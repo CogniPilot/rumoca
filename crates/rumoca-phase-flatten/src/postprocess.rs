@@ -868,7 +868,8 @@ fn substitute_function_bodies(
             .chain(function.locals.iter())
             .map(|param| param.name.clone())
             .collect();
-        let function_scope = crate::path_utils::parent_scope(function.name.as_str()).unwrap_or("");
+        let function_scope =
+            crate::path_utils::enclosing_scope(function.name.as_str()).unwrap_or("");
 
         for param in function
             .inputs

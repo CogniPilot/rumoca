@@ -115,7 +115,7 @@ impl TypeChecker {
         qualified_name.to_component_path()
     }
 
-    fn parent_scope_name(path: &ComponentPath) -> String {
+    fn enclosing_scope_name(path: &ComponentPath) -> String {
         path.parent()
             .unwrap_or_else(ComponentPath::root)
             .to_flat_string()
@@ -287,8 +287,8 @@ impl TypeChecker {
             let component_name = Self::instance_component_path(&instance_data.qualified_name);
             let mut scopes = Vec::with_capacity(2 + instance_data.class_overrides.len());
             scopes.push(instance_data.type_name.clone());
-            if let Some(parent_scope) = Self::parent_type_scope(&instance_data.type_name) {
-                scopes.push(parent_scope.to_string());
+            if let Some(enclosing) = Self::parent_type_scope(&instance_data.type_name) {
+                scopes.push(enclosing.to_string());
             }
             Self::push_enclosing_class_override_scopes(
                 &component_name,
@@ -332,9 +332,7 @@ impl TypeChecker {
     }
 
     fn parent_type_scope(type_name: &str) -> Option<&str> {
-        let pos = find_last_top_level_dot(type_name)?;
-        let parent_scope = &type_name[..pos];
-        (!parent_scope.is_empty()).then_some(parent_scope)
+        crate::path_utils::enclosing_scope_str(type_name).filter(|scope| !scope.is_empty())
     }
 
     /// Fallback dimension evaluation using enclosing component type scopes.
@@ -357,8 +355,8 @@ impl TypeChecker {
             {
                 return Some(value);
             }
-            if let Some(parent_scope) = current.parent() {
-                current = parent_scope;
+            if let Some(enclosing) = current.parent() {
+                current = enclosing;
             } else {
                 break;
             }
@@ -385,7 +383,7 @@ impl TypeChecker {
         for (_def_id, instance_data) in &overlay.components {
             let name_path = Self::instance_component_path(&instance_data.qualified_name);
             let name = name_path.to_flat_string();
-            let scope = Self::parent_scope_name(&name_path);
+            let scope = Self::enclosing_scope_name(&name_path);
 
             // Recompute from the most specific declaration source each pass.
             // MLS §10.1 dependency chains can reveal better values in later passes;
@@ -427,7 +425,7 @@ impl TypeChecker {
         for (_def_id, instance_data) in &overlay.components {
             let name_path = Self::instance_component_path(&instance_data.qualified_name);
             let name = name_path.to_flat_string();
-            let scope = Self::parent_scope_name(&name_path);
+            let scope = Self::enclosing_scope_name(&name_path);
 
             if !self.eval_ctx.booleans.contains_key(&name) {
                 progress |= self.try_eval_boolean(instance_data, &name, &scope);
@@ -552,7 +550,7 @@ impl TypeChecker {
     ) -> bool {
         let name_path = Self::instance_component_path(&instance_data.qualified_name);
         let name = name_path.to_flat_string();
-        let scope = Self::parent_scope_name(&name_path);
+        let scope = Self::enclosing_scope_name(&name_path);
 
         // Try to infer from binding first
         if let Some(ref binding) = instance_data.binding
@@ -1939,7 +1937,7 @@ impl TypeChecker {
 
         // Last resort: unique short-name lookup.
         // Keep this as a compatibility fallback for mixed qualification styles.
-        let short_name = top_level_last_segment(name);
+        let short_name = crate::path_utils::class_name_leaf(name);
         if let Some(type_id) = self.type_suffix_index.get(short_name).copied().flatten() {
             return type_id;
         }
@@ -1953,7 +1951,7 @@ impl TypeChecker {
         name: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        if has_top_level_dot(name)
+        if crate::path_utils::is_qualified_class_name(name)
             && let Some(type_id) = self.resolve_dotted_type_from_anchor(def_id, name, type_table)
         {
             return Some(type_id);
@@ -1970,7 +1968,7 @@ impl TypeChecker {
         dotted_name: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        let (_, tail) = rumoca_core::split_first_top_level(dotted_name)?;
+        let (_, tail) = crate::path_utils::class_root_split(dotted_name)?;
         let anchor_qname = self.def_qualified_names.get(&anchor_def_id)?;
         let candidate = format!("{anchor_qname}.{tail}");
         type_table.lookup(&candidate).or_else(|| {

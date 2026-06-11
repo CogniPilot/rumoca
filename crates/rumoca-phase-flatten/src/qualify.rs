@@ -13,8 +13,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::path_utils::split_path_with_indices;
-
 /// Resolved import map: short name → fully-qualified name.
 ///
 /// Built from `ClassDef.imports` during instantiation. For example,
@@ -692,7 +690,7 @@ fn is_builtin_enum_literal_ref(cr: &ComponentReference) -> bool {
 fn make_fqn_component_ref(fqn: &str) -> ComponentReference {
     ComponentReference {
         local: false,
-        parts: split_path_with_indices(fqn)
+        parts: crate::path_utils::segments(fqn)
             .into_iter()
             .map(|seg| ComponentRefPart {
                 ident: Token {

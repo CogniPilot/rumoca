@@ -248,7 +248,7 @@ mod tests {
 
     fn cref(name: &str) -> ast::Expression {
         let mut parts = Vec::new();
-        for seg in crate::path_utils::split_path_with_indices(name) {
+        for seg in crate::path_utils::segments(name) {
             parts.push(ComponentRefPart {
                 ident: Token {
                     text: Arc::from(seg),

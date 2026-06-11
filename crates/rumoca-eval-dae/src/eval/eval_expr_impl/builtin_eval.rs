@@ -19,7 +19,7 @@ fn exact_clock_expr_is_left_limit_false<T: SimFloat>(
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
 ) -> Result<bool, EvalError> {
-    let short = rumoca_core::top_level_last_segment(name.as_str());
+    let short = name.last_segment();
     Ok(matches!(
         short,
         "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "firstTick"

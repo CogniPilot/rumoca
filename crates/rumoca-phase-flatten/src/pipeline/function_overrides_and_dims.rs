@@ -1,5 +1,5 @@
 use super::*;
-use crate::path_utils::{parent_scope, top_level_last_segment};
+use crate::path_utils::{enclosing_scope, leaf_segment};
 use rumoca_core::{ComponentPath, ExpressionRewriter, StatementRewriter, Token};
 use rumoca_ir_ast::ExpressionTransformer;
 use rustc_hash::FxHashSet;
@@ -208,7 +208,7 @@ fn collect_nested_package_aliases_for_class(
             continue;
         };
         if target_ref.class_def.class_type == rumoca_core::ClassType::Package {
-            let active_alias = active_aliases && top_level_last_segment(&target_ref.name) != alias;
+            let active_alias = active_aliases && leaf_segment(&target_ref.name) != alias;
             overrides.insert(
                 alias.clone(),
                 OverrideTarget::from_resolved(alias.clone(), target_ref, active_alias),
@@ -277,7 +277,7 @@ fn collect_extends_redeclare_aliases_for_class(
                 continue;
             };
             if is_receiver_alias_type(&target_ref.class_def.class_type) {
-                let active_redeclare = top_level_last_segment(&target_ref.name) != alias;
+                let active_redeclare = leaf_segment(&target_ref.name) != alias;
                 overrides.insert(
                     alias.clone(),
                     OverrideTarget::from_resolved_with_modifier_args(
@@ -553,7 +553,7 @@ fn component_class_override_is_active(
         .map(|part| part.ident.text.as_ref());
     redeclare_value_leaf != Some(class_override.alias.as_str())
         || inherited_default.is_some_and(|default| default.def_id != target_ref.def_id)
-        || top_level_last_segment(&target_ref.name) != class_override.alias.as_str()
+        || leaf_segment(&target_ref.name) != class_override.alias.as_str()
 }
 
 pub(crate) fn class_instance_component_overrides(
@@ -1250,7 +1250,7 @@ fn reference_source_package_def_id_from_index(
     {
         return Some(source_package_def_id);
     }
-    let package_name = parent_scope(reference.as_str())?;
+    let package_name = enclosing_scope(reference.as_str())?;
     class_index
         .get_by_qualified_name(package_name)
         .and_then(|class_def| class_def.def_id)
@@ -1345,7 +1345,7 @@ fn canonical_instance_reference_name(
             .class_index
             .get_by_qualified_name(&component_name)
             .is_none()
-        && parent_scope(&component_name)
+        && enclosing_scope(&component_name)
             .is_none_or(|scope| ctx.class_index.get_by_qualified_name(scope).is_none()))
     .then(|| {
         rumoca_core::Reference::with_component_reference(component_name, component_ref.clone())
@@ -1500,7 +1500,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         let name = self.tree.def_map.get(&def_id)?.clone();
         let class_def = self.class_index.get(def_id)?;
         Some(OverrideTarget {
-            alias: top_level_last_segment(&name).to_string(),
+            alias: leaf_segment(&name).to_string(),
             name,
             def_id,
             class_type: class_def.class_type.clone(),
@@ -1515,7 +1515,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             .tree
             .def_map
             .get(&lexical_package_def_id)
-            .map(|name| top_level_last_segment(name))
+            .map(|name| leaf_segment(name))
         {
             let mut matches = self.override_packages.iter().filter(|package| {
                 package.alias == lexical_alias && package.def_id != lexical_package_def_id

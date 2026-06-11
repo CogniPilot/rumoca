@@ -51,10 +51,15 @@ fn test_model_description_propagation() {
     let mut flat = flat::Model::new();
     flat.model_description = Some("Test model description".to_string());
 
-    // Add a simple variable to make it valid
+    // Add a simple variable to make it valid. Producers must attach the
+    // structured component reference (DAE provenance contract).
     let var = rumoca_ir_flat::Variable {
         name: "x".into(),
         variability: rumoca_core::Variability::Parameter(Default::default()),
+        component_ref: rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("x"),
+            rumoca_core::Span::DUMMY,
+        ),
         ..Default::default()
     };
     flat.add_variable("x".into(), var);

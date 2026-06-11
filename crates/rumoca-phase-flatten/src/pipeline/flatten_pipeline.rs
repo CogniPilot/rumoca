@@ -990,6 +990,10 @@ pub(crate) fn finalize_flat_model(
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;
     }
+    // Final boundary pass: every rendered variable reference leaves flatten
+    // with its structured component reference attached, so downstream phases
+    // never re-derive structure from names.
+    crate::structured_refs::attach_structured_references(flat);
 
     Ok(())
 }

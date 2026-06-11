@@ -1,4 +1,5 @@
-use rumoca_core::{DefId, TypeId, split_last_top_level, top_level_last_segment};
+use crate::path_utils;
+use rumoca_core::{DefId, TypeId};
 use rumoca_ir_ast as ast;
 
 use super::inheritance;
@@ -17,7 +18,7 @@ pub(super) struct TypeInfo<'a> {
 
 /// Map a builtin primitive name to its TypeId in the class tree.
 fn builtin_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
-    let simple = top_level_last_segment(name);
+    let simple = path_utils::class_name_leaf(name);
     match simple {
         "Real" => Some(tree.type_table.real()),
         "Integer" => Some(tree.type_table.integer()),
@@ -210,7 +211,7 @@ pub(super) fn lookup_type_info<'a>(
     // such as `Medium.BaseProperties medium`.
     if let Some(cd) = class_def
         && matches!(cd.class_type, rumoca_core::ClassType::Package)
-        && let Some((_, member_name)) = split_last_top_level(type_name)
+        && let Some((_, member_name)) = path_utils::class_scope_split(type_name)
         && let Some(member) = find_member_type_in_class(tree, cd, member_name)
     {
         class_def = Some(member);

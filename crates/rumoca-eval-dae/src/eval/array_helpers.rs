@@ -90,8 +90,13 @@ fn collect_indexed_array_values_generic<T: SimFloat>(
     (!values.is_empty()).then_some(values)
 }
 
-fn split_record_array_field_name(name: &str) -> Option<(&str, &str)> {
-    let (base, field) = rumoca_core::split_last_top_level(name)?;
+fn split_record_array_field_name(name: &str) -> Option<(String, String)> {
+    let mut parts = rumoca_core::ComponentPath::from_flat_path(name).into_parts();
+    if parts.len() < 2 {
+        return None;
+    }
+    let field = parts.pop()?;
+    let base = parts.join(".");
     if base.is_empty() || field.is_empty() {
         return None;
     }
@@ -106,7 +111,7 @@ fn collect_record_field_indexed_values_generic<T: SimFloat>(
     let mut values = Vec::new();
     let mut key = String::with_capacity(base.len() + field.len() + 10);
     for i in 1.. {
-        let Some(value) = env.vars.get(indexed_field_key(&mut key, base, i, field)) else {
+        let Some(value) = env.vars.get(indexed_field_key(&mut key, &base, i, &field)) else {
             break;
         };
         values.push(*value);
@@ -133,7 +138,7 @@ fn collect_dense_record_field_indexed_values_generic<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Option<Vec<T>> {
     let (base, field) = split_record_array_field_name(name)?;
-    let keys = cached_indexed_field_keys(&env.runtime, base, field, scalar_count);
+    let keys = cached_indexed_field_keys(&env.runtime, &base, &field, scalar_count);
     let mut values = Vec::with_capacity(scalar_count);
     for key in keys.iter() {
         values.push(env.vars.get(key.as_str()).copied()?);
@@ -406,16 +411,18 @@ pub(super) fn record_constructor_fields_for_output<'a>(
     env: &'a VarEnv<impl SimFloat>,
 ) -> Option<&'a [rumoca_core::FunctionParam]> {
     let type_name = output.type_name.as_str();
-    let qualified = rumoca_core::split_last_top_level(function.name.as_str())
-        .map(|(prefix, _)| format!("{prefix}.{type_name}"));
+    let qualified = function
+        .name
+        .enclosing_scope()
+        .map(|prefix| format!("{prefix}.{type_name}"));
     let constructor = qualified
         .as_deref()
         .and_then(|name| env.functions.get(name))
         .or_else(|| env.functions.get(type_name))
         .or_else(|| {
-            env.functions.values().find(|candidate| {
-                rumoca_core::top_level_last_segment(candidate.name.as_str()) == type_name
-            })
+            env.functions
+                .values()
+                .find(|candidate| candidate.name.last_segment() == type_name)
         })?;
     Some(constructor.inputs.as_slice())
 }

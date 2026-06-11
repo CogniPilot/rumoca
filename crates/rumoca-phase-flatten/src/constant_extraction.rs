@@ -520,10 +520,10 @@ pub(super) fn maybe_add_referenced_class_scope(
         return;
     }
 
-    let Some(scope) = path_utils::parent_scope(name) else {
+    let Some(scope) = path_utils::enclosing_scope(name) else {
         return;
     };
-    let last = path_utils::top_level_last_segment(name);
+    let last = path_utils::leaf_segment(name);
     let base_last = path_utils::strip_array_index(last);
     if base_last.is_empty() {
         return;
@@ -537,7 +537,7 @@ pub(super) fn maybe_add_referenced_class_scope(
     let mut current = Some(scope);
     while let Some(candidate) = current {
         scopes.insert(candidate.to_string());
-        current = path_utils::parent_scope(candidate);
+        current = path_utils::enclosing_scope(candidate);
     }
 }
 
@@ -598,9 +598,9 @@ pub(super) fn inject_model_extends_redeclare_constants(
     model_name: &str,
     ctx: &mut Context,
 ) {
-    let model_class = class_index.get_by_qualified_name(model_name).or_else(|| {
-        class_index.get_by_qualified_name(crate::path_utils::top_level_last_segment(model_name))
-    });
+    let model_class = class_index
+        .get_by_qualified_name(model_name)
+        .or_else(|| class_index.get_by_qualified_name(crate::path_utils::leaf_segment(model_name)));
     let Some(model_class) = model_class else {
         return;
     };
@@ -846,7 +846,7 @@ pub(super) fn referenced_direct_nested_names(
         .iter()
         .filter_map(|scope| scope.strip_prefix(&nested_scope_prefix))
         .filter_map(|rest| {
-            let name = path_utils::split_first_top_level(rest)
+            let name = path_utils::root_split(rest)
                 .map(|(first, _rest)| first)
                 .unwrap_or(rest);
             (!name.is_empty()).then(|| path_utils::strip_array_index(name).to_string())

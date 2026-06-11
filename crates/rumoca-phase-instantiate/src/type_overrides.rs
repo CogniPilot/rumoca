@@ -4,7 +4,7 @@ use super::traversal_adapter::{
 };
 use super::type_lookup::find_member_type_in_class;
 use crate::{InstantiateError, InstantiateResult, location_to_span};
-use rumoca_core::{DefId, parent_scope};
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
@@ -160,7 +160,7 @@ fn collect_enclosing_type_overrides(
     let Some(qualified_name) = tree.def_map.get(&class_def_id) else {
         return;
     };
-    let Some(parent_name) = parent_scope(qualified_name) else {
+    let Some(parent_name) = tree.enclosing_class_names_of(qualified_name).next() else {
         return;
     };
     let Some(parent_class) = tree.get_class_by_qualified_name(parent_name) else {
@@ -667,13 +667,7 @@ mod tests {
     }
 
     fn make_name(text: &str) -> ast::Name {
-        ast::Name {
-            name: rumoca_core::split_path_with_indices(text)
-                .into_iter()
-                .map(make_token)
-                .collect(),
-            def_id: None,
-        }
+        ast::Name::from_string(text)
     }
 
     #[test]
@@ -733,6 +727,22 @@ mod tests {
             .insert("BaseProperties".to_string(), base_properties);
 
         let mut tree = ast::ClassTree::default();
+        // Scope structure mirrors what resolve registration produces: the
+        // enclosing-class walk traverses the scope tree, not rendered names.
+        let derived_scope = tree
+            .scope_tree
+            .create_scope(rumoca_core::ScopeId::GLOBAL, ast::ScopeKind::Class);
+        let base_properties_scope = tree
+            .scope_tree
+            .create_scope(derived_scope, ast::ScopeKind::Class);
+        tree.scope_to_class
+            .insert(derived_scope, derived_package_id);
+        tree.scope_to_class
+            .insert(base_properties_scope, base_properties_id);
+        if let Some(base_properties) = derived_package.classes.get_mut("BaseProperties") {
+            base_properties.scope_id = Some(base_properties_scope);
+        }
+        derived_package.scope_id = Some(derived_scope);
         tree.definitions
             .classes
             .insert("BaseMedium".to_string(), base_package);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::path_utils::{split_first_top_level, split_path_with_indices};
+use crate::path_utils::{root_split, segments as path_segments_of};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ComponentStaticConstantKey {
@@ -727,7 +727,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
     class_context: &str,
     ctx: &mut Context,
 ) {
-    let Some(enclosing_name) = crate::path_utils::parent_scope(class_context) else {
+    let Some(enclosing_name) = crate::path_utils::enclosing_scope(class_context) else {
         return;
     };
     let ancestors = collect_ancestor_classes_with_index(tree, class_index, enclosing_name);
@@ -939,7 +939,7 @@ fn inject_alias_package_constants(
 }
 
 pub(crate) fn split_alias_declared_type(type_name: &str) -> Option<(&str, &str)> {
-    let (alias_name, declared_tail) = split_first_top_level(type_name)?;
+    let (alias_name, declared_tail) = root_split(type_name)?;
     if alias_name.starts_with(char::is_uppercase) && !declared_tail.is_empty() {
         Some((alias_name, declared_tail))
     } else {
@@ -948,8 +948,8 @@ pub(crate) fn split_alias_declared_type(type_name: &str) -> Option<(&str, &str)>
 }
 
 pub(crate) fn strip_declared_suffix(actual_type: &str, declared_tail: &str) -> Option<String> {
-    let actual_parts = split_path_with_indices(actual_type);
-    let declared_parts = split_path_with_indices(declared_tail);
+    let actual_parts = path_segments_of(actual_type);
+    let declared_parts = path_segments_of(declared_tail);
     if declared_parts.is_empty()
         || actual_parts.len() <= declared_parts.len()
         || actual_parts[actual_parts.len() - declared_parts.len()..] != declared_parts[..]

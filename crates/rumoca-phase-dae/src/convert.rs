@@ -284,62 +284,69 @@ impl DaeReferenceScope {
         if let Some(metadata) = self.aggregate_prefixes.get(name.var_name()) {
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
+        // Element reference to an aggregate variable (`sum.u[2]` while the
+        // declared variable is `sum.u`): derive the base structurally from
+        // the parts (last part without its subscripts) and enrich def-ids
+        // from the base variable's metadata, exactly as exact-name hits do.
+        if let Some(enriched) = self.enrich_element_reference(name, span)? {
+            return Ok(enriched);
+        }
         if name.has_structure() {
             return Ok(name.clone());
         }
-        // Bridge for the remaining name-encoded scalarized references:
-        // flatten's connector/array expansion still renders element names
-        // such as `sum.u[2]` without structured parts. Once those producers
-        // emit structured references, this parse goes away and any
-        // unstructured leftover becomes an unresolved-reference error.
-        if let Some(scalar_name) = rumoca_core::parse_scalar_name(name.as_str()) {
-            let base = rumoca_core::VarName::new(scalar_name.base);
-            if let Some(metadata) = self.variables.get(&base) {
-                return self.scalar_reference_from_metadata(
-                    name.as_str(),
-                    metadata,
-                    &scalar_name.indices,
-                    span,
-                );
-            }
-        }
+        // Flatten's exit pass attaches structured references to every
+        // rendered variable reference, so an unstructured leftover is a
+        // producer bug, not something to recover by parsing the name.
         Err(ToDaeError::UnresolvedReference {
             name: name.as_str().to_string(),
             span: rumoca_core::span_to_source_span(span),
         })
     }
 
-    fn scalar_reference_from_metadata(
+    /// Enrich an element reference whose base is a declared aggregate
+    /// variable: the base is derived from the structured parts (no name
+    /// parsing), its metadata supplies the def-ids, and the element's own
+    /// subscripts are re-applied.
+    fn enrich_element_reference(
         &self,
-        rendered: &str,
-        metadata: &DaeReferenceMetadata,
-        indices: &[i64],
+        name: &rumoca_core::Reference,
         span: rumoca_core::Span,
-    ) -> Result<rumoca_core::Reference, ToDaeError> {
-        match metadata.origin {
-            dae::VariableOrigin::Generated => Ok(rumoca_core::Reference::generated(rendered)),
-            dae::VariableOrigin::Source => {
-                let mut component_ref = metadata.component_ref.clone().ok_or_else(|| {
-                    ToDaeError::RuntimeContractViolation {
-                        detail: format!(
-                            "source DAE variable `{rendered}` lost structured component-reference metadata"
-                        ),
-                        span: rumoca_core::span_to_source_span(span),
-                    }
-                })?;
-                append_generated_subscripts(
-                    rendered,
-                    &mut component_ref,
-                    indices,
-                    metadata.source_span,
-                    span,
-                )?;
-                Ok(rumoca_core::Reference::with_component_reference(
-                    rendered,
-                    component_ref,
-                ))
-            }
+    ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+        let Some(component_ref) = name.component_ref() else {
+            return Ok(None);
+        };
+        let Some(last) = component_ref.parts.last() else {
+            return Ok(None);
+        };
+        if last.subs.is_empty() {
+            return Ok(None);
         }
+        let mut base_ref = component_ref.clone();
+        let element_subs = match base_ref.parts.last_mut() {
+            Some(part) => std::mem::take(&mut part.subs),
+            None => return Ok(None),
+        };
+        let base_name = rumoca_core::VarName::new(
+            rumoca_core::ComponentPath::from_component_reference(&base_ref).to_flat_string(),
+        );
+        let Some(metadata) = self.variables.get(&base_name) else {
+            return Ok(None);
+        };
+        if metadata.origin == dae::VariableOrigin::Generated {
+            return Ok(Some(rumoca_core::Reference::generated(name.as_str())));
+        }
+        let Some(mut enriched) = metadata.component_ref.clone() else {
+            return Ok(None);
+        };
+        let Some(part) = enriched.parts.last_mut() else {
+            return Ok(None);
+        };
+        part.subs.extend(element_subs);
+        let _ = span;
+        Ok(Some(rumoca_core::Reference::with_component_reference(
+            name.as_str(),
+            enriched,
+        )))
     }
 
     fn reference_from_metadata(
@@ -369,29 +376,6 @@ impl DaeReferenceScope {
             }
         }
     }
-}
-
-fn append_generated_subscripts(
-    rendered: &str,
-    component_ref: &mut rumoca_core::ComponentReference,
-    indices: &[i64],
-    source_span: rumoca_core::Span,
-    diagnostic_span: rumoca_core::Span,
-) -> Result<(), ToDaeError> {
-    let Some(part) = component_ref.parts.last_mut() else {
-        return Err(ToDaeError::RuntimeContractViolation {
-            detail: format!(
-                "source DAE variable `{rendered}` has empty component-reference metadata"
-            ),
-            span: rumoca_core::span_to_source_span(diagnostic_span),
-        });
-    };
-    part.subs.extend(
-        indices
-            .iter()
-            .map(|index| rumoca_core::Subscript::generated_index(*index, source_span)),
-    );
-    Ok(())
 }
 
 struct DaeMetadataReferenceRewriter {

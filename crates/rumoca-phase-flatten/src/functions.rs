@@ -1062,7 +1062,7 @@ fn lookup_function_in_known_packages<'tree>(
     known_functions: &[String],
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
-    let Some((_first, remainder)) = path_utils::split_first_top_level(func_name) else {
+    let Some((_first, remainder)) = path_utils::root_split(func_name) else {
         return Ok(None);
     };
     if remainder.is_empty() {
@@ -1071,7 +1071,7 @@ fn lookup_function_in_known_packages<'tree>(
 
     let mut matched: Option<String> = None;
     for known in known_functions {
-        let Some(pkg_prefix) = path_utils::parent_scope(known) else {
+        let Some(pkg_prefix) = path_utils::enclosing_scope(known) else {
             continue;
         };
         if resolve_function_in_package_chain_class(tree, class_index, pkg_prefix, remainder)
@@ -1092,8 +1092,8 @@ fn lookup_function_in_known_packages<'tree>(
     let Some(qualified_name) = matched else {
         return Ok(None);
     };
-    let Some((class_def, _source_name)) = path_utils::split_last_top_level(&qualified_name)
-        .and_then(|(package, leaf)| {
+    let Some((class_def, _source_name)) =
+        path_utils::scope_split(&qualified_name).and_then(|(package, leaf)| {
             resolve_function_in_package_chain_class(tree, class_index, package, leaf)
         })
     else {
@@ -1129,7 +1129,7 @@ fn resolve_function_class_with_scope<'a>(
         if class_def.partial
             && let Some(caller_scope) = caller_scope
         {
-            let short_name = path_utils::top_level_last_segment(func_name);
+            let short_name = path_utils::leaf_segment(func_name);
             if let Some(scoped_match) =
                 resolve_function_in_caller_packages(tree, class_index, caller_scope, short_name)
                 && scoped_match != func_name
@@ -1148,7 +1148,7 @@ fn resolve_function_class_with_scope<'a>(
         });
     }
 
-    if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(func_name)
+    if let Some((package_name, function_leaf)) = path_utils::scope_split(func_name)
         && let Some((class_def, _source_name)) =
             resolve_function_in_package_chain_class(tree, class_index, package_name, function_leaf)
     {
@@ -1170,7 +1170,7 @@ fn resolve_function_class_with_scope<'a>(
         );
     }
 
-    let short_name = path_utils::top_level_last_segment(func_name);
+    let short_name = path_utils::leaf_segment(func_name);
     if short_name != func_name
         && let Some(caller_scope) = caller_scope
         && let Some(scoped_match) =
@@ -1232,14 +1232,13 @@ fn resolve_function_path_in_caller_packages_inner(
         }
     }
 
-    if !path_utils::has_top_level_dot(func_path) {
+    if !path_utils::is_nested_name(func_path) {
         return resolve_function_in_caller_packages(tree, class_index, caller_scope, func_path);
     }
 
-    let mut prefix = path_utils::parent_scope(caller_scope)?;
-    loop {
+    for prefix in path_utils::enclosing_scopes(caller_scope) {
         let candidate = format!("{prefix}.{func_path}");
-        if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(&candidate)
+        if let Some((package_name, function_leaf)) = path_utils::scope_split(&candidate)
             && resolve_function_in_package_chain_class(
                 tree,
                 class_index,
@@ -1250,10 +1249,6 @@ fn resolve_function_path_in_caller_packages_inner(
         {
             return Some(candidate);
         }
-        let Some(parent) = path_utils::parent_scope(prefix) else {
-            break;
-        };
-        prefix = parent;
     }
     None
 }
@@ -1360,10 +1355,10 @@ fn resolve_function_in_caller_packages(
     caller_scope: &str,
     short_name: &str,
 ) -> Option<String> {
-    let mut prefix = path_utils::parent_scope(caller_scope)?;
+    let mut prefix = path_utils::enclosing_scope(caller_scope)?;
     loop {
         let candidate = format!("{prefix}.{short_name}");
-        if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(&candidate)
+        if let Some((package_name, function_leaf)) = path_utils::scope_split(&candidate)
             && resolve_function_in_package_chain_class(
                 tree,
                 class_index,
@@ -1374,7 +1369,7 @@ fn resolve_function_in_caller_packages(
         {
             return Some(candidate);
         }
-        let Some(parent) = path_utils::parent_scope(prefix) else {
+        let Some(parent) = path_utils::enclosing_scope(prefix) else {
             break;
         };
         prefix = parent;
@@ -1499,7 +1494,7 @@ fn resolve_import_pairs(
         match import {
             ast::Import::Qualified { path, .. } => {
                 let fqn = path.to_string();
-                map.insert(path_utils::top_level_last_segment(&fqn).to_string(), fqn);
+                map.insert(path_utils::leaf_segment(&fqn).to_string(), fqn);
             }
             ast::Import::Renamed { alias, path, .. } => {
                 map.insert(alias.text.to_string(), path.to_string());

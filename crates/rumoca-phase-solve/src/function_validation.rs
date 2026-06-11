@@ -117,17 +117,13 @@ fn resolve_dae_component_function<'a>(
     resolve_dae_function_by_key(dae, name.as_str())
 }
 
-fn short_function_name(name: &str) -> &str {
-    rumoca_core::top_level_last_segment(name)
-}
-
 fn is_runtime_intrinsic_short_name(short: &str) -> bool {
     short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
         || eval::is_runtime_special_function_short_name(short)
 }
 
-fn is_builtin_or_runtime_special_key(name: &str) -> bool {
-    let short = short_function_name(name);
+fn is_builtin_or_runtime_special_key(name: &VarName) -> bool {
+    let short = name.last_segment();
     BuiltinFunction::from_name(short).is_some()
         || BuiltinFunction::from_name(&short.to_ascii_lowercase()).is_some()
         || is_runtime_intrinsic_short_name(short)
@@ -137,7 +133,7 @@ fn is_builtin_or_runtime_special_key(name: &str) -> bool {
 }
 
 fn is_builtin_or_runtime_special(name: &rumoca_core::Reference) -> bool {
-    is_builtin_or_runtime_special_key(name.as_str())
+    is_builtin_or_runtime_special_key(name.var_name())
 }
 
 pub(super) fn collect_function_parameter_call_aliases(dae: &Dae) -> HashSet<VarName> {
@@ -175,7 +171,7 @@ pub(super) fn validate_sim_function_call_name(
         });
     };
 
-    if func.external.is_some() && !eval::is_runtime_special_function_name(func.name.as_str()) {
+    if func.external.is_some() && !eval::is_runtime_special_function_name(&func.name) {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
             reason: "external function is not supported by this simulator".to_string(),
@@ -184,7 +180,7 @@ pub(super) fn validate_sim_function_call_name(
 
     if func.external.is_none()
         && func.body.is_empty()
-        && !eval::is_runtime_special_function_name(func.name.as_str())
+        && !eval::is_runtime_special_function_name(&func.name)
     {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
@@ -240,7 +236,7 @@ pub(super) fn validate_sim_component_function_call_name(
     function_param_aliases: &HashSet<VarName>,
 ) -> Result<(), FunctionValidationError> {
     let name = comp.to_var_name();
-    if is_builtin_or_runtime_special_key(name.as_str()) {
+    if is_builtin_or_runtime_special_key(&name) {
         return Ok(());
     }
     if function_param_aliases.contains(&name) {
@@ -254,7 +250,7 @@ pub(super) fn validate_sim_component_function_call_name(
         });
     };
 
-    if func.external.is_some() && !eval::is_runtime_special_function_name(func.name.as_str()) {
+    if func.external.is_some() && !eval::is_runtime_special_function_name(&func.name) {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
             reason: "external function is not supported by this simulator".to_string(),
@@ -263,7 +259,7 @@ pub(super) fn validate_sim_component_function_call_name(
 
     if func.external.is_none()
         && func.body.is_empty()
-        && !eval::is_runtime_special_function_name(func.name.as_str())
+        && !eval::is_runtime_special_function_name(&func.name)
     {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
@@ -821,8 +817,7 @@ pub(super) fn validate_statement_function_call(
     }
 
     validate_sim_component_function_call_name(dae, comp, function_param_aliases)?;
-    if !is_builtin_or_runtime_special_key(name.as_str()) && !function_param_aliases.contains(&name)
-    {
+    if !is_builtin_or_runtime_special_key(&name) && !function_param_aliases.contains(&name) {
         validate_called_function_body(
             dae,
             &name,
@@ -1097,7 +1092,7 @@ pub fn validate_simulation_function_support(dae: &Dae) -> Result<(), FunctionVal
 }
 
 fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
-    rumoca_core::top_level_last_segment(&output.type_name) == "Complex"
+    rumoca_core::qualified_type_name_matches(&output.type_name, "Complex")
 }
 
 #[cfg(test)]

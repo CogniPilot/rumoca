@@ -27,7 +27,7 @@ fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &rumoca_core::VarName)
 }
 
 pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
-    let parts = split_path_with_indices(path);
+    let parts = crate::path_utils::segments(path);
     if !parts
         .iter()
         .any(|part| rumoca_core::split_trailing_subscript_suffix(part).is_some())

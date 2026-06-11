@@ -417,7 +417,7 @@ fn copy_array_literal_input_entries<T: SimFloat>(
 }
 
 fn is_pre_like_call_name(name: &rumoca_core::Reference) -> bool {
-    let short = rumoca_core::top_level_last_segment(name.as_str());
+    let short = name.last_segment();
     short.eq_ignore_ascii_case("pre") || short.eq_ignore_ascii_case("previous")
 }
 
@@ -1060,8 +1060,10 @@ fn resolve_selection_value<T: SimFloat>(
     if let Some(value) = local_env.vars.get(&selected_name).copied() {
         return Ok(value);
     }
-    if let Some((base_output, _)) = rumoca_core::split_first_top_level(&selection.output_name)
-        && let Some(value) = local_env.vars.get(base_output).copied()
+    if let Some(base_output) = rumoca_core::ComponentPath::from_flat_path(&selection.output_name)
+        .parts()
+        .first()
+        && let Some(value) = local_env.vars.get(base_output.as_str()).copied()
     {
         // Scalar evaluator executes user functions in selection context
         // (`*.re` / `*.im` caller names). If field materialization is absent
@@ -1607,7 +1609,7 @@ pub(super) fn eval_function_call<T: SimFloat>(
     is_constructor: bool,
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
-    let short_name = rumoca_core::top_level_last_segment(name.as_str());
+    let short_name = name.last_segment();
     if let Some(result) = eval_external_table_function(short_name, args, env)? {
         return Ok(result);
     }
@@ -1624,8 +1626,8 @@ pub(super) fn eval_function_call<T: SimFloat>(
         return Ok(result);
     }
 
-    if is_runtime_special_function_name(name.as_str())
-        && let Some(result) = eval_special_function_call(name.as_str(), args, env)?
+    if is_runtime_special_function_name(name)
+        && let Some(result) = eval_special_function_call(name, args, env)?
     {
         return Ok(result);
     }
@@ -1646,28 +1648,28 @@ pub(super) fn eval_function_call<T: SimFloat>(
     if let Some(builtin) = BuiltinFunction::from_name(&short_name.to_ascii_lowercase()) {
         return eval_builtin(builtin, args, env);
     }
-    if let Some(result) = eval_special_function_call(name.as_str(), args, env)? {
+    if let Some(result) = eval_special_function_call(name, args, env)? {
         return Ok(result);
     }
-    trace_unresolved_user_function(name.as_str(), env);
+    trace_unresolved_user_function(name, env);
 
     Err(EvalError::MissingFunction {
         name: name.to_string(),
     })
 }
 
-fn trace_unresolved_user_function<T: SimFloat>(name: &str, env: &VarEnv<T>) {
+fn trace_unresolved_user_function<T: SimFloat>(name: &VarName, env: &VarEnv<T>) {
     if !crate::trace::sim_or_introspect_enabled() {
         return;
     }
-    let short = rumoca_core::top_level_last_segment(name);
-    let direct_hit = env.functions.contains_key(name);
+    let short = name.last_segment();
+    let direct_hit = env.functions.contains_key(name.as_str());
     let short_hits: Vec<String> = env
         .functions
-        .keys()
-        .filter(|candidate| rumoca_core::top_level_last_segment(candidate) == short)
+        .values()
+        .filter(|candidate| candidate.name.last_segment() == short)
+        .map(|candidate| candidate.name.as_str().to_string())
         .take(16)
-        .cloned()
         .collect();
     tracing::debug!(
         target: "rumoca_eval_dae::sim",

@@ -38,13 +38,34 @@ impl ComponentReference {
     pub fn last_ident(&self) -> Option<&str> {
         self.parts.last().map(|part| part.ident.as_str())
     }
+
+    /// Build a reference from a rendered flat declaration path.
+    ///
+    /// Each top-level segment becomes one part; subscript text (if any) stays
+    /// embedded in the ident, matching how declaration paths are rendered.
+    pub fn from_flat_segments(path: &str, span: Span, def_id: Option<DefId>) -> Self {
+        Self {
+            local: false,
+            span,
+            parts: split_path_with_indices(path)
+                .into_iter()
+                .map(|segment| ComponentRefPart {
+                    ident: segment.to_string(),
+                    span,
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id,
+        }
+    }
 }
 
 pub fn component_reference_from_flat_name(
     name: &VarName,
     span: Span,
 ) -> Option<ComponentReference> {
-    let parts = split_path_with_indices(name.as_str())
+    let parts = name
+        .segments()
         .into_iter()
         .map(|segment| component_ref_part_from_flat_segment(segment, span))
         .collect::<Option<Vec<_>>>()?;
@@ -153,11 +174,26 @@ impl ComponentPath {
     }
 
     pub fn from_flat_path(path: &str) -> Self {
-        Self::from_parts(
-            split_path_with_indices(path)
-                .into_iter()
-                .filter(|part| !part.is_empty()),
-        )
+        // The interner has already segmented every name it has seen; reuse
+        // those boundaries instead of re-parsing. `from_parts` re-joins (and
+        // thereby normalizes empty segments), so only fall back to it when
+        // normalization would change the text.
+        let interned = VarName::new(path);
+        let parts: Vec<String> = interned
+            .segments()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        if interned.as_str().len() == path.len() && !parts.is_empty() {
+            let joined_len: usize = parts.iter().map(|part| part.len() + 1).sum::<usize>() - 1;
+            if joined_len == path.len() {
+                return Self {
+                    name: interned,
+                    parts,
+                };
+            }
+        }
+        Self::from_parts(parts)
     }
 
     pub fn from_parts(parts: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -191,6 +227,10 @@ impl ComponentPath {
 
     pub fn parts(&self) -> &[String] {
         &self.parts
+    }
+
+    pub fn into_parts(self) -> Vec<String> {
+        self.parts
     }
 
     pub fn parent(&self) -> Option<Self> {

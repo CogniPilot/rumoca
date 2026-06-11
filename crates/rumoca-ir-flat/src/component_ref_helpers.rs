@@ -1,24 +1,12 @@
 use super::*;
-use rumoca_core::{ComponentRefPart, ComponentReference, Reference, Span, split_path_with_indices};
+use rumoca_core::{ComponentReference, Reference, Span};
 
 pub(super) fn component_reference_from_path(
     path: &str,
     span: Span,
     def_id: Option<DefId>,
 ) -> ComponentReference {
-    ComponentReference {
-        local: false,
-        span,
-        parts: split_path_with_indices(path)
-            .into_iter()
-            .map(|segment| ComponentRefPart {
-                ident: segment.to_string(),
-                span,
-                subs: Vec::new(),
-            })
-            .collect(),
-        def_id,
-    }
+    ComponentReference::from_flat_segments(path, span, def_id)
 }
 
 /// Convert a component reference to a VarRef with optional def-map canonicalization.
@@ -104,7 +92,10 @@ fn is_enum_literal_ref(cr: &ast::ComponentReference, canonical_path: &str) -> bo
         return false;
     }
 
-    is_quoted_identifier(rumoca_core::top_level_last_segment(canonical_path))
+    rumoca_core::ComponentPath::from_flat_path(canonical_path)
+        .parts()
+        .last()
+        .is_some_and(|segment| is_quoted_identifier(segment))
 }
 
 /// Modelica quoted identifiers use single quotes (e.g., `'1'`).

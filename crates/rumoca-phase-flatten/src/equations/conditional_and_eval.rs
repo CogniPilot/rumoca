@@ -1,5 +1,4 @@
 use super::*;
-use crate::path_utils::split_last_top_level;
 
 /// Expand a nested non-constant if-equation to simple equations with conditional RHS.
 ///
@@ -1414,7 +1413,7 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
     for (name, value) in &ctx.enum_parameter_values {
         // The value is a qualified enum literal like "Type.Literal"
         // Parse it into type and literal parts
-        if let Some((type_name, literal)) = split_last_top_level(value) {
+        if let Some((type_name, literal)) = crate::path_utils::scope_split(value) {
             eval_ctx.add_parameter(
                 name.clone(),
                 Value::Enum(type_name.to_string(), literal.to_string()),
@@ -1491,7 +1490,7 @@ mod tests {
     fn make_comp_ref(path: &str) -> ComponentReference {
         ComponentReference {
             local: false,
-            parts: crate::path_utils::split_path_with_indices(path)
+            parts: crate::path_utils::segments(path)
                 .into_iter()
                 .map(|name| ComponentRefPart {
                     ident: Token {

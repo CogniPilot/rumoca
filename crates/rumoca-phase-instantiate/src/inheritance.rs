@@ -23,9 +23,9 @@
 //! - [x] MLS §5.4 - Outer reference resolution (nearest inner)
 //! - [x] MLS §5.4 - Type compatibility checking (inheritance-aware)
 
+use crate::path_utils;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{SourceMap, is_builtin_type};
-use rumoca_core::{parent_scope, split_path_with_indices, top_level_last_segment};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
@@ -143,10 +143,11 @@ fn extend_relative_component_target(
         .map(|part| part.ident.text.as_ref())
         .collect::<Vec<_>>();
     let first = target_parts.first()?.to_string();
-    let base_name = extend.base_name.to_string();
-    let base_parts = split_path_with_indices(&base_name)
-        .into_iter()
-        .map(str::to_string)
+    let base_parts = extend
+        .base_name
+        .name
+        .iter()
+        .map(|token| token.text.to_string())
         .collect::<Vec<_>>();
     let base_part_refs = base_parts.iter().map(String::as_str).collect::<Vec<_>>();
 
@@ -532,10 +533,8 @@ fn resolve_type_in_context(tree: &ast::ClassTree, type_name: &str, context_type:
 
     // Try to resolve by prepending context package prefixes
     // For context "A.B.C.TypeX", try: "A.B.C.{type_name}", "A.B.{type_name}", "A.{type_name}"
-    let mut package = context_type.to_string();
-    while let Some(parent) = parent_scope(&package) {
-        package.truncate(parent.len());
-        let qualified = format!("{}.{}", package, type_name);
+    for package in tree.enclosing_class_names_of(context_type) {
+        let qualified = format!("{package}.{type_name}");
         if tree.name_map.contains_key(&qualified) {
             return qualified;
         }
@@ -878,7 +877,7 @@ pub(crate) fn is_discrete_by_type(
 ) -> bool {
     // Helper to check if a name is Integer or Boolean
     fn is_discrete_builtin(name: &str) -> bool {
-        let simple_name = top_level_last_segment(name);
+        let simple_name = path_utils::class_name_leaf(name);
         simple_name == "Integer" || simple_name == "Boolean"
     }
 
@@ -1553,22 +1552,11 @@ fn merge_class_content(
     for (comp_name, new_type_name) in &redeclare_types {
         if let Some(comp) = target.components.get_mut(comp_name) {
             // Update the type_name to the new type
-            comp.type_name = rumoca_ir_ast::Name {
-                name: split_path_with_indices(new_type_name)
-                    .into_iter()
-                    .map(|part| rumoca_core::Token {
-                        text: std::sync::Arc::from(part),
-                        location: rumoca_core::Location::default(),
-                        token_number: 0,
-                        token_type: 0,
-                    })
-                    .collect(),
-                def_id: None,
-            };
+            comp.type_name = rumoca_ir_ast::Name::from_string(new_type_name);
             // Update type_def_id by looking up the new type in the tree
             comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
                 // Try with shorter name (last segment) for unqualified lookups
-                let short_name = top_level_last_segment(new_type_name);
+                let short_name = path_utils::class_name_leaf(new_type_name);
                 tree.name_map.get(short_name).copied()
             });
 
@@ -1863,8 +1851,12 @@ fn collect_local_type_def_ids(
     // during inherited-content synthesis.
     for comp in components.values() {
         if let Some(def_id) = comp.type_def_id {
-            let type_name = comp.type_name.to_string();
-            let short = top_level_last_segment(&type_name);
+            let short = comp
+                .type_name
+                .name
+                .last()
+                .map(|token| token.text.as_ref())
+                .unwrap_or_default();
             if !short.is_empty() {
                 local.entry(short.to_string()).or_insert(def_id);
             }
@@ -1887,7 +1879,7 @@ fn populate_local_component_type_def_ids(
         if type_name.is_empty() {
             continue;
         }
-        let is_dotted = rumoca_core::has_top_level_dot(&type_name);
+        let is_dotted = comp.type_name.name.len() > 1;
 
         // `type_name.def_id` may be a partial first-segment anchor (e.g. `Medium`
         // for `Medium.AbsolutePressure`). Promote it only for short names.

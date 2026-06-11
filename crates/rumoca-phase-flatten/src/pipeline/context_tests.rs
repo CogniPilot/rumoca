@@ -11,7 +11,7 @@ mod tests {
     use std::sync::Arc;
 
     fn component_ref_expr(path: &str) -> ast::Expression {
-        let parts = crate::path_utils::split_path_with_indices(path)
+        let parts = crate::path_utils::segments(path)
             .into_iter()
             .map(|segment| ast::ComponentRefPart {
                 ident: rumoca_core::Token {

@@ -6,7 +6,7 @@
 use indexmap::IndexSet;
 use rumoca_core::{
     BuiltinFunction, ComponentReference, Expression, ExpressionRewriter, ForIndex, Reference,
-    Statement, StatementBlock, Subscript, VarName, top_level_last_segment,
+    Statement, StatementBlock, Subscript, VarName,
 };
 
 use rumoca_core::ExpressionVisitor;
@@ -531,7 +531,7 @@ impl ExpressionVisitor for ImplicitSampleChecker {
         args: &[Expression],
         _is_constructor: bool,
     ) {
-        let short = top_level_last_segment(name.as_str());
+        let short = name.last_segment();
         if short == "sample" && args.len() == 1 {
             self.found = true;
             return;

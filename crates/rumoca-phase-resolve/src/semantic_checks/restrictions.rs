@@ -45,6 +45,7 @@ pub(super) const ER123_CLASS_EXTENDS_NON_REPLACEABLE: &str = "ER123";
 pub(super) const WR005_EVALUATE_NOT_EVALUABLE: &str = "WR005";
 pub(super) const ER124_NONEVAL_NESTED_FOR_RANGE: &str = "ER124";
 pub(super) const ER125_OPERATOR_CONSTRUCTOR_PAIR: &str = "ER125";
+pub(super) const ER129_OPREC_ZERO_DIMENSION: &str = "ER129";
 
 pub(super) fn run_restriction_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
     let mut diags = Vec::new();

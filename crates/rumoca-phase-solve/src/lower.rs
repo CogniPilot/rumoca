@@ -1592,7 +1592,7 @@ impl<'a> LowerBuilder<'a> {
         name: &rumoca_core::Reference,
         is_constructor: bool,
     ) -> bool {
-        if is_constructor && rumoca_core::top_level_last_segment(name.as_str()) == "Complex" {
+        if is_constructor && name.last_segment() == "Complex" {
             return true;
         }
         let Some(function) = self.lookup_function(name) else {
@@ -1604,7 +1604,7 @@ impl<'a> LowerBuilder<'a> {
         }
         function.outputs.first().is_some_and(|output| {
             output.type_class == Some(rumoca_core::ClassType::Record)
-                && rumoca_core::top_level_last_segment(&output.type_name) == "Complex"
+                && rumoca_core::qualified_type_name_matches(&output.type_name, "Complex")
         })
     }
 

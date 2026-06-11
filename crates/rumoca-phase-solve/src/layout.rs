@@ -374,6 +374,12 @@ fn variable_component_key(
     name: &str,
     var: &dae::Variable,
 ) -> Result<ComponentReferenceKey, LowerError> {
+    // Generated DAE variables (event conditions, `__pre__` parameters) carry
+    // explicit compiler identity; their structured reference exists for
+    // provenance, not for source-layout keying.
+    if source_free_layout_name(name, var) {
+        return Ok(ComponentReferenceKey::generated(name));
+    }
     if let Some(component_ref) = var.component_ref.as_ref() {
         #[cfg(test)]
         if let Some(key) = crate::test_support::fixture_key_for_component_ref(component_ref, name) {
@@ -387,9 +393,6 @@ fn variable_component_key(
                 span: err.span,
             }
         });
-    }
-    if source_free_layout_name(name, var) {
-        return Ok(ComponentReferenceKey::generated(name));
     }
     #[cfg(test)]
     if let Some(key) = crate::test_support::fixture_key_for_variable(name, var) {
@@ -636,7 +639,7 @@ fn lookup_enum_literal_ordinal(raw: &str, ordinals: &IndexMap<String, i64>) -> O
 }
 
 fn alternate_enum_literal_key(raw: &str) -> Option<String> {
-    let (prefix, literal) = rumoca_core::split_last_top_level(raw)?;
+    let (prefix, literal) = crate::path_utils::scope_split(raw)?;
     if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
         return Some(format!("{prefix}.{}", &literal[1..literal.len() - 1]));
     }

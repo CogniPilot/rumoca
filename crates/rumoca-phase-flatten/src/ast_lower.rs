@@ -1,7 +1,4 @@
-use rumoca_core::{
-    ComponentRefPart, ComponentReference, Reference, SourceMap, split_path_with_indices,
-    top_level_last_segment,
-};
+use rumoca_core::{ComponentRefPart, ComponentReference, Reference, SourceMap};
 use rumoca_core::{DefId, Span};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -411,19 +408,7 @@ fn component_reference_from_path(
     span: rumoca_core::Span,
     def_id: Option<DefId>,
 ) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span,
-        parts: split_path_with_indices(path)
-            .into_iter()
-            .map(|segment| rumoca_core::ComponentRefPart {
-                ident: segment.to_string(),
-                span,
-                subs: Vec::new(),
-            })
-            .collect(),
-        def_id,
-    }
+    rumoca_core::ComponentReference::from_flat_segments(path, span, def_id)
 }
 
 fn subscript_from_ast(sub: &ast::Subscript) -> LowerResult<rumoca_core::Subscript> {
@@ -642,7 +627,7 @@ fn is_enum_literal_ref(cr: &ast::ComponentReference, canonical_path: &str) -> bo
         return false;
     }
 
-    is_quoted_identifier(top_level_last_segment(canonical_path))
+    is_quoted_identifier(crate::path_utils::leaf_segment(canonical_path))
 }
 
 fn is_quoted_identifier(name: &str) -> bool {
@@ -774,7 +759,7 @@ fn resolved_function_call_name(
         .def_id
         .and_then(|def_id| def_map.and_then(|map| map.get(&def_id)))?;
     let call_leaf = comp.parts.last()?.ident.text.as_ref();
-    let resolved_leaf = top_level_last_segment(resolved.as_str());
+    let resolved_leaf = crate::path_utils::leaf_segment(resolved.as_str());
     if !resolved_path_ends_with_component_ref(resolved, comp)
         && !is_receiver_member_function_call(comp, call_leaf, resolved_leaf)
     {
@@ -812,7 +797,7 @@ fn resolved_path_ends_with_component_ref(resolved: &str, comp: &ast::ComponentRe
     if comp.parts.is_empty() {
         return true;
     }
-    let resolved_parts = split_path_with_indices(resolved);
+    let resolved_parts = crate::path_utils::segments(resolved);
     if resolved_parts.len() < comp.parts.len() {
         return false;
     }

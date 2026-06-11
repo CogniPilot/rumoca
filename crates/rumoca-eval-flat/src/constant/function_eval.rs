@@ -15,7 +15,7 @@
 use indexmap::IndexMap;
 use rumoca_core::{
     ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Span,
-    Statement, StatementBlock, Subscript, split_last_top_level,
+    Statement, StatementBlock, Subscript,
 };
 
 use super::EvalContext;
@@ -747,12 +747,12 @@ fn eval_literal(literal: &Literal) -> Result<Value, EvalError> {
 
 /// Evaluate a variable reference.
 fn eval_var_ref(
-    name: &rumoca_core::Reference,
+    reference: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     env: &FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
-    let name = name.as_str();
+    let name = reference.as_str();
     // Check function environment
     if let Some(val) = env.get(name) {
         return apply_subscripts_flat(val.clone(), subscripts, env, eval);
@@ -766,7 +766,7 @@ fn eval_var_ref(
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
     // Try parsing as qualified enum.
-    if let Some((type_name, literal)) = split_last_top_level(name) {
+    if let Some((type_name, literal)) = reference.scope_split() {
         return Ok(Value::Enum(type_name.to_string(), literal.to_string()));
     }
     Err(EvalError::unknown_variable(name, eval.span))

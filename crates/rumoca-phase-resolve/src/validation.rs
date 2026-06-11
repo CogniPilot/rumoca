@@ -19,7 +19,10 @@ type Extend = ast::Extend;
 pub struct UnresolvedSymbol {
     pub name: String,
     pub kind: UnresolvedKind,
-    pub scope_path: String,
+    /// Enclosing class path segments (outermost first) at the reference site.
+    /// Kept structured so consumers walk enclosing scopes by composing
+    /// prefixes instead of re-splitting a rendered path.
+    pub scope_path: Vec<String>,
     pub source_location: Location,
 }
 
@@ -78,14 +81,6 @@ struct Validator {
 }
 
 impl Validator {
-    fn location(&self) -> String {
-        if self.path.is_empty() {
-            "<root>".into()
-        } else {
-            self.path.join(".")
-        }
-    }
-
     fn add(&mut self, name: String, kind: UnresolvedKind, source_location: Location) {
         if !has_valid_location(&source_location) {
             return;
@@ -93,7 +88,7 @@ impl Validator {
         self.unresolved.push(UnresolvedSymbol {
             name,
             kind,
-            scope_path: self.location(),
+            scope_path: self.path.clone(),
             source_location,
         });
     }

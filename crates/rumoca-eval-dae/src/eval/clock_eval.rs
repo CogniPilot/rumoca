@@ -59,7 +59,7 @@ pub(super) fn infer_clock_timing_from_expr<T: SimFloat>(
 ) -> Result<Option<ClockTiming>, EvalError> {
     match expr {
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
-            let short_name = rumoca_core::top_level_last_segment(name.as_str());
+            let short_name = name.last_segment();
             infer_clock_timing_from_call(short_name, args, env)
         }
         rumoca_core::Expression::VarRef {
@@ -89,7 +89,7 @@ pub(super) fn infer_clock_counter_form<T: SimFloat>(
     let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
         return Ok(None);
     };
-    let short_name = rumoca_core::top_level_last_segment(name.as_str());
+    let short_name = name.last_segment();
     if short_name != "Clock" || args.len() != 1 {
         return Ok(None);
     }
@@ -215,7 +215,7 @@ fn infer_clock_constructor_timing_from_expr<T: SimFloat>(
     let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
         return Ok(None);
     };
-    let short_name = rumoca_core::top_level_last_segment(name.as_str());
+    let short_name = name.last_segment();
     infer_clock_timing_from_call(short_name, args, env)
 }
 

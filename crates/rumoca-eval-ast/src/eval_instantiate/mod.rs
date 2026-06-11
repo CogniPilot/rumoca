@@ -604,7 +604,8 @@ fn get_enum_value_with_depth(
 }
 
 fn parent_dotted_scope(path: &str) -> Option<String> {
-    rumoca_core::parent_scope(path).map(str::to_string)
+    let enclosing = rumoca_core::ComponentPath::from_flat_path(path).parent()?;
+    (!enclosing.is_root()).then(|| enclosing.to_flat_string())
 }
 
 fn eval_if_enum_value(
@@ -903,12 +904,11 @@ fn resolve_component_ref_from_record_defaults(
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
 ) -> Option<ast::Expression> {
-    let dotted = component_ref_to_dotted_no_subscripts(comp_ref)?;
-    if !rumoca_core::has_top_level_dot(&dotted) {
+    if comp_ref.parts.len() < 2 || comp_ref.parts.iter().any(|part| part.subs.is_some()) {
         return None;
     }
-    let mut parts = rumoca_core::split_path_with_indices(&dotted).into_iter();
-    let first = parts.next()?;
+    let mut parts = comp_ref.parts.iter().map(|part| part.ident.text.as_ref());
+    let first: &str = parts.next()?;
     let mut current = effective_components.get(first)?;
     let mut expr = None;
 

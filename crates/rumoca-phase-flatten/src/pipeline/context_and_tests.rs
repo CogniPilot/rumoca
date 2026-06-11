@@ -1224,7 +1224,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             if let Some(value) = lookup_with_scope(name, scope, &self.parameter_values) {
                 return Some(value);
             }
@@ -1256,7 +1256,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             if let Some(value) = lookup_with_scope(name, scope, &self.real_parameter_values) {
                 return Some(value);
             }
@@ -1274,7 +1274,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             return lookup_with_scope(name, scope, &self.boolean_parameter_values);
         }
         None
@@ -1294,7 +1294,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             return lookup_with_scope(name, scope, &self.enum_parameter_values)
                 .map(std::borrow::Cow::Owned);
         }

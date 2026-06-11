@@ -1464,12 +1464,27 @@ impl Equation {
         scalar_count: usize,
     ) -> Self {
         Self {
-            lhs: Some(lhs.into()),
+            lhs: Some(structured_lhs_reference(lhs.into(), span)),
             rhs,
             span,
             origin: origin.into(),
             scalar_count: scalar_count.max(1),
         }
+    }
+}
+
+/// Normalize an explicit-equation target at construction: a bare rendered
+/// name gains its structured component reference here, once, so every
+/// producer emits structured targets and DAE resolution never parses names.
+/// Targets whose rendered subscripts are not static integers stay
+/// unstructured and fail resolution loudly.
+fn structured_lhs_reference(lhs: Reference, span: Span) -> Reference {
+    if lhs.has_structure() || lhs.is_generated() {
+        return lhs;
+    }
+    match rumoca_core::component_reference_from_flat_name(lhs.var_name(), span) {
+        Some(component_ref) => Reference::with_component_reference(lhs.as_str(), component_ref),
+        None => lhs,
     }
 }
 

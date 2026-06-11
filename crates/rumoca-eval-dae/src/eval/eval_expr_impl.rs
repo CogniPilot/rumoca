@@ -183,13 +183,13 @@ fn validate_function_call_expr<T: SimFloat>(
     is_constructor: bool,
     env: &VarEnv<T>,
 ) -> Result<(), EvalError> {
-    if let Some(result) = validate_external_table_call(name.as_str(), args, env) {
+    if let Some(result) = validate_external_table_call(name, args, env) {
         return result;
     }
     if is_constructor || name.as_str() == "Complex" {
         return validate_expr_slice_checked(args, env);
     }
-    if is_runtime_special_function_name(name.as_str()) {
+    if is_runtime_special_function_name(name.var_name()) {
         // Runtime special functions own aggregate argument semantics such as
         // table matrices and clock constructors.
         return Ok(());
@@ -205,11 +205,11 @@ fn validate_function_call_expr<T: SimFloat>(
     {
         return validate_user_function_call_args(resolved_name.as_str(), function, args, env);
     }
-    if let Some(function) = builtin_function_from_call_name(name.as_str()) {
+    if let Some(function) = builtin_function_from_call_name(name.var_name()) {
         return validate_builtin_call(function, args, env);
     }
     validate_expr_slice_checked(args, env)?;
-    function_call_supported(name.as_str(), env)
+    function_call_supported(name.var_name(), env)
         .then_some(())
         .ok_or_else(|| EvalError::MissingFunction {
             name: name.to_string(),
@@ -335,11 +335,11 @@ fn size_arg_has_known_shape<T: SimFloat>(expr: &rumoca_core::Expression, env: &V
 }
 
 fn validate_external_table_call<T: SimFloat>(
-    name: &str,
+    name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
 ) -> Option<Result<(), EvalError>> {
-    let short_name = rumoca_core::top_level_last_segment(name);
+    let short_name = name.last_segment();
     match short_name {
         "ExternalCombiTimeTable" => Some(validate_external_table_constructor(args, env, true)),
         "ExternalCombiTable1D" => Some(validate_external_table_constructor(args, env, false)),
@@ -936,16 +936,18 @@ fn validate_range_argument<T: SimFloat>(
     Ok(())
 }
 
-fn function_call_supported<T: SimFloat>(name: &str, env: &VarEnv<T>) -> bool {
-    name == "Complex"
+fn function_call_supported<T: SimFloat>(name: &rumoca_core::VarName, env: &VarEnv<T>) -> bool {
+    name.as_str() == "Complex"
         || builtin_function_from_call_name(name).is_some()
-        || env.function_closures.contains_key(name)
+        || env.function_closures.contains_key(name.as_str())
         || is_runtime_special_function_name(name)
-        || env.functions.contains_key(name)
+        || env.functions.contains_key(name.as_str())
 }
 
-fn builtin_function_from_call_name(name: &str) -> Option<rumoca_core::BuiltinFunction> {
-    let short_name = rumoca_core::top_level_last_segment(name);
+fn builtin_function_from_call_name(
+    name: &rumoca_core::VarName,
+) -> Option<rumoca_core::BuiltinFunction> {
+    let short_name = name.last_segment();
     rumoca_core::BuiltinFunction::from_name(short_name)
         .or_else(|| rumoca_core::BuiltinFunction::from_name(&short_name.to_ascii_lowercase()))
 }
@@ -1358,7 +1360,7 @@ fn try_eval_field_access<T: SimFloat>(
         }
 
         let selected = rumoca_core::VarName::new(format!("{}.{}", name.as_str(), field));
-        if function_call_supported(selected.as_str(), env) {
+        if function_call_supported(&selected, env) {
             validate_expr_slice_checked(args, env)?;
             return eval_function_call::<T>(&selected, args, false, env);
         }
@@ -1386,7 +1388,7 @@ fn try_eval_function_record_scalar_field<T: SimFloat>(
     }
 
     if let Ok(Some(value)) =
-        super::special::eval_state_accessor_from_set_state(name.as_str(), args, field, env)
+        super::special::eval_state_accessor_from_set_state(name.var_name(), args, field, env)
     {
         return Ok(Some(value));
     }
@@ -1411,7 +1413,7 @@ fn try_eval_function_record_scalar_field<T: SimFloat>(
     match eval_user_function_output_path_pub(name.var_name(), args, output_path.as_str(), env) {
         Ok(value) => Ok(Some(value)),
         Err(EvalError::MissingBinding { .. }) => {
-            super::special::eval_state_accessor_from_set_state(name.as_str(), args, field, env)
+            super::special::eval_state_accessor_from_set_state(name.var_name(), args, field, env)
         }
         Err(err) => Err(err),
     }
@@ -1545,7 +1547,13 @@ pub(super) fn lookup_enum_literal_ordinal(
     if let Some(&ordinal) = ordinals.get(raw) {
         return Some(ordinal);
     }
-    let (prefix, literal) = rumoca_core::split_last_top_level(raw)?;
+    let mut raw_parts = rumoca_core::ComponentPath::from_flat_path(raw).into_parts();
+    if raw_parts.len() < 2 {
+        return None;
+    }
+    let literal = raw_parts.pop()?;
+    let literal = literal.as_str();
+    let prefix = raw_parts.join(".");
     if let Some(unquoted) = strip_quoted_identifier(literal) {
         let alt = format!("{prefix}.{unquoted}");
         return ordinals
@@ -1575,7 +1583,8 @@ fn lookup_enum_literal_by_unambiguous_suffix(
     let target = canonical_enum_literal_segment(raw_literal);
     let mut found = None;
     for (name, ordinal) in ordinals {
-        let Some((_, literal)) = rumoca_core::split_last_top_level(name) else {
+        let path = rumoca_core::ComponentPath::from_flat_path(name);
+        let Some(literal) = (path.len() >= 2).then(|| path.parts().last()).flatten() else {
             continue;
         };
         if canonical_enum_literal_segment(literal) != target {

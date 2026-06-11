@@ -58,34 +58,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
                 target.span,
             ));
         };
-        let (source_span, dims, start, start_span) = (
-            var.source_span,
-            var.dims.clone(),
-            var.start.clone(),
-            var.start_attribute_span(),
-        );
-
-        let pre_var = dae::Variable {
-            name: pre_param_name.clone(),
-            component_ref: None,
-            source_span,
-            dims,
-            start,
-            start_span,
-            fixed: Some(true),
-            min: None,
-            min_span: None,
-            max: None,
-            max_span: None,
-            nominal: None,
-            nominal_span: None,
-            unit: None,
-            state_select: rumoca_core::StateSelect::Default,
-            description: Some(format!("pre() of {}", target.source_name.as_str())),
-            causality: dae::VariableCausality::CalculatedParameter,
-            is_tunable: false,
-            origin: dae::VariableOrigin::Generated,
-        };
+        let pre_var = build_pre_parameter(&pre_param_name, var, target.source_name.as_str());
         pre_params.insert(pre_param_name, pre_var);
     }
 
@@ -389,7 +362,7 @@ fn singleton_scalarized_field_name(
     target_name: &rumoca_core::VarName,
     require_discrete: bool,
 ) -> Option<rumoca_core::VarName> {
-    let (prefix, field) = rumoca_core::split_last_top_level(target_name.as_str())?;
+    let (prefix, field) = target_name.scope_split()?;
     let mut collector = ScalarizedFieldCandidateCollector {
         prefix,
         field,
@@ -435,6 +408,41 @@ fn scalarized_field_name_matches(candidate: &str, prefix: &str, field: &str) -> 
     }
     let candidate_prefix = rumoca_core::ComponentPath::from_parts(prefix_parts.iter().cloned());
     rumoca_core::component_path_base_name(candidate_prefix.as_str()).as_deref() == Some(prefix)
+}
+
+/// Snapshot parameter for `pre(<source>)`: copies the source variable's
+/// shape/start metadata and attaches a generated `__pre__.<source>`
+/// structured reference (DAE provenance contract).
+fn build_pre_parameter(
+    pre_param_name: &rumoca_core::VarName,
+    var: &dae::Variable,
+    source_name: &str,
+) -> dae::Variable {
+    let pre_ref = crate::condition_lowering::generated_pre_component_ref(
+        var.component_ref.as_ref(),
+        source_name,
+    );
+    dae::Variable {
+        name: pre_param_name.clone(),
+        component_ref: Some(pre_ref),
+        source_span: var.source_span,
+        dims: var.dims.clone(),
+        start: var.start.clone(),
+        start_span: var.start_attribute_span(),
+        fixed: Some(true),
+        min: None,
+        min_span: None,
+        max: None,
+        max_span: None,
+        nominal: None,
+        nominal_span: None,
+        unit: None,
+        state_select: rumoca_core::StateSelect::Default,
+        description: Some(format!("pre() of {source_name}")),
+        causality: dae::VariableCausality::CalculatedParameter,
+        is_tunable: false,
+        origin: dae::VariableOrigin::Generated,
+    }
 }
 
 fn find_variable<'a>(dae: &'a dae::Dae, name: &rumoca_core::VarName) -> Option<&'a dae::Variable> {

@@ -1,13 +1,52 @@
 //! Shared path/subscript helpers for flatten internals.
+//!
+//! Flatten keys variables, constants, and functions by rendered flat names.
+//! Segmentation of those names stays centralized here — flatten code must not
+//! re-derive model structure with ad hoc string splitting. Prefer the typed
+//! accessors on `VarName`/`Reference`/`ComponentPath` whenever a typed name
+//! is available.
 
-pub(crate) use rumoca_core::{
-    find_last_top_level_dot, first_path_segment_without_index, has_top_level_dot, parent_scope,
-    split_first_top_level, split_last_top_level, split_path_with_indices, strip_array_index,
-    top_level_last_segment,
-};
+pub(crate) use rumoca_core::{first_path_segment_without_index, strip_array_index};
+
+/// Final top-level segment of a rendered name.
+pub(crate) fn leaf_segment(name: &str) -> &str {
+    rumoca_core::top_level_last_segment(name)
+}
+
+/// The enclosing scope of a rendered name (`a.b.c` -> `a.b`).
+pub(crate) fn enclosing_scope(name: &str) -> Option<&str> {
+    rumoca_core::parent_scope(name)
+}
+
+/// Iterate the enclosing scopes of a rendered name from the innermost
+/// outwards (`a.b.c` yields `a.b`, then `a`).
+pub(crate) fn enclosing_scopes(name: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(enclosing_scope(name), |current| enclosing_scope(current))
+}
+
+/// Split a rendered name into `(enclosing scope, leaf)` at the last
+/// top-level dot.
+pub(crate) fn scope_split(name: &str) -> Option<(&str, &str)> {
+    rumoca_core::split_last_top_level(name)
+}
+
+/// Split a rendered name into `(root, rest)` at the first top-level dot.
+pub(crate) fn root_split(name: &str) -> Option<(&str, &str)> {
+    rumoca_core::split_first_top_level(name)
+}
+
+/// True when the rendered name is nested (has a top-level dot).
+pub(crate) fn is_nested_name(name: &str) -> bool {
+    rumoca_core::has_top_level_dot(name)
+}
+
+/// Top-level segments of a rendered name (subscripts keep embedded dots).
+pub(crate) fn segments(name: &str) -> Vec<&str> {
+    rumoca_core::split_path_with_indices(name)
+}
 
 pub(crate) fn unindexed_lookup_variants(path: &str) -> Vec<String> {
-    let segments = split_path_with_indices(path);
+    let segments = segments(path);
     let indexed_positions = segments
         .iter()
         .enumerate()

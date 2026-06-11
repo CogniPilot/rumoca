@@ -11,7 +11,7 @@ type Statement = ast::Statement;
 ///
 /// Traversal is centralized here while semantic actions stay in callbacks.
 pub(crate) trait ResolveTraversalCallbacks {
-    fn create_loop_scope(&mut self, parent_scope: ScopeId) -> ScopeId;
+    fn create_loop_scope(&mut self, enclosing: ScopeId) -> ScopeId;
     fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str);
     fn on_component_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId);
     fn on_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId);

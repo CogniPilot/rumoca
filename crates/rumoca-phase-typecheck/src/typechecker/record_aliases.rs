@@ -104,8 +104,8 @@ impl TypeChecker {
         known_paths.contains(candidate) || known_prefixes.contains(candidate)
     }
 
-    pub(crate) fn parent_scope(path: &str) -> &str {
-        rumoca_core::parent_scope(path).unwrap_or("")
+    pub(crate) fn enclosing_scope_or_root(path: &str) -> &str {
+        crate::path_utils::enclosing_scope_str(path).unwrap_or("")
     }
 
     fn parent_path(path: &ComponentPath) -> ComponentPath {

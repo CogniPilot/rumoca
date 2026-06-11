@@ -613,19 +613,18 @@ fn is_runtime_special_function_qualified_name(name: &str) -> bool {
 
 /// Returns true if the function name (qualified or short) is handled by
 /// runtime special-function evaluators.
-pub fn is_runtime_special_function_name(name: &str) -> bool {
-    let short_name = rumoca_core::top_level_last_segment(name);
-    is_runtime_special_function_short_name(short_name)
-        || is_runtime_special_function_qualified_name(name)
-        || resolve_runtime_special_target(name).is_some()
+pub fn is_runtime_special_function_name(name: &rumoca_core::VarName) -> bool {
+    is_runtime_special_function_short_name(name.last_segment())
+        || is_runtime_special_function_qualified_name(name.as_str())
+        || resolve_runtime_special_target(name.as_str()).is_some()
 }
 
 pub(super) fn eval_special_function_call<T: SimFloat>(
-    name: &str,
+    name: &rumoca_core::VarName,
     args: &[Expression],
     env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
-    if let Some((resolved_name, Some(selection))) = resolve_runtime_special_target(name) {
+    if let Some((resolved_name, Some(selection))) = resolve_runtime_special_target(name.as_str()) {
         return eval_selected_runtime_special_function(
             resolved_name.as_str(),
             &selection,
@@ -633,10 +632,10 @@ pub(super) fn eval_special_function_call<T: SimFloat>(
             env,
         );
     }
-    if let Some(v) = eval_qualified_special_function(name, args, env)? {
+    if let Some(v) = eval_qualified_special_function(name.as_str(), args, env)? {
         return Ok(Some(v));
     }
-    let short_name = rumoca_core::top_level_last_segment(name);
+    let short_name = name.last_segment();
     if let Some(v) = eval_misc_intrinsic_function(short_name, args, env)? {
         return Ok(Some(v));
     }

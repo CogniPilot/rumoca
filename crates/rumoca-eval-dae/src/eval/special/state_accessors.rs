@@ -117,7 +117,7 @@ fn eval_state_accessor_from_expr<T: SimFloat>(
             eval_state_accessor_from_var_ref(&state_ref, &[], field, env)
         }
         Expression::FunctionCall { name, args, .. } => {
-            eval_state_accessor_from_set_state(name.as_str(), args, field, env)
+            eval_state_accessor_from_set_state(name.var_name(), args, field, env)
         }
         _ => Ok(None),
     }
@@ -217,12 +217,12 @@ fn eval_state_accessor_from_var_ref<T: SimFloat>(
 }
 
 pub(in crate::eval) fn eval_state_accessor_from_set_state<T: SimFloat>(
-    name: &str,
+    name: &VarName,
     args: &[Expression],
     field: &str,
     env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
-    let short_name = rumoca_core::top_level_last_segment(name);
+    let short_name = name.last_segment();
     match short_name {
         // setState_pTX(p, T, X)
         "setState_pTX" | "setState_pT" => match field {
@@ -317,12 +317,12 @@ fn optional_eval_arg<T: SimFloat>(
 }
 
 fn eval_state_accessor_via_user_helper<T: SimFloat>(
-    constructor_name: &str,
+    constructor_name: &VarName,
     args: &[Expression],
     env: &VarEnv<T>,
     helper_suffixes: &[&str],
 ) -> Result<Option<T>, EvalError> {
-    let Some((prefix, _)) = rumoca_core::split_last_top_level(constructor_name) else {
+    let Some(prefix) = constructor_name.enclosing_scope() else {
         return Ok(None);
     };
     for suffix in helper_suffixes {

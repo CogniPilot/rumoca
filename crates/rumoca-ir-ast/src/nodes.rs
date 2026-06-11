@@ -37,10 +37,11 @@ impl Debug for Name {
 impl Name {
     /// Create a Name from a dotted string (e.g., "Modelica.Blocks.Continuous.FirstOrder")
     pub fn from_string(s: &str) -> Self {
-        let name: Vec<Token> = split_path_with_indices(s)
+        let name: Vec<Token> = rumoca_core::ComponentPath::from_flat_path(s)
+            .into_parts()
             .into_iter()
             .map(|part| Token {
-                text: Arc::from(part),
+                text: Arc::from(part.as_str()),
                 location: Location::default(),
                 token_number: 0,
                 token_type: 0,

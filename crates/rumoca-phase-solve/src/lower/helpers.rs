@@ -107,7 +107,7 @@ pub(super) fn is_record_constructor_signature(
         return false;
     }
 
-    let function_leaf = rumoca_core::top_level_last_segment(name);
+    let function_leaf = crate::path_utils::leaf_segment(name);
     if function.inputs.is_empty() {
         return false;
     }
@@ -128,7 +128,7 @@ pub(super) fn is_record_constructor_signature(
         return false;
     }
 
-    let output_leaf = rumoca_core::top_level_last_segment(&output.type_name);
+    let output_leaf = crate::path_utils::leaf_segment(&output.type_name);
     !output_leaf.is_empty() && output_leaf == function_leaf && output.name == "res"
 }
 
@@ -771,8 +771,7 @@ pub(super) fn resolve_intrinsic_builtin(name: &str) -> Option<rumoca_core::Built
     if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(name) {
         return Some(builtin);
     }
-    let builtin =
-        rumoca_core::BuiltinFunction::from_name(rumoca_core::top_level_last_segment(name))?;
+    let builtin = rumoca_core::BuiltinFunction::from_name(crate::path_utils::leaf_segment(name))?;
     is_qualified_standard_math_intrinsic(name, builtin).then_some(builtin)
 }
 
@@ -784,7 +783,7 @@ fn is_qualified_standard_math_intrinsic(name: &str, builtin: rumoca_core::Builti
 }
 
 pub(super) fn intrinsic_short_name(name: &str) -> &str {
-    rumoca_core::top_level_last_segment(name)
+    crate::path_utils::leaf_segment(name)
 }
 
 pub(super) fn is_stream_passthrough_intrinsic(name: &str) -> bool {

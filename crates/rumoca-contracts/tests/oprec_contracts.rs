@@ -600,7 +600,7 @@ fn oprec_009_cross_constructor_pair_rejected() {
 
 #[test]
 fn oprec_011_zero_inner_dimension_product_rejected() {
-    rumoca_contracts::test_support::expect_failure_in_phase_with_code(
+    rumoca_contracts::test_support::expect_resolve_failure_with_code(
         r#"
         package P
             operator record OR
@@ -616,7 +616,6 @@ fn oprec_011_zero_inner_dimension_product_rejected() {
         end P;
     "#,
         "P.M",
-        rumoca_compile::compile::FailedPhase::ToDae,
-        "ED001",
+        "ER129",
     );
 }

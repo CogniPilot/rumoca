@@ -47,6 +47,7 @@ mod instance_sections;
 mod mod_env;
 mod nested_scope;
 mod package_constant_imports;
+mod path_utils;
 mod plug_compat;
 mod source_scope;
 mod templates;
@@ -61,7 +62,7 @@ use rumoca_eval_ast::eval_instantiate::{
 };
 
 use rumoca_core::Diagnostics;
-use rumoca_core::{DefId, Span, TypeId, split_path_with_indices};
+use rumoca_core::{DefId, Span, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
@@ -729,14 +730,8 @@ fn create_synthetic_inner_component(
     ast::Component {
         name: mi.name.clone(),
         type_name: rumoca_ir_ast::Name {
-            name: split_path_with_indices(&mi.type_name)
-                .into_iter()
-                .map(|s| rumoca_core::Token {
-                    text: s.to_string().into(),
-                    ..rumoca_core::Token::default()
-                })
-                .collect(),
             def_id: mi.type_def_id,
+            ..rumoca_ir_ast::Name::from_string(&mi.type_name)
         },
         type_def_id: mi.type_def_id,
         inner: true,
@@ -1210,8 +1205,7 @@ fn resolve_inner_outer_type_name(
     if let Some(qualified) = comp
         .type_def_id
         .and_then(|def_id| tree.def_map.get(&def_id))
-        && rumoca_core::top_level_last_segment(qualified)
-            == rumoca_core::top_level_last_segment(type_name)
+        && path_utils::class_name_leaf(qualified) == path_utils::class_name_leaf(type_name)
     {
         return qualified.clone();
     }
@@ -1228,24 +1222,23 @@ fn resolve_type_name_in_source_scope(
     type_name: &str,
     source_scope: &ast::QualifiedName,
 ) -> Option<String> {
-    let mut scope = source_scope.to_flat_string();
-    loop {
-        let candidate = if scope.is_empty() {
-            type_name.to_string()
-        } else {
-            format!("{scope}.{type_name}")
-        };
-        if tree.name_map.contains_key(&candidate) {
-            return Some(candidate);
-        }
-
-        let Some(parent_end) = rumoca_core::find_last_top_level_dot(&scope) else {
-            break;
-        };
-        scope.truncate(parent_end);
-    }
-
-    None
+    // Walk the structured scope's prefixes from innermost outwards; the
+    // candidate names are composed, never re-parsed.
+    (0..=source_scope.parts.len())
+        .rev()
+        .map(|end| {
+            let prefix = source_scope.parts[..end]
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            if prefix.is_empty() {
+                type_name.to_string()
+            } else {
+                format!("{prefix}.{type_name}")
+            }
+        })
+        .find(|candidate| tree.name_map.contains_key(candidate))
 }
 
 fn resolve_pending_outer_refs_for_inner(
