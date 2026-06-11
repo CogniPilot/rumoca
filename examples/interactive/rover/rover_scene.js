@@ -18,16 +18,17 @@
 const JEEP_URL = "https://static.poly.pizza/8036e526-b08a-4d8c-a4b3-0214097cbc18.glb";
 const JEEP_SCALE = 0.30;  // tune to match Rover.mo physical dimensions
 // Wheel node indices, identified from the GLB by bbox analysis. The jeep
-// models' nose points at GLB -X, so we rotate 180° about Y below to align
-// with the rover's +X=forward convention. After that rotation, a node at
-// GLB cz=+c ends up at rover-z=-c, so left/right labels flip.
+// model's nose points at GLB -X, and the viewer frame convention puts
+// model-forward on renderer +Z at identity, so we rotate 90° about Y below
+// (Ry(π/2): GLB (x,z) → renderer (z,-x)). GLB cz=-c lands at renderer
+// X=-c, the left side (model FLU +y/left is renderer -X).
 //   Front wheels (thin, narrower track): nodes 82, 83 at cx≈-1.27
 //   Rear wheels  (fat off-road tires):   nodes 76, 77 at cx≈+0.78
 const WHEEL_NODES = {
-  frontLeft:  83,  // GLB cz=-0.58 → rover +Z (left)
-  frontRight: 82,  // GLB cz=+0.59 → rover -Z (right)
-  rearLeft:   77,  // GLB cz=-0.78 → rover +Z (left)
-  rearRight:  76,  // GLB cz=+0.75 → rover -Z (right)
+  frontLeft:  83,  // GLB cz=-0.58 → renderer -X (left)
+  frontRight: 82,  // GLB cz=+0.59 → renderer +X (right)
+  rearLeft:   77,  // GLB cz=-0.78 → renderer -X (left)
+  rearRight:  76,  // GLB cz=+0.75 → renderer +X (right)
 };
 
 ctx.onInit = async function(api) {
@@ -164,10 +165,11 @@ ctx.onInit = async function(api) {
     wheelPivots[slot] = { pivot, wheel: node };
   }
 
-  // Fit the jeep onto the rover group: rotate 180° about Y so the GLB's
-  // -X (nose) aligns with the rover's +X (forward), scale, then lift so
-  // the lowest vertex sits on y=0.
-  model.rotation.y = Math.PI;
+  // Fit the jeep onto the rover group: the viewer's frame convention puts
+  // model-forward on renderer +Z at identity, and the GLB nose is authored
+  // on -X, so rotate 90° about Y; scale, then lift so the lowest vertex
+  // sits on y=0.
+  model.rotation.y = Math.PI / 2;
   model.scale.setScalar(JEEP_SCALE);
   rover.add(model);
   const box = new THREE.Box3().setFromObject(model);
@@ -206,21 +208,21 @@ ctx.onFrame = function(api) {
   // so early-return until the model is ready.
   if (!s.rover || !s.wheels) return;
 
-  const xr    = get("x") ?? 0;
-  const yr    = get("y") ?? 0;
-  const theta = get("theta") ?? 0;
   const rpm   = get("wheel_rpm") ?? 0;
   const steer = get("front_wheel_yaw") ?? 0;
 
-  // Map rover world (x, y) to three.js (x, z). Keep axes aligned so the
-  // body points the same direction it translates:
-  //   rover +X (forward at theta=0) → three +X
-  //   rover +Y                     → three +Z
-  //   rover theta (CCW around +Z)  → three -Y yaw (+Y is up in three)
-  s.rover.position.x = xr;
-  s.rover.position.z = yr;
-  s.rover.rotation.y = -theta;
-  s.shadow.position.set(xr, 0.001, yr);
+  // The chassis pose comes from the viewer's [[viewer.frame]] "chassis"
+  // (planar x/y + heading in model FLU coordinates); the viewer owns the
+  // FLU-to-renderer conversion, so the configured onboard camera and this
+  // placement can never drift apart.
+  const chassis = api.frames && api.frames.get("chassis");
+  if (!chassis) return;
+  s.rover.matrixAutoUpdate = false;
+  s.rover.matrix.copy(chassis);
+  s.rover.matrixWorldNeedsUpdate = true;
+  if (!s.chassisPos) s.chassisPos = new THREE.Vector3();
+  const pos = s.chassisPos.setFromMatrixPosition(chassis);
+  s.shadow.position.set(pos.x, 0.001, pos.z);
 
   // Integrate rolling phase from wheel_rpm (wall-time so it's smooth
   // regardless of sim realtime ratio).
@@ -235,25 +237,24 @@ ctx.onFrame = function(api) {
   s.wheels.frontLeft.wheel.rotation.z  = s.rollPhase;
   s.wheels.frontRight.wheel.rotation.z = s.rollPhase;
 
-  // Front pivots yaw with steering angle. Sign is flipped to match the
-  // body yaw convention (s.rover.rotation.y = -theta), since the scene
-  // mirrors rover +Y onto three +Z.
+  // Front pivots yaw with steering angle. Model CCW yaw (about FLU +z) maps
+  // to renderer rotation.y = -angle under the viewer frame convention.
   s.wheels.frontLeft.pivot.rotation.y  = -steer;
   s.wheels.frontRight.pivot.rotation.y = -steer;
 
   // Trail
   const idx = s.trailCount % s.maxTrail;
-  s.trailPos[idx*3    ] = xr;
+  s.trailPos[idx*3    ] = pos.x;
   s.trailPos[idx*3 + 1] = 0.02;
-  s.trailPos[idx*3 + 2] = yr;
+  s.trailPos[idx*3 + 2] = pos.z;
   s.trailCount++;
   s.trailGeo.attributes.position.needsUpdate = true;
   s.trailGeo.setDrawRange(0, Math.min(s.trailCount, s.maxTrail));
 
-  // Chase camera
-  if (api.cam && api.camera) {
+  // Chase camera (scene-controlled mode)
+  if (api.cameraMode === "scene" && api.cam && api.camera) {
     const c = api.cam;
-    c.target.lerp(new THREE.Vector3(xr, 0.15, yr), 0.08);
+    c.target.lerp(new THREE.Vector3(pos.x, 0.15, pos.z), 0.08);
     api.camera.position.set(
       c.target.x + c.dist * Math.sin(c.angle) * Math.cos(c.elev),
       c.target.y + c.dist * Math.sin(c.elev),

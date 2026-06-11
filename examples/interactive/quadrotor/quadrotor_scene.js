@@ -525,7 +525,7 @@ ctx.onFrame = function(api) {
   s.shadow.scale.set(sc, sc, 1);
   s.shadow.material.opacity = Math.max(0.03, 0.25 - alt * 0.015);
 
-  if (api.cameraMode !== "onboard") {
+  if (api.cameraMode === "scene") {
     // Camera follow. Keep the camera anchors translated with the vehicle and
     // rotated by heading only, so roll/pitch maneuvers do not shake the camera.
     const c = api.cam;

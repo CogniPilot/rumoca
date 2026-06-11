@@ -101,7 +101,20 @@ port = 8081
 [viewer]
 mode = "external_web"
 show_armed = false
-status_title = "Vehicle"
+status_title = "Rover"
+
+# Chassis frame in model FLU coordinates: planar position + heading. The
+# scene places the body from this frame and the onboard camera mounts on it.
+[[viewer.frame]]
+name = "chassis"
+position = ["x", "y"]
+heading = "theta"
+
+# Hood camera: C cycles scene chase → onboard.
+[[viewer.camera]]
+name = "onboard"
+frame = "chassis"
+mount = [0.95, 0.0, 0.24]
 
 [[viewer.controls.keyboard]]
 keys = "Up / Down"

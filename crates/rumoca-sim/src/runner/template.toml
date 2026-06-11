@@ -201,3 +201,29 @@ on_signal         = "reset"
 reset_locals      = true
 rebuild_stepper   = true
 restart_external_interface = false
+
+# ── Viewer presentation ───────────────────────────────────────────────────
+# Optional named kinematic frames in model FLU coordinates (x forward,
+# y left, z up), driven by [signals.viewer] entries. Cameras mount on
+# frames; the C key cycles scene camera → configured cameras. The opt-in
+# flight HUD reads attitude from a frame. Position entries may be signal
+# names or numeric constants; orientation is quaternion = [q0,q1,q2,q3]
+# (scalar first) OR heading = "yaw_signal" (planar), or omitted (fixed).
+# [[viewer.frame]]
+# name = "body"
+# position = ["x", "y"]
+# heading = "theta"
+#
+# [[viewer.camera]]
+# name = "onboard"
+# frame = "body"
+# mount = [0.95, 0.0, 0.24]   # frame-local FLU offset
+# look = [1.0, 0.0, 0.0]      # view direction (default: frame forward)
+# up = [0.0, 0.0, 1.0]        # camera up (default: frame up)
+#
+# [viewer.hud]
+# mode = "flight"
+# frame = "body"
+# altitude = "pz"
+# speed = ["vx", "vy", "vz"]
+# sticks = { roll = "stick_roll", pitch = "stick_pitch", yaw = "stick_yaw", throttle = "stick_throttle" }
