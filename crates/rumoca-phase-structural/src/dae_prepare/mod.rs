@@ -30,7 +30,8 @@ mod row_shape;
 use row_shape::{dae_variable_size, required_dae_variable_size, residual_scalar_width};
 mod dummy_state_metadata;
 pub use dummy_state_metadata::{
-    constrained_dummy_state_defining_exprs, constrained_dummy_state_names,
+    ConstrainedDummyDefinition, constrained_dummy_state_defining_exprs,
+    constrained_dummy_state_names,
 };
 mod state_row_reduction;
 pub use state_row_reduction::{
@@ -1198,10 +1199,14 @@ fn extract_state_direct_assignment_equation(
             .contains(lhs.as_str())
             .then(|| (lhs.var_name().clone(), eq.rhs.clone()));
     }
-    if expression_contains_any_der_call(&eq.rhs) {
-        return None;
-    }
-    if let Some(pair) = extract_state_direct_assignment(&eq.rhs, state_name_set) {
+    // Defining expressions may read `der(<other state>)` (differentiator
+    // chains such as `y = der(x)` behind a closed-form ODE for `x`); the
+    // per-candidate gates below and in `direct_demotion_plan_for_equation`
+    // reject the unsafe cases (self-derivatives, derivative definitions that
+    // feed back through the candidate).
+    if let Some(pair) = extract_state_direct_assignment(&eq.rhs, state_name_set)
+        && !expr_contains_der_of(&pair.1, &pair.0)
+    {
         return Some(pair);
     }
 
@@ -1251,6 +1256,35 @@ fn substitute_der_of_state(
         replacement,
     }
     .rewrite_expression(expr)
+}
+
+/// Replace every `der(<state>)` sub-expression with a zero literal.
+///
+/// Used to scan a defining expression for unsafe dependencies *outside* its
+/// derivative-reader links: a `der(state)` link is substituted symbolically on
+/// demotion (validated separately), so its state reference must not count as
+/// a value dependence on that state.
+fn mask_state_der_calls(expr: &Expression, state_name_set: &HashSet<String>) -> Expression {
+    struct StateDerMasker<'a> {
+        state_name_set: &'a HashSet<String>,
+    }
+    impl ExpressionRewriter for StateDerMasker<'_> {
+        fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+            if let Expression::BuiltinCall { function, args, .. } = expr
+                && *function == BuiltinFunction::Der
+                && args.len() == 1
+                && let Expression::VarRef {
+                    name, subscripts, ..
+                } = &args[0]
+                && subscripts.is_empty()
+                && self.state_name_set.contains(name.as_str())
+            {
+                return zero_expr();
+            }
+            self.walk_expression(expr)
+        }
+    }
+    StateDerMasker { state_name_set }.rewrite_expression(expr)
 }
 
 struct DerSubstitutionRewriter<'a> {
@@ -1403,12 +1437,16 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
 
     loop {
         let definitions = constrained_dummy_state_defining_exprs(dae);
+        crate::structural_trace!(
+            "[sim-trace] constrained-dummy scan: candidates={:?}",
+            definitions.keys().collect::<Vec<_>>()
+        );
         if definitions.is_empty() {
             break;
         }
 
         let mut demoted_this_round = false;
-        for (candidate, defining_expr) in definitions {
+        for (candidate, definition) in definitions {
             let Some((_state_names, state_name_set, _when_assigned_states)) =
                 direct_demotion_round_context(dae)
             else {
@@ -1422,13 +1460,33 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
             let Some(plan) = constrained_dummy_derivative_plan(
                 dae,
                 &state_name,
-                &defining_expr,
+                &definition.defining_expr,
                 &state_name_set,
                 &der_map,
             ) else {
+                crate::structural_trace!(
+                    "[sim-trace] constrained-dummy plan rejected state={}",
+                    state_name.as_str()
+                );
                 continue;
             };
+            crate::structural_trace!(
+                "[sim-trace] constrained-dummy demoting state={} structural_params={:?} defining={} der_expr={}",
+                state_name.as_str(),
+                definition.structural_params,
+                truncate_debug(&format!("{:?}", definition.defining_expr), 400),
+                truncate_debug(&format!("{:?}", plan.der_expr), 400)
+            );
             total_demoted += apply_direct_demotion_plan(dae, &plan);
+            // The reduction baked these parameters' compile-time values into
+            // the substituted derivative expressions; pin them as structural
+            // so runtime tuning cannot silently disagree with the reduction.
+            for param in &definition.structural_params {
+                if let Some(var) = dae.variables.parameters.get_mut(&VarName::new(param.as_str()))
+                {
+                    var.is_tunable = false;
+                }
+            }
             demoted_this_round = true;
             break;
         }
@@ -1682,13 +1740,18 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_self_der += 1;
         return None;
     }
-    if eq_contains_any_state_der(&defining_expr, &round.state_names) {
+    if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round) {
         counters.n_skip_der_in_defining_expr += 1;
         return None;
     }
+    // `der(state)` links are substituted symbolically on demotion (gated by
+    // `state_ders_in_expr_independently_defined` above and validated again in
+    // `choose_derivative_replacement`), so mask them before scanning for value
+    // dependencies on states or unsafe alias closures.
+    let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
     if defining_expr_references_unsafe_non_state_alias_closure(
         round.dae,
-        &defining_expr,
+        &alias_scan_expr,
         &round.state_name_set,
         &round.non_state_unknown_names,
         eq,
@@ -1750,6 +1813,30 @@ fn direct_demotion_plan_for_equation(
         state_name,
         der_expr,
     })
+}
+
+/// `der(z)` links inside a defining expression are demotable only when `z`'s
+/// own derivative definition is closed-form (not the symbolic `der(z)`
+/// fallback) and does not feed back through the candidate state. This admits
+/// differentiator chains (`y = der(x)` reading a state with its own ODE row)
+/// while keeping kinematic aliases as states: in `v = der(s)` the alias row
+/// itself defines `der(s) = v`, so `der(s)`'s value contains the candidate.
+fn state_ders_in_expr_independently_defined(
+    defining_expr: &Expression,
+    candidate: &VarName,
+    round: &DirectDemotionRound<'_>,
+) -> bool {
+    derivative_states_in_eq(defining_expr, &round.state_names)
+        .iter()
+        .all(|inner_state| {
+            round
+                .der_map
+                .get(inner_state.as_str())
+                .is_some_and(|value| {
+                    !expr_contains_der_of(value, inner_state)
+                        && !expr_contains_var(value, candidate)
+                })
+        })
 }
 
 fn collect_direct_demotion_plans(

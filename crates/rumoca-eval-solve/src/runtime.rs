@@ -353,18 +353,132 @@ impl SolveRuntime {
             tol,
             max_iters,
         } = args;
+        // Snapshot the targets: if Gauss-Seidel diverges (coupled loop with
+        // gain > 1, e.g. torque loops through a gear ratio), Newton restarts
+        // from these values rather than the diverged iterates.
+        let snapshot: Vec<f64> = rows.iter().map(|row| solver_y[row.target_index]).collect();
         let mut last_max = RefreshIterationMax {
             delta: 0.0,
             target: None,
         };
         for iter_idx in 0..max_iters {
-            last_max = self.refresh_slots_iteration(rows, t, solver_y, params)?;
+            match self.refresh_slots_iteration(rows, t, solver_y, params) {
+                Ok(iteration_max) => last_max = iteration_max,
+                Err(error) => {
+                    // Divergence to non-finite values: retry with Newton from
+                    // the snapshot before giving up.
+                    return self
+                        .refresh_slots_newton(rows, &snapshot, t, solver_y, params, tol)
+                        .map_err(|_| error);
+                }
+            }
             self.trace_refresh_iteration(iter_idx, &last_max);
             if last_max.delta <= tol {
                 return Ok(());
             }
         }
-        Err(self.refresh_convergence_error(max_iters, &last_max))
+        let convergence_error = self.refresh_convergence_error(max_iters, &last_max);
+        self.refresh_slots_newton(rows, &snapshot, t, solver_y, params, tol)
+            .map_err(|_| convergence_error)
+    }
+
+    /// Solve the coupled refresh subsystem `x = F(x)` with damped Newton on
+    /// `G(x) = x - F(x)` using a finite-difference Jacobian. Gauss-Seidel
+    /// sweeps diverge whenever the algebraic dependency cycle has gain > 1
+    /// (any geared torque loop); Newton solves linear cycles exactly in one
+    /// step and handles mildly nonlinear ones.
+    fn refresh_slots_newton(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        snapshot: &[f64],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+        tol: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        const MAX_NEWTON_REFRESH_ROWS: usize = 256;
+        const MAX_NEWTON_ITERS: usize = 25;
+        let m = rows.len();
+        if m == 0 || m > MAX_NEWTON_REFRESH_ROWS {
+            return Err(self.refresh_convergence_error(
+                0,
+                &RefreshIterationMax {
+                    delta: f64::INFINITY,
+                    target: None,
+                },
+            ));
+        }
+
+        let mut x = snapshot.to_vec();
+        let sweep = |x: &[f64], solver_y: &mut [f64]| -> Option<Vec<f64>> {
+            for (row, value) in rows.iter().zip(x) {
+                solver_y[row.target_index] = *value;
+            }
+            let mut values = Vec::with_capacity(m);
+            for row in rows {
+                let value = self
+                    .eval_refresh_row_value(row.row_idx, row.target_index, t, solver_y, params)
+                    .ok()?;
+                if !value.is_finite() {
+                    return None;
+                }
+                values.push(value);
+            }
+            Some(values)
+        };
+
+        for _ in 0..MAX_NEWTON_ITERS {
+            let Some(f_base) = sweep(&x, solver_y) else {
+                return Err(self.refresh_newton_failure());
+            };
+            let residual: Vec<f64> = x.iter().zip(&f_base).map(|(xi, fi)| xi - fi).collect();
+            let max_residual = residual.iter().fold(0.0_f64, |acc, r| acc.max(r.abs()));
+            if max_residual <= tol {
+                for (row, value) in rows.iter().zip(&x) {
+                    solver_y[row.target_index] = *value;
+                }
+                return Ok(());
+            }
+
+            // J = I - dF/dx by forward differences, augmented with -residual.
+            let mut augmented = vec![vec![0.0_f64; m + 1]; m];
+            for j in 0..m {
+                let eps = 1.0e-8_f64.max(1.0e-8 * x[j].abs());
+                let mut probe = x.clone();
+                probe[j] += eps;
+                let Some(f_probe) = sweep(&probe, solver_y) else {
+                    return Err(self.refresh_newton_failure());
+                };
+                for i in 0..m {
+                    let df = (f_probe[i] - f_base[i]) / eps;
+                    augmented[i][j] = if i == j { 1.0 - df } else { -df };
+                }
+            }
+            for (i, row) in augmented.iter_mut().enumerate() {
+                row[m] = -residual[i];
+            }
+            if crate::linear_solve::gaussian_eliminate(&mut augmented).is_none() {
+                return Err(self.refresh_newton_failure());
+            }
+            for (j, value) in x.iter_mut().enumerate() {
+                let step = augmented[j][m];
+                if !step.is_finite() {
+                    return Err(self.refresh_newton_failure());
+                }
+                *value += step;
+            }
+        }
+        Err(self.refresh_newton_failure())
+    }
+
+    fn refresh_newton_failure(&self) -> RuntimeSolveError {
+        self.refresh_convergence_error(
+            0,
+            &RefreshIterationMax {
+                delta: f64::INFINITY,
+                target: None,
+            },
+        )
     }
 
     fn refresh_slots_iteration(

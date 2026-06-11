@@ -127,7 +127,7 @@ fn build_augmented_matrix_unchecked(
     matrix
 }
 
-fn gaussian_eliminate(matrix: &mut [Vec<f64>]) -> Option<()> {
+pub(crate) fn gaussian_eliminate(matrix: &mut [Vec<f64>]) -> Option<()> {
     let n = matrix.len();
     for col in 0..n {
         let pivot =

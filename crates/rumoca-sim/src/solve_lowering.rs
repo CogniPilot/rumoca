@@ -306,6 +306,15 @@ pub struct SingularityDiagnosis {
     pub n_unknowns: usize,
     pub n_matched: usize,
     pub unknowns: Vec<UnmatchedUnknownDiagnosis>,
+    pub equations: Vec<UnmatchedEquationDiagnosis>,
+}
+
+/// One unmatched equation from a [`SingularityDiagnosis`].
+#[derive(Debug, Clone)]
+pub struct UnmatchedEquationDiagnosis {
+    pub name: String,
+    pub origin: String,
+    pub summary: String,
 }
 
 /// One unmatched unknown from a [`SingularityDiagnosis`].
@@ -332,11 +341,31 @@ pub fn diagnose_structural_singularity(
         Ok(_) => return Ok(None),
         Err(error) => error,
     };
+    if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
+        for (index, eq) in prepared.continuous.equations.iter().enumerate() {
+            let mut summary = format!(
+                "{}{:?}",
+                eq.lhs
+                    .as_ref()
+                    .map(|lhs| format!("{} = ", lhs.as_str()))
+                    .unwrap_or_default(),
+                eq.rhs
+            );
+            summary.truncate(200);
+            tracing::debug!(
+                target: "rumoca_phase_structural",
+                "[sim-trace] prepared f_x[{index}] origin='{}' {}",
+                eq.origin,
+                summary
+            );
+        }
+    }
     let rumoca_phase_structural::StructuralError::Singular {
         n_equations,
         n_unknowns,
         n_matched,
         unmatched_unknowns,
+        unmatched_equations,
         ..
     } = error
     else {
@@ -355,13 +384,46 @@ pub fn diagnose_structural_singularity(
             }
         })
         .collect();
+    let equations = unmatched_equations
+        .iter()
+        .map(|name| unmatched_equation_diagnosis(&prepared, name))
+        .collect();
 
     Ok(Some(SingularityDiagnosis {
         n_equations,
         n_unknowns,
         n_matched,
         unknowns,
+        equations,
     }))
+}
+
+/// Resolve one `f_x[N]` unmatched-equation name to its origin and a truncated
+/// expression summary from the prepared system.
+fn unmatched_equation_diagnosis(dae: &dae::Dae, name: &str) -> UnmatchedEquationDiagnosis {
+    let index = name
+        .strip_prefix("f_x[")
+        .and_then(|rest| rest.strip_suffix(']'))
+        .and_then(|digits| digits.parse::<usize>().ok());
+    let equation = index.and_then(|index| dae.continuous.equations.get(index));
+    let (origin, summary) = equation.map_or_else(
+        || ("<not an f_x row>".to_string(), String::new()),
+        |eq| {
+            let lhs = eq
+                .lhs
+                .as_ref()
+                .map(|lhs| format!("{} = ", lhs.as_str()))
+                .unwrap_or_default();
+            let mut summary = format!("{}{:?}", lhs, eq.rhs);
+            summary.truncate(220);
+            (eq.origin.clone(), summary)
+        },
+    );
+    UnmatchedEquationDiagnosis {
+        name: name.to_string(),
+        origin,
+        summary,
+    }
 }
 
 fn unmatched_base_name(name: &str) -> &str {
