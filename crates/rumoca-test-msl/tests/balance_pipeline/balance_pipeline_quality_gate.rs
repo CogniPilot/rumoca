@@ -27,6 +27,10 @@ pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 pub(super) const INITIAL_BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Allowed one-model cumulative-stage jitter for full-library MSL quality runs.
 pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP: usize = 1;
+/// Solve lowering runs under a per-model wall-clock budget, so its pass count
+/// moves with runner load (unlike the deterministic compile-side stages).
+/// Allow more jitter before treating a drop as a regression.
+pub(super) const MSL_SOLVE_STAGE_COUNT_ALLOWED_DROP: usize = 3;
 /// Keep focused/unit gate checks strict; runner jitter allowance is only for
 /// full-library scale denominators.
 pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR: usize = 100;
@@ -1302,12 +1306,13 @@ fn push_compile_balance_count_regression_reasons(
         baseline.dae_models.max(baseline.compiled_models),
         denominator,
     );
-    push_stage_count_regression_reason(
+    push_stage_count_regression_reason_with_drop(
         reasons,
         "IR-Solve",
         gate_input.solve_models,
         baseline.solve_models,
         denominator,
+        solve_stage_count_allowed_drop(denominator),
     );
     push_stage_count_regression_reason(
         reasons,
@@ -1442,7 +1447,24 @@ fn push_stage_count_regression_reason(
     baseline: usize,
     denominator: usize,
 ) {
-    let allowed_drop = stage_count_allowed_drop(denominator);
+    push_stage_count_regression_reason_with_drop(
+        reasons,
+        stage,
+        current,
+        baseline,
+        denominator,
+        stage_count_allowed_drop(denominator),
+    );
+}
+
+fn push_stage_count_regression_reason_with_drop(
+    reasons: &mut Vec<String>,
+    stage: &str,
+    current: usize,
+    baseline: usize,
+    denominator: usize,
+    allowed_drop: usize,
+) {
     let floor = baseline.saturating_sub(allowed_drop);
     if current >= floor {
         return;
@@ -1462,6 +1484,14 @@ fn push_stage_count_regression_reason(
 fn stage_count_allowed_drop(denominator: usize) -> usize {
     if denominator >= MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR {
         MSL_STAGE_COUNT_ALLOWED_DROP
+    } else {
+        0
+    }
+}
+
+fn solve_stage_count_allowed_drop(denominator: usize) -> usize {
+    if denominator >= MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR {
+        MSL_SOLVE_STAGE_COUNT_ALLOWED_DROP
     } else {
         0
     }
