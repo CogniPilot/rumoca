@@ -43,7 +43,18 @@ fn variable(name: &str, dims: &[i64]) -> dae::Variable {
 }
 
 fn lhs(name: &str) -> Option<rumoca_core::Reference> {
-    Some(rumoca_core::Reference::new(name))
+    // Explicit-equation targets are structured at construction
+    // (`Equation::explicit` normalizes bare names).
+    let component_ref = rumoca_core::component_reference_from_flat_name(
+        &rumoca_core::VarName::new(name),
+        rumoca_core::Span::DUMMY,
+    );
+    Some(match component_ref {
+        Some(component_ref) => {
+            rumoca_core::Reference::with_component_reference(name, component_ref)
+        }
+        None => rumoca_core::Reference::new(name),
+    })
 }
 
 #[test]

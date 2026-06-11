@@ -1852,13 +1852,24 @@ pub fn scalarized_equation_lhs(
     target: Option<&ScalarizedLhsTarget>,
     scalar_idx: usize,
 ) -> Option<rumoca_core::Reference> {
-    let _ = eq.lhs.as_ref()?;
+    let lhs = eq.lhs.as_ref()?;
     if let Some(name) = target {
-        return Some(rumoca_core::Reference::new(name.name.clone()));
+        return Some(structured_scalar_target(&rumoca_core::VarName::new(
+            name.name.clone(),
+        )));
     }
-    eq.lhs
-        .as_ref()
-        .map(|lhs| rumoca_core::Reference::new(format!("{}[{scalar_idx}]", lhs.as_str())))
+    Some(lhs.with_appended_index(scalar_idx as i64))
+}
+
+/// Structured reference for a rendered scalar target (the target names come
+/// from the scalarized output table, so their subscripts are static).
+fn structured_scalar_target(name: &rumoca_core::VarName) -> rumoca_core::Reference {
+    match rumoca_core::component_reference_from_flat_name(name, rumoca_core::Span::DUMMY) {
+        Some(component_ref) => {
+            rumoca_core::Reference::with_component_reference(name.as_str(), component_ref)
+        }
+        None => rumoca_core::Reference::from_var_name(name.clone()),
+    }
 }
 
 fn lower_scalar_linear_algebra_exprs(

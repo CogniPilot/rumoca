@@ -132,6 +132,26 @@ impl VarName {
     pub fn id(&self) -> VarNameId {
         self.id
     }
+
+    /// Structural ancestors of this name: every proper segment prefix, plus
+    /// each prefix's subscript-stripped form so an aggregate reference
+    /// (`voltageSource.v`) is recognized as an ancestor of a scalarized
+    /// element (`voltageSource.v[1].re`). Composed from the interned
+    /// segmentation; nothing re-parses the rendered path.
+    pub fn structural_ancestors(&self) -> Vec<VarName> {
+        let text = self.as_str();
+        let mut ancestors = Vec::new();
+        for dot in self.data.top_level_dots.iter() {
+            let prefix = &text[..*dot as usize];
+            ancestors.push(VarName::new(prefix));
+            if let Some(stripped) = crate::strip_trailing_subscript_suffix(prefix)
+                && stripped != prefix
+            {
+                ancestors.push(VarName::new(stripped));
+            }
+        }
+        ancestors
+    }
 }
 
 impl Default for VarName {

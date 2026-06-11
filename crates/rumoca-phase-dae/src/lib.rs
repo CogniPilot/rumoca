@@ -761,11 +761,19 @@ fn select_scalarized_start_expr(
             name,
             subscripts,
             span,
-        } if subscripts.is_empty() => rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(format!("{}{}", name.as_str(), suffix)),
-            subscripts: vec![],
-            span: *span,
-        },
+        } if subscripts.is_empty() => {
+            // `suffix` is a `.member[.member...]` path; append each part so
+            // the rendered name and the structured reference stay in lockstep.
+            let mut reference = name.clone();
+            rumoca_core::visit_top_level_path_segments(suffix.trim_start_matches('.'), |field| {
+                reference = reference.with_appended_field(field);
+            });
+            rumoca_core::Expression::VarRef {
+                name: reference,
+                subscripts: vec![],
+                span: *span,
+            }
+        }
         _ => base_start.clone(),
     }
 }

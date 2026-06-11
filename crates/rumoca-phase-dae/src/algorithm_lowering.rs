@@ -347,7 +347,9 @@ fn process_collision_equation(
 
     flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
     let mut flipped = equation;
-    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target).into());
+    flipped.lhs = Some(crate::convert::structured_target_reference(
+        &flat_to_dae_var_name(&resolved_target),
+    ));
     flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
         name: structured_target_reference(lhs),
         subscripts: vec![],
@@ -525,7 +527,9 @@ fn reroute_connection_aliases_for_defined_targets(
                 continue;
             }
             let mut flipped = equation.clone();
-            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target).into());
+            flipped.lhs = Some(crate::convert::structured_target_reference(
+                &flat_to_dae_var_name(&rhs_target),
+            ));
             flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
                 name: structured_target_reference(lhs),
                 subscripts: vec![],

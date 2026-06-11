@@ -157,7 +157,38 @@
   "initial_for_equations": [],
   "f_z": [
     {
-      "lhs": "hold.y",
+      "lhs": {
+        "name": "hold.y",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "hold",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            },
+            {
+              "ident": "y",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "If": {
           "branches": [
@@ -217,7 +248,38 @@
   ],
   "f_m": [
     {
-      "lhs": "and1.y",
+      "lhs": {
+        "name": "and1.y",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "and1",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            },
+            {
+              "ident": "y",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "Binary": {
           "op": "And",
@@ -259,7 +321,38 @@
       "scalar_count": 1
     },
     {
-      "lhs": "not1.y",
+      "lhs": {
+        "name": "not1.y",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "not1",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            },
+            {
+              "ident": "y",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "Unary": {
           "op": "Not",
@@ -292,7 +385,40 @@
   ],
   "f_c": [
     {
-      "lhs": "c[1]",
+      "lhs": {
+        "name": "c[1]",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "c",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": [
+                {
+                  "Index": {
+                    "value": 1,
+                    "span": {
+                      "source": 0,
+                      "start": 0,
+                      "end": 0
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "Binary": {
           "op": "Ge",

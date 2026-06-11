@@ -314,7 +314,7 @@ fn expand_dae_record_arg(
     if let rumoca_core::Expression::VarRef { name, .. } = arg {
         for field in fields {
             out.push(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), field)),
+                name: name.with_appended_field(field),
                 subscripts: vec![],
                 span: rumoca_core::Span::DUMMY,
             });
@@ -641,7 +641,7 @@ impl ExpressionVisitor for VarRefListCollector {
 /// by its indexed variant and every declared-array VarRef subscripted.
 pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeError> {
     let known_names = build_known_var_name_set(dae);
-    let phantom_map = build_phantom_expansion_map(&known_names);
+    let phantom_map = build_phantom_expansion_map(dae, &known_names);
     let array_dims = build_array_dims_map(dae);
 
     canonicalize_embedded_subscript_equation_list(&mut dae.continuous.equations, &array_dims);
@@ -715,7 +715,10 @@ fn build_known_var_name_set(dae: &Dae) -> HashSet<String> {
 ///
 /// Only base names that do NOT themselves appear in `known_names` are included
 /// (i.e., only phantom base names that need expansion).
-fn build_phantom_expansion_map(known_names: &HashSet<String>) -> HashMap<String, Vec<String>> {
+fn build_phantom_expansion_map(
+    dae: &Dae,
+    known_names: &HashSet<String>,
+) -> HashMap<String, Vec<rumoca_core::Reference>> {
     // Group all known names by their stripped base
     let mut base_to_indexed: HashMap<String, BTreeMap<String, ()>> = HashMap::new();
     for name in known_names {
@@ -736,10 +739,37 @@ fn build_phantom_expansion_map(known_names: &HashSet<String>) -> HashMap<String,
     let mut result = HashMap::new();
     for (base, indexed) in base_to_indexed {
         if !known_names.contains(&base) && !indexed.is_empty() {
-            result.insert(base, indexed.into_keys().collect());
+            let variants = indexed
+                .into_keys()
+                .map(|variant| phantom_variant_reference(dae, variant))
+                .collect();
+            result.insert(base, variants);
         }
     }
     result
+}
+
+/// Structured reference for a phantom expansion variant. Variants name
+/// existing scalarized DAE variables, so the variable's own structured
+/// component reference is the source of truth.
+fn phantom_variant_reference(dae: &Dae, variant: String) -> rumoca_core::Reference {
+    let key = rumoca_core::VarName::new(&variant);
+    let variable = [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ]
+    .into_iter()
+    .find_map(|map| map.get(&key));
+    match variable.and_then(|var| var.component_ref.clone()) {
+        Some(reference) => rumoca_core::Reference::with_component_reference(variant, reference),
+        None => rumoca_core::Reference::generated(variant),
+    }
 }
 
 /// Build a map from variable name → dims for declared array variables.
@@ -823,7 +853,7 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
 
 fn expr_phantom_ref_width(
     expr: &rumoca_core::Expression,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
 ) -> Option<usize> {
     match expr {
         rumoca_core::Expression::VarRef {
@@ -935,7 +965,7 @@ fn subscript_has_array_comprehension(subscript: &rumoca_core::Subscript) -> bool
 fn scalarize_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
@@ -950,7 +980,7 @@ fn scalarize_expr_at(
 
 struct ScalarizeExprContext<'a> {
     k: usize,
-    phantom_map: &'a HashMap<String, Vec<String>>,
+    phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &'a HashMap<String, Vec<i64>>,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 }
@@ -1125,7 +1155,7 @@ fn scalarize_var_ref_at(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     k: usize,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
 ) -> Option<rumoca_core::Expression> {
     let n = name.as_str();
@@ -1136,7 +1166,7 @@ fn scalarize_var_ref_at(
         && k < variants.len()
     {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(variants[k].clone()),
+            name: variants[k].clone(),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         });
@@ -1220,7 +1250,7 @@ fn scalarize_builtin_array_constructor_at(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
     k: usize,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
@@ -1278,13 +1308,13 @@ fn first_function_output_size(
 
 fn vectorize_phantom_expr(
     expr: &rumoca_core::Expression,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
 ) -> rumoca_core::Expression {
     PhantomVectorizer { phantom_map }.rewrite_expression(expr)
 }
 
 struct PhantomVectorizer<'a> {
-    phantom_map: &'a HashMap<String, Vec<String>>,
+    phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
 }
 
 impl ExpressionRewriter for PhantomVectorizer<'_> {
@@ -1301,7 +1331,7 @@ impl ExpressionRewriter for PhantomVectorizer<'_> {
                 elements: variants
                     .iter()
                     .map(|variant| rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::new(variant.clone()),
+                        name: variant.clone(),
                         subscripts: Vec::new(),
                         span,
                     })
@@ -1429,7 +1459,7 @@ fn array_from_binary_elements(
 /// Process an equation list, expanding vector equations with phantom refs.
 fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<(), ToDaeError> {
@@ -1470,7 +1500,7 @@ fn scalarized_equation_at(
     scalar_rhs: rumoca_core::Expression,
     k: usize,
     origin: String,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
 ) -> dae::Equation {
     let Some(lhs) = &eq.lhs else {
@@ -1487,18 +1517,20 @@ fn scalarized_equation_at(
 fn scalarize_lhs_name_at(
     name: &rumoca_core::VarName,
     k: usize,
-    phantom_map: &HashMap<String, Vec<String>>,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
-) -> rumoca_core::VarName {
+) -> rumoca_core::Reference {
     if let Some(variants) = phantom_map.get(name.as_str())
         && let Some(variant) = variants.get(k)
     {
-        return rumoca_core::VarName::new(variant);
+        return variant.clone();
     }
-    if let Some(dims) = array_dims.get(name.as_str()) {
-        return dae::scalar_name_for_flat_index(name, dims, k);
-    }
-    rumoca_core::VarName::new(format!("{}[{}]", name.as_str(), k + 1))
+    let scalar_name = if let Some(dims) = array_dims.get(name.as_str()) {
+        dae::scalar_name_for_flat_index(name, dims, k)
+    } else {
+        rumoca_core::VarName::new(format!("{}[{}]", name.as_str(), k + 1))
+    };
+    super::convert::structured_target_reference(&scalar_name)
 }
 
 #[cfg(test)]

@@ -52,6 +52,7 @@ mod postprocess;
 pub mod qualify;
 pub(crate) mod record_constant_arrays;
 mod static_subscripts;
+mod structured_refs;
 mod variables;
 mod vcg;
 mod when_equations;

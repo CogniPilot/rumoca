@@ -483,6 +483,41 @@ impl Reference {
         self.component_ref.as_ref()
     }
 
+    /// Element reference: this reference with a literal index appended to its
+    /// last part, keeping rendered text and structure in lockstep.
+    pub fn with_appended_index(&self, index: i64) -> Self {
+        let rendered = format!("{}[{index}]", self.as_str());
+        match self.component_ref.clone() {
+            Some(mut reference) if !reference.parts.is_empty() => {
+                if let Some(part) = reference.parts.last_mut() {
+                    part.subs
+                        .push(Subscript::generated_index(index, reference.span));
+                }
+                Self::with_component_reference(rendered, reference)
+            }
+            _ if self.generated => Self::generated(rendered),
+            _ => Self::new(rendered),
+        }
+    }
+
+    /// Member reference: this reference with a field part appended, keeping
+    /// rendered text and structure in lockstep.
+    pub fn with_appended_field(&self, field: &str) -> Self {
+        let rendered = format!("{}.{field}", self.as_str());
+        match self.component_ref.clone() {
+            Some(mut reference) if !reference.parts.is_empty() => {
+                reference.parts.push(ComponentRefPart {
+                    ident: field.to_string(),
+                    span: reference.span,
+                    subs: Vec::new(),
+                });
+                Self::with_component_reference(rendered, reference)
+            }
+            _ if self.generated => Self::generated(rendered),
+            _ => Self::new(rendered),
+        }
+    }
+
     pub fn is_generated(&self) -> bool {
         self.generated
     }

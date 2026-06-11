@@ -209,7 +209,7 @@ impl<'a> BalanceSymbolSet<'a> {
             .collect();
         let mut prefixes = HashSet::new();
         for name in names {
-            insert_name_prefixes(name.as_str(), &mut prefixes);
+            prefixes.extend(name.structural_ancestors());
         }
         Self {
             names,
@@ -244,14 +244,6 @@ impl<'a> BalanceSymbolSet<'a> {
                     .get(candidate)
                     .is_some_and(|chain| chain.contains(&def_id))
             })
-    }
-}
-
-fn insert_name_prefixes(rendered: &str, prefixes: &mut HashSet<rumoca_core::VarName>) {
-    for (idx, ch) in rendered.char_indices() {
-        if ch == '.' {
-            prefixes.insert(rumoca_core::VarName::new(&rendered[..idx]));
-        }
     }
 }
 
