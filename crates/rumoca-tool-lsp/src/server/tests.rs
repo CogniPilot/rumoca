@@ -65,7 +65,12 @@ fn new_test_service() -> LspService<ModelicaLanguageServer> {
 pub(super) async fn wait_for_namespace_cache_prewarm(
     server: &ModelicaLanguageServer,
 ) -> Vec<String> {
-    for _ in 0..64 {
+    // The prewarm compiles the library on the blocking pool, which takes real
+    // wall time on slow CI runners (Windows debug builds); bare yields on a
+    // current-thread runtime elapse in microseconds and lose that race, so
+    // poll against a wall-clock deadline instead.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
         let class_names = server
             .session_snapshot()
             .await
@@ -73,9 +78,12 @@ pub(super) async fn wait_for_namespace_cache_prewarm(
         if !class_names.is_empty() {
             return class_names;
         }
-        tokio::task::yield_now().await;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected background namespace prewarm to populate namespace class names within 60s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    panic!("expected background namespace prewarm to populate namespace class names");
 }
 
 #[derive(Debug, Deserialize)]
