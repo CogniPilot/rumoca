@@ -53,9 +53,27 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
         }
     }
 
+    // Set of parameter names: a parameter start expression that references
+    // another parameter stays symbolic (see below), matching the bare-alias
+    // preservation that already exists for top-level VarRef starts.
+    let param_names: std::collections::HashSet<String> = dae
+        .variables
+        .parameters
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect();
+
+    // Parameters whose translation-time values were consumed by a fold.
+    // MLS 3.7 §4.5.2: using a parameter's value during translation turns it
+    // into an evaluated parameter, and "it must be ensured that the parameter
+    // cannot be assigned a different value after translation". Folding a
+    // start expression bakes the referenced parameters' values into the
+    // literal, so those parameters are pinned non-tunable below.
+    let mut consumed_params: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     // Phase 2: rewrite start expressions to literals where we found values.
     // Also clear self-referencing defaults (start = VarRef(self_name)).
-    let rewrite = |var: &mut Variable| {
+    let rewrite = |var: &mut Variable, is_parameter: bool| {
         if let Some(ref start) = var.start {
             // Check for self-reference: start = VarRef(own_name)
             if let Expression::VarRef {
@@ -81,7 +99,30 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
             {
                 return;
             }
+            // MLS 3.7 §4.5 makes the translation-vs-initialization split for
+            // evaluable parameters tool dependent; keeping the expression
+            // (`massRatio = exp(dv/(Isp*g0))`) defers evaluation to
+            // initialization so a runtime override of a base parameter
+            // (`Isp`) still propagates to its dependents. The parameter
+            // chain is already topo-ordered for forward evaluation.
+            // String-dependent expressions (MSL TransformerData selects by
+            // winding-connection letter) still fold: string evaluation is
+            // translation-time only in the solve runtime, and the consumed
+            // parameters are pinned non-tunable per §4.5.2.
+            if is_parameter
+                && start_references_parameter(start, &param_names)
+                && !expr_depends_on_string_value(start, &values)
+            {
+                return;
+            }
             if let Some(val) = values.get(var.name.as_str()).cloned() {
+                let mut refs: Vec<VarName> = Vec::new();
+                start.collect_var_refs(&mut refs);
+                consumed_params.extend(
+                    refs.iter()
+                        .map(|name| name.as_str().to_string())
+                        .filter(|name| param_names.contains(name)),
+                );
                 var.start = Some(Expression::Literal {
                     value: val.into_literal(),
                     span: rumoca_core::Span::DUMMY,
@@ -91,6 +132,57 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
     };
 
     StartRewriter { rewrite }.visit_variables_mut(&mut dae.variables);
+
+    // Evaluated-parameter lock (MLS 3.7 §4.5.2): parameters whose values
+    // were folded into literals above must reject post-translation overrides.
+    for (name, var) in dae.variables.parameters.iter_mut() {
+        if consumed_params.contains(name.as_str()) {
+            var.is_tunable = false;
+        }
+    }
+}
+
+/// True when the expression contains a String literal or references a name
+/// whose folded constant value is a String. Such expressions are evaluable
+/// only at translation time (the solve runtime has no string operations), so
+/// they must keep folding to literals.
+fn expr_depends_on_string_value(expr: &Expression, values: &HashMap<String, ConstValue>) -> bool {
+    let mut refs: Vec<VarName> = Vec::new();
+    expr.collect_var_refs(&mut refs);
+    if refs
+        .iter()
+        .any(|name| matches!(values.get(name.as_str()), Some(ConstValue::String(_))))
+    {
+        return true;
+    }
+    struct StringLiteralFinder {
+        found: bool,
+    }
+    impl ExpressionVisitor for StringLiteralFinder {
+        fn visit_expression(&mut self, expr: &Expression) {
+            if let Expression::Literal {
+                value: rumoca_core::Literal::String(_),
+                ..
+            } = expr
+            {
+                self.found = true;
+            }
+            self.walk_expression(expr);
+        }
+    }
+    let mut finder = StringLiteralFinder { found: false };
+    finder.visit_expression(expr);
+    finder.found
+}
+
+/// True when the start expression references at least one parameter by name.
+fn start_references_parameter(
+    expr: &Expression,
+    param_names: &std::collections::HashSet<String>,
+) -> bool {
+    let mut refs: Vec<VarName> = Vec::new();
+    expr.collect_var_refs(&mut refs);
+    refs.iter().any(|name| param_names.contains(name.as_str()))
 }
 
 struct StartBindingCollector<'a> {
@@ -104,6 +196,13 @@ impl DaeVisitor for StartBindingCollector<'_> {
         name: &VarName,
         variable: &Variable,
     ) {
+        // MLS 3.7 §4.5: with `fixed = false` the variable is determined by
+        // the initialization problem and `start` is only a guess value, so
+        // it must not be treated as the variable's value when evaluating
+        // other start expressions.
+        if variable.fixed == Some(false) {
+            return;
+        }
         if let Some(expr) = &variable.start {
             self.bindings.push((name.clone(), expr.clone()));
         }
@@ -116,15 +215,15 @@ struct StartRewriter<F> {
 
 impl<F> DaeVariableMutVisitor for StartRewriter<F>
 where
-    F: FnMut(&mut Variable),
+    F: FnMut(&mut Variable, bool),
 {
     fn visit_variable_mut(
         &mut self,
-        _partition: DaeVariablePartition,
+        partition: DaeVariablePartition,
         _name: &VarName,
         variable: &mut Variable,
     ) {
-        (self.rewrite)(variable);
+        (self.rewrite)(variable, partition == DaeVariablePartition::Parameter);
     }
 }
 
@@ -557,5 +656,39 @@ mod tests {
             }) => assert!((value - 100.0).abs() <= 1.0e-12),
             ref other => panic!("expected folded numeric V1ph start, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn preserves_numeric_parameter_start_depending_on_parameters() {
+        let mut dae = Dae::new();
+        dae.variables
+            .parameters
+            .insert(VarName::new("Isp"), parameter("Isp", real(300.0)));
+        dae.variables
+            .parameters
+            .insert(VarName::new("g0"), parameter("g0", real(9.81)));
+        dae.variables.parameters.insert(
+            VarName::new("ve"),
+            parameter(
+                "ve",
+                Expression::Binary {
+                    op: OpBinary::Mul,
+                    lhs: Box::new(var("Isp")),
+                    rhs: Box::new(var("g0")),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ),
+        );
+
+        fold_start_values_to_literals(&mut dae);
+
+        // A runtime override of `Isp` must propagate to `ve`, so the computed
+        // start keeps its expression instead of folding to 2943.0.
+        let ve = &dae.variables.parameters[&VarName::new("ve")];
+        assert!(
+            matches!(ve.start, Some(Expression::Binary { .. })),
+            "expected preserved expression start for ve, got {:?}",
+            ve.start
+        );
     }
 }
