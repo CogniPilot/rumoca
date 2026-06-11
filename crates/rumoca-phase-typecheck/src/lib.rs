@@ -682,28 +682,48 @@ impl TypeChecker {
             let Some(&alias_id) = type_ids_by_def_id.get(&def_id) else {
                 continue;
             };
-            let aliased =
-                match self.resolve_alias_target_type_id(class, &type_table, &type_ids_by_def_id) {
-                    Ok(aliased) => aliased,
-                    // An unresolvable alias target anywhere in the tree (an
-                    // MSL alias into a library that is not loaded) must not
-                    // fail every model in the session. Defer the error; it is
-                    // surfaced when the alias is actually used.
-                    Err(error) => {
-                        if let TypeCheckError::UndefinedType { name, span } = error.as_ref() {
-                            self.deferred_alias_errors
-                                .insert(alias_id, (name.clone(), *span));
-                            continue;
-                        }
-                        return Err(error);
-                    }
-                };
+            let Some(aliased) = self.resolve_alias_target_or_defer(
+                alias_id,
+                class,
+                &type_table,
+                &type_ids_by_def_id,
+            )?
+            else {
+                continue;
+            };
             if let Some(Type::Alias(alias)) = type_table.get_mut(alias_id) {
                 alias.aliased = aliased;
             }
         }
 
         Ok((type_table, type_ids_by_def_id))
+    }
+
+    /// Resolve an alias target, deferring `UndefinedType` failures.
+    ///
+    /// An unresolvable alias target anywhere in the tree (an MSL alias into a
+    /// library that is not loaded) must not fail every model in the session.
+    /// The error is recorded per alias `TypeId` and surfaced when a model's
+    /// overlay actually resolves a component to the alias; `Ok(None)` means
+    /// the alias keeps its `UNKNOWN` target. Other errors still propagate.
+    fn resolve_alias_target_or_defer(
+        &mut self,
+        alias_id: TypeId,
+        class: &ClassDef,
+        type_table: &TypeTable,
+        type_ids_by_def_id: &HashMap<DefId, TypeId>,
+    ) -> TypeCheckResult<Option<TypeId>> {
+        match self.resolve_alias_target_type_id(class, type_table, type_ids_by_def_id) {
+            Ok(aliased) => Ok(Some(aliased)),
+            Err(error) => match error.as_ref() {
+                TypeCheckError::UndefinedType { name, span } => {
+                    self.deferred_alias_errors
+                        .insert(alias_id, (name.clone(), *span));
+                    Ok(None)
+                }
+                _ => Err(error),
+            },
+        }
     }
 
     fn build_type_suffix_index(type_table: &TypeTable) -> HashMap<String, Option<TypeId>> {
