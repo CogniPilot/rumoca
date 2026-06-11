@@ -105,7 +105,7 @@ impl TypeChecker {
     }
 
     pub(crate) fn enclosing_scope_or_root(path: &str) -> &str {
-        crate::path_utils::enclosing_class_scope(path).unwrap_or("")
+        crate::path_utils::enclosing_scope_str(path).unwrap_or("")
     }
 
     fn parent_path(path: &ComponentPath) -> ComponentPath {

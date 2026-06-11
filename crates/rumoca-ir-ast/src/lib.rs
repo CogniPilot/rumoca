@@ -109,6 +109,11 @@ pub struct ClassTree {
     /// This includes non-class definitions such as components.
     /// Populated during the resolve phase alongside def_map.
     pub name_map: AstIndexMap<String, DefId>,
+    /// Each class scope's declaring class. Populated during resolve so later
+    /// phases walk enclosing classes through the scope tree instead of
+    /// re-parsing qualified names.
+    #[serde(default)]
+    pub scope_to_class: AstIndexMap<ScopeId, DefId>,
     /// Source map for mapping file names to SourceIds.
     /// Populated during session build for multi-file diagnostics.
     #[serde(default)]
@@ -124,8 +129,29 @@ impl ClassTree {
             scope_tree: ScopeTree::new(),
             def_map: AstIndexMap::default(),
             name_map: AstIndexMap::default(),
+            scope_to_class: AstIndexMap::default(),
             source_map: rumoca_core::SourceMap::new(),
         }
+    }
+
+    /// Qualified names of the classes enclosing `scope` (innermost first),
+    /// walked through the scope tree. This is the structured replacement for
+    /// re-parsing a qualified name into its enclosing scopes.
+    pub fn enclosing_class_names_from(&self, scope: ScopeId) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(scope), |current| self.scope_tree.parent(*current))
+            .filter_map(|current| self.scope_to_class.get(&current))
+            .filter_map(|class_def_id| self.def_map.get(class_def_id))
+            .map(String::as_str)
+    }
+
+    /// Qualified names of the classes strictly enclosing `qualified_name`
+    /// (innermost first), walked through the scope tree.
+    pub fn enclosing_class_names_of(&self, qualified_name: &str) -> impl Iterator<Item = &str> {
+        self.get_class_by_qualified_name(qualified_name)
+            .and_then(|class| class.scope_id)
+            .and_then(|scope| self.scope_tree.parent(scope))
+            .into_iter()
+            .flat_map(|enclosing| self.enclosing_class_names_from(enclosing))
     }
 
     /// Create a class tree from a parsed StoredDefinition.
@@ -136,6 +162,7 @@ impl ClassTree {
             scope_tree: ScopeTree::new(),
             def_map: AstIndexMap::default(),
             name_map: AstIndexMap::default(),
+            scope_to_class: AstIndexMap::default(),
             source_map: rumoca_core::SourceMap::new(),
         }
     }

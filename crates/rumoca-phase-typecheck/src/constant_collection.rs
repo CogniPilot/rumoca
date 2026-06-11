@@ -819,7 +819,7 @@ impl TypeChecker {
         model_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let Some(enclosing_name) = crate::path_utils::enclosing_class_scope(model_name) else {
+        let Some(enclosing_name) = tree.enclosing_class_names_of(model_name).next() else {
             return;
         };
         // Collect all ancestor classes (enclosing + full extends chain)

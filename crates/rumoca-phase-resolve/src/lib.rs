@@ -205,6 +205,10 @@ pub struct Resolver {
     pub(crate) class_to_bases: IndexMap<DefId, Vec<DefId>>,
     /// Map class scope id -> class DefId for inherited lookups from nested scopes.
     pub(crate) scope_to_class_def: std::collections::HashMap<ScopeId, DefId>,
+    /// Inverse of `scope_to_class_def`: each class declaration's own scope,
+    /// so enclosing-class walks traverse the scope tree instead of re-parsing
+    /// qualified names.
+    pub(crate) class_def_scopes: std::collections::HashMap<DefId, ScopeId>,
     /// Fully qualified class names whose scopes are encapsulated.
     pub(crate) encapsulated_class_names: std::collections::HashSet<String>,
     /// DefIds that can legitimately anchor partial type resolution (replaceable roots).
@@ -308,6 +312,7 @@ impl Resolver {
             inheritance_edges: Vec::new(),
             class_to_bases: IndexMap::default(),
             scope_to_class_def: std::collections::HashMap::new(),
+            class_def_scopes: std::collections::HashMap::new(),
             encapsulated_class_names: std::collections::HashSet::new(),
             partial_type_root_ids: std::collections::HashSet::new(),
             builtin_count: 0,
@@ -337,7 +342,7 @@ impl Resolver {
 
         for &name in all_builtins {
             if !self.name_to_def.contains_key(name) {
-                let def_id = self.alloc_def_id(name.to_string());
+                let def_id = self.alloc_def_id(None, name);
                 self.scope_tree
                     .add_member(global, ComponentPath::from_flat_path(name), def_id);
             }
@@ -353,24 +358,26 @@ impl Resolver {
         def_id.index() > 0 && def_id.index() < self.builtin_count
     }
 
-    /// Allocate a new DefId and register it in both lookup maps.
+    /// Allocate a new DefId for `leaf` declared inside `enclosing` (None for
+    /// top-level/global names) and register it in both lookup maps.
     ///
-    /// Also populates the package_children map for O(1) unqualified import resolution.
-    ///
-    /// Takes an owned `String` to avoid double allocation when callers already have
-    /// a formatted string (e.g., from `format!()`).
-    pub(crate) fn alloc_def_id(&mut self, name: String) -> DefId {
+    /// The qualified name is composed here from the structured pair; callers
+    /// never join-and-resplit paths. Also populates the package_children map
+    /// for O(1) unqualified import resolution.
+    pub(crate) fn alloc_def_id(&mut self, enclosing: Option<&str>, leaf: &str) -> DefId {
         let id = DefId::new(self.next_def_id);
         self.next_def_id += 1;
 
-        // Register as child of parent package for O(1) unqualified import lookup.
-        // Must do this before moving `name` into the maps.
-        if let Some((parent, child_name)) = path_utils::class_scope_split(&name) {
-            self.package_children
-                .entry(parent.to_string())
-                .or_default()
-                .insert(child_name.to_string(), id);
-        }
+        let name = match enclosing {
+            Some(enclosing) if !enclosing.is_empty() => {
+                self.package_children
+                    .entry(enclosing.to_string())
+                    .or_default()
+                    .insert(leaf.to_string(), id);
+                format!("{enclosing}.{leaf}")
+            }
+            _ => leaf.to_string(),
+        };
 
         // Insert into both maps: clone for first, move for second.
         self.name_to_def.insert(name.clone(), id);
@@ -460,6 +467,11 @@ impl Resolver {
         // inherited lookup helpers before returning.
         tree.def_map = self.def_names.clone();
         tree.name_map = self.name_to_def.clone();
+        tree.scope_to_class = self
+            .scope_to_class_def
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
     }
 
     /// Check if resolution produced any errors.
@@ -669,18 +681,23 @@ fn emit_unresolved_symbol_diagnostics(
     }
 }
 
-fn unresolved_is_within_encapsulated_scope(resolver: &Resolver, scope_path: &str) -> bool {
-    std::iter::once(scope_path)
-        .chain(path_utils::enclosing_class_scopes(scope_path))
-        .any(|path| resolver.encapsulated_class_names.contains(path))
+/// Qualified names of the reference site's class and every enclosing class,
+/// composed innermost-first from the structured scope segments.
+fn enclosing_scope_names(scope_path: &[String]) -> impl Iterator<Item = String> + '_ {
+    (1..=scope_path.len())
+        .rev()
+        .map(|end| scope_path[..end].join("."))
+}
+
+fn unresolved_is_within_encapsulated_scope(resolver: &Resolver, scope_path: &[String]) -> bool {
+    enclosing_scope_names(scope_path).any(|path| resolver.encapsulated_class_names.contains(&path))
 }
 
 /// Check whether an unresolved simple name can be found in inherited members of
 /// the current class or any enclosing class.
-fn has_inherited_match(resolver: &Resolver, location: &str, name: &str) -> bool {
-    std::iter::once(location)
-        .chain(path_utils::enclosing_class_scopes(location))
-        .any(|container| resolver.lookup_inherited_member(container, name).is_some())
+fn has_inherited_match(resolver: &Resolver, scope_path: &[String], name: &str) -> bool {
+    enclosing_scope_names(scope_path)
+        .any(|container| resolver.lookup_inherited_member(&container, name).is_some())
 }
 
 #[cfg(test)]

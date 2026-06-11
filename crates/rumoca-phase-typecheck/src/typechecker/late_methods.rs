@@ -332,7 +332,7 @@ impl TypeChecker {
     }
 
     fn parent_type_scope(type_name: &str) -> Option<&str> {
-        crate::path_utils::enclosing_class_scope(type_name).filter(|scope| !scope.is_empty())
+        crate::path_utils::enclosing_scope_str(type_name).filter(|scope| !scope.is_empty())
     }
 
     /// Fallback dimension evaluation using enclosing component type scopes.

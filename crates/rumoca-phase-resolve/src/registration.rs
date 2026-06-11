@@ -17,7 +17,8 @@ impl Resolver {
     ) {
         // Register all top-level class names
         for (name, class) in def.classes.iter_mut() {
-            let def_id = self.alloc_def_id(format!("{}{}", prefix, name));
+            let enclosing = prefix.trim_end_matches('.');
+            let def_id = self.alloc_def_id((!enclosing.is_empty()).then_some(enclosing), name);
             class.def_id = Some(def_id);
             self.class_types.insert(def_id, class.class_type.clone());
             self.scope_tree
@@ -59,11 +60,12 @@ impl Resolver {
         }
         if let Some(class_def_id) = class.def_id {
             self.scope_to_class_def.insert(class_scope, class_def_id);
+            self.class_def_scopes.insert(class_def_id, class_scope);
         }
 
         // Register component names
         for (name, comp) in class.components.iter_mut() {
-            let def_id = self.alloc_def_id(format!("{}.{}", qualified_name, name));
+            let def_id = self.alloc_def_id(Some(qualified_name), name);
             comp.def_id = Some(def_id);
             self.scope_tree
                 .add_member(class_scope, ComponentPath::from_flat_path(name), def_id);
@@ -74,7 +76,7 @@ impl Resolver {
 
         // Register nested class names
         for (name, nested) in class.classes.iter_mut() {
-            let def_id = self.alloc_def_id(format!("{}.{}", qualified_name, name));
+            let def_id = self.alloc_def_id(Some(qualified_name), name);
             nested.def_id = Some(def_id);
             self.class_types.insert(def_id, nested.class_type.clone());
             self.scope_tree

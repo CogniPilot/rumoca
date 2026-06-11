@@ -4,7 +4,6 @@
 //! component start/modification expressions.
 
 use crate::Resolver;
-use crate::path_utils;
 use crate::traversal_adapter::{
     ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
     walk_subscripts,
@@ -24,7 +23,7 @@ impl ResolveTraversalCallbacks for Resolver {
     }
 
     fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) {
-        let def_id = self.alloc_def_id(index_name.to_string());
+        let def_id = self.alloc_def_id(None, index_name);
         self.scope_tree.add_member(
             loop_scope,
             ComponentPath::from_flat_path(index_name),
@@ -130,11 +129,9 @@ impl Resolver {
                 comp.type_name.def_id = Some(type_def_id);
                 comp.type_def_id = Some(type_def_id);
                 self.stats.types_fully_resolved += 1;
-            } else if let Some(type_def_id) = self.resolve_type_name_with_inheritance(
-                &comp.type_name,
-                class_scope,
-                qualified_name,
-            ) {
+            } else if let Some(type_def_id) =
+                self.resolve_type_name_with_inheritance(&comp.type_name, class_scope)
+            {
                 // Full resolution via inherited members succeeded.
                 comp.type_name.def_id = Some(type_def_id);
                 comp.type_def_id = Some(type_def_id);
@@ -179,7 +176,7 @@ impl Resolver {
 
         // If not in direct scope, check inherited members from base classes.
         // We need to search the entire enclosing class hierarchy.
-        if let Some(def_id) = self.find_inherited_type(qualified_name, first_part)
+        if let Some(def_id) = self.find_inherited_type(class_scope, first_part)
             && self.partial_type_root_ids.contains(&def_id)
         {
             comp.type_name.def_id = Some(def_id);
@@ -194,19 +191,19 @@ impl Resolver {
             .push((comp.type_name.to_string(), qualified_name.to_string()));
     }
 
-    /// Find an inherited type by searching the enclosing class hierarchy.
-    fn find_inherited_type(
-        &self,
-        qualified_name: &str,
-        type_name: &str,
-    ) -> Option<rumoca_core::DefId> {
-        // Try the current class first
-        if let Some(def_id) = self.lookup_inherited_member(qualified_name, type_name) {
-            return Some(def_id);
-        }
+    /// Qualified names of the classes enclosing `scope`, innermost first,
+    /// walked through the scope tree (never re-parsed from rendered names).
+    pub(crate) fn enclosing_class_names_from(&self, scope: ScopeId) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(scope), |current| self.scope_tree.parent(*current))
+            .filter_map(|current| self.scope_to_class_def.get(&current))
+            .filter_map(|class_def_id| self.def_names.get(class_def_id))
+            .map(String::as_str)
+    }
 
-        // Walk up the enclosing class hierarchy
-        path_utils::enclosing_class_scopes(qualified_name)
+    /// Find an inherited type by searching the class at `scope` and every
+    /// enclosing class.
+    fn find_inherited_type(&self, scope: ScopeId, type_name: &str) -> Option<rumoca_core::DefId> {
+        self.enclosing_class_names_from(scope)
             .find_map(|container| self.lookup_inherited_member(container, type_name))
     }
 
@@ -301,19 +298,6 @@ impl Resolver {
         }
     }
 
-    fn enclosing_class_qualified_name(&self, scope: ScopeId) -> Option<&str> {
-        let mut current = Some(scope);
-        while let Some(scope_id) = current {
-            if let Some(class_def_id) = self.scope_to_class_def.get(&scope_id)
-                && let Some(name) = self.def_names.get(class_def_id)
-            {
-                return Some(name.as_str());
-            }
-            current = self.scope_tree.parent(scope_id);
-        }
-        None
-    }
-
     fn resolve_function_first_part(&self, first_part: &str, scope: ScopeId) -> Option<DefId> {
         if let Some(def_id) = self
             .scope_tree
@@ -322,9 +306,7 @@ impl Resolver {
             return Some(def_id);
         }
 
-        let start = self.enclosing_class_qualified_name(scope)?;
-        std::iter::once(start)
-            .chain(path_utils::enclosing_class_scopes(start))
+        self.enclosing_class_names_from(scope)
             .find_map(|container| self.lookup_inherited_member(container, first_part))
     }
 
@@ -360,7 +342,6 @@ impl Resolver {
         &self,
         name: &rumoca_ir_ast::Name,
         scope: ScopeId,
-        qualified_name: &str,
     ) -> Option<rumoca_core::DefId> {
         let first_part = name.name.first()?.text.as_ref();
         let mut current_def_id = self
@@ -369,7 +350,7 @@ impl Resolver {
             .or_else(|| self.resolve_function_first_part(first_part, scope))
             // MLS §7.3: inherited class/type elements are visible as members of
             // the extending class, including simple type names in nested records.
-            .or_else(|| self.find_inherited_type(qualified_name, first_part))?;
+            .or_else(|| self.find_inherited_type(scope, first_part))?;
         let mut current_qualified = self.def_names.get(&current_def_id)?.clone();
 
         for part in name.name.iter().skip(1) {

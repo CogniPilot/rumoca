@@ -1,4 +1,3 @@
-use crate::path_utils;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -121,7 +120,8 @@ fn collect_lexical_ancestor_imports(
     class_name: &str,
     pairs: &mut Vec<(String, String)>,
 ) {
-    let mut ancestors: Vec<String> = path_utils::enclosing_class_scopes(class_name)
+    let mut ancestors: Vec<String> = tree
+        .enclosing_class_names_of(class_name)
         .map(str::to_string)
         .collect();
     ancestors.reverse();

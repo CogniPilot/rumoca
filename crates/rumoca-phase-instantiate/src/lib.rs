@@ -1222,10 +1222,16 @@ fn resolve_type_name_in_source_scope(
     type_name: &str,
     source_scope: &ast::QualifiedName,
 ) -> Option<String> {
-    let scope = source_scope.to_flat_string();
-    std::iter::once(scope.as_str())
-        .chain(path_utils::enclosing_class_scopes(&scope))
-        .map(|prefix| {
+    // Walk the structured scope's prefixes from innermost outwards; the
+    // candidate names are composed, never re-parsed.
+    (0..=source_scope.parts.len())
+        .rev()
+        .map(|end| {
+            let prefix = source_scope.parts[..end]
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
             if prefix.is_empty() {
                 type_name.to_string()
             } else {

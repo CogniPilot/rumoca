@@ -533,7 +533,7 @@ fn resolve_type_in_context(tree: &ast::ClassTree, type_name: &str, context_type:
 
     // Try to resolve by prepending context package prefixes
     // For context "A.B.C.TypeX", try: "A.B.C.{type_name}", "A.B.{type_name}", "A.{type_name}"
-    for package in path_utils::enclosing_class_scopes(context_type) {
+    for package in tree.enclosing_class_names_of(context_type) {
         let qualified = format!("{package}.{type_name}");
         if tree.name_map.contains_key(&qualified) {
             return qualified;

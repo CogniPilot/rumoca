@@ -1035,8 +1035,9 @@ impl TypeChecker {
         if let Some(cls) = tree.get_class_by_qualified_name(name) {
             return (Some(cls), Some(name.to_string()));
         }
-        // Try prepending scope prefixes from context
-        for scope in path_utils::enclosing_class_scopes(context) {
+        // Try prepending the context class and its enclosing classes,
+        // walked through the scope tree.
+        for scope in std::iter::once(context).chain(tree.enclosing_class_names_of(context)) {
             let qualified = format!("{scope}.{name}");
             if let Some(cls) = tree.get_class_by_qualified_name(&qualified) {
                 return (Some(cls), Some(qualified));
