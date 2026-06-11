@@ -224,6 +224,58 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
             &structurally_lowered.metadata_dae,
         )?;
     timings.solve_ir_seconds = stage_timer_elapsed_seconds(solve_ir_start);
+    if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
+        let layout = &solve_model.problem.layout;
+        let mut names_by_y: std::collections::HashMap<usize, &str> =
+            std::collections::HashMap::new();
+        for (name, slot) in layout.bindings() {
+            if let solve::ScalarSlot::Y { index, .. } = slot {
+                names_by_y.insert(*index, name.as_str());
+            }
+        }
+        for (row, target) in solve_model
+            .problem
+            .continuous
+            .implicit_row_targets
+            .iter()
+            .enumerate()
+        {
+            let label = match target {
+                Some(solve::ScalarSlot::Y { index, .. }) => format!(
+                    "Y[{index}] {}",
+                    names_by_y.get(&{ *index }).copied().unwrap_or("?")
+                ),
+                Some(other) => format!("{other:?}"),
+                None => "RESIDUAL-ONLY".to_string(),
+            };
+            tracing::debug!(
+                target: "rumoca_phase_structural",
+                "[sim-trace] solve row {row} -> {label}"
+            );
+        }
+        for (block_idx, block) in solve_model
+            .problem
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .iter()
+            .enumerate()
+        {
+            tracing::debug!(
+                target: "rumoca_phase_structural",
+                "[sim-trace] projection block {block_idx}: rows={:?} y_indices={:?} ({}) causal_steps={}",
+                block.rows,
+                block.y_indices,
+                block
+                    .y_indices
+                    .iter()
+                    .map(|idx| names_by_y.get(idx).copied().unwrap_or("?"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                block.causal_steps.len()
+            );
+        }
+    }
     Ok((solve_model, timings))
 }
 
@@ -294,6 +346,24 @@ pub(crate) fn prepare_dae_for_structural_analysis(
     rumoca_phase_structural::dae_prepare::substitute_standalone_state_derivatives_in_non_ode_rows(
         lowered,
     );
+    if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
+        for (index, eq) in lowered.continuous.equations.iter().enumerate() {
+            let summary = format!(
+                "{}{}",
+                eq.lhs
+                    .as_ref()
+                    .map(|lhs| format!("{} = ", lhs.as_str()))
+                    .unwrap_or_default(),
+                debug_render_expr(&eq.rhs)
+            );
+            tracing::debug!(
+                target: "rumoca_phase_structural",
+                "[sim-trace] prepared f_x[{index}] origin='{}' {}",
+                eq.origin,
+                summary
+            );
+        }
+    }
     Ok(())
 }
 
@@ -545,6 +615,28 @@ pub(crate) fn structurally_lower_dae_for_simulation(
         &mut lowered,
         &elimination.substitutions,
     );
+    if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
+        for sub in &elimination.substitutions {
+            tracing::debug!(
+                target: "rumoca_phase_structural",
+                "[sim-trace] substitution {} := {}",
+                sub.var_name.as_str(),
+                debug_render_expr(&sub.expr)
+            );
+        }
+        for (index, eq) in lowered.continuous.equations.iter().enumerate() {
+            tracing::debug!(
+                target: "rumoca_phase_structural",
+                "[sim-trace] post-elim f_x[{index}] origin='{}' {}{}",
+                eq.origin,
+                eq.lhs
+                    .as_ref()
+                    .map(|lhs| format!("{} = ", lhs.as_str()))
+                    .unwrap_or_default(),
+                debug_render_expr(&eq.rhs)
+            );
+        }
+    }
     let mut state_selection_dae = metadata_dae.clone();
     rumoca_phase_structural::eliminate::apply_elimination_substitutions_to_dae(
         &mut state_selection_dae,
@@ -678,6 +770,54 @@ fn mark_constrained_dummy_states_in_metadata(
         if let Some(var) = metadata_dae.variables.states.shift_remove(&name) {
             metadata_dae.variables.algebraics.insert(name, var);
         }
+    }
+}
+
+/// Compact Modelica-ish rendering for `--trace` diagnostics only.
+pub(crate) fn debug_render_expr(expr: &rumoca_core::Expression) -> String {
+    use rumoca_core::Expression as E;
+    match expr {
+        E::Literal { value, .. } => format!("{value:?}"),
+        E::VarRef {
+            name, subscripts, ..
+        } => {
+            if subscripts.is_empty() {
+                name.as_str().to_string()
+            } else {
+                format!("{}[{} subs]", name.as_str(), subscripts.len())
+            }
+        }
+        E::Binary { op, lhs, rhs, .. } => format!(
+            "({} {op:?} {})",
+            debug_render_expr(lhs),
+            debug_render_expr(rhs)
+        ),
+        E::Unary { op, rhs, .. } => format!("({op:?} {})", debug_render_expr(rhs)),
+        E::BuiltinCall { function, args, .. } => format!(
+            "{function:?}({})",
+            args.iter()
+                .map(debug_render_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        E::FunctionCall { name, args, .. } => format!(
+            "{}({})",
+            name.as_str(),
+            args.iter()
+                .map(debug_render_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        E::If {
+            branches,
+            else_branch,
+            ..
+        } => format!(
+            "if({} branches, else {})",
+            branches.len(),
+            debug_render_expr(else_branch)
+        ),
+        other => format!("<{}>", std::any::type_name_of_val(other)),
     }
 }
 

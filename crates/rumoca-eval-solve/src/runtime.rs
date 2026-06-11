@@ -399,6 +399,7 @@ impl SolveRuntime {
         const MAX_NEWTON_REFRESH_ROWS: usize = 256;
         const MAX_NEWTON_ITERS: usize = 25;
         let m = rows.len();
+        tracing::debug!(target: "rumoca_eval_solve::refresh", "newton fallback: rows={m}");
         if m == 0 || m > MAX_NEWTON_REFRESH_ROWS {
             return Err(self.refresh_convergence_error(
                 0,
@@ -410,68 +411,94 @@ impl SolveRuntime {
         }
 
         let mut x = snapshot.to_vec();
-        let sweep = |x: &[f64], solver_y: &mut [f64]| -> Option<Vec<f64>> {
-            for (row, value) in rows.iter().zip(x) {
-                solver_y[row.target_index] = *value;
-            }
-            let mut values = Vec::with_capacity(m);
-            for row in rows {
-                let value = self
-                    .eval_refresh_row_value(row.row_idx, row.target_index, t, solver_y, params)
-                    .ok()?;
-                if !value.is_finite() {
-                    return None;
-                }
-                values.push(value);
-            }
-            Some(values)
-        };
-
         for _ in 0..MAX_NEWTON_ITERS {
-            let Some(f_base) = sweep(&x, solver_y) else {
+            let Some(f_base) = self.refresh_newton_sweep(rows, &x, t, solver_y, params) else {
                 return Err(self.refresh_newton_failure());
             };
             let residual: Vec<f64> = x.iter().zip(&f_base).map(|(xi, fi)| xi - fi).collect();
             let max_residual = residual.iter().fold(0.0_f64, |acc, r| acc.max(r.abs()));
+            tracing::debug!(target: "rumoca_eval_solve::refresh", "newton residual={max_residual:e}");
             if max_residual <= tol {
-                for (row, value) in rows.iter().zip(&x) {
-                    solver_y[row.target_index] = *value;
-                }
+                write_refresh_targets(rows, &x, solver_y);
                 return Ok(());
             }
-
-            // J = I - dF/dx by forward differences, augmented with -residual.
-            let mut augmented = vec![vec![0.0_f64; m + 1]; m];
-            for j in 0..m {
-                let eps = 1.0e-8_f64.max(1.0e-8 * x[j].abs());
-                let mut probe = x.clone();
-                probe[j] += eps;
-                let Some(f_probe) = sweep(&probe, solver_y) else {
-                    return Err(self.refresh_newton_failure());
-                };
-                for i in 0..m {
-                    let df = (f_probe[i] - f_base[i]) / eps;
-                    augmented[i][j] = if i == j { 1.0 - df } else { -df };
-                }
-            }
-            for (i, row) in augmented.iter_mut().enumerate() {
-                row[m] = -residual[i];
-            }
+            let probe = NewtonProbe {
+                rows,
+                x: &x,
+                f_base: &f_base,
+                residual: &residual,
+                t,
+                params,
+            };
+            let Some(mut augmented) = self.refresh_newton_augmented(probe, solver_y) else {
+                return Err(self.refresh_newton_failure());
+            };
             if crate::linear_solve::gaussian_eliminate(&mut augmented).is_none() {
                 return Err(self.refresh_newton_failure());
             }
-            for (j, value) in x.iter_mut().enumerate() {
-                let step = augmented[j][m];
-                if !step.is_finite() {
-                    return Err(self.refresh_newton_failure());
-                }
-                *value += step;
+            if !apply_newton_steps(&mut x, &augmented) {
+                return Err(self.refresh_newton_failure());
             }
         }
         Err(self.refresh_newton_failure())
     }
 
+    /// Evaluate the refresh map `F` at `x` (writing `x` into the target slots
+    /// first); `None` on evaluation failure or non-finite values.
+    fn refresh_newton_sweep(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        x: &[f64],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Option<Vec<f64>> {
+        write_refresh_targets(rows, x, solver_y);
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let value = self.eval_refresh_row_value(row, t, solver_y, params).ok()?;
+            if !value.is_finite() {
+                return None;
+            }
+            values.push(value);
+        }
+        Some(values)
+    }
+
+    /// `J = I - dF/dx` by forward differences, augmented with `-residual`.
+    fn refresh_newton_augmented(
+        &self,
+        probe: NewtonProbe<'_>,
+        solver_y: &mut [f64],
+    ) -> Option<Vec<Vec<f64>>> {
+        let NewtonProbe {
+            rows,
+            x,
+            f_base,
+            residual,
+            t,
+            params,
+        } = probe;
+        let m = rows.len();
+        let mut augmented = vec![vec![0.0_f64; m + 1]; m];
+        for j in 0..m {
+            let eps = 1.0e-8_f64.max(1.0e-8 * x[j].abs());
+            let mut probe_x = x.to_vec();
+            probe_x[j] += eps;
+            let f_probe = self.refresh_newton_sweep(rows, &probe_x, t, solver_y, params)?;
+            for i in 0..m {
+                let df = (f_probe[i] - f_base[i]) / eps;
+                augmented[i][j] = f64::from(i == j) - df;
+            }
+        }
+        for (i, row) in augmented.iter_mut().enumerate() {
+            row[m] = -residual[i];
+        }
+        Some(augmented)
+    }
+
     fn refresh_newton_failure(&self) -> RuntimeSolveError {
+        tracing::debug!(target: "rumoca_eval_solve::refresh", "newton fallback FAILED");
         self.refresh_convergence_error(
             0,
             &RefreshIterationMax {
@@ -493,7 +520,7 @@ impl SolveRuntime {
         for refresh_row in rows {
             let row_idx = refresh_row.row_idx;
             let index = refresh_row.target_index;
-            let value = self.eval_refresh_row(row_idx, index, t, solver_y, params)?;
+            let value = self.eval_refresh_row(refresh_row, t, solver_y, params)?;
             let delta = (solver_y[index] - value).abs();
             if delta > max_delta {
                 max_delta = delta;
@@ -509,13 +536,13 @@ impl SolveRuntime {
 
     fn eval_refresh_row(
         &self,
-        row_idx: usize,
-        index: usize,
+        row: &AlgebraicRefreshRow,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
-        let value = self.eval_refresh_row_value(row_idx, index, t, solver_y, params)?;
+        let index = row.target_index;
+        let value = self.eval_refresh_row_value(row, t, solver_y, params)?;
         // Catch non-finite results here (where the variable is known) and raise
         // a spanned diagnostic; otherwise a NaN slips through the iteration (the
         // `delta > max_delta` check is false for NaN) and only surfaces later as
@@ -524,6 +551,17 @@ impl SolveRuntime {
             return Err(self.non_finite_value_error(index, value));
         }
         Ok(value)
+    }
+
+    /// Solver slot name for diagnostics.
+    fn solver_name(&self, index: usize) -> &str {
+        self.model
+            .problem
+            .solve_layout
+            .solver_maps
+            .names
+            .get(index)
+            .map_or("<unnamed>", String::as_str)
     }
 
     /// Build a spanned non-finite-value error, resolving the solver slot's name
@@ -550,59 +588,92 @@ impl SolveRuntime {
 
     fn eval_refresh_row_value(
         &self,
-        row_idx: usize,
-        index: usize,
+        row: &AlgebraicRefreshRow,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
-        if let Some(value) = self
-            .implicit_scalar_rhs
-            .eval_target_assignment_row_unchecked_with_context(
-                row_idx,
-                index,
-                solver_y,
-                params,
-                t,
-                self.row_eval_context(),
-            )?
+        let index = row.target_index;
+        // The assignment fast path is only valid when this plan entry updates
+        // the row's own implicit target; for a cross-paired row (a coupled
+        // block solved a residual row for one of its other unknowns) the
+        // assignment value belongs to a different variable.
+        if row.assignment_target == Some(index)
+            && let Some(value) = self
+                .implicit_scalar_rhs
+                .eval_target_assignment_row_unchecked_with_context(
+                    row.row_idx,
+                    index,
+                    solver_y,
+                    params,
+                    t,
+                    self.row_eval_context(),
+                )?
         {
             return Ok(value);
         }
-        let residual = self.implicit_scalar_rhs.eval_row_unchecked_with_context(
-            row_idx,
+        let residual = self.refresh_row_residual(row, t, solver_y, params)?;
+        self.solve_refresh_residual_row(row, residual, t, solver_y, params)
+    }
+
+    /// Residual of a refresh row at the current point. Rows lowered with an
+    /// assignment shape evaluate the residual directly; shapeless rows with an
+    /// implicit target evaluate the target value, so the residual is
+    /// `value - current_target`.
+    fn refresh_row_residual(
+        &self,
+        row: &AlgebraicRefreshRow,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+    ) -> Result<f64, RuntimeSolveError> {
+        let raw = self.implicit_scalar_rhs.eval_row_unchecked_with_context(
+            row.row_idx,
             solver_y,
             params,
             t,
             self.row_eval_context(),
         )?;
-        self.solve_refresh_residual_row(row_idx, index, residual, t, solver_y, params)
+        match row.assignment_target {
+            Some(own)
+                if !self
+                    .implicit_scalar_rhs
+                    .row_has_assignment_shape(row.row_idx) =>
+            {
+                Ok(raw - solver_y[own])
+            }
+            _ => Ok(raw),
+        }
     }
 
     fn solve_refresh_residual_row(
         &self,
-        row_idx: usize,
-        index: usize,
+        row: &AlgebraicRefreshRow,
         residual: f64,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
+        let index = row.target_index;
         let current = solver_y[index];
         let mut probe_y = solver_y.to_vec();
         probe_y[index] = current + 1.0;
-        let probe_residual = self.implicit_scalar_rhs.eval_row_unchecked_with_context(
-            row_idx,
-            &probe_y,
-            params,
-            t,
-            self.row_eval_context(),
-        )?;
+        let probe_residual = self.refresh_row_residual(row, t, &probe_y, params)?;
         let slope = probe_residual - residual;
         if slope.is_finite() && slope.abs() > 1.0e-12 {
             return Ok(current - residual / slope);
         }
-        Ok(current + residual)
+        // A residual that does not respond to the paired variable means the
+        // refresh plan paired this row with a variable it cannot determine.
+        // Nudging the value by the residual (the old fallback) converges to a
+        // wrong but stable solution; fail loudly instead.
+        Err(RuntimeSolveError::UnsupportedModel {
+            reason: format!(
+                "algebraic refresh row {} cannot be solved for '{}': the residual does not depend on it",
+                row.row_idx,
+                self.solver_name(index)
+            ),
+        })
     }
 
     fn trace_refresh_iteration(&self, iter_idx: usize, max: &RefreshIterationMax) {
@@ -660,9 +731,8 @@ impl SolveRuntime {
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
         for refresh_row in plan {
-            let row_idx = refresh_row.row_idx;
             let index = refresh_row.target_index;
-            let value = self.eval_refresh_row(row_idx, index, t, solver_y, params)?;
+            let value = self.eval_refresh_row(refresh_row, t, solver_y, params)?;
             solver_y[index] = value;
         }
         Ok(())
@@ -1800,3 +1870,33 @@ pub fn apply_discrete_slot_value(
 
 #[cfg(test)]
 mod tests;
+
+/// Write the Newton iterate back into the plan rows' target slots.
+fn write_refresh_targets(rows: &[AlgebraicRefreshRow], x: &[f64], solver_y: &mut [f64]) {
+    for (row, value) in rows.iter().zip(x) {
+        solver_y[row.target_index] = *value;
+    }
+}
+
+/// Borrowed inputs for one Newton Jacobian assembly.
+struct NewtonProbe<'a> {
+    rows: &'a [AlgebraicRefreshRow],
+    x: &'a [f64],
+    f_base: &'a [f64],
+    residual: &'a [f64],
+    t: f64,
+    params: &'a [f64],
+}
+
+/// Apply the eliminated Newton steps; false when any step is non-finite.
+fn apply_newton_steps(x: &mut [f64], augmented: &[Vec<f64>]) -> bool {
+    let m = x.len();
+    for (j, value) in x.iter_mut().enumerate() {
+        let step = augmented[j][m];
+        if !step.is_finite() {
+            return false;
+        }
+        *value += step;
+    }
+    true
+}

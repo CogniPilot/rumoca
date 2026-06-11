@@ -1478,15 +1478,7 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
                 truncate_debug(&format!("{:?}", plan.der_expr), 400)
             );
             total_demoted += apply_direct_demotion_plan(dae, &plan);
-            // The reduction baked these parameters' compile-time values into
-            // the substituted derivative expressions; pin them as structural
-            // so runtime tuning cannot silently disagree with the reduction.
-            for param in &definition.structural_params {
-                if let Some(var) = dae.variables.parameters.get_mut(&VarName::new(param.as_str()))
-                {
-                    var.is_tunable = false;
-                }
-            }
+            pin_structural_params(dae, &definition.structural_params);
             demoted_this_round = true;
             break;
         }
@@ -1900,3 +1892,18 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> usize {
 
 #[cfg(test)]
 mod dae_prepare_demotion_tests;
+
+/// Pin parameters whose compile-time values the constrained-dummy reduction
+/// baked into substituted derivative expressions: runtime tuning of them
+/// would silently disagree with the reduction.
+fn pin_structural_params(dae: &mut rumoca_ir_dae::Dae, params: &[String]) {
+    for param in params {
+        if let Some(var) = dae
+            .variables
+            .parameters
+            .get_mut(&VarName::new(param.as_str()))
+        {
+            var.is_tunable = false;
+        }
+    }
+}

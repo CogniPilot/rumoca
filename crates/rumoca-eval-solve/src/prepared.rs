@@ -236,6 +236,23 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    /// True when the row's program loads the given solver-Y slot.
+    pub fn row_reads_y(&self, row_idx: usize, y_index: usize) -> bool {
+        self.block
+            .programs
+            .get(row_idx)
+            .is_some_and(|row| row_loads_y_index(row, y_index))
+    }
+
+    /// True when the row was lowered with an explicit assignment shape
+    /// (`target = expr`); its full program then evaluates the residual, while
+    /// shapeless rows with an implicit target evaluate the target value.
+    pub fn row_has_assignment_shape(&self, row_idx: usize) -> bool {
+        self.row_assignment_shapes
+            .get(row_idx)
+            .is_some_and(|shape| shape.is_some())
+    }
+
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;
