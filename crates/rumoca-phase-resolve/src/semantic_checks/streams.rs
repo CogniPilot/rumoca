@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use std::ops::ControlFlow::Continue;
 
 pub(super) const ER064_STREAM_PREFIX_SCOPE: &str = "ER064";
+pub(super) const ER074_FLOW_PREFIX_SCOPE: &str = "ER074";
+pub(super) const ER075_STREAM_SUBTYPE: &str = "ER075";
+pub(super) const ER076_FLOW_SUBTYPE: &str = "ER076";
 pub(super) const ER065_STREAM_CONNECTOR_FLOW_COUNT: &str = "ER065";
 pub(super) const ER066_STREAM_FLOW_TYPE: &str = "ER066";
 pub(super) const ER067_INSTREAM_STREAM_ONLY: &str = "ER067";
@@ -30,9 +33,69 @@ pub(super) fn check_stream_restrictions(
                             "stream prefix is only allowed in connector declarations",
                         ),
                     ));
+                } else if matches!(
+                    resolve_component_type_root(comp, def),
+                    Some(ResolvedTypeRoot::Builtin("Boolean"))
+                        | Some(ResolvedTypeRoot::Builtin("Integer"))
+                        | Some(ResolvedTypeRoot::Builtin("String"))
+                ) {
+                    // MLS §15.1 / DECL-011: stream variables shall be a
+                    // subtype of Real.
+                    diags.push(semantic_error(
+                        ER075_STREAM_SUBTYPE,
+                        format!(
+                            "stream variable '{}' must be a subtype of Real (MLS §15.1)",
+                            name
+                        ),
+                        label_from_token(
+                            token,
+                            "check_stream_restrictions/stream_subtype",
+                            "stream variables must resolve to Real",
+                        ),
+                    ));
                 }
             }
-            Connection::Flow(_) => {}
+            Connection::Flow(token) => {
+                if class.class_type != ClassType::Connector && class.class_type != ClassType::Record
+                {
+                    // MLS §9.3 / DECL-010: the flow prefix only applies to
+                    // connector (and operator-record) member declarations.
+                    diags.push(semantic_error(
+                        ER074_FLOW_PREFIX_SCOPE,
+                        format!(
+                            "component '{}' cannot have 'flow' prefix outside a connector declaration (MLS §9.3)",
+                            name
+                        ),
+                        label_from_token(
+                            token,
+                            "check_stream_restrictions/flow_prefix_scope",
+                            "flow prefix is only allowed in connector declarations",
+                        ),
+                    ));
+                } else if class.class_type == ClassType::Connector
+                    && matches!(
+                        resolve_component_type_root(comp, def),
+                        Some(ResolvedTypeRoot::Builtin("Boolean"))
+                            | Some(ResolvedTypeRoot::Builtin("String"))
+                    )
+                {
+                    // MLS §9.3 / DECL-016: flow variables shall be a subtype
+                    // of Real or Integer; operator records carry their own
+                    // additive-group rules and are left to their own checks.
+                    diags.push(semantic_error(
+                        ER076_FLOW_SUBTYPE,
+                        format!(
+                            "flow variable '{}' must be a subtype of Real or Integer (MLS §9.3)",
+                            name
+                        ),
+                        label_from_token(
+                            token,
+                            "check_stream_restrictions/flow_subtype",
+                            "flow variables must resolve to Real or Integer",
+                        ),
+                    ));
+                }
+            }
             Connection::Empty => {}
         }
     }

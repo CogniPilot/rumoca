@@ -338,3 +338,229 @@ fn strm_011_nested_connector_missing_same_level_flow_rejected() {
         "ER065",
     );
 }
+
+// =============================================================================
+// STRM-008: Implementation must be continuous and differentiable given
+// continuous inputs
+// STRM-009: Division by zero can no longer occur; result is always well-defined
+// =============================================================================
+
+#[test]
+fn strm_009_instream_finite_through_zero_flow() {
+    // m_flow crosses zero at t = 1; inStream must stay finite and bounded by
+    // the two mixing enthalpies throughout (regularized stream semantics).
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h;
+            end C;
+            model Vol
+                C port;
+                parameter Real h_out = 2;
+                Real h_in;
+            equation
+                port.h = h_out;
+                h_in = inStream(port.h);
+            end Vol;
+            Vol v1(h_out = 2);
+            Vol v2(h_out = 4);
+            Real q;
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+            connect(v1.port, v2.port);
+            v1.port.p = 1;
+            v1.port.m_flow = time - 1;
+            q = v1.h_in;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    let q = trace.channel("q");
+    assert!(
+        q.iter().all(|v| v.is_finite()),
+        "inStream must be well-defined at zero flow: {q:?}"
+    );
+    assert!(
+        q.iter().all(|&v| (2.0..=4.0).contains(&v)),
+        "inStream must stay between the mixing enthalpies: {q:?}"
+    );
+}
+
+#[test]
+fn strm_008_instream_continuous_across_flow_reversal() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h;
+            end C;
+            model Vol
+                C port;
+                parameter Real h_out = 2;
+                Real h_in;
+            equation
+                port.h = h_out;
+                h_in = inStream(port.h);
+            end Vol;
+            Vol v1(h_out = 2);
+            Vol v2(h_out = 4);
+            Real q;
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+            connect(v1.port, v2.port);
+            v1.port.p = 1;
+            v1.port.m_flow = time - 1;
+            q = v1.h_in;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    let q = trace.channel("q");
+    let max_jump = q
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_jump < 1.0,
+        "inStream must vary continuously across flow reversal, max jump {max_jump}"
+    );
+}
+
+// =============================================================================
+// STRM-005: For inside connectors, variables with stream prefix do not lead
+// to connection equations
+// =============================================================================
+
+#[test]
+fn strm_005_inside_connector_instream_is_peer_value() {
+    // With exactly two inside connectors in the set, inStream(v1.port.h) is
+    // the peer's outflow enthalpy with no extra connection equations.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h;
+            end C;
+            model Vol
+                C port;
+                parameter Real h_out = 2;
+                Real h_in;
+            equation
+                port.h = h_out;
+                h_in = inStream(port.h);
+            end Vol;
+            Vol v1(h_out = 2);
+            Vol v2(h_out = 4);
+            Real q;
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+            connect(v1.port, v2.port);
+            v1.port.p = 1;
+            v1.port.m_flow = time - 1;
+            q = v1.h_in;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    let q = trace.channel("q");
+    assert!(
+        q.iter().all(|&v| v == 4.0),
+        "inStream at an inside connector must be the peer's stream value: {q:?}"
+    );
+}
+
+// =============================================================================
+// STRM-004: For every outside connector, one equation is generated for every
+// variable with stream prefix
+// =============================================================================
+
+#[test]
+fn strm_004_outside_singleton_instream_is_own_value() {
+    // A standalone top-level connector forms a singleton stream set; the
+    // outside-connector rule makes inStream(port.h) = port.h, and the
+    // unconnected-flow equation is generated for m_flow.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h;
+            end C;
+            C port;
+            Real q;
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+            port.p = 1;
+            port.h = 5;
+            q = inStream(port.h);
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    let q = trace.channel("q");
+    assert!(
+        q.iter().all(|&v| v == 5.0),
+        "outside singleton inStream must equal its own stream value: {q:?}"
+    );
+}
+
+// =============================================================================
+// STRM-007: If argument of inStream is array, implicit equation system holds
+// elementwise
+// =============================================================================
+
+#[test]
+fn strm_007_array_instream_elementwise_peer_values() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h[2];
+            end C;
+            model Vol
+                C port;
+                parameter Real h1 = 2;
+                parameter Real h2 = 3;
+                Real h_in[2];
+            equation
+                port.h = {h1, h2};
+                h_in = inStream(port.h);
+            end Vol;
+            Vol v1(h1 = 2, h2 = 3);
+            Vol v2(h1 = 4, h2 = 5);
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+            connect(v1.port, v2.port);
+            v1.port.p = 1;
+            v1.port.m_flow = time - 1;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    assert_eq!(
+        trace.final_value("v1.h_in[1]"),
+        4.0,
+        "array inStream must take the peer's elementwise values"
+    );
+    assert_eq!(trace.final_value("v1.h_in[2]"), 5.0);
+}

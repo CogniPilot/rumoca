@@ -17,7 +17,7 @@ pub(super) struct ArrayExpansionScope<'a> {
     pub(super) tree: &'a ast::ClassTree,
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
     pub(super) type_overrides: &'a TypeOverrideMap,
-    pub(super) imports: &'a [(String, String)],
+    pub(super) imports: super::ComponentImports<'a>,
 }
 
 pub(super) fn expand_array_component(
@@ -1256,7 +1256,10 @@ mod tests {
             tree: &tree,
             effective_components: &effective_components,
             type_overrides: &type_overrides,
-            imports: &imports,
+            imports: crate::ComponentImports {
+                qualification: &imports,
+                attributes: &[],
+            },
         };
         let source = make_comp_ref_expr(&["outer", "x"]);
         let parent_mod = ast::ModificationValue::with_source_scope(
@@ -1299,7 +1302,10 @@ mod tests {
             tree: &tree,
             effective_components: &effective_components,
             type_overrides: &type_overrides,
-            imports: &imports,
+            imports: crate::ComponentImports {
+                qualification: &imports,
+                attributes: &[],
+            },
         };
         let binding = make_comp_ref_expr(&["plug", "pin"]);
 

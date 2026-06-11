@@ -60,6 +60,37 @@ pub enum FlattenError {
     #[error("internal flatten error: {0}")]
     #[diagnostic(code(rumoca::flatten::EF005))]
     Internal(String),
+
+    /// A function call binds its argument slots incorrectly (MLS §12.4.1).
+    #[error("invalid call of function `{function}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF016),
+        help(
+            "MLS §12.4.1: each input slot is filled by exactly one positional or named argument; slots without defaults must be filled"
+        )
+    )]
+    InvalidFunctionCallArgs {
+        function: String,
+        reason: String,
+        #[label("function call here")]
+        span: SourceSpan,
+    },
+
+    /// A record constructor was requested for a record with conditional
+    /// components (MLS §12.6.1 / FUNC-029).
+    #[error(
+        "record `{record}` has conditional component `{component}` and cannot have a constructor"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF018),
+        help("MLS §12.6.1: records with conditional components have no record constructor")
+    )]
+    ConditionalComponentConstructor {
+        record: String,
+        component: String,
+        #[label("record constructed here")]
+        span: SourceSpan,
+    },
     // Note: EF006 was EventTriggerOutsideWhen, removed per MLS Appendix B which
     // allows edge()/change() in discrete equations. Code reserved for future use.
     // Note: EF007 (UnevaluableDimensions) removed - typecheck phase (ET004) now handles this
@@ -215,6 +246,19 @@ impl FlattenError {
         Self::MissingSourceScope {
             name: name.into(),
             context: context.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create an InvalidFunctionCallArgs error.
+    pub fn invalid_function_call_args(
+        function: impl Into<String>,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::InvalidFunctionCallArgs {
+            function: function.into(),
+            reason: reason.into(),
             span: rumoca_core::span_to_source_span(span),
         }
     }

@@ -265,13 +265,23 @@ impl TypeChecker {
         };
 
         let prev_scope_types = std::mem::take(&mut self.current_component_types);
+        let prev_scope_shapes = std::mem::take(&mut self.current_component_shapes);
+        let (full_prefix, short_model) = Self::instanced_scope_prefixes(model_name);
         self.current_component_types =
-            Self::build_instanced_component_type_scope(overlay, model_name);
+            Self::build_instanced_component_type_scope(overlay, &full_prefix, &short_model);
+        self.current_component_shapes =
+            Self::build_instanced_component_shape_scope(overlay, &full_prefix, &short_model);
 
         self.check_component_modifier_types_in_class(model_class, type_table);
         walk_equations(self, &model_class.equations, type_table);
         walk_equations(self, &model_class.initial_equations, type_table);
+        // Note: component *bindings* are not walked here. Binding
+        // expressions are written in the declaring component's scope, so
+        // validating them against this model-scope name map produces false
+        // positives (nested `P[k]` vs a top-level scalar `P`). Binding
+        // checks need per-instance scope maps first.
 
         self.current_component_types = prev_scope_types;
+        self.current_component_shapes = prev_scope_shapes;
     }
 }

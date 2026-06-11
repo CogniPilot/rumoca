@@ -19,6 +19,8 @@ mod expr;
 mod functions;
 mod lookup;
 mod operators;
+mod restrictions;
+mod state_machines;
 mod streams;
 mod type_roots;
 use annotations::*;
@@ -28,6 +30,8 @@ use expr::*;
 use functions::*;
 use lookup::*;
 use operators::*;
+use restrictions::*;
+use state_machines::*;
 use streams::*;
 use type_roots::*;
 
@@ -222,6 +226,8 @@ pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Ve
     diags.extend(run_der_in_function_checks(def));
     diags.extend(run_builtin_call_semantic_checks(def));
     diags.extend(run_stream_builtin_semantic_checks(def));
+    diags.extend(run_state_machine_semantic_checks(def));
+    diags.extend(run_restriction_semantic_checks(def));
     diags
 }
 
@@ -850,7 +856,7 @@ fn check_cross_class_restrictions(
 
         check_record_component_type_restriction(class, name, comp, &type_name, type_class, diags);
         check_partial_class_instantiation_restriction(
-            class, name, comp, &type_name, type_class, diags,
+            class, def, name, comp, &type_name, type_class, diags,
         );
         check_connector_variability_restriction(name, comp, type_class, diags);
     }
@@ -904,6 +910,7 @@ fn check_record_component_type_restriction(
 
 fn check_partial_class_instantiation_restriction(
     class: &ClassDef,
+    def: &StoredDefinition,
     component_name: &str,
     comp: &ast::Component,
     type_name: &str,
@@ -925,7 +932,7 @@ fn check_partial_class_instantiation_restriction(
     if matches!(tc.class_type, ClassType::Package | ClassType::Function) {
         return;
     }
-    if !tc.partial || type_name_has_replaceable_root(class, comp) {
+    if !effective_partial(tc, def) || type_name_has_replaceable_root(class, comp) {
         return;
     }
 
@@ -943,6 +950,45 @@ fn check_partial_class_instantiation_restriction(
             format!("instantiation of partial class '{}'", type_name),
         ),
     ));
+}
+
+/// MLS §4.6.1 / DECL-023: a short class definition (alias) of a partial class
+/// is itself partial; follow the alias chain when deciding partiality.
+fn effective_partial(class: &ClassDef, def: &StoredDefinition) -> bool {
+    let mut current = class;
+    let mut seen: HashSet<DefId> = HashSet::new();
+    loop {
+        if current.partial {
+            return true;
+        }
+        // A replaceable alias is a placeholder that a redeclare will replace
+        // with a concrete class (e.g. `replaceable model H = PartialH;`);
+        // instantiating it is legal.
+        if current.is_replaceable {
+            return false;
+        }
+        let is_alias = current.end_name_token.is_none()
+            && current.components.is_empty()
+            && current.equations.is_empty()
+            && current.initial_equations.is_empty()
+            && current.algorithms.is_empty()
+            && current.initial_algorithms.is_empty()
+            && current.enum_literals.is_empty()
+            && current.extends.len() == 1;
+        if !is_alias {
+            return false;
+        }
+        let Some(def_id) = current.extends[0].base_def_id else {
+            return false;
+        };
+        if !seen.insert(def_id) {
+            return false;
+        }
+        let Some(base) = find_class_by_def_id(def, def_id) else {
+            return false;
+        };
+        current = base;
+    }
 }
 
 fn type_name_has_replaceable_root(class: &ClassDef, comp: &ast::Component) -> bool {

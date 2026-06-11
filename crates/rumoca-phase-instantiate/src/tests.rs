@@ -187,7 +187,7 @@ fn test_extract_attributes_preserves_local_fixed_with_local_start() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
@@ -209,7 +209,7 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
@@ -233,7 +233,7 @@ fn test_extract_attributes_outer_state_select_overrides_local() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
@@ -255,7 +255,7 @@ fn test_extract_attributes_evaluates_state_select_parameter() {
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
@@ -286,7 +286,7 @@ fn test_extract_attributes_rejects_invalid_state_select() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let err = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+    let err = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect_err("invalid stateSelect literal should fail");
 
     assert!(err.to_string().contains("stateSelect"));
@@ -354,7 +354,7 @@ fn test_parameter_declaration_binding_promotes_builtin_default_start() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx)
+    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(
@@ -377,7 +377,7 @@ fn test_parameter_declaration_binding_does_not_override_explicit_start() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx)
+    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(
@@ -410,9 +410,15 @@ fn test_continuous_declaration_binding_preserves_runtime_expression() {
     let tree = ast::ClassTree::default();
     let mut ctx = InstantiateContext::new();
 
-    let info =
-        prepare_component_binding_info(&tree, &phi_diff, &mut ctx, &effective_components, false)
-            .expect("continuous binding should prepare");
+    let info = prepare_component_binding_info(
+        &tree,
+        &phi_diff,
+        &mut ctx,
+        &effective_components,
+        false,
+        &[],
+    )
+    .expect("continuous binding should prepare");
 
     assert_eq!(
         info.binding.as_ref(),
@@ -436,8 +442,9 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
     let tree = ast::ClassTree::default();
     let mut ctx = InstantiateContext::new();
 
-    let info = prepare_component_binding_info(&tree, &p, &mut ctx, &effective_components, true)
-        .expect("parameter binding should prepare");
+    let info =
+        prepare_component_binding_info(&tree, &p, &mut ctx, &effective_components, true, &[])
+            .expect("parameter binding should prepare");
 
     assert_eq!(
         info.binding.as_ref().map(terminal_text),
@@ -888,7 +895,7 @@ fn inherited_attribute_modification_keeps_written_source_scope() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
@@ -918,7 +925,7 @@ fn local_attribute_modification_keeps_instance_qualification() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx)
+    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx, &[])
         .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 

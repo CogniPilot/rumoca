@@ -233,7 +233,7 @@ pub(super) fn qualify_shape_subscripts_imports(
         .collect()
 }
 
-fn qualify_shape_expr_imports(
+pub(super) fn qualify_shape_expr_imports(
     expr: &ast::Expression,
     imports: &[(String, String)],
 ) -> ast::Expression {

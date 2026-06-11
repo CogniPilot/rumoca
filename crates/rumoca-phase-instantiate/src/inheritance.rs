@@ -631,23 +631,30 @@ pub fn is_type_subtype_cached(
 
     // For class types, check if subtype's class extends supertype's class
     let result = if let Some(subtype_class) = find_class_in_tree(tree, subtype) {
-        if class_extends_cached(tree, subtype_class, supertype, cache) {
+        let accepted = if class_extends_cached(tree, subtype_class, supertype, cache) {
             true
+        } else if let Some(supertype_class) = find_class_in_tree(tree, supertype) {
+            // Check for sibling types: both extend the same base class.
+            // This supports replaceable component redeclarations where both
+            // types share a common base (e.g., CellRCStack and CellStack both
+            // extend BaseCellStack). Siblinghood alone does not make the
+            // interfaces compatible, so the plug-compatibility comparator
+            // (MLS §6.5) must also pass.
+            types_share_common_base(tree, subtype_class, supertype_class, cache)
+                && crate::plug_compat::members_plug_compatible(tree, subtype_class, supertype_class)
+        } else if is_builtin_type(supertype) {
+            // Supertype is a built-in type (Real, Integer, Boolean, String) not
+            // in the class tree. Check if subtype transitively extends this built-in.
+            // This handles e.g. Resistance -> Real, Voltage -> Real chains.
+            class_extends_builtin(tree, subtype_class, supertype)
         } else {
-            // Check for sibling types: both extend the same base class
-            // This supports replaceable component redeclarations where both types
-            // share a common base (e.g., CellRCStack and CellStack both extend BaseCellStack)
-            if let Some(supertype_class) = find_class_in_tree(tree, supertype) {
-                types_share_common_base(tree, subtype_class, supertype_class, cache)
-            } else if is_builtin_type(supertype) {
-                // Supertype is a built-in type (Real, Integer, Boolean, String) not
-                // in the class tree. Check if subtype transitively extends this built-in.
-                // This handles e.g. Resistance -> Real, Voltage -> Real chains.
-                class_extends_builtin(tree, subtype_class, supertype)
-            } else {
-                false
-            }
-        }
+            false
+        };
+        accepted
+            && crate::plug_compat::class_flags_compatible(
+                subtype_class,
+                find_class_in_tree(tree, supertype),
+            )
     } else {
         false
     };
@@ -1346,13 +1353,16 @@ fn merge_inherited(
         }
     }
 
-    // Merge equations (no conflict checking - all equations are accumulated)
-    target.equations.extend(base.equations);
-    target.initial_equations.extend(base.initial_equations);
+    // Merge equations. MLS §7.1 / INST-025: equations syntactically
+    // equivalent to already-inherited ones are discarded (diamond
+    // inheritance of a common base must not duplicate its equations; the
+    // duplicates are clones of the same source AST and compare equal).
+    extend_without_duplicates(&mut target.equations, base.equations);
+    extend_without_duplicates(&mut target.initial_equations, base.initial_equations);
 
-    // Merge algorithms
-    target.algorithms.extend(base.algorithms);
-    target.initial_algorithms.extend(base.initial_algorithms);
+    // Merge algorithms with the same syntactic-equivalence rule.
+    extend_without_duplicates(&mut target.algorithms, base.algorithms);
+    extend_without_duplicates(&mut target.initial_algorithms, base.initial_algorithms);
 
     // Merge nested classes
     for (name, class) in base.classes {
@@ -1367,6 +1377,17 @@ fn merge_inherited(
 enum NestedClassMerge {
     Inserted,
     Skipped,
+}
+
+/// Append `source` items to `target`, discarding items already present.
+/// Inherited duplicates from diamond inheritance are clones of the same
+/// source AST, so syntactic equivalence is plain equality here.
+fn extend_without_duplicates<T: PartialEq>(target: &mut Vec<T>, source: Vec<T>) {
+    for item in source {
+        if !target.contains(&item) {
+            target.push(item);
+        }
+    }
 }
 
 fn merge_inherited_nested_class(

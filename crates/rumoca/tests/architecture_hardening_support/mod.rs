@@ -393,8 +393,12 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
     ("crates/rumoca-phase-structural/src/projection_maps.rs", 2),
     ("crates/rumoca-phase-structural/src/runtime_defined.rs", 1),
     ("crates/rumoca-phase-structural/src/scalarize.rs", 2),
+    (
+        "crates/rumoca-phase-typecheck/src/constant_collection.rs",
+        2,
+    ),
     ("crates/rumoca-phase-typecheck/src/instanced.rs", 2),
-    ("crates/rumoca-phase-typecheck/src/lib.rs", 21),
+    ("crates/rumoca-phase-typecheck/src/lib.rs", 19),
     (
         "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
         15,

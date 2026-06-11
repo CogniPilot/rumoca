@@ -7,6 +7,7 @@ pub(super) const ER057_CARDINALITY_INVALID_TARGET: &str = "ER057";
 pub(super) const ER058_EXPANDABLE_FLOW_COMPONENT: &str = "ER058";
 pub(super) const ER059_EXPANDABLE_CONNECTOR_MISMATCH: &str = "ER059";
 pub(super) const ER073_STATE_MACHINE_UNSUPPORTED: &str = "ER073";
+pub(super) const ER096_DELAY_TIME_BOUNDS: &str = "ER096";
 
 pub(super) fn run_builtin_call_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -66,8 +67,30 @@ impl ast::Visitor for BuiltinCallVisitor<'_> {
         args: &[Expression],
         ctx: ast::FunctionCallContext,
     ) -> std::ops::ControlFlow<()> {
+        // MLS §9.4: Connections.* graph operators are not allowed inside
+        // function classes (CONN-023).
+        if self.in_function
+            && comp.parts.len() == 2
+            && comp.parts[0].ident.text.as_ref() == "Connections"
+        {
+            let operator = format!("Connections.{}", comp.parts[1].ident.text);
+            self.check_function_forbidden_operator(comp, &operator);
+        }
+        // `terminate(...)` appears in statement position; the function-scope
+        // ban applies regardless of call context (MLS §8.3.8 / ALG-014).
+        if matches!(ctx, ast::FunctionCallContext::Statement)
+            && builtin_name(comp) == Some("terminate")
+        {
+            self.check_function_forbidden_operator(comp, "terminate");
+        }
         if let Some(operator) = state_machine_operator_name(comp) {
-            self.check_state_machine_operator_unsupported(comp, operator);
+            if self.in_function {
+                // MLS §17.1 / SM-005: state-machine operators are not allowed
+                // inside function classes.
+                self.check_function_forbidden_operator(comp, operator);
+            } else {
+                self.check_state_machine_operator_unsupported(comp, operator);
+            }
         } else if matches!(ctx, ast::FunctionCallContext::Expression)
             && let Some(name) = builtin_name(comp)
         {
@@ -76,7 +99,9 @@ impl ast::Visitor for BuiltinCallVisitor<'_> {
                 "cardinality" => self.check_cardinality_call(comp, args),
                 "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample"
                 | "inStream" | "actualStream" | "pre" | "sample" | "edge" | "change"
-                | "initial" | "terminal" => self.check_function_forbidden_operator(comp, name),
+                | "initial" | "terminal" | "terminate" => {
+                    self.check_function_forbidden_operator(comp, name)
+                }
                 _ => {}
             }
         }
@@ -138,6 +163,36 @@ impl BuiltinCallVisitor<'_> {
 
         if let Some(diag) = delay_diag {
             self.diags.push(diag);
+        }
+
+        // MLS §3.7 / EXPR-007: 0 <= delayTime <= delayMax must hold; reject
+        // literal violations during translation.
+        if let [_, delay_time, rest @ ..] = args
+            && let Some(time_value) = numeric_literal_value(delay_time)
+        {
+            let max_value = rest.first().and_then(numeric_literal_value);
+            let violation = if time_value < 0.0 {
+                Some(format!("delayTime {time_value} must be >= 0"))
+            } else if let Some(max_value) = max_value
+                && time_value > max_value
+            {
+                Some(format!(
+                    "delayTime {time_value} must not exceed delayMax {max_value}"
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = violation {
+                self.diags.push(semantic_error(
+                    ER096_DELAY_TIME_BOUNDS,
+                    format!("delay(): {message} (MLS §3.7)"),
+                    label_from_token(
+                        operator_token,
+                        "check_delay_call/delay_time_bounds",
+                        "0 <= delayTime <= delayMax is required",
+                    ),
+                ));
+            }
         }
     }
 
@@ -269,7 +324,7 @@ fn component_reference_targets_array(
     indexed_dimension_count < dimension_count
 }
 
-fn is_parameter_expression(expr: &Expression, class: &ClassDef) -> bool {
+pub(super) fn is_parameter_expression(expr: &Expression, class: &ClassDef) -> bool {
     rumoca_ir_ast::collect_component_refs(expr)
         .into_iter()
         .all(|cref| match cref.parts.as_slice() {

@@ -199,6 +199,21 @@ pub enum ToDaeError {
         #[label("source temporal operator survived here")]
         span: SourceSpan,
     },
+
+    /// The virtual connection graph (MLS §9.4) is invalid: required
+    /// spanning-tree edges form a cycle, or two definite roots are connected.
+    #[error("invalid connection graph: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED017),
+        help(
+            "MLS §9.4: Connections.branch() edges must form a forest and each spanning tree may contain at most one Connections.root()"
+        )
+    )]
+    InvalidConnectionGraph {
+        detail: String,
+        #[label("connection graph constructed from these connectors")]
+        span: SourceSpan,
+    },
 }
 
 impl ToDaeError {

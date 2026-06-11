@@ -398,7 +398,7 @@ pub(super) fn apply_type_override<'a>(
     comp: &'a ast::Component,
     type_overrides: &TypeOverrideMap,
     mod_env: Option<&ast::ModificationEnvironment>,
-) -> std::borrow::Cow<'a, ast::Component> {
+) -> InstantiateResult<std::borrow::Cow<'a, ast::Component>> {
     // MLS §7.3: Apply type redeclarations by exact type name first.
     // For dotted type names (e.g., `Medium.ThermodynamicState`), also honor
     // package-level redeclarations keyed by the dotted prefix (`Medium`) when
@@ -428,11 +428,15 @@ pub(super) fn apply_type_override<'a>(
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {
+        // Note: the MLS §7.3.2 constraining-type check happens in the
+        // extends-redeclare path (`validate_redeclaration`); this override
+        // map also carries package-member type remaps (Medium.X), which are
+        // constrained at the package level and must not be re-checked here.
         let mut overridden = comp.clone();
         overridden.type_def_id = Some(override_def_id);
-        return std::borrow::Cow::Owned(overridden);
+        return Ok(std::borrow::Cow::Owned(overridden));
     }
-    std::borrow::Cow::Borrowed(comp)
+    Ok(std::borrow::Cow::Borrowed(comp))
 }
 
 fn resolve_dotted_type_from_mod_env(
@@ -757,7 +761,8 @@ mod tests {
             ..Default::default()
         };
 
-        let overridden = apply_type_override(&tree, &comp, &overrides, None);
+        let overridden =
+            apply_type_override(&tree, &comp, &overrides, None).expect("override should validate");
 
         assert_eq!(
             overridden.type_def_id,
@@ -919,7 +924,8 @@ mod tests {
             )),
         );
 
-        let overridden = apply_type_override(&tree, &comp, &TypeOverrideMap::new(), Some(&mod_env));
+        let overridden = apply_type_override(&tree, &comp, &TypeOverrideMap::new(), Some(&mod_env))
+            .expect("override should validate");
 
         assert_eq!(
             overridden.type_def_id,
@@ -982,7 +988,8 @@ mod tests {
             concrete_medium_id,
         );
 
-        let overridden = apply_type_override(&tree, &comp, &type_overrides, None);
+        let overridden = apply_type_override(&tree, &comp, &type_overrides, None)
+            .expect("override should validate");
 
         assert_eq!(
             overridden.type_def_id,

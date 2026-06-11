@@ -148,6 +148,11 @@ fn normalized_source_name_bytes(name: &str) -> impl Iterator<Item = u8> + '_ {
 )]
 pub struct BytePos(pub usize);
 
+/// Marker prefix used to encode a named function argument
+/// (`f(x = expr)`) as a `FunctionCall { name: "__rumoca_named_arg__.x" }`
+/// node in the flat IR.
+pub const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+
 /// A span in source code (source, start, end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Span {

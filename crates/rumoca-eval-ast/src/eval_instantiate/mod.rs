@@ -258,6 +258,22 @@ fn eval_param_ref(
         );
     }
 
+    // MLS §5.3.2: qualified references to class-level constants
+    // (`P.pT_explicit`) resolve through the class tree.
+    if let Some(binding) = resolve_class_constant_binding(comp_ref, tree) {
+        if let Some(val) = expr_to_bool(&binding) {
+            return Some(val);
+        }
+        return evaluate_component_condition_with_depth(
+            &binding,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            depth + 1,
+        );
+    }
+
     None
 }
 
@@ -654,6 +670,37 @@ fn resolve_component_ref_expr(
             )?;
             Some((scoped_expr, Some(prefix.to_string())))
         })
+        .or_else(|| resolve_class_constant_binding(comp_ref, tree).map(|expr| (expr, None)))
+}
+
+/// Resolve a qualified reference like `P.pT_explicit` to the binding of a
+/// class-level constant. Enclosing-scope constants are qualified to their
+/// declaring class by the package-constant alias pass (MLS §5.3.2), so this
+/// is the evaluation counterpart of that lexical lookup.
+fn resolve_class_constant_binding(
+    comp_ref: &ast::ComponentReference,
+    tree: &ast::ClassTree,
+) -> Option<ast::Expression> {
+    if comp_ref.parts.len() < 2
+        || comp_ref
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return None;
+    }
+    let member = comp_ref.parts.last()?.ident.text.as_ref();
+    let class_path = comp_ref.parts[..comp_ref.parts.len() - 1]
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    let class = tree.get_class_by_qualified_name(&class_path)?;
+    let component = class.components.get(member)?;
+    if !matches!(component.variability, rumoca_core::Variability::Constant(_)) {
+        return None;
+    }
+    component.binding.clone()
 }
 
 fn candidate_paths_for_ref(
