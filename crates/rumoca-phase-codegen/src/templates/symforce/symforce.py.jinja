@@ -27,7 +27,7 @@ from symforce.values import Values
         "while", "with", "yield"
     ]
 } %}
-{%- set symbols = target_symbols(dae.symbol_refs, symforce_symbol_policy) %}
+{%- set symbols = target_symbols(dae.symbol_refs, symforce_symbol_policy, dae.symbol_aliases) %}
 {%- set cfg = {
     "prefix": "",
     "power": "**",

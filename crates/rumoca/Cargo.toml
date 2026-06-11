@@ -91,6 +91,11 @@ path = "tests/backend_template_runtime_regression.rs"
 required-features = ["template-runtime-tests"]
 
 [[test]]
+name = "symforce_template_regression"
+path = "tests/symforce_template_regression.rs"
+required-features = ["template-runtime-tests"]
+
+[[test]]
 name = "msl_sim_regression"
 path = "tests/msl_sim_regression.rs"
 required-features = ["msl-sim-tests"]

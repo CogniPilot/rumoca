@@ -302,6 +302,12 @@ jobs:
             /opt/rumoca/cargo/git
           key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
+      # No-op once the dev image ships it (core-requirements.txt); kept so the
+      # symforce runtime tests exercise the real package even on a stale image
+      # instead of silently skipping.
+      - name: Ensure symforce runtime dependency
+        run: pip install --no-cache-dir 'symforce==0.11.0'
+
       - name: Run template runtime checks
         run: cargo xtask verify template-runtimes
 

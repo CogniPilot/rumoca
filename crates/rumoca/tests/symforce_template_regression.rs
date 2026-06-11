@@ -157,3 +157,165 @@ fn symforce_template_can_express_reprojection_residuals_for_ba_style_models() {
         "expected external input Values scope for observations/points, got:\n{rendered}"
     );
 }
+
+// ============================================================================
+// Runtime checks: execute the generated module under an installed symforce.
+// Run via `cargo xtask verify template-runtimes` (CI dev image ships
+// symforce); skipped with a notice when the package is missing locally.
+// ============================================================================
+
+#[cfg(feature = "template-runtime-tests")]
+fn python_command() -> &'static str {
+    for candidate in ["python3", "python"] {
+        if std::process::Command::new(candidate)
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            return candidate;
+        }
+    }
+    panic!("expected python3 or python to be available");
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn python_has_symforce() -> bool {
+    std::process::Command::new(python_command())
+        .args(["-c", "import symforce"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn run_python(rendered: &str, driver: &str) -> String {
+    let dir = tempfile::Builder::new()
+        .prefix("rumoca_symforce_runtime_")
+        .tempdir()
+        .expect("create temp dir");
+    let model_path = dir.path().join("model.py");
+    let driver_path = dir.path().join("driver.py");
+    std::fs::write(&model_path, rendered).expect("write model.py");
+    std::fs::write(&driver_path, driver).expect("write driver.py");
+
+    let output = std::process::Command::new(python_command())
+        .arg(driver_path.to_str().unwrap())
+        .output()
+        .expect("run Python driver");
+
+    assert!(
+        output.status.success(),
+        "Python execution failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout).expect("stdout is utf8")
+}
+
+/// The generated module must build a symbolic DAE under real symforce and the
+/// residual must vanish numerically at a consistent point of
+/// `der(x) = -k*x` (x=1, k=2, der(x)=-2).
+#[cfg(feature = "template-runtime-tests")]
+const SYMFORCE_EVAL_DRIVER: &str = r#"
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import model
+
+m = model.create_model()
+inputs = m["inputs"]
+f_x = m["f_x"]
+assert f_x.shape == (1, 1), f"expected one residual row, got {f_x.shape}"
+
+# derivatives Values are keyed by state name; the symbol itself renders
+# as der(<state>).
+der_x = inputs["derivatives"]["x"]
+subs = {
+    inputs["states"]["x"]: 1.0,
+    inputs["parameters"]["k"]: 2.0,
+    der_x: -2.0,
+}
+residual = float(f_x.subs(subs)[0, 0])
+print(f"RESIDUAL={residual}")
+
+off = float(f_x.subs({**subs, der_x: 0.0})[0, 0])
+print(f"OFF_RESIDUAL={off}")
+"#;
+
+/// The symforce Codegen path (the EKF/controller deployment use case) must
+/// produce a compilable C++ residual-with-jacobians function.
+#[cfg(feature = "template-runtime-tests")]
+const SYMFORCE_CODEGEN_DRIVER: &str = r#"
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import model
+
+out = tempfile.mkdtemp(prefix="rumoca_symforce_codegen_")
+model.make_residual_jacobian_codegen().generate_function(
+    output_dir=out, namespace="sym"
+)
+headers = []
+for root, _, files in os.walk(out):
+    for name in files:
+        if name.endswith(".h"):
+            headers.append(name)
+print(f"HEADERS={sorted(headers)}")
+"#;
+
+#[cfg(feature = "template-runtime-tests")]
+#[test]
+fn symforce_runtime_evaluates_generated_residual() {
+    if !python_has_symforce() {
+        eprintln!("SKIP: symforce not available");
+        return;
+    }
+    let rendered = render_ball_template();
+    let stdout = run_python(&rendered, SYMFORCE_EVAL_DRIVER);
+
+    let residual: f64 = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("RESIDUAL="))
+        .expect("driver prints RESIDUAL=")
+        .parse()
+        .expect("residual parses as f64");
+    assert!(
+        residual.abs() < 1.0e-12,
+        "residual at the consistent point should vanish, got {residual}"
+    );
+
+    let off: f64 = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("OFF_RESIDUAL="))
+        .expect("driver prints OFF_RESIDUAL=")
+        .parse()
+        .expect("off residual parses as f64");
+    assert!(
+        (off - 2.0).abs() < 1.0e-12,
+        "residual with der(x)=0 should equal k*x = 2, got {off}"
+    );
+}
+
+#[cfg(feature = "template-runtime-tests")]
+#[test]
+fn symforce_runtime_generates_cpp_residual_jacobians() {
+    if !python_has_symforce() {
+        eprintln!("SKIP: symforce not available");
+        return;
+    }
+    let rendered = render_ball_template();
+    let stdout = run_python(&rendered, SYMFORCE_CODEGEN_DRIVER);
+
+    let headers = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("HEADERS="))
+        .expect("driver prints HEADERS=");
+    assert!(
+        headers.contains("Ball_dae_residual_jacobians.h"),
+        "symforce Codegen should emit the residual-with-jacobians header, got {headers}"
+    );
+}
