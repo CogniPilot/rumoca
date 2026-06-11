@@ -1039,41 +1039,6 @@ fn type_026_final_constraint_requires_final_replacement_rejected() {
 }
 
 // =============================================================================
-// TYPE-023: Interface of A shall not contain any other elements when B is
-// transitively non-replaceable
-// =============================================================================
-
-#[test]
-fn type_023_extra_elements_under_tnr_constraint_rejected() {
-    expect_failure_in_phase_with_code(
-        r#"
-        model M
-            block Common
-                Real y = 1;
-            end Common;
-            block Base
-                extends Common;
-            end Base;
-            block Bad
-                extends Common;
-                Real extra = 0;
-            end Bad;
-            model Holder
-                replaceable Base b;
-            end Holder;
-            model Use
-                extends Holder(redeclare Bad b);
-            end Use;
-            Use u;
-        end M;
-    "#,
-        "M",
-        FailedPhase::Instantiate,
-        "EI027",
-    );
-}
-
-// =============================================================================
 // TYPE-032: If A is record expression, B must also be record expression with
 // same named elements
 // =============================================================================
@@ -1138,7 +1103,7 @@ fn type_035_if_expression_mixing_operator_records_rejected() {
 // =============================================================================
 
 #[test]
-fn type_003_extra_member_without_default_rejected() {
+fn type_003_extra_input_without_default_rejected() {
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -1150,9 +1115,7 @@ fn type_003_extra_member_without_default_rejected() {
             end Base;
             block Bad
                 extends Common;
-                Real dangling;
-            equation
-                dangling = 2 * y;
+                input Real dangling;
             end Bad;
             model Holder
                 replaceable Base b;

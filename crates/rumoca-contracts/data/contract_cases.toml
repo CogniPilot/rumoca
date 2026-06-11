@@ -3341,13 +3341,6 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
-contract_id = 'TYPE-023'
-case_id = 'type_023_extra_elements_under_tnr_constraint_rejected'
-test_file = 'tests/type_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
 contract_id = 'CONN-024'
 case_id = 'conn_024_equality_constraint_bad_prototype_rejected'
 test_file = 'tests/conn_contracts.rs'
@@ -3643,7 +3636,7 @@ outcome = 'Reject'
 
 [[cases]]
 contract_id = 'TYPE-003'
-case_id = 'type_003_extra_member_without_default_rejected'
+case_id = 'type_003_extra_input_without_default_rejected'
 test_file = 'tests/type_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'

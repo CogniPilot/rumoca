@@ -105,16 +105,11 @@ pub(crate) fn members_plug_compatible(
     if supertype.class_type == rumoca_core::ClassType::Function {
         return function_signatures_plug_compatible(&sub_members, &super_members);
     }
-    // MLS §6.4 / TYPE-023: when the constraining type is transitively
-    // non-replaceable, the replacement interface shall not contain any other
-    // elements.
-    if is_transitively_non_replaceable(supertype)
-        && sub_members
-            .keys()
-            .any(|name| !super_members.contains_key(name))
-    {
-        return false;
-    }
+    // MLS §6.4's transitively-non-replaceable "no other elements" rule
+    // (TYPE-023) is deliberately not enforced: idiomatic MSL redeclarations
+    // add public members to sibling replacements (e.g. RobotR3 GearType1 for
+    // GearType2, Batteries CellRCStack for CellStack) and every major tool
+    // accepts them under plug-compatibility.
     // MLS §6.5 / TYPE-003: additional public components of the replacement
     // must be default-connectable. Plain variables are defined by the
     // replacement's own equations; the genuinely dangling case is an extra
@@ -124,10 +119,10 @@ pub(crate) fn members_plug_compatible(
         if super_members.contains_key(name) {
             continue;
         }
+        // A default means a declaration equation (binding); `start` is not a
+        // binding and is auto-populated for builtin types, so it cannot count.
         let is_input = matches!(member.causality, rumoca_core::Causality::Input(_));
-        let has_default =
-            member.binding.is_some() || !matches!(member.start, ast::Expression::Empty { .. });
-        if is_input && !has_default {
+        if is_input && member.binding.is_none() {
             return false;
         }
     }

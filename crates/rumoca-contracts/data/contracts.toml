@@ -3688,7 +3688,7 @@ category = 'Type'
 name = 'No other elements'
 mls_ref = '§6.4'
 requirement = 'Interface of A shall not contain any other elements when B is transitively non-replaceable'
-status = 'Implemented'
+status = 'Deferred'
 tier = 1
 
 [[contracts]]

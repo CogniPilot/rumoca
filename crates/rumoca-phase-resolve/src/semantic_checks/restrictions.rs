@@ -583,25 +583,70 @@ impl EquationScan<'_> {
     /// Conservative translation-time evaluability: every unqualified component
     /// reference must be a parameter/constant of this class or an active
     /// for-iterator. Qualified or non-local names cannot be classified here
-    /// and are assumed evaluable to avoid false positives.
+    /// and are assumed evaluable to avoid false positives. `size()`/`ndims()`
+    /// of a declared array are structural, so their array argument does not
+    /// affect evaluability (MLS §3.7.2).
     fn is_evaluable_expression(&self, expr: &Expression) -> bool {
-        rumoca_ir_ast::collect_component_refs(expr)
-            .into_iter()
-            .all(|cref| match cref.parts.as_slice() {
-                [part] => {
-                    let name = part.ident.text.as_ref();
-                    // `time` is the builtin continuous-time variable.
-                    name != "time"
-                        && (self.iterators.contains(name)
-                            || self.class.components.get(name).is_none_or(|component| {
-                                matches!(
-                                    component.variability,
-                                    Variability::Parameter(_) | Variability::Constant(_)
-                                )
-                            }))
-                }
-                _ => true,
-            })
+        let mut walker = EvaluableExprWalker {
+            scan: self,
+            evaluable: true,
+        };
+        let _ = walker.visit_expression(expr);
+        walker.evaluable
+    }
+
+    /// Evaluability of one component reference (see
+    /// [`Self::is_evaluable_expression`] for the classification rules).
+    fn is_evaluable_component_ref(&self, cref: &ComponentReference) -> bool {
+        match cref.parts.as_slice() {
+            [part] => {
+                let name = part.ident.text.as_ref();
+                // `time` is the builtin continuous-time variable.
+                name != "time"
+                    && (self.iterators.contains(name)
+                        || self.class.components.get(name).is_none_or(|component| {
+                            matches!(
+                                component.variability,
+                                Variability::Parameter(_) | Variability::Constant(_)
+                            )
+                        }))
+            }
+            _ => true,
+        }
+    }
+}
+
+/// Expression walker behind [`EquationScan::is_evaluable_expression`]: flags
+/// non-evaluable component references while treating the array argument of
+/// `size()`/`ndims()` as structural (only its declared dimensions matter).
+struct EvaluableExprWalker<'a, 'b> {
+    scan: &'a EquationScan<'b>,
+    evaluable: bool,
+}
+
+impl ast::Visitor for EvaluableExprWalker<'_, '_> {
+    fn visit_expr_function_call(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+    ) -> std::ops::ControlFlow<()> {
+        if matches!(builtin_name(comp), Some("size" | "ndims")) {
+            // The array argument contributes only its declared dimensions;
+            // the optional dimension-index argument must still be evaluable.
+            return self.visit_each(args.get(1..).unwrap_or(&[]), Self::visit_expression);
+        }
+        self.visit_each(args, Self::visit_expression)
+    }
+
+    fn visit_component_reference(
+        &mut self,
+        cref: &ComponentReference,
+    ) -> std::ops::ControlFlow<()> {
+        if !self.scan.is_evaluable_component_ref(cref) {
+            self.evaluable = false;
+            return std::ops::ControlFlow::Break(());
+        }
+        ast::visitor::walk_component_reference_default(self, cref)
     }
 }
 
