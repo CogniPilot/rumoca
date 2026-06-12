@@ -993,6 +993,29 @@ impl SimulationBackend for Rk45Backend<'_> {
             self.atol,
             UPDATE_MAX_ITERS,
         )?;
+        // Settle discrete relation/condition variables (the `c[]` guards behind
+        // `if` expressions, which "follow current" relation values) against the
+        // initialized state before the first output sample. Without this the
+        // conditions keep their default value at t_start and only get corrected by
+        // the first integration step, so the very first output frame reports the
+        // wrong values for any algebraic gated by such a relation. This uses the
+        // FollowCurrent-only update so edge-triggered `when` clauses do not fire at
+        // init. Mirrors the diffsol init path.
+        if !self.model.model.problem.discrete.update_targets.is_empty() {
+            let runtime = self.model;
+            let state_count = runtime.state_count;
+            let tol = self.atol;
+            let t = self.time;
+            let outcome = runtime.apply_projected_post_initial_event_update(
+                &mut solver_y,
+                &mut self.params,
+                t,
+                tol,
+                UPDATE_MAX_ITERS,
+                move |y, p| project_rk_algebraics(runtime, y, p, t, state_count, tol),
+            )?;
+            self.apply_event_action_outcome(outcome, t)?;
+        }
         self.copy_state_from_solver_y(&solver_y);
         self.model.update_relation_memory_from_state(
             self.time,
@@ -1398,6 +1421,7 @@ mod tests {
         model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
         model.problem.events.scheduled_time_events = vec![0.05];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
         model.problem.discrete.rhs = const_scalar_program_block(2.0);
         model.parameters = vec![0.0];
         model.visible_names = vec!["x".to_string(), "m".to_string()];
@@ -1465,6 +1489,7 @@ mod tests {
             LinearOp::StoreOutput { src: 2 },
         ]]);
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
         model.problem.discrete.rhs = const_scalar_program_block(2.0);
         model.parameters = vec![0.0];
         model.visible_names = vec!["x".to_string(), "m".to_string()];
@@ -1560,6 +1585,7 @@ mod tests {
             phase_seconds: 0.05,
         }];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
         model.problem.discrete.rhs = const_scalar_program_block(3.0);
         model.parameters = vec![0.0];
         model.visible_names = vec!["x".to_string(), "m".to_string()];
@@ -1589,6 +1615,7 @@ mod tests {
         model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
         model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
         model.problem.discrete.rhs = const_scalar_program_block(4.0);
         model.parameters = vec![0.05, 0.0];
         model.visible_names = vec!["x".to_string(), "next".to_string(), "m".to_string()];
