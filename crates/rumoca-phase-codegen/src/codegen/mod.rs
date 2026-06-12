@@ -26,7 +26,8 @@ mod render_stmt;
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_pre_param_binding_c_function,
+    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
+    render_solve_block_rust_function, render_solve_pre_param_binding_c_function,
     render_solve_row_c_function, render_solve_row_rust_function,
     render_solve_slot_assign_c_function,
 };
@@ -1256,6 +1257,8 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
+    env.add_function("render_solve_block_c", render_solve_block_c_function);
+    env.add_function("render_solve_block_rust", render_solve_block_rust_function);
     env.add_function(
         "render_solve_slot_assign_c",
         render_solve_slot_assign_c_function,

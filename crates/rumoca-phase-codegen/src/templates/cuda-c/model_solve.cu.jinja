@@ -34,11 +34,12 @@ extern "C" __global__ void {{ name }}_derivative_rhs_batch(
     (void)batch_y;
     (void)batch_p;
 {%- set cfg = {"time": "time", "y": "batch_y[{}]", "p": "batch_p[{}]"} %}
-{%- for row in rows %}
-    batch_out[{{ loop.index0 }}] = {{ render_solve_row_c(row, cfg) }};
+{%- set solve_body = render_solve_block_c(rows, cfg, "batch_out[{}] = {}") %}
+{%- if solve_body %}
+{{ solve_body }}
 {%- else %}
     (void)batch_out;
-{%- endfor %}
+{%- endif %}
 }
 
 // Solve-IR derivative block inventory:

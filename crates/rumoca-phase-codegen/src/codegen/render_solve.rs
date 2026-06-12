@@ -449,6 +449,33 @@ pub(super) fn render_solve_row_rust_function(row: Value, config: Value) -> Rende
     render_solve_row_for(&row, &cfg, SolveRowDialect::Rust)
 }
 
+/// Render a whole list of scalar programs as a C statement block, handling
+/// multi-output programs and computing shared registers once. `out_set` is the
+/// assignment pattern (two `{}`: index, value), e.g. `"out[{}] = {}"`.
+pub(super) fn render_solve_block_c_function(
+    programs: Value,
+    config: Value,
+    out_set: Value,
+) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_block_for(&programs, &cfg, SolveRowDialect::C, &value_to_string(&out_set))
+}
+
+/// Rust counterpart of [`render_solve_block_c_function`].
+pub(super) fn render_solve_block_rust_function(
+    programs: Value,
+    config: Value,
+    out_set: Value,
+) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_block_for(
+        &programs,
+        &cfg,
+        SolveRowDialect::Rust,
+        &value_to_string(&out_set),
+    )
+}
+
 pub(super) fn render_solve_slot_assign_c_function(
     slot: Value,
     value: Value,
@@ -711,35 +738,51 @@ fn render_solve_op_c(
     render_solve_op_for(op, cfg, SolveRowDialect::C, regs, output)
 }
 
-fn render_solve_op_for(
+/// The effect of a single `LinearOp` when rendering a solve program: either it
+/// computes a value into register `dst`, or it stores a register to an output.
+enum SolveOpEffect {
+    Compute { dst: usize, expr: String },
+    Store { src: usize },
+}
+
+/// Compute the rendered expression (and destination register) for one solve op,
+/// reading operand registers from `regs` (their already-rendered expressions or
+/// temp names). Shared by the single-output expression renderer
+/// ([`render_solve_op_for`]) and the multi-output block renderer
+/// ([`render_solve_block_for`]).
+fn solve_op_expr(
     op: &Value,
     cfg: &SolveRowCConfig,
     dialect: SolveRowDialect,
-    regs: &mut Vec<String>,
-    output: Option<String>,
-) -> Result<Option<String>, minijinja::Error> {
+    regs: &[String],
+) -> Result<SolveOpEffect, minijinja::Error> {
     if let Ok(value) = get_field(op, "Const") {
         let dst = solve_field_usize(&value, "dst")?;
-        let value = solve_const_value_string(&value, dialect.infinity())?;
-        store_solve_reg(regs, dst, value);
-        return Ok(output);
+        let expr = solve_const_value_string(&value, dialect.infinity())?;
+        return Ok(SolveOpEffect::Compute { dst, expr });
     }
     if let Ok(value) = get_field(op, "LoadTime") {
         let dst = solve_field_usize(&value, "dst")?;
-        store_solve_reg(regs, dst, cfg.time.clone());
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.time.clone(),
+        });
     }
     if let Ok(value) = get_field(op, "LoadY") {
         let dst = solve_field_usize(&value, "dst")?;
         let index = solve_field_usize(&value, "index")?;
-        store_solve_reg(regs, dst, cfg.y_access(index));
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.y_access(index),
+        });
     }
     if let Ok(value) = get_field(op, "LoadP") {
         let dst = solve_field_usize(&value, "dst")?;
         let index = solve_field_usize(&value, "index")?;
-        store_solve_reg(regs, dst, cfg.p_access(index));
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.p_access(index),
+        });
     }
     if let Ok(value) = get_field(op, "LoadSeed") {
         let dst = solve_field_usize(&value, "dst")?;
@@ -749,14 +792,12 @@ fn render_solve_op_for(
                 "LoadSeed requires a `seed` access pattern in solve-row C output",
             ));
         };
-        store_solve_reg(regs, dst, seed);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute { dst, expr: seed });
     }
     if let Ok(value) = get_field(op, "Move") {
         let dst = solve_field_usize(&value, "dst")?;
         let src = solve_reg(regs, solve_field_usize(&value, "src")?)?;
-        store_solve_reg(regs, dst, src);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute { dst, expr: src });
     }
     if let Ok(value) = get_field(op, "LinearSolveComponent") {
         let dst = solve_field_usize(&value, "dst")?;
@@ -766,49 +807,187 @@ fn render_solve_op_for(
         let component = solve_field_usize(&value, "component")?;
         let expr =
             dialect.render_linear_solve_component(regs, matrix_start, rhs_start, n, component)?;
-        store_solve_reg(regs, dst, expr);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute { dst, expr });
     }
     if let Ok(value) = get_field(op, "Unary") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let arg = solve_reg(regs, solve_field_usize(&value, "arg")?)?;
-        store_solve_reg(regs, dst, dialect.render_unary(&op, arg)?);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: dialect.render_unary(&op, arg)?,
+        });
     }
     if let Ok(value) = get_field(op, "Binary") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let lhs = solve_reg(regs, solve_field_usize(&value, "lhs")?)?;
         let rhs = solve_reg(regs, solve_field_usize(&value, "rhs")?)?;
-        store_solve_reg(regs, dst, dialect.render_binary(&op, lhs, rhs)?);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: dialect.render_binary(&op, lhs, rhs)?,
+        });
     }
     if let Ok(value) = get_field(op, "Compare") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let lhs = solve_reg(regs, solve_field_usize(&value, "lhs")?)?;
         let rhs = solve_reg(regs, solve_field_usize(&value, "rhs")?)?;
-        store_solve_reg(regs, dst, render_solve_compare(&op, lhs, rhs)?);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: render_solve_compare(&op, lhs, rhs)?,
+        });
     }
     if let Ok(value) = get_field(op, "Select") {
         let dst = solve_field_usize(&value, "dst")?;
         let cond = solve_reg(regs, solve_field_usize(&value, "cond")?)?;
         let if_true = solve_reg(regs, solve_field_usize(&value, "if_true")?)?;
         let if_false = solve_reg(regs, solve_field_usize(&value, "if_false")?)?;
-        store_solve_reg(
-            regs,
+        return Ok(SolveOpEffect::Compute {
             dst,
-            format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))"),
-        );
-        return Ok(output);
+            expr: format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))"),
+        });
     }
     if let Ok(value) = get_field(op, "StoreOutput") {
         let src = solve_field_usize(&value, "src")?;
-        return Ok(Some(solve_reg(regs, src)?));
+        return Ok(SolveOpEffect::Store { src });
     }
     Err(render_err(format!("unsupported solve LinearOp: {op}")))
+}
+
+fn render_solve_op_for(
+    op: &Value,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    regs: &mut Vec<String>,
+    output: Option<String>,
+) -> Result<Option<String>, minijinja::Error> {
+    match solve_op_expr(op, cfg, dialect, regs)? {
+        SolveOpEffect::Compute { dst, expr } => {
+            store_solve_reg(regs, dst, expr);
+            Ok(output)
+        }
+        SolveOpEffect::Store { src } => Ok(Some(solve_reg(regs, src)?)),
+    }
+}
+
+/// Render a (possibly multi-output) scalar program block as a statement block
+/// using register temporaries.
+///
+/// Registers read two or more times are materialized into a temporary
+/// (`double __rN = ...;` / `let __rN = ...;`) so a value shared across outputs —
+/// e.g. a matmul/linsolve operand reused by every output element — is computed
+/// ONCE instead of being re-expanded into each output expression. This is the
+/// codegen-side counterpart to the IR-level "compute operands once" fix; without
+/// it, a compact multi-output program would still blow up as nested C/Rust text.
+/// Registers read at most once are inlined, which keeps generated code free of
+/// unused-variable bindings.
+///
+/// `out_set` is the assignment pattern with two `{}` placeholders (index, value),
+/// e.g. `"out[{}] = {}"` or `"m->xdot[{}] = {}"`. Outputs are numbered by a
+/// running counter across all programs (the `StoreOutput` running-counter
+/// invariant).
+fn render_solve_block_for(
+    programs: &Value,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    out_set: &str,
+) -> RenderResult {
+    let mut body = String::new();
+    let mut temp_counter = 0usize;
+    let mut output_index = 0usize;
+    for program in programs
+        .try_iter()
+        .map_err(|_| render_err("solve programs must be an array"))?
+    {
+        let ops: Vec<Value> = program
+            .try_iter()
+            .map_err(|_| render_err("solve program must be an array of LinearOp values"))?
+            .collect();
+        let read_counts = collect_solve_read_counts(&ops)?;
+        let mut regs = Vec::<String>::new();
+        for op in &ops {
+            match solve_op_expr(op, cfg, dialect, &regs)? {
+                SolveOpEffect::Compute { dst, expr } => {
+                    if read_counts.get(dst).copied().unwrap_or(0) >= 2 {
+                        let name = format!("__r{temp_counter}");
+                        temp_counter += 1;
+                        body.push_str(&dialect.temp_decl(&name, &expr));
+                        store_solve_reg(&mut regs, dst, name);
+                    } else {
+                        store_solve_reg(&mut regs, dst, expr);
+                    }
+                }
+                SolveOpEffect::Store { src } => {
+                    let value = solve_reg(&regs, src)?;
+                    body.push_str(&format!(
+                        "\t{};\n",
+                        format_solve_set(out_set, output_index, &value)
+                    ));
+                    output_index += 1;
+                }
+            }
+        }
+    }
+    Ok(body)
+}
+
+/// Count how many times each register is read across a program's ops.
+fn collect_solve_read_counts(ops: &[Value]) -> Result<Vec<usize>, minijinja::Error> {
+    let mut counts = Vec::<usize>::new();
+    let mut bump = |reg: usize| {
+        if counts.len() <= reg {
+            counts.resize(reg + 1, 0);
+        }
+        counts[reg] += 1;
+    };
+    for op in ops {
+        for reg in solve_op_read_regs(op)? {
+            bump(reg);
+        }
+    }
+    Ok(counts)
+}
+
+/// The operand registers read by a single solve op.
+fn solve_op_read_regs(op: &Value) -> Result<Vec<usize>, minijinja::Error> {
+    if let Ok(value) = get_field(op, "Move") {
+        return Ok(vec![solve_field_usize(&value, "src")?]);
+    }
+    if let Ok(value) = get_field(op, "Unary") {
+        return Ok(vec![solve_field_usize(&value, "arg")?]);
+    }
+    if let Ok(value) = get_field(op, "Binary") {
+        return Ok(vec![
+            solve_field_usize(&value, "lhs")?,
+            solve_field_usize(&value, "rhs")?,
+        ]);
+    }
+    if let Ok(value) = get_field(op, "Compare") {
+        return Ok(vec![
+            solve_field_usize(&value, "lhs")?,
+            solve_field_usize(&value, "rhs")?,
+        ]);
+    }
+    if let Ok(value) = get_field(op, "Select") {
+        return Ok(vec![
+            solve_field_usize(&value, "cond")?,
+            solve_field_usize(&value, "if_true")?,
+            solve_field_usize(&value, "if_false")?,
+        ]);
+    }
+    if let Ok(value) = get_field(op, "LinearSolveComponent") {
+        let matrix_start = solve_field_usize(&value, "matrix_start")?;
+        let rhs_start = solve_field_usize(&value, "rhs_start")?;
+        let n = solve_field_usize(&value, "n")?;
+        let mut regs: Vec<usize> = (matrix_start..matrix_start + n * n).collect();
+        regs.extend(rhs_start..rhs_start + n);
+        return Ok(regs);
+    }
+    if let Ok(value) = get_field(op, "StoreOutput") {
+        return Ok(vec![solve_field_usize(&value, "src")?]);
+    }
+    Ok(Vec::new())
 }
 
 #[derive(Clone, Copy)]
@@ -867,6 +1046,14 @@ impl SolveRowDialect {
         match self {
             Self::C => render_solve_binary_c(op, lhs, rhs),
             Self::Rust => render_solve_binary_rust(op, lhs, rhs),
+        }
+    }
+
+    /// A temporary-register declaration line, e.g. `double __r0 = expr;`.
+    fn temp_decl(self, name: &str, expr: &str) -> String {
+        match self {
+            Self::C => format!("\tdouble {name} = {expr};\n"),
+            Self::Rust => format!("\tlet {name} = {expr};\n"),
         }
     }
 }
