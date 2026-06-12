@@ -1173,7 +1173,10 @@ self.onmessage = async (event) => {
             if (!adapter) {
                 throw new Error(
                     'GPU requested but no WebGPU adapter was found. '
-                    + 'Uncheck GPU to run on the CPU (WASM) path.'
+                    + 'On Linux Chrome, WebGPU is off by default: enable '
+                    + 'chrome://flags/#enable-unsafe-webgpu (or launch with '
+                    + '--enable-unsafe-webgpu --enable-features=Vulkan) and '
+                    + 'reload. Or uncheck GPU to run on the CPU (WASM) path.'
                 );
             }
             return adapter;
