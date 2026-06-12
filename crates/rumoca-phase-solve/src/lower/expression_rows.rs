@@ -25,8 +25,8 @@ struct RowLoweringContext<'a> {
     discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
     dae_variables: Option<&'a dae::DaeVariables>,
-    structural_bindings: Option<&'a IndexMap<String, f64>>,
-    direct_assignments: Option<&'a IndexMap<String, DirectAssignmentValue>>,
+    structural_bindings: Option<Arc<IndexMap<String, f64>>>,
+    direct_assignments: Option<Arc<IndexMap<String, DirectAssignmentValue>>>,
     indexed_bindings: IndexedBindingMap,
     is_initial_mode: bool,
     guard_target_start_before_first_clock_tick: bool,
@@ -39,7 +39,7 @@ pub(super) struct RuntimeRowMetadata<'a> {
     pub(super) discrete_valued_names: &'a IndexMap<rumoca_core::VarName, dae::Variable>,
     pub(super) variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
     pub(super) dae_variables: Option<&'a dae::DaeVariables>,
-    pub(super) structural_bindings: Option<&'a IndexMap<String, f64>>,
+    pub(super) structural_bindings: Option<Arc<IndexMap<String, f64>>>,
     pub(super) guard_target_start_before_first_clock_tick: bool,
 }
 
@@ -186,8 +186,8 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     metadata: RuntimeRowMetadata<'_>,
+    indexed_bindings: IndexedBindingMap,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
     lower_observation_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -849,6 +849,8 @@ fn lower_residual_rows_from_equations_core<'a>(
         layout,
         &structural_bindings,
     )?;
+    let structural_bindings = Arc::new(structural_bindings);
+    let direct_assignments = Arc::new(direct_assignments);
     let equations: Vec<(usize, &dae::Equation)> = equations.into_iter().collect();
     let mut rows = Vec::with_capacity(equations.len());
     for (row_idx, eq) in equations {
@@ -862,8 +864,8 @@ fn lower_residual_rows_from_equations_core<'a>(
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
             dae_variables: Some(&dae_model.variables),
-            structural_bindings: Some(&structural_bindings),
-            direct_assignments: Some(&direct_assignments),
+            structural_bindings: Some(Arc::clone(&structural_bindings)),
+            direct_assignments: Some(Arc::clone(&direct_assignments)),
             indexed_bindings: Arc::clone(&indexed_bindings),
             is_initial_mode,
             guard_target_start_before_first_clock_tick: false,
@@ -1108,8 +1110,8 @@ fn lower_builder_for_context<'a>(
             is_initial_mode: ctx.is_initial_mode,
         },
     )
-    .with_structural_bindings(ctx.structural_bindings.cloned().unwrap_or_default())
-    .with_direct_assignments(ctx.direct_assignments.cloned().unwrap_or_default())
+    .with_structural_bindings(ctx.structural_bindings.clone().unwrap_or_default())
+    .with_direct_assignments(ctx.direct_assignments.clone().unwrap_or_default())
     .with_call_site_namespace(row_namespace)
 }
 

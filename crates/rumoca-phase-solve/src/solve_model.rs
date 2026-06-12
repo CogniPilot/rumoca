@@ -257,14 +257,18 @@ fn lower_visible_observations(
     let mut names = Vec::new();
     let mut rows = Vec::new();
     let mut program_spans = Vec::new();
+    let structural_bindings = crate::lower::structural_bindings_for_dae(dae_model);
+    let indexed_bindings = crate::lower::indexed_bindings_for_layout(layout);
     for visible in visible_expressions {
         if is_unbound_identity_observation(layout, visible) {
             continue;
         }
-        match crate::lower::lower_observation_rhs(
+        match crate::lower::lower_observation_rhs_with_structural_bindings(
             dae_model,
             layout,
             std::slice::from_ref(&visible.expr),
+            &structural_bindings,
+            &indexed_bindings,
         ) {
             Ok(mut lowered) => {
                 append_visible_names(&mut names, &visible.name, lowered.len());
@@ -1187,6 +1191,10 @@ fn build_variable_meta(
     let mut by_scalar = IndexMap::new();
     for (name, var, role, is_state) in vars {
         let (value_type, variability, time_domain) = variable_meta_classification(role, is_state);
+        let start_text = var.start.as_ref().map(|expr| format!("{expr:?}"));
+        let min_text = var.min.as_ref().map(|expr| format!("{expr:?}"));
+        let max_text = var.max.as_ref().map(|expr| format!("{expr:?}"));
+        let nominal_text = var.nominal.as_ref().map(|expr| format!("{expr:?}"));
         for scalar_name in scalar_names(name.as_str(), var) {
             let time_domain = if continuous_real_role_is_event_discontinuous(
                 role,
@@ -1208,10 +1216,10 @@ fn build_variable_meta(
                     variability: variability.clone(),
                     time_domain: time_domain.clone(),
                     unit: var.unit.clone(),
-                    start: var.start.as_ref().map(|expr| format!("{expr:?}")),
-                    min: var.min.as_ref().map(|expr| format!("{expr:?}")),
-                    max: var.max.as_ref().map(|expr| format!("{expr:?}")),
-                    nominal: var.nominal.as_ref().map(|expr| format!("{expr:?}")),
+                    start: start_text.clone(),
+                    min: min_text.clone(),
+                    max: max_text.clone(),
+                    nominal: nominal_text.clone(),
                     fixed: var.fixed,
                     description: var.description.clone(),
                 },
@@ -1290,7 +1298,7 @@ fn event_discrete_scalar_names(dae_model: &dae::Dae) -> IndexSet<String> {
 
 fn continuous_definition_expressions(
     dae_model: &dae::Dae,
-) -> IndexMap<String, Vec<rumoca_core::Expression>> {
+) -> IndexMap<String, Vec<&rumoca_core::Expression>> {
     let continuous_vars = dae_model
         .variables
         .states
@@ -1325,24 +1333,24 @@ fn continuous_definition_expressions(
     definitions
 }
 
-fn add_continuous_lhs_definitions(
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn add_continuous_lhs_definitions<'m>(
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
     continuous_vars: &IndexMap<rumoca_core::VarName, Vec<String>>,
     lhs: &rumoca_core::VarName,
-    rhs: &rumoca_core::Expression,
+    rhs: &'m rumoca_core::Expression,
 ) {
     let Some(scalars) = continuous_vars.get(lhs) else {
         return;
     };
     for scalar_name in scalars {
-        add_continuous_definition(definitions, scalar_name, rhs.clone());
+        add_continuous_definition(definitions, scalar_name, rhs);
     }
 }
 
-fn add_continuous_definition(
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn add_continuous_definition<'m>(
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
     scalar_name: &str,
-    expr: rumoca_core::Expression,
+    expr: &'m rumoca_core::Expression,
 ) {
     definitions
         .entry(scalar_name.to_string())
@@ -1350,10 +1358,10 @@ fn add_continuous_definition(
         .push(expr);
 }
 
-fn collect_residual_continuous_definitions(
-    expr: &rumoca_core::Expression,
+fn collect_residual_continuous_definitions<'m>(
+    expr: &'m rumoca_core::Expression,
     continuous_names: ScalarNameLookup<'_>,
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     match expr {
         rumoca_core::Expression::Binary {
@@ -1371,34 +1379,34 @@ fn collect_residual_continuous_definitions(
     }
 }
 
-fn collect_sub_residual_definitions(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
+fn collect_sub_residual_definitions<'m>(
+    lhs: &'m rumoca_core::Expression,
+    rhs: &'m rumoca_core::Expression,
     continuous_names: ScalarNameLookup<'_>,
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     let mut targets = IndexSet::new();
     for scalar_name in continuous_ref_scalar_names(lhs, continuous_names) {
-        add_continuous_definition(definitions, &scalar_name, rhs.clone());
+        add_continuous_definition(definitions, &scalar_name, rhs);
         targets.insert(scalar_name);
     }
     for scalar_name in continuous_ref_scalar_names(rhs, continuous_names) {
-        add_continuous_definition(definitions, &scalar_name, lhs.clone());
+        add_continuous_definition(definitions, &scalar_name, lhs);
         targets.insert(scalar_name);
     }
     targets
 }
 
-fn collect_if_residual_definitions(
-    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-    else_branch: &rumoca_core::Expression,
+fn collect_if_residual_definitions<'m>(
+    branches: &'m [(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &'m rumoca_core::Expression,
     continuous_names: ScalarNameLookup<'_>,
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     let mut guards = Vec::new();
     let mut targets = IndexSet::new();
     for (condition, branch_expr) in branches {
-        guards.push(condition.clone());
+        guards.push(condition);
         targets.extend(collect_residual_continuous_definitions(
             branch_expr,
             continuous_names,
@@ -1412,7 +1420,7 @@ fn collect_if_residual_definitions(
     ));
     for scalar_name in &targets {
         for guard in &guards {
-            add_continuous_definition(definitions, scalar_name, guard.clone());
+            add_continuous_definition(definitions, scalar_name, guard);
         }
     }
     targets

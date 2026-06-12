@@ -99,7 +99,7 @@ pub(crate) fn lower_initial_update_rhs(
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
-                structural_bindings: Some(&structural_bindings),
+                structural_bindings: Some(std::sync::Arc::new(structural_bindings)),
                 guard_target_start_before_first_clock_tick: false,
             },
             true,

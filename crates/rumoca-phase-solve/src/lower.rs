@@ -190,7 +190,7 @@ pub fn lower_discrete_rhs(
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
-                structural_bindings: Some(&structural_bindings),
+                structural_bindings: Some(Arc::new(structural_bindings)),
                 guard_target_start_before_first_clock_tick: true,
             },
             false,
@@ -217,7 +217,7 @@ pub(crate) fn lower_runtime_assignment_rhs(
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
-                structural_bindings: Some(&structural_bindings),
+                structural_bindings: Some(Arc::new(structural_bindings)),
                 guard_target_start_before_first_clock_tick: true,
             },
             false,
@@ -243,7 +243,7 @@ pub(crate) fn lower_dynamic_time_event_rhs(
             discrete_valued_names: &dae_model.variables.discrete_valued,
             variable_starts: &dae_model.metadata.variable_starts,
             dae_variables: Some(&dae_model.variables),
-            structural_bindings: Some(&structural_bindings),
+            structural_bindings: Some(Arc::new(structural_bindings)),
             guard_target_start_before_first_clock_tick: false,
         },
     )
@@ -254,7 +254,36 @@ pub fn lower_observation_rhs(
     layout: &VarLayout,
     expressions: &[rumoca_core::Expression],
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let structural_bindings = compile_time::structural_bindings(dae_model);
+    let structural_bindings = Arc::new(compile_time::structural_bindings(dae_model));
+    let indexed_bindings = indexed_bindings_for_layout(layout);
+    lower_observation_rhs_with_structural_bindings(
+        dae_model,
+        layout,
+        expressions,
+        &structural_bindings,
+        &indexed_bindings,
+    )
+}
+
+/// Observation lowering with a caller-provided structural-bindings map, so
+/// batch callers build the (potentially large) scalarized binding map once
+/// instead of once per observation row.
+pub(crate) fn structural_bindings_for_dae(dae_model: &dae::Dae) -> Arc<IndexMap<String, f64>> {
+    Arc::new(compile_time::structural_bindings(dae_model))
+}
+
+/// Prebuilt layout binding index for batch observation lowering.
+pub(crate) fn indexed_bindings_for_layout(layout: &VarLayout) -> IndexedBindingMap {
+    Arc::new(build_indexed_binding_map(layout))
+}
+
+pub(crate) fn lower_observation_rhs_with_structural_bindings(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    expressions: &[rumoca_core::Expression],
+    structural_bindings: &Arc<IndexMap<String, f64>>,
+    indexed_bindings: &IndexedBindingMap,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     expression_rows::lower_observation_rows_from_expressions_with_structural_bindings(
         expressions,
         layout,
@@ -266,9 +295,10 @@ pub fn lower_observation_rhs(
             discrete_valued_names: &dae_model.variables.discrete_valued,
             variable_starts: &dae_model.metadata.variable_starts,
             dae_variables: Some(&dae_model.variables),
-            structural_bindings: Some(&structural_bindings),
+            structural_bindings: Some(Arc::clone(structural_bindings)),
             guard_target_start_before_first_clock_tick: false,
         },
+        Arc::clone(indexed_bindings),
     )
 }
 
@@ -295,8 +325,8 @@ struct LowerBuilder<'a> {
     discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
     dae_variables: Option<&'a dae::DaeVariables>,
-    structural_bindings: IndexMap<String, f64>,
-    direct_assignments: IndexMap<String, DirectAssignmentValue>,
+    structural_bindings: Arc<IndexMap<String, f64>>,
+    direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
     direct_assignment_stack: Vec<String>,
     indexed_bindings: IndexedBindingMap,
     local_indexed_bindings: IndexMap<String, Vec<LocalIndexedBinding>>,
@@ -388,8 +418,8 @@ impl<'a> LowerBuilder<'a> {
             discrete_valued_names: metadata.discrete_valued_names,
             variable_starts: metadata.variable_starts,
             dae_variables: metadata.dae_variables,
-            structural_bindings: IndexMap::new(),
-            direct_assignments: IndexMap::new(),
+            structural_bindings: Arc::default(),
+            direct_assignments: Arc::default(),
             direct_assignment_stack: Vec::new(),
             indexed_bindings: metadata
                 .indexed_bindings
@@ -415,13 +445,13 @@ impl<'a> LowerBuilder<'a> {
 
     fn with_direct_assignments(
         mut self,
-        direct_assignments: IndexMap<String, DirectAssignmentValue>,
+        direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
     ) -> Self {
         self.direct_assignments = direct_assignments;
         self
     }
 
-    fn with_structural_bindings(mut self, structural_bindings: IndexMap<String, f64>) -> Self {
+    fn with_structural_bindings(mut self, structural_bindings: Arc<IndexMap<String, f64>>) -> Self {
         self.structural_bindings = structural_bindings;
         self
     }
@@ -450,7 +480,7 @@ impl<'a> LowerBuilder<'a> {
             variable_starts: self.variable_starts,
             dae_variables: self.dae_variables,
             structural_bindings: self.structural_bindings.clone(),
-            direct_assignments: IndexMap::new(),
+            direct_assignments: Arc::default(),
             direct_assignment_stack: Vec::new(),
             indexed_bindings: Arc::clone(&self.indexed_bindings),
             local_indexed_bindings: IndexMap::new(),
