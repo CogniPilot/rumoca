@@ -111,6 +111,15 @@ fn print_singularity_diagnosis(diagnosis: &rumoca_sim::SingularityDiagnosis) {
         println!("  {:<40} {}", unknown.name, unknown.category);
         println!("  {:<40}   referenced by: {rows}", "");
     }
+    if !diagnosis.equations.is_empty() {
+        println!("\nunmatched equations:");
+        for equation in &diagnosis.equations {
+            println!(
+                "  {:<10} origin='{}'\n             {}",
+                equation.name, equation.origin, equation.summary
+            );
+        }
+    }
     println!("\ncategory tally:");
     for (category, count) in &by_category {
         println!("  {count:>3}  {category}");
