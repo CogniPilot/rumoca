@@ -78,6 +78,33 @@ pub(super) struct IndexedBinding {
 
 pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>>;
 
+/// Cached per-key view of an indexed binding group: inferred dims plus an
+/// indices-to-position map over the rank-length entries. Deriving these per
+/// reference (clone + scan + sort of the whole group) was quadratic in
+/// model size for large arrays.
+pub(super) struct IndexedMeta {
+    pub(super) dims: Vec<usize>,
+    pub(super) by_indices: std::collections::HashMap<Vec<usize>, usize>,
+}
+
+impl IndexedMeta {
+    pub(super) fn build(entries: &[IndexedBinding]) -> Self {
+        let dims = helpers::infer_indexed_dims(entries);
+        let rank = entries
+            .iter()
+            .map(|entry| entry.indices.len())
+            .max()
+            .unwrap_or(0);
+        let mut by_indices = std::collections::HashMap::with_capacity(entries.len());
+        for (position, entry) in entries.iter().enumerate() {
+            if entry.indices.len() == rank {
+                by_indices.entry(entry.indices.clone()).or_insert(position);
+            }
+        }
+        Self { dims, by_indices }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalIndexedBinding {
     reg: Reg,
@@ -312,6 +339,9 @@ struct LowerBuilder<'a> {
     call_site_namespace: u64,
     next_call_site: u64,
     cse: RowCse,
+    /// Lazy per-key indexed-binding metadata (dims + indices lookup).
+    /// `RefCell` because dims inference also runs from `&self` paths.
+    indexed_meta_cache: std::cell::RefCell<IndexMap<ComponentReferenceKey, Arc<IndexedMeta>>>,
     /// Lazy index from a parent binding path to its direct scalarized
     /// children, mirroring `scope_key_direct_child_suffix` semantics.
     /// Built once on first use: the previous per-reference full scan of
@@ -405,6 +435,7 @@ impl<'a> LowerBuilder<'a> {
             call_site_namespace: 0,
             next_call_site: 0,
             cse: RowCse::default(),
+            indexed_meta_cache: std::cell::RefCell::new(IndexMap::new()),
             scalarized_children_index: None,
         }
     }
@@ -462,6 +493,7 @@ impl<'a> LowerBuilder<'a> {
             call_site_namespace: self.call_site_namespace,
             next_call_site: 0,
             cse: RowCse::default(),
+            indexed_meta_cache: std::cell::RefCell::new(IndexMap::new()),
             scalarized_children_index: None,
         }
     }
