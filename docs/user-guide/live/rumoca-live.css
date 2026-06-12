@@ -227,3 +227,8 @@
     cursor: pointer;
     user-select: none;
 }
+
+.rumoca-live-radial-controls .rumoca-live-status {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
