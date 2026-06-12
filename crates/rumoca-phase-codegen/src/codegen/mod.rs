@@ -1990,3 +1990,5 @@ mod codegen_tests;
 mod fmi_template_tests;
 #[cfg(test)]
 mod strict_render_tests;
+#[cfg(test)]
+mod wgsl_solve_tests;

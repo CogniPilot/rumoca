@@ -137,6 +137,21 @@ fn solve_template_json_for_dae(dae_model: &Dae) -> Result<serde_json::Value, Cod
 }
 
 impl CompilationResult {
+    pub fn new(
+        dae: Dae,
+        balance_detail: dae_analysis::BalanceDetail,
+        flat: FlatModel,
+        resolved: ResolvedTree,
+    ) -> Self {
+        Self {
+            dae,
+            balance_detail,
+            flat,
+            resolved,
+            solve_template_renderer: std::sync::OnceLock::new(),
+        }
+    }
+
     fn template_json_dae_only(&self) -> Result<Value, CompilerError> {
         dae_to_template_json(&self.dae).map_err(CompilerError::TemplateError)
     }
@@ -749,13 +764,12 @@ impl Compiler {
             eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
-        Ok(CompilationResult {
-            dae: result.dae,
-            balance_detail: result.balance_detail,
-            flat: result.flat,
+        Ok(CompilationResult::new(
+            result.dae,
+            result.balance_detail,
+            result.flat,
             resolved,
-            solve_template_renderer: std::sync::OnceLock::new(),
-        })
+        ))
     }
 
     /// Compile Modelica source code through the resolved AST stage only.
