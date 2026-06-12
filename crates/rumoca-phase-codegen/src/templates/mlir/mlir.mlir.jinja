@@ -185,8 +185,8 @@
     %{{ pfx }}_comp = arith.constant {{ comp }} : i64
     %r{{ r }}_{{ dst }} = func.call @rumoca_solve_linear_component(%{{ pfx }}_Ai64, %{{ pfx }}_bi64, %{{ pfx }}_n, %{{ pfx }}_comp) : (i64, i64, i64, i64) -> f64
 {%- elif op.StoreOutput is defined %}
-    %outi{{ r }} = arith.constant {{ i }} : index
-    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi{{ r }}] : memref<?xf64>
+    %outi_{{ i }} = arith.constant {{ i }} : index
+    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi_{{ i }}] : memref<?xf64>
 {%- endif %}
 {%- endmacro %}
 
@@ -209,8 +209,9 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in drv_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -222,8 +223,9 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in impl_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -238,8 +240,9 @@ module @{{ name }} {
       %seed : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in jac_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -252,8 +255,9 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in root_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }

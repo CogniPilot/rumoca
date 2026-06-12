@@ -456,9 +456,16 @@ pub(super) fn render_solve_block_c_function(
     programs: Value,
     config: Value,
     out_set: Value,
+    output_offset: Option<Value>,
 ) -> RenderResult {
     let cfg = SolveRowCConfig::from_value(&config);
-    render_solve_block_for(&programs, &cfg, SolveRowDialect::C, &value_to_string(&out_set))
+    render_solve_block_for(
+        &programs,
+        &cfg,
+        SolveRowDialect::C,
+        &value_to_string(&out_set),
+        output_offset.and_then(|v| v.as_usize()).unwrap_or(0),
+    )
 }
 
 /// Rust counterpart of [`render_solve_block_c_function`].
@@ -466,6 +473,7 @@ pub(super) fn render_solve_block_rust_function(
     programs: Value,
     config: Value,
     out_set: Value,
+    output_offset: Option<Value>,
 ) -> RenderResult {
     let cfg = SolveRowCConfig::from_value(&config);
     render_solve_block_for(
@@ -473,7 +481,29 @@ pub(super) fn render_solve_block_rust_function(
         &cfg,
         SolveRowDialect::Rust,
         &value_to_string(&out_set),
+        output_offset.and_then(|v| v.as_usize()).unwrap_or(0),
     )
+}
+
+/// Total number of outputs (`StoreOutput` ops) across a list of scalar programs.
+/// Used by templates to size output buffers and advance running output offsets
+/// when a program may emit more than one output.
+pub(super) fn solve_block_output_count_function(programs: Value) -> Result<usize, minijinja::Error> {
+    let mut count = 0usize;
+    for program in programs
+        .try_iter()
+        .map_err(|_| render_err("solve programs must be an array"))?
+    {
+        for op in program
+            .try_iter()
+            .map_err(|_| render_err("solve program must be an array of LinearOp values"))?
+        {
+            if get_field(&op, "StoreOutput").is_ok() {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
 }
 
 pub(super) fn render_solve_slot_assign_c_function(
@@ -892,10 +922,11 @@ fn render_solve_block_for(
     cfg: &SolveRowCConfig,
     dialect: SolveRowDialect,
     out_set: &str,
+    output_offset: usize,
 ) -> RenderResult {
     let mut body = String::new();
     let mut temp_counter = 0usize;
-    let mut output_index = 0usize;
+    let mut output_index = output_offset;
     for program in programs
         .try_iter()
         .map_err(|_| render_err("solve programs must be an array"))?

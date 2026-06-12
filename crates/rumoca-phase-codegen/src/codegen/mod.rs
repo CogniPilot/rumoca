@@ -29,7 +29,7 @@ use render_solve::{
     render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
     render_solve_block_rust_function, render_solve_pre_param_binding_c_function,
     render_solve_row_c_function, render_solve_row_rust_function,
-    render_solve_slot_assign_c_function,
+    render_solve_slot_assign_c_function, solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 
@@ -1259,6 +1259,7 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
     env.add_function("render_solve_block_c", render_solve_block_c_function);
     env.add_function("render_solve_block_rust", render_solve_block_rust_function);
+    env.add_function("store_output_count", solve_block_output_count_function);
     env.add_function(
         "render_solve_slot_assign_c",
         render_solve_slot_assign_c_function,
