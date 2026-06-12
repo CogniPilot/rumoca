@@ -51,6 +51,82 @@ impl Object for SolveRowsValue {
     }
 }
 
+/// Affine row families exposed to templates as a typed sequence; each
+/// element is a `SolveStencilValue` the stencil renderer can downcast.
+#[derive(Debug)]
+pub(super) struct SolveStencilsValue {
+    families: Arc<Vec<super::stencil::AffineRowFamily>>,
+}
+
+impl SolveStencilsValue {
+    pub(super) fn new(families: Vec<super::stencil::AffineRowFamily>) -> Self {
+        Self {
+            families: Arc::new(families),
+        }
+    }
+}
+
+impl Object for SolveStencilsValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        (index < self.families.len()).then(|| {
+            Value::from_object(SolveStencilValue {
+                families: self.families.clone(),
+                index,
+            })
+        })
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.families.len())
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct SolveStencilValue {
+    families: Arc<Vec<super::stencil::AffineRowFamily>>,
+    index: usize,
+}
+
+impl SolveStencilValue {
+    fn family(&self) -> &super::stencil::AffineRowFamily {
+        &self.families[self.index]
+    }
+}
+
+impl Object for SolveStencilValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        match key.as_str()? {
+            "start_row" => Some(Value::from(self.family().start_row)),
+            "count" => Some(Value::from(self.family().count)),
+            _ => None,
+        }
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Str(&["start_row", "count"])
+    }
+}
+
+/// Template function: render a stencil family as a WGSL expression
+/// parametric in the kernel-local row offset `r`.
+pub(super) fn render_solve_stencil_wgsl_function(stencil: Value, config: Value) -> RenderResult {
+    let Some(stencil) = stencil.downcast_object_ref::<SolveStencilValue>() else {
+        return Err(render_err(
+            "render_solve_stencil_wgsl expects a stencil from solve_blocks",
+        ));
+    };
+    render_stencil_family_expr_wgsl(stencil.family(), &config)
+}
+
 #[derive(Debug)]
 pub(super) struct SolveRowValue {
     rows: Arc<Vec<Vec<solve::LinearOp>>>,
@@ -782,14 +858,76 @@ fn render_solve_row_for(
     output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
 }
 
+/// Render an affine row family as one WGSL expression parametric in the
+/// row offset `r` (a `u32` in the emitting kernel): loads with stride 0
+/// keep their literal index; stride 1 renders `base + r`; larger strides
+/// render `base + r * stride`.
+fn render_stencil_family_expr_wgsl(
+    family: &super::stencil::AffineRowFamily,
+    config: &Value,
+) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(config);
+    let mut overrides = std::collections::HashMap::new();
+    for &(position, stride) in &family.load_strides {
+        if stride == 0 {
+            continue;
+        }
+        let (pattern_is_y, base_index) = match &family.base_ops[position] {
+            solve::LinearOp::LoadY { index, .. } => (true, *index),
+            solve::LinearOp::LoadP { index, .. } => (false, *index),
+            other => {
+                return Err(render_err(format!(
+                    "stencil stride targets a non-load op: {other:?}"
+                )));
+            }
+        };
+        let index_expr = if stride == 1 {
+            format!("{base_index}u + r")
+        } else {
+            format!("{base_index}u + r * {stride}u")
+        };
+        let access = if pattern_is_y {
+            cfg.y_access_expr(&index_expr)
+        } else {
+            cfg.p_access_expr(&index_expr)
+        };
+        overrides.insert(position, access);
+    }
+    render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+}
+
 fn render_solve_row_typed(
     ops: &[solve::LinearOp],
     cfg: &SolveRowCConfig,
     dialect: SolveRowDialect,
 ) -> RenderResult {
+    render_solve_row_typed_with_overrides(ops, &std::collections::HashMap::new(), cfg, dialect)
+}
+
+/// Typed row render where selected load ops (by op position) use a caller
+/// provided access expression instead of their literal index — the
+/// mechanism behind parametric stencil-kernel emission.
+fn render_solve_row_typed_with_overrides(
+    ops: &[solve::LinearOp],
+    access_overrides: &std::collections::HashMap<usize, String>,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+) -> RenderResult {
     let mut regs = Vec::<String>::new();
     let mut output = None;
-    for op in ops {
+    for (position, op) in ops.iter().enumerate() {
+        if let Some(access) = access_overrides.get(&position) {
+            let dst = match op {
+                solve::LinearOp::LoadY { dst, .. } | solve::LinearOp::LoadP { dst, .. } => *dst,
+                other => {
+                    return Err(render_err(format!(
+                        "stencil access override targets a non-load op: {other:?}"
+                    )));
+                }
+            };
+            store_solve_reg(regs.as_mut(), dst as usize, access.clone());
+            continue;
+        }
         output = render_solve_op_typed(op, cfg, dialect, &mut regs, output)?;
     }
     output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
@@ -1359,6 +1497,14 @@ impl SolveRowCConfig {
 
     fn y_access(&self, index: usize) -> String {
         format_solve_access(&self.y_pattern, index)
+    }
+
+    fn y_access_expr(&self, index_expr: &str) -> String {
+        self.y_pattern.replace("{}", index_expr)
+    }
+
+    fn p_access_expr(&self, index_expr: &str) -> String {
+        self.p_pattern.replace("{}", index_expr)
     }
 
     fn p_access(&self, index: usize) -> String {

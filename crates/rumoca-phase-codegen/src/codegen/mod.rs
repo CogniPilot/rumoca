@@ -843,6 +843,12 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     let uses_linear_solve = scalar_program_block_uses_linear_solve_component(&scalar_programs);
     let nodes = Value::from_serialize(&block.nodes);
     let program_spans = Value::from_serialize(&scalar_programs.program_spans);
+    // Affine row families (stencils) let GPU backends emit one parametric
+    // kernel per family instead of one switch case per row; rows not in a
+    // family stay addressable through `stencil_residual_rows`.
+    let partition = stencil::partition_rows(&scalar_programs.programs);
+    let stencil_residual_rows = Value::from_serialize(&partition.residual_rows);
+    let stencils = Value::from_object(render_solve::SolveStencilsValue::new(partition.families));
     // Rows go to templates as typed objects: per-row serde bridging made
     // rendering the dominant compile cost on large models.
     let programs = Value::from_object(render_solve::SolveRowsValue::new(scalar_programs.programs));
@@ -852,6 +858,8 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
             programs => programs,
             program_spans => program_spans,
         },
+        stencils => stencils,
+        stencil_residual_rows => stencil_residual_rows,
         output_count => block.len(),
         tensor_node_count => block.tensor_node_count(),
         scalar_programs_use_linear_solve_component => uses_linear_solve,
@@ -1233,6 +1241,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
     env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
+    env.add_function(
+        "render_solve_stencil_wgsl",
+        render_solve::render_solve_stencil_wgsl_function,
+    );
     env.add_function(
         "render_solve_slot_assign_c",
         render_solve_slot_assign_c_function,
@@ -1862,6 +1874,8 @@ mod local_tests {
         );
     }
 }
+
+mod stencil;
 
 mod solve_renderer;
 pub use solve_renderer::SolveTemplateRenderer;

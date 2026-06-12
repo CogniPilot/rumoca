@@ -1,11 +1,25 @@
+{%- set derivative = solve_blocks.continuous.derivative_rhs %}
+{%- set residual = derivative.stencil_residual_rows %}
+{%- set row_count = derivative.scalar_programs.programs | length %}
+{%- set residual_chunks = ((residual | length + 63) // 64) if residual | length > 0 else 0 %}
 {
   "model": "{{ model_name | default("model") }}",
   "kernel_prefix": "derivative_rhs_chunk",
   "workgroup_size": 64,
   "chunk_size": 64,
-{%- set row_count = solve_blocks.continuous.derivative_rhs.scalar_programs.programs | length %}
-  "chunks": {{ ((row_count + 63) // 64) if row_count > 0 else 1 }},
-  "rows": {{ solve_blocks.continuous.derivative_rhs.output_count }},
+  "chunks": {{ residual_chunks if (derivative.stencils | length) > 0 or residual | length > 0 else 1 }},
+  "kernels": [
+{%- for st in derivative.stencils %}
+    { "entry": "derivative_rhs_stencil{{ loop.index0 }}", "rows": {{ st.count }} }{{ "," if not loop.last or residual_chunks > 0 }}
+{%- endfor %}
+{%- for start in range(0, residual | length, 64) %}
+    { "entry": "derivative_rhs_chunk{{ loop.index0 }}", "rows": {{ [start + 64, residual | length] | min - start }} }{{ "," if not loop.last }}
+{%- endfor %}
+{%- if (derivative.stencils | length) == 0 and (residual | length) == 0 %}
+    { "entry": "derivative_rhs_chunk0", "rows": 0 }
+{%- endif %}
+  ],
+  "rows": {{ derivative.output_count }},
   "y_len": {{ solve.layout.y_scalars }},
   "p_len": {{ solve.layout.p_scalars }},
   "runtime_event_roots": {{ solve.events.root_conditions.programs | length }},
