@@ -229,12 +229,17 @@ pure ODE — exactly what the method of lines wants:
   velocity to zero, so the flow sees a solid body on a plain Cartesian grid.
 
 The angle of attack enters only through the freestream direction `(uin,
-vin)` — edit `aoa` and re-run. The run is an impulsive wind-tunnel start:
+vin)` — edit `aoa` and re-run. This example defaults the **GPU** checkbox
+on: the compiler's experimental `wgsl-solve` backend lowers the system to
+a WebGPU compute kernel. If WebGPU is missing the run fails with a clear
+error (uncheck GPU for the CPU path), and while the in-page WebGPU
+integrator is still landing the checkbox reports its status honestly
+rather than falling back silently. The run is an impulsive wind-tunnel start:
 the field begins at rest and the freestream sweeps in from the inlet and
 far-field boundaries. This is the heaviest example in the book
 (~3,500 unknowns after unrolling): expect the first run to take a while.
 
-```modelica,interactive
+```modelica,interactive,gpu
 model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penalization"
   parameter Integer NX = 30 "Cells along the channel";
   parameter Integer NY = 18 "Cells across the channel";

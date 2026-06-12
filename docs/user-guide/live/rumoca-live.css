@@ -193,8 +193,9 @@
 }
 
 .rumoca-live-progress {
-    height: 4px;
+    height: 10px;
     background: var(--table-border-color, #ddd);
+    border-radius: 0 0 4px 4px;
     overflow: hidden;
 }
 
@@ -216,4 +217,13 @@
 @keyframes rumoca-live-progress-slide {
     from { background-position: 0 0; }
     to { background-position: 34px 0; }
+}
+
+.rumoca-live-gpu {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25em;
+    font-size: 0.8em;
+    cursor: pointer;
+    user-select: none;
 }

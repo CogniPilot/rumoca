@@ -1012,6 +1012,7 @@ self.onmessage = async (event) => {
         const pre = codeEl.parentElement;
         const originalSource = codeEl.textContent.replace(/\n$/, '');
         const wantsRadialViz = /\bviz-radial\b/.test(codeEl.className || '');
+        const gpuDefault = /\bgpu\b/.test(codeEl.className || '');
 
         const container = document.createElement('div');
         container.className = 'rumoca-live';
@@ -1032,9 +1033,16 @@ self.onmessage = async (event) => {
         resetBtn.type = 'button';
         resetBtn.className = 'rumoca-live-button';
         resetBtn.textContent = 'Reset';
+        const gpuLabel = document.createElement('label');
+        gpuLabel.className = 'rumoca-live-gpu';
+        const gpuCheck = document.createElement('input');
+        gpuCheck.type = 'checkbox';
+        gpuCheck.checked = gpuDefault;
+        gpuLabel.append(gpuCheck, document.createTextNode(' GPU'));
+        gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
-        toolbar.append(runBtn, daeBtn, resetBtn, status);
+        toolbar.append(runBtn, daeBtn, resetBtn, gpuLabel, status);
 
         const progress = document.createElement('div');
         progress.className = 'rumoca-live-progress';
@@ -1070,7 +1078,7 @@ self.onmessage = async (event) => {
                 }
                 const suffix = expected
                     ? ` ${(elapsed / 1000).toFixed(0)} / ~${(expected / 1000).toFixed(0)} s`
-                    : ` ${(elapsed / 1000).toFixed(0)} s`;
+                    : ` ${(elapsed / 1000).toFixed(0)} s (first run — no estimate yet)`;
                 status.textContent = label + suffix;
             };
             tick();
@@ -1153,7 +1161,37 @@ self.onmessage = async (event) => {
             }
         };
 
+        const probeGpu = async () => {
+            if (!navigator.gpu) {
+                throw new Error(
+                    'GPU requested but WebGPU is not available in this '
+                    + 'browser. Uncheck GPU to run on the CPU (WASM) path.'
+                );
+            }
+            const adapter = await navigator.gpu.requestAdapter()
+                || await navigator.gpu.requestAdapter({ forceFallbackAdapter: true });
+            if (!adapter) {
+                throw new Error(
+                    'GPU requested but no WebGPU adapter was found. '
+                    + 'Uncheck GPU to run on the CPU (WASM) path.'
+                );
+            }
+            return adapter;
+        };
+
         runBtn.addEventListener('click', () => withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model) => {
+            if (gpuCheck.checked) {
+                await probeGpu();
+                // Kernel generation (the wgsl-solve target) is in the
+                // compiler; the in-page WebGPU integrator is landing next.
+                // Fail loudly rather than silently running on the CPU.
+                throw new Error(
+                    'WebGPU adapter detected, but the browser execution '
+                    + 'driver for the wgsl-solve backend has not shipped in '
+                    + 'this build yet (see rumoca issue #236). Uncheck GPU '
+                    + 'to simulate on the CPU (WASM) path.'
+                );
+            }
             // t_end = 0 / dt = 0 / solver = "" defer to the model's
             // experiment annotation, falling back to runtime defaults. The
             // call runs in a worker so the page (and progress bar) stay live.
