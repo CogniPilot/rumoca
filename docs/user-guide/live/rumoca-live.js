@@ -659,14 +659,15 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
         // Kernel inventory: stencil-family kernels + residual chunks from
-        // the layout manifest; fall back to the legacy chunk list for
-        // packages predating stencil emission.
-        const kernelList = Array.isArray(layout.kernels) && layout.kernels.length > 0
-            ? layout.kernels
-            : Array.from({ length: Math.max(layout.chunks | 0, 1) }, (_, c) => ({
-                entry: `${layout.kernel_prefix || 'derivative_rhs_chunk'}${c}`,
-                rows: layout.chunk_size | 0 || 64,
-            }));
+        // the layout manifest.
+        if (!Array.isArray(layout.kernels) || layout.kernels.length === 0) {
+            throw new Error(
+                'GPU layout manifest has no kernel inventory; the WASM package '
+                + 'predates stencil emission. Rebuild it from the wgsl-backend '
+                + 'sources (wasm-pack build crates/rumoca-bind-wasm).'
+            );
+        }
+        const kernelList = layout.kernels;
         let pipelinesBuilt = 0;
         onPhase(`Building GPU pipelines (0/${kernelList.length})`, 0);
         const derPipelines = await Promise.all(
