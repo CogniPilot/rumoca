@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ['main']
+    tags: ['v*']
   pull_request:
     branches: ['main']
 
@@ -27,7 +28,7 @@ permissions:
 jobs:
   detect-release-tag:
     name: Detect release tag on commit
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     outputs:
       is_release: ${{ steps.detect.outputs.is_release }}
@@ -845,7 +846,7 @@ jobs:
 
   deploy-pages:
     name: Deploy Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [build-wasm]
     runs-on: ubuntu-24.04
     environment:
@@ -1113,7 +1114,7 @@ jobs:
   # ============================================================================
   deploy:
     name: Deploy
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.detect-release-tag.outputs.is_release == 'true'
     needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
@@ -1125,11 +1126,17 @@ jobs:
 
       - name: Verify tag is on main
         run: |
-          if ! git tag --points-at "${{ github.sha }}" | grep -Fx "${{ needs.detect-release-tag.outputs.tag }}" >/dev/null; then
-            echo "::error::Detected release tag '${{ needs.detect-release-tag.outputs.tag }}' is not on commit ${{ github.sha }}"
+          tag='${{ needs.detect-release-tag.outputs.tag }}'
+          if ! git tag --points-at "${{ github.sha }}" | grep -Fx "$tag" >/dev/null; then
+            echo "::error::Release tag '$tag' does not point at built commit ${{ github.sha }}"
             exit 1
           fi
-          echo "Release tag '${{ needs.detect-release-tag.outputs.tag }}' points to current main commit"
+          git fetch --no-tags --depth=2147483647 origin main
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "::error::Release tag '$tag' commit ${{ github.sha }} is not on origin/main; refusing to release"
+            exit 1
+          fi
+          echo "Release tag '$tag' points to commit ${{ github.sha }} on origin/main"
 
       - name: Get tag name
         id: tag
