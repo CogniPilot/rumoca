@@ -78,33 +78,6 @@ pub(super) struct IndexedBinding {
 
 pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>>;
 
-/// Cached per-key view of an indexed binding group: inferred dims plus an
-/// indices-to-position map over the rank-length entries. Deriving these per
-/// reference (clone + scan + sort of the whole group) was quadratic in
-/// model size for large arrays.
-pub(super) struct IndexedMeta {
-    pub(super) dims: Vec<usize>,
-    pub(super) by_indices: std::collections::HashMap<Vec<usize>, usize>,
-}
-
-impl IndexedMeta {
-    pub(super) fn build(entries: &[IndexedBinding]) -> Self {
-        let dims = helpers::infer_indexed_dims(entries);
-        let rank = entries
-            .iter()
-            .map(|entry| entry.indices.len())
-            .max()
-            .unwrap_or(0);
-        let mut by_indices = std::collections::HashMap::with_capacity(entries.len());
-        for (position, entry) in entries.iter().enumerate() {
-            if entry.indices.len() == rank {
-                by_indices.entry(entry.indices.clone()).or_insert(position);
-            }
-        }
-        Self { dims, by_indices }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalIndexedBinding {
     reg: Reg,
