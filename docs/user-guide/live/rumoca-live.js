@@ -658,23 +658,32 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         const stageModule = await compileGpuModule(device, GPU_STAGE_WGSL, 'rk4-stage');
         const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
-        const chunks = Math.max(layout.chunks | 0, 1);
-        const prefix = layout.kernel_prefix || 'derivative_rhs_chunk';
+        // Kernel inventory: stencil-family kernels + residual chunks from
+        // the layout manifest; fall back to the legacy chunk list for
+        // packages predating stencil emission.
+        const kernelList = Array.isArray(layout.kernels) && layout.kernels.length > 0
+            ? layout.kernels
+            : Array.from({ length: Math.max(layout.chunks | 0, 1) }, (_, c) => ({
+                entry: `${layout.kernel_prefix || 'derivative_rhs_chunk'}${c}`,
+                rows: layout.chunk_size | 0 || 64,
+            }));
         let pipelinesBuilt = 0;
-        onPhase(`Building GPU pipelines (0/${chunks})`, 0);
+        onPhase(`Building GPU pipelines (0/${kernelList.length})`, 0);
         const derPipelines = await Promise.all(
-            Array.from({ length: chunks }, (_, c) => device.createComputePipelineAsync({
+            kernelList.map((kernel) => device.createComputePipelineAsync({
                 layout: 'auto',
-                compute: { module: derModule, entryPoint: `${prefix}${c}` },
+                compute: { module: derModule, entryPoint: kernel.entry },
             }).then((pipeline) => {
                 pipelinesBuilt += 1;
                 onPhase(
-                    `Building GPU pipelines (${pipelinesBuilt}/${chunks})`,
-                    pipelinesBuilt / chunks
+                    `Building GPU pipelines (${pipelinesBuilt}/${kernelList.length})`,
+                    pipelinesBuilt / kernelList.length
                 );
                 return pipeline;
             }))
         );
+        const kernelWorkgroups = kernelList.map(
+            (kernel) => Math.max(1, Math.ceil((kernel.rows | 0) / 64)));
         const axpyPipeline = await device.createComputePipelineAsync({
             layout: 'auto', compute: { module: stageModule, entryPoint: 'axpy' },
         });
@@ -766,7 +775,7 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
             derPipelines.forEach((pipe, c) => {
                 pass.setPipeline(pipe);
                 pass.setBindGroup(0, derBinds[stage][c]);
-                pass.dispatchWorkgroups(1);
+                pass.dispatchWorkgroups(kernelWorkgroups[c]);
             });
             pass.end();
         };
