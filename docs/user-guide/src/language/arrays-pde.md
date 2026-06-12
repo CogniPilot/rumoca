@@ -231,10 +231,12 @@ pure ODE — exactly what the method of lines wants:
 The angle of attack enters only through the freestream direction `(uin,
 vin)` — edit `aoa` and re-run. This example defaults the **GPU** checkbox
 on: the compiler's experimental `wgsl-solve` backend lowers the system to
-a WebGPU compute kernel. If WebGPU is missing the run fails with a clear
-error (uncheck GPU for the CPU path), and while the in-page WebGPU
-integrator is still landing the checkbox reports its status honestly
-rather than falling back silently. The run is an impulsive wind-tunnel start:
+WebGPU compute kernels and an in-page RK4 integrator runs them — about
+5× faster than the CPU (WASM) path even on a software GPU adapter. If
+WebGPU is unavailable the run fails with a clear error instead of
+silently falling back (uncheck GPU for the CPU path). GPU v1 runs in
+f32 with events and algebraics frozen at their initial values, which is
+exact for this model's constant geometry masks. The run is an impulsive wind-tunnel start:
 the field begins at rest and the freestream sweeps in from the inlet and
 far-field boundaries. This is the heaviest example in the book
 (~3,500 unknowns after unrolling): expect the first run to take a while.
