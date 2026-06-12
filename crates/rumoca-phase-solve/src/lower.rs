@@ -312,6 +312,12 @@ struct LowerBuilder<'a> {
     call_site_namespace: u64,
     next_call_site: u64,
     cse: RowCse,
+    /// Lazy index from a parent binding path to its direct scalarized
+    /// children, mirroring `scope_key_direct_child_suffix` semantics.
+    /// Built once on first use: the previous per-reference full scan of
+    /// `layout.bindings()` was quadratic in model size and dominated
+    /// solve lowering for large discretized models.
+    scalarized_children_index: Option<IndexMap<String, Vec<(ComponentReferenceKey, String)>>>,
 }
 
 #[derive(Default)]
@@ -399,6 +405,7 @@ impl<'a> LowerBuilder<'a> {
             call_site_namespace: 0,
             next_call_site: 0,
             cse: RowCse::default(),
+            scalarized_children_index: None,
         }
     }
 
@@ -455,6 +462,7 @@ impl<'a> LowerBuilder<'a> {
             call_site_namespace: self.call_site_namespace,
             next_call_site: 0,
             cse: RowCse::default(),
+            scalarized_children_index: None,
         }
     }
 

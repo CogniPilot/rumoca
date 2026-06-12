@@ -1,10 +1,82 @@
 //! C and MLIR rendering for solver-facing row IR.
 
+use std::sync::Arc;
+
 use crate::errors::render_err;
 use minijinja::Value;
+use minijinja::value::{Enumerator, Object, ObjectRepr};
+use rumoca_ir_solve as solve;
 
 use super::render_expr::get_field;
 use super::{RenderResult, value_to_string};
+
+// ─── Typed scalar-program rows ───────────────────────────────────────────────
+//
+// Templates receive scalar-program rows as these objects instead of
+// serde-bridged values: per-row value bridging dominated render time on
+// large models (each access re-serialized op subtrees). The row renderers
+// downcast and walk the typed ops directly; plain-value rows (tests,
+// custom contexts) keep the original walk.
+
+#[derive(Debug)]
+pub(super) struct SolveRowsValue {
+    rows: Arc<Vec<Vec<solve::LinearOp>>>,
+}
+
+impl SolveRowsValue {
+    pub(super) fn new(rows: Vec<Vec<solve::LinearOp>>) -> Self {
+        Self {
+            rows: Arc::new(rows),
+        }
+    }
+}
+
+impl Object for SolveRowsValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        (index < self.rows.len()).then(|| {
+            Value::from_object(SolveRowValue {
+                rows: self.rows.clone(),
+                index,
+            })
+        })
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.rows.len())
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct SolveRowValue {
+    rows: Arc<Vec<Vec<solve::LinearOp>>>,
+    index: usize,
+}
+
+impl SolveRowValue {
+    fn ops(&self) -> &[solve::LinearOp] {
+        &self.rows[self.index]
+    }
+}
+
+impl Object for SolveRowValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        self.ops().get(index).map(Value::from_serialize)
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.ops().len())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct MatMulRenderShape {
@@ -696,6 +768,9 @@ fn render_solve_row_for(
     cfg: &SolveRowCConfig,
     dialect: SolveRowDialect,
 ) -> RenderResult {
+    if let Some(typed) = row.downcast_object_ref::<SolveRowValue>() {
+        return render_solve_row_typed(typed.ops(), cfg, dialect);
+    }
     let mut regs = Vec::<String>::new();
     let mut output = None;
     let iter = row
@@ -705,6 +780,128 @@ fn render_solve_row_for(
         output = render_solve_op_for(&op, cfg, dialect, &mut regs, output)?;
     }
     output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
+}
+
+fn render_solve_row_typed(
+    ops: &[solve::LinearOp],
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut output = None;
+    for op in ops {
+        output = render_solve_op_typed(op, cfg, dialect, &mut regs, output)?;
+    }
+    output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
+}
+
+/// Typed twin of `render_solve_op_for`. The textual output must stay
+/// byte-identical to the value-walk path (`{:?}` on f64 prints the same
+/// shortest round-trip form serde_json uses; non-finite constants render
+/// as the dialect infinity, matching serde_json's null for non-finite).
+fn render_solve_op_typed(
+    op: &solve::LinearOp,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    regs: &mut Vec<String>,
+    output: Option<String>,
+) -> Result<Option<String>, minijinja::Error> {
+    use solve::LinearOp;
+    match op {
+        LinearOp::Const { dst, value } => {
+            let text = if value.is_finite() {
+                format!("{value:?}")
+            } else {
+                dialect.infinity().to_string()
+            };
+            store_solve_reg(regs, *dst as usize, dialect.format_const(text));
+        }
+        LinearOp::LoadTime { dst } => {
+            store_solve_reg(regs, *dst as usize, cfg.time.clone());
+        }
+        LinearOp::LoadY { dst, index } => {
+            store_solve_reg(regs, *dst as usize, cfg.y_access(*index));
+        }
+        LinearOp::LoadP { dst, index } => {
+            store_solve_reg(regs, *dst as usize, cfg.p_access(*index));
+        }
+        LinearOp::LoadSeed { dst, index } => {
+            let Some(seed) = cfg.seed_access(*index) else {
+                return Err(render_err(
+                    "LoadSeed requires a `seed` access pattern in solve-row C output",
+                ));
+            };
+            store_solve_reg(regs, *dst as usize, seed);
+        }
+        LinearOp::Move { dst, src } => {
+            let value = solve_reg(regs, *src as usize)?;
+            store_solve_reg(regs, *dst as usize, value);
+        }
+        LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start,
+            rhs_start,
+            n,
+            component,
+        } => {
+            let expr = dialect.render_linear_solve_component(
+                regs,
+                *matrix_start as usize,
+                *rhs_start as usize,
+                *n,
+                *component,
+            )?;
+            store_solve_reg(regs, *dst as usize, expr);
+        }
+        LinearOp::Unary { dst, op, arg } => {
+            let arg = solve_reg(regs, *arg as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_unary(&format!("{op:?}"), arg)?,
+            );
+        }
+        LinearOp::Binary { dst, op, lhs, rhs } => {
+            let lhs = solve_reg(regs, *lhs as usize)?;
+            let rhs = solve_reg(regs, *rhs as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_binary(&format!("{op:?}"), lhs, rhs)?,
+            );
+        }
+        LinearOp::Compare { dst, op, lhs, rhs } => {
+            let lhs = solve_reg(regs, *lhs as usize)?;
+            let rhs = solve_reg(regs, *rhs as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_compare(&format!("{op:?}"), lhs, rhs)?,
+            );
+        }
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => {
+            let cond = solve_reg(regs, *cond as usize)?;
+            let if_true = solve_reg(regs, *if_true as usize)?;
+            let if_false = solve_reg(regs, *if_false as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_select(cond, if_true, if_false),
+            );
+        }
+        LinearOp::StoreOutput { src } => {
+            return Ok(Some(solve_reg(regs, *src as usize)?));
+        }
+        other => {
+            return Err(render_err(format!("unsupported solve LinearOp: {other:?}")));
+        }
+    }
+    Ok(output)
 }
 
 fn render_solve_op_c(

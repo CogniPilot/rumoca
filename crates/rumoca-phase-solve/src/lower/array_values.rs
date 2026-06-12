@@ -1193,6 +1193,35 @@ impl<'a> LowerBuilder<'a> {
         keys
     }
 
+    /// Index from a parent binding path to its direct scalarized children.
+    ///
+    /// Mirrors `scope_key_direct_child_suffix` for generated keys: a binding
+    /// `<parent>.<seg>` is a direct child of `<parent>` when `<seg>` contains
+    /// neither `.` nor `[`. Built once per lowering; the previous full scan
+    /// of `layout.bindings()` per reference was quadratic in model size.
+    fn scalarized_children_index(
+        &mut self,
+    ) -> &IndexMap<String, Vec<(ComponentReferenceKey, String)>> {
+        if self.scalarized_children_index.is_none() {
+            let mut index: IndexMap<String, Vec<(ComponentReferenceKey, String)>> = IndexMap::new();
+            for name in self.layout.bindings().keys() {
+                let Some(dot) = name.rfind('.') else {
+                    continue;
+                };
+                let segment = &name[dot + 1..];
+                if segment.is_empty() || segment.contains('[') {
+                    continue;
+                }
+                index
+                    .entry(name[..dot].to_string())
+                    .or_default()
+                    .push((generated_scope_key(name.clone()), name.clone()));
+            }
+            self.scalarized_children_index = Some(index);
+        }
+        self.scalarized_children_index.as_ref().expect("just built")
+    }
+
     fn lower_scalarized_component_values(
         &mut self,
         base_key: &ComponentReferenceKey,
@@ -1206,16 +1235,25 @@ impl<'a> LowerBuilder<'a> {
             })
             .collect::<IndexMap<_, _>>();
 
-        let child_paths = self
-            .layout
-            .bindings()
-            .keys()
-            .filter_map(|name| {
-                let key = generated_scope_key(name);
-                scope_key_direct_child_suffix(&key, base_key)?;
-                (!values.contains_key(&key)).then_some((key, name.clone()))
-            })
-            .collect::<Vec<_>>();
+        // Bindings are keyed by generated names, so only a generated base
+        // key can have binding children (matching the Generated/Generated
+        // arm of `scope_key_direct_child_suffix`).
+        let child_paths = match generated_scope_key_name(base_key) {
+            Some(base_name) => {
+                let base_name = base_name.to_string();
+                self.scalarized_children_index()
+                    .get(&base_name)
+                    .map(|children| {
+                        children
+                            .iter()
+                            .filter(|(key, _)| !values.contains_key(key))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
 
         for (key, name) in child_paths {
             let slot = self

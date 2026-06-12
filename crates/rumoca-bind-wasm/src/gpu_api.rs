@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::simulation_api::build_simulation_options;
 use crate::{compile_requested_model, qualify_input_model_name, with_singleton_session};
-use rumoca_compile::codegen::render_solve_template_with_name;
+use rumoca_compile::codegen::SolveTemplateRenderer;
 use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
 
 /// Prepare a model for WebGPU execution.
@@ -41,17 +41,17 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
 
         let bundle = TargetBundle::builtin("wgsl-solve")
             .ok_or_else(|| JsValue::from_str("wgsl-solve builtin target is missing"))?;
+        // One shared context: building it serializes the full solve problem.
+        let renderer =
+            SolveTemplateRenderer::new(&solve_model.problem, &solve_model.artifacts, model_name)
+                .map_err(|e| JsValue::from_str(&format!("wgsl-solve context failed: {e}")))?;
         let render = |template_name: &str| -> Result<String, JsValue> {
             let template = bundle
                 .template_source(template_name)
                 .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-            render_solve_template_with_name(
-                &solve_model.problem,
-                &solve_model.artifacts,
-                template.as_ref(),
-                model_name,
-            )
-            .map_err(|e| JsValue::from_str(&format!("wgsl-solve render failed: {e}")))
+            renderer
+                .render(template.as_ref())
+                .map_err(|e| JsValue::from_str(&format!("wgsl-solve render failed: {e}")))
         };
         let wgsl = render("model_solve.wgsl.jinja")?;
         let layout_text = render("model_layout.json.jinja")?;

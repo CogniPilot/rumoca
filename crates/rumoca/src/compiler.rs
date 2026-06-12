@@ -40,7 +40,7 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, dae_to_template_json, render_ast_template_with_name,
+    CodegenError, DaeJsonTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
     render_dae_template_with_json, render_dae_template_with_json_and_name,
     render_flat_template_with_name,
 };
@@ -70,6 +70,11 @@ pub struct CompilationResult {
     pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
     pub resolved: ResolvedTree,
+    /// Cached solve-template renderer (scalarized DAE + lowered solve
+    /// problem, converted to template values). Building it dominates target
+    /// generation on large models and a multi-file target renders several
+    /// strings against the same input.
+    solve_template_renderer: std::sync::OnceLock<DaeJsonTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -118,11 +123,7 @@ fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenErro
     Ok(value)
 }
 
-fn render_solve_template_with_name(
-    dae_model: &Dae,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
+fn solve_template_json_for_dae(dae_model: &Dae) -> Result<serde_json::Value, CodegenError> {
     let dae = scalarized_dae(dae_model)?;
     let mut dae_json = dae_to_template_json_with_solve(&dae)?;
     dae_json
@@ -132,7 +133,7 @@ fn render_solve_template_with_name(
             "__ir_kind".to_string(),
             serde_json::Value::String("solve".to_string()),
         );
-    render_dae_template_with_json_and_name(&dae_json, template, model_name)
+    Ok(dae_json)
 }
 
 impl CompilationResult {
@@ -346,8 +347,24 @@ impl CompilationResult {
     ) -> Result<String, CompilerError> {
         match ir {
             TemplateIr::Dae => self.render_template_str_with_name(template, model_name),
-            TemplateIr::Solve => render_solve_template_with_name(&self.dae, template, model_name)
-                .map_err(CompilerError::TemplateError),
+            TemplateIr::Solve => {
+                // Scalarization, solve lowering, serialization, and the
+                // JSON-to-template-value conversion dominate large-model
+                // target generation; build once per compilation and render
+                // every template string (paths included) against the cache.
+                if self.solve_template_renderer.get().is_none() {
+                    let json = solve_template_json_for_dae(&self.dae)
+                        .map_err(CompilerError::TemplateError)?;
+                    let renderer =
+                        DaeJsonTemplateRenderer::new(json).map_err(CompilerError::TemplateError)?;
+                    let _ = self.solve_template_renderer.set(renderer);
+                }
+                self.solve_template_renderer
+                    .get()
+                    .expect("solve template renderer just initialized")
+                    .render_with_name(template, model_name)
+                    .map_err(CompilerError::TemplateError)
+            }
             TemplateIr::Flat => render_flat_template_with_name(&self.flat, template, model_name)
                 .map_err(CompilerError::TemplateError),
             TemplateIr::Ast => {
@@ -737,6 +754,7 @@ impl Compiler {
             balance_detail: result.balance_detail,
             flat: result.flat,
             resolved,
+            solve_template_renderer: std::sync::OnceLock::new(),
         })
     }
 
