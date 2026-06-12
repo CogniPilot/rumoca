@@ -201,7 +201,7 @@ api.addAnimation(times, (frame) => {
       ctx2d.fillRect((i - 1) * cell, (j - 1) * cell, cell + 1, cell + 1);
     }
   }
-  return `t = ${api.formatClock(times[frame])}`;
+  return `t = ${times[frame].toFixed(1)} s`;
 }, 8000);
 
 api.addColorbar(-span, span, api.heatColor);
@@ -211,6 +211,228 @@ Notice the cost of resolution: each cell adds two states (`u` and `w`), so
 `N = 20` is an 800-state system. Rumoca compiles and simulates it fine, but
 output volume grows as `N²` — keep `Interval` coarse enough for the
 browser.
+
+## 2-D Navier–Stokes: Flow over a NACA 2412 Airfoil
+
+The same machinery scales up to fluid dynamics. This example solves the 2-D
+incompressible Navier–Stokes equations around a NACA 2412 airfoil at an
+adjustable angle of attack, using two classic tricks that keep the system a
+pure ODE — exactly what the method of lines wants:
+
+- **Artificial compressibility**: instead of the pressure-Poisson algebraic
+  constraint, pressure gets its own fast dynamics
+  `der(q) = -cs² · div(V)`. The continuity error propagates away as an
+  artificial acoustic wave, and no algebraic loop is needed.
+- **Brinkman penalization**: the airfoil is not meshed. Cells inside the
+  NACA 2412 outline (computed per grid column from the standard camber and
+  thickness polynomials) get a strong drag term `-sig·V/tau` that drives the
+  velocity to zero, so the flow sees a solid body on a plain Cartesian grid.
+
+The angle of attack enters only through the freestream direction `(uin,
+vin)` — edit `aoa` and re-run. This example defaults the **GPU** checkbox
+on: the compiler's experimental `wgsl-solve` backend lowers the system to
+WebGPU compute kernels and an in-page RK4 integrator runs them — about
+5× faster than the CPU (WASM) path even on a software GPU adapter. If
+WebGPU is unavailable the run fails with a clear error instead of
+silently falling back (uncheck GPU for the CPU path). GPU v1 runs in
+f32 with events and algebraics frozen at their initial values, which is
+exact for this model's constant geometry masks. The run is an impulsive wind-tunnel start:
+the field begins at rest and the freestream sweeps in from the inlet and
+far-field boundaries. This is the heaviest example in the book
+(~3,500 unknowns after unrolling): expect the first run to take a while.
+
+```modelica,interactive,gpu
+model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penalization"
+  parameter Integer NX = 30 "Cells along the channel";
+  parameter Integer NY = 18 "Cells across the channel";
+  parameter Real Lx = 4.0 "Domain length [chords]";
+  parameter Real Ly = 1.5 "Domain height [chords]";
+  parameter Real xle = 1.0 "Leading edge distance from inlet [chords]";
+  parameter Real aoa = 8.0 "Angle of attack [deg]";
+  parameter Real U = 1.0 "Freestream speed";
+  parameter Real nu = 0.05 "Kinematic viscosity (Re = U/nu = 20)";
+  parameter Real cs = 3.0 "Artificial-compressibility wave speed";
+  parameter Real tau = 0.02 "Solid penalization time constant [s]";
+  parameter Real taub = 0.05 "Boundary relaxation time constant [s]";
+  parameter Real mc = 0.02 "NACA 2412 max camber";
+  parameter Real pc = 0.4 "NACA 2412 camber position";
+  parameter Real tk = 0.12 "NACA 2412 thickness";
+  parameter Real dx = Lx / NX;
+  parameter Real dy = Ly / NY;
+  parameter Real pi = 3.14159265359;
+  parameter Real uin = U * cos(aoa * pi / 180.0);
+  parameter Real vin = U * sin(aoa * pi / 180.0);
+  Real u[NX, NY] "x-velocity";
+  Real v[NX, NY] "y-velocity";
+  Real q[NX, NY] "pressure / rho";
+  Real s[NX] "Chordwise coordinate of each column";
+  Real ycam[NX] "Camber line height per column";
+  Real ythk[NX] "Half thickness per column";
+  Real sig[NX, NY] "Solid mask (1 inside the airfoil)";
+  // States start at rest (default start = 0): an impulsive wind-tunnel
+  // start where the freestream sweeps in through the boundary relaxation.
+equation
+  // NACA 2412 geometry, evaluated per grid column.
+  for i in 1:NX loop
+    s[i] = (i - 0.5) * dx - xle;
+    ycam[i] = if s[i] < 0.0 or s[i] > 1.0 then 0.0
+      elseif s[i] < pc then mc / pc ^ 2 * (2.0 * pc * s[i] - s[i] ^ 2)
+      else mc / (1.0 - pc) ^ 2 * ((1.0 - 2.0 * pc) + 2.0 * pc * s[i] - s[i] ^ 2);
+    // Half thickness, floored to one grid cell so the coarse mask stays closed.
+    ythk[i] = if s[i] < 0.0 or s[i] > 1.0 then 0.0
+      else max(0.8 * dy,
+        5.0 * tk * (0.2969 * sqrt(max(s[i], 0.0)) - 0.1260 * s[i] - 0.3516 * s[i] ^ 2
+                    + 0.2843 * s[i] ^ 3 - 0.1036 * s[i] ^ 4));
+    for j in 1:NY loop
+      sig[i, j] = if ythk[i] > 0.0
+          and abs((j - 0.5) * dy - Ly / 2.0 - ycam[i]) <= ythk[i] then 1.0 else 0.0;
+    end for;
+  end for;
+  // Interior: momentum + artificial-compressibility continuity.
+  for i in 2:NX - 1 loop
+    for j in 2:NY - 1 loop
+      der(u[i, j]) = -u[i, j] * (u[i + 1, j] - u[i - 1, j]) / (2.0 * dx)
+        - v[i, j] * (u[i, j + 1] - u[i, j - 1]) / (2.0 * dy)
+        - (q[i + 1, j] - q[i - 1, j]) / (2.0 * dx)
+        + nu * ((u[i + 1, j] - 2.0 * u[i, j] + u[i - 1, j]) / dx ^ 2
+              + (u[i, j + 1] - 2.0 * u[i, j] + u[i, j - 1]) / dy ^ 2)
+        - sig[i, j] * u[i, j] / tau;
+      der(v[i, j]) = -u[i, j] * (v[i + 1, j] - v[i - 1, j]) / (2.0 * dx)
+        - v[i, j] * (v[i, j + 1] - v[i, j - 1]) / (2.0 * dy)
+        - (q[i, j + 1] - q[i, j - 1]) / (2.0 * dy)
+        + nu * ((v[i + 1, j] - 2.0 * v[i, j] + v[i - 1, j]) / dx ^ 2
+              + (v[i, j + 1] - 2.0 * v[i, j] + v[i, j - 1]) / dy ^ 2)
+        - sig[i, j] * v[i, j] / tau;
+      der(q[i, j]) = -cs ^ 2 * ((u[i + 1, j] - u[i - 1, j]) / (2.0 * dx)
+                              + (v[i, j + 1] - v[i, j - 1]) / (2.0 * dy));
+    end for;
+  end for;
+  // Inlet (left): freestream; pressure zero-gradient.
+  for j in 1:NY loop
+    der(u[1, j]) = (uin - u[1, j]) / taub;
+    der(v[1, j]) = (vin - v[1, j]) / taub;
+    der(q[1, j]) = (q[2, j] - q[1, j]) / taub;
+    // Outlet (right): zero-gradient velocities, reference pressure.
+    der(u[NX, j]) = (u[NX - 1, j] - u[NX, j]) / taub;
+    der(v[NX, j]) = (v[NX - 1, j] - v[NX, j]) / taub;
+    der(q[NX, j]) = (0.0 - q[NX, j]) / taub;
+  end for;
+  // Far field (top/bottom): freestream; pressure zero-gradient.
+  for i in 2:NX - 1 loop
+    der(u[i, 1]) = (uin - u[i, 1]) / taub;
+    der(v[i, 1]) = (vin - v[i, 1]) / taub;
+    der(q[i, 1]) = (q[i, 2] - q[i, 1]) / taub;
+    der(u[i, NY]) = (uin - u[i, NY]) / taub;
+    der(v[i, NY]) = (vin - v[i, NY]) / taub;
+    der(q[i, NY]) = (q[i, 2] - q[i, NY]) / taub;
+  end for;
+  annotation(experiment(StopTime = 2.5, Interval = 0.0125, Solver = "rk-like"));
+end AirfoilFlow;
+```
+
+```js,rumoca-viz
+// Speed heatmap |V(x,y,t)| with the penalized cells in gray and the true
+// NACA 2412 contour drawn on top. Grid size is discovered from the result
+// names, so editing NX/NY in the model just works.
+const cell = new Map();
+let NX = 0, NY = 0;
+names.forEach((n, k) => {
+  const m = /^([uvq]|sig)\[(\d+),(\d+)\]$/.exec(n);
+  if (!m) return;
+  cell.set(`${m[1]}:${m[2]},${m[3]}`, data[k]);
+  if (m[1] === 'u') {
+    NX = Math.max(NX, Number(m[2]));
+    NY = Math.max(NY, Number(m[3]));
+  }
+});
+const speed = (i, j, f) => Math.hypot(
+  cell.get(`u:${i},${j}`)[f], cell.get(`v:${i},${j}`)[f]);
+let vMax = 0;
+for (let f = 0; f < times.length; f += 5) {
+  for (let i = 1; i <= NX; i++) {
+    for (let j = 1; j <= NY; j++) {
+      vMax = Math.max(vMax, speed(i, j, f));
+    }
+  }
+}
+// The mask is constant; sample it at the end of the run (algebraic values
+// at the very first output point may not be settled yet).
+const maskFrame = times.length - 1;
+
+// Geometry for the overlay — keep in sync with the model parameters.
+const geo = { Lx: 4.0, Ly: 1.5, xle: 1.0, mc: 0.02, pc: 0.4, tk: 0.12 };
+const camber = (sc) => sc < geo.pc
+  ? geo.mc / geo.pc ** 2 * (2 * geo.pc * sc - sc ** 2)
+  : geo.mc / (1 - geo.pc) ** 2 * ((1 - 2 * geo.pc) + 2 * geo.pc * sc - sc ** 2);
+const halfThick = (sc) => 5 * geo.tk * (0.2969 * Math.sqrt(sc) - 0.1260 * sc
+  - 0.3516 * sc ** 2 + 0.2843 * sc ** 3 - 0.1036 * sc ** 4);
+
+const W = 600;
+const H = Math.round(W * (geo.Ly / geo.Lx));
+const { ctx2d } = api.makeCanvas(W, H);
+const cw = W / NX;
+const ch = H / NY;
+const px = (x) => (x / geo.Lx) * W;                    // physical x -> canvas
+const py = (y) => H - ((y + geo.Ly / 2) / geo.Ly) * H; // physical y -> canvas
+
+function drawAirfoil() {
+  ctx2d.beginPath();
+  for (let k = 0; k <= 60; k++) {            // upper surface, LE -> TE
+    const sc = k / 60;
+    const fn = k === 0 ? 'moveTo' : 'lineTo';
+    ctx2d[fn](px(geo.xle + sc), py(camber(sc) + halfThick(sc)));
+  }
+  for (let k = 60; k >= 0; k--) {            // lower surface, TE -> LE
+    const sc = k / 60;
+    ctx2d.lineTo(px(geo.xle + sc), py(camber(sc) - halfThick(sc)));
+  }
+  ctx2d.closePath();
+  ctx2d.fillStyle = '#111';
+  ctx2d.fill();
+  ctx2d.strokeStyle = '#fff';
+  ctx2d.lineWidth = 1;
+  ctx2d.stroke();
+}
+
+api.addAnimation(times, (frame) => {
+  for (let i = 1; i <= NX; i++) {
+    for (let j = 1; j <= NY; j++) {
+      const solid = cell.get(`sig:${i},${j}`)[maskFrame] > 0.5;
+      ctx2d.fillStyle = solid
+        ? '#666'
+        : api.heatColor(speed(i, j, frame) / vMax);
+      // j = 1 is the bottom row: flip the y axis for drawing.
+      ctx2d.fillRect((i - 1) * cw, (NY - j) * ch, cw + 1, ch + 1);
+    }
+  }
+  drawAirfoil();
+  return `t = ${times[frame].toFixed(1)} s · max |V| = ${api.formatTick(vMax)}`;
+}, 10000);
+
+api.addColorbar(0, vMax, api.heatColor);
+```
+
+In the animation, the black shape is the *true* NACA 2412 contour and the
+gray blocks around it are the penalized grid cells — the body the flow
+actually feels at this resolution. Watch the impulsive start settle: the
+stagnation point appears at the leading edge (dark blue), flow accelerates
+over the upper surface (red), and a slow wake trails downstream. The pressure field (plotted below the
+animation as the most dynamic states) shows the suction side developing —
+the lift. Things to try:
+
+- `aoa = 0.0` — the wake straightens and the up/down asymmetry mostly
+  disappears (the residual comes from camber, which is the *2* in 2412).
+- `aoa = -8.0` — the suction side flips.
+- `nu = 0.02` — less viscosity, sharper wake (drop `Interval` and the
+  solver step accordingly if it goes unstable).
+
+**Honest caveats**: at this grid (~0.1 chord cells) and Reynolds number
+(`U/nu = 20`), this is a *qualitative* low-Re flow — a teaching
+visualization, not an aerodynamic prediction. The thickness polynomial is
+floored to one grid cell so the thin profile stays closed, and central
+differencing limits how low the viscosity may go. Resolving boundary layers
+at flight Reynolds numbers needs orders of magnitude more cells, which is
+GPU-backend territory (see the roadmap note below).
 
 ## Scaling the Resolution
 

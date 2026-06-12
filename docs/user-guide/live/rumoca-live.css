@@ -191,3 +191,44 @@
     margin: 0;
     font-size: 0.8em;
 }
+
+.rumoca-live-progress {
+    height: 10px;
+    background: var(--table-border-color, #ddd);
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+}
+
+.rumoca-live-progress-fill {
+    height: 100%;
+    width: 0;
+    background: #2470c2;
+    transition: width 0.25s linear;
+}
+
+.rumoca-live-progress-indeterminate {
+    width: 100% !important;
+    background: repeating-linear-gradient(
+        -45deg, #2470c2 0 12px, #7db4e8 12px 24px);
+    background-size: 200% 100%;
+    animation: rumoca-live-progress-slide 1.2s linear infinite;
+}
+
+@keyframes rumoca-live-progress-slide {
+    from { background-position: 0 0; }
+    to { background-position: 34px 0; }
+}
+
+.rumoca-live-gpu {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25em;
+    font-size: 0.8em;
+    cursor: pointer;
+    user-select: none;
+}
+
+.rumoca-live-radial-controls .rumoca-live-status {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
