@@ -25,8 +25,10 @@ use input_validation::{
     row_input_requirements, validate_input_requirements, validate_output_len,
 };
 
-type ResidualRowFn = unsafe extern "C" fn(*const f64, *const f64, f64) -> f64;
-type JacobianRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *const f64) -> f64;
+// Each compiled program writes its outputs through the trailing `*mut f64`
+// pointer (one program may emit several outputs via consecutive StoreOutputs).
+type ResidualRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64);
+type JacobianRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *const f64, *mut f64);
 
 #[derive(Clone)]
 enum RowPlan {
@@ -58,7 +60,7 @@ struct JacobianCallContext<'a> {
 struct SimpleRowPlan {
     ops: Box<[SimpleOp]>,
     reg_count: usize,
-    output_src: usize,
+    output_srcs: Box<[usize]>,
     input_requirements: InputRequirements,
 }
 
@@ -66,8 +68,18 @@ struct SimpleRowPlan {
 struct GeneralRowPlan {
     ops: Box<[LinearOp]>,
     reg_count: usize,
-    output_src: usize,
+    output_srcs: Box<[usize]>,
     input_requirements: InputRequirements,
+}
+
+impl RowPlan {
+    /// Number of outputs this program writes (one per StoreOutput).
+    fn output_count(&self) -> usize {
+        match self {
+            RowPlan::Simple(plan) => plan.output_srcs.len(),
+            RowPlan::General(plan) => plan.output_srcs.len(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -139,13 +151,24 @@ impl CompiledResidualRows {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        validate_output_len(out, self.rows.len())?;
+        let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
+        validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, None)?;
         with_active_external_tables(external_tables, || {
             let mut regs_scratch = self.regs_scratch.borrow_mut();
-            for (index, row) in self.rows.iter().enumerate() {
-                out[index] =
-                    self.call_residual_row(row, &mut regs_scratch, y, p, t, external_tables)?;
+            let mut base = 0;
+            for row in self.rows.iter() {
+                let k = row.plan.output_count();
+                self.call_residual_row(
+                    row,
+                    &mut regs_scratch,
+                    y,
+                    p,
+                    t,
+                    external_tables,
+                    &mut out[base..base + k],
+                )?;
+                base += k;
             }
             Ok(())
         })
@@ -159,17 +182,30 @@ impl CompiledResidualRows {
         p: &[f64],
         t: f64,
         external_tables: &[ExternalTableData],
-    ) -> Result<f64, CompileError> {
+        out: &mut [f64],
+    ) -> Result<(), CompileError> {
         if should_validate_jit_row(row.validate_with_interpreter) {
-            let expected = execute_row(&row.plan, regs_scratch, y, p, t, None, external_tables)?;
-            let actual = unsafe { call_residual_jit(row.jit, y, p, t) };
+            let mut expected = vec![0.0; out.len()];
+            execute_row(
+                &row.plan,
+                regs_scratch,
+                y,
+                p,
+                t,
+                None,
+                external_tables,
+                &mut expected,
+            )?;
+            unsafe { call_residual_jit(row.jit, y, p, t, out) };
             self.record_jit_call();
-            validate_jit_matches_interpreter("residual", actual, expected)?;
-            return Ok(actual);
+            for (actual, expected) in out.iter().zip(&expected) {
+                validate_jit_matches_interpreter("residual", *actual, *expected)?;
+            }
+            return Ok(());
         }
-        let actual = unsafe { call_residual_jit(row.jit, y, p, t) };
+        unsafe { call_residual_jit(row.jit, y, p, t, out) };
         self.record_jit_call();
-        Ok(actual)
+        Ok(())
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -220,7 +256,8 @@ impl CompiledJacobianRows {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        validate_output_len(out, self.rows.len())?;
+        let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
+        validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, Some(v))?;
         with_active_external_tables(external_tables, || {
             let mut regs_scratch = self.regs_scratch.borrow_mut();
@@ -231,8 +268,11 @@ impl CompiledJacobianRows {
                 v,
                 external_tables,
             };
-            for (index, row) in self.rows.iter().enumerate() {
-                out[index] = self.call_jacobian_row(row, &mut regs_scratch, &ctx)?;
+            let mut base = 0;
+            for row in self.rows.iter() {
+                let k = row.plan.output_count();
+                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut out[base..base + k])?;
+                base += k;
             }
             Ok(())
         })
@@ -243,9 +283,11 @@ impl CompiledJacobianRows {
         row: &CompiledJacobianRow,
         regs_scratch: &mut Vec<f64>,
         ctx: &JacobianCallContext<'_>,
-    ) -> Result<f64, CompileError> {
+        out: &mut [f64],
+    ) -> Result<(), CompileError> {
         if should_validate_jit_row(row.validate_with_interpreter) {
-            let expected = execute_row(
+            let mut expected = vec![0.0; out.len()];
+            execute_row(
                 &row.plan,
                 regs_scratch,
                 ctx.y,
@@ -253,15 +295,18 @@ impl CompiledJacobianRows {
                 ctx.t,
                 Some(ctx.v),
                 ctx.external_tables,
+                &mut expected,
             )?;
-            let actual = unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v) };
+            unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) };
             self.record_jit_call();
-            validate_jit_matches_interpreter("jacobian", actual, expected)?;
-            return Ok(actual);
+            for (actual, expected) in out.iter().zip(&expected) {
+                validate_jit_matches_interpreter("jacobian", *actual, *expected)?;
+            }
+            return Ok(());
         }
-        let actual = unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v) };
+        unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) };
         self.record_jit_call();
-        Ok(actual)
+        Ok(())
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -418,18 +463,25 @@ fn finalized_jacobian_fn(
     Ok(unsafe { std::mem::transmute::<*const u8, JacobianRowFn>(ptr) })
 }
 
-unsafe fn call_residual_jit(jit: ResidualRowFn, y: &[f64], p: &[f64], t: f64) -> f64 {
+unsafe fn call_residual_jit(jit: ResidualRowFn, y: &[f64], p: &[f64], t: f64, out: &mut [f64]) {
     // SAFETY: the caller guarantees the function pointer came from
-    // finalized_residual_fn, and prevalidation ensures any loaded y/p indices
-    // are in bounds before the JIT reads through these pointers.
-    unsafe { jit(y.as_ptr(), p.as_ptr(), t) }
+    // finalized_residual_fn, prevalidation ensures any loaded y/p indices are in
+    // bounds, and `out` has room for this program's output_count outputs.
+    unsafe { jit(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr()) }
 }
 
-unsafe fn call_jacobian_jit(jit: JacobianRowFn, y: &[f64], p: &[f64], t: f64, v: &[f64]) -> f64 {
+unsafe fn call_jacobian_jit(
+    jit: JacobianRowFn,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    v: &[f64],
+    out: &mut [f64],
+) {
     // SAFETY: the caller guarantees the function pointer came from
-    // finalized_jacobian_fn, and prevalidation ensures any loaded y/p/seed
-    // indices are in bounds before the JIT reads through these pointers.
-    unsafe { jit(y.as_ptr(), p.as_ptr(), t, v.as_ptr()) }
+    // finalized_jacobian_fn, prevalidation ensures any loaded y/p/seed indices
+    // are in bounds, and `out` has room for this program's outputs.
+    unsafe { jit(y.as_ptr(), p.as_ptr(), t, v.as_ptr(), out.as_mut_ptr()) }
 }
 
 fn validate_jit_matches_interpreter(
@@ -521,7 +573,7 @@ impl CraneliftEmitter {
         if kind.has_seed() {
             signature.params.push(AbiParam::new(pointer_type)); // v
         }
-        signature.returns.push(AbiParam::new(types::F64));
+        signature.params.push(AbiParam::new(pointer_type)); // out (written, not returned)
 
         let func_id = self
             .module
@@ -542,14 +594,14 @@ impl CraneliftEmitter {
             let y_ptr = params[0];
             let p_ptr = params[1];
             let t_value = params[2];
-            let v_ptr = if kind.has_seed() {
-                Some(params[3])
+            let (v_ptr, out_ptr) = if kind.has_seed() {
+                (Some(params[3]), params[4])
             } else {
-                None
+                (None, params[3])
             };
 
             let mut regs: HashMap<u32, cranelift_codegen::ir::Value> = HashMap::new();
-            let mut output = fb.ins().f64const(0.0);
+            let flags = MemFlags::new();
             let mut row_lower = RowLowerCtx {
                 fb: &mut fb,
                 module: &mut self.module,
@@ -559,13 +611,20 @@ impl CraneliftEmitter {
                 p_ptr,
                 t_value,
                 v_ptr,
-                flags: MemFlags::new(),
+                flags,
             };
 
+            // `lower_op` returns `Some(value)` for each StoreOutput; write each
+            // to out[k] in order so a multi-output program fills consecutive
+            // output slots.
+            let mut out_idx: i32 = 0;
             for &op in row {
-                output = row_lower.lower_op(op)?.unwrap_or(output);
+                if let Some(value) = row_lower.lower_op(op)? {
+                    row_lower.fb.ins().store(flags, value, out_ptr, out_idx * 8);
+                    out_idx += 1;
+                }
             }
-            fb.ins().return_(&[output]);
+            fb.ins().return_(&[]);
             fb.finalize();
         }
 
@@ -1229,16 +1288,24 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
             defined[dst] = true;
         }
     }
-    let output_src = match row.last().copied() {
-        Some(LinearOp::StoreOutput { src }) => src as usize,
-        _ => {
-            return Err(CompileError::Backend(
-                "compiled row is missing final StoreOutput".to_string(),
-            ));
+    // Collect every output (one per StoreOutput, in order) and keep the
+    // compute ops as the body. A program may emit several outputs.
+    let mut output_srcs = Vec::new();
+    let mut body: Vec<LinearOp> = Vec::with_capacity(row.len());
+    for op in row {
+        if let LinearOp::StoreOutput { src } = op {
+            output_srcs.push(*src as usize);
+        } else {
+            body.push(*op);
         }
-    };
+    }
+    if output_srcs.is_empty() {
+        return Err(CompileError::Backend(
+            "compiled row is missing StoreOutput".to_string(),
+        ));
+    }
+    let output_srcs = output_srcs.into_boxed_slice();
 
-    let body = &row[..row.len().saturating_sub(1)];
     if body.iter().copied().all(is_simple_linear_op) {
         let ops = body
             .iter()
@@ -1248,15 +1315,15 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
         return Ok(RowPlan::Simple(SimpleRowPlan {
             ops: ops.into_boxed_slice(),
             reg_count,
-            output_src,
+            output_srcs,
             input_requirements,
         }));
     }
 
     Ok(RowPlan::General(GeneralRowPlan {
-        ops: body.to_vec().into_boxed_slice(),
+        ops: body.into_boxed_slice(),
         reg_count,
-        output_src,
+        output_srcs,
         input_requirements,
     }))
 }
@@ -1536,12 +1603,13 @@ fn execute_row(
     t: f64,
     seed: Option<&[f64]>,
     external_tables: &[ExternalTableData],
-) -> Result<f64, CompileError> {
+    out: &mut [f64],
+) -> Result<(), CompileError> {
     validate_input_requirements(row_input_requirements(row), y, p, seed)?;
     match row {
-        RowPlan::Simple(row) => execute_simple_row(row, regs_scratch, y, p, t),
+        RowPlan::Simple(row) => execute_simple_row(row, regs_scratch, y, p, t, out),
         RowPlan::General(row) => {
-            execute_general_row(row, regs_scratch, y, p, t, seed, external_tables)
+            execute_general_row(row, regs_scratch, y, p, t, seed, external_tables, out)
         }
     }
 }
@@ -1553,7 +1621,8 @@ fn execute_simple_row(
     y: &[f64],
     p: &[f64],
     t: f64,
-) -> Result<f64, CompileError> {
+    out: &mut [f64],
+) -> Result<(), CompileError> {
     let regs = runtime_reg_slice(regs_scratch, row.reg_count);
     for op in row.ops.iter().copied() {
         match op {
@@ -1598,7 +1667,10 @@ fn execute_simple_row(
             }
         }
     }
-    Ok(read_reg_value(regs, row.output_src))
+    for (slot, &src) in out.iter_mut().zip(row.output_srcs.iter()) {
+        *slot = read_reg_value(regs, src);
+    }
+    Ok(())
 }
 
 #[inline(always)]
@@ -1610,12 +1682,16 @@ fn execute_general_row(
     t: f64,
     seed: Option<&[f64]>,
     external_tables: &[ExternalTableData],
-) -> Result<f64, CompileError> {
+    out: &mut [f64],
+) -> Result<(), CompileError> {
     let regs = runtime_reg_slice(regs_scratch, row.reg_count);
     for op in row.ops.iter().copied() {
         execute_general_op(regs, op, y, p, t, seed, external_tables)?;
     }
-    Ok(read_reg_value(regs, row.output_src))
+    for (slot, &src) in out.iter_mut().zip(row.output_srcs.iter()) {
+        *slot = read_reg_value(regs, src);
+    }
+    Ok(())
 }
 
 #[inline(always)]

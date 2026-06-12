@@ -98,8 +98,8 @@ fn compiled_residual_invokes_jit_and_matches_interpreter_for_representative_row(
     ];
     let plan = plan_row(&row).expect("plan row");
     let mut scratch = Vec::new();
-    let expected =
-        execute_row(&plan, &mut scratch, &[3.0], &[2.0], 0.5, None, &[]).expect("interp");
+    let mut expected = [0.0];
+    execute_row(&plan, &mut scratch, &[3.0], &[2.0], 0.5, None, &[], &mut expected).expect("interp");
     let compiled = compile_residual_rows(&[row]).expect("compile row");
     let mut out = [0.0];
 
@@ -107,7 +107,7 @@ fn compiled_residual_invokes_jit_and_matches_interpreter_for_representative_row(
         .call(&[3.0], &[2.0], 0.5, &mut out)
         .expect("jit row eval");
 
-    assert!((out[0] - expected).abs() <= f64::EPSILON * 64.0);
+    assert!((out[0] - expected[0]).abs() <= f64::EPSILON * 64.0);
     assert_eq!(compiled.jit_call_count(), 1);
 }
 
@@ -258,7 +258,7 @@ fn general_runtime_table_lookup_failure_is_error_not_silent_zero() {
     let plan = plan_row(&row).expect("general plan");
     let mut scratch = Vec::new();
 
-    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &[])
+    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &[], &mut [0.0])
         .expect_err("missing table should report an evaluation error");
 
     assert!(matches!(err, CompileError::Input(message) if message.contains("table id 42")));
@@ -292,7 +292,7 @@ fn general_runtime_table_lookup_invalid_column_is_error_not_clamped() {
     let plan = plan_row(&row).expect("general plan");
     let mut scratch = Vec::new();
 
-    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &tables)
+    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &tables, &mut [0.0])
         .expect_err("invalid table column should report an evaluation error");
 
     assert!(
@@ -310,7 +310,7 @@ fn simple_runtime_missing_y_input_is_error_not_zero() {
     let plan = plan_row(&row).expect("simple plan");
     let mut scratch = Vec::new();
 
-    let err = execute_row(&plan, &mut scratch, &[5.0], &[], 0.0, None, &[])
+    let err = execute_row(&plan, &mut scratch, &[5.0], &[], 0.0, None, &[], &mut [0.0])
         .expect_err("undersized y vector should report an error");
 
     assert!(matches!(err, CompileError::Input(message) if message.contains("missing y[1]")));
@@ -325,7 +325,7 @@ fn simple_runtime_missing_p_input_is_error_not_zero() {
     let plan = plan_row(&row).expect("simple plan");
     let mut scratch = Vec::new();
 
-    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &[])
+    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &[], &mut [0.0])
         .expect_err("undersized p vector should report an error");
 
     assert!(matches!(err, CompileError::Input(message) if message.contains("missing p[0]")));
@@ -340,7 +340,7 @@ fn general_runtime_missing_seed_input_is_error_not_zero() {
     let plan = plan_row(&row).expect("general plan");
     let mut scratch = Vec::new();
 
-    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &[])
+    let err = execute_row(&plan, &mut scratch, &[], &[], 0.0, None, &[], &mut [0.0])
         .expect_err("missing seed vector should report an error");
 
     assert!(matches!(err, CompileError::Input(message) if message.contains("missing seed[0]")));
@@ -384,6 +384,39 @@ fn compiled_jacobian_prevalidates_seed_before_mutating_output() {
 
     assert!(matches!(err, CompileError::Input(message) if message.contains("missing seed[1]")));
     assert_eq!(out, [9.0]);
+}
+
+#[test]
+fn compiled_residual_program_writes_multiple_outputs() {
+    // One self-contained program with two outputs that share register 0
+    // (the operand-once shape produced by the scalarizer for matmul/linsolve).
+    let row = vec![
+        LinearOp::LoadP { dst: 0, index: 0 }, // shared operand
+        LinearOp::Const { dst: 1, value: 2.0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        }, // out0 = p0 * 2
+        LinearOp::StoreOutput { src: 2 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 2,
+        }, // out1 = p0 + out0
+        LinearOp::StoreOutput { src: 3 },
+    ];
+    let plan = plan_row(&row).expect("plan");
+    assert_eq!(plan.output_count(), 2);
+
+    let compiled = compile_residual_rows(&[row]).expect("compiled program");
+    assert_eq!(compiled.rows(), 1, "one program, two outputs");
+    let mut out = [0.0, 0.0];
+    compiled.call(&[], &[5.0], 0.0, &mut out).expect("eval");
+    assert_eq!(out[0], 10.0); // 5 * 2
+    assert_eq!(out[1], 15.0); // 5 + 10
 }
 
 #[test]
