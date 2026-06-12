@@ -348,7 +348,10 @@ fn projection_plan_covers_non_state_loads(
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
     let implicit_rows = solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs);
-    let Some(producer_rows) = projection_producer_rows(model, implicit_rows.len()) else {
+    // The projection plan references residual rows by OUTPUT index; a program may
+    // now emit several outputs, so the producer map is bounded by output count
+    // and resolved to its producing program.
+    let Some(producer_rows) = projection_producer_rows(model, implicit_rows.output_count()) else {
         return false;
     };
     let mut needed = BTreeSet::new();
@@ -357,10 +360,13 @@ fn projection_plan_covers_non_state_loads(
         if index < state_count || !needed.insert(index) {
             continue;
         }
-        let Some(row_idx) = producer_rows.get(&index).copied() else {
+        let Some(output_idx) = producer_rows.get(&index).copied() else {
             return false;
         };
-        let Some(row) = implicit_rows.programs.get(row_idx) else {
+        let Some(program_idx) = implicit_rows.program_index_for_output(output_idx) else {
+            return false;
+        };
+        let Some(row) = implicit_rows.programs.get(program_idx) else {
             return false;
         };
         stack.extend(non_state_y_loads(row, state_count, solver_count));
