@@ -446,19 +446,31 @@
         const names = payload.names || [];
         const allData = payload.allData || [];
         const data = allData.slice(1);
-        const nStates = payload.nStates || 0;
-        const indices = [];
-        for (let i = 0; i < names.length && indices.length < MAX_PLOT_SERIES; i++) {
-            if (nStates === 0 || i < nStates) {
-                indices.push(i);
+        const nStates = payload.nStates || names.length;
+        // Rank states by dynamic range so flat series (e.g. clamped boundary
+        // cells of a discretized field) do not crowd out the real dynamics.
+        const candidates = [];
+        for (let i = 0; i < Math.min(nStates, names.length); i++) {
+            if (!Array.isArray(data[i])) {
+                continue;
             }
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (const v of data[i]) {
+                if (isFinite(v)) {
+                    lo = Math.min(lo, v);
+                    hi = Math.max(hi, v);
+                }
+            }
+            candidates.push({ index: i, range: isFinite(hi - lo) ? hi - lo : 0 });
         }
-        if (indices.length === 0 && names.length > 0) {
-            indices.push(0);
+        candidates.sort((a, b) => (b.range - a.range) || (a.index - b.index));
+        const picked = candidates.slice(0, MAX_PLOT_SERIES);
+        if (picked.length === 0 && names.length > 0 && Array.isArray(data[0])) {
+            picked.push({ index: 0 });
         }
-        return indices
-            .filter((i) => Array.isArray(data[i]))
-            .map((i) => ({ name: names[i], values: data[i] }));
+        picked.sort((a, b) => a.index - b.index);
+        return picked.map(({ index }) => ({ name: names[index], values: data[index] }));
     }
 
     // ---------------------------------------------------------------------
@@ -595,10 +607,6 @@
         controls.append(playBtn, slider, clock);
         container.appendChild(controls);
 
-        const draw = (frame) => {
-            clock.textContent = drawFrame(frame) || '';
-        };
-
         let playing = false;
         let rafId = null;
         const stop = () => {
@@ -609,6 +617,20 @@
                 rafId = null;
             }
         };
+        const clampFrame = (frame) =>
+            Math.max(0, Math.min(times.length - 1, Math.round(frame)));
+        // A drawFrame exception must stop playback visibly, not freeze the
+        // loop while the button still reads "playing".
+        const draw = (frame) => {
+            try {
+                clock.textContent = drawFrame(clampFrame(frame)) || '';
+            } catch (error) {
+                stop();
+                clock.textContent = `draw error: ${error.message || error}`;
+                console.error('rumoca-live animation draw error:', error);
+            }
+        };
+
         playBtn.addEventListener('click', () => {
             if (playing) {
                 stop();
@@ -616,18 +638,22 @@
             }
             playing = true;
             playBtn.textContent = '⏸';
-            const startWall = performance.now();
-            const startFrame = Number(slider.value) >= times.length - 1
+            // Delta-time accumulation: robust to rAF timestamp skew and to
+            // pauses, and resumes from the current slider position.
+            let framePos = Number(slider.value) >= times.length - 1
                 ? 0 : Number(slider.value);
+            let lastTick = null;
+            const framesPerMs = (times.length - 1) / playDurationMs;
             const step = (now) => {
                 if (!playing) {
                     return;
                 }
-                const progress = (now - startWall) / playDurationMs;
-                const frame = Math.min(
-                    times.length - 1,
-                    startFrame + Math.floor(progress * (times.length - 1))
-                );
+                if (lastTick !== null) {
+                    const dt = Math.max(0, now - lastTick);
+                    framePos += dt * framesPerMs;
+                }
+                lastTick = now;
+                const frame = clampFrame(framePos);
                 slider.value = String(frame);
                 draw(frame);
                 if (frame >= times.length - 1) {
