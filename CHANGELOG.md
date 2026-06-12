@@ -2,31 +2,14 @@
 
 High-level release summary by `0.x` line. Patch releases are rolled up into their parent series.
 
-## Unreleased
+## 0.9.x
 
-- Documentation: the user guide (Rumoca Handbook) and dev guide (Rumoca Internals) were rebuilt for the 0.9 release — a full handbook covering installation, tutorials, the Modelica language subset, the CLI/scenario/solver/codegen surface, and troubleshooting, plus an internals book that narrates the AST→Flat→DAE→Solve pipeline and the contribution workflow with pointers into `spec/`.
-- Live documentation examples: `modelica,interactive` code fences in both mdBooks become mini Monaco editors backed by the Rumoca WASM compiler and LSP (highlighting, completion, hover, diagnostics) with one-click simulate-and-plot and a Show DAE view; `js,rumoca-viz` fences attach editable JavaScript visualizations (animated turkey-roast cross-section, 2-D wave membrane heatmap), and the Monaco Modelica language definition is now shared between the playground and the books via `editors/wasm/src/modules/modelica_language.js`.
-- VS Code: new `Rumoca: Open Rumoca User Guide`, `Open Rumoca Internals Guide`, and `Open Rumoca Web Playground` commands link the published docs from the command palette.
-- Python bindings and notebooks: the Python API is now explicit with `rumoca.compile(...)` for inline source and `rumoca.compile_file(...)` for file-backed models, while VS Code notebook snippets emit valid DAE-JSON-oriented Python instead of stale object-style APIs.
-- MSL switched-RLC simulation: runtime event projection now masks fixed differential rows and keeps alias-connected algebraics free, fixing the `SwitchedRLC_MSL` step-voltage regression and adding matching low-level/runtime and high-level example-based regression coverage.
-- MSL sim-worker IPC: the hot parent-to-worker DAE handoff now streams compact binary DAE payloads over stdin instead of writing large JSON temp files, removing the worst per-model serialization stall while keeping process isolation.
-- The example SymPy template was rewritten against the current DAE template schema and now renders current Rumoca models again without removed metadata and expression variants.
-- SymPy example-template runtime checks are now ignored in the default Rust workspace test pass and exposed explicitly through `cargo xtask verify template-runtimes`, so host CI no longer depends on ad hoc Python package installs.
-- The VS Code devcontainer now uses the prebuilt `ghcr.io/cognipilot/rumoca-dev:main` image, and the nightly Docker publish workflow refreshes the `core`, `ci`, and `dev` package images on GitHub Packages.
-- GitHub Actions now runs `cargo xtask verify template-runtimes` in a dedicated `Template Runtime Tests` job inside the published `ghcr.io/cognipilot/rumoca-dev:main` environment, so ignored example-template execution checks have a real CI lane.
-- Focused editor and MSL compiles: shared parsed/resolved library state is now reused while each requested model compiles on its own uncached reachable closure, which removes cross-model memory blow-ups in the parity harness and keeps wasm/VS Code compile behavior aligned.
-- MSL staging: the parity harness and CI now use the official `ModelicaStandardLibrary_v4.1.0.zip` release asset and reject stale caches missing `Complex.mo`, fixing incomplete library staging.
-- MSL baseline determinism: the default parity run now always starts from the committed 180-model target list and lexical order unless generated targets or prior-result scheduling are explicitly opted in via env vars.
-- Developer CLI: the public surface is now target-first and explicit: `cargo xtask verify ...`, `cargo xtask vscode ...`, `cargo xtask wasm ...`, `cargo xtask python build`, `cargo xtask coverage ...`, and `cargo xtask repo ...`, with MSL maintenance under `cargo xtask repo msl ...`.
-- MSL profiling: `cargo xtask repo msl flamegraph --model ... --mode compile|simulate` now wraps focused session-based flamegraphs for one model without dragging in the full parity harness.
-- VS Code packaging: Linux musl release packaging is now exposed as `cargo xtask vscode package --target linux-x64|linux-arm64`, so the release workflow no longer depends on raw Cargo/musl command recipes in the docs.
-- Developer bootstrap: `cargo xtask repo cli install` now installs `rum` and shell completions, with `--path` as the explicit opt-in for writing a persistent PATH update.
-- VS Code: `rumoca.modelicaPath` updates now restart the language server automatically, and notebook execution/controller availability stays aligned with the active `rumoca` and `rumoca-lsp` pair.
-- Editor MSL workflows: opening a Modelica-backed file now loads required libraries early enough to clear false unresolved-import diagnostics, top-level namespace completion reuses a library-only cache across local edits, code lenses and DAE preview hovers compile through the requested model's strict reachable closure, and CI runs the real VS Code extension-host and browser-hosted wasm editor MSL smokes through `cargo xtask verify vscode-msl` and `cargo xtask verify wasm-editor-msl` against the cached Modelica Standard Library.
-- LSP work scheduling: interactive completion now runs on its own editor lane while strict simulation compiles/simulations execute from isolated session snapshots on a separate strict lane, so `Modelica.` completion no longer waits on the heavier strict compile path.
-- Library cache persistence: parsed Modelica libraries are now stored as buffered binary cache payloads instead of large JSON blobs, cutting cold cache-hit startup work for top-level MSL completion while preserving one-time migration from existing JSON cache files.
-- Editors and CI: `cargo xtask vscode test` and GitHub Actions now run the same VS Code checks, and the wasm editor library-loading path has dedicated regression coverage.
-- Shared timing instrumentation is now centralized in `rumoca-core` with a wasm-safe guard, fixing wasm editor simulation smokes that previously panicked on unsupported `Instant::now()` calls and aligning the dev image with headless VS Code smoke requirements.
+- Added a new SymForce codegen backend with native automatic-differentiation support.
+- Rebuilt the docs as a user Handbook and a Rumoca Internals guide, with live interactive Monaco examples and visualizations in the browser.
+- Made the Python API explicit (`rumoca.compile` / `rumoca.compile_file`) and refreshed the notebook and SymPy templates.
+- Improved MSL correctness and performance, including the SwitchedRLC fix, binary sim-worker IPC, per-model compile isolation, and deterministic v4.1.0 staging.
+- Sharpened the editor and LSP experience with separate interactive/strict work lanes, binary library caching, and cleaner import diagnostics.
+- Restructured the developer CLI around target-first `cargo xtask` commands and moved CI onto the prebuilt dev container image.
 
 ## 0.8.x
 
