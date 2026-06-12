@@ -129,7 +129,7 @@ fn test_wgsl_solve_builtin_target_renders_row_parallel_kernel() {
     )
     .expect("wgsl-solve template should render scalar rows");
 
-    assert!(rendered.contains("fn derivative_rhs"));
+    assert!(rendered.contains("fn derivative_rhs_chunk0"));
     assert!(rendered.contains("const ROWS: u32 = 2u;"));
     // der0: negated product of p[0] and y[0]
     assert!(rendered.contains("out[0] = (-(((p[0]) * (y[0]))));"));
@@ -175,7 +175,8 @@ fn test_wgsl_solve_layout_manifest_renders_bindings() {
     let parsed: serde_json::Value =
         serde_json::from_str(&rendered).expect("layout manifest must be valid JSON");
     assert_eq!(parsed["model"], "WgslDemo");
-    assert_eq!(parsed["kernel"], "derivative_rhs");
+    assert_eq!(parsed["kernel_prefix"], "derivative_rhs_chunk");
+    assert_eq!(parsed["chunks"], 1);
     assert_eq!(parsed["rows"], 2);
 }
 

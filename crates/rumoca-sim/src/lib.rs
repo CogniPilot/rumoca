@@ -51,7 +51,7 @@ pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     SimulationDiagnosticError, SingularityDiagnosis, StructuralReport, TearingReport,
     UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis, diagnose_structural_singularity,
-    eval_dae_at, jacobian_for_dae, structural_report_for_dae,
+    eval_dae_at, jacobian_for_dae, lower_dae_for_simulation, structural_report_for_dae,
     structurally_lowered_dae_for_simulation_artifact,
 };
 

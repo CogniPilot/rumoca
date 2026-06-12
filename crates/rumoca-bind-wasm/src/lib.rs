@@ -9,6 +9,8 @@ include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 
 mod class_browser_helpers;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+mod gpu_api;
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
 pub mod source_root_api;
 #[cfg(feature = "stepper-diffsol")]
@@ -54,6 +56,8 @@ use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+pub use crate::gpu_api::prepare_gpu_simulation;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{

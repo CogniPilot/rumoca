@@ -1,7 +1,10 @@
 {
   "model": "{{ model_name | default("model") }}",
-  "kernel": "derivative_rhs",
+  "kernel_prefix": "derivative_rhs_chunk",
   "workgroup_size": 64,
+  "chunk_size": 64,
+{%- set row_count = solve_blocks.continuous.derivative_rhs.scalar_programs.programs | length %}
+  "chunks": {{ ((row_count + 63) // 64) if row_count > 0 else 1 }},
   "rows": {{ solve_blocks.continuous.derivative_rhs.output_count }},
   "y_len": {{ solve.layout.y_scalars }},
   "p_len": {{ solve.layout.p_scalars }},

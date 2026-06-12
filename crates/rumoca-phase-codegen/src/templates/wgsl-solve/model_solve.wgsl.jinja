@@ -28,28 +28,48 @@ struct Uniforms {
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
 @group(0) @binding(3) var<uniform> u: Uniforms;
 
+{%- set cfg = {"time": "u.time", "y": "y[{}]", "p": "p[{}]"} %}
+{%- set chunk_size = 64 %}
+{#- Rows are split across multiple entry points: Tint/driver shader
+    compilation degrades badly on single huge switches (a 1,620-case kernel
+    took >6 min on SwiftShader), while many small entry points compile
+    quickly. Hosts dispatch every `derivative_rhs_chunk*` entry point listed
+    in the layout manifest. -#}
+{%- for start in range(0, rows | length, chunk_size) %}
+
 @compute @workgroup_size(64)
-fn derivative_rhs(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let row = gid.x;
-    if (row >= ROWS) {
+fn derivative_rhs_chunk{{ loop.index0 }}(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let row = {{ start }}u + gid.x;
+    if (row >= {{ [start + chunk_size, rows | length] | min }}u) {
         return;
     }
-    // Keep every binding in the auto layout even when a model does not use
-    // it, so host drivers can bind a fixed group shape.
+    // Keep every binding in the auto layout even when a chunk does not use
+    // it, so host drivers can bind one fixed group shape.
     _ = u.time;
     _ = arrayLength(&y);
     _ = arrayLength(&p);
-{%- set cfg = {"time": "u.time", "y": "y[{}]", "p": "p[{}]"} %}
     switch row {
-{%- for row in rows %}
-        case {{ loop.index0 }}u: {
-            out[{{ loop.index0 }}] = {{ render_solve_row_wgsl(row, cfg) }};
+{%- for row_index in range(start, [start + chunk_size, rows | length] | min) %}
+        case {{ row_index }}u: {
+            out[{{ row_index }}] = {{ render_solve_row_wgsl(rows[row_index], cfg) }};
         }
 {%- endfor %}
         default: {
         }
     }
 }
+{%- endfor %}
+{%- if rows | length == 0 %}
+
+@compute @workgroup_size(64)
+fn derivative_rhs_chunk0(@builtin(global_invocation_id) gid: vec3<u32>) {
+    _ = u.time;
+    _ = arrayLength(&y);
+    _ = arrayLength(&p);
+    _ = arrayLength(&out);
+    _ = gid.x;
+}
+{%- endif %}
 
 // Solve-IR derivative block inventory:
 // outputs={{ derivative.output_count }}
