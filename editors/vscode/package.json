@@ -2,7 +2,7 @@
   "name": "rumoca-modelica",
   "displayName": "Rumoca Modelica",
   "description": "Modelica language support powered by rumoca-lsp",
-  "version": "0.8.12",
+  "version": "0.9.0",
   "publisher": "JamesGoppert",
   "repository": {
     "type": "git",
@@ -306,3 +306,4 @@
     }
   }
 }
+
