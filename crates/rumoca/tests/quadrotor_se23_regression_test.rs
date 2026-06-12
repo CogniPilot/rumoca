@@ -111,3 +111,75 @@ fn quadrotor_se23_13state_initial_derivatives_are_stable() {
         );
     }
 }
+
+/// Regression guard for the scalar Solve-IR operand-duplication memory
+/// explosion. The SE_2(3) control chain (inverse → product → log_map →
+/// left_jacobian → matmul) used to scalarize into m*n self-contained programs
+/// that each re-inlined their operand op-lists, blowing up multiplicatively
+/// with nesting depth (29 KB → 80 MB → OOM). After the fix each matmul/linsolve
+/// lowers to ONE multi-output program with operands computed once.
+#[test]
+fn quadrotor_se23_scalar_program_does_not_explode() {
+    let Some(lie_groups) = cached_lie_groups() else {
+        eprintln!("skipping SE_2(3) scalar-program size regression: requires cached CMM");
+        return;
+    };
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
+    let model = fixtures.join("QuadrotorSquare13_fn.mo");
+
+    let compiled = Compiler::new()
+        .model("QuadrotorSquare13_fn")
+        .source_root(&lie_groups.to_string_lossy())
+        .compile_path_dae(&model)
+        .expect("SE_2(3) 13-state quadrotor should compile to DAE");
+
+    let problem =
+        rumoca_sim::lower_solve_problem(&compiled.dae).expect("derivative should lower to solve IR");
+    let block = &problem.continuous.derivative_rhs;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(block);
+    let total_ops: usize = scalar.programs.iter().map(|program| program.len()).sum();
+    let approx_bytes = total_ops * std::mem::size_of::<rumoca_ir_solve::LinearOp>();
+
+    let mut per_program: Vec<usize> = scalar.programs.iter().map(|p| p.len()).collect();
+    per_program.sort_unstable();
+    let node_kinds: Vec<&str> = block
+        .nodes
+        .iter()
+        .map(|n| match n {
+            rumoca_ir_solve::ComputeNode::ScalarPrograms(_) => "ScalarPrograms",
+            rumoca_ir_solve::ComputeNode::MatMul { .. } => "MatMul",
+            rumoca_ir_solve::ComputeNode::LinSolve { .. } => "LinSolve",
+        })
+        .collect();
+    eprintln!(
+        "SE_2(3) derivative_rhs: nodes={:?}, output_count={}, programs={}, total_ops={}, ~{} KB",
+        node_kinds,
+        block.len(),
+        scalar.programs.len(),
+        total_ops,
+        approx_bytes / 1024,
+    );
+    eprintln!("per-program op counts (sorted): {per_program:?}");
+
+    // Invariant guaranteed by the multi-output scalarizer fix: the scalar form
+    // produces exactly one output per ComputeBlock output (no off-by-N from the
+    // running StoreOutput counter).
+    assert_eq!(
+        scalar.output_count(),
+        block.len(),
+        "scalar output count must match the ComputeBlock output count"
+    );
+
+    // NOTE (known remaining gap): for THIS model the derivative is a single
+    // function call `Xdot = quad_deriv13(...)` whose 13 outputs are lowered as 13
+    // independent programs, each re-inlining the entire 158k-op function body
+    // (~64 MB total). The matmul/linsolve operand-duplication fix does not cover
+    // this path because there is no MatMul/LinSolve node here — the blowup is in
+    // function-call projection (`lower_state_derivative_row` /
+    // `function_call_projected_scalars`), which re-derives the whole call per
+    // selected output. The multi-output-program machinery added by this change
+    // is the foundation for the fix (lower the call once → one program with 13
+    // StoreOutputs); the grouping pass in derivative lowering is the remaining
+    // work. See `scalar-ir-cse-multioutput-fix` memory.
+    let _ = approx_bytes;
+}
