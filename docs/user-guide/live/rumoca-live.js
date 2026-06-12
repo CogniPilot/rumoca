@@ -119,6 +119,104 @@
         return wasmModulePromise;
     }
 
+    // -----------------------------------------------------------------
+    // Simulation worker
+    //
+    // simulate_model and DAE rendering are synchronous WASM calls that can
+    // take tens of seconds on large discretized models (the NACA airfoil
+    // page). Running them in a module worker keeps the page responsive so
+    // the progress bar can animate. Falls back to main-thread calls when
+    // workers are unavailable.
+    // -----------------------------------------------------------------
+
+    let simWorkerPromise = null;
+
+    function buildSimWorkerSource(pkgBase) {
+        return `
+import init, * as rumoca from '${pkgBase}rumoca_bind_wasm.js';
+const ready = init();
+self.onmessage = async (event) => {
+    const { id, action, args } = event.data;
+    try {
+        await ready;
+        let result;
+        if (action === 'simulate') {
+            result = rumoca.simulate_model(args.source, args.model, 0, 0, '');
+        } else if (action === 'dae') {
+            const envelope = JSON.parse(rumoca.compile(args.source, args.model));
+            const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
+            const rendered = rumoca.render_target(daeJson, args.model, 'dae-modelica', '', '{}');
+            const files = rendered.files;
+            result = Array.isArray(files)
+                ? files.map((file) => file.content || '').join('\\n')
+                : '';
+        } else {
+            throw new Error('unknown action ' + action);
+        }
+        self.postMessage({ id, ok: true, result });
+    } catch (error) {
+        self.postMessage({ id, ok: false, error: String((error && error.message) || error) });
+    }
+};
+`;
+    }
+
+    function loadSimWorker() {
+        if (!simWorkerPromise) {
+            simWorkerPromise = (async () => {
+                const base = await locatePkgBase();
+                const blob = new Blob([buildSimWorkerSource(base)], { type: 'text/javascript' });
+                const worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
+                const pending = new Map();
+                let nextId = 1;
+                worker.onmessage = (event) => {
+                    const { id, ok, result, error } = event.data;
+                    const entry = pending.get(id);
+                    if (!entry) {
+                        return;
+                    }
+                    pending.delete(id);
+                    if (ok) {
+                        entry.resolve(result);
+                    } else {
+                        entry.reject(new Error(error));
+                    }
+                };
+                worker.onerror = (event) => {
+                    const failure = new Error(event.message || 'simulation worker failed');
+                    for (const entry of pending.values()) {
+                        entry.reject(failure);
+                    }
+                    pending.clear();
+                };
+                return {
+                    request(action, args) {
+                        return new Promise((resolve, reject) => {
+                            const id = nextId++;
+                            pending.set(id, { resolve, reject });
+                            worker.postMessage({ id, action, args });
+                        });
+                    },
+                };
+            })();
+            simWorkerPromise.catch(() => {
+                simWorkerPromise = null;
+            });
+        }
+        return simWorkerPromise;
+    }
+
+    // Run a heavy action in the worker, falling back to the main thread.
+    async function runHeavy(action, args, mainThreadFallback) {
+        try {
+            const worker = await loadSimWorker();
+            return await worker.request(action, args);
+        } catch (error) {
+            console.warn(`rumoca-live: worker path failed for ${action}, using main thread:`, error);
+            return mainThreadFallback();
+        }
+    }
+
     function broadcastStatus(text) {
         for (const widget of widgets) {
             if (!widget.busy) {
@@ -938,16 +1036,55 @@
         status.className = 'rumoca-live-status';
         toolbar.append(runBtn, daeBtn, resetBtn, status);
 
+        const progress = document.createElement('div');
+        progress.className = 'rumoca-live-progress';
+        progress.hidden = true;
+        const progressFill = document.createElement('div');
+        progressFill.className = 'rumoca-live-progress-fill';
+        progress.appendChild(progressFill);
+
         const output = document.createElement('div');
         output.className = 'rumoca-live-output';
         output.hidden = true;
 
-        container.append(editorHost, toolbar, output);
+        container.append(editorHost, toolbar, progress, output);
         pre.replaceWith(container);
 
         const editor = monaco
             ? createMonacoEditor(monaco, editorHost, originalSource)
             : createTextareaEditor(editorHost, originalSource);
+
+        const lastRunMs = {};
+        let progressTimer = null;
+        const beginProgress = (key, label) => {
+            const started = performance.now();
+            const expected = lastRunMs[key];
+            progress.hidden = false;
+            progressFill.classList.toggle('rumoca-live-progress-indeterminate', !expected);
+            progressFill.style.width = expected ? '0%' : '100%';
+            const tick = () => {
+                const elapsed = performance.now() - started;
+                if (expected) {
+                    const pct = Math.min(97, (elapsed / expected) * 100);
+                    progressFill.style.width = `${pct.toFixed(1)}%`;
+                }
+                const suffix = expected
+                    ? ` ${(elapsed / 1000).toFixed(0)} / ~${(expected / 1000).toFixed(0)} s`
+                    : ` ${(elapsed / 1000).toFixed(0)} s`;
+                status.textContent = label + suffix;
+            };
+            tick();
+            progressTimer = setInterval(tick, 250);
+            return started;
+        };
+        const endProgress = (key, started, succeeded) => {
+            clearInterval(progressTimer);
+            progressTimer = null;
+            progress.hidden = true;
+            if (succeeded) {
+                lastRunMs[key] = performance.now() - started;
+            }
+        };
 
         const widget = {
             busy: false,
@@ -988,35 +1125,41 @@
             widget.setStatus('Failed');
         };
 
-        const withWasm = async (busyLabel, action) => {
+        const withWasm = async (key, busyLabel, action) => {
             runBtn.disabled = true;
             daeBtn.disabled = true;
             widget.busy = true;
+            let started = null;
+            let succeeded = false;
             try {
                 const wasm = await loadWasm();
-                widget.setStatus(busyLabel);
-                // Yield once so the status text paints before the
-                // synchronous WASM call blocks this thread.
-                await new Promise((resolve) => setTimeout(resolve, 16));
+                started = beginProgress(key, busyLabel);
                 const source = editor.getValue();
                 const model = inferModelName(wasm, source);
                 if (!model) {
                     throw new Error('No model/block/class found in this example.');
                 }
                 await action(wasm, source, model);
+                succeeded = true;
             } catch (error) {
                 showError(error);
             } finally {
+                if (started !== null) {
+                    endProgress(key, started, succeeded);
+                }
                 widget.busy = false;
                 runBtn.disabled = false;
                 daeBtn.disabled = false;
             }
         };
 
-        runBtn.addEventListener('click', () => withWasm('Compiling & simulating…', async (wasm, source, model) => {
+        runBtn.addEventListener('click', () => withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model) => {
             // t_end = 0 / dt = 0 / solver = "" defer to the model's
-            // experiment annotation, falling back to runtime defaults.
-            const result = JSON.parse(wasm.simulate_model(source, model, 0, 0, ''));
+            // experiment annotation, falling back to runtime defaults. The
+            // call runs in a worker so the page (and progress bar) stay live.
+            const raw = await runHeavy('simulate', { source, model },
+                () => wasm.simulate_model(source, model, 0, 0, ''));
+            const result = JSON.parse(raw);
             const payload = result.payload || {};
             const allData = payload.allData || [];
             if (allData.length < 2) {
@@ -1051,13 +1194,15 @@
             widget.setStatus(describeRun(result));
         }));
 
-        daeBtn.addEventListener('click', () => withWasm('Compiling to DAE…', async (wasm, source, model) => {
-            // compile() returns an envelope; render_target wants the native
-            // DAE document from its `dae_native` field.
-            const envelope = JSON.parse(wasm.compile(source, model));
-            const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
-            const rendered = wasm.render_target(daeJson, model, 'dae-modelica', '', '{}');
-            const text = targetFilesToText(rendered.files);
+        daeBtn.addEventListener('click', () => withWasm('dae', 'Compiling to DAE…', async (wasm, source, model) => {
+            const text = await runHeavy('dae', { source, model }, () => {
+                // compile() returns an envelope; render_target wants the
+                // native DAE document from its `dae_native` field.
+                const envelope = JSON.parse(wasm.compile(source, model));
+                const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
+                const rendered = wasm.render_target(daeJson, model, 'dae-modelica', '', '{}');
+                return targetFilesToText(rendered.files);
+            });
             const daeBox = document.createElement('pre');
             daeBox.className = 'rumoca-live-dae';
             daeBox.textContent = text || '(empty render)';

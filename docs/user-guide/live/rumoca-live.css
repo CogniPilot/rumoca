@@ -191,3 +191,29 @@
     margin: 0;
     font-size: 0.8em;
 }
+
+.rumoca-live-progress {
+    height: 4px;
+    background: var(--table-border-color, #ddd);
+    overflow: hidden;
+}
+
+.rumoca-live-progress-fill {
+    height: 100%;
+    width: 0;
+    background: #2470c2;
+    transition: width 0.25s linear;
+}
+
+.rumoca-live-progress-indeterminate {
+    width: 100% !important;
+    background: repeating-linear-gradient(
+        -45deg, #2470c2 0 12px, #7db4e8 12px 24px);
+    background-size: 200% 100%;
+    animation: rumoca-live-progress-slide 1.2s linear infinite;
+}
+
+@keyframes rumoca-live-progress-slide {
+    from { background-position: 0 0; }
+    to { background-position: 34px 0; }
+}
