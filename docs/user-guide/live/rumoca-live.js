@@ -1021,6 +1021,12 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
                 clock.textContent = `draw error: ${error.message || error}`;
                 console.error('rumoca-live animation draw error:', error);
             }
+            // Ratchet the label width up so the flexed slider next to it
+            // does not resize (oscillate) as digit counts change.
+            const width = clock.scrollWidth;
+            if (width > (parseFloat(clock.style.minWidth) || 0)) {
+                clock.style.minWidth = `${width}px`;
+            }
         };
 
         playBtn.addEventListener('click', () => {
