@@ -201,7 +201,7 @@ api.addAnimation(times, (frame) => {
       ctx2d.fillRect((i - 1) * cell, (j - 1) * cell, cell + 1, cell + 1);
     }
   }
-  return `t = ${api.formatClock(times[frame])}`;
+  return `t = ${times[frame].toFixed(1)} s`;
 }, 8000);
 
 api.addColorbar(-span, span, api.heatColor);
@@ -406,7 +406,7 @@ api.addAnimation(times, (frame) => {
     }
   }
   drawAirfoil();
-  return `t = ${api.formatTick(times[frame])} s · max |V| = ${api.formatTick(vMax)}`;
+  return `t = ${times[frame].toFixed(1)} s · max |V| = ${api.formatTick(vMax)}`;
 }, 10000);
 
 api.addColorbar(0, vMax, api.heatColor);
