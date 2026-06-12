@@ -632,7 +632,7 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         return module;
     }
 
-    async function runGpuSimulation(adapter, prep) {
+    async function runGpuSimulation(adapter, prep, onPhase = () => {}) {
         const layout = prep.layout || {};
         const nStates = prep.n_states | 0;
         const yLen = Math.max(layout.y_len | 0, 1);
@@ -653,16 +653,26 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         const steps = Math.max(1, Math.round((tEnd - tStart) / dt));
 
         const device = await adapter.requestDevice();
+        onPhase('Parsing GPU kernels (WGSL)', null);
         const derModule = await compileGpuModule(device, prep.wgsl, 'wgsl-solve');
         const stageModule = await compileGpuModule(device, GPU_STAGE_WGSL, 'rk4-stage');
         const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
         const chunks = Math.max(layout.chunks | 0, 1);
         const prefix = layout.kernel_prefix || 'derivative_rhs_chunk';
+        let pipelinesBuilt = 0;
+        onPhase(`Building GPU pipelines (0/${chunks})`, 0);
         const derPipelines = await Promise.all(
             Array.from({ length: chunks }, (_, c) => device.createComputePipelineAsync({
                 layout: 'auto',
                 compute: { module: derModule, entryPoint: `${prefix}${c}` },
+            }).then((pipeline) => {
+                pipelinesBuilt += 1;
+                onPhase(
+                    `Building GPU pipelines (${pipelinesBuilt}/${chunks})`,
+                    pipelinesBuilt / chunks
+                );
+                return pipeline;
             }))
         );
         const axpyPipeline = await device.createComputePipelineAsync({
@@ -777,6 +787,7 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         const times = [tStart];
         const samples = [Array.from(y0)];
+        onPhase(`Simulating on WebGPU (0/${steps} steps)`, 0);
         const wallStart = performance.now();
         // One readback per step keeps the driver simple; the GPU work per
         // step is small enough that this is not the bottleneck yet.
@@ -806,6 +817,12 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
             samples.push(Array.from(new Float32Array(readback.getMappedRange())));
             readback.unmap();
             times.push(t + dt);
+            if (step % 5 === 4 || step === steps - 1) {
+                onPhase(
+                    `Simulating on WebGPU (${step + 1}/${steps} steps)`,
+                    (step + 1) / steps
+                );
+            }
         }
         const gpuSeconds = (performance.now() - wallStart) / 1000;
         device.destroy();
@@ -1341,23 +1358,53 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         const lastRunMs = {};
         let progressTimer = null;
+        // When a run reports its own phases (the GPU path), `phase`
+        // overrides the elapsed-time estimate: a fraction renders a real
+        // progress fill, null renders the indeterminate stripe.
+        let phase = null;
+        const setPhase = (label, fraction) => {
+            phase = { label, fraction, since: performance.now() };
+            renderProgressNow();
+        };
+        let renderProgressNow = () => {};
         const beginProgress = (key, label) => {
             const started = performance.now();
             const expected = lastRunMs[key];
+            phase = null;
             progress.hidden = false;
-            progressFill.classList.toggle('rumoca-live-progress-indeterminate', !expected);
-            progressFill.style.width = expected ? '0%' : '100%';
             const tick = () => {
                 const elapsed = performance.now() - started;
+                if (phase) {
+                    const determinate = phase.fraction !== null
+                        && phase.fraction !== undefined;
+                    progressFill.classList.toggle(
+                        'rumoca-live-progress-indeterminate', !determinate);
+                    if (determinate) {
+                        progressFill.style.width =
+                            `${(Math.min(1, phase.fraction) * 100).toFixed(1)}%`;
+                    } else {
+                        progressFill.style.width = '100%';
+                    }
+                    const pct = determinate
+                        ? ` ${(phase.fraction * 100).toFixed(0)}% ·` : '';
+                    status.textContent =
+                        `${phase.label} ·${pct} ${(elapsed / 1000).toFixed(0)} s`;
+                    return;
+                }
+                progressFill.classList.toggle(
+                    'rumoca-live-progress-indeterminate', !expected);
                 if (expected) {
                     const pct = Math.min(97, (elapsed / expected) * 100);
                     progressFill.style.width = `${pct.toFixed(1)}%`;
+                } else {
+                    progressFill.style.width = '100%';
                 }
                 const suffix = expected
                     ? ` ${(elapsed / 1000).toFixed(0)} / ~${(expected / 1000).toFixed(0)} s`
                     : ` ${(elapsed / 1000).toFixed(0)} s (first run — no estimate yet)`;
                 status.textContent = label + suffix;
             };
+            renderProgressNow = tick;
             tick();
             progressTimer = setInterval(tick, 250);
             return started;
@@ -1366,6 +1413,8 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
             clearInterval(progressTimer);
             progressTimer = null;
             progress.hidden = true;
+            phase = null;
+            renderProgressNow = () => {};
             if (succeeded) {
                 lastRunMs[key] = performance.now() - started;
             }
@@ -1469,14 +1518,13 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
                         + 'uncheck GPU to simulate on the CPU (WASM) path.'
                     );
                 }
-                widget.setStatus('Compiling for GPU (wgsl-solve)…');
+                setPhase('Compiling model (Modelica → Solve IR → WGSL)', null);
                 const prep = JSON.parse(await runHeavy(
                     'prepare_gpu',
                     { source, model },
                     () => wasm.prepare_gpu_simulation(source, model)
                 ));
-                widget.setStatus('Running on WebGPU…');
-                const result = await runGpuSimulation(adapter, prep);
+                const result = await runGpuSimulation(adapter, prep, setPhase);
                 renderRunResult(result);
                 return;
             }
