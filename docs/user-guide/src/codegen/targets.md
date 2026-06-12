@@ -1,56 +1,62 @@
 # Targets and Templates
 
-Rumoca code generation is target-directory based. A target directory contains a
-`target.toml` file and Jinja templates. The target owns the IR stage it expects;
-individual template files should not silently switch IRs.
+Rumoca can render a compiled model into other languages and ecosystems:
+symbolic math packages, compiled simulation kernels, FMUs, or Modelica
+source at any pipeline stage. Code generation is *target-directory based*: a
+target is a `target.toml` manifest plus Jinja templates, and each target
+declares which compiler IR stage it consumes.
 
-List built-in targets:
+## Listing Targets
 
 ```bash
-cargo run -p rumoca -- targets
+rumoca targets
 ```
 
-Render a built-in target:
+Built-in targets include:
+
+| Target | IR | Mode | Output |
+|---|---|---|---|
+| `sympy` | dae | symbolic | SymPy model classes |
+| `jax` | dae | symbolic | JAX functions |
+| `casadi-sx` / `casadi-mx` | dae | symbolic | CasADi expressions |
+| `julia-mtk` | dae | symbolic | ModelingToolkit.jl |
+| `symforce` | dae | symbolic | SymForce, with native AD support |
+| `onnx` | dae | symbolic | ONNX graph |
+| `rust-solve` / `c-solve` / `embedded-c` | solve | compiled | Self-contained simulation kernels |
+| `cuda-c` / `cuda-nvrtc-solve-jit` | solve | compiled/JIT | GPU kernels |
+| `cranelift-solve-jit` / `mlir` | solve | JIT/compiled | In-process execution backends |
+| `fmi2` / `fmi3` | solve | packaged | FMU export |
+| `modelica` / `flat-modelica` / `dae-modelica` / `base-modelica` | ast/flat/dae | source-transform | Modelica source at each stage |
+
+The `rumoca targets` table also reports a readiness level (0 = experimental
+… 2 = validated) and per-feature support columns (scalarization, matmul,
+linear solve, events, AD, …) for each target. Treat the table — not this
+page — as the current source of truth.
+
+## Rendering a Target
 
 ```bash
-cargo run -p rumoca -- \
-  compile examples/models/SympyDecay.mo \
+rumoca compile examples/models/SympyDecay.mo \
   --model SympyDecay \
   --target sympy \
   --output /tmp/sympy_decay
 ```
 
-Render a custom target directory:
+`--output` may be a file or directory depending on what the target renders.
 
-```bash
-cargo run -p rumoca -- \
-  compile examples/models/SympyDecay.mo \
-  --model SympyDecay \
-  --target examples/codegen/standalone_web \
-  --output /tmp/sympy_decay_custom
-```
+## Codegen Scenarios
 
-Runnable codegen scenarios live under `examples/codegen/` and write generated
-files under `examples/codegen/gen/`, which is ignored by git:
+Like simulations, generation jobs worth repeating belong in a `rum.toml`
+with `task = "codegen"`. Runnable examples live under `examples/codegen/`
+and write into `examples/codegen/gen/` (git-ignored):
 
-```bash
-cargo run -p rumoca -- \
-  compile examples/models/SympyDecay.mo \
-  --model SympyDecay \
-  --target examples/codegen/standalone_web \
-  --output examples/codegen/gen/sympy_decay_standalone_web
-```
+- `examples/codegen/rum.ball_jax.toml` — built-in JAX target
+- `examples/codegen/rum.sympy_decay_sympy.toml` — built-in SymPy target
+- `examples/codegen/rum.sympy_decay_standalone_web.toml` — custom web target
+- `examples/codegen/rum.sympy_decay_custom_casadi.toml` — raw Jinja template
 
-## Custom Targets
+## IR Dumps vs Targets
 
-For custom generation, create a directory with `target.toml` and templates, then
-pass the directory as `--target`.
-
-The repository includes `examples/codegen/standalone_web/target.toml` as a
-minimal custom target bundle that renders both standalone HTML and companion
-JavaScript. `examples/codegen/custom_casadi.jinja` shows the simpler direct raw
-template workflow when a `target.toml` bundle is unnecessary.
-
-Rust code should not special-case target languages such as C, MLIR, CUDA, or
-Python. Language-specific behavior belongs in `target.toml` metadata and the
-templates for that target.
+If what you want is to *see* a compiler stage rather than generate project
+code, use `--emit` instead of a target — see
+[Inspecting and Debugging Models](../simulation/inspect.md).

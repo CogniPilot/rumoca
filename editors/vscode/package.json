@@ -214,6 +214,24 @@
         "command": "rumoca.collapseAllAnnotations",
         "title": "Collapse All Annotations",
         "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.openUserGuide",
+        "title": "Open Rumoca User Guide",
+        "shortTitle": "User Guide",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.openDevGuide",
+        "title": "Open Rumoca Internals Guide",
+        "shortTitle": "Internals Guide",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.openPlayground",
+        "title": "Open Rumoca Web Playground",
+        "shortTitle": "Playground",
+        "category": "Rumoca"
       }
     ],
     "menus": {
