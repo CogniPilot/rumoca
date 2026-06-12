@@ -33,6 +33,8 @@ pub mod sim_trace_compare;
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod prepared_vectors;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod solve_lowering;
 #[cfg(feature = "solver-diffsol")]
 pub use diffsol::{
@@ -41,6 +43,8 @@ pub use diffsol::{
     check_initialization, check_prepared_initialization, run_prepared_simulation, simulate,
     simulate_dae,
 };
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use sim_stepper::{SimStepper, StepperState};
 // The inspection/debug facade (probes + their named report types) is surfaced

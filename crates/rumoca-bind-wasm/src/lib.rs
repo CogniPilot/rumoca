@@ -57,7 +57,7 @@ use crate::class_browser_helpers::{
     join_path, token_list_to_text,
 };
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-pub use crate::gpu_api::prepare_gpu_simulation;
+pub use crate::gpu_api::{prepare_gpu_simulation, update_gpu_parameters};
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{

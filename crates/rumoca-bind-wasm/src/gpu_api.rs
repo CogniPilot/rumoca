@@ -1,12 +1,35 @@
 //! WebGPU execution preparation: renders the `wgsl-solve` target and packs
 //! everything a browser-side integrator needs into one JSON payload.
 
+use std::cell::RefCell;
+
 use wasm_bindgen::prelude::*;
 
 use crate::simulation_api::build_simulation_options;
 use crate::{compile_requested_model, qualify_input_model_name, with_singleton_session};
 use rumoca_compile::codegen::SolveTemplateRenderer;
 use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
+
+/// Lowered model retained from the last `prepare_gpu_simulation` so
+/// parameter updates can re-settle vectors without re-lowering.
+struct GpuPrepCache {
+    source_key: u64,
+    model_name: String,
+    t_start: f64,
+    solve_model: rumoca_ir_solve::SolveModel,
+}
+
+thread_local! {
+    static GPU_PREP_CACHE: RefCell<Option<GpuPrepCache>> = const { RefCell::new(None) };
+}
+
+fn source_key(source: &str, model_name: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    source.hash(&mut hasher);
+    model_name.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Prepare a model for WebGPU execution.
 ///
@@ -68,6 +91,50 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             "t_end": opts.t_end,
             "dt": opts.dt,
         });
-        serde_json::to_string(&response).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+        let text = serde_json::to_string(&response)
+            .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))?;
+        GPU_PREP_CACHE.with(|cache| {
+            *cache.borrow_mut() = Some(GpuPrepCache {
+                source_key: source_key(source, model_name),
+                model_name: model_name.to_string(),
+                t_start: opts.t_start,
+                solve_model,
+            });
+        });
+        Ok(text)
+    })
+}
+
+/// Re-settle the prepared vectors of the last `prepare_gpu_simulation` for
+/// new parameter values, without re-lowering the model. `overrides_json`
+/// is a `{ "name": value }` object naming scalar parameters. Returns
+/// `{ "y0": [...], "p0": [...] }`.
+#[wasm_bindgen]
+pub fn update_gpu_parameters(
+    source: &str,
+    model_name: &str,
+    overrides_json: &str,
+) -> Result<String, JsValue> {
+    let overrides: std::collections::BTreeMap<String, f64> =
+        serde_json::from_str(overrides_json)
+            .map_err(|e| JsValue::from_str(&format!("overrides must be {{name: value}}: {e}")))?;
+    let overrides: Vec<(String, f64)> = overrides.into_iter().collect();
+    GPU_PREP_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        let Some(prep) = cache.as_ref() else {
+            return Err(JsValue::from_str(
+                "no prepared GPU model in this session; run prepare_gpu_simulation first",
+            ));
+        };
+        if prep.source_key != source_key(source, model_name) || prep.model_name != model_name {
+            return Err(JsValue::from_str(
+                "the prepared GPU model does not match this source; run prepare_gpu_simulation again",
+            ));
+        }
+        let (y0, p0) =
+            rumoca_sim::refresh_prepared_vectors(&prep.solve_model, prep.t_start, &overrides)
+                .map_err(|e| JsValue::from_str(&format!("parameter update failed: {e}")))?;
+        serde_json::to_string(&serde_json::json!({ "y0": y0, "p0": p0 }))
+            .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
     })
 }
