@@ -1286,6 +1286,17 @@ impl<'a> LowerBuilder<'a> {
         else_branch: &'expr rumoca_core::Expression,
     ) -> Option<&'expr rumoca_core::Expression> {
         for (cond, value) in branches {
+            // Only fold the branch away when the predicate is a genuine
+            // translation-time constant. A condition that reads a run-time value
+            // (state, input, `time`, continuous algebraic, tunable parameter, …)
+            // must lower to a run-time `Select`, not be collapsed to one branch
+            // using the variable's `start` value. Otherwise an inline relation
+            // such as `if a >= 0 then 1 else -1` (e.g. the body of a
+            // `noEvent(...)`, whose relation carries no event memory) silently
+            // bakes in the start-value branch and yields wrong dynamics.
+            if !self.condition_is_compile_time_constant(cond) {
+                return None;
+            }
             let Ok(condition) = self.eval_compile_time_expr(cond, &self.local_const_bindings)
             else {
                 return None;
@@ -1295,6 +1306,85 @@ impl<'a> LowerBuilder<'a> {
             }
         }
         Some(else_branch)
+    }
+
+    /// True when `expr` can be evaluated at translation time without reading any
+    /// run-time value, so it is sound to use it to select an if-branch during
+    /// lowering. Mirrors the expression forms `eval_compile_time_expr` accepts;
+    /// anything else is treated conservatively as non-constant so lowering falls
+    /// through to a run-time `Select`.
+    fn condition_is_compile_time_constant(&self, expr: &rumoca_core::Expression) -> bool {
+        match expr {
+            rumoca_core::Expression::Literal { .. } => true,
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => self.var_ref_is_compile_time_constant(name, subscripts),
+            rumoca_core::Expression::Unary { rhs, .. } => {
+                self.condition_is_compile_time_constant(rhs)
+            }
+            rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+                self.condition_is_compile_time_constant(lhs)
+                    && self.condition_is_compile_time_constant(rhs)
+            }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches.iter().all(|(cond, value)| {
+                    self.condition_is_compile_time_constant(cond)
+                        && self.condition_is_compile_time_constant(value)
+                }) && self.condition_is_compile_time_constant(else_branch)
+            }
+            rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+                // `size`/`ndims` only read an array's structural shape, never its
+                // run-time contents, so they stay translation-time constant
+                // regardless of the argument.
+                matches!(
+                    function,
+                    rumoca_core::BuiltinFunction::Size | rumoca_core::BuiltinFunction::Ndims
+                ) || args
+                    .iter()
+                    .all(|arg| self.condition_is_compile_time_constant(arg))
+            }
+            rumoca_core::Expression::FunctionCall { args, .. } => args
+                .iter()
+                .all(|arg| self.condition_is_compile_time_constant(arg)),
+            _ => false,
+        }
+    }
+
+    fn var_ref_is_compile_time_constant(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) -> bool {
+        let key = name.as_str();
+        // Loop indices and projected function parameters bound to constants.
+        if subscripts.is_empty() && self.local_const_bindings.contains_key(key) {
+            return true;
+        }
+        // Structural quantities: sizes, enum-literal ordinals, structural params.
+        if self.structural_bindings.contains_key(key) {
+            return true;
+        }
+        // `time` always varies at run time.
+        if key == "time" {
+            return false;
+        }
+        let Some(variables) = self.dae_variables else {
+            return false;
+        };
+        let var_name = name.var_name();
+        if variables.constants.contains_key(var_name) {
+            return true;
+        }
+        // Non-tunable parameters are fixed for the whole simulation; tunable
+        // parameters and every continuous/discrete variable may change.
+        if let Some(parameter) = variables.parameters.get(var_name) {
+            return !parameter.is_tunable;
+        }
+        false
     }
 
     pub(in crate::lower) fn lower_indexed_binding_values(
