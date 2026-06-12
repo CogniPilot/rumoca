@@ -40,7 +40,7 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, DaeJsonTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
     render_dae_template_with_json, render_dae_template_with_json_and_name,
     render_flat_template_with_name,
 };
@@ -71,10 +71,10 @@ pub struct CompilationResult {
     /// The resolved tree (intermediate, before instantiation and typechecking).
     pub resolved: ResolvedTree,
     /// Cached solve-template renderer (scalarized DAE + lowered solve
-    /// problem, converted to template values). Building it dominates target
+    /// problem, as typed template values). Building it dominates target
     /// generation on large models and a multi-file target renders several
     /// strings against the same input.
-    solve_template_renderer: std::sync::OnceLock<DaeJsonTemplateRenderer>,
+    solve_template_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -100,40 +100,14 @@ fn scalarized_dae(dae: &Dae) -> Result<Dae, CodegenError> {
     Ok(dae)
 }
 
-fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
-    let mut value = dae_to_template_json(dae_model)?;
-    let solve =
-        lower_solve_problem(dae_model).map_err(|err| CodegenError::template(err.to_string()))?;
-    let artifacts =
-        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    let mut solve_value =
-        serde_json::to_value(solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    solve_value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("Solve template JSON root must be an object"))?
-        .insert(
-            "artifacts".to_string(),
-            serde_json::to_value(artifacts)
-                .map_err(|err| CodegenError::template(err.to_string()))?,
-        );
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?;
-    object.insert("solve".to_string(), solve_value);
-    Ok(value)
-}
-
-fn solve_template_json_for_dae(dae_model: &Dae) -> Result<serde_json::Value, CodegenError> {
-    let dae = scalarized_dae(dae_model)?;
-    let mut dae_json = dae_to_template_json_with_solve(&dae)?;
-    dae_json
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?
-        .insert(
-            "__ir_kind".to_string(),
-            serde_json::Value::String("solve".to_string()),
-        );
-    Ok(dae_json)
+fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
+    let dae = scalarized_dae(dae_model).map_err(CompilerError::TemplateError)?;
+    let problem = lower_solve_problem(&dae)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let artifacts = lower_solve_artifacts(&problem)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
+        .map_err(CompilerError::TemplateError)
 }
 
 impl CompilationResult {
@@ -363,15 +337,14 @@ impl CompilationResult {
         match ir {
             TemplateIr::Dae => self.render_template_str_with_name(template, model_name),
             TemplateIr::Solve => {
-                // Scalarization, solve lowering, serialization, and the
-                // JSON-to-template-value conversion dominate large-model
-                // target generation; build once per compilation and render
-                // every template string (paths included) against the cache.
+                // Build the template context once per compilation, straight
+                // from typed data: the previous path serialized the
+                // scalarized DAE plus the lowered solve problem to JSON and
+                // deserialized the problem back, per compilation - several
+                // seconds of round-trip on large models with the actual
+                // template rendering measured in milliseconds.
                 if self.solve_template_renderer.get().is_none() {
-                    let json = solve_template_json_for_dae(&self.dae)
-                        .map_err(CompilerError::TemplateError)?;
-                    let renderer =
-                        DaeJsonTemplateRenderer::new(json).map_err(CompilerError::TemplateError)?;
+                    let renderer = build_solve_template_renderer(&self.dae)?;
                     let _ = self.solve_template_renderer.set(renderer);
                 }
                 self.solve_template_renderer

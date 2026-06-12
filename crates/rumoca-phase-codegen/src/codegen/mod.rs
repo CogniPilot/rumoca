@@ -821,46 +821,6 @@ fn render_solve_context(
     )?)?)
 }
 
-fn solve_render_context_value(
-    solve_problem: &solve::SolveProblem,
-    artifacts: &solve::SolveArtifacts,
-    model_name: Option<&str>,
-) -> Result<Value, CodegenError> {
-    let solve_value = Value::from_serialize(solve_problem);
-    let artifacts_value = Value::from_serialize(artifacts);
-    let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
-    let derivative_nodes = Value::from_serialize(&solve_problem.continuous.derivative_rhs.nodes);
-    let implicit_rows =
-        rumoca_eval_solve::to_scalar_program_block(&solve_problem.continuous.implicit_rhs);
-    let jacobian_rows =
-        rumoca_eval_solve::to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v);
-    let implicit_rows = Value::from_serialize(&implicit_rows);
-    let jacobian_rows = Value::from_serialize(&jacobian_rows);
-    Ok(match model_name {
-        Some(name) => minijinja::context! {
-            solve => solve_value.clone(),
-            solve_artifacts => artifacts_value,
-            ir => solve_value,
-            ir_kind => "solve",
-            model_name => name,
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => derivative_nodes,
-            solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
-        },
-        None => minijinja::context! {
-            solve => solve_value.clone(),
-            solve_artifacts => artifacts_value,
-            ir => solve_value,
-            ir_kind => "solve",
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => derivative_nodes,
-            solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
-        },
-    })
-}
-
 fn solve_template_blocks_value(
     solve_problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
@@ -1040,64 +1000,6 @@ pub fn render_template_with_dae_json(
     Ok(result)
 }
 
-/// Prebuilt template context for repeated renders against the same
-/// DAE/solve JSON document.
-///
-/// Converting a large JSON document into template values dominates
-/// multi-file target generation, so the conversion happens once here and
-/// every rendered string (file paths and templates alike) reuses it.
-#[derive(Debug)]
-pub struct DaeJsonTemplateRenderer {
-    /// Kept for the per-template external-function guard.
-    dae_json: serde_json::Value,
-    /// Everything except `model_name`.
-    base_context: Value,
-}
-
-impl DaeJsonTemplateRenderer {
-    pub fn new(dae_json: serde_json::Value) -> Result<Self, CodegenError> {
-        let dae_value = Value::from_serialize(&dae_json);
-        let solve_value = optional_object_field(&dae_value, "solve");
-        let ir_kind = template_ir_kind_from_dae_json(&dae_json);
-        let ir_value = if ir_kind == "solve" {
-            solve_value.clone()
-        } else {
-            dae_value.clone()
-        };
-        let solve_blocks = solve_blocks_from_dae_json(&dae_json)?;
-        let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(&dae_json);
-        let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(&dae_json);
-        let base_context = minijinja::context! {
-            dae => dae_value.clone(),
-            solve => solve_value,
-            ir => ir_value,
-            ir_kind => ir_kind,
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => solve_derivative_nodes,
-            solve_jacobian_rows => solve_jacobian_rows,
-        };
-        Ok(Self {
-            dae_json,
-            base_context,
-        })
-    }
-
-    pub fn render_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-    ) -> Result<String, CodegenError> {
-        reject_external_functions_in_json_for_simulation_template(&self.dae_json, template)?;
-        let mut env = create_environment();
-        env.add_template("inline", template)?;
-        let tmpl = env.get_template("inline")?;
-        Ok(tmpl.render(minijinja::context! {
-            model_name => model_name,
-            ..self.base_context.clone()
-        })?)
-    }
-}
-
 pub fn render_template_with_dae_json_and_name(
     dae_json: &serde_json::Value,
     template: &str,
@@ -1272,29 +1174,6 @@ pub fn render_flat_template_with_name(
 /// that once and rendering many templates against it is dramatically
 /// cheaper than calling `render_solve_template_with_name` per template on
 /// large models.
-pub struct SolveTemplateRenderer {
-    context: Value,
-}
-
-impl SolveTemplateRenderer {
-    pub fn new(
-        problem: &solve::SolveProblem,
-        artifacts: &solve::SolveArtifacts,
-        model_name: &str,
-    ) -> Result<Self, CodegenError> {
-        Ok(Self {
-            context: solve_render_context_value(problem, artifacts, Some(model_name))?,
-        })
-    }
-
-    pub fn render(&self, template: &str) -> Result<String, CodegenError> {
-        let mut env = create_environment();
-        env.add_template("inline", template)?;
-        let tmpl = env.get_template("inline")?;
-        Ok(tmpl.render(&self.context)?)
-    }
-}
-
 /// Render a solver IR problem using a template string and model name.
 pub fn render_solve_template_with_name(
     solve: &solve::SolveProblem,
@@ -1983,6 +1862,10 @@ mod local_tests {
         );
     }
 }
+
+mod solve_renderer;
+pub use solve_renderer::SolveTemplateRenderer;
+use solve_renderer::solve_render_context_value;
 
 #[cfg(test)]
 mod codegen_tests;
