@@ -201,7 +201,9 @@ fn test_solve_template_context_exposes_tensor_nodes_and_scalar_fallback_rows() {
     )
     .expect("solve template should render tensor block context");
 
-    assert_eq!(rendered, "1 1 2 true");
+    // The 2×2 linsolve now lowers to ONE multi-output scalar program (2 outputs)
+    // rather than two single-output programs.
+    assert_eq!(rendered, "1 1 1 true");
 }
 
 #[test]

@@ -97,6 +97,60 @@ impl ScalarProgramBlock {
             .filter(|span| !span.is_dummy())
     }
 
+    /// Number of `StoreOutput` ops in a single program.
+    ///
+    /// A program may emit more than one output: matmul/linsolve nodes lower to
+    /// one self-contained program that computes its operands once and stores
+    /// every result via consecutive `StoreOutput` ops (see the running-counter
+    /// invariant on [`ScalarProgramBlock::output_count`]).
+    pub fn program_output_count(program: &[LinearOp]) -> usize {
+        program
+            .iter()
+            .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
+            .count()
+    }
+
+    /// Total number of outputs produced by the block.
+    ///
+    /// Running-counter invariant: the i-th `StoreOutput` op encountered when
+    /// iterating `programs` in order, then ops within each program in order,
+    /// writes output `i`. Therefore `output_count` equals the total number of
+    /// `StoreOutput` ops across all programs, and must equal the owning
+    /// [`ComputeBlock::len`] that this block was scalarized from.
+    ///
+    /// Note this differs from [`ScalarProgramBlock::len`], which counts
+    /// *programs* (one per matmul/linsolve node, possibly many outputs each).
+    pub fn output_count(&self) -> usize {
+        self.programs
+            .iter()
+            .map(|program| Self::program_output_count(program))
+            .sum()
+    }
+
+    /// Map a global output index to the program that produces it.
+    ///
+    /// Returns `None` if `output` is out of range.
+    pub fn program_index_for_output(&self, output: usize) -> Option<usize> {
+        let mut remaining = output;
+        for (idx, program) in self.programs.iter().enumerate() {
+            let count = Self::program_output_count(program);
+            if remaining < count {
+                return Some(idx);
+            }
+            remaining -= count;
+        }
+        None
+    }
+
+    /// Source span for a global output index, looked up via its owning program.
+    ///
+    /// All outputs of a matmul/linsolve program share the node's span, matching
+    /// the pre-existing per-node span attribution.
+    pub fn span_for_output(&self, output: usize) -> Option<Span> {
+        let program_index = self.program_index_for_output(output)?;
+        self.program_span(program_index)
+    }
+
     pub fn len(&self) -> usize {
         self.programs.len()
     }
@@ -252,12 +306,17 @@ impl ComputeBlock {
         }
     }
 
-    /// Total scalar row count across all nodes.
+    /// Total output count across all nodes.
+    ///
+    /// Each `StoreOutput` is one output. A `ScalarPrograms` node contributes its
+    /// block's [`ScalarProgramBlock::output_count`] (which may exceed the program
+    /// count when a program emits several outputs), and matmul/linsolve nodes
+    /// contribute `m*n` / `n` respectively.
     pub fn len(&self) -> usize {
         self.nodes
             .iter()
             .map(|n| match n {
-                ComputeNode::ScalarPrograms(b) => b.len(),
+                ComputeNode::ScalarPrograms(b) => b.output_count(),
                 ComputeNode::MatMul { m, n, .. } => m * n,
                 ComputeNode::LinSolve { n, .. } => *n,
             })

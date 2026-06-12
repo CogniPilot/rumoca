@@ -27,7 +27,7 @@ fn lower_derivative_rhs_extracts_explicit_state_derivative_rows() {
     let rows = rumoca_eval_solve::to_scalar_program_block(
         &lower_derivative_rhs(&dae_model, &layout).expect("explicit xdot should lower"),
     );
-    let (_, output) = eval_linear_ops(&rows.programs[0], &[2.0], &[3.0], 0.0);
+    let (_, output) = eval_block_output(&rows, 0, &[2.0], &[3.0], 0.0);
 
     assert!((output.expect("xdot row") + 6.0).abs() < 1e-12);
 }
@@ -61,8 +61,8 @@ fn lower_derivative_rhs_extracts_additive_zero_residual_rows() {
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("additive zero residual derivative rows should lower"),
     );
-    let (_, q_derivative) = eval_linear_ops(&rows.programs[0], &[2.0, 5.0], &[3.0], 0.0);
-    let (_, qd_derivative) = eval_linear_ops(&rows.programs[1], &[2.0, 5.0], &[3.0], 0.0);
+    let (_, q_derivative) = eval_block_output(&rows, 0, &[2.0, 5.0], &[3.0], 0.0);
+    let (_, qd_derivative) = eval_block_output(&rows, 1, &[2.0, 5.0], &[3.0], 0.0);
 
     assert!((q_derivative.expect("q derivative row") - 5.0).abs() < 1e-12);
     assert!((qd_derivative.expect("qd derivative row") + 6.0).abs() < 1e-12);
@@ -100,10 +100,10 @@ fn lower_derivative_rhs_extracts_piecewise_state_derivative_rows() {
     let mut p = vec![0.0; 2];
     set_p_value(&layout, &mut p, "limited", 0.0);
     set_p_value(&layout, &mut p, "u", 4.0);
-    let (_, unconstrained_output) = eval_linear_ops(&rows.programs[0], &[0.0], &p, 0.0);
+    let (_, unconstrained_output) = eval_block_output(&rows, 0, &[0.0], &p, 0.0);
 
     set_p_value(&layout, &mut p, "limited", 1.0);
-    let (_, limited_output) = eval_linear_ops(&rows.programs[0], &[0.0], &p, 0.0);
+    let (_, limited_output) = eval_block_output(&rows, 0, &[0.0], &p, 0.0);
 
     assert!((unconstrained_output.expect("unconstrained derivative") - 4.0).abs() < 1e-12);
     assert!(limited_output.expect("limited derivative").abs() < 1e-12);
@@ -148,7 +148,7 @@ fn lower_derivative_rhs_extracts_nested_piecewise_inductor_row() {
     set_p_value(&layout, &mut p, "L", 2.0);
     set_p_value(&layout, &mut p, "quasiStatic", 0.0);
 
-    let (_, output) = eval_linear_ops(&rows.programs[0], &y, &p, 0.0);
+    let (_, output) = eval_block_output(&rows, 0, &y, &p, 0.0);
 
     assert!((output.expect("inductor derivative") - 3.0).abs() < 1e-12);
 }
@@ -203,7 +203,7 @@ fn lower_derivative_rhs_extracts_whole_if_with_derivative_free_branch() {
     set_p_value(&layout, &mut p, "m", 2.0);
     set_p_value(&layout, &mut p, "cv", 5.0);
 
-    let (_, output) = eval_linear_ops(&rows.programs[0], &y, &p, 0.0);
+    let (_, output) = eval_block_output(&rows, 0, &y, &p, 0.0);
 
     assert!((output.expect("state derivative") - 3.0).abs() < 1e-12);
 }
@@ -233,7 +233,7 @@ fn lower_derivative_rhs_preserves_one_element_array_state_index() {
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("one-element array-state derivative should lower"),
     );
-    let (_, output) = eval_linear_ops(&rows.programs[0], &[0.0, 4.0], &[], 0.0);
+    let (_, output) = eval_block_output(&rows, 0, &[0.0, 4.0], &[], 0.0);
 
     assert!((output.expect("x[1] derivative") - 4.0).abs() < 1e-12);
 }
@@ -285,8 +285,8 @@ fn lower_derivative_rhs_lowers_coupled_array_state_solve_to_solver_ir() {
         )
     }));
     let y = [0.0, 0.0, 2.0, 0.0, 0.0, 4.0, 8.0, 20.0];
-    let (_, first) = eval_linear_ops(&rows.programs[0], &y, &[], 0.0);
-    let (_, second) = eval_linear_ops(&rows.programs[1], &y, &[], 0.0);
+    let (_, first) = eval_block_output(&rows, 0, &y, &[], 0.0);
+    let (_, second) = eval_block_output(&rows, 1, &y, &[], 0.0);
 
     assert!((first.expect("omega[1] derivative") - 4.0).abs() < 1e-12);
     assert!((second.expect("omega[2] derivative") - 5.0).abs() < 1e-12);

@@ -4,9 +4,10 @@ use rumoca_ir_solve::{ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock};
 use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
 use crate::{
-    EvalSolveError, PreparedRowEval, RowEvalContext, RowEvalScratch, RowInputRequirements,
-    SimulationRuntimeState, eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked,
-    record_solve_block_eval, required_registers, row_input_requirements,
+    EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
+    RowInputRequirements, SimulationRuntimeState, eval_program_single, eval_row_prepared_maybe_fast,
+    linear_solve::solve_all_unchecked, record_solve_block_eval, required_registers,
+    row_input_requirements,
     row_register_flow_is_valid, to_scalar_program_block, validate_input_requirements,
     validate_output_len,
 };
@@ -70,8 +71,11 @@ impl PreparedScalarProgramBlock {
         &self.block
     }
 
+    /// Number of outputs this block produces (one per `StoreOutput`), which a
+    /// matmul/linsolve program may exceed its program count for. Consumers size
+    /// their output buffers from this.
     pub fn len(&self) -> usize {
-        self.block.len()
+        self.block.output_count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -98,7 +102,7 @@ impl PreparedScalarProgramBlock {
                 context.with_runtime_state(&local_runtime_state)
             }
         };
-        validate_output_len(out, self.block.len())?;
+        validate_output_len(out, self.block.output_count())?;
         validate_input_requirements(self.requirements, y, p, context.seed)?;
         out.fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
@@ -114,7 +118,14 @@ impl PreparedScalarProgramBlock {
         context: RowEvalContext<'_>,
         out: &mut [f64],
     ) -> Result<(), EvalSolveError> {
+        // `rows` counts programs (the prefix to evaluate); the produced output
+        // count may exceed it when a program emits several outputs.
         let rows = rows.min(self.block.len());
+        let prefix = &self.block.programs[..rows];
+        let output_count: usize = prefix
+            .iter()
+            .map(|program| ScalarProgramBlock::program_output_count(program))
+            .sum();
         let local_runtime_state;
         let context = match context.runtime_state {
             Some(_) => context,
@@ -123,7 +134,7 @@ impl PreparedScalarProgramBlock {
                 context.with_runtime_state(&local_runtime_state)
             }
         };
-        validate_output_len(out, rows)?;
+        validate_output_len(out, output_count)?;
         let requirements = self
             .row_requirements
             .iter()
@@ -131,14 +142,16 @@ impl PreparedScalarProgramBlock {
             .copied()
             .fold(RowInputRequirements::default(), RowInputRequirements::merge);
         validate_input_requirements(requirements, y, p, context.seed)?;
-        out[..rows].fill(0.0);
+        out[..output_count].fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval("scalar_prefix", self.block.len(), rows);
-        for (row_idx, row) in self.block.programs.iter().take(rows).enumerate() {
-            out[row_idx] = eval_row_prepared_maybe_fast(
+        record_solve_block_eval("scalar_prefix", self.block.len(), output_count);
+        let mut sink = OutputCursor::new(&mut out[..output_count]);
+        for (row_idx, row) in prefix.iter().enumerate() {
+            eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context),
                 self.row_register_safe[row_idx],
                 &mut scratch,
+                &mut sink,
             )?;
         }
         Ok(())
@@ -201,7 +214,7 @@ impl PreparedScalarProgramBlock {
         }
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(request.label, self.block.len(), 1);
-        eval_row_prepared_maybe_fast(
+        eval_program_single(
             PreparedRowEval::new(
                 row,
                 self.row_registers[request.row_idx],
@@ -310,7 +323,7 @@ impl PreparedScalarProgramBlock {
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.
-            let output = eval_row_prepared_maybe_fast(
+            let output = eval_program_single(
                 PreparedRowEval::new(
                     row,
                     self.row_registers[request.row_idx],
@@ -327,7 +340,7 @@ impl PreparedScalarProgramBlock {
         if shape.target_y_index() != request.target_y_index {
             return Ok(None);
         }
-        eval_row_prepared_maybe_fast(
+        eval_program_single(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -351,12 +364,18 @@ impl PreparedScalarProgramBlock {
         out: &mut [f64],
         scratch: &mut RowEvalScratch,
     ) -> Result<(), EvalSolveError> {
-        record_solve_block_eval("scalar_rows_unchecked", self.block.len(), self.block.len());
+        record_solve_block_eval(
+            "scalar_rows_unchecked",
+            self.block.len(),
+            self.block.output_count(),
+        );
+        let mut sink = OutputCursor::new(out);
         for (row_idx, row) in self.block.programs.iter().enumerate() {
-            out[row_idx] = eval_row_prepared_maybe_fast(
+            eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context),
                 self.row_register_safe[row_idx],
                 scratch,
+                &mut sink,
             )?;
         }
         Ok(())
@@ -446,6 +465,12 @@ impl TargetAssignmentShape {
 }
 
 fn target_assignment_shape(row: &[LinearOp]) -> Option<TargetAssignmentShape> {
+    // Affine/direct target back-solving is only meaningful for single-output
+    // residual programs. Multi-output programs (matmul/linsolve) have no single
+    // target slot, so they are never reusable for target assignment.
+    if ScalarProgramBlock::program_output_count(row) > 1 {
+        return None;
+    }
     let output_reg = store_output_reg(row)?;
     direct_assignment_shape(row, output_reg).or_else(|| affine_assignment_shape(row, output_reg))
 }
@@ -1018,7 +1043,11 @@ impl PreparedLinearOps {
         context: RowEvalContext<'_>,
         scratch: &mut RowEvalScratch,
     ) -> Result<(), EvalSolveError> {
-        eval_row_prepared_maybe_fast(
+        // Operand setup ops compute matrix/rhs entries into the register file
+        // and contain no `StoreOutput`; the matmul/linsolve kernel reads the
+        // registers afterward. The single-output helper drives the op loop and
+        // its (unused) return value is discarded.
+        eval_program_single(
             PreparedRowEval::new(&self.ops, self.register_count, y, p, t, context),
             self.register_safe,
             scratch,
