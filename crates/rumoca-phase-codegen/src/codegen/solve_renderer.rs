@@ -20,16 +20,20 @@ use super::{
 #[derive(Debug)]
 struct LazyDaeTemplateJson {
     dae: std::sync::Arc<dae::Dae>,
-    value: std::sync::OnceLock<Value>,
+    value: std::sync::OnceLock<Option<Value>>,
 }
 
 impl LazyDaeTemplateJson {
-    fn materialized(&self) -> &Value {
-        self.value.get_or_init(|| {
-            dae_template_json(&self.dae)
-                .map(|json| Value::from_serialize(&json))
-                .unwrap_or_default()
-        })
+    /// Materialization failure surfaces as `None`/empty here, which the
+    /// strict-undefined template environment turns into a render error at
+    /// the access site — a visible failure, not a silent default.
+    fn materialized(&self) -> Option<&Value> {
+        self.value
+            .get_or_init(|| match dae_template_json(&self.dae) {
+                Ok(json) => Some(Value::from_serialize(&json)),
+                Err(_) => None,
+            })
+            .as_ref()
     }
 }
 
@@ -39,16 +43,14 @@ impl minijinja::value::Object for LazyDaeTemplateJson {
     }
 
     fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
-        self.materialized().get_item(key).ok()
+        self.materialized()?.get_item(key).ok()
     }
 
     fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
-        let keys = self
-            .materialized()
-            .try_iter()
-            .map(|iter| iter.collect::<Vec<_>>())
-            .unwrap_or_default();
-        minijinja::value::Enumerator::Values(keys)
+        match self.materialized().map(Value::try_iter) {
+            Some(Ok(iter)) => minijinja::value::Enumerator::Values(iter.collect()),
+            _ => minijinja::value::Enumerator::Empty,
+        }
     }
 }
 
@@ -135,8 +137,14 @@ fn solve_render_context_value_with_dae(
     let derivative_nodes = Value::from_serialize(&solve_problem.continuous.derivative_rhs.nodes);
     let implicit_rows =
         rumoca_eval_solve::to_scalar_program_block(&solve_problem.continuous.implicit_rhs);
-    let jacobian_rows =
-        rumoca_eval_solve::to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v);
+    // Jacobian rows prefer the full AD jacobian (state + parameter seed
+    // columns, needed e.g. for FMI directional derivatives w.r.t.
+    // parameters); the implicit state-only block is the fallback.
+    let jacobian_rows = if artifacts.continuous.full_jacobian_v.programs.is_empty() {
+        rumoca_eval_solve::to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)
+    } else {
+        artifacts.continuous.full_jacobian_v.clone()
+    };
     // Row arrays (matching the historical `.programs` shape) as typed
     // objects so the row renderers take the typed fast path.
     let implicit_rows =
