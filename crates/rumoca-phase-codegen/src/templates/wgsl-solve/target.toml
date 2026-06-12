@@ -1,0 +1,36 @@
+version = 1
+ir = "solve"
+name = "wgsl-solve"
+description = "WGSL compute-shader derivative kernel for WebGPU execution (browser and native wgpu)"
+execution_mode = "jit"
+deployment_class = "gpu"
+readiness_level = 0
+
+[capabilities]
+scalar_fallback = true
+# Condition/relation slots render as plain parameter reads; event *iteration*
+# is not provided by this target (runtime_events stays false) — hosts must
+# refuse or warn for models whose conditions fire during simulation.
+events = true
+runtime_events = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "scalar"
+elementwise = "scalar"
+reductions = "scalar"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f32"]
+
+[[files]]
+path = "{{ model_name }}_solve.wgsl"
+template = "model_solve.wgsl.jinja"
+
+[[files]]
+path = "{{ model_name }}_layout.json"
+template = "model_layout.json.jinja"

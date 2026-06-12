@@ -444,6 +444,11 @@ pub(super) fn render_solve_row_c_function(row: Value, config: Value) -> RenderRe
     render_solve_row_c(&row, &cfg)
 }
 
+pub(super) fn render_solve_row_wgsl_function(row: Value, config: Value) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_row_for(&row, &cfg, SolveRowDialect::Wgsl)
+}
+
 pub(super) fn render_solve_row_rust_function(row: Value, config: Value) -> RenderResult {
     let cfg = SolveRowCConfig::from_value(&config);
     render_solve_row_for(&row, &cfg, SolveRowDialect::Rust)
@@ -721,7 +726,7 @@ fn render_solve_op_for(
     if let Ok(value) = get_field(op, "Const") {
         let dst = solve_field_usize(&value, "dst")?;
         let value = solve_const_value_string(&value, dialect.infinity())?;
-        store_solve_reg(regs, dst, value);
+        store_solve_reg(regs, dst, dialect.format_const(value));
         return Ok(output);
     }
     if let Ok(value) = get_field(op, "LoadTime") {
@@ -789,7 +794,7 @@ fn render_solve_op_for(
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let lhs = solve_reg(regs, solve_field_usize(&value, "lhs")?)?;
         let rhs = solve_reg(regs, solve_field_usize(&value, "rhs")?)?;
-        store_solve_reg(regs, dst, render_solve_compare(&op, lhs, rhs)?);
+        store_solve_reg(regs, dst, dialect.render_compare(&op, lhs, rhs)?);
         return Ok(output);
     }
     if let Ok(value) = get_field(op, "Select") {
@@ -797,11 +802,7 @@ fn render_solve_op_for(
         let cond = solve_reg(regs, solve_field_usize(&value, "cond")?)?;
         let if_true = solve_reg(regs, solve_field_usize(&value, "if_true")?)?;
         let if_false = solve_reg(regs, solve_field_usize(&value, "if_false")?)?;
-        store_solve_reg(
-            regs,
-            dst,
-            format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))"),
-        );
+        store_solve_reg(regs, dst, dialect.render_select(cond, if_true, if_false));
         return Ok(output);
     }
     if let Ok(value) = get_field(op, "StoreOutput") {
@@ -815,6 +816,9 @@ fn render_solve_op_for(
 enum SolveRowDialect {
     C,
     Rust,
+    /// WGSL compute-shader dialect (WebGPU). f32 baseline precision; boolean
+    /// values keep the numeric 0.0/1.0 encoding via `select`.
+    Wgsl,
 }
 
 impl SolveRowDialect {
@@ -822,6 +826,48 @@ impl SolveRowDialect {
         match self {
             Self::C => "INFINITY",
             Self::Rust => "f64::INFINITY",
+            // WGSL has no portable infinity literal; f32::MAX approximates it.
+            Self::Wgsl => "3.4028235e38",
+        }
+    }
+
+    /// WGSL rejects abstract-int/float mixing in some positions; force float
+    /// form for integer-looking constants. C and Rust are unchanged.
+    fn format_const(self, value: String) -> String {
+        match self {
+            Self::C | Self::Rust => value,
+            Self::Wgsl => {
+                let looks_integer = !value.is_empty()
+                    && !value.contains(['.', 'e', 'E'])
+                    && value
+                        .strip_prefix('-')
+                        .unwrap_or(&value)
+                        .chars()
+                        .all(|c| c.is_ascii_digit());
+                if looks_integer {
+                    format!("{value}.0")
+                } else {
+                    value
+                }
+            }
+        }
+    }
+
+    fn render_compare(self, op: &str, lhs: String, rhs: String) -> RenderResult {
+        match self {
+            Self::C | Self::Rust => render_solve_compare(op, lhs, rhs),
+            Self::Wgsl => render_solve_compare_wgsl(op, lhs, rhs),
+        }
+    }
+
+    fn render_select(self, cond: String, if_true: String, if_false: String) -> String {
+        match self {
+            Self::C | Self::Rust => {
+                format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))")
+            }
+            Self::Wgsl => {
+                format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
+            }
         }
     }
 
@@ -853,6 +899,10 @@ impl SolveRowDialect {
             Self::Rust => Ok(format!(
                 "rumoca_solve_linear_component(&[{matrix}], &[{rhs}], {n}, {component})"
             )),
+            Self::Wgsl => Err(render_err(
+                "LinearSolveComponent is not supported by the WGSL dialect yet; \
+                 models with implicit linear blocks cannot target wgsl-solve",
+            )),
         }
     }
 
@@ -860,6 +910,7 @@ impl SolveRowDialect {
         match self {
             Self::C => render_solve_unary_c(op, arg),
             Self::Rust => render_solve_unary_rust(op, arg),
+            Self::Wgsl => render_solve_unary_wgsl(op, arg),
         }
     }
 
@@ -867,8 +918,68 @@ impl SolveRowDialect {
         match self {
             Self::C => render_solve_binary_c(op, lhs, rhs),
             Self::Rust => render_solve_binary_rust(op, lhs, rhs),
+            Self::Wgsl => render_solve_binary_wgsl(op, lhs, rhs),
         }
     }
+}
+
+fn render_solve_unary_wgsl(op: &str, arg: String) -> RenderResult {
+    match op {
+        "Neg" => Ok(format!("(-({arg}))")),
+        "Not" => Ok(format!("select(0.0, 1.0, ({arg}) == 0.0)")),
+        "Abs" => Ok(format!("abs({arg})")),
+        "Sign" => Ok(format!("sign({arg})")),
+        "Sqrt" => Ok(format!("sqrt({arg})")),
+        "Floor" => Ok(format!("floor({arg})")),
+        "Ceil" => Ok(format!("ceil({arg})")),
+        "Trunc" => Ok(format!("trunc({arg})")),
+        "Sin" => Ok(format!("sin({arg})")),
+        "Cos" => Ok(format!("cos({arg})")),
+        "Tan" => Ok(format!("tan({arg})")),
+        "Asin" => Ok(format!("asin({arg})")),
+        "Acos" => Ok(format!("acos({arg})")),
+        "Atan" => Ok(format!("atan({arg})")),
+        "Sinh" => Ok(format!("sinh({arg})")),
+        "Cosh" => Ok(format!("cosh({arg})")),
+        "Tanh" => Ok(format!("tanh({arg})")),
+        "Exp" => Ok(format!("exp({arg})")),
+        "Log" => Ok(format!("log({arg})")),
+        "Log10" => Ok(format!("(log({arg}) / log(10.0))")),
+        _ => Err(render_err(format!("unsupported solve unary op: {op}"))),
+    }
+}
+
+fn render_solve_binary_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
+    match op {
+        "Add" => Ok(format!("(({lhs}) + ({rhs}))")),
+        "Sub" => Ok(format!("(({lhs}) - ({rhs}))")),
+        "Mul" => Ok(format!("(({lhs}) * ({rhs}))")),
+        "Div" => Ok(format!("(({lhs}) / ({rhs}))")),
+        "Pow" => Ok(format!("pow({lhs}, {rhs})")),
+        "And" => Ok(format!(
+            "select(0.0, 1.0, (({lhs}) != 0.0) && (({rhs}) != 0.0))"
+        )),
+        "Or" => Ok(format!(
+            "select(0.0, 1.0, (({lhs}) != 0.0) || (({rhs}) != 0.0))"
+        )),
+        "Atan2" => Ok(format!("atan2({lhs}, {rhs})")),
+        "Min" => Ok(format!("min({lhs}, {rhs})")),
+        "Max" => Ok(format!("max({lhs}, {rhs})")),
+        _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
+    }
+}
+
+fn render_solve_compare_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
+    let op = match op {
+        "Lt" => "<",
+        "Le" => "<=",
+        "Gt" => ">",
+        "Ge" => ">=",
+        "Eq" => "==",
+        "Ne" => "!=",
+        _ => return Err(render_err(format!("unsupported solve compare op: {op}"))),
+    };
+    Ok(format!("select(0.0, 1.0, ({lhs}) {op} ({rhs}))"))
 }
 
 fn render_solve_unary_c(op: &str, arg: String) -> RenderResult {
