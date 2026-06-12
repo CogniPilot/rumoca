@@ -4,6 +4,9 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 
 ## Unreleased
 
+- Documentation: the user guide (Rumoca Handbook) and dev guide (Rumoca Internals) were rebuilt for the 0.9 release — a full handbook covering installation, tutorials, the Modelica language subset, the CLI/scenario/solver/codegen surface, and troubleshooting, plus an internals book that narrates the AST→Flat→DAE→Solve pipeline and the contribution workflow with pointers into `spec/`.
+- Live documentation examples: `modelica,interactive` code fences in both mdBooks become mini Monaco editors backed by the Rumoca WASM compiler and LSP (highlighting, completion, hover, diagnostics) with one-click simulate-and-plot and a Show DAE view; `js,rumoca-viz` fences attach editable JavaScript visualizations (animated turkey-roast cross-section, 2-D wave membrane heatmap), and the Monaco Modelica language definition is now shared between the playground and the books via `editors/wasm/src/modules/modelica_language.js`.
+- VS Code: new `Rumoca: Open Rumoca User Guide`, `Open Rumoca Internals Guide`, and `Open Rumoca Web Playground` commands link the published docs from the command palette.
 - Python bindings and notebooks: the Python API is now explicit with `rumoca.compile(...)` for inline source and `rumoca.compile_file(...)` for file-backed models, while VS Code notebook snippets emit valid DAE-JSON-oriented Python instead of stale object-style APIs.
 - MSL switched-RLC simulation: runtime event projection now masks fixed differential rows and keeps alias-connected algebraics free, fixing the `SwitchedRLC_MSL` step-voltage regression and adding matching low-level/runtime and high-level example-based regression coverage.
 - MSL sim-worker IPC: the hot parent-to-worker DAE handoff now streams compact binary DAE payloads over stdin instead of writing large JSON temp files, removing the worst per-model serialization stall while keeping process isolation.

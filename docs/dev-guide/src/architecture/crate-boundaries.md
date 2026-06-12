@@ -1,19 +1,38 @@
-# Crate Boundaries
+# Crate Map
 
-Compiler crate boundaries are normative in `spec/SPEC_0029_CRATE_BOUNDARIES.md`.
-Read that spec before changing dependencies.
+The workspace is deliberately granular — phases, IRs, tools, backends, and
+bindings are separate crates with enforced dependency edges. The normative
+boundary rules are
+[SPEC_0029](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0029_CRATE_BOUNDARIES.md);
+this page is the orientation map.
 
-The short version:
+## Families
 
-- foundation types live in low-level crates
-- phases depend forward through explicit IR contracts
-- tools use compiler facades instead of reaching into internals
-- backend/runtime crates stay thin around shared solver and execution APIs
+| Family | Crates | Role |
+|---|---|---|
+| Foundation | `rumoca-core`, `rumoca-contracts`, `rumoca-codec`, `rumoca-codec-flatbuffers` | Shared low-level types, contracts, serialization |
+| IRs | `rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, `rumoca-ir-solve` | The four stage data structures |
+| Phases | `rumoca-phase-parse`, `-resolve`, `-typecheck`, `-instantiate`, `-flatten`, `-dae`, `-structural`, `-solve`, `-codegen` | One transformation each |
+| Facade | `rumoca-compile` | Session/compilation API the tools use |
+| Evaluators | `rumoca-eval-ast`, `-eval-flat`, `-eval-dae`, `-eval-solve` | Stage-appropriate evaluation |
+| Runtime | `rumoca-sim`, `rumoca-solver`, `rumoca-solver-rk45`, `rumoca-solver-diffsol`, `rumoca-worker` | Simulation orchestration and solver backends |
+| Execution adapters | `rumoca-exec-cranelift`, `rumoca-exec-mlir`, `rumoca-exec-wasm` | JIT/compiled execution over Solve |
+| Interactive I/O | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad`, `rumoca-signal-frame`, `rumoca-transport-udp`, `rumoca-transport-websocket`, `rumoca-viz-web` | Devices, signals, transports, viewer |
+| Tools | `rumoca-tool-fmt`, `rumoca-tool-lint`, `rumoca-tool-lsp` | Formatter, linter, language server logic |
+| Bindings | `rumoca` (CLI), `rumoca-bind-wasm`, `rumoca-bind-python` | User-facing entry points |
+| Testing/dev | `rumoca-test-msl`, `xtask` | MSL gates, developer CLI |
 
-Keep target-language-specific behavior out of Rust phase logic. Code generation
-targets should describe language-specific output through `target.toml` and
-templates.
+## The Rules That Matter Daily
 
-Architecture tests enforce important dependency edges. If a dependency feels
-necessary but violates a spec, update the spec first instead of bypassing the
-test.
+- Foundation types live in low-level crates; phases depend *forward*
+  through explicit IR contracts.
+- Tools and bindings use the `rumoca-compile` facade instead of reaching
+  into phase internals.
+- Backend/runtime crates stay thin around the shared solver and execution
+  APIs; shared policy lives in the shared layer.
+- Target-language specifics live in `target.toml` + templates, never in
+  phase logic.
+
+Architecture tests enforce the important edges. If a dependency you want
+violates a spec, update the spec first — see
+[Where the Rules Live](../contributing/specs-process.md).

@@ -3888,6 +3888,16 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(settingsMenuCommand);
 
+    const openGuideUrl = (url: string) => vscode.env.openExternal(vscode.Uri.parse(url));
+    context.subscriptions.push(
+        vscode.commands.registerCommand('rumoca.openUserGuide', () =>
+            openGuideUrl('https://cognipilot.github.io/rumoca/user-guide/')),
+        vscode.commands.registerCommand('rumoca.openDevGuide', () =>
+            openGuideUrl('https://cognipilot.github.io/rumoca/dev-guide/')),
+        vscode.commands.registerCommand('rumoca.openPlayground', () =>
+            openGuideUrl('https://cognipilot.github.io/rumoca/')),
+    );
+
     const isModelicaPath = (uri: vscode.Uri): boolean => uri.fsPath.toLowerCase().endsWith('.mo');
     context.subscriptions.push(
         vscode.workspace.onDidRenameFiles((event) => {

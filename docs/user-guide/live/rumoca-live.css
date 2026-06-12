@@ -1,0 +1,193 @@
+/* Styling for live (WASM-backed) Modelica examples in the guides. */
+
+.rumoca-live {
+    margin: 1em 0;
+    border: 1px solid var(--table-border-color, #ccc);
+    border-radius: 6px;
+    /* Keep overflow visible so Monaco suggest/hover popups can escape. */
+    overflow: visible;
+}
+
+.rumoca-live-editor-host {
+    width: 100%;
+    text-align: left;
+}
+
+.rumoca-live-editor {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    border: none;
+    resize: vertical;
+    padding: 0.8em 1em;
+    font-family: var(--mono-font, "Source Code Pro", monospace);
+    font-size: 0.875em;
+    line-height: 1.45;
+    background: var(--quote-bg, #f6f7f6);
+    color: var(--fg, #333);
+    white-space: pre;
+    overflow-x: auto;
+}
+
+.rumoca-live-editor:focus {
+    outline: 2px solid #2470c2;
+    outline-offset: -2px;
+}
+
+.rumoca-live-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    flex-wrap: wrap;
+    padding: 0.45em 0.8em;
+    border-top: 1px solid var(--table-border-color, #ccc);
+    background: var(--table-header-bg, #eee);
+}
+
+.rumoca-live-button {
+    font-size: 0.8em;
+    padding: 0.3em 0.9em;
+    border: 1px solid var(--table-border-color, #bbb);
+    border-radius: 4px;
+    background: var(--bg, #fff);
+    color: var(--fg, #333);
+    cursor: pointer;
+}
+
+.rumoca-live-button:hover:not(:disabled) {
+    border-color: #2470c2;
+    color: #2470c2;
+}
+
+.rumoca-live-run {
+    font-weight: 600;
+}
+
+.rumoca-live-button:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.rumoca-live-status {
+    font-size: 0.75em;
+    opacity: 0.85;
+}
+
+.rumoca-live-output {
+    padding: 0.6em 0.8em;
+    border-top: 1px solid var(--table-border-color, #ccc);
+}
+
+.rumoca-live-plot-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.rumoca-live-plot-frame {
+    fill: none;
+    stroke: var(--fg, #555);
+    stroke-width: 1;
+}
+
+.rumoca-live-plot-grid {
+    stroke: var(--table-border-color, #ddd);
+    stroke-width: 0.5;
+}
+
+.rumoca-live-plot-tick,
+.rumoca-live-plot-axis {
+    font-size: 11px;
+    fill: var(--fg, #555);
+}
+
+.rumoca-live-legend {
+    display: flex;
+    gap: 1em;
+    flex-wrap: wrap;
+    margin-top: 0.4em;
+    font-size: 0.8em;
+}
+
+.rumoca-live-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+}
+
+.rumoca-live-legend-swatch {
+    width: 1em;
+    height: 0.25em;
+    display: inline-block;
+    border-radius: 2px;
+}
+
+.rumoca-live-radial {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5em;
+    margin-bottom: 0.8em;
+}
+
+.rumoca-live-radial-canvas {
+    max-width: 100%;
+}
+
+.rumoca-live-radial-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    width: 100%;
+    max-width: 28em;
+}
+
+.rumoca-live-radial-slider {
+    flex: 1;
+}
+
+.rumoca-live-radial-colorbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: 0.75em;
+}
+
+.rumoca-live-radial-gradient {
+    display: inline-block;
+    width: 12em;
+    height: 0.8em;
+    border-radius: 3px;
+    border: 1px solid var(--table-border-color, #ccc);
+}
+
+.rumoca-live-viz {
+    margin: 0.4em 0 1em 0;
+    border: 1px dashed var(--table-border-color, #ccc);
+    border-radius: 6px;
+    padding: 0.3em 0.6em;
+}
+
+.rumoca-live-viz > summary {
+    cursor: pointer;
+    font-size: 0.85em;
+    opacity: 0.85;
+}
+
+.rumoca-live-viz[open] > summary {
+    margin-bottom: 0.4em;
+}
+
+.rumoca-live-error {
+    color: #c0392b;
+    white-space: pre-wrap;
+    margin: 0;
+    font-size: 0.8em;
+}
+
+.rumoca-live-dae {
+    max-height: 24em;
+    overflow: auto;
+    margin: 0;
+    font-size: 0.8em;
+}

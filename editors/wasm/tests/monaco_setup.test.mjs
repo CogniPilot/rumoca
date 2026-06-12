@@ -84,6 +84,9 @@ function createFakeMonaco() {
         InsertAsSnippet: 4,
       },
       register() {},
+      getLanguages() {
+        return [];
+      },
       setLanguageConfiguration(languageId, config) {
         languageConfigurations.push([languageId, config]);
       },
@@ -144,6 +147,17 @@ test("setupMonacoWorkspace wires comment metadata for editable languages", async
         lineComment: "//",
         blockComment: ["/*", "*/"],
       },
+      brackets: [
+        ["{", "}"],
+        ["[", "]"],
+        ["(", ")"],
+      ],
+      autoClosingPairs: [
+        { open: "{", close: "}" },
+        { open: "[", close: "]" },
+        { open: "(", close: ")" },
+        { open: '"', close: '"', notIn: ["string", "comment"] },
+      ],
     });
     assert.deepEqual(languageConfigurations.get("jinja2"), {
       comments: {

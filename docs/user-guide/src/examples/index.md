@@ -1,31 +1,45 @@
 # Examples Overview
 
-Examples live under `examples/`.
+Runnable examples live under `examples/` in the repository, organized by
+what they demonstrate. Each runnable example is driven by a colocated
+`rum.toml` scenario.
 
-Useful starting points:
+| Example | What it shows |
+|---|---|
+| `examples/simulation/rum.ball.toml` | Small batch simulation with plots |
+| `examples/models/` | Shared Modelica models used by simulation and codegen scenarios |
+| `examples/codegen/rum.ball_jax.toml` | Built-in JAX target |
+| `examples/codegen/rum.sympy_decay_sympy.toml` | Built-in SymPy target |
+| `examples/codegen/rum.sympy_decay_standalone_web.toml` | Custom standalone web target bundle |
+| `examples/codegen/rum.sympy_decay_custom_casadi.toml` | Direct raw Jinja template |
+| `examples/interactive/quadrotor/rum.acro.toml` | Interactive quadrotor SIL with 3D viewer |
+| `examples/interactive/rover/rum.toml` | Interactive rover |
 
-- `examples/simulation/rum.ball.toml`: small simulation with plots
-- `examples/models/`: shared Modelica models used by simulation and codegen scenarios
-- `examples/codegen/rum.ball_jax.toml`: built-in JAX target example
-- `examples/codegen/rum.sympy_decay_sympy.toml`: built-in SymPy target example
-- `examples/codegen/rum.sympy_decay_standalone_web.toml`: custom standalone web target example
-- `examples/codegen/rum.sympy_decay_custom_casadi.toml`: direct raw Jinja template example
-- `examples/interactive/quadrotor/rum.acro.toml`: interactive quadrotor scenario
-- `examples/interactive/rover/rum.toml`: interactive rover scenario
+Run any of them the same way:
 
-Codegen scenarios write generated files under `examples/codegen/gen/`, which is
-ignored by git.
+```bash
+cargo run -p rumoca --release -- sim -c examples/simulation/rum.ball.toml
+```
 
-Browser examples should be native book components: a focused Monaco editor,
-in-page model files, Rumoca WASM calls, and the simulation view needed for the
-example. They should not embed the full playground workbench.
+Codegen scenarios write generated files under `examples/codegen/gen/`,
+which is ignored by git.
 
-Fetch pinned external Modelica package dependencies before running examples that
-use MSL or CogniPilot Modelica Models:
+## Library Dependencies
+
+Examples that use MSL or the CogniPilot Modelica Models need the pinned
+packages fetched first:
 
 ```bash
 cargo xtask repo modelica-deps ensure
 ```
 
-The repository includes VS Code workspace settings that point to the fetched
-packages from common open modes.
+The repository's committed VS Code workspace settings point at the fetched
+packages for the common open modes (repository root, `examples/`, and the
+quadrotor directory).
+
+## In-Browser Examples
+
+The [Live Examples](./live.md) page collects runnable models embedded
+directly in this book — no install needed. The same live blocks appear
+throughout the guide chapters, including the
+[turkey PDE animation](../language/arrays-pde.md).
