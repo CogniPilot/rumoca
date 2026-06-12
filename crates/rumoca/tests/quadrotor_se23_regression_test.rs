@@ -170,16 +170,20 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
         "scalar output count must match the ComputeBlock output count"
     );
 
-    // NOTE (known remaining gap): for THIS model the derivative is a single
-    // function call `Xdot = quad_deriv13(...)` whose 13 outputs are lowered as 13
-    // independent programs, each re-inlining the entire 158k-op function body
-    // (~64 MB total). The matmul/linsolve operand-duplication fix does not cover
-    // this path because there is no MatMul/LinSolve node here — the blowup is in
-    // function-call projection (`lower_state_derivative_row` /
-    // `function_call_projected_scalars`), which re-derives the whole call per
-    // selected output. The multi-output-program machinery added by this change
-    // is the foundation for the fix (lower the call once → one program with 13
-    // StoreOutputs); the grouping pass in derivative lowering is the remaining
-    // work. See `scalar-ir-cse-multioutput-fix` memory.
-    let _ = approx_bytes;
+    // The derivative is a single vector function call `Xdot = quad_deriv13(...)`.
+    // Before the multi-output function-projection fix it lowered to 13 programs
+    // that each re-inlined the whole ~158k-op function body (~64 MB, OOM). Now it
+    // lowers to ONE program (~158k ops, ~5 MB) computed once and projected into
+    // 13 outputs. A generous ceiling catches any regression back to per-output
+    // re-inlining (which would be 13x larger).
+    assert_eq!(
+        scalar.programs.len(),
+        1,
+        "vector function-call derivative should lower to one shared program"
+    );
+    assert!(
+        approx_bytes < 16 * 1024 * 1024,
+        "scalar derivative program is {} KB — function-projection duplication regression?",
+        approx_bytes / 1024
+    );
 }
