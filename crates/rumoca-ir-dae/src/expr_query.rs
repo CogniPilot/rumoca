@@ -104,16 +104,18 @@ thread_local! {
 }
 
 fn cached_base_id(name: &VarName) -> Option<VarNameId> {
-    let base_name = base_name_for_valid_component(name.as_str())?;
-    if base_name == name.as_str() {
-        return Some(name.id());
-    }
     BASE_NAME_ID_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(base_id) = cache.get(&name.id()) {
             return *base_id;
         }
-        let base_id = Some(VarName::new(base_name).id());
+        let base_id = base_name_for_valid_component(name.as_str()).map(|base_name| {
+            if base_name == name.as_str() {
+                name.id()
+            } else {
+                VarName::new(base_name).id()
+            }
+        });
         cache.insert(name.id(), base_id);
         base_id
     })
