@@ -1,0 +1,34 @@
+[package]
+name = "rumoca-bind-wasm-diffsol"
+description = "Lazy diffsol (stiff/implicit) simulation addon for the rumoca WASM package — simulates a pre-lowered SolveModel; carries the relaxed-SIMD code, loaded on demand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+serde_json = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-solver = { workspace = true }
+rumoca-solver-diffsol = { workspace = true }
+# Enable the wasm_js getrandom backend (diffsol/rand pull getrandom); mirrors
+# rumoca-bind-wasm. The `.cargo/config.toml` cfg selects the backend; this
+# enables its feature when the addon is built on its own.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+console_error_panic_hook = { workspace = true, optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+# Size-optimize the published addon (mirrors rumoca-bind-wasm); the relaxed-SIMD
+# from faer/pulp is confined to this module, so it must be lazy-loaded only
+# after feature-detecting relaxed-SIMD support.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
+
+[lints]
+workspace = true

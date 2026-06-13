@@ -44,6 +44,7 @@ members = [
     "crates/xtask",
     # Bindings
     "crates/rumoca-bind-wasm",
+    "crates/rumoca-bind-wasm-diffsol",
     "crates/rumoca-bind-python",
     # Compiled execution adapters
     "crates/rumoca-exec-cranelift",
