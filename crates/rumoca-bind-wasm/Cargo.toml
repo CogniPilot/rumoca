@@ -10,6 +10,12 @@ build = "build.rs"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# wasm-opt settings used when building published packages (build.mjs --optimize,
+# which drops the default --no-opt). -Oz optimizes for size; the thread/bulk-
+# memory features keep the wasm-rayon variants valid.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
+
 [dependencies]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
@@ -34,6 +40,10 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
+# The full web build is the browser-safe simulation build: explicit rk45 only.
+# Diffsol must NOT be added here — it pulls the Pulp relaxed-SIMD graph, which
+# is not safe in all browsers (guarded by
+# architecture_hardening_test::test_bind_wasm_full_web_uses_browser_safe_solver_graph).
 full-web = ["sim-rk45"]
 sim-wasm = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-diffsol"]

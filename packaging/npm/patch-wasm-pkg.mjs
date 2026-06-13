@@ -1,7 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const packageNameForVariant = (variant) => (variant === "core" ? "rumoca" : `rumoca-${variant}`);
+// Published under the @cognipilot org scope. The headline package
+// `@cognipilot/rumoca` is the browser-safe full build (variant `full-web`:
+// compiler + LSP + all-IR codegen + the rk45 solver runtime);
+// `@cognipilot/rumoca-core` is the same minus the bundled solver runtime. Any
+// other variant (only used for local/experimental builds) appends its name.
+const NPM_SCOPE = "@cognipilot";
+const packageNameForVariant = (variant) => {
+  switch (variant) {
+    case "full-web":
+      return `${NPM_SCOPE}/rumoca`;
+    case "core":
+      return `${NPM_SCOPE}/rumoca-core`;
+    default:
+      return `${NPM_SCOPE}/rumoca-${variant}`;
+  }
+};
 
 export const patchWasmPackageJson = async (pkgDir, variant) => {
   const pkgJsonPath = path.join(pkgDir, "package.json");
@@ -18,6 +33,9 @@ export const patchWasmPackageJson = async (pkgDir, variant) => {
   };
 
   pkg.name = packageNameForVariant(variant);
+  // Scoped packages default to restricted; force public so `npm publish`
+  // (both the manual scripts and CI) publishes openly without a flag.
+  pkg.publishConfig = { ...(pkg.publishConfig || {}), access: "public" };
   pkg.files = pkg.files || [];
 
   const addFile = (entry) => {
