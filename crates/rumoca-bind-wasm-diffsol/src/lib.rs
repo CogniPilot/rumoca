@@ -16,7 +16,21 @@ use rumoca_solver::{
     SimOptions, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_payload,
 };
+use serde::Deserialize;
 use wasm_bindgen::prelude::*;
+
+/// The payload the main module's `lower_model_to_solve_json` produces: the
+/// lowered model plus the resolved simulation time (which the SolveModel does
+/// not itself carry, and which the main module resolves from the experiment
+/// annotation when the caller defers).
+#[derive(Deserialize)]
+struct DiffsolInput {
+    solve_model: SolveModel,
+    #[serde(default)]
+    t_end: f64,
+    #[serde(default)]
+    dt: f64,
+}
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -24,28 +38,29 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// Simulate a pre-lowered model (the JSON the main module produced from its
-/// `SolveModel`) with the stiff/implicit diffsol backend. Returns the same
-/// `{ "payload": ... }` JSON shape as the main module's `simulate_model`, so
-/// callers can treat both paths uniformly.
+/// Simulate a pre-lowered model with the stiff/implicit diffsol backend.
+/// `input_json` is the `{ solve_model, t_end, dt }` payload from the main
+/// module's `lower_model_to_solve_json`. Returns the same `{ "payload": ... }`
+/// JSON shape as the main module's `simulate_model`, so callers treat both
+/// paths uniformly.
 #[wasm_bindgen]
-pub fn simulate_solve_model_diffsol(
-    solve_json: &str,
-    t_end: f64,
-    dt: f64,
-) -> Result<String, JsValue> {
-    let model: SolveModel = serde_json::from_str(solve_json)
-        .map_err(|e| JsValue::from_str(&format!("invalid solve-model JSON: {e}")))?;
+pub fn simulate_solve_model_diffsol(input_json: &str) -> Result<String, JsValue> {
+    let input: DiffsolInput = serde_json::from_str(input_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid diffsol input JSON: {e}")))?;
 
     let defaults = SimOptions::default();
     let opts = SimOptions {
         solver_mode: SimSolverMode::Bdf,
-        t_end: if t_end > 0.0 { t_end } else { defaults.t_end },
-        dt: if dt > 0.0 { Some(dt) } else { None },
+        t_end: if input.t_end > 0.0 {
+            input.t_end
+        } else {
+            defaults.t_end
+        },
+        dt: if input.dt > 0.0 { Some(input.dt) } else { None },
         ..defaults
     };
 
-    let sim = rumoca_solver_diffsol::simulate(&model, &opts)
+    let sim = rumoca_solver_diffsol::simulate(&input.solve_model, &opts)
         .map_err(|e| JsValue::from_str(&format!("diffsol simulation error: {e}")))?;
 
     let metrics = SimulationRunMetrics::default();

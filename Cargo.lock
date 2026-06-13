@@ -3261,6 +3261,7 @@ dependencies = [
  "rumoca-ir-solve",
  "rumoca-solver",
  "rumoca-solver-diffsol",
+ "serde",
  "serde_json",
  "wasm-bindgen",
 ]

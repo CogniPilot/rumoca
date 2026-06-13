@@ -1892,10 +1892,15 @@ fn lower_to_solve_json_feeds_diffsol_simulation() {
     let _guard = session_test_guard();
     let source = "model Decay\n  parameter Real k = 1.0;\n  Real x(start = 1.0);\nequation\n  der(x) = -k * x;\nend Decay;\n";
 
-    let json = crate::simulation_api::lower_model_to_solve_json_impl(source, "Decay", 1.0, 0.05)
-        .expect("lower model to solve-model JSON");
+    let payload = crate::simulation_api::lower_model_to_solve_json_impl(source, "Decay", 1.0, 0.05)
+        .expect("lower model to solve-model payload");
+    let value: serde_json::Value = serde_json::from_str(&payload).expect("parse lowering payload");
+    assert!(
+        (value["t_end"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+        "payload should carry the resolved t_end"
+    );
     let model: rumoca_ir_solve::SolveModel =
-        serde_json::from_str(&json).expect("deserialize solve-model JSON");
+        serde_json::from_value(value["solve_model"].clone()).expect("deserialize solve_model");
 
     let opts = rumoca_sim::SimOptions {
         solver_mode: rumoca_sim::SimSolverMode::Bdf,

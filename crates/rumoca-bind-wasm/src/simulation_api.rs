@@ -24,11 +24,13 @@ pub(crate) fn simulate_model_impl(
     })
 }
 
-/// Compile a model and emit its lowered `SolveModel` as JSON, ready to hand to
-/// the lazy diffsol addon (`@cognipilot/rumoca/diffsol`). Lowered with the
-/// diffsol (`bdf`) solver mode so the structure matches what the addon runs.
-/// The main module stays SIMD-free; only the addon that consumes this JSON
-/// carries relaxed-SIMD.
+/// Compile a model and emit a `{ solve_model, t_end, dt }` payload for the lazy
+/// diffsol addon (`@cognipilot/rumoca/diffsol`). Lowered with the diffsol
+/// (`bdf`) solver mode so the structure matches what the addon runs. The
+/// resolved `t_end`/`dt` (from the experiment annotation when the caller passes
+/// 0) travel with the model, since the `SolveModel` does not carry them. The
+/// main module stays SIMD-free; only the addon that consumes this carries
+/// relaxed-SIMD.
 pub(crate) fn lower_model_to_solve_json_impl(
     source: &str,
     model_name: &str,
@@ -42,8 +44,12 @@ pub(crate) fn lower_model_to_solve_json_impl(
         let (opts, _solver_label) = build_simulation_options(&result, t_end, dt, "bdf");
         let solve_model = lower_dae_for_simulation(&result.dae, &opts)
             .map_err(|e| JsValue::from_str(&format!("solve lowering error: {e}")))?;
-        serde_json::to_string(&solve_model)
-            .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+        let payload = serde_json::json!({
+            "solve_model": solve_model,
+            "t_end": opts.t_end,
+            "dt": opts.dt.unwrap_or(0.0),
+        });
+        serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
     })
 }
 

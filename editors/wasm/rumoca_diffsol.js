@@ -101,7 +101,9 @@ export async function simulateWithDiffsol(mainModule, pkgBase, source, modelName
         `path instead. (${err && err.message ? err.message : err})`,
     );
   }
-  const solveJson = mainModule.lower_model_to_solve_json(source, modelName, tEnd, dt);
-  const resultJson = addon.simulate_solve_model_diffsol(solveJson, tEnd, dt);
+  // The payload carries the lowered model plus the resolved t_end/dt (so an
+  // annotation-driven duration is honored even when the caller passes 0).
+  const prepJson = mainModule.lower_model_to_solve_json(source, modelName, tEnd, dt);
+  const resultJson = addon.simulate_solve_model_diffsol(prepJson);
   return JSON.parse(resultJson);
 }
