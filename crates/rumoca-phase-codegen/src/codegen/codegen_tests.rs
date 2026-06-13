@@ -744,7 +744,10 @@ fn test_fmi3_event_indicators_render_from_solver_ir() {
     .unwrap();
 
     assert!(rendered.contains("#define N_EVENT_INDICATORS 1"));
-    assert!(rendered.contains("m->event_indicators[0] = ((__rumoca_solve_y(m, 0)) - (0.0));"));
+    // The root condition `y[0] - 0` is materialized into a temp whose RHS is the
+    // inline subtraction; the event indicator is assigned from that temp.
+    assert!(rendered.contains("((__rumoca_solve_y(m, 0)) - (0.0))"));
+    assert!(rendered.contains("m->event_indicators[0] = __r"));
     assert!(
         !rendered.contains("render_event_indicator"),
         "FMI3 event indicators should be generated from solve IR rows"
@@ -858,8 +861,9 @@ fn test_fmi3_derivatives_do_not_treat_implicit_solver_residuals_as_xdot() {
     )
     .unwrap();
 
+    // `der = -y` materializes the negation into a temp assigned to xdot[0].
     assert!(
-        rendered.contains("m->xdot[0] = (-(__rumoca_solve_y(m, 0)));"),
+        rendered.contains("(-(__rumoca_solve_y(m, 0)))") && rendered.contains("m->xdot[0] = __r"),
         "FMI3 derivatives should come from solve derivative rows, got:\n{rendered}"
     );
     assert!(

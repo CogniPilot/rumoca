@@ -904,14 +904,15 @@ fn render_solve_op_for(
 /// Render a (possibly multi-output) scalar program block as a statement block
 /// using register temporaries.
 ///
-/// Registers read two or more times are materialized into a temporary
-/// (`double __rN = ...;` / `let __rN = ...;`) so a value shared across outputs —
-/// e.g. a matmul/linsolve operand reused by every output element — is computed
-/// ONCE instead of being re-expanded into each output expression. This is the
-/// codegen-side counterpart to the IR-level "compute operands once" fix; without
-/// it, a compact multi-output program would still blow up as nested C/Rust text.
-/// Registers read at most once are inlined, which keeps generated code free of
-/// unused-variable bindings.
+/// Non-leaf computed registers (those with register operands) are materialized
+/// into a temporary (`double __rN = ...;` / `let __rN = ...;`) whenever read at
+/// least once, and any register read two or more times is materialized
+/// regardless. Leaf ops (Const / Load*) read once are inlined since their
+/// expression is O(1). This computes each value ONCE (shared across outputs) AND
+/// keeps every emitted expression O(1): inlining non-leaf single-use registers
+/// as nested strings would re-expand deep single-use chains (common in Lie-group
+/// control math) into O(n^2) text — gigabytes for a 150k-op program. A temp read
+/// once is still used once, so no unused-variable warnings are introduced.
 ///
 /// `out_set` is the assignment pattern with two `{}` placeholders (index, value),
 /// e.g. `"out[{}] = {}"` or `"m->xdot[{}] = {}"`. Outputs are numbered by a
@@ -938,9 +939,15 @@ fn render_solve_block_for(
         let read_counts = collect_solve_read_counts(&ops)?;
         let mut regs = Vec::<String>::new();
         for op in &ops {
+            // A leaf op (Const / Load*) has no register operands; its expression
+            // is O(1) and safe to inline. Non-leaf ops carry register operands, so
+            // inlining them as nested strings would re-expand deep single-use
+            // chains into O(n^2) text — materialize those into a temp instead.
+            let is_leaf = solve_op_read_regs(op)?.is_empty();
             match solve_op_expr(op, cfg, dialect, &regs)? {
                 SolveOpEffect::Compute { dst, expr } => {
-                    if read_counts.get(dst).copied().unwrap_or(0) >= 2 {
+                    let reads = read_counts.get(dst).copied().unwrap_or(0);
+                    if reads >= 2 || (reads >= 1 && !is_leaf) {
                         let name = format!("__r{temp_counter}");
                         temp_counter += 1;
                         body.push_str(&dialect.temp_decl(&name, &expr));
