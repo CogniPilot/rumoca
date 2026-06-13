@@ -791,6 +791,12 @@ jobs:
       - name: Run WASM CI gate
         run: cargo xtask wasm test
 
+      - name: Build npm package (core variant)
+        # Produces pkg/release-core (the publishable `rumoca` package). Built on
+        # every run so npm packaging is validated on PRs; the deploy job only
+        # publishes it on a release. wasm-pack is installed by the gate above.
+        run: node packaging/npm/build.mjs --profile release --variant core
+
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
 
@@ -1119,7 +1125,7 @@ jobs:
   deploy:
     name: Deploy
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-rust-binaries, build-python-wheels, build-python-sdist]
+    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1341,5 +1347,33 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Setup Node.js for npm publish
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish npm package to npmjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_dir="artifacts/wasm-package/release-core"
+          if [ ! -f "$pkg_dir/package.json" ]; then
+            echo "::error::npm package not found at $pkg_dir (build-wasm must build the core variant)"
+            exit 1
+          fi
+          name="$(node -p "require('./$pkg_dir/package.json').name")"
+          version="$(node -p "require('./$pkg_dir/package.json').version")"
+          echo "Preparing to publish $name@$version"
+          # Idempotent like the PyPI --skip-existing above: re-running a release
+          # must not fail just because the version is already on the registry.
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version already published; skipping."
+            exit 0
+          fi
+          npm publish "$pkg_dir" --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Rust binary and VS Code extension artifacts are distributed via GitHub Releases.
