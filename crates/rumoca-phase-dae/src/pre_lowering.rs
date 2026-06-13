@@ -345,8 +345,7 @@ fn resolve_pre_targets(
             target.source_name = target_name.clone();
             continue;
         }
-        let index =
-            scalarized_index.get_or_insert_with(|| build_scalarized_field_index(dae));
+        let index = scalarized_index.get_or_insert_with(|| build_scalarized_field_index(dae));
         if let Some(source_name) =
             singleton_scalarized_field_name(index, target_name, target.require_discrete)
         {
