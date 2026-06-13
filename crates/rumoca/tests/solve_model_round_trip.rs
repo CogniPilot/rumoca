@@ -50,7 +50,11 @@ fn solve_model_round_trip_simulates_identically() {
         "series count changed after round-trip"
     );
     for (i, (a, b)) in original.data.iter().zip(after.data.iter()).enumerate() {
-        assert_eq!(a.len(), b.len(), "series {i} length changed after round-trip");
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "series {i} length changed after round-trip"
+        );
         for (j, (va, vb)) in a.iter().zip(b.iter()).enumerate() {
             assert!(
                 (va - vb).abs() < 1e-12,
