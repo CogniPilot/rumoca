@@ -13,58 +13,6 @@ fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::Built
     builtin_target_descriptors_for_ir(TargetTemplateIr::Dae)
 }
 
-fn table_has_key(value: &toml::Value, key: &str) -> bool {
-    value
-        .as_table()
-        .is_some_and(|table| table.contains_key(key))
-}
-
-fn table_path<'a>(value: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
-    let mut current = value;
-    for key in path {
-        current = current.as_table()?.get(*key)?;
-    }
-    Some(current)
-}
-
-fn scenario_requests_live_viewer(raw: &toml::Value) -> bool {
-    table_path(raw, &["transport", "http"]).is_some()
-        || table_has_key(raw, "input")
-        || table_has_key(raw, "signals")
-        || table_has_key(raw, "locals")
-        || table_has_key(raw, "derive")
-        || table_has_key(raw, "reset")
-        || table_has_key(raw, "external_interface")
-        || (table_has_key(raw, "schema")
-            && table_has_key(raw, "receive")
-            && table_has_key(raw, "send"))
-}
-
-fn scenario_viewer_mode(config: &ProjectConfigFile, raw: &toml::Value) -> &'static str {
-    match config.viewer.mode {
-        Some(ScenarioViewerMode::ResultsPanel) => "results_panel",
-        Some(ScenarioViewerMode::ExternalWeb) => "external_web",
-        None if scenario_requests_live_viewer(raw) => "external_web",
-        None => "results_panel",
-    }
-}
-
-fn scenario_http_port(raw: &toml::Value) -> Option<i64> {
-    table_path(raw, &["transport", "http", "port"]).and_then(toml::Value::as_integer)
-}
-
-fn scenario_websocket_port(raw: &toml::Value) -> Option<i64> {
-    table_path(raw, &["transport", "websocket", "port"]).and_then(toml::Value::as_integer)
-}
-
-fn scenario_http_scene(raw: &toml::Value) -> Option<&str> {
-    table_path(raw, &["transport", "http", "scene"]).and_then(toml::Value::as_str)
-}
-
-fn scenario_sim_mode(raw: &toml::Value) -> Option<&str> {
-    table_path(raw, &["sim", "mode"]).and_then(toml::Value::as_str)
-}
-
 impl ModelicaLanguageServer {
     pub(super) async fn simulation_request_settings_for_model_prewarm(
         &self,
@@ -151,57 +99,7 @@ impl ModelicaLanguageServer {
             Ok(source) => source,
             Err(error) => return Some(Self::simulation_error_value(error)),
         };
-        let raw_config = match toml::from_str::<toml::Value>(&source) {
-            Ok(config) => config,
-            Err(error) => {
-                return Some(Self::simulation_error_value(format!(
-                    "failed to parse scenario config: {error}",
-                )));
-            }
-        };
-        let config = match toml::from_str::<ProjectConfigFile>(&source) {
-            Ok(config) => config,
-            Err(error) => {
-                return Some(Self::simulation_error_value(format!(
-                    "failed to parse scenario config: {error}",
-                )));
-            }
-        };
-        let model = config
-            .model
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("");
-        if model.is_empty() {
-            return Some(Self::simulation_error_value(
-                "scenario config is missing [model].name",
-            ));
-        }
-        let target = config.codegen.target.as_deref().unwrap_or("").trim();
-        if config.rumoca.task == ProjectTask::Codegen && target.is_empty() {
-            return Some(Self::simulation_error_value(
-                "codegen scenario config is missing [codegen].target",
-            ));
-        }
-        Some(json!({
-            "ok": true,
-            "task": match config.rumoca.task {
-                ProjectTask::Simulate => "simulate",
-                ProjectTask::Codegen => "codegen",
-            },
-            "model": model,
-            "target": target,
-            "outputDir": config.codegen.output_dir,
-            "viewerMode": scenario_viewer_mode(&config, &raw_config),
-            "viewerPreferExternal": config.viewer.prefer_external,
-            "simMode": scenario_sim_mode(&raw_config),
-            "httpPort": scenario_http_port(&raw_config),
-            "websocketPort": scenario_websocket_port(&raw_config),
-            "httpScene": scenario_http_scene(&raw_config),
-            "interactive": scenario_requests_live_viewer(&raw_config),
-        }))
+        Some(scenario_config_response(&source))
     }
 
     pub(super) async fn execute_render_target(&self, params: Option<Value>) -> Option<Value> {
@@ -419,11 +317,7 @@ impl ModelicaLanguageServer {
             .or(workspace_root_default)?;
         let model = obj.get("model").and_then(Value::as_str)?.to_string();
         let views = load_plot_views_for_model(&workspace_root, &model).ok()?;
-        let payload_views: Vec<VisualizationViewPayload> = views
-            .into_iter()
-            .map(VisualizationViewPayload::from)
-            .collect();
-        Some(json!({ "views": payload_views }))
+        Some(visualization_views_to_json(views))
     }
 
     pub(super) async fn execute_set_visualization_config(

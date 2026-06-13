@@ -15,10 +15,9 @@ use rumoca_compile::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, parse_source_to_ast,
 };
 use rumoca_compile::project::{
-    EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
-    ProjectConfigFile, ProjectTask, ScenarioViewerMode, SimulationModelOverride,
-    clear_model_simulation_preset, load_plot_views_for_model, load_simulation_snapshot_for_model,
-    write_model_simulation_preset, write_plot_views_for_model,
+    EffectiveSimulationConfig, ProjectConfig, ProjectConfigFile, clear_model_simulation_preset,
+    load_plot_views_for_model, load_simulation_snapshot_for_model, write_model_simulation_preset,
+    write_plot_views_for_model,
 };
 use rumoca_compile::source_roots::{
     PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,

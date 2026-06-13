@@ -301,3 +301,58 @@ dt = 0.01
     assert!(!text.contains("t_end ="));
     assert!(!text.contains("dt ="));
 }
+
+#[test]
+fn from_files_reads_config_without_filesystem() {
+    // The browser editor path: parse an in-memory file set (no disk access).
+    let files = vec![
+        (
+            PathBuf::from("rum.Ball.toml"),
+            r#"
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+name = "Examples.Ball"
+
+[sim]
+solver = "bdf"
+t_end = 7.0
+"#
+            .to_string(),
+        ),
+        (PathBuf::from("Ball.mo"), "model Ball end Ball;".to_string()),
+    ];
+
+    let config = ProjectConfig::from_files(Path::new(""), files);
+    let effective =
+        config.effective_for_model("Examples.Ball", &EffectiveSimulationConfig::default());
+    assert_eq!(effective.solver, "bdf");
+    assert_eq!(effective.t_end, 7.0);
+}
+
+#[test]
+fn from_files_colocates_new_config_next_to_model_source() {
+    // A new preset for a model whose .mo lives in a subdirectory should write a
+    // colocated `rum.<stem>.toml` next to it, resolved from the in-memory map.
+    let files = vec![(
+        PathBuf::from("models/Ball.mo"),
+        "model Ball end Ball;".to_string(),
+    )];
+    let mut config = ProjectConfig::from_files(Path::new(""), files);
+    config.set_model_simulation_preset(
+        "Ball",
+        SimulationModelOverride {
+            solver: Some("bdf".to_string()),
+            ..SimulationModelOverride::default()
+        },
+    );
+    let (path, text) = config
+        .compute_write_for_model("Ball")
+        .expect("write exists")
+        .expect("render ok");
+    assert_eq!(path, PathBuf::from("models/rum.ball.toml"));
+    assert!(text.contains("solver = \"bdf\""));
+    assert!(text.contains("[rumoca]"));
+}

@@ -8,7 +8,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::merge::collect_model_names;
-use crate::parse::parse_files_parallel_lenient;
+use crate::parse::{parse_files_parallel_lenient, parse_source_to_ast};
+
+mod json;
+pub use json::{
+    parse_fallback_simulation, parse_views_payload, scenario_config_response,
+    simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
+    visualization_views_to_json,
+};
 
 const RUMOCA_TASK_FILE_VERSION: &str = "1";
 const GENERATED_RESULTS_DIR: &str = ".rumoca/results";
@@ -17,6 +24,11 @@ const GENERATED_RESULTS_DIR: &str = ".rumoca/results";
 pub struct ProjectConfig {
     workspace_root: PathBuf,
     configs: BTreeMap<String, ColocatedModelConfig>,
+    /// In-memory `model name -> .mo source path` map. `Some` only when the
+    /// config was built from an in-memory file set (e.g. the browser editor,
+    /// which has no real filesystem); `None` means resolve model sources from
+    /// disk. Used to colocate newly created `rum.<model>.toml` files.
+    model_source_files: Option<BTreeMap<String, PathBuf>>,
     pub diagnostics: Vec<String>,
 }
 
@@ -193,6 +205,10 @@ pub struct PlotViewConfig {
 pub(crate) struct ColocatedModelConfig {
     path: PathBuf,
     data: ProjectConfigFile,
+    /// Original on-load file text, used to merge managed keys into a write
+    /// while preserving any unmanaged keys. Empty for configs created in
+    /// memory (no prior file).
+    raw_text: String,
 }
 
 impl ProjectConfig {
@@ -206,19 +222,56 @@ impl ProjectConfig {
     }
 
     pub fn load_or_default(workspace_root: &Path) -> Result<Self> {
+        let mut read_diagnostics = Vec::new();
+        let mut config_texts = Vec::new();
+        for path in collect_workspace_scenario_files(workspace_root)? {
+            match fs::read_to_string(&path) {
+                Ok(text) => config_texts.push((path, text)),
+                Err(error) => read_diagnostics.push(format!(
+                    "Failed to read config '{}': {error}",
+                    path.display()
+                )),
+            }
+        }
+        // Disk mode: model sources are resolved from disk on demand.
+        let mut config = Self::from_config_texts(workspace_root, config_texts, None);
+        config.diagnostics.splice(0..0, read_diagnostics);
+        Ok(config)
+    }
+
+    /// Build a project config from an in-memory file set (path + content),
+    /// without touching the filesystem. `rum.<profile>.toml` entries are parsed
+    /// as configs; `.mo` entries seed the model-source map used to colocate
+    /// newly created config files. This is the browser-editor entry point.
+    pub fn from_files(workspace_root: &Path, files: Vec<(PathBuf, String)>) -> Self {
+        let mut config_texts = Vec::new();
+        let mut modelica_files = Vec::new();
+        for (path, text) in files {
+            let is_task_file = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_rumoca_task_filename);
+            if is_task_file {
+                config_texts.push((path, text));
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("mo"))
+            {
+                modelica_files.push((path, text));
+            }
+        }
+        let model_source_files = build_model_source_files(modelica_files);
+        Self::from_config_texts(workspace_root, config_texts, Some(model_source_files))
+    }
+
+    fn from_config_texts(
+        workspace_root: &Path,
+        config_texts: Vec<(PathBuf, String)>,
+        model_source_files: Option<BTreeMap<String, PathBuf>>,
+    ) -> Self {
         let mut diagnostics = Vec::new();
         let mut configs = BTreeMap::<String, ColocatedModelConfig>::new();
-        for path in collect_workspace_scenario_files(workspace_root)? {
-            let text = match fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(error) => {
-                    diagnostics.push(format!(
-                        "Failed to read config '{}': {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
+        for (path, text) in config_texts {
             if !text_looks_like_rumoca_scenario_config(&text) {
                 continue;
             }
@@ -251,20 +304,54 @@ impl ProjectConfig {
             if data.rumoca.task != ProjectTask::Simulate {
                 continue;
             }
-            configs.insert(model_name, ColocatedModelConfig { path, data });
+            configs.insert(
+                model_name,
+                ColocatedModelConfig {
+                    path,
+                    data,
+                    raw_text: text,
+                },
+            );
         }
-        Ok(Self {
+        Self {
             workspace_root: workspace_root.to_path_buf(),
             configs,
+            model_source_files,
             diagnostics,
-        })
+        }
     }
 
     pub fn save(&self) -> Result<()> {
-        for config in self.configs.values() {
-            write_colocated_config_file(&config.path, &config.data)?;
+        for (path, text) in self.compute_writes()? {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
+            }
+            fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
         }
         Ok(())
+    }
+
+    /// Render every tracked config to its `(path, text)` write, without touching
+    /// the filesystem. Used by `save` (disk) and by the browser editor (which
+    /// applies the writes to its in-memory project store).
+    pub fn compute_writes(&self) -> Result<Vec<(PathBuf, String)>> {
+        self.configs
+            .values()
+            .map(|config| {
+                render_config_text(&config.raw_text, &config.data)
+                    .map(|text| (config.path.clone(), text))
+            })
+            .collect()
+    }
+
+    /// Render just one model's config to its `(path, text)` write. Returns
+    /// `None` when the model has no tracked config.
+    pub fn compute_write_for_model(&self, model: &str) -> Option<Result<(PathBuf, String)>> {
+        self.configs.get(model).map(|config| {
+            render_config_text(&config.raw_text, &config.data)
+                .map(|text| (config.path.clone(), text))
+        })
     }
 
     pub fn model_override(&self, model: &str) -> Option<&SimulationModelOverride> {
@@ -272,11 +359,10 @@ impl ProjectConfig {
     }
 
     pub fn set_model_override(&mut self, model: &str, model_override: SimulationModelOverride) {
-        let path = self
-            .configs
-            .get(model)
-            .map(|config| config.path.clone())
-            .unwrap_or_else(|| default_config_path_for_model(&self.workspace_root, model));
+        let path = match self.configs.get(model) {
+            Some(config) => config.path.clone(),
+            None => self.default_config_path_for_model(model),
+        };
         let entry = self
             .configs
             .entry(model.to_string())
@@ -289,9 +375,57 @@ impl ProjectConfig {
                     },
                     ..ProjectConfigFile::default()
                 },
+                raw_text: String::new(),
             });
         entry.data.model.name = Some(model.to_string());
         entry.data.sim = model_override;
+    }
+
+    /// Normalize and set a model's simulation preset (solver/dt/t_end). Shared
+    /// by the disk writer ([`write_model_simulation_preset`]) and the in-memory
+    /// browser-editor path so normalization stays identical.
+    pub fn set_model_simulation_preset(
+        &mut self,
+        model: &str,
+        mut model_override: SimulationModelOverride,
+    ) {
+        model_override.solver = normalize_solver_opt(model_override.solver);
+        model_override.dt = normalize_dt_opt(model_override.dt);
+        if !model_override
+            .t_end
+            .map(|value| value.is_finite() && value > 0.0)
+            .unwrap_or(true)
+        {
+            model_override.t_end = None;
+        }
+        self.set_model_override(model, model_override);
+    }
+
+    /// Set the plot/visualization views for a model, creating a colocated
+    /// config entry if necessary. In-memory analogue of
+    /// [`write_plot_views_for_model`].
+    pub fn set_plot_views(&mut self, model: &str, mut views: Vec<PlotViewConfig>) {
+        normalize_plot_views(&mut views);
+        let path = match self.configs.get(model) {
+            Some(config) => config.path.clone(),
+            None => self.default_config_path_for_model(model),
+        };
+        let entry = self
+            .configs
+            .entry(model.to_string())
+            .or_insert_with(|| ColocatedModelConfig {
+                path,
+                data: ProjectConfigFile {
+                    model: ModelConfig {
+                        name: Some(model.to_string()),
+                        file: None,
+                    },
+                    ..ProjectConfigFile::default()
+                },
+                raw_text: String::new(),
+            });
+        entry.data.model.name = Some(model.to_string());
+        entry.data.plot.views = views;
     }
 
     pub fn remove_model_override(&mut self, model: &str) -> bool {
@@ -362,6 +496,40 @@ impl ProjectConfig {
             diagnostics: self.diagnostics.clone(),
         }
     }
+
+    /// Plot/visualization views configured for a model (empty when none).
+    /// In-memory analogue of [`load_plot_views_for_model`].
+    pub fn plot_views_for_model(&self, model: &str) -> Vec<PlotViewConfig> {
+        self.configs
+            .get(model)
+            .map(|config| config.data.plot.views.clone())
+            .unwrap_or_default()
+    }
+
+    /// Resolve the default colocated `rum.<model>.toml` path for a model:
+    /// next to the model's `.mo` source when known, else at the workspace root.
+    fn default_config_path_for_model(&self, model: &str) -> PathBuf {
+        let source_file = match &self.model_source_files {
+            Some(map) => map.get(model).cloned(),
+            None => find_model_source_file(&self.workspace_root, model)
+                .ok()
+                .flatten(),
+        };
+        if let Some(source_file) = source_file
+            && let Some(parent) = source_file.parent()
+        {
+            let stem = source_file
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| class_name_from_qualified_name(model));
+            return parent.join(format!("rum.{}.toml", sanitize_identifier(stem)));
+        }
+        self.workspace_root.join(format!(
+            "rum.{}.toml",
+            sanitize_identifier(class_name_from_qualified_name(model))
+        ))
+    }
 }
 
 /// Rumoca task-file naming convention: `rum.toml` (default) or
@@ -394,19 +562,10 @@ pub fn load_simulation_snapshot_for_model(
 pub fn write_model_simulation_preset(
     workspace_root: &Path,
     model: &str,
-    mut model_override: SimulationModelOverride,
+    model_override: SimulationModelOverride,
 ) -> Result<()> {
-    model_override.solver = normalize_solver_opt(model_override.solver);
-    model_override.dt = normalize_dt_opt(model_override.dt);
-    if !model_override
-        .t_end
-        .map(|value| value.is_finite() && value > 0.0)
-        .unwrap_or(true)
-    {
-        model_override.t_end = None;
-    }
     let mut config = ProjectConfig::load_or_default(workspace_root)?;
-    config.set_model_override(model, model_override);
+    config.set_model_simulation_preset(model, model_override);
     config.save()
 }
 
@@ -421,40 +580,16 @@ pub fn load_plot_views_for_model(
     model: &str,
 ) -> Result<Vec<PlotViewConfig>> {
     let config = ProjectConfig::load_or_default(workspace_root)?;
-    Ok(config
-        .configs
-        .get(model)
-        .map(|cfg| cfg.data.plot.views.clone())
-        .unwrap_or_default())
+    Ok(config.plot_views_for_model(model))
 }
 
 pub fn write_plot_views_for_model(
     workspace_root: &Path,
     model: &str,
-    mut views: Vec<PlotViewConfig>,
+    views: Vec<PlotViewConfig>,
 ) -> Result<()> {
-    normalize_plot_views(&mut views);
     let mut config = ProjectConfig::load_or_default(workspace_root)?;
-    let path = config
-        .configs
-        .get(model)
-        .map(|config| config.path.clone())
-        .unwrap_or_else(|| default_config_path_for_model(workspace_root, model));
-    let entry = config
-        .configs
-        .entry(model.to_string())
-        .or_insert_with(|| ColocatedModelConfig {
-            path,
-            data: ProjectConfigFile {
-                model: ModelConfig {
-                    name: Some(model.to_string()),
-                    file: None,
-                },
-                ..ProjectConfigFile::default()
-            },
-        });
-    entry.data.model.name = Some(model.to_string());
-    entry.data.plot.views = views;
+    config.set_plot_views(model, views);
     config.save()
 }
 
@@ -704,22 +839,30 @@ fn collect_workspace_scenario_files(workspace_root: &Path) -> Result<Vec<PathBuf
     Ok(files)
 }
 
-fn write_colocated_config_file(path: &Path, data: &ProjectConfigFile) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-
-    let mut value = if path.is_file() {
-        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        toml::from_str::<toml::Value>(&text)
-            .unwrap_or_else(|_| toml::Value::Table(Default::default()))
-    } else {
-        toml::Value::Table(Default::default())
-    };
+/// Render a config file's text by merging managed keys into the prior file
+/// text (preserving any unmanaged keys). Pure: no filesystem access.
+fn render_config_text(existing_raw: &str, data: &ProjectConfigFile) -> Result<String> {
+    let mut value = toml::from_str::<toml::Value>(existing_raw)
+        .unwrap_or_else(|_| toml::Value::Table(Default::default()));
     merge_config_value(&mut value, data)?;
-    let text =
-        toml::to_string_pretty(&value).with_context(|| format!("serialize {}", path.display()))?;
-    fs::write(path, text).with_context(|| format!("write {}", path.display()))
+    toml::to_string_pretty(&value).context("serialize project config")
+}
+
+/// Build a `model name -> .mo source path` map from an in-memory file set, so
+/// the browser editor can colocate new config files without disk access.
+/// Files are sorted by path so the lowest path wins for a duplicated model.
+fn build_model_source_files(mut files: Vec<(PathBuf, String)>) -> BTreeMap<String, PathBuf> {
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut map = BTreeMap::new();
+    for (path, content) in files {
+        let Ok(definition) = parse_source_to_ast(&content, &path.to_string_lossy()) else {
+            continue;
+        };
+        for name in collect_model_names(&definition) {
+            map.entry(name).or_insert_with(|| path.clone());
+        }
+    }
+    map
 }
 
 fn merge_config_value(value: &mut toml::Value, data: &ProjectConfigFile) -> Result<()> {
@@ -874,23 +1017,6 @@ fn merge_optional_f64(
     } else {
         table.remove(key);
     }
-}
-
-fn default_config_path_for_model(workspace_root: &Path, model: &str) -> PathBuf {
-    if let Ok(Some(source_file)) = find_model_source_file(workspace_root, model)
-        && let Some(parent) = source_file.parent()
-    {
-        let stem = source_file
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| class_name_from_qualified_name(model));
-        return parent.join(format!("rum.{}.toml", sanitize_identifier(stem)));
-    }
-    workspace_root.join(format!(
-        "rum.{}.toml",
-        sanitize_identifier(class_name_from_qualified_name(model))
-    ))
 }
 
 fn find_model_source_file(workspace_root: &Path, model: &str) -> Result<Option<PathBuf>> {

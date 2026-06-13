@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_compile::project::SimulationModelOverride;
 use std::sync::atomic::Ordering;
 
 pub(super) async fn assert_formatting_wraps_handler(

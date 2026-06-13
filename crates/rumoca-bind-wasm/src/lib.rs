@@ -10,6 +10,7 @@ include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 mod class_browser_helpers;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod gpu_api;
+mod project_config_api;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
 pub mod source_root_api;
@@ -528,6 +529,71 @@ pub fn get_simulation_models(source: &str, default_model: &str) -> Result<String
         error: None,
     })
     .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+}
+
+// --- Project (`rum.toml`) configuration commands ---------------------------
+// These operate on the editor's in-memory `projectSources` map (`path ->
+// content` JSON) and mirror the LSP server's `rumoca.project.*` config
+// commands, sharing the implementation in `rumoca_compile::project`.
+
+/// Effective + preset + default simulation settings for a model, given the
+/// project's `rum.toml` files and an optional editor `fallback` settings JSON.
+#[wasm_bindgen]
+pub fn project_get_simulation_config(
+    project_sources_json: &str,
+    model: &str,
+    fallback_json: &str,
+) -> Result<String, JsValue> {
+    project_config_api::get_simulation_config_impl(project_sources_json, model, fallback_json)
+}
+
+/// Write a model's simulation preset into its colocated `rum.<model>.toml`.
+/// Returns `{ writes, result }` for the editor to apply to its project store.
+#[wasm_bindgen]
+pub fn project_set_simulation_preset(
+    project_sources_json: &str,
+    model: &str,
+    preset_json: &str,
+) -> Result<String, JsValue> {
+    project_config_api::set_simulation_preset_impl(project_sources_json, model, preset_json)
+}
+
+/// Clear a model's simulation preset. Returns `{ writes, result }`.
+#[wasm_bindgen]
+pub fn project_reset_simulation_preset(
+    project_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    project_config_api::reset_simulation_preset_impl(project_sources_json, model)
+}
+
+/// Configured plot/visualization views for a model (`{ views: [...] }`).
+#[wasm_bindgen]
+pub fn project_get_visualization_config(
+    project_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    project_config_api::get_visualization_config_impl(project_sources_json, model)
+}
+
+/// Write a model's plot/visualization views. Returns `{ writes, result }`.
+#[wasm_bindgen]
+pub fn project_set_visualization_config(
+    project_sources_json: &str,
+    model: &str,
+    views_json: &str,
+) -> Result<String, JsValue> {
+    project_config_api::set_visualization_config_impl(project_sources_json, model, views_json)
+}
+
+/// Parse a single `rum.toml` scenario file (by project path) into the editor's
+/// scenario descriptor (`task`, `model`, `viewerMode`, interactive ports, ...).
+#[wasm_bindgen]
+pub fn project_get_scenario_config(
+    project_sources_json: &str,
+    path: &str,
+) -> Result<String, JsValue> {
+    project_config_api::get_scenario_config_impl(project_sources_json, path)
 }
 
 #[derive(Default)]

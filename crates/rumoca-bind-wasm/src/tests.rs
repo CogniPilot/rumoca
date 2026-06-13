@@ -1920,3 +1920,34 @@ fn lower_to_solve_json_feeds_diffsol_simulation() {
         "x(1) should be ~e^-1, got {last}"
     );
 }
+
+#[test]
+fn project_get_simulation_config_reads_in_memory_rum_toml() {
+    // The browser editor passes its in-memory project files as a `path ->
+    // content` JSON map; the command reads the `rum.toml` config with no disk.
+    let sources = serde_json::json!({
+        "rum.Ball.toml": "[rumoca]\nversion = \"1\"\ntask = \"simulate\"\n\n[model]\nname = \"Ball\"\n\n[sim]\nsolver = \"bdf\"\nt_end = 9.0\n",
+        "Ball.mo": "model Ball end Ball;",
+    })
+    .to_string();
+
+    let response =
+        project_get_simulation_config(&sources, "Ball", "").expect("simulation config response");
+    let parsed: serde_json::Value = serde_json::from_str(&response).expect("valid JSON");
+    assert_eq!(parsed["effective"]["solver"], "bdf");
+    assert_eq!(parsed["effective"]["tEnd"], 9.0);
+
+    // Writing a preset returns a colocated `rum.toml` write for the editor.
+    let preset = serde_json::json!({ "solver": "rk-like", "tEnd": 3.0 }).to_string();
+    let write_response =
+        project_set_simulation_preset(&sources, "Ball", &preset).expect("set preset response");
+    let written: serde_json::Value = serde_json::from_str(&write_response).expect("valid JSON");
+    let writes = written["writes"].as_array().expect("writes array");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["path"], "rum.Ball.toml");
+    assert!(
+        writes[0]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("solver = \"rk-like\""))
+    );
+}

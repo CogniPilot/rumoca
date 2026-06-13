@@ -1,6 +1,13 @@
 use super::*;
 pub(super) use crate::completion_metrics::{CompletionProgressSummary, CompletionTimingSummary};
 use rumoca_compile::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
+// Project (`rum.toml`) config command JSON shaping is owned by `rumoca-compile`
+// so the LSP server and the browser editor bindings share one implementation.
+pub(super) use rumoca_compile::project::{
+    parse_fallback_simulation, parse_views_payload, scenario_config_response,
+    simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
+    visualization_views_to_json,
+};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -414,60 +421,6 @@ pub(super) fn parse_simulation_request_settings(
     })
 }
 
-pub(super) fn parse_fallback_simulation(
-    value: Option<&Value>,
-) -> Option<EffectiveSimulationConfig> {
-    let value = value?;
-    let obj = value.as_object()?;
-    let solver = normalize_solver_opt(
-        obj.get("solver")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    )
-    .unwrap_or_else(|| "auto".to_string());
-    let t_end = obj
-        .get("tEnd")
-        .and_then(Value::as_f64)
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(10.0);
-    let dt = normalize_dt_opt(obj.get("dt").and_then(Value::as_f64));
-    let output_dir = obj
-        .get("outputDir")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let source_root_paths = obj
-        .get("sourceRootPaths")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(EffectiveSimulationConfig {
-        solver,
-        t_end,
-        dt,
-        output_dir,
-        source_root_paths,
-    })
-}
-
-pub(super) fn simulation_settings_to_json(settings: &EffectiveSimulationConfig) -> Value {
-    json!({
-        "solver": settings.solver,
-        "tEnd": settings.t_end,
-        "dt": settings.dt,
-        "outputDir": settings.output_dir,
-        "sourceRootPaths": settings.source_root_paths,
-    })
-}
-
 pub(super) fn find_open_workspace_document_for_model(
     snapshot: &SessionSnapshot,
     model: &str,
@@ -493,98 +446,6 @@ pub(super) fn find_open_workspace_document_for_model(
         }
     }
     None
-}
-
-pub(super) fn simulation_preset_to_json(preset: &EffectiveSimulationPreset) -> Value {
-    json!({
-        "solver": preset.solver,
-        "tEnd": preset.t_end,
-        "dt": preset.dt,
-        "outputDir": preset.output_dir,
-        "sourceRootOverrides": preset.source_root_overrides,
-    })
-}
-
-pub(super) fn simulation_override_from_json(value: &Value) -> Option<SimulationModelOverride> {
-    let obj = value.as_object()?;
-    let solver = obj
-        .get("solver")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let t_end = obj.get("tEnd").and_then(Value::as_f64);
-    let dt = obj.get("dt").and_then(Value::as_f64);
-    let output_dir = obj
-        .get("outputDir")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let source_root_overrides = obj
-        .get("sourceRootOverrides")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(SimulationModelOverride {
-        solver,
-        t_end,
-        dt,
-        output_dir,
-        source_root_overrides,
-    })
-}
-
-pub(super) fn parse_views_payload(value: &Value) -> Option<Vec<PlotViewConfig>> {
-    serde_json::from_value::<Vec<VisualizationViewPayload>>(value.clone())
-        .ok()
-        .map(|views| views.into_iter().map(PlotViewConfig::from).collect())
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct VisualizationViewPayload {
-    pub(super) id: String,
-    pub(super) title: String,
-    #[serde(rename = "type")]
-    pub(super) view_type: String,
-    pub(super) x: Option<String>,
-    #[serde(default)]
-    pub(super) y: Vec<String>,
-    pub(super) script: Option<String>,
-    pub(super) script_path: Option<String>,
-}
-
-impl From<PlotViewConfig> for VisualizationViewPayload {
-    fn from(view: PlotViewConfig) -> Self {
-        Self {
-            id: view.id,
-            title: view.title,
-            view_type: view.view_type,
-            x: view.x,
-            y: view.y,
-            script: view.script,
-            script_path: view.script_path,
-        }
-    }
-}
-
-impl From<VisualizationViewPayload> for PlotViewConfig {
-    fn from(view: VisualizationViewPayload) -> Self {
-        Self {
-            id: view.id,
-            title: view.title,
-            view_type: view.view_type,
-            x: view.x,
-            y: view.y,
-            script: view.script,
-            script_path: view.script_path,
-        }
-    }
 }
 
 pub(super) fn normalize_solver_opt(value: Option<String>) -> Option<String> {
@@ -768,24 +629,5 @@ mod tests {
         .expect("parse views payload");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].script_path.as_deref(), Some("viewer_3d.js"));
-    }
-
-    #[test]
-    fn visualization_view_payload_serializes_script_path_as_camel_case() {
-        let payload = VisualizationViewPayload::from(PlotViewConfig {
-            id: "viewer_3d".to_string(),
-            title: "Viewer".to_string(),
-            view_type: "3d".to_string(),
-            x: None,
-            y: Vec::new(),
-            script: None,
-            script_path: Some("viewer_3d.js".to_string()),
-        });
-        let encoded = serde_json::to_value(payload).expect("serialize payload");
-        assert_eq!(
-            encoded.get("scriptPath").and_then(Value::as_str),
-            Some("viewer_3d.js")
-        );
-        assert!(encoded.get("script_path").is_none());
     }
 }

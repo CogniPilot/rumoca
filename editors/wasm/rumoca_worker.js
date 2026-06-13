@@ -7,6 +7,11 @@ const cacheBust = workerUrl.searchParams.get('v') || '';
 const withCacheBust = (path) =>
     cacheBust ? `${path}?v=${encodeURIComponent(cacheBust)}` : path;
 
+// WASM project-config commands take JSON-string arguments. Accept either an
+// already-stringified payload field or a structured object from the main thread.
+const jsonArg = (value, emptyDefault = '') =>
+    value == null ? emptyDefault : (typeof value === 'string' ? value : JSON.stringify(value));
+
 let init;
 let wasm_init;
 let get_version;
@@ -34,6 +39,12 @@ let lsp_semantic_token_legend;
 let list_classes;
 let get_class_info;
 let render_target;
+let project_get_simulation_config;
+let project_set_simulation_preset;
+let project_reset_simulation_preset;
+let project_get_visualization_config;
+let project_set_visualization_config;
+let project_get_scenario_config;
 let simulate_model = null;
 let simulate_model_with_project_sources = null;
 let lower_model_to_solve_json = null;
@@ -116,6 +127,12 @@ async function loadWasmModule() {
     list_classes = mod.list_classes;
     get_class_info = mod.get_class_info;
     render_target = mod.render_target;
+    project_get_simulation_config = mod.project_get_simulation_config;
+    project_set_simulation_preset = mod.project_set_simulation_preset;
+    project_reset_simulation_preset = mod.project_reset_simulation_preset;
+    project_get_visualization_config = mod.project_get_visualization_config;
+    project_set_visualization_config = mod.project_set_visualization_config;
+    project_get_scenario_config = mod.project_get_scenario_config;
     if (typeof mod.simulate_model === 'function') {
         simulate_model = mod.simulate_model;
     }
@@ -268,6 +285,45 @@ self.onmessage = async (e) => {
                 switch (command) {
                     case 'rumoca.project.getSimulationModels':
                         result = get_simulation_models(payload.source || '', payload.defaultModel || '');
+                        break;
+                    case 'rumoca.project.getSimulationConfig':
+                        result = project_get_simulation_config(
+                            jsonArg(payload.projectSources),
+                            payload.model || '',
+                            jsonArg(payload.fallback),
+                        );
+                        break;
+                    case 'rumoca.project.setSimulationPreset':
+                        result = project_set_simulation_preset(
+                            jsonArg(payload.projectSources),
+                            payload.model || '',
+                            jsonArg(payload.preset, 'null'),
+                        );
+                        break;
+                    case 'rumoca.project.resetSimulationPreset':
+                        result = project_reset_simulation_preset(
+                            jsonArg(payload.projectSources),
+                            payload.model || '',
+                        );
+                        break;
+                    case 'rumoca.project.getVisualizationConfig':
+                        result = project_get_visualization_config(
+                            jsonArg(payload.projectSources),
+                            payload.model || '',
+                        );
+                        break;
+                    case 'rumoca.project.setVisualizationConfig':
+                        result = project_set_visualization_config(
+                            jsonArg(payload.projectSources),
+                            payload.model || '',
+                            jsonArg(payload.views, 'null'),
+                        );
+                        break;
+                    case 'rumoca.project.getScenarioConfig':
+                        result = project_get_scenario_config(
+                            jsonArg(payload.projectSources),
+                            payload.path || payload.uri || '',
+                        );
                         break;
                     case 'rumoca.project.startSimulation':
                         if (!simulate_model) {
