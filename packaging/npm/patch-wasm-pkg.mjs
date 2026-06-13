@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const packageNameForVariant = (variant) => (variant === "core" ? "rumoca" : `rumoca-${variant}`);
+// Published under the @cognipilot org scope. Core is the headline package
+// (@cognipilot/rumoca); other variants append the variant name.
+const NPM_SCOPE = "@cognipilot";
+const packageNameForVariant = (variant) =>
+  variant === "core" ? `${NPM_SCOPE}/rumoca` : `${NPM_SCOPE}/rumoca-${variant}`;
 
 export const patchWasmPackageJson = async (pkgDir, variant) => {
   const pkgJsonPath = path.join(pkgDir, "package.json");
@@ -18,6 +22,9 @@ export const patchWasmPackageJson = async (pkgDir, variant) => {
   };
 
   pkg.name = packageNameForVariant(variant);
+  // Scoped packages default to restricted; force public so `npm publish`
+  // (both the manual scripts and CI) publishes openly without a flag.
+  pkg.publishConfig = { ...(pkg.publishConfig || {}), access: "public" };
   pkg.files = pkg.files || [];
 
   const addFile = (entry) => {
