@@ -1951,3 +1951,64 @@ fn project_get_simulation_config_reads_in_memory_rum_toml() {
             .is_some_and(|content| content.contains("solver = \"rk-like\""))
     );
 }
+
+#[test]
+fn scenario_config_full_round_trips_interactive_io() {
+    // The config GUI reads the whole rum.toml as a JSON tree and writes it back.
+    // Nested interactive-IO sections must survive a round-trip losslessly.
+    let rum_toml = r#"[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+name = "Rover"
+file = "Rover.mo"
+
+[sim]
+solver = "auto"
+mode = "realtime"
+
+[input.keyboard.keys.ArrowUp]
+action = "set"
+target = "throttle"
+value = 1.0
+
+[signals.viewer]
+theta = "stepper:theta"
+"#;
+    let sources = serde_json::json!({ "rum.toml": rum_toml }).to_string();
+
+    let full = project_get_scenario_config_full(&sources, "rum.toml").expect("full config");
+    let parsed: serde_json::Value = serde_json::from_str(&full).expect("json");
+    assert_eq!(parsed["ok"], true);
+    let mut config = parsed["config"].clone();
+    assert_eq!(
+        config["input"]["keyboard"]["keys"]["ArrowUp"]["action"],
+        "set"
+    );
+    assert_eq!(config["signals"]["viewer"]["theta"], "stepper:theta");
+
+    // Change the solver in the tree and write it back.
+    config["sim"]["solver"] = serde_json::Value::from("bdf");
+    let write_response =
+        project_set_scenario_config("rum.toml", &config.to_string()).expect("set scenario");
+    let written: serde_json::Value = serde_json::from_str(&write_response).expect("json");
+    let content = written["writes"][0]["content"].as_str().expect("content");
+    assert!(content.contains("solver = \"bdf\""));
+    // Interactive-IO blocks preserved.
+    assert!(content.contains("[input.keyboard.keys.ArrowUp]"));
+    assert!(content.contains("theta = \"stepper:theta\""));
+    assert!(content.contains("[rumoca]"));
+}
+
+#[test]
+fn default_scenario_config_creates_minimal_rum_toml() {
+    let sources = serde_json::json!({ "models/Rover.mo": "model Rover end Rover;" }).to_string();
+    let response = project_default_scenario_config(&sources, "Rover").expect("default config");
+    let parsed: serde_json::Value = serde_json::from_str(&response).expect("json");
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["path"], "models/rum.rover.toml");
+    let content = parsed["content"].as_str().expect("content");
+    assert!(content.contains("[rumoca]"));
+    assert!(content.contains("name = \"Rover\""));
+}

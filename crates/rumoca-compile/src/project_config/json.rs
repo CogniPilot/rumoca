@@ -149,6 +149,70 @@ fn scenario_error(message: impl Into<String>) -> Value {
     json!({ "ok": false, "error": message.into() })
 }
 
+/// Full `rum.toml` scenario as a JSON tree for the editor's config GUI:
+/// `{ ok, config: <toml-as-json>, descriptor: <scenario_config_response> }`. The
+/// `config` tree round-trips every section losslessly (including the nested
+/// interactive-IO blocks), so the form can edit known fields and preserve the rest.
+pub fn scenario_config_full_to_json(content: &str) -> Value {
+    let raw = match toml::from_str::<toml::Value>(content) {
+        Ok(raw) => raw,
+        Err(error) => return scenario_error(format!("failed to parse scenario config: {error}")),
+    };
+    let config = serde_json::to_value(&raw).unwrap_or(Value::Null);
+    json!({
+        "ok": true,
+        "config": config,
+        "descriptor": scenario_config_response(content),
+    })
+}
+
+/// Render a `rum.toml` from the GUI's JSON config tree, ensuring the `[rumoca]`
+/// marker is present (defaulting version/task). Pure: no filesystem access.
+pub fn scenario_config_text_from_json(config: &Value) -> Result<String, String> {
+    let mut cleaned = config.clone();
+    strip_json_nulls(&mut cleaned);
+    let mut toml_value = toml::Value::try_from(&cleaned)
+        .map_err(|error| format!("config is not representable as TOML: {error}"))?;
+    ensure_rumoca_marker(&mut toml_value);
+    toml::to_string_pretty(&toml_value)
+        .map_err(|error| format!("failed to serialize scenario config: {error}"))
+}
+
+/// TOML has no `null`; drop null-valued keys so the GUI can omit unset fields.
+fn strip_json_nulls(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, entry| !entry.is_null());
+            for entry in map.values_mut() {
+                strip_json_nulls(entry);
+            }
+        }
+        Value::Array(items) => {
+            for entry in items.iter_mut() {
+                strip_json_nulls(entry);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ensure_rumoca_marker(value: &mut toml::Value) {
+    let toml::Value::Table(root) = value else {
+        return;
+    };
+    let marker = root
+        .entry("rumoca".to_string())
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    if let toml::Value::Table(marker_table) = marker {
+        marker_table
+            .entry("version".to_string())
+            .or_insert_with(|| toml::Value::String(super::RUMOCA_TASK_FILE_VERSION.to_string()));
+        marker_table
+            .entry("task".to_string())
+            .or_insert_with(|| toml::Value::String("simulate".to_string()));
+    }
+}
+
 fn string_array(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)

@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rumoca_compile::project::{
-    ProjectConfig, parse_fallback_simulation, parse_views_payload, scenario_config_response,
-    simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
-    visualization_views_to_json,
+    ProjectConfig, parse_fallback_simulation, parse_views_payload, scenario_config_full_to_json,
+    scenario_config_response, scenario_config_text_from_json, simulation_override_from_json,
+    simulation_preset_to_json, simulation_settings_to_json, visualization_views_to_json,
 };
 use serde_json::{Value, json};
 use wasm_bindgen::JsValue;
@@ -134,19 +134,60 @@ pub(crate) fn get_scenario_config_impl(
     path: &str,
 ) -> Result<String, JsValue> {
     let files = parse_project_files(project_sources_json)?;
-    let needle = path.trim();
-    let content = files
-        .iter()
-        .find(|(file_path, _)| {
-            let candidate = file_path.to_string_lossy();
-            candidate == needle || (!needle.is_empty() && candidate.ends_with(needle))
-        })
-        .map(|(_, content)| content.clone());
-    match content {
-        Some(content) => to_json_string(&scenario_config_response(&content)),
+    match find_project_file(&files, path.trim()) {
+        Some(content) => to_json_string(&scenario_config_response(content)),
         None => to_json_string(&json!({
             "ok": false,
             "error": "rum.toml scenario was not found in the project",
         })),
     }
+}
+
+fn find_project_file<'a>(files: &'a [(PathBuf, String)], needle: &str) -> Option<&'a str> {
+    files
+        .iter()
+        .find(|(file_path, _)| {
+            let candidate = file_path.to_string_lossy();
+            candidate == needle || (!needle.is_empty() && candidate.ends_with(needle))
+        })
+        .map(|(_, content)| content.as_str())
+}
+
+pub(crate) fn get_scenario_config_full_impl(
+    project_sources_json: &str,
+    path: &str,
+) -> Result<String, JsValue> {
+    let files = parse_project_files(project_sources_json)?;
+    match find_project_file(&files, path.trim()) {
+        Some(content) => to_json_string(&scenario_config_full_to_json(content)),
+        None => to_json_string(&json!({
+            "ok": false,
+            "error": "rum.toml scenario was not found in the project",
+        })),
+    }
+}
+
+pub(crate) fn set_scenario_config_impl(path: &str, config_json: &str) -> Result<String, JsValue> {
+    let config: Value = serde_json::from_str(config_json.trim())
+        .map_err(|e| JsValue::from_str(&format!("Invalid scenario config JSON: {e}")))?;
+    let content = scenario_config_text_from_json(&config).map_err(|e| JsValue::from_str(&e))?;
+    to_json_string(&json!({
+        "writes": [{ "path": path, "content": content }],
+        "result": { "ok": true },
+    }))
+}
+
+pub(crate) fn default_scenario_config_impl(
+    project_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    let config = project_config_from_sources(project_sources_json)?;
+    let (path, content) = config
+        .default_scenario_config(model)
+        .map_err(|e| JsValue::from_str(&format!("default scenario config error: {e}")))?;
+    to_json_string(&json!({
+        "ok": true,
+        "path": path.to_string_lossy(),
+        "content": content,
+    }))
 }

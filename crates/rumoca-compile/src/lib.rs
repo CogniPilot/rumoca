@@ -112,10 +112,10 @@ pub mod project {
         SimulationModelOverride, clear_model_simulation_preset, is_rumoca_task_filename,
         load_last_simulation_result_for_model, load_plot_views_for_model, load_simulation_run,
         load_simulation_snapshot_for_model, parse_fallback_simulation, parse_views_payload,
-        scenario_config_response, simulation_override_from_json, simulation_preset_to_json,
-        simulation_settings_to_json, visualization_views_to_json,
-        write_last_simulation_result_for_model, write_model_simulation_preset,
-        write_plot_views_for_model, write_simulation_run,
+        scenario_config_full_to_json, scenario_config_response, scenario_config_text_from_json,
+        simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
+        visualization_views_to_json, write_last_simulation_result_for_model,
+        write_model_simulation_preset, write_plot_views_for_model, write_simulation_run,
     };
 }
 

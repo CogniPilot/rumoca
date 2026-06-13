@@ -45,6 +45,9 @@ let project_reset_simulation_preset;
 let project_get_visualization_config;
 let project_set_visualization_config;
 let project_get_scenario_config;
+let project_get_scenario_config_full;
+let project_set_scenario_config;
+let project_default_scenario_config;
 let simulate_model = null;
 let simulate_model_with_project_sources = null;
 let lower_model_to_solve_json = null;
@@ -133,6 +136,9 @@ async function loadWasmModule() {
     project_get_visualization_config = mod.project_get_visualization_config;
     project_set_visualization_config = mod.project_set_visualization_config;
     project_get_scenario_config = mod.project_get_scenario_config;
+    project_get_scenario_config_full = mod.project_get_scenario_config_full;
+    project_set_scenario_config = mod.project_set_scenario_config;
+    project_default_scenario_config = mod.project_default_scenario_config;
     if (typeof mod.simulate_model === 'function') {
         simulate_model = mod.simulate_model;
     }
@@ -323,6 +329,24 @@ self.onmessage = async (e) => {
                         result = project_get_scenario_config(
                             jsonArg(payload.projectSources),
                             payload.path || payload.uri || '',
+                        );
+                        break;
+                    case 'rumoca.project.getScenarioConfigFull':
+                        result = project_get_scenario_config_full(
+                            jsonArg(payload.projectSources),
+                            payload.path || payload.uri || '',
+                        );
+                        break;
+                    case 'rumoca.project.setScenarioConfig':
+                        result = project_set_scenario_config(
+                            payload.path || payload.uri || '',
+                            jsonArg(payload.config, 'null'),
+                        );
+                        break;
+                    case 'rumoca.project.defaultScenarioConfig':
+                        result = project_default_scenario_config(
+                            jsonArg(payload.projectSources),
+                            payload.model || '',
                         );
                         break;
                     case 'rumoca.project.startSimulation':

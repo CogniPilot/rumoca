@@ -596,6 +596,34 @@ pub fn project_get_scenario_config(
     project_config_api::get_scenario_config_impl(project_sources_json, path)
 }
 
+/// Full `rum.toml` scenario as a JSON tree for the config GUI:
+/// `{ ok, config: <toml-as-json>, descriptor }`. The `config` tree round-trips
+/// every section (including nested interactive-IO) losslessly.
+#[wasm_bindgen]
+pub fn project_get_scenario_config_full(
+    project_sources_json: &str,
+    path: &str,
+) -> Result<String, JsValue> {
+    project_config_api::get_scenario_config_full_impl(project_sources_json, path)
+}
+
+/// Render a `rum.toml` from the config GUI's JSON tree. Returns
+/// `{ writes: [{path, content}], result }` for the editor to apply.
+#[wasm_bindgen]
+pub fn project_set_scenario_config(path: &str, config_json: &str) -> Result<String, JsValue> {
+    project_config_api::set_scenario_config_impl(path, config_json)
+}
+
+/// Default colocated `rum.<model>.toml` (`{ ok, path, content }`) for the
+/// lightning-bolt "create config" action on a Modelica model.
+#[wasm_bindgen]
+pub fn project_default_scenario_config(
+    project_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    project_config_api::default_scenario_config_impl(project_sources_json, model)
+}
+
 #[derive(Default)]
 struct DocumentationFields {
     info_html: Option<String>,

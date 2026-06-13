@@ -12,9 +12,9 @@ use crate::parse::{parse_files_parallel_lenient, parse_source_to_ast};
 
 mod json;
 pub use json::{
-    parse_fallback_simulation, parse_views_payload, scenario_config_response,
-    simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
-    visualization_views_to_json,
+    parse_fallback_simulation, parse_views_payload, scenario_config_full_to_json,
+    scenario_config_response, scenario_config_text_from_json, simulation_override_from_json,
+    simulation_preset_to_json, simulation_settings_to_json, visualization_views_to_json,
 };
 
 const RUMOCA_TASK_FILE_VERSION: &str = "1";
@@ -495,6 +495,22 @@ impl ProjectConfig {
             effective,
             diagnostics: self.diagnostics.clone(),
         }
+    }
+
+    /// Default colocated `rum.<model>.toml` (path + rendered content) for a
+    /// model: a minimal `[rumoca]` + `[model]` scenario, used by the editor's
+    /// "create config" (lightning-bolt) action. The GUI fills in the rest.
+    pub fn default_scenario_config(&self, model: &str) -> Result<(PathBuf, String)> {
+        let path = self.default_config_path_for_model(model);
+        let data = ProjectConfigFile {
+            model: ModelConfig {
+                name: Some(model.to_string()),
+                file: None,
+            },
+            ..ProjectConfigFile::default()
+        };
+        let text = render_config_text("", &data)?;
+        Ok((path, text))
     }
 
     /// Plot/visualization views configured for a model (empty when none).
