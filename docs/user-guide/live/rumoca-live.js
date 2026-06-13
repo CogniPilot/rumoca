@@ -39,6 +39,11 @@
     let wasmModulePromise = null;
     let wasmRequested = false;
     let languageServicesRegistered = false;
+    // Resolved pkg base URL (where rumoca_bind_wasm.js loaded from); the diffsol
+    // driver + addon sit next to it. Cached the first time the WASM is loaded.
+    let resolvedPkgBase = null;
+    // Cached promise for the diffsol driver module (rumoca_diffsol.js).
+    let diffsolDriverPromise = null;
     const widgets = [];
 
     function bookRoot() {
@@ -96,6 +101,7 @@
             broadcastStatus('Downloading Rumoca WASM (first use on this page)…');
             wasmModulePromise = (async () => {
                 const base = await locatePkgBase();
+                resolvedPkgBase = base;
                 const module = await import(base + 'rumoca_bind_wasm.js');
                 await module.default();
                 return module;
@@ -117,6 +123,20 @@
             );
         }
         return wasmModulePromise;
+    }
+
+    // Lazily import the diffsol driver (rumoca_diffsol.js), which sits next to
+    // the main WASM. It feature-detects relaxed-SIMD and lazy-loads the separate
+    // diffsol addon. Returns null if unavailable (older package without it).
+    function loadDiffsolDriver() {
+        if (!diffsolDriverPromise && resolvedPkgBase) {
+            diffsolDriverPromise = import(resolvedPkgBase + 'rumoca_diffsol.js')
+                .catch(() => {
+                    diffsolDriverPromise = null;
+                    return null;
+                });
+        }
+        return diffsolDriverPromise || Promise.resolve(null);
     }
 
     // -----------------------------------------------------------------
@@ -1386,6 +1406,28 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         resetBtn.type = 'button';
         resetBtn.className = 'rumoca-live-button';
         resetBtn.textContent = 'Reset';
+        const solverLabel = document.createElement('label');
+        solverLabel.className = 'rumoca-live-solver';
+        const solverSelect = document.createElement('select');
+        solverSelect.className = 'rumoca-live-solver-select';
+        let bdfOption = null;
+        for (const { value, label } of [
+            { value: '', label: 'Auto' },
+            { value: 'rk-like', label: 'RK45 (explicit)' },
+            { value: 'bdf', label: 'BDF (stiff)' },
+        ]) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = label;
+            if (value === 'bdf') {
+                // Enabled later iff the browser supports the diffsol addon.
+                opt.disabled = true;
+                opt.title = 'Checking browser support…';
+                bdfOption = opt;
+            }
+            solverSelect.appendChild(opt);
+        }
+        solverLabel.append(document.createTextNode('Solver '), solverSelect);
         const gpuLabel = document.createElement('label');
         gpuLabel.className = 'rumoca-live-gpu';
         const gpuCheck = document.createElement('input');
@@ -1395,7 +1437,31 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
-        toolbar.append(runBtn, daeBtn, resetBtn, gpuLabel, status);
+        toolbar.append(runBtn, daeBtn, resetBtn, solverLabel, gpuLabel, status);
+
+        // Enable the stiff (BDF/diffsol) option only when the browser can load
+        // the relaxed-SIMD addon; otherwise leave it greyed out with a reason.
+        async function refreshBdfAvailability() {
+            if (!bdfOption) {
+                return;
+            }
+            const driver = await loadDiffsolDriver();
+            const ok = driver && typeof driver.diffsolAvailable === 'function'
+                ? await driver.diffsolAvailable(resolvedPkgBase)
+                : false;
+            if (ok) {
+                bdfOption.disabled = false;
+                bdfOption.title = 'Stiff/implicit solver (diffsol)';
+            } else {
+                bdfOption.disabled = true;
+                bdfOption.title =
+                    'The stiff (diffsol) solver needs a browser with WebAssembly '
+                    + 'relaxed-SIMD (Chrome 114+, Firefox 120+, Safari 16.4+).';
+                if (solverSelect.value === 'bdf') {
+                    solverSelect.value = '';
+                }
+            }
+        }
 
         const progress = document.createElement('div');
         progress.className = 'rumoca-live-progress';
@@ -1492,6 +1558,8 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
             },
             setStatus(text) { status.textContent = text; },
             onWasmReady(wasm) {
+                // Independent of Monaco: enable the BDF option if supported.
+                refreshBdfAvailability();
                 if (!monaco || !editor.model) {
                     return;
                 }
@@ -1628,11 +1696,26 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
                     + 're-run on the CPU.'
                 );
             }
-            // t_end = 0 / dt = 0 / solver = "" defer to the model's
-            // experiment annotation, falling back to runtime defaults. The
-            // call runs in a worker so the page (and progress bar) stay live.
+            const solver = solverSelect.value;
+            if (solver === 'bdf') {
+                // Stiff path: the diffsol addon (separate relaxed-SIMD module)
+                // runs on the main thread, like the GPU path. The main module
+                // lowers the model and the addon simulates it. t_end/dt = 0
+                // defer to the model's experiment annotation.
+                const driver = await loadDiffsolDriver();
+                if (!driver || typeof driver.simulateWithDiffsol !== 'function') {
+                    throw new Error('the diffsol (stiff) solver addon is unavailable in this build');
+                }
+                setPhase('Compiling & simulating (stiff · diffsol)', null);
+                const result = await driver.simulateWithDiffsol(wasm, resolvedPkgBase, source, model, 0, 0);
+                renderRunResult(result);
+                return;
+            }
+            // t_end = 0 / dt = 0 defer to the model's experiment annotation,
+            // falling back to runtime defaults. `solver` is "" (auto/annotation)
+            // or "rk-like". Runs in a worker so the page stays live.
             const raw = await runHeavy('simulate', { source, model },
-                () => wasm.simulate_model(source, model, 0, 0, ''));
+                () => wasm.simulate_model(source, model, 0, 0, solver));
             renderRunResult(JSON.parse(raw));
         }));
 
