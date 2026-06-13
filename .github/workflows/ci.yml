@@ -789,13 +789,10 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run WASM CI gate
+        # Also builds (and patches) pkg/release-full-web — the published
+        # `@cognipilot/rumoca` package — which rides in the wasm-package
+        # artifact for the deploy job to publish on a release.
         run: cargo xtask wasm test
-
-      - name: Build npm package (core variant)
-        # Produces pkg/release-core (the publishable `rumoca` package). Built on
-        # every run so npm packaging is validated on PRs; the deploy job only
-        # publishes it on a release. wasm-pack is installed by the gate above.
-        run: node packaging/npm/build.mjs --profile release --variant core
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
@@ -1358,9 +1355,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg_dir="artifacts/wasm-package/release-core"
+          pkg_dir="artifacts/wasm-package/release-full-web"
           if [ ! -f "$pkg_dir/package.json" ]; then
-            echo "::error::npm package not found at $pkg_dir (build-wasm must build the core variant)"
+            echo "::error::npm package not found at $pkg_dir (build-wasm must build the full-web variant)"
             exit 1
           fi
           name="$(node -p "require('./$pkg_dir/package.json').name")"

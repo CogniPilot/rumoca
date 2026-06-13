@@ -1,11 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-// Published under the @cognipilot org scope. Core is the headline package
-// (@cognipilot/rumoca); other variants append the variant name.
+// Published under the @cognipilot org scope. The headline package
+// `@cognipilot/rumoca` is the full build (both solvers, variant `full-web`);
+// `@cognipilot/rumoca-core` is the compile/LSP-only build. Any other variant
+// (only used for local/experimental builds) appends its variant name.
 const NPM_SCOPE = "@cognipilot";
-const packageNameForVariant = (variant) =>
-  variant === "core" ? `${NPM_SCOPE}/rumoca` : `${NPM_SCOPE}/rumoca-${variant}`;
+const packageNameForVariant = (variant) => {
+  switch (variant) {
+    case "full-web":
+      return `${NPM_SCOPE}/rumoca`;
+    case "core":
+      return `${NPM_SCOPE}/rumoca-core`;
+    default:
+      return `${NPM_SCOPE}/rumoca-${variant}`;
+  }
+};
 
 export const patchWasmPackageJson = async (pkgDir, variant) => {
   const pkgJsonPath = path.join(pkgDir, "package.json");

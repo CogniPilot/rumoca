@@ -34,7 +34,10 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
-full-web = ["sim-rk45"]
+# The full web build ships both solvers (explicit rk45 + stiff/implicit
+# diffsol) so the editor and the published `@cognipilot/rumoca` package can run
+# stiff and non-stiff models alike.
+full-web = ["sim-diffsol", "sim-rk45"]
 sim-wasm = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-diffsol"]
 sim-rk45 = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-rk45"]
