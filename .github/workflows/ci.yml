@@ -846,8 +846,12 @@ jobs:
 
   deploy-pages:
     name: Deploy Pages
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [build-wasm]
+    # Publish the docs/WASM site only on a release (a v* tag on the commit),
+    # not on every main merge. detect-release-tag resolves the tag via
+    # `git tag --points-at`, so this fires for both the co-pushed main+tag
+    # release and a tag pushed onto an already-merged commit.
+    if: github.event_name == 'push' && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, build-wasm]
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
