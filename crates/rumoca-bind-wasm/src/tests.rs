@@ -1882,3 +1882,36 @@ fn test_simulate_model_wrapper_advances_after_relation_root_crossing() {
 
     clear_source_root_cache();
 }
+
+/// The lazy-diffsol path end-to-end (native): the main module lowers a model to
+/// SolveModel JSON (`lower_model_to_solve_json`), and that JSON deserializes and
+/// simulates with diffsol — proving the JSON the addon receives is complete.
+#[cfg(feature = "sim-diffsol")]
+#[test]
+fn lower_to_solve_json_feeds_diffsol_simulation() {
+    let _guard = session_test_guard();
+    let source = "model Decay\n  parameter Real k = 1.0;\n  Real x(start = 1.0);\nequation\n  der(x) = -k * x;\nend Decay;\n";
+
+    let json = crate::simulation_api::lower_model_to_solve_json_impl(source, "Decay", 1.0, 0.05)
+        .expect("lower model to solve-model JSON");
+    let model: rumoca_ir_solve::SolveModel =
+        serde_json::from_str(&json).expect("deserialize solve-model JSON");
+
+    let opts = rumoca_sim::SimOptions {
+        solver_mode: rumoca_sim::SimSolverMode::Bdf,
+        t_end: 1.0,
+        dt: Some(0.05),
+        ..Default::default()
+    };
+    let result = rumoca_sim::simulate_solve_model(&model, &opts).expect("diffsol simulation");
+    let xi = result
+        .names
+        .iter()
+        .position(|n| n == "x")
+        .expect("x in results");
+    let last = *result.data[xi].last().expect("non-empty x series");
+    assert!(
+        (last - (-1.0_f64).exp()).abs() < 0.02,
+        "x(1) should be ~e^-1, got {last}"
+    );
+}

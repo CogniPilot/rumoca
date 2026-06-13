@@ -59,7 +59,9 @@ use crate::class_browser_helpers::{
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::gpu_api::{prepare_gpu_simulation, update_gpu_parameters};
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
+use crate::simulation_api::{
+    lower_model_to_solve_json_impl, simulate_model_impl, simulate_model_with_project_sources_impl,
+};
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots,
     compile_check_with_source_roots_with_options, compile_with_project_sources,
@@ -1458,6 +1460,20 @@ pub fn simulate_model(
     solver: &str,
 ) -> Result<String, JsValue> {
     simulate_model_impl(source, model_name, t_end, dt, solver)
+}
+
+/// Compile a model and return its lowered `SolveModel` as JSON, for the lazy
+/// diffsol addon (`@cognipilot/rumoca/diffsol`) to simulate. Lets the stiff
+/// solver run without putting relaxed-SIMD in this (universal) module.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn lower_model_to_solve_json(
+    source: &str,
+    model_name: &str,
+    t_end: f64,
+    dt: f64,
+) -> Result<String, JsValue> {
+    lower_model_to_solve_json_impl(source, model_name, t_end, dt)
 }
 
 /// Compile with additional project-local sources and simulate a Modelica model.

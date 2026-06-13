@@ -1,7 +1,8 @@
 use rumoca_compile::{Session, compile::CompilationResult};
 use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
-    build_simulation_metrics_value, build_simulation_payload, simulate_dae_with_diagnostics,
+    build_simulation_metrics_value, build_simulation_payload, lower_dae_for_simulation,
+    simulate_dae_with_diagnostics,
 };
 use wasm_bindgen::JsValue;
 
@@ -20,6 +21,29 @@ pub(crate) fn simulate_model_impl(
 ) -> Result<String, JsValue> {
     with_singleton_session(|session| {
         simulate_model_in_session(session, source, model_name, t_end, dt, solver)
+    })
+}
+
+/// Compile a model and emit its lowered `SolveModel` as JSON, ready to hand to
+/// the lazy diffsol addon (`@cognipilot/rumoca/diffsol`). Lowered with the
+/// diffsol (`bdf`) solver mode so the structure matches what the addon runs.
+/// The main module stays SIMD-free; only the addon that consumes this JSON
+/// carries relaxed-SIMD.
+pub(crate) fn lower_model_to_solve_json_impl(
+    source: &str,
+    model_name: &str,
+    t_end: f64,
+    dt: f64,
+) -> Result<String, JsValue> {
+    with_singleton_session(|session| {
+        session.update_document("input.mo", source);
+        let requested_model = qualify_input_model_name(session, model_name);
+        let result = compile_requested_model(session, &requested_model)?;
+        let (opts, _solver_label) = build_simulation_options(&result, t_end, dt, "bdf");
+        let solve_model = lower_dae_for_simulation(&result.dae, &opts)
+            .map_err(|e| JsValue::from_str(&format!("solve lowering error: {e}")))?;
+        serde_json::to_string(&solve_model)
+            .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
     })
 }
 
