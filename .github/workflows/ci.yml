@@ -1,9 +1,13 @@
 name: CI
 
 on:
+  # Releases push main + the v* tag together in one operation, so the
+  # main-branch run already sees the tag (detect-release-tag resolves it via
+  # `git tag --points-at`) and runs the deploy. Triggering on the tag ref as
+  # well spawned a second, identical full-matrix run at the same SHA, so we do
+  # not list tags here.
   push:
     branches: ['main']
-    tags: ['v*']
   pull_request:
     branches: ['main']
 
