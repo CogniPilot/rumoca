@@ -20,6 +20,7 @@ const parseArgs = (argv) => {
     rayon: false,
     patch: true,
     pack: false,
+    optimize: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -29,6 +30,7 @@ const parseArgs = (argv) => {
     else if (arg === "--rayon") args.rayon = true;
     else if (arg === "--no-patch") args.patch = false;
     else if (arg === "--pack") args.pack = true;
+    else if (arg === "--optimize") args.optimize = true;
     else if (arg === "--help") {
       console.log(`Usage: node packaging/npm/build.mjs [options]
 
@@ -39,6 +41,7 @@ Options:
   --rayon                                  Enable wasm-rayon
   --no-patch                               Skip package.json patching
   --pack                                   Run npm pack on pkg/
+  --optimize                               Run wasm-opt (-Oz) — use for published builds
 `);
       process.exit(0);
     } else {
@@ -178,8 +181,14 @@ const main = async () => {
       releaseFlag,
     ];
 
-    // wasm-opt is disabled (slow, and not needed for these builds).
-    wasmPackArgs.push("--no-opt");
+    // wasm-opt is slow, so skip it by default (fast dev/editor builds). For
+    // published packages pass --optimize: wasm-pack then runs wasm-opt with the
+    // `-Oz` level configured in crates/rumoca-bind-wasm/Cargo.toml's
+    // [package.metadata.wasm-pack.profile.release], stripping debug names and
+    // dead code (~25% smaller raw).
+    if (!args.optimize) {
+      wasmPackArgs.push("--no-opt");
+    }
     if (features.length > 0) {
       wasmPackArgs.push("--", "--features", features.join(","));
     }

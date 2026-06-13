@@ -10,6 +10,12 @@ build = "build.rs"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# wasm-opt settings used when building published packages (build.mjs --optimize,
+# which drops the default --no-opt). -Oz optimizes for size; the thread/bulk-
+# memory features keep the wasm-rayon variants valid.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
+
 [dependencies]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }

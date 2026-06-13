@@ -789,10 +789,23 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run WASM CI gate
-        # Also builds (and patches) pkg/release-full-web — the published
-        # `@cognipilot/rumoca` package — which rides in the wasm-package
-        # artifact for the deploy job to publish on a release.
         run: cargo xtask wasm test
+
+      - name: Build optimized npm packages
+        # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
+        # via the gate above. BOTH packages compile Modelica and emit code from
+        # every IR (AST/flat/DAE/solve) — they are equally capable for codegen.
+        # The only difference is the bundled solver RUNTIME for in-package
+        # simulation:
+        #   full-web -> @cognipilot/rumoca       (+ rk45 & diffsol runtime)
+        #   core     -> @cognipilot/rumoca-core  (no bundled solver — bring your own)
+        # These overwrite the gate's unoptimized full-web so gh-pages and the
+        # wasm-package artifact (published on release by the deploy job) both
+        # get the optimized build.
+        if: github.event_name == 'push'
+        run: |
+          node packaging/npm/build.mjs --profile release --variant full-web --optimize
+          node packaging/npm/build.mjs --profile release --variant core --optimize
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
@@ -1355,21 +1368,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg_dir="artifacts/wasm-package/release-full-web"
-          if [ ! -f "$pkg_dir/package.json" ]; then
-            echo "::error::npm package not found at $pkg_dir (build-wasm must build the full-web variant)"
-            exit 1
-          fi
-          name="$(node -p "require('./$pkg_dir/package.json').name")"
-          version="$(node -p "require('./$pkg_dir/package.json').version")"
-          echo "Preparing to publish $name@$version"
-          # Idempotent like the PyPI --skip-existing above: re-running a release
-          # must not fail just because the version is already on the registry.
-          if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "$name@$version already published; skipping."
-            exit 0
-          fi
-          npm publish "$pkg_dir" --access public
+          # Two packages: the batteries-included build and the compile/codegen
+          # build (no solver runtime). Both are wasm-opt'd in build-wasm.
+          for variant in release-full-web release-core; do
+            pkg_dir="artifacts/wasm-package/$variant"
+            if [ ! -f "$pkg_dir/package.json" ]; then
+              echo "::error::npm package not found at $pkg_dir (build-wasm must build the $variant variant)"
+              exit 1
+            fi
+            name="$(node -p "require('./$pkg_dir/package.json').name")"
+            version="$(node -p "require('./$pkg_dir/package.json').version")"
+            echo "Preparing to publish $name@$version"
+            # Idempotent like the PyPI --skip-existing above: re-running a release
+            # must not fail just because a version is already on the registry.
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already published; skipping."
+              continue
+            fi
+            npm publish "$pkg_dir" --access public
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
