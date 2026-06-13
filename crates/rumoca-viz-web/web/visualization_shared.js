@@ -3728,11 +3728,221 @@ ctx.onFrame = (api) => {
         return next;
     }
 
+    const SCENARIO_CONFIG_SECTION_ORDER = [
+        'rumoca',
+        'model',
+        'sim',
+        'codegen',
+        'viewer',
+        'transport',
+        'locals',
+        'input',
+        'signals',
+        'derive',
+        'reset',
+    ];
+
+    function scenarioConfigSectionRank(section) {
+        const index = SCENARIO_CONFIG_SECTION_ORDER.indexOf(section);
+        return index === -1 ? SCENARIO_CONFIG_SECTION_ORDER.length : index;
+    }
+
+    // Render one editable leaf field for the config form. `index` keys the input
+    // back to its field descriptor so the host can rebuild edits on save.
+    function scenarioConfigFieldMarkup(field, index) {
+        const subLabel = field.path.slice(1).join('.') || field.key;
+        const idAttr = `field_${index}`;
+        let control;
+        if (field.kind === 'boolean') {
+            const checked = field.value ? ' checked' : '';
+            control = `<input type="checkbox" id="${idAttr}" data-field="${index}"${checked}>`;
+        } else if (field.kind === 'number') {
+            control = `<input type="number" step="any" id="${idAttr}" data-field="${index}" value="${escapeHtml(String(field.value ?? ''))}">`;
+        } else if (field.kind === 'json') {
+            control = `<textarea id="${idAttr}" data-field="${index}" rows="2">${escapeHtml(JSON.stringify(field.value ?? null))}</textarea>`;
+        } else {
+            control = `<input type="text" id="${idAttr}" data-field="${index}" value="${escapeHtml(String(field.value ?? ''))}">`;
+        }
+        return `
+        <div class="field">
+          <label for="${idAttr}">${escapeHtml(subLabel)}</label>
+          ${control}
+        </div>`;
+    }
+
+    // Build the rum.toml config GUI document (iframe srcdoc). The form renders
+    // the flattened scalar leaves grouped by top-level section; on save it posts
+    // the collected `{path, value}` edits to the host (which holds the config
+    // tree and writes via project_set_scenario_config). Toggling switches the
+    // editor to the raw TOML view. Mirrors the simulation-settings bridge.
+    function buildScenarioConfigDocument(scenario) {
+        const data = scenario && typeof scenario === 'object' ? scenario : {};
+        const config = data.config && typeof data.config === 'object' ? data.config : {};
+        const descriptor = data.descriptor && typeof data.descriptor === 'object' ? data.descriptor : {};
+        const path = trimMaybeString(data.path) || 'rum.toml';
+        const model = trimMaybeString(descriptor.model)
+            || trimMaybeString((config.model || {}).name)
+            || trimMaybeString(data.model);
+        const task = trimMaybeString(descriptor.task) || trimMaybeString((config.rumoca || {}).task) || 'simulate';
+        const fields = flattenScenarioConfig(config);
+        fields.forEach((field, index) => {
+            field.index = index;
+        });
+        const sections = new Map();
+        for (const field of fields) {
+            if (!sections.has(field.section)) {
+                sections.set(field.section, []);
+            }
+            sections.get(field.section).push(field);
+        }
+        const sectionMarkup = [...sections.keys()]
+            .sort((a, b) => scenarioConfigSectionRank(a) - scenarioConfigSectionRank(b) || a.localeCompare(b))
+            .map((section) => {
+                const rows = sections
+                    .get(section)
+                    .map((field) => scenarioConfigFieldMarkup(field, field.index))
+                    .join('');
+                return `
+      <section class="card">
+        <h3>${escapeHtml(section)}</h3>
+        <div class="grid">${rows}</div>
+      </section>`;
+            })
+            .join('');
+        const initialStateJson = escapeInlineScriptJson(JSON.stringify({ path, fields }));
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rumoca Config: ${escapeHtml(model || path)}</title>
+  <style>
+    :root { --pad: 16px; --radius: 8px; --muted: var(--vscode-descriptionForeground, #9da5b4); --ok: var(--vscode-testing-iconPassed, #73c991); --error: var(--vscode-errorForeground, #f48771); }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: var(--vscode-font-family, system-ui, sans-serif); color: var(--vscode-foreground, #d4d4d4); background: var(--vscode-editor-background, #1e1e1e); }
+    .page { padding: var(--pad); display: grid; gap: 12px; }
+    .header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .title { font-size: 16px; font-weight: 700; margin: 0; }
+    .subtitle { color: var(--muted); font-size: 12px; }
+    .actions { display: flex; gap: 8px; }
+    button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); cursor: pointer; }
+    button.ghost { background: transparent; color: var(--vscode-foreground, #d4d4d4); border-color: var(--vscode-input-border, #3c3c3c); }
+    .card { border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: var(--radius); padding: 12px; background: var(--vscode-sideBar-background, #252526); }
+    .card h3 { margin: 0 0 10px 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .field { display: grid; gap: 4px; }
+    label { font-size: 12px; font-weight: 600; }
+    input, textarea { width: 100%; box-sizing: border-box; background: var(--vscode-input-background, #313131); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: 6px; padding: 6px; }
+    input[type="checkbox"] { width: auto; }
+    .status { font-size: 12px; min-height: 16px; }
+    .status.ok { color: var(--ok); } .status.error { color: var(--error); }
+    .empty { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="header">
+      <div>
+        <p class="title">${escapeHtml(model || 'Scenario')} <span class="subtitle">(${escapeHtml(task)})</span></p>
+        <div class="subtitle">${escapeHtml(path)}</div>
+      </div>
+      <div class="actions">
+        <button id="saveBtn">Save</button>
+        <button id="rawBtn" class="ghost">Raw TOML</button>
+      </div>
+    </div>
+    <div id="status" class="status"></div>
+    ${sectionMarkup || '<div class="empty">This rum.toml has no editable fields yet. Use the lightning-bolt action on a model, or switch to the raw TOML view.</div>'}
+  </div>
+  <script>
+    const initialState = ${initialStateJson};
+    const fields = Array.isArray(initialState.fields) ? initialState.fields : [];
+    const path = String(initialState.path || 'rum.toml');
+    const statusEl = document.getElementById('status');
+    const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
+    const pendingRequests = new Map();
+    let nextRequestId = 1;
+    const browserHost = (() => {
+      const own = globalThis.RumocaScenarioConfigHost;
+      if (own && typeof own.request === 'function') return own;
+      try {
+        const parentHost = globalThis.parent && globalThis.parent !== globalThis
+          ? globalThis.parent.RumocaScenarioConfigHost : null;
+        if (parentHost && typeof parentHost.request === 'function') return parentHost;
+      } catch (_error) { return null; }
+      return null;
+    })();
+
+    function requestHost(method, payload) {
+      if (browserHost) return Promise.resolve(browserHost.request(method, payload));
+      if (!vscodeApi) return Promise.reject(new Error('config host unavailable'));
+      const requestId = String(nextRequestId++);
+      return new Promise((resolve, reject) => {
+        pendingRequests.set(requestId, { resolve, reject });
+        vscodeApi.postMessage({ command: 'scenarioConfig.request', requestId, method, payload });
+      });
+    }
+
+    window.addEventListener('message', (event) => {
+      const message = event && event.data ? event.data : {};
+      if (message.command !== 'scenarioConfig.response') return;
+      const pending = pendingRequests.get(String(message.requestId || ''));
+      if (!pending) return;
+      pendingRequests.delete(String(message.requestId));
+      if (message.ok === false) pending.reject(new Error(String(message.error || 'config host request failed')));
+      else pending.resolve(message.value);
+    });
+
+    function setStatus(text, level) {
+      statusEl.textContent = text || '';
+      statusEl.classList.remove('ok', 'error');
+      if (level) statusEl.classList.add(level);
+    }
+
+    function collectEdits() {
+      const edits = [];
+      for (const field of fields) {
+        const el = document.querySelector('[data-field="' + field.index + '"]');
+        if (!el) continue;
+        let value;
+        if (field.kind === 'boolean') {
+          value = el.checked;
+        } else if (field.kind === 'number') {
+          const parsed = Number(el.value);
+          value = Number.isFinite(parsed) ? parsed : field.value;
+        } else if (field.kind === 'json') {
+          try { value = JSON.parse(el.value); } catch (_error) { value = field.value; }
+        } else {
+          value = el.value;
+        }
+        edits.push({ path: field.path, value });
+      }
+      return edits;
+    }
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      try {
+        setStatus('Saving…');
+        await requestHost('save', { path, edits: collectEdits() });
+        setStatus('Saved', 'ok');
+      } catch (error) {
+        setStatus(String(error && error.message ? error.message : error), 'error');
+      }
+    });
+    document.getElementById('rawBtn').addEventListener('click', () => {
+      requestHost('toggleRaw', { path }).catch(() => {});
+    });
+  </script>
+</body>
+</html>`;
+    }
+
     return {
         buildHostedResultsPanelState,
         flattenScenarioConfig,
         setScenarioConfigValue,
         applyScenarioConfigEdits,
+        buildScenarioConfigDocument,
         buildHostedResultsPanelTitle,
         buildLatestSimulationResultsIndexDocument,
         buildVisualizationModel,

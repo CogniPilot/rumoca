@@ -69,7 +69,31 @@ function undefinedEditDeletesKey() {
   assert(configTree.sim.mode === "realtime", "expected original tree unchanged");
 }
 
+function documentRendersSectionsAndControls() {
+  const html = shared.buildScenarioConfigDocument({
+    path: "rum.Rover.toml",
+    config: configTree,
+    descriptor: { model: "Rover", task: "simulate" },
+  });
+  assert(typeof html === "string" && html.includes("<!DOCTYPE html>"), "expected an HTML document");
+  assert(html.includes("Rover"), "expected the model name in the header");
+  assert(html.includes(">sim<") || html.includes(">sim</h3>"), "expected a sim section card");
+  assert(html.includes(">signals<") || html.includes("signals"), "expected the interactive signals section");
+  assert(html.includes('id="saveBtn"'), "expected a Save button");
+  assert(html.includes('id="rawBtn"'), "expected a Raw TOML toggle");
+  assert(html.includes("RumocaScenarioConfigHost"), "expected the host bridge");
+  // Deeply nested IO leaf must be rendered as an editable field.
+  assert(html.includes("keyboard.keys.ArrowUp.value"), "expected nested IO leaf label");
+}
+
+function documentHandlesEmptyConfig() {
+  const html = shared.buildScenarioConfigDocument({ path: "rum.toml", config: {} });
+  assert(html.includes("no editable fields"), "expected an empty-state message");
+}
+
 flattenExposesNestedLeaves();
 editsApplyByPathAndPreserveSiblings();
 undefinedEditDeletesKey();
+documentRendersSectionsAndControls();
+documentHandlesEmptyConfig();
 console.log("scenario_config_form_smoke: ok");
