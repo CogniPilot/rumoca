@@ -75,6 +75,16 @@ export const patchWasmPackageJson = async (pkgDir, variant) => {
     pkg.exports["./gpu"] = { import: "./rumoca_gpu.js" };
     addFile("rumoca_gpu.js");
   }
+  // Lazy diffsol (stiff/implicit) addon, exposed as `@cognipilot/rumoca/diffsol`
+  // (only present in the full-web build). The driver is the entry point; it
+  // lazy-loads the separate relaxed-SIMD addon module on demand.
+  if (await exists(path.join(pkgDir, "rumoca_diffsol.js"))) {
+    pkg.exports["./diffsol"] = { import: "./rumoca_diffsol.js" };
+    addFile("rumoca_diffsol.js");
+    addFile("rumoca_bind_wasm_diffsol.js");
+    addFile("rumoca_bind_wasm_diffsol_bg.wasm");
+    addFile("rumoca_bind_wasm_diffsol.d.ts");
+  }
   if (await exists(path.join(pkgDir, "rumoca_worker.js"))) {
     addFile("rumoca_worker.js");
   }
