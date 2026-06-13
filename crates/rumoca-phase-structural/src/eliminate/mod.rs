@@ -25,6 +25,7 @@ mod scalar_shape;
 mod solve_for_unknown;
 mod substitution_application;
 mod tearing_elimination;
+mod unknown_index;
 
 use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_contains_unknown};
 use runtime_known::singular_rows_are_runtime_known_assignments;
@@ -41,6 +42,10 @@ use substitution_application::{
     apply_substitutions_to_remaining_once, equation_analysis_expr,
 };
 use tearing_elimination::tear_and_eliminate_loop_block;
+use unknown_index::{
+    BoundaryUnknownIndex, checked_count_live_unknowns, find_live_scalar_unknowns,
+    has_any_live_unknown,
+};
 
 use crate::variable_scope::{DaeVariableScope, DaeVariableShape, scalar_count_from_dims};
 use crate::{BltBlock, EquationRef, StructuralError, UnknownId, sort_dae};
@@ -93,7 +98,7 @@ pub struct EliminationResult {
 struct ZeroUnknownEliminationCtx<'a> {
     dae: &'a Dae,
     state_names: &'a [VarName],
-    all_unknowns: &'a [VarName],
+    unknown_index: &'a BoundaryUnknownIndex<'a>,
     resolved: &'a HashSet<VarName>,
     runtime_protected_unknowns: &'a IndexSet<String>,
     runtime_defined_discrete_targets: &'a HashSet<String>,
@@ -191,6 +196,7 @@ fn eliminate_trace_enabled() -> bool {
 /// ODE equations (containing `der(state)`) are always skipped.
 fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, StructuralError> {
     let all_unknowns = collect_boundary_unknowns(dae)?;
+    let unknown_index = BoundaryUnknownIndex::build(dae, &all_unknowns)?;
     let runtime_protected_unknowns = runtime_protected_unknown_names(dae);
     let runtime_defined_discrete_targets = runtime_defined_discrete_target_names(dae);
 
@@ -202,7 +208,7 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
     let mut eliminated_eq_indices: Vec<usize> = Vec::new();
     let mut eliminated_eq_flags = vec![false; dae.continuous.equations.len()];
 
-    let eq_order = boundary_equation_order(dae, &all_unknowns, &resolved)?;
+    let eq_order = boundary_equation_order(dae, &unknown_index, &resolved)?;
 
     for (eq_idx, _) in eq_order {
         if eliminated_eq_flags[eq_idx] {
@@ -216,7 +222,7 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
             .starts_with("connection equation:");
 
         // Re-count live unknowns (may have decreased due to prior resolutions).
-        let live: Vec<VarName> = find_live_scalar_unknowns(&eq_rhs, &all_unknowns, &resolved, dae)?;
+        let live: Vec<VarName> = find_live_scalar_unknowns(&eq_rhs, &unknown_index, &resolved)?;
 
         if should_skip_connection_equation(
             dae,
@@ -244,7 +250,7 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
             let mut zero_unknown_ctx = ZeroUnknownEliminationCtx {
                 dae,
                 state_names: &state_names,
-                all_unknowns: &all_unknowns,
+                unknown_index: &unknown_index,
                 resolved: &resolved,
                 runtime_protected_unknowns: &runtime_protected_unknowns,
                 runtime_defined_discrete_targets: &runtime_defined_discrete_targets,
@@ -289,14 +295,13 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
 
 fn boundary_equation_order(
     dae: &Dae,
-    all_unknowns: &[VarName],
+    unknown_index: &BoundaryUnknownIndex<'_>,
     resolved: &HashSet<VarName>,
 ) -> Result<Vec<(usize, usize)>, StructuralError> {
     let mut eq_order: Vec<(usize, usize)> = (0..dae.continuous.equations.len())
         .map(|eq_idx| {
             let expr = equation_analysis_expr(&dae.continuous.equations[eq_idx]);
-            checked_count_live_unknowns(&expr, all_unknowns, resolved, dae)
-                .map(|count| (eq_idx, count))
+            checked_count_live_unknowns(&expr, unknown_index, resolved).map(|count| (eq_idx, count))
         })
         .collect::<Result<_, StructuralError>>()?;
     eq_order.sort_by_key(|&(_, count)| count);
@@ -570,7 +575,7 @@ fn try_eliminate_zero_unknown_equation(
         .any(|sn| expr_contains_var(eq_rhs, sn));
     if has_state_derivative
         || references_state_value
-        || has_any_live_unknown(eq_rhs, ctx.all_unknowns, ctx.resolved, ctx.dae)?
+        || has_any_live_unknown(eq_rhs, ctx.unknown_index, ctx.resolved)?
         || expr_contains_indexed_multiscalar_ref(eq_rhs, ctx.dae)?
     {
         return Ok(());
@@ -927,63 +932,7 @@ fn is_symbolically_stable_solution(expr: &Expression) -> bool {
     }
 }
 
-fn checked_count_live_unknowns(
-    expr: &Expression,
-    all_unknowns: &[VarName],
-    resolved: &HashSet<VarName>,
-    dae: &Dae,
-) -> Result<usize, StructuralError> {
-    let mut var_refs = Vec::new();
-    collect_var_ref_nodes(expr, &mut var_refs);
-    let mut count = 0usize;
-    for unknown in all_unknowns {
-        if !resolved.contains(unknown) && refs_contain_unknown(&var_refs, unknown, dae)? {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn has_any_live_unknown(
-    expr: &Expression,
-    all_unknowns: &[VarName],
-    resolved: &HashSet<VarName>,
-    dae: &Dae,
-) -> Result<bool, StructuralError> {
-    let mut var_refs = Vec::new();
-    collect_var_ref_nodes(expr, &mut var_refs);
-    for unknown in all_unknowns {
-        if !resolved.contains(unknown) && refs_contain_unknown(&var_refs, unknown, dae)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Find the live scalar unknowns referenced by an expression.
-fn find_live_scalar_unknowns(
-    expr: &Expression,
-    all_unknowns: &[VarName],
-    resolved: &HashSet<VarName>,
-    dae: &Dae,
-) -> Result<Vec<VarName>, StructuralError> {
-    let mut var_refs = Vec::new();
-    collect_var_ref_nodes(expr, &mut var_refs);
-    let mut live = Vec::new();
-    let scope = DaeVariableScope::new(dae);
-    for unknown in all_unknowns {
-        if resolved.contains(unknown) || !refs_contain_unknown(&var_refs, unknown, dae)? {
-            continue;
-        }
-        let is_scalar = scope.size(unknown)? == 1;
-        if is_scalar {
-            live.push(unknown.clone());
-        }
-    }
-    Ok(live)
-}
-
-fn collect_var_ref_nodes(
+pub(super) fn collect_var_ref_nodes(
     expr: &Expression,
     out: &mut Vec<(Reference, Vec<rumoca_core::Subscript>)>,
 ) {
@@ -999,23 +948,6 @@ fn collect_var_ref_nodes(
     }
 
     Collector { out }.visit_expression(expr);
-}
-
-fn refs_contain_unknown(
-    refs: &[(Reference, Vec<rumoca_core::Subscript>)],
-    unknown: &VarName,
-    dae: &Dae,
-) -> Result<bool, StructuralError> {
-    for (name, subscripts) in refs {
-        if var_ref_mentions_unknown_for_presence(name, subscripts.as_slice(), unknown, dae)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn unknown_scalar_size(dae: &Dae, unknown: &VarName) -> Result<usize, StructuralError> {
-    DaeVariableScope::new(dae).size(unknown)
 }
 
 fn dae_var_size(dae: &Dae, name: &VarName) -> Result<usize, StructuralError> {
@@ -1073,30 +1005,6 @@ fn array_expr_dims(elements: &[Expression], is_matrix: bool) -> Vec<i64> {
         _ => return vec![elements.len() as i64],
     };
     vec![elements.len() as i64, cols as i64]
-}
-
-fn var_ref_mentions_unknown_for_presence(
-    name: &Reference,
-    subscripts: &[rumoca_core::Subscript],
-    unknown: &VarName,
-    dae: &Dae,
-) -> Result<bool, StructuralError> {
-    if var_ref_matches_unknown(name, subscripts, unknown) {
-        return Ok(true);
-    }
-
-    // MLS §10.6 / SPEC_0019: array equations stay aggregate before
-    // scalarization. Any indexed or sliced reference to an aggregate unknown is
-    // still a live reference to that unknown at this phase.
-    if unknown_scalar_size(dae, unknown)? <= 1 {
-        return Ok(false);
-    }
-    let scope = DaeVariableScope::new(dae);
-    if scope.is_indexed_component_variable(unknown) {
-        return Ok(false);
-    }
-
-    Ok(scope.reference_shares_component_base(name, unknown))
 }
 
 // ── Phase B: BLT Scalar-Block Elimination ───────────────────────────────

@@ -8,7 +8,7 @@ fn normalize_newlines(input: &str) -> String {
     input.replace("\r\n", "\n")
 }
 
-fn builtin_template(target: &str, template: &str) -> &'static str {
+pub(super) fn builtin_template(target: &str, template: &str) -> &'static str {
     crate::templates::builtin_target(target)
         .and_then(|target| target.template_source(template))
         .expect("built-in target template must exist")
@@ -34,7 +34,7 @@ fn solve_problem_with_one_by_one_matmul_derivative() -> solve::SolveProblem {
     problem
 }
 
-fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::SolveProblem {
+pub(super) fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::SolveProblem {
     let mut problem = solve::SolveProblem::default();
     problem.continuous.derivative_rhs = solve::ComputeBlock {
         nodes: vec![solve::ComputeNode::LinSolve {

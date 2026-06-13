@@ -327,6 +327,11 @@ fn resolve_pre_targets(
     dae: &dae::Dae,
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
 ) -> Result<(), ToDaeError> {
+    // The scalarized-field fallback used to scan (and path-parse) every
+    // variable per unresolved target, which is quadratic when many
+    // parameter-dependent relations create pre() targets. Build the
+    // (prefix, field) -> candidates index once, on first need.
+    let mut scalarized_index = None;
     for (target_name, target) in targets {
         if let Some((partition, _)) = find_variable_partition(dae, target_name) {
             if target.require_discrete {
@@ -340,8 +345,9 @@ fn resolve_pre_targets(
             target.source_name = target_name.clone();
             continue;
         }
+        let index = scalarized_index.get_or_insert_with(|| build_scalarized_field_index(dae));
         if let Some(source_name) =
-            singleton_scalarized_field_name(dae, target_name, target.require_discrete)
+            singleton_scalarized_field_name(index, target_name, target.require_discrete)
         {
             target.source_name = source_name;
             continue;
@@ -357,57 +363,62 @@ fn resolve_pre_targets(
     Ok(())
 }
 
+type ScalarizedFieldIndex =
+    std::collections::HashMap<(String, String), Vec<(rumoca_core::VarName, bool)>>;
+
+/// One pass over all variables: candidates keyed by (subscript-stripped
+/// prefix base name, last field segment), tagged with whether their
+/// partition is a valid pre() target.
+fn build_scalarized_field_index(dae: &dae::Dae) -> ScalarizedFieldIndex {
+    struct Collector {
+        index: ScalarizedFieldIndex,
+    }
+    impl DaeVisitor for Collector {
+        fn visit_variable(
+            &mut self,
+            partition: dae::DaeVariablePartition,
+            name: &rumoca_core::VarName,
+            _variable: &dae::Variable,
+        ) {
+            let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
+            let Some((field, prefix_parts)) = path.parts().split_last() else {
+                return;
+            };
+            let candidate_prefix =
+                rumoca_core::ComponentPath::from_parts(prefix_parts.iter().cloned());
+            let Some(prefix_base) =
+                rumoca_core::component_path_base_name(candidate_prefix.as_str())
+            else {
+                return;
+            };
+            self.index
+                .entry((prefix_base, field.as_str().to_string()))
+                .or_default()
+                .push((name.clone(), is_pre_target_partition(partition)));
+        }
+    }
+    let mut collector = Collector {
+        index: ScalarizedFieldIndex::new(),
+    };
+    collector.visit_variables(&dae.variables);
+    collector.index
+}
+
 fn singleton_scalarized_field_name(
-    dae: &dae::Dae,
+    index: &ScalarizedFieldIndex,
     target_name: &rumoca_core::VarName,
     require_discrete: bool,
 ) -> Option<rumoca_core::VarName> {
     let (prefix, field) = target_name.scope_split()?;
-    let mut collector = ScalarizedFieldCandidateCollector {
-        prefix,
-        field,
-        require_discrete,
-        candidates: Vec::new(),
-    };
-    collector.visit_variables(&dae.variables);
-    match collector.candidates.as_slice() {
-        [name] => Some(name.clone()),
+    let candidates = index.get(&(prefix.to_string(), field.to_string()))?;
+    let mut matches = candidates
+        .iter()
+        .filter(|(_, pre_ok)| !require_discrete || *pre_ok)
+        .map(|(name, _)| name);
+    match (matches.next(), matches.next()) {
+        (Some(name), None) => Some(name.clone()),
         _ => None,
     }
-}
-
-struct ScalarizedFieldCandidateCollector<'a> {
-    prefix: &'a str,
-    field: &'a str,
-    require_discrete: bool,
-    candidates: Vec<rumoca_core::VarName>,
-}
-
-impl DaeVisitor for ScalarizedFieldCandidateCollector<'_> {
-    fn visit_variable(
-        &mut self,
-        partition: dae::DaeVariablePartition,
-        name: &rumoca_core::VarName,
-        _variable: &dae::Variable,
-    ) {
-        if (!self.require_discrete || is_pre_target_partition(partition))
-            && scalarized_field_name_matches(name.as_str(), self.prefix, self.field)
-        {
-            self.candidates.push(name.clone());
-        }
-    }
-}
-
-fn scalarized_field_name_matches(candidate: &str, prefix: &str, field: &str) -> bool {
-    let path = rumoca_core::ComponentPath::from_flat_path(candidate);
-    let Some((candidate_field, prefix_parts)) = path.parts().split_last() else {
-        return false;
-    };
-    if candidate_field.as_str() != field {
-        return false;
-    }
-    let candidate_prefix = rumoca_core::ComponentPath::from_parts(prefix_parts.iter().cloned());
-    rumoca_core::component_path_base_name(candidate_prefix.as_str()).as_deref() == Some(prefix)
 }
 
 /// Snapshot parameter for `pre(<source>)`: copies the source variable's

@@ -225,11 +225,10 @@ impl<'a> LowerBuilder<'a> {
         if let Some(shape) = self.layout.shape(name_text) {
             return Ok(shape.to_vec());
         }
-        let indexed_dims = infer_indexed_dims(&indexed_entries_for_reference(
-            &self.indexed_bindings,
-            name,
-            span,
-        )?);
+        let indexed_dims = indexed_key_for_reference(&self.indexed_bindings, name, span)?
+            .and_then(|key| self.indexed_meta_for_key(&key))
+            .map(|meta| meta.dims.clone())
+            .unwrap_or_default();
         if !indexed_dims.is_empty() {
             return Ok(indexed_dims);
         }

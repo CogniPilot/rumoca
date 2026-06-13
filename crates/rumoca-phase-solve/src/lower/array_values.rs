@@ -161,21 +161,80 @@ fn infer_dims_from_index_sets(index_sets: impl IntoIterator<Item = Vec<usize>>) 
     dims
 }
 
+/// One-pass parent-to-direct-children index over layout binding names,
+/// mirroring `scope_key_direct_child_suffix` for generated keys: a binding
+/// `<parent>.<seg>` is a direct child of `<parent>` when `<seg>` contains
+/// neither `.` nor `[`.
+fn build_scalarized_children_index(
+    layout: &VarLayout,
+) -> IndexMap<String, Vec<(ComponentReferenceKey, String)>> {
+    let mut index: IndexMap<String, Vec<(ComponentReferenceKey, String)>> = IndexMap::new();
+    for name in layout.bindings().keys() {
+        let Some(dot) = name.rfind('.') else {
+            continue;
+        };
+        let segment = &name[dot + 1..];
+        if segment.is_empty() || segment.contains('[') {
+            continue;
+        }
+        index
+            .entry(name[..dot].to_string())
+            .or_default()
+            .push((generated_scope_key(name.clone()), name.clone()));
+    }
+    index
+}
+
+/// Row-major cartesian product over per-dimension sorted selections,
+/// collecting the entries present in the indexed metadata. Enumerating the
+/// product directly replaces the previous whole-group filter walk, which
+/// was quadratic in array size.
+fn collect_selected_indexed_entries(
+    normalized: &[Vec<usize>],
+    meta: &crate::lower::IndexedMeta,
+    entries: &[IndexedBinding],
+) -> Vec<IndexedBinding> {
+    let mut selected = Vec::new();
+    if normalized.iter().any(|selection| selection.is_empty()) {
+        return selected;
+    }
+    let mut cursor = vec![0usize; normalized.len()];
+    loop {
+        let indices = cursor
+            .iter()
+            .zip(normalized)
+            .map(|(at, selection)| selection[*at])
+            .collect::<Vec<_>>();
+        if let Some(&position) = meta.by_indices.get(&indices) {
+            selected.push(entries[position].clone());
+        }
+        if !advance_row_major(&mut cursor, normalized) {
+            break;
+        }
+    }
+    selected
+}
+
+/// Advance a row-major odometer (last dimension fastest); false on wrap.
+fn advance_row_major(cursor: &mut [usize], dims: &[Vec<usize>]) -> bool {
+    let mut dim = dims.len();
+    while dim > 0 {
+        dim -= 1;
+        cursor[dim] += 1;
+        if cursor[dim] < dims[dim].len() {
+            return true;
+        }
+        cursor[dim] = 0;
+    }
+    false
+}
+
 fn expr_span_from_subscripts(subscripts: &[rumoca_core::Subscript]) -> rumoca_core::Span {
     subscripts
         .iter()
         .map(rumoca_core::Subscript::span)
         .find(|span| !span.is_dummy())
         .unwrap_or(rumoca_core::Span::DUMMY)
-}
-
-fn indexed_entry_matches_selections(entry: &IndexedBinding, selections: &[Vec<usize>]) -> bool {
-    entry.indices.len() == selections.len()
-        && entry
-            .indices
-            .iter()
-            .zip(selections)
-            .all(|(index, selection)| selection.contains(index))
 }
 
 fn collect_indexed_record_field_keys(
@@ -1193,6 +1252,21 @@ impl<'a> LowerBuilder<'a> {
         keys
     }
 
+    /// Index from a parent binding path to its direct scalarized children.
+    ///
+    /// Mirrors `scope_key_direct_child_suffix` for generated keys: a binding
+    /// `<parent>.<seg>` is a direct child of `<parent>` when `<seg>` contains
+    /// neither `.` nor `[`. Built once per lowering; the previous full scan
+    /// of `layout.bindings()` per reference was quadratic in model size.
+    fn scalarized_children_index(
+        &mut self,
+    ) -> &IndexMap<String, Vec<(ComponentReferenceKey, String)>> {
+        if self.scalarized_children_index.is_none() {
+            self.scalarized_children_index = Some(build_scalarized_children_index(self.layout));
+        }
+        self.scalarized_children_index.as_ref().expect("just built")
+    }
+
     fn lower_scalarized_component_values(
         &mut self,
         base_key: &ComponentReferenceKey,
@@ -1206,16 +1280,25 @@ impl<'a> LowerBuilder<'a> {
             })
             .collect::<IndexMap<_, _>>();
 
-        let child_paths = self
-            .layout
-            .bindings()
-            .keys()
-            .filter_map(|name| {
-                let key = generated_scope_key(name);
-                scope_key_direct_child_suffix(&key, base_key)?;
-                (!values.contains_key(&key)).then_some((key, name.clone()))
-            })
-            .collect::<Vec<_>>();
+        // Bindings are keyed by generated names, so only a generated base
+        // key can have binding children (matching the Generated/Generated
+        // arm of `scope_key_direct_child_suffix`).
+        let child_paths = match generated_scope_key_name(base_key) {
+            Some(base_name) => {
+                let base_name = base_name.to_string();
+                self.scalarized_children_index()
+                    .get(&base_name)
+                    .map(|children| {
+                        children
+                            .iter()
+                            .filter(|(key, _)| !values.contains_key(key))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
 
         for (key, name) in child_paths {
             let slot = self
@@ -1274,6 +1357,22 @@ impl<'a> LowerBuilder<'a> {
         self.load_binding_keys(&keys)
     }
 
+    /// Cached per-key indexed metadata (dims + indices lookup), built once.
+    fn indexed_meta_for_key(
+        &self,
+        key: &ComponentReferenceKey,
+    ) -> Option<std::sync::Arc<crate::lower::IndexedMeta>> {
+        if let Some(meta) = self.indexed_meta_cache.borrow().get(key) {
+            return Some(meta.clone());
+        }
+        let entries = self.indexed_bindings.get(key)?;
+        let meta = std::sync::Arc::new(crate::lower::IndexedMeta::build(entries));
+        self.indexed_meta_cache
+            .borrow_mut()
+            .insert(key.clone(), meta.clone());
+        Some(meta)
+    }
+
     fn lower_indexed_reference_slice_values(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1281,20 +1380,32 @@ impl<'a> LowerBuilder<'a> {
         span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        let entries = indexed_entries_for_reference(&self.indexed_bindings, name, span)?;
-        if entries.is_empty() {
+        let grouped = self.indexed_bindings.clone();
+        let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
+            return Ok(None);
+        };
+        let Some(meta) = self.indexed_meta_for_key(&key) else {
+            return Ok(None);
+        };
+        if meta.dims.is_empty() {
             return Ok(None);
         }
-        let dims = infer_indexed_dims(&entries);
-        if dims.is_empty() {
-            return Ok(None);
-        }
-        let selections = self.slice_selections(subscripts, &dims, scope)?;
-        let selected_entries = sorted_flat_entries(&entries)
-            .into_iter()
-            .filter(|entry| indexed_entry_matches_selections(entry, &selections))
-            .cloned()
+        let selections = self.slice_selections(subscripts, &meta.dims, scope)?;
+        // Enumerate the selected cells directly (row-major over per-dim
+        // sorted selections) instead of filtering the whole group: the
+        // filter walk was quadratic in array size. Sorting per-dim
+        // reproduces the previous index-sorted output order.
+        let entries = grouped.get(&key).expect("meta implies group presence");
+        let normalized = selections
+            .iter()
+            .map(|selection| {
+                let mut indices = selection.clone();
+                indices.sort_unstable();
+                indices.dedup();
+                indices
+            })
             .collect::<Vec<_>>();
+        let selected_entries = collect_selected_indexed_entries(&normalized, &meta, entries);
         if selected_entries.is_empty() {
             return Err(LowerError::Unsupported {
                 reason: format!(

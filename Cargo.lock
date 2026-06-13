@@ -3240,6 +3240,7 @@ dependencies = [
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-ast",
+ "rumoca-ir-solve",
  "rumoca-sim",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
