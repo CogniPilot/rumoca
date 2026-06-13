@@ -83,6 +83,80 @@ pub fn simulate_with_diagnostics(
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
+/// Simulate an already-lowered [`rumoca_ir_solve::SolveModel`], skipping the
+/// DAE→solve lowering, dispatching by `opts.solver_mode`. This is the
+/// runtime-only entry the lazy diffsol WASM addon uses: the main module emits a
+/// SolveModel, the addon deserializes and simulates it without carrying the
+/// compiler. The skipped (`#[serde(skip)]`) layout fields are lowering-only and
+/// not read here, so a serialized→deserialized SolveModel simulates identically
+/// (pinned by `solve_model_round_trip` in crates/rumoca/tests).
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub fn simulate_solve_model(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    match opts.solver_mode {
+        SimSolverMode::Auto => simulate_solve_model_auto(model, opts),
+        SimSolverMode::RkLike => simulate_solve_model_rk45(model, opts),
+        SimSolverMode::Bdf => simulate_solve_model_diffsol(model, opts),
+    }
+}
+
+#[cfg(feature = "solver-diffsol")]
+fn simulate_solve_model_auto(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    simulate_solve_model_diffsol(model, opts)
+}
+
+#[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
+fn simulate_solve_model_auto(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    simulate_solve_model_rk45(model, opts)
+}
+
+#[cfg(feature = "solver-rk45")]
+fn simulate_solve_model_rk45(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    rumoca_solver_rk45::simulate(model, opts)
+        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+}
+
+#[cfg(not(feature = "solver-rk45"))]
+fn simulate_solve_model_rk45(
+    _model: &rumoca_ir_solve::SolveModel,
+    _opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    Err(SimulationDiagnosticError::Solver(
+        "rk-like solver requested, but this build does not include the rk45 backend".to_string(),
+    ))
+}
+
+#[cfg(feature = "solver-diffsol")]
+fn simulate_solve_model_diffsol(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    rumoca_solver_diffsol::simulate(model, opts)
+        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+}
+
+#[cfg(not(feature = "solver-diffsol"))]
+fn simulate_solve_model_diffsol(
+    _model: &rumoca_ir_solve::SolveModel,
+    _opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    Err(SimulationDiagnosticError::Solver(
+        "bdf/diffsol solver requested, but this build does not include the diffsol backend"
+            .to_string(),
+    ))
+}
+
 /// Simulate, and if it fails with an error that suggests a non-finite
 /// (`NaN`/`inf`) value, automatically re-run once with NaN tracing enabled so
 /// the offending model variable(s) are reported — turning an opaque

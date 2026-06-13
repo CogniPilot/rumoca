@@ -3253,6 +3253,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-bind-wasm-diffsol"
+version = "0.9.1"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "rumoca-ir-solve",
+ "rumoca-solver",
+ "rumoca-solver-diffsol",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "rumoca-codec"
 version = "0.9.1"
 dependencies = [

@@ -134,6 +134,44 @@ const copyEditorWorkers = async (pkgDir) => {
   );
 };
 
+// Build the diffsol (stiff/implicit) addon and ship it inside the same package.
+// It is a SEPARATE wasm module carrying relaxed-SIMD (faer/pulp), loaded lazily
+// by rumoca_diffsol.js only when the browser supports it — so the main module
+// stays SIMD-free / universal. Only meaningful for `full-web` (the package that
+// has the `lower_model_to_solve_json` export the addon consumes); `core` lacks
+// it, so the addon is not shipped there.
+const buildDiffsolAddon = async (pkgDir, args) => {
+  const tmpSubdir = ".diffsol-build";
+  const tmpDir = path.join(pkgRoot, tmpSubdir);
+  const addonArgs = [
+    "build",
+    "crates/rumoca-bind-wasm-diffsol",
+    "--target",
+    "web",
+    "--out-dir",
+    `../../pkg/${tmpSubdir}`,
+    args.profile === "dev" ? "--dev" : "--release",
+  ];
+  if (!args.optimize) {
+    addonArgs.push("--no-opt");
+  }
+  run("wasm-pack", addonArgs);
+  for (const file of [
+    "rumoca_bind_wasm_diffsol.js",
+    "rumoca_bind_wasm_diffsol_bg.wasm",
+    "rumoca_bind_wasm_diffsol.d.ts",
+  ]) {
+    await fs.copyFile(path.join(tmpDir, file), path.join(pkgDir, file));
+  }
+  // The driver (feature-detect + lazy-load + dispatch), exposed as
+  // `@cognipilot/rumoca/diffsol`.
+  await fs.copyFile(
+    path.join(repoRoot, "editors", "wasm", "rumoca_diffsol.js"),
+    path.join(pkgDir, "rumoca_diffsol.js"),
+  );
+  await fs.rm(tmpDir, { recursive: true, force: true });
+};
+
 const copyPackageReadme = async (pkgDir) => {
   await fs.copyFile(
     path.join(repoRoot, "packaging", "npm", "README.md"),
@@ -208,6 +246,11 @@ const main = async () => {
     run("wasm-pack", wasmPackArgs, { env });
     await copyEditorWorkers(pkgDir);
     await copyPackageReadme(pkgDir);
+    // The published `@cognipilot/rumoca` package (full-web) also ships the lazy
+    // diffsol addon; `core` does not (no lowering export to feed it).
+    if (args.variant === "full-web") {
+      await buildDiffsolAddon(pkgDir, args);
+    }
     await fs.writeFile(
       path.join(pkgDir, "rumoca_package_meta.json"),
       `${JSON.stringify({ packageBuiltTimeUtc: nowUtc }, null, 2)}\n`,

@@ -36,8 +36,49 @@ let get_class_info;
 let render_target;
 let simulate_model = null;
 let simulate_model_with_project_sources = null;
+let lower_model_to_solve_json = null;
 let wasmModuleLoaded = false;
 let activeRequestId = null;
+
+// Lazy diffsol (stiff/implicit) addon — a separate relaxed-SIMD module, loaded
+// only when a BDF solve is requested, so this worker (and the package) stay
+// universal. Returns the addon's exports, or rejects on browsers without
+// relaxed-SIMD.
+let diffsolAddonPromise = null;
+function loadDiffsolAddon() {
+    if (!diffsolAddonPromise) {
+        diffsolAddonPromise = (async () => {
+            const mod = await import(withCacheBust('./rumoca_bind_wasm_diffsol.js'));
+            await mod.default();
+            return mod;
+        })();
+        diffsolAddonPromise.catch(() => {
+            diffsolAddonPromise = null;
+        });
+    }
+    return diffsolAddonPromise;
+}
+
+// Run a stiff (BDF/diffsol) simulation: the main module lowers the model to a
+// `{ solve_model, t_end, dt }` payload, the addon simulates it. Returns the
+// same JSON string shape as `simulate_model`.
+async function simulateViaDiffsol(source, model, tEnd, dt) {
+    if (typeof lower_model_to_solve_json !== 'function') {
+        throw new Error('this build cannot lower models for the diffsol addon');
+    }
+    let addon;
+    try {
+        addon = await loadDiffsolAddon();
+    } catch (err) {
+        throw new Error(
+            'the stiff (BDF/diffsol) solver needs a browser with WebAssembly '
+            + 'relaxed-SIMD (Chrome 114+, Firefox 120+, Safari 16.4+). '
+            + `Use RK45 instead. (${err && err.message ? err.message : err})`,
+        );
+    }
+    const prep = lower_model_to_solve_json(source, model, tEnd, dt);
+    return addon.simulate_solve_model_diffsol(prep);
+}
 
 function canUseSharedWasmThreads() {
     return typeof self.crossOriginIsolated === 'boolean'
@@ -80,6 +121,9 @@ async function loadWasmModule() {
     }
     if (typeof mod.simulate_model_with_project_sources === 'function') {
         simulate_model_with_project_sources = mod.simulate_model_with_project_sources;
+    }
+    if (typeof mod.lower_model_to_solve_json === 'function') {
+        lower_model_to_solve_json = mod.lower_model_to_solve_json;
     }
     wasmModuleLoaded = true;
 }
@@ -229,7 +273,18 @@ self.onmessage = async (e) => {
                         if (!simulate_model) {
                             throw new Error('Simulation not available in this WASM build. Rebuild with rumoca-sim (diffsol feature enabled).');
                         }
-                        if (
+                        if ((payload.solver || '') === 'bdf') {
+                            // Stiff path: route to the lazy diffsol addon (the
+                            // main module can't simulate bdf — it has no diffsol
+                            // runtime). Project-local sources aren't supported on
+                            // this path yet.
+                            result = await simulateViaDiffsol(
+                                payload.source || '',
+                                payload.modelName || 'Model',
+                                payload.tEnd || 1.0,
+                                payload.dt || 0,
+                            );
+                        } else if (
                             simulate_model_with_project_sources
                             && typeof payload.projectSources === 'string'
                             && payload.projectSources.trim()
