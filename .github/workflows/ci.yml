@@ -812,6 +812,7 @@ jobs:
           cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_gpu.js" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
           cp -r "pkg/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true

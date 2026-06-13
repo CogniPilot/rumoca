@@ -124,6 +124,11 @@ const copyEditorWorkers = async (pkgDir) => {
     path.join(repoRoot, "editors", "wasm", "parse_worker.js"),
     path.join(pkgDir, "parse_worker.js"),
   );
+  // WebGPU RK4 driver, exposed to consumers as `@cognipilot/rumoca/gpu`.
+  await fs.copyFile(
+    path.join(repoRoot, "editors", "wasm", "rumoca_gpu.js"),
+    path.join(pkgDir, "rumoca_gpu.js"),
+  );
 };
 
 const copyPackageReadme = async (pkgDir) => {
