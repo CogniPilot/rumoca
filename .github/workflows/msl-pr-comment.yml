@@ -4,6 +4,12 @@ on:
   workflow_run:
     workflows: ['CI']
     types: [completed]
+    # This workflow only does work for CI runs triggered by a pull_request (see
+    # the job `if`). workflow_run can't filter on the triggering event type, but
+    # PR runs carry the PR's source branch as head_branch while push-to-main /
+    # tag runs carry 'main' / the tag. Ignoring those stops GitHub from creating
+    # (and listing) a skipped run for every main merge, which was the noise.
+    branches-ignore: ['main']
 
 # Commenting on a pull request through the issues API requires
 # `pull-requests: write` (GitHub returns 403 "Resource not accessible by
