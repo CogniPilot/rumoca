@@ -3659,8 +3659,80 @@ ctx.onFrame = (api) => {
         }
     }
 
+    // --- Scenario config form model (rum.toml dual-view GUI) -----------------
+    // Pure transforms between a rum.toml-as-JSON config tree (from
+    // project_get_scenario_config_full) and a flat list of editable leaf fields,
+    // shared by the config form in both editors. Scalars (string/number/boolean)
+    // are editable leaves; nested tables recurse so the form can group by
+    // top-level section; arrays and other non-scalars are edited as raw JSON
+    // leaves in v1 and refined into richer widgets later.
+
+    function scenarioConfigLeafKind(value) {
+        if (typeof value === 'boolean') return 'boolean';
+        if (typeof value === 'number') return 'number';
+        if (typeof value === 'string') return 'string';
+        return 'json';
+    }
+
+    function flattenScenarioConfig(tree, basePath = []) {
+        const fields = [];
+        if (!tree || typeof tree !== 'object' || Array.isArray(tree)) {
+            return fields;
+        }
+        for (const key of Object.keys(tree)) {
+            const value = tree[key];
+            const path = [...basePath, key];
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+                fields.push(...flattenScenarioConfig(value, path));
+            } else {
+                fields.push({
+                    path,
+                    section: path[0],
+                    key,
+                    label: path.join('.'),
+                    kind: scenarioConfigLeafKind(value),
+                    value,
+                });
+            }
+        }
+        return fields;
+    }
+
+    function setScenarioConfigValue(tree, path, value) {
+        const next = tree && typeof tree === 'object' && !Array.isArray(tree)
+            ? { ...tree }
+            : {};
+        if (!Array.isArray(path) || path.length === 0) {
+            return next;
+        }
+        const [head, ...rest] = path;
+        if (rest.length === 0) {
+            if (value === undefined) {
+                delete next[head];
+            } else {
+                next[head] = value;
+            }
+        } else {
+            next[head] = setScenarioConfigValue(next[head], rest, value);
+        }
+        return next;
+    }
+
+    function applyScenarioConfigEdits(tree, edits) {
+        let next = tree && typeof tree === 'object' && !Array.isArray(tree) ? tree : {};
+        for (const edit of Array.isArray(edits) ? edits : []) {
+            if (edit && Array.isArray(edit.path)) {
+                next = setScenarioConfigValue(next, edit.path, edit.value);
+            }
+        }
+        return next;
+    }
+
     return {
         buildHostedResultsPanelState,
+        flattenScenarioConfig,
+        setScenarioConfigValue,
+        applyScenarioConfigEdits,
         buildHostedResultsPanelTitle,
         buildLatestSimulationResultsIndexDocument,
         buildVisualizationModel,
