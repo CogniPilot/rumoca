@@ -2,9 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 // Published under the @cognipilot org scope. The headline package
-// `@cognipilot/rumoca` is the full build (both solvers, variant `full-web`);
-// `@cognipilot/rumoca-core` is the compile/LSP-only build. Any other variant
-// (only used for local/experimental builds) appends its variant name.
+// `@cognipilot/rumoca` is the browser-safe full build (variant `full-web`:
+// compiler + LSP + all-IR codegen + the rk45 solver runtime);
+// `@cognipilot/rumoca-core` is the same minus the bundled solver runtime. Any
+// other variant (only used for local/experimental builds) appends its name.
 const NPM_SCOPE = "@cognipilot";
 const packageNameForVariant = (variant) => {
   switch (variant) {
