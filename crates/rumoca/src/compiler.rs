@@ -42,7 +42,7 @@ use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
     CodegenError, dae_to_template_json, render_ast_template_with_name,
     render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_flat_template_with_name,
+    render_flat_template_with_name, render_solve_template_with_dae_and_name,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -95,27 +95,11 @@ fn scalarized_dae(dae: &Dae) -> Result<Dae, CodegenError> {
     Ok(dae)
 }
 
-fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
-    let mut value = dae_to_template_json(dae_model)?;
-    let solve =
-        lower_solve_problem(dae_model).map_err(|err| CodegenError::template(err.to_string()))?;
-    let artifacts =
-        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    let mut solve_value =
-        serde_json::to_value(solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    solve_value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("Solve template JSON root must be an object"))?
-        .insert(
-            "artifacts".to_string(),
-            serde_json::to_value(artifacts)
-                .map_err(|err| CodegenError::template(err.to_string()))?,
-        );
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?;
-    object.insert("solve".to_string(), solve_value);
-    Ok(value)
+/// Whether a template references the AD-Jacobian artifacts. Only the AD targets
+/// (casadi, symforce, mlir, fmi3) do; for the rest we skip the (expensive)
+/// `lower_solve_artifacts` build entirely.
+fn template_uses_solve_artifacts(template: &str) -> bool {
+    template.contains("artifacts") || template.contains("jacobian")
 }
 
 fn render_solve_template_with_name(
@@ -124,15 +108,20 @@ fn render_solve_template_with_name(
     model_name: &str,
 ) -> Result<String, CodegenError> {
     let dae = scalarized_dae(dae_model)?;
-    let mut dae_json = dae_to_template_json_with_solve(&dae)?;
-    dae_json
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?
-        .insert(
-            "__ir_kind".to_string(),
-            serde_json::Value::String("solve".to_string()),
-        );
-    render_dae_template_with_json_and_name(&dae_json, template, model_name)
+    // Build the lowered solve IR once and hand it to the codegen crate's lazy
+    // `from_serialize` render path, instead of materializing the whole IR as a
+    // `serde_json::Value` tree (the codegen-context OOM on large scalar models).
+    let solve =
+        lower_solve_problem(&dae).map_err(|err| CodegenError::template(err.to_string()))?;
+    let artifacts = if template_uses_solve_artifacts(template) {
+        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?
+    } else {
+        Default::default()
+    };
+    // The `dae` context object is small (the DAE keeps function calls as calls,
+    // not the lowered scalar ops), so it stays a serde_json::Value.
+    let dae_json = dae_to_template_json(&dae)?;
+    render_solve_template_with_dae_and_name(&dae_json, &solve, &artifacts, template, Some(model_name))
 }
 
 impl CompilationResult {

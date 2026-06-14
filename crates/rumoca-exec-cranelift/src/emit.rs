@@ -1,3 +1,10 @@
+// SPEC_0021 file-size exception: this file bundles the Cranelift JIT emitter,
+// the interpreter fallback, and the multi-output row ABI. It crossed the 2,000
+// line threshold when the multi-output ABI was added.
+// split plan: extract the interpreter (`execute_row` / `execute_simple_row` /
+// `execute_general_row` / `execute_general_op` / `apply_*` and their reg
+// helpers, ~440 lines) into a sibling `emit/interpreter.rs` module; the emitter
+// and ABI plumbing then stay well under the limit.
 use super::CompileError;
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, types};

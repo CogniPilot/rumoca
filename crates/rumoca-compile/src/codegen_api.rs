@@ -53,6 +53,7 @@ pub fn render_ast_template_with_name(
 }
 
 pub use rumoca_phase_codegen::render_solve_template_with_name;
+pub use rumoca_phase_codegen::render_solve_template_with_dae_and_name;
 
 /// Built-in target metadata, re-exported from the codegen crate.
 pub mod templates {
