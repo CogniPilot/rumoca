@@ -1,10 +1,158 @@
 //! C and MLIR rendering for solver-facing row IR.
 
+use std::sync::Arc;
+
 use crate::errors::render_err;
 use minijinja::Value;
+use minijinja::value::{Enumerator, Object, ObjectRepr};
+use rumoca_ir_solve as solve;
 
 use super::render_expr::get_field;
 use super::{RenderResult, value_to_string};
+
+// ─── Typed scalar-program rows ───────────────────────────────────────────────
+//
+// Templates receive scalar-program rows as these objects instead of
+// serde-bridged values: per-row value bridging dominated render time on
+// large models (each access re-serialized op subtrees). The row renderers
+// downcast and walk the typed ops directly; plain-value rows (tests,
+// custom contexts) keep the original walk.
+
+#[derive(Debug)]
+pub(super) struct SolveRowsValue {
+    rows: Arc<Vec<Vec<solve::LinearOp>>>,
+}
+
+impl SolveRowsValue {
+    pub(super) fn new(rows: Vec<Vec<solve::LinearOp>>) -> Self {
+        Self {
+            rows: Arc::new(rows),
+        }
+    }
+}
+
+impl Object for SolveRowsValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        (index < self.rows.len()).then(|| {
+            Value::from_object(SolveRowValue {
+                rows: self.rows.clone(),
+                index,
+            })
+        })
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.rows.len())
+    }
+}
+
+/// Affine row families exposed to templates as a typed sequence; each
+/// element is a `SolveStencilValue` the stencil renderer can downcast.
+#[derive(Debug)]
+pub(super) struct SolveStencilsValue {
+    families: Arc<Vec<super::stencil::AffineRowFamily>>,
+}
+
+impl SolveStencilsValue {
+    pub(super) fn new(families: Vec<super::stencil::AffineRowFamily>) -> Self {
+        Self {
+            families: Arc::new(families),
+        }
+    }
+}
+
+impl Object for SolveStencilsValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        (index < self.families.len()).then(|| {
+            Value::from_object(SolveStencilValue {
+                families: self.families.clone(),
+                index,
+            })
+        })
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.families.len())
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct SolveStencilValue {
+    families: Arc<Vec<super::stencil::AffineRowFamily>>,
+    index: usize,
+}
+
+impl SolveStencilValue {
+    fn family(&self) -> &super::stencil::AffineRowFamily {
+        &self.families[self.index]
+    }
+}
+
+impl Object for SolveStencilValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        match key.as_str()? {
+            "start_row" => Some(Value::from(self.family().start_row)),
+            "count" => Some(Value::from(self.family().count)),
+            _ => None,
+        }
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Str(&["start_row", "count"])
+    }
+}
+
+/// Template function: render a stencil family as a WGSL expression
+/// parametric in the kernel-local row offset `r`.
+pub(super) fn render_solve_stencil_wgsl_function(stencil: Value, config: Value) -> RenderResult {
+    let Some(stencil) = stencil.downcast_object_ref::<SolveStencilValue>() else {
+        return Err(render_err(
+            "render_solve_stencil_wgsl expects a stencil from solve_blocks",
+        ));
+    };
+    render_stencil_family_expr_wgsl(stencil.family(), &config)
+}
+
+#[derive(Debug)]
+pub(super) struct SolveRowValue {
+    rows: Arc<Vec<Vec<solve::LinearOp>>>,
+    index: usize,
+}
+
+impl SolveRowValue {
+    fn ops(&self) -> &[solve::LinearOp] {
+        &self.rows[self.index]
+    }
+}
+
+impl Object for SolveRowValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        self.ops().get(index).map(Value::from_serialize)
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.ops().len())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct MatMulRenderShape {
@@ -444,6 +592,11 @@ pub(super) fn render_solve_row_c_function(row: Value, config: Value) -> RenderRe
     render_solve_row_c(&row, &cfg)
 }
 
+pub(super) fn render_solve_row_wgsl_function(row: Value, config: Value) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_row_for(&row, &cfg, SolveRowDialect::Wgsl)
+}
+
 pub(super) fn render_solve_row_rust_function(row: Value, config: Value) -> RenderResult {
     let cfg = SolveRowCConfig::from_value(&config);
     render_solve_row_for(&row, &cfg, SolveRowDialect::Rust)
@@ -748,6 +901,9 @@ fn render_solve_row_for(
     cfg: &SolveRowCConfig,
     dialect: SolveRowDialect,
 ) -> RenderResult {
+    if let Some(typed) = row.downcast_object_ref::<SolveRowValue>() {
+        return render_solve_row_typed(typed.ops(), cfg, dialect);
+    }
     let mut regs = Vec::<String>::new();
     let mut output = None;
     let iter = row
@@ -757,6 +913,190 @@ fn render_solve_row_for(
         output = render_solve_op_for(&op, cfg, dialect, &mut regs, output)?;
     }
     output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
+}
+
+/// Render an affine row family as one WGSL expression parametric in the
+/// row offset `r` (a `u32` in the emitting kernel): loads with stride 0
+/// keep their literal index; stride 1 renders `base + r`; larger strides
+/// render `base + r * stride`.
+fn render_stencil_family_expr_wgsl(
+    family: &super::stencil::AffineRowFamily,
+    config: &Value,
+) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(config);
+    let mut overrides = std::collections::HashMap::new();
+    for &(position, stride) in &family.load_strides {
+        if stride == 0 {
+            continue;
+        }
+        let (pattern_is_y, base_index) = match &family.base_ops[position] {
+            solve::LinearOp::LoadY { index, .. } => (true, *index),
+            solve::LinearOp::LoadP { index, .. } => (false, *index),
+            other => {
+                return Err(render_err(format!(
+                    "stencil stride targets a non-load op: {other:?}"
+                )));
+            }
+        };
+        let index_expr = if stride == 1 {
+            format!("{base_index}u + r")
+        } else {
+            format!("{base_index}u + r * {stride}u")
+        };
+        let access = if pattern_is_y {
+            cfg.y_access_expr(&index_expr)
+        } else {
+            cfg.p_access_expr(&index_expr)
+        };
+        overrides.insert(position, access);
+    }
+    render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+}
+
+fn render_solve_row_typed(
+    ops: &[solve::LinearOp],
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+) -> RenderResult {
+    render_solve_row_typed_with_overrides(ops, &std::collections::HashMap::new(), cfg, dialect)
+}
+
+/// Typed row render where selected load ops (by op position) use a caller
+/// provided access expression instead of their literal index — the
+/// mechanism behind parametric stencil-kernel emission.
+fn render_solve_row_typed_with_overrides(
+    ops: &[solve::LinearOp],
+    access_overrides: &std::collections::HashMap<usize, String>,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut output = None;
+    for (position, op) in ops.iter().enumerate() {
+        if let Some(access) = access_overrides.get(&position) {
+            let dst = match op {
+                solve::LinearOp::LoadY { dst, .. } | solve::LinearOp::LoadP { dst, .. } => *dst,
+                other => {
+                    return Err(render_err(format!(
+                        "stencil access override targets a non-load op: {other:?}"
+                    )));
+                }
+            };
+            store_solve_reg(regs.as_mut(), dst as usize, access.clone());
+            continue;
+        }
+        output = render_solve_op_typed(op, cfg, dialect, &mut regs, output)?;
+    }
+    output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
+}
+
+/// Typed twin of `render_solve_op_for`. The textual output must stay
+/// byte-identical to the value-walk path (`{:?}` on f64 prints the same
+/// shortest round-trip form serde_json uses; non-finite constants render
+/// as the dialect infinity, matching serde_json's null for non-finite).
+fn render_solve_op_typed(
+    op: &solve::LinearOp,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    regs: &mut Vec<String>,
+    output: Option<String>,
+) -> Result<Option<String>, minijinja::Error> {
+    use solve::LinearOp;
+    match op {
+        LinearOp::Const { dst, value } => {
+            let text = if value.is_finite() {
+                format!("{value:?}")
+            } else {
+                dialect.infinity().to_string()
+            };
+            store_solve_reg(regs, *dst as usize, dialect.format_const(text));
+        }
+        LinearOp::LoadTime { dst } => {
+            store_solve_reg(regs, *dst as usize, cfg.time.clone());
+        }
+        LinearOp::LoadY { dst, index } => {
+            store_solve_reg(regs, *dst as usize, cfg.y_access(*index));
+        }
+        LinearOp::LoadP { dst, index } => {
+            store_solve_reg(regs, *dst as usize, cfg.p_access(*index));
+        }
+        LinearOp::LoadSeed { dst, index } => {
+            let Some(seed) = cfg.seed_access(*index) else {
+                return Err(render_err(
+                    "LoadSeed requires a `seed` access pattern in solve-row C output",
+                ));
+            };
+            store_solve_reg(regs, *dst as usize, seed);
+        }
+        LinearOp::Move { dst, src } => {
+            let value = solve_reg(regs, *src as usize)?;
+            store_solve_reg(regs, *dst as usize, value);
+        }
+        LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start,
+            rhs_start,
+            n,
+            component,
+        } => {
+            let expr = dialect.render_linear_solve_component(
+                regs,
+                *matrix_start as usize,
+                *rhs_start as usize,
+                *n,
+                *component,
+            )?;
+            store_solve_reg(regs, *dst as usize, expr);
+        }
+        LinearOp::Unary { dst, op, arg } => {
+            let arg = solve_reg(regs, *arg as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_unary(&format!("{op:?}"), arg)?,
+            );
+        }
+        LinearOp::Binary { dst, op, lhs, rhs } => {
+            let lhs = solve_reg(regs, *lhs as usize)?;
+            let rhs = solve_reg(regs, *rhs as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_binary(&format!("{op:?}"), lhs, rhs)?,
+            );
+        }
+        LinearOp::Compare { dst, op, lhs, rhs } => {
+            let lhs = solve_reg(regs, *lhs as usize)?;
+            let rhs = solve_reg(regs, *rhs as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_compare(&format!("{op:?}"), lhs, rhs)?,
+            );
+        }
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => {
+            let cond = solve_reg(regs, *cond as usize)?;
+            let if_true = solve_reg(regs, *if_true as usize)?;
+            let if_false = solve_reg(regs, *if_false as usize)?;
+            store_solve_reg(
+                regs,
+                *dst as usize,
+                dialect.render_select(cond, if_true, if_false),
+            );
+        }
+        LinearOp::StoreOutput { src } => {
+            return Ok(Some(solve_reg(regs, *src as usize)?));
+        }
+        other => {
+            return Err(render_err(format!("unsupported solve LinearOp: {other:?}")));
+        }
+    }
+    Ok(output)
 }
 
 fn render_solve_op_c(
@@ -788,7 +1128,7 @@ fn solve_op_expr(
 ) -> Result<SolveOpEffect, minijinja::Error> {
     if let Ok(value) = get_field(op, "Const") {
         let dst = solve_field_usize(&value, "dst")?;
-        let expr = solve_const_value_string(&value, dialect.infinity())?;
+        let expr = dialect.format_const(solve_const_value_string(&value, dialect.infinity())?);
         return Ok(SolveOpEffect::Compute { dst, expr });
     }
     if let Ok(value) = get_field(op, "LoadTime") {
@@ -865,7 +1205,7 @@ fn solve_op_expr(
         let rhs = solve_reg(regs, solve_field_usize(&value, "rhs")?)?;
         return Ok(SolveOpEffect::Compute {
             dst,
-            expr: render_solve_compare(&op, lhs, rhs)?,
+            expr: dialect.render_compare(&op, lhs, rhs)?,
         });
     }
     if let Ok(value) = get_field(op, "Select") {
@@ -875,7 +1215,7 @@ fn solve_op_expr(
         let if_false = solve_reg(regs, solve_field_usize(&value, "if_false")?)?;
         return Ok(SolveOpEffect::Compute {
             dst,
-            expr: format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))"),
+            expr: dialect.render_select(cond, if_true, if_false),
         });
     }
     if let Ok(value) = get_field(op, "StoreOutput") {
@@ -1032,6 +1372,9 @@ fn solve_op_read_regs(op: &Value) -> Result<Vec<usize>, minijinja::Error> {
 enum SolveRowDialect {
     C,
     Rust,
+    /// WGSL compute-shader dialect (WebGPU). f32 baseline precision; boolean
+    /// values keep the numeric 0.0/1.0 encoding via `select`.
+    Wgsl,
 }
 
 impl SolveRowDialect {
@@ -1039,6 +1382,48 @@ impl SolveRowDialect {
         match self {
             Self::C => "INFINITY",
             Self::Rust => "f64::INFINITY",
+            // WGSL has no portable infinity literal; f32::MAX approximates it.
+            Self::Wgsl => "3.4028235e38",
+        }
+    }
+
+    /// WGSL rejects abstract-int/float mixing in some positions; force float
+    /// form for integer-looking constants. C and Rust are unchanged.
+    fn format_const(self, value: String) -> String {
+        match self {
+            Self::C | Self::Rust => value,
+            Self::Wgsl => {
+                let looks_integer = !value.is_empty()
+                    && !value.contains(['.', 'e', 'E'])
+                    && value
+                        .strip_prefix('-')
+                        .unwrap_or(&value)
+                        .chars()
+                        .all(|c| c.is_ascii_digit());
+                if looks_integer {
+                    format!("{value}.0")
+                } else {
+                    value
+                }
+            }
+        }
+    }
+
+    fn render_compare(self, op: &str, lhs: String, rhs: String) -> RenderResult {
+        match self {
+            Self::C | Self::Rust => render_solve_compare(op, lhs, rhs),
+            Self::Wgsl => render_solve_compare_wgsl(op, lhs, rhs),
+        }
+    }
+
+    fn render_select(self, cond: String, if_true: String, if_false: String) -> String {
+        match self {
+            Self::C | Self::Rust => {
+                format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))")
+            }
+            Self::Wgsl => {
+                format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
+            }
         }
     }
 
@@ -1070,6 +1455,10 @@ impl SolveRowDialect {
             Self::Rust => Ok(format!(
                 "rumoca_solve_linear_component(&[{matrix}], &[{rhs}], {n}, {component})"
             )),
+            Self::Wgsl => Err(render_err(
+                "LinearSolveComponent is not supported by the WGSL dialect yet; \
+                 models with implicit linear blocks cannot target wgsl-solve",
+            )),
         }
     }
 
@@ -1077,6 +1466,7 @@ impl SolveRowDialect {
         match self {
             Self::C => render_solve_unary_c(op, arg),
             Self::Rust => render_solve_unary_rust(op, arg),
+            Self::Wgsl => render_solve_unary_wgsl(op, arg),
         }
     }
 
@@ -1084,6 +1474,7 @@ impl SolveRowDialect {
         match self {
             Self::C => render_solve_binary_c(op, lhs, rhs),
             Self::Rust => render_solve_binary_rust(op, lhs, rhs),
+            Self::Wgsl => render_solve_binary_wgsl(op, lhs, rhs),
         }
     }
 
@@ -1092,8 +1483,68 @@ impl SolveRowDialect {
         match self {
             Self::C => format!("\tdouble {name} = {expr};\n"),
             Self::Rust => format!("\tlet {name} = {expr};\n"),
+            Self::Wgsl => format!("\tlet {name} = {expr};\n"),
         }
     }
+}
+
+fn render_solve_unary_wgsl(op: &str, arg: String) -> RenderResult {
+    match op {
+        "Neg" => Ok(format!("(-({arg}))")),
+        "Not" => Ok(format!("select(0.0, 1.0, ({arg}) == 0.0)")),
+        "Abs" => Ok(format!("abs({arg})")),
+        "Sign" => Ok(format!("sign({arg})")),
+        "Sqrt" => Ok(format!("sqrt({arg})")),
+        "Floor" => Ok(format!("floor({arg})")),
+        "Ceil" => Ok(format!("ceil({arg})")),
+        "Trunc" => Ok(format!("trunc({arg})")),
+        "Sin" => Ok(format!("sin({arg})")),
+        "Cos" => Ok(format!("cos({arg})")),
+        "Tan" => Ok(format!("tan({arg})")),
+        "Asin" => Ok(format!("asin({arg})")),
+        "Acos" => Ok(format!("acos({arg})")),
+        "Atan" => Ok(format!("atan({arg})")),
+        "Sinh" => Ok(format!("sinh({arg})")),
+        "Cosh" => Ok(format!("cosh({arg})")),
+        "Tanh" => Ok(format!("tanh({arg})")),
+        "Exp" => Ok(format!("exp({arg})")),
+        "Log" => Ok(format!("log({arg})")),
+        "Log10" => Ok(format!("(log({arg}) / log(10.0))")),
+        _ => Err(render_err(format!("unsupported solve unary op: {op}"))),
+    }
+}
+
+fn render_solve_binary_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
+    match op {
+        "Add" => Ok(format!("(({lhs}) + ({rhs}))")),
+        "Sub" => Ok(format!("(({lhs}) - ({rhs}))")),
+        "Mul" => Ok(format!("(({lhs}) * ({rhs}))")),
+        "Div" => Ok(format!("(({lhs}) / ({rhs}))")),
+        "Pow" => Ok(format!("pow({lhs}, {rhs})")),
+        "And" => Ok(format!(
+            "select(0.0, 1.0, (({lhs}) != 0.0) && (({rhs}) != 0.0))"
+        )),
+        "Or" => Ok(format!(
+            "select(0.0, 1.0, (({lhs}) != 0.0) || (({rhs}) != 0.0))"
+        )),
+        "Atan2" => Ok(format!("atan2({lhs}, {rhs})")),
+        "Min" => Ok(format!("min({lhs}, {rhs})")),
+        "Max" => Ok(format!("max({lhs}, {rhs})")),
+        _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
+    }
+}
+
+fn render_solve_compare_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
+    let op = match op {
+        "Lt" => "<",
+        "Le" => "<=",
+        "Gt" => ">",
+        "Ge" => ">=",
+        "Eq" => "==",
+        "Ne" => "!=",
+        _ => return Err(render_err(format!("unsupported solve compare op: {op}"))),
+    };
+    Ok(format!("select(0.0, 1.0, ({lhs}) {op} ({rhs}))"))
 }
 
 fn render_solve_unary_c(op: &str, arg: String) -> RenderResult {
@@ -1276,6 +1727,14 @@ impl SolveRowCConfig {
 
     fn y_access(&self, index: usize) -> String {
         format_solve_access(&self.y_pattern, index)
+    }
+
+    fn y_access_expr(&self, index_expr: &str) -> String {
+        self.y_pattern.replace("{}", index_expr)
+    }
+
+    fn p_access_expr(&self, index_expr: &str) -> String {
+        self.p_pattern.replace("{}", index_expr)
     }
 
     fn p_access(&self, index: usize) -> String {

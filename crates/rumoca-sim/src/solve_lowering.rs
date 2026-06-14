@@ -49,7 +49,7 @@ impl std::fmt::Display for SimulationDiagnosticError {
 
 impl std::error::Error for SimulationDiagnosticError {}
 
-pub(crate) fn lower_dae_for_simulation(
+pub fn lower_dae_for_simulation(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {

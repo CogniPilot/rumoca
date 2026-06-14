@@ -1600,7 +1600,7 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 0.0
             };
-            self.structural_bindings
+            std::sync::Arc::make_mut(&mut self.structural_bindings)
                 .insert(super::size_binding_key(name, idx + 1), dim);
         }
     }
@@ -1617,7 +1617,7 @@ impl<'a> LowerBuilder<'a> {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.structural_bindings.shift_remove(key.as_str());
+            std::sync::Arc::make_mut(&mut self.structural_bindings).shift_remove(key.as_str());
         }
     }
 

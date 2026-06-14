@@ -401,7 +401,7 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
     )
 }
 
-fn artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
+pub(super) fn artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
     lazy_map(&["continuous"], move |k| {
         (k == "continuous").then(|| {
             let artifacts = artifacts.clone();
@@ -460,6 +460,15 @@ pub(super) fn solve_value(
     )
 }
 
+/// Lazy `nodes` Seq of a `ComputeBlock` (each `ComputeNode` materialized on
+/// demand, with its op lists lazy underneath).
+pub(super) fn nodes_value(block: Arc<solve::ComputeBlock>) -> Value {
+    let len = block.nodes.len();
+    lazy_seq(len, move |i| {
+        compute_node_value(Arc::new(block.nodes[i].clone()))
+    })
+}
+
 /// Lazy `solve_derivative_nodes`: the `nodes` of the continuous derivative block.
 pub(super) fn derivative_nodes_value(problem: Arc<solve::SolveProblem>) -> Value {
     let len = problem.continuous.derivative_rhs.nodes.len();
@@ -468,48 +477,3 @@ pub(super) fn derivative_nodes_value(problem: Arc<solve::SolveProblem>) -> Value
     })
 }
 
-/// Lazy scalar-program view of a `ComputeBlock` (used for `solve_implicit_rows`
-/// and `solve_jacobian_rows`, which are `to_scalar_program_block(block)`).
-pub(super) fn scalarized_block_value(block: Arc<solve::ComputeBlock>) -> Value {
-    scalar_program_block_value(Arc::new(rumoca_eval_solve::to_scalar_program_block(&block)))
-}
-
-/// Lazy `solve_blocks` value (continuous derivative/implicit + artifact jacobian)
-/// matching the eager `solve_template_blocks_value`.
-pub(super) fn solve_blocks_value(
-    problem: Arc<solve::SolveProblem>,
-    artifacts: Arc<solve::SolveArtifacts>,
-) -> Value {
-    lazy_map(&["continuous", "artifacts"], move |k| match k {
-        "continuous" => {
-            let problem = problem.clone();
-            Some(lazy_map(&["implicit_rhs", "derivative_rhs"], move |k| {
-                match k {
-                    "implicit_rhs" => Some(compute_block_value(Arc::new(
-                        problem.continuous.implicit_rhs.clone(),
-                    ))),
-                    "derivative_rhs" => Some(compute_block_value(Arc::new(
-                        problem.continuous.derivative_rhs.clone(),
-                    ))),
-                    _ => None,
-                }
-            }))
-        }
-        "artifacts" => {
-            let artifacts = artifacts.clone();
-            Some(lazy_map(&["continuous"], move |k| {
-                (k == "continuous").then(|| {
-                    let artifacts = artifacts.clone();
-                    lazy_map(&["implicit_jacobian_v"], move |k| {
-                        (k == "implicit_jacobian_v").then(|| {
-                            compute_block_value(Arc::new(
-                                artifacts.continuous.implicit_jacobian_v.clone(),
-                            ))
-                        })
-                    })
-                })
-            }))
-        }
-        _ => None,
-    })
-}

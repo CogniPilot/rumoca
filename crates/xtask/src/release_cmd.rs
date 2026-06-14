@@ -170,13 +170,36 @@ fn run_release_git_commit(root: &Path, version: &str) -> Result<()> {
 }
 
 fn run_release_git_tag(root: &Path, version: &str) -> Result<()> {
-    let mut tag = Command::new("git");
-    tag.arg("tag").arg(format!("v{version}")).current_dir(root);
-    crate::run_status(tag)
+    let tag = format!("v{version}");
+    // Tolerate a re-run (e.g. phase 2 retried) as long as the existing tag still
+    // points at the commit we are about to release.
+    let mut list = Command::new("git");
+    list.arg("tag").arg("--list").arg(&tag).current_dir(root);
+    if !crate::run_capture(list)?.trim().is_empty() {
+        let mut points = Command::new("git");
+        points
+            .arg("tag")
+            .arg("--points-at")
+            .arg("HEAD")
+            .current_dir(root);
+        let at_head = crate::run_capture(points)?;
+        ensure!(
+            at_head.lines().any(|line| line.trim() == tag),
+            "tag {tag} already exists but does not point at HEAD; \
+             delete it or choose a new version"
+        );
+        println!("Tag {tag} already exists at HEAD; reusing it.");
+        return Ok(());
+    }
+    let mut create = Command::new("git");
+    create.arg("tag").arg(&tag).current_dir(root);
+    crate::run_status(create)
 }
 
 fn run_release_git_push(root: &Path, version: &str) -> Result<()> {
-    // Push branch and release tag together so main-push CI can detect the v* tag on this SHA.
+    // Push the bump commit and the release tag together. Heavy build jobs and
+    // deploy are gated to the tag ref (and PRs), so the main-ref run only lints
+    // and tests while the tag-ref run builds and deploys exactly once.
     let mut push_main_and_tag = Command::new("git");
     push_main_and_tag
         .arg("push")
@@ -238,7 +261,28 @@ fn validate_semver(version: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::replace_json_version_line;
+    use super::{normalize_release_flags, replace_json_version_line};
+    use crate::ReleaseArgs;
+
+    fn args() -> ReleaseArgs {
+        ReleaseArgs {
+            version: "1.2.3".to_string(),
+            dry_run: false,
+            allow_dirty: false,
+            commit: false,
+            tag: false,
+            push: false,
+        }
+    }
+
+    #[test]
+    fn push_implies_commit_and_tag() {
+        let mut a = args();
+        a.push = true;
+        normalize_release_flags(&mut a);
+        assert!(a.commit, "--push must commit the bump");
+        assert!(a.tag, "--push must create the tag (pushed alongside main)");
+    }
 
     #[test]
     fn replace_json_version_line_preserves_order_and_updates_version() {

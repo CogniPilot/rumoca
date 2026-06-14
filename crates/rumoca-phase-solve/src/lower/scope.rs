@@ -286,7 +286,7 @@ pub(super) struct MaterializedRecordComponents {
 
 #[derive(Clone)]
 pub(super) struct LocalLowerFrame {
-    pub(super) structural_bindings: IndexMap<String, f64>,
+    pub(super) structural_bindings: std::sync::Arc<IndexMap<String, f64>>,
     pub(super) local_indexed_bindings: IndexMap<String, Vec<LocalIndexedBinding>>,
     pub(super) local_binding_dims: IndexMap<String, Vec<i64>>,
     pub(super) known_empty_local_arrays: IndexSet<String>,

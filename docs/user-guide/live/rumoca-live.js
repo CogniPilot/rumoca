@@ -39,6 +39,11 @@
     let wasmModulePromise = null;
     let wasmRequested = false;
     let languageServicesRegistered = false;
+    // Resolved pkg base URL (where rumoca_bind_wasm.js loaded from); the diffsol
+    // driver + addon sit next to it. Cached the first time the WASM is loaded.
+    let resolvedPkgBase = null;
+    // Cached promise for the diffsol driver module (rumoca_diffsol.js).
+    let diffsolDriverPromise = null;
     const widgets = [];
 
     function bookRoot() {
@@ -96,6 +101,7 @@
             broadcastStatus('Downloading Rumoca WASM (first use on this page)…');
             wasmModulePromise = (async () => {
                 const base = await locatePkgBase();
+                resolvedPkgBase = base;
                 const module = await import(base + 'rumoca_bind_wasm.js');
                 await module.default();
                 return module;
@@ -117,6 +123,20 @@
             );
         }
         return wasmModulePromise;
+    }
+
+    // Lazily import the diffsol driver (rumoca_diffsol.js), which sits next to
+    // the main WASM. It feature-detects relaxed-SIMD and lazy-loads the separate
+    // diffsol addon. Returns null if unavailable (older package without it).
+    function loadDiffsolDriver() {
+        if (!diffsolDriverPromise && resolvedPkgBase) {
+            diffsolDriverPromise = import(resolvedPkgBase + 'rumoca_diffsol.js')
+                .catch(() => {
+                    diffsolDriverPromise = null;
+                    return null;
+                });
+        }
+        return diffsolDriverPromise || Promise.resolve(null);
     }
 
     // -----------------------------------------------------------------
@@ -147,6 +167,11 @@ self.onmessage = async (event) => {
                 throw new Error('prepare_gpu_simulation missing in this WASM build');
             }
             result = rumoca.prepare_gpu_simulation(args.source, args.model);
+        } else if (action === 'update_gpu') {
+            if (typeof rumoca.update_gpu_parameters !== 'function') {
+                throw new Error('update_gpu_parameters missing in this WASM build');
+            }
+            result = rumoca.update_gpu_parameters(args.source, args.model, args.overrides);
         } else if (action === 'dae') {
             const envelope = JSON.parse(rumoca.compile(args.source, args.model));
             const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
@@ -658,23 +683,33 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         const stageModule = await compileGpuModule(device, GPU_STAGE_WGSL, 'rk4-stage');
         const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
-        const chunks = Math.max(layout.chunks | 0, 1);
-        const prefix = layout.kernel_prefix || 'derivative_rhs_chunk';
+        // Kernel inventory: stencil-family kernels + residual chunks from
+        // the layout manifest.
+        if (!Array.isArray(layout.kernels) || layout.kernels.length === 0) {
+            throw new Error(
+                'GPU layout manifest has no kernel inventory; the WASM package '
+                + 'predates stencil emission. Rebuild it from the wgsl-backend '
+                + 'sources (wasm-pack build crates/rumoca-bind-wasm).'
+            );
+        }
+        const kernelList = layout.kernels;
         let pipelinesBuilt = 0;
-        onPhase(`Building GPU pipelines (0/${chunks})`, 0);
+        onPhase(`Building GPU pipelines (0/${kernelList.length})`, 0);
         const derPipelines = await Promise.all(
-            Array.from({ length: chunks }, (_, c) => device.createComputePipelineAsync({
+            kernelList.map((kernel) => device.createComputePipelineAsync({
                 layout: 'auto',
-                compute: { module: derModule, entryPoint: `${prefix}${c}` },
+                compute: { module: derModule, entryPoint: kernel.entry },
             }).then((pipeline) => {
                 pipelinesBuilt += 1;
                 onPhase(
-                    `Building GPU pipelines (${pipelinesBuilt}/${chunks})`,
-                    pipelinesBuilt / chunks
+                    `Building GPU pipelines (${pipelinesBuilt}/${kernelList.length})`,
+                    pipelinesBuilt / kernelList.length
                 );
                 return pipeline;
             }))
         );
+        const kernelWorkgroups = kernelList.map(
+            (kernel) => Math.max(1, Math.ceil((kernel.rows | 0) / 64)));
         const axpyPipeline = await device.createComputePipelineAsync({
             layout: 'auto', compute: { module: stageModule, entryPoint: 'axpy' },
         });
@@ -766,7 +801,7 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
             derPipelines.forEach((pipe, c) => {
                 pass.setPipeline(pipe);
                 pass.setBindGroup(0, derBinds[stage][c]);
-                pass.dispatchWorkgroups(1);
+                pass.dispatchWorkgroups(kernelWorkgroups[c]);
             });
             pass.end();
         };
@@ -1106,10 +1141,48 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // The API handed to editable `js,rumoca-viz` blocks (and used by the
     // built-in `viz-radial` mode). Documented in the user guide.
-    function makeVizApi(payload, container) {
+    function makeVizApi(payload, container, widget) {
         const names = payload.names || [];
         const data = (payload.allData || []).slice(1);
         return {
+            overrides: widget ? { ...widget.paramOverrides } : {},
+            // Slider bound to a scalar parameter: changing it re-settles the
+            // prepared vectors and re-runs (GPU path) without recompiling.
+            // Locked while a simulation is in flight.
+            addTuner(name, opts = {}) {
+                if (!widget) {
+                    return;
+                }
+                const row = document.createElement('div');
+                row.className = 'rumoca-live-tuner';
+                const label = document.createElement('span');
+                label.textContent = opts.label || name;
+                const slider = document.createElement('input');
+                slider.type = 'range';
+                slider.min = String(opts.min ?? 0);
+                slider.max = String(opts.max ?? 1);
+                slider.step = String(opts.step ?? 0.1);
+                slider.value = String(
+                    widget.paramOverrides[name] ?? opts.value ?? opts.min ?? 0);
+                const readout = document.createElement('span');
+                readout.className = 'rumoca-live-status';
+                readout.textContent = slider.value;
+                slider.addEventListener('input', () => {
+                    readout.textContent = slider.value;
+                });
+                // Apply on release: parameters are frozen during a run, so a
+                // change triggers a fresh (fast) run with the new value.
+                slider.addEventListener('change', () => {
+                    if (widget.busy) {
+                        return;
+                    }
+                    widget.paramOverrides[name] = Number(slider.value);
+                    widget.requestRun();
+                });
+                widget.tunerInputs.push(slider);
+                row.append(label, slider, readout);
+                container.appendChild(row);
+            },
             arrayField: () => findRadialField(payload),
             matrixField: () => findMatrixField(payload),
             series: (name) => {
@@ -1135,7 +1208,7 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (!field) {
             return false;
         }
-        const api = makeVizApi(payload, container);
+        const api = makeVizApi(payload, container, null);
         const { vMin, vMax } = valueRange(field.members);
         const size = 280;
         const { ctx2d } = api.makeCanvas(size, size);
@@ -1164,8 +1237,8 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         return true;
     }
 
-    function runCustomViz(container, payload, times, code) {
-        const api = makeVizApi(payload, container);
+    function runCustomViz(container, payload, times, code, widget) {
+        const api = makeVizApi(payload, container, widget);
         const render = new Function(
             '{ payload, times, names, data, container, api }',
             code
@@ -1333,6 +1406,28 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         resetBtn.type = 'button';
         resetBtn.className = 'rumoca-live-button';
         resetBtn.textContent = 'Reset';
+        const solverLabel = document.createElement('label');
+        solverLabel.className = 'rumoca-live-solver';
+        const solverSelect = document.createElement('select');
+        solverSelect.className = 'rumoca-live-solver-select';
+        let bdfOption = null;
+        for (const { value, label } of [
+            { value: '', label: 'Auto' },
+            { value: 'rk-like', label: 'RK45 (explicit)' },
+            { value: 'bdf', label: 'BDF (stiff)' },
+        ]) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = label;
+            if (value === 'bdf') {
+                // Enabled later iff the browser supports the diffsol addon.
+                opt.disabled = true;
+                opt.title = 'Checking browser support…';
+                bdfOption = opt;
+            }
+            solverSelect.appendChild(opt);
+        }
+        solverLabel.append(document.createTextNode('Solver '), solverSelect);
         const gpuLabel = document.createElement('label');
         gpuLabel.className = 'rumoca-live-gpu';
         const gpuCheck = document.createElement('input');
@@ -1342,7 +1437,31 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
-        toolbar.append(runBtn, daeBtn, resetBtn, gpuLabel, status);
+        toolbar.append(runBtn, daeBtn, resetBtn, solverLabel, gpuLabel, status);
+
+        // Enable the stiff (BDF/diffsol) option only when the browser can load
+        // the relaxed-SIMD addon; otherwise leave it greyed out with a reason.
+        async function refreshBdfAvailability() {
+            if (!bdfOption) {
+                return;
+            }
+            const driver = await loadDiffsolDriver();
+            const ok = driver && typeof driver.diffsolAvailable === 'function'
+                ? await driver.diffsolAvailable(resolvedPkgBase)
+                : false;
+            if (ok) {
+                bdfOption.disabled = false;
+                bdfOption.title = 'Stiff/implicit solver (diffsol)';
+            } else {
+                bdfOption.disabled = true;
+                bdfOption.title =
+                    'The stiff (diffsol) solver needs a browser with WebAssembly '
+                    + 'relaxed-SIMD (Chrome 114+, Firefox 120+, Safari 16.4+).';
+                if (solverSelect.value === 'bdf') {
+                    solverSelect.value = '';
+                }
+            }
+        }
 
         const progress = document.createElement('div');
         progress.className = 'rumoca-live-progress';
@@ -1429,8 +1548,18 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
         const widget = {
             busy: false,
             vizEditor: null,
+            gpuPrep: null,
+            paramOverrides: {},
+            tunerInputs: [],
+            requestRun() {
+                if (!widget.busy) {
+                    runBtn.click();
+                }
+            },
             setStatus(text) { status.textContent = text; },
             onWasmReady(wasm) {
+                // Independent of Monaco: enable the BDF option if supported.
+                refreshBdfAvailability();
                 if (!monaco || !editor.model) {
                     return;
                 }
@@ -1469,6 +1598,10 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
             runBtn.disabled = true;
             daeBtn.disabled = true;
             widget.busy = true;
+            // Parameters are frozen during a simulation: lock any tuners.
+            for (const input of widget.tunerInputs) {
+                input.disabled = true;
+            }
             let started = null;
             let succeeded = false;
             try {
@@ -1490,6 +1623,9 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
                 widget.busy = false;
                 runBtn.disabled = false;
                 daeBtn.disabled = false;
+                for (const input of widget.tunerInputs) {
+                    input.disabled = false;
+                }
             }
         };
 
@@ -1524,21 +1660,62 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
                         + 'uncheck GPU to simulate on the CPU (WASM) path.'
                     );
                 }
-                setPhase('Compiling model (Modelica → Solve IR → WGSL)', null);
-                const prep = JSON.parse(await runHeavy(
-                    'prepare_gpu',
-                    { source, model },
-                    () => wasm.prepare_gpu_simulation(source, model)
-                ));
+                let prep;
+                if (widget.gpuPrep && widget.gpuPrep.source === source) {
+                    prep = widget.gpuPrep.prep;
+                } else {
+                    setPhase('Compiling model (Modelica → Solve IR → WGSL)', null);
+                    prep = JSON.parse(await runHeavy(
+                        'prepare_gpu',
+                        { source, model },
+                        () => wasm.prepare_gpu_simulation(source, model)
+                    ));
+                    widget.gpuPrep = { source, prep };
+                }
+                if (Object.keys(widget.paramOverrides).length > 0) {
+                    // Parameter-only change: re-settle the prepared vectors
+                    // in milliseconds instead of re-lowering the model. The
+                    // worker keeps the lowered model from the prepare call.
+                    setPhase('Updating parameters', null);
+                    const overrides = JSON.stringify(widget.paramOverrides);
+                    const updated = JSON.parse(await runHeavy(
+                        'update_gpu',
+                        { source, model, overrides },
+                        () => wasm.update_gpu_parameters(source, model, overrides)
+                    ));
+                    prep = { ...prep, y0: updated.y0, p0: updated.p0 };
+                }
                 const result = await runGpuSimulation(adapter, prep, setPhase);
                 renderRunResult(result);
                 return;
             }
-            // t_end = 0 / dt = 0 / solver = "" defer to the model's
-            // experiment annotation, falling back to runtime defaults. The
-            // call runs in a worker so the page (and progress bar) stay live.
+            if (Object.keys(widget.paramOverrides).length > 0) {
+                throw new Error(
+                    'Parameter sliders drive the GPU fast path; enable the '
+                    + 'GPU checkbox, or edit the parameter in the source and '
+                    + 're-run on the CPU.'
+                );
+            }
+            const solver = solverSelect.value;
+            if (solver === 'bdf') {
+                // Stiff path: the diffsol addon (separate relaxed-SIMD module)
+                // runs on the main thread, like the GPU path. The main module
+                // lowers the model and the addon simulates it. t_end/dt = 0
+                // defer to the model's experiment annotation.
+                const driver = await loadDiffsolDriver();
+                if (!driver || typeof driver.simulateWithDiffsol !== 'function') {
+                    throw new Error('the diffsol (stiff) solver addon is unavailable in this build');
+                }
+                setPhase('Compiling & simulating (stiff · diffsol)', null);
+                const result = await driver.simulateWithDiffsol(wasm, resolvedPkgBase, source, model, 0, 0);
+                renderRunResult(result);
+                return;
+            }
+            // t_end = 0 / dt = 0 defer to the model's experiment annotation,
+            // falling back to runtime defaults. `solver` is "" (auto/annotation)
+            // or "rk-like". Runs in a worker so the page stays live.
             const raw = await runHeavy('simulate', { source, model },
-                () => wasm.simulate_model(source, model, 0, 0, ''));
+                () => wasm.simulate_model(source, model, 0, 0, solver));
             renderRunResult(JSON.parse(raw));
         }));
 
@@ -1553,7 +1730,7 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
                 const custom = document.createElement('div');
                 custom.className = 'rumoca-live-radial';
                 try {
-                    runCustomViz(custom, payload, allData[0], widget.vizEditor.getValue());
+                    runCustomViz(custom, payload, allData[0], widget.vizEditor.getValue(), widget);
                     views.push(custom);
                 } catch (error) {
                     const errBox = document.createElement('pre');

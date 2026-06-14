@@ -45,10 +45,10 @@ pub(crate) struct DerivativeRhsAnalysis {
     states: Vec<StateScalar>,
     equations: Vec<DerivativeEquation>,
     direct_equations: IndexMap<String, usize>,
-    direct_assignments: IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
     component_roots: Vec<usize>,
     components: IndexMap<usize, Vec<usize>>,
-    structural_bindings: IndexMap<String, f64>,
+    structural_bindings: Arc<IndexMap<String, f64>>,
     equation_flags: Vec<bool>,
 }
 
@@ -76,10 +76,10 @@ pub(crate) fn analyze_derivative_rhs(
         states,
         equations,
         direct_equations,
-        direct_assignments,
+        direct_assignments: Arc::new(direct_assignments),
         component_roots,
         components,
-        structural_bindings,
+        structural_bindings: Arc::new(structural_bindings),
         equation_flags,
     })
 }
@@ -233,10 +233,10 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
 
 struct DerivativeRhsLoweringContext<'a> {
     equations: &'a [DerivativeEquation],
-    direct_assignments: &'a IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &'a Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &'a dae::Dae,
     layout: &'a VarLayout,
-    structural_bindings: &'a IndexMap<String, f64>,
+    structural_bindings: &'a Arc<IndexMap<String, f64>>,
     indexed_bindings: &'a IndexedBindingMap,
 }
 
@@ -341,10 +341,10 @@ fn find_component_root(parent: &mut [usize], idx: usize) -> usize {
 fn lower_direct_row(
     equation: &DerivativeEquation,
     state: &StateScalar,
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
@@ -512,10 +512,10 @@ fn lower_row_rhs_expr(
 fn lower_coupled_row(
     state: &StateScalar,
     equations: &[DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let base_rows = coupled_rows_for_base(equations, state);
@@ -545,10 +545,10 @@ fn lower_coupled_row(
 fn lower_linsolve_group(
     states: &[StateScalar],
     equations: &[DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
 ) -> Result<ComputeNode, LowerError> {
     let setup = build_dense_group_solve_setup(
@@ -620,10 +620,10 @@ struct DenseGroupSolveSetup {
 fn build_dense_group_solve_setup(
     states: &[StateScalar],
     equations: &[DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
 ) -> Result<DenseGroupSolveSetup, LowerError> {
     let n = states.len();
@@ -716,10 +716,10 @@ fn derivative_row_key_summary(rows: &[&DerivativeEquation]) -> String {
 fn lower_dense_solve_component(
     state: &StateScalar,
     rows: &[&DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
@@ -787,8 +787,8 @@ fn pack_registers(builder: &mut LowerBuilder<'_>, regs: &[Reg]) -> Reg {
 fn row_builder<'a>(
     dae_model: &'a dae::Dae,
     layout: &'a VarLayout,
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
-    structural_bindings: &IndexMap<String, f64>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &'a IndexedBindingMap,
 ) -> LowerBuilder<'a> {
     LowerBuilder::new_with_metadata(

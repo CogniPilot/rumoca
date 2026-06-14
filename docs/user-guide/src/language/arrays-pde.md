@@ -228,18 +228,30 @@ pure ODE — exactly what the method of lines wants:
   thickness polynomials) get a strong drag term `-sig·V/tau` that drives the
   velocity to zero, so the flow sees a solid body on a plain Cartesian grid.
 
-The angle of attack enters only through the freestream direction `(uin,
-vin)` — edit `aoa` and re-run. This example defaults the **GPU** checkbox
+The freestream is horizontal and the *airfoil itself pitches*: each
+cell's coordinates are rotated into the airfoil frame (`sc` chordwise,
+`nc` chord-normal), so the solid mask turns with the angle of attack the
+way a real wind-tunnel model would. `aoa` is a plain `parameter` — the
+trig stays in the equations rather than being folded into derived
+constants, so changing it only re-settles the algebraic mask. That is
+what the **AoA slider** under the animation does: it overrides the
+parameter on the already-compiled model and re-runs in milliseconds,
+skipping the Modelica→WGSL pipeline entirely. The slider drives the GPU
+fast path and freezes while a run is in flight (on the CPU path, edit
+`aoa` in the source instead).
+
+This example defaults the **GPU** checkbox
 on: the compiler's experimental `wgsl-solve` backend lowers the system to
 WebGPU compute kernels and an in-page RK4 integrator runs them — about
 5× faster than the CPU (WASM) path even on a software GPU adapter. If
 WebGPU is unavailable the run fails with a clear error instead of
 silently falling back (uncheck GPU for the CPU path). GPU v1 runs in
-f32 with events and algebraics frozen at their initial values, which is
-exact for this model's constant geometry masks. The run is an impulsive wind-tunnel start:
+f32 with events and algebraics frozen at their settled initial values,
+which is exact here: the mask depends on parameters only, so it is
+constant during a run. The run is an impulsive wind-tunnel start:
 the field begins at rest and the freestream sweeps in from the inlet and
 far-field boundaries. This is the heaviest example in the book
-(~3,500 unknowns after unrolling): expect the first run to take a while.
+(~4,100 unknowns after unrolling): expect the first run to take a while.
 
 ```modelica,interactive,gpu
 model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penalization"
@@ -248,8 +260,8 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   parameter Real Lx = 4.0 "Domain length [chords]";
   parameter Real Ly = 1.5 "Domain height [chords]";
   parameter Real xle = 1.0 "Leading edge distance from inlet [chords]";
-  parameter Real aoa = 8.0 "Angle of attack [deg]";
-  parameter Real U = 1.0 "Freestream speed";
+  parameter Real aoa = 8.0 "Angle of attack [deg]: the airfoil pitches nose-up";
+  parameter Real U = 1.0 "Freestream speed (horizontal)";
   parameter Real nu = 0.05 "Kinematic viscosity (Re = U/nu = 20)";
   parameter Real cs = 3.0 "Artificial-compressibility wave speed";
   parameter Real tau = 0.02 "Solid penalization time constant [s]";
@@ -260,32 +272,36 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   parameter Real dx = Lx / NX;
   parameter Real dy = Ly / NY;
   parameter Real pi = 3.14159265359;
-  parameter Real uin = U * cos(aoa * pi / 180.0);
-  parameter Real vin = U * sin(aoa * pi / 180.0);
   Real u[NX, NY] "x-velocity";
   Real v[NX, NY] "y-velocity";
   Real q[NX, NY] "pressure / rho";
-  Real s[NX] "Chordwise coordinate of each column";
-  Real ycam[NX] "Camber line height per column";
-  Real ythk[NX] "Half thickness per column";
+  Real sc[NX, NY] "Chordwise coordinate in the pitched airfoil frame";
+  Real nc[NX, NY] "Chord-normal coordinate in the pitched airfoil frame";
   Real sig[NX, NY] "Solid mask (1 inside the airfoil)";
   // States start at rest (default start = 0): an impulsive wind-tunnel
   // start where the freestream sweeps in through the boundary relaxation.
+  // The trig on `aoa` stays in the equations (not in derived parameters)
+  // so the mask follows the parameter at runtime: changing `aoa` only
+  // requires re-settling these algebraics, not recompiling.
 equation
-  // NACA 2412 geometry, evaluated per grid column.
   for i in 1:NX loop
-    s[i] = (i - 0.5) * dx - xle;
-    ycam[i] = if s[i] < 0.0 or s[i] > 1.0 then 0.0
-      elseif s[i] < pc then mc / pc ^ 2 * (2.0 * pc * s[i] - s[i] ^ 2)
-      else mc / (1.0 - pc) ^ 2 * ((1.0 - 2.0 * pc) + 2.0 * pc * s[i] - s[i] ^ 2);
-    // Half thickness, floored to one grid cell so the coarse mask stays closed.
-    ythk[i] = if s[i] < 0.0 or s[i] > 1.0 then 0.0
-      else max(0.8 * dy,
-        5.0 * tk * (0.2969 * sqrt(max(s[i], 0.0)) - 0.1260 * s[i] - 0.3516 * s[i] ^ 2
-                    + 0.2843 * s[i] ^ 3 - 0.1036 * s[i] ^ 4));
     for j in 1:NY loop
-      sig[i, j] = if ythk[i] > 0.0
-          and abs((j - 0.5) * dy - Ly / 2.0 - ycam[i]) <= ythk[i] then 1.0 else 0.0;
+      sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa * pi / 180.0)
+        - ((j - 0.5) * dy - Ly / 2.0) * sin(aoa * pi / 180.0);
+      nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa * pi / 180.0)
+        + ((j - 0.5) * dy - Ly / 2.0) * cos(aoa * pi / 180.0);
+      // Inside when 0 <= sc <= 1 and |nc - camber| <= half thickness
+      // (floored to one grid cell so the coarse mask stays closed).
+      sig[i, j] = if sc[i, j] >= 0.0 and sc[i, j] <= 1.0
+          and abs(nc[i, j]
+            - (if sc[i, j] < pc then mc / pc ^ 2 * (2.0 * pc * sc[i, j] - sc[i, j] ^ 2)
+               else mc / (1.0 - pc) ^ 2
+                 * ((1.0 - 2.0 * pc) + 2.0 * pc * sc[i, j] - sc[i, j] ^ 2)))
+          <= max(0.8 * dy,
+            5.0 * tk * (0.2969 * sqrt(max(sc[i, j], 0.0)) - 0.1260 * sc[i, j]
+                        - 0.3516 * sc[i, j] ^ 2 + 0.2843 * sc[i, j] ^ 3
+                        - 0.1036 * sc[i, j] ^ 4))
+        then 1.0 else 0.0;
     end for;
   end for;
   // Interior: momentum + artificial-compressibility continuity.
@@ -307,10 +323,10 @@ equation
                               + (v[i, j + 1] - v[i, j - 1]) / (2.0 * dy));
     end for;
   end for;
-  // Inlet (left): freestream; pressure zero-gradient.
+  // Inlet (left): horizontal freestream; pressure zero-gradient.
   for j in 1:NY loop
-    der(u[1, j]) = (uin - u[1, j]) / taub;
-    der(v[1, j]) = (vin - v[1, j]) / taub;
+    der(u[1, j]) = (U - u[1, j]) / taub;
+    der(v[1, j]) = (0.0 - v[1, j]) / taub;
     der(q[1, j]) = (q[2, j] - q[1, j]) / taub;
     // Outlet (right): zero-gradient velocities, reference pressure.
     der(u[NX, j]) = (u[NX - 1, j] - u[NX, j]) / taub;
@@ -319,12 +335,12 @@ equation
   end for;
   // Far field (top/bottom): freestream; pressure zero-gradient.
   for i in 2:NX - 1 loop
-    der(u[i, 1]) = (uin - u[i, 1]) / taub;
-    der(v[i, 1]) = (vin - v[i, 1]) / taub;
+    der(u[i, 1]) = (U - u[i, 1]) / taub;
+    der(v[i, 1]) = (0.0 - v[i, 1]) / taub;
     der(q[i, 1]) = (q[i, 2] - q[i, 1]) / taub;
-    der(u[i, NY]) = (uin - u[i, NY]) / taub;
-    der(v[i, NY]) = (vin - v[i, NY]) / taub;
-    der(q[i, NY]) = (q[i, 2] - q[i, NY]) / taub;
+    der(u[i, NY]) = (U - u[i, NY]) / taub;
+    der(v[i, NY]) = (0.0 - v[i, NY]) / taub;
+    der(q[i, NY]) = (q[i, NY - 1] - q[i, NY]) / taub;
   end for;
   annotation(experiment(StopTime = 2.5, Interval = 0.0125, Solver = "rk-like"));
 end AirfoilFlow;
@@ -360,7 +376,11 @@ for (let f = 0; f < times.length; f += 5) {
 const maskFrame = times.length - 1;
 
 // Geometry for the overlay — keep in sync with the model parameters.
+// The slider override (if any) wins so the outline pitches with the mask.
 const geo = { Lx: 4.0, Ly: 1.5, xle: 1.0, mc: 0.02, pc: 0.4, tk: 0.12 };
+const aoa = api.overrides.aoa ?? 8.0;
+const ca = Math.cos(aoa * Math.PI / 180);
+const sa = Math.sin(aoa * Math.PI / 180);
 const camber = (sc) => sc < geo.pc
   ? geo.mc / geo.pc ** 2 * (2 * geo.pc * sc - sc ** 2)
   : geo.mc / (1 - geo.pc) ** 2 * ((1 - 2 * geo.pc) + 2 * geo.pc * sc - sc ** 2);
@@ -375,16 +395,23 @@ const ch = H / NY;
 const px = (x) => (x / geo.Lx) * W;                    // physical x -> canvas
 const py = (y) => H - ((y + geo.Ly / 2) / geo.Ly) * H; // physical y -> canvas
 
+// Airfoil-frame point (sc chordwise, h chord-normal) -> physical x/y,
+// pitched nose-up by aoa about the leading edge (the model's inverse map).
+const fx = (sc, h) => geo.xle + sc * ca + h * sa;
+const fy = (sc, h) => -sc * sa + h * ca;
+
 function drawAirfoil() {
   ctx2d.beginPath();
   for (let k = 0; k <= 60; k++) {            // upper surface, LE -> TE
     const sc = k / 60;
+    const h = camber(sc) + halfThick(sc);
     const fn = k === 0 ? 'moveTo' : 'lineTo';
-    ctx2d[fn](px(geo.xle + sc), py(camber(sc) + halfThick(sc)));
+    ctx2d[fn](px(fx(sc, h)), py(fy(sc, h)));
   }
   for (let k = 60; k >= 0; k--) {            // lower surface, TE -> LE
     const sc = k / 60;
-    ctx2d.lineTo(px(geo.xle + sc), py(camber(sc) - halfThick(sc)));
+    const h = camber(sc) - halfThick(sc);
+    ctx2d.lineTo(px(fx(sc, h)), py(fy(sc, h)));
   }
   ctx2d.closePath();
   ctx2d.fillStyle = '#111';
@@ -410,6 +437,10 @@ api.addAnimation(times, (frame) => {
 }, 10000);
 
 api.addColorbar(0, vMax, api.heatColor);
+
+// Pitch the airfoil without recompiling: overrides the `aoa` parameter on
+// the prepared model, re-settles the mask, and re-runs the GPU integrator.
+api.addTuner('aoa', { min: -10, max: 15, step: 1, value: aoa, label: 'AoA °' });
 ```
 
 In the animation, the black shape is the *true* NACA 2412 contour and the
@@ -420,9 +451,11 @@ over the upper surface (red), and a slow wake trails downstream. The pressure fi
 animation as the most dynamic states) shows the suction side developing —
 the lift. Things to try:
 
-- `aoa = 0.0` — the wake straightens and the up/down asymmetry mostly
-  disappears (the residual comes from camber, which is the *2* in 2412).
-- `aoa = -8.0` — the suction side flips.
+- Slide **AoA** to `0` — the wake straightens and the up/down asymmetry
+  mostly disappears (the residual comes from camber, the *2* in 2412),
+  and the re-run skips compilation entirely.
+- Slide **AoA** negative — the airfoil visibly pitches nose-down and the
+  suction side flips.
 - `nu = 0.02` — less viscosity, sharper wake (drop `Interval` and the
   solver step accordingly if it goes unstable).
 

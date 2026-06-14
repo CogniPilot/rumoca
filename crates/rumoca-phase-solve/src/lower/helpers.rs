@@ -36,29 +36,64 @@ pub(super) fn indexed_entries_for_key(
         .unwrap_or_default()
 }
 
+/// Cached per-key view of an indexed binding group: inferred dims plus an
+/// indices-to-position map over the rank-length entries. Deriving these per
+/// reference (clone + scan + sort of the whole group) was quadratic in
+/// model size for large arrays.
+pub(super) struct IndexedMeta {
+    pub(super) dims: Vec<usize>,
+    pub(super) by_indices: std::collections::HashMap<Vec<usize>, usize>,
+}
+
+impl IndexedMeta {
+    pub(super) fn build(entries: &[IndexedBinding]) -> Self {
+        let dims = infer_indexed_dims(entries);
+        let rank = entries
+            .iter()
+            .map(|entry| entry.indices.len())
+            .max()
+            .unwrap_or(0);
+        let mut by_indices = std::collections::HashMap::with_capacity(entries.len());
+        for (position, entry) in entries.iter().enumerate() {
+            if entry.indices.len() == rank {
+                by_indices.entry(entry.indices.clone()).or_insert(position);
+            }
+        }
+        Self { dims, by_indices }
+    }
+}
+
 pub(super) fn indexed_entries_for_reference(
     grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
     reference: &rumoca_core::Reference,
     span: rumoca_core::Span,
 ) -> Result<Vec<IndexedBinding>, LowerError> {
+    Ok(indexed_key_for_reference(grouped, reference, span)?
+        .and_then(|key| grouped.get(&key).cloned())
+        .unwrap_or_default())
+}
+
+/// Resolve the indexed-binding group key for a reference without cloning
+/// the group. Returns `Ok(None)` when no group exists for the reference.
+pub(super) fn indexed_key_for_reference(
+    grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
+    reference: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+) -> Result<Option<ComponentReferenceKey>, LowerError> {
+    let contained = |key: ComponentReferenceKey| grouped.contains_key(&key).then_some(key);
     if reference.is_generated() {
-        return Ok(grouped
-            .get(&ComponentReferenceKey::generated(reference.as_str()))
-            .cloned()
-            .unwrap_or_default());
+        return Ok(contained(ComponentReferenceKey::generated(
+            reference.as_str(),
+        )));
     }
     let Some(component_ref) = reference.component_ref() else {
         let generated_key = ComponentReferenceKey::generated(reference.as_str());
         #[cfg(test)]
-        if let Some(entries) = grouped.get(&generated_key) {
-            return Ok(entries.clone());
-        }
-        #[cfg(test)]
-        if span.is_dummy() {
-            return Ok(grouped.get(&generated_key).cloned().unwrap_or_default());
+        if grouped.contains_key(&generated_key) || span.is_dummy() {
+            return Ok(contained(generated_key));
         }
         if !grouped.contains_key(&generated_key) {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         return Err(LowerError::ContractViolation {
             reason: format!(
@@ -72,7 +107,7 @@ pub(super) fn indexed_entries_for_reference(
     if let Some(key) =
         crate::test_support::fixture_key_for_component_ref(component_ref, reference.as_str())
     {
-        return Ok(grouped.get(&key).cloned().unwrap_or_default());
+        return Ok(contained(key));
     }
     let key = ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
         LowerError::ContractViolation {
@@ -83,7 +118,7 @@ pub(super) fn indexed_entries_for_reference(
             span: err.span,
         }
     })?;
-    Ok(grouped.get(&key).cloned().unwrap_or_default())
+    Ok(contained(key))
 }
 
 pub(super) fn parse_indexed_binding_key(key: &str) -> Option<(String, Vec<usize>)> {

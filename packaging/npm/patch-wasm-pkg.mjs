@@ -1,7 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const packageNameForVariant = (variant) => (variant === "core" ? "rumoca" : `rumoca-${variant}`);
+// Published under the @cognipilot org scope. The headline package
+// `@cognipilot/rumoca` is the browser-safe full build (variant `full-web`:
+// compiler + LSP + all-IR codegen + the rk45 solver runtime);
+// `@cognipilot/rumoca-core` is the same minus the bundled solver runtime. Any
+// other variant (only used for local/experimental builds) appends its name.
+const NPM_SCOPE = "@cognipilot";
+const packageNameForVariant = (variant) => {
+  switch (variant) {
+    case "full-web":
+      return `${NPM_SCOPE}/rumoca`;
+    case "core":
+      return `${NPM_SCOPE}/rumoca-core`;
+    default:
+      return `${NPM_SCOPE}/rumoca-${variant}`;
+  }
+};
 
 export const patchWasmPackageJson = async (pkgDir, variant) => {
   const pkgJsonPath = path.join(pkgDir, "package.json");
@@ -18,6 +33,9 @@ export const patchWasmPackageJson = async (pkgDir, variant) => {
   };
 
   pkg.name = packageNameForVariant(variant);
+  // Scoped packages default to restricted; force public so `npm publish`
+  // (both the manual scripts and CI) publishes openly without a flag.
+  pkg.publishConfig = { ...(pkg.publishConfig || {}), access: "public" };
   pkg.files = pkg.files || [];
 
   const addFile = (entry) => {
@@ -43,10 +61,30 @@ export const patchWasmPackageJson = async (pkgDir, variant) => {
 
   pkg.main = "rumoca_bind_wasm.js";
   pkg.module = "rumoca_bind_wasm.js";
+  // Subpath exports so the WASM glue and the WebGPU driver are both reachable:
+  //   import init, { prepare_gpu_simulation } from "rumoca";
+  //   import { runGpuSimulation, probeGpu } from "rumoca/gpu";
+  pkg.exports = {
+    ".": { import: "./rumoca_bind_wasm.js", types: "./rumoca_bind_wasm.d.ts" },
+  };
   addFile("rumoca_bind_wasm.js");
   addFile("rumoca_bind_wasm_bg.wasm");
   addFile("rumoca_bind_wasm.d.ts");
 
+  if (await exists(path.join(pkgDir, "rumoca_gpu.js"))) {
+    pkg.exports["./gpu"] = { import: "./rumoca_gpu.js" };
+    addFile("rumoca_gpu.js");
+  }
+  // Lazy diffsol (stiff/implicit) addon, exposed as `@cognipilot/rumoca/diffsol`
+  // (only present in the full-web build). The driver is the entry point; it
+  // lazy-loads the separate relaxed-SIMD addon module on demand.
+  if (await exists(path.join(pkgDir, "rumoca_diffsol.js"))) {
+    pkg.exports["./diffsol"] = { import: "./rumoca_diffsol.js" };
+    addFile("rumoca_diffsol.js");
+    addFile("rumoca_bind_wasm_diffsol.js");
+    addFile("rumoca_bind_wasm_diffsol_bg.wasm");
+    addFile("rumoca_bind_wasm_diffsol.d.ts");
+  }
   if (await exists(path.join(pkgDir, "rumoca_worker.js"))) {
     addFile("rumoca_worker.js");
   }

@@ -337,7 +337,7 @@ impl<'a> LowerBuilder<'a> {
     }
 
     fn compile_time_slice_bindings(&self, _scope: &Scope) -> IndexMap<String, f64> {
-        let mut bindings = self.structural_bindings.clone();
+        let mut bindings = (*self.structural_bindings).clone();
         bindings.extend(self.local_const_bindings.clone());
         bindings
     }

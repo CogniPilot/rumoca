@@ -232,3 +232,16 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
+
+.rumoca-live-tuner {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    margin: 0.4em 0;
+    font-size: 0.85em;
+}
+
+.rumoca-live-tuner input[type="range"] {
+    flex: 1;
+    max-width: 18em;
+}

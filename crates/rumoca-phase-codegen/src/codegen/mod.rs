@@ -29,7 +29,7 @@ use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
     render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
     render_solve_block_rust_function, render_solve_pre_param_binding_c_function,
-    render_solve_row_c_function, render_solve_row_rust_function,
+    render_solve_row_c_function, render_solve_row_rust_function, render_solve_row_wgsl_function,
     render_solve_slot_assign_c_function, solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
@@ -816,112 +816,58 @@ fn render_solve_context(
     artifacts: &solve::SolveArtifacts,
     model_name: Option<&str>,
 ) -> Result<String, CodegenError> {
-    render_solve_context_with_dae(tmpl, solve_problem, artifacts, None, model_name)
-}
-
-fn render_solve_context_with_dae(
-    tmpl: &minijinja::Template<'_, '_>,
-    solve_problem: &solve::SolveProblem,
-    artifacts: &solve::SolveArtifacts,
-    dae_value: Option<Value>,
-    model_name: Option<&str>,
-) -> Result<String, CodegenError> {
-    // Lazy minijinja Objects over the Solve IR (see `solve_lazy`): structural
-    // fields serialize on demand and op lists materialize one op at a time, so a
-    // 150k-op model costs O(one program) at render time instead of ~5 GB of
-    // eager `Value` materialization. `solve_artifacts` and bare `ir` are unused
-    // by every solve template, so they are left undefined.
-    let problem = std::sync::Arc::new(solve_problem.clone());
-    let artifacts = std::sync::Arc::new(artifacts.clone());
-    let solve_value = solve_lazy::solve_value(problem.clone(), artifacts.clone());
-    let solve_blocks = solve_lazy::solve_blocks_value(problem.clone(), artifacts.clone());
-    let derivative_nodes = solve_lazy::derivative_nodes_value(problem.clone());
-    let implicit_rows = solve_lazy::scalarized_block_value(std::sync::Arc::new(
-        problem.continuous.implicit_rhs.clone(),
-    ));
-    let jacobian_rows = solve_lazy::scalarized_block_value(std::sync::Arc::new(
-        artifacts.continuous.implicit_jacobian_v.clone(),
-    ));
-    match model_name {
-        Some(name) => Ok(tmpl.render(minijinja::context! {
-            dae => dae_value,
-            solve => solve_value.clone(),
-            ir => solve_value,
-            ir_kind => "solve",
-            model_name => name,
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => derivative_nodes,
-            solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
-        })?),
-        None => Ok(tmpl.render(minijinja::context! {
-            dae => dae_value,
-            solve => solve_value.clone(),
-            ir => solve_value,
-            ir_kind => "solve",
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => derivative_nodes,
-            solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
-        })?),
-    }
-}
-
-/// Render a solve template with a separately-provided `dae` context object
-/// (small, from `dae_to_template_json`) plus the lowered `SolveProblem` and
-/// `SolveArtifacts` serialized lazily via `from_serialize`. This avoids
-/// materializing the (large) solve IR as a `serde_json::Value` tree, which is
-/// the codegen-context OOM on big scalar models. `model_name` is optional.
-pub fn render_solve_template_with_dae_and_name(
-    dae_json: &serde_json::Value,
-    solve: &solve::SolveProblem,
-    artifacts: &solve::SolveArtifacts,
-    template: &str,
-    model_name: Option<&str>,
-) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-    let tmpl = env.get_template("inline")?;
-    render_solve_context_with_dae(
-        &tmpl,
-        solve,
+    Ok(tmpl.render(solve_render_context_value(
+        solve_problem,
         artifacts,
-        Some(Value::from_serialize(dae_json)),
         model_name,
-    )
+    )?)?)
 }
 
 fn solve_template_blocks_value(
     solve_problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
-) -> Value {
-    // Build the minijinja Value directly via `from_serialize` rather than first
-    // materializing a `serde_json::Value` tree (~10-50x heavier) and converting.
-    // For large scalar models (e.g. the SE2(3) quadrotor, ~150k ops) the
-    // serde_json intermediate is the dominant codegen-context memory cost.
-    minijinja::context! {
+) -> Result<Value, CodegenError> {
+    Ok(minijinja::context! {
         continuous => minijinja::context! {
-            implicit_rhs => solve_template_compute_block_value(&solve_problem.continuous.implicit_rhs),
-            derivative_rhs => solve_template_compute_block_value(&solve_problem.continuous.derivative_rhs),
+            implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
+            derivative_rhs => solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
         },
         artifacts => minijinja::context! {
             continuous => minijinja::context! {
-                implicit_jacobian_v => solve_template_compute_block_value(&artifacts.continuous.implicit_jacobian_v),
-            }
-        }
-    }
+                implicit_jacobian_v => solve_template_compute_block_json(&artifacts.continuous.implicit_jacobian_v)?,
+            },
+        },
+    })
 }
 
-fn solve_template_compute_block_value(block: &solve::ComputeBlock) -> Value {
+fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Value, CodegenError> {
     let scalar_programs = rumoca_eval_solve::to_scalar_program_block(block);
-    minijinja::context! {
-        nodes => Value::from_serialize(&block.nodes),
-        scalar_programs => Value::from_serialize(&scalar_programs),
+    let uses_linear_solve = scalar_program_block_uses_linear_solve_component(&scalar_programs);
+    // Lazy nodes (one ComputeNode -> ops materialized on demand) so blocks whose
+    // nodes contain large op programs don't materialize as eager Values.
+    let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()));
+    let program_spans = Value::from_serialize(&scalar_programs.program_spans);
+    // Affine row families (stencils) let GPU backends emit one parametric
+    // kernel per family instead of one switch case per row; rows not in a
+    // family stay addressable through `stencil_residual_rows`.
+    let partition = stencil::partition_rows(&scalar_programs.programs);
+    let stencil_residual_rows = Value::from_serialize(&partition.residual_rows);
+    let stencils = Value::from_object(render_solve::SolveStencilsValue::new(partition.families));
+    // Rows go to templates as typed objects: per-row serde bridging made
+    // rendering the dominant compile cost on large models.
+    let programs = Value::from_object(render_solve::SolveRowsValue::new(scalar_programs.programs));
+    Ok(minijinja::context! {
+        nodes => nodes,
+        scalar_programs => minijinja::context! {
+            programs => programs,
+            program_spans => program_spans,
+        },
+        stencils => stencils,
+        stencil_residual_rows => stencil_residual_rows,
         output_count => block.len(),
         tensor_node_count => block.tensor_node_count(),
-        scalar_programs_use_linear_solve_component =>
-            scalar_program_block_uses_linear_solve_component(&scalar_programs),
-    }
+        scalar_programs_use_linear_solve_component => uses_linear_solve,
+    })
 }
 
 fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
@@ -1133,7 +1079,7 @@ fn solve_blocks_from_dae_json(dae_json: &serde_json::Value) -> Result<Value, Cod
             message: format!("SolveProblem template context: {err}"),
         })?;
     let artifacts = solve_artifacts_for_template_blocks(solve_json)?;
-    Ok(solve_template_blocks_value(&problem, &artifacts))
+    solve_template_blocks_value(&problem, &artifacts)
 }
 
 fn solve_artifacts_for_template_blocks(
@@ -1234,6 +1180,12 @@ pub fn render_flat_template_with_name(
     render_template_with_name_for_input(CodegenInput::Flat(flat), template, model_name)
 }
 
+/// Reusable solve-template renderer.
+///
+/// Building the template context serializes the full `SolveProblem`; doing
+/// that once and rendering many templates against it is dramatically
+/// cheaper than calling `render_solve_template_with_name` per template on
+/// large models.
 /// Render a solver IR problem using a template string and model name.
 pub fn render_solve_template_with_name(
     solve: &solve::SolveProblem,
@@ -1295,6 +1247,11 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_solve_block_c", render_solve_block_c_function);
     env.add_function("render_solve_block_rust", render_solve_block_rust_function);
     env.add_function("store_output_count", solve_block_output_count_function);
+    env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
+    env.add_function(
+        "render_solve_stencil_wgsl",
+        render_solve::render_solve_stencil_wgsl_function,
+    );
     env.add_function(
         "render_solve_slot_assign_c",
         render_solve_slot_assign_c_function,
@@ -1925,6 +1882,12 @@ mod local_tests {
     }
 }
 
+mod stencil;
+
+mod solve_renderer;
+pub use solve_renderer::SolveTemplateRenderer;
+use solve_renderer::solve_render_context_value;
+
 #[cfg(test)]
 mod codegen_tests;
 #[cfg(test)]
@@ -1933,3 +1896,5 @@ mod codegen_block_render_tests;
 mod fmi_template_tests;
 #[cfg(test)]
 mod strict_render_tests;
+#[cfg(test)]
+mod wgsl_solve_tests;

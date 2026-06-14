@@ -278,7 +278,8 @@ struct ReleaseArgs {
     /// Create git tag vX.Y.Z
     #[arg(long)]
     tag: bool,
-    /// Push main and tag in one git push (implies --commit --tag)
+    /// Push main and tag in one git push (implies --commit --tag). Heavy build
+    /// jobs and deploy are gated to the tag ref, so the release builds once.
     #[arg(long)]
     push: bool,
 }

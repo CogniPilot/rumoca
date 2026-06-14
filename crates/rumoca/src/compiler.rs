@@ -40,9 +40,9 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, dae_to_template_json, render_ast_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
     render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_flat_template_with_name, render_solve_template_with_dae_and_name,
+    render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -70,6 +70,11 @@ pub struct CompilationResult {
     pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
     pub resolved: ResolvedTree,
+    /// Cached solve-template renderer (scalarized DAE + lowered solve
+    /// problem, as typed template values). Building it dominates target
+    /// generation on large models and a multi-file target renders several
+    /// strings against the same input.
+    solve_template_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -95,36 +100,32 @@ fn scalarized_dae(dae: &Dae) -> Result<Dae, CodegenError> {
     Ok(dae)
 }
 
-/// Whether a template references the AD-Jacobian artifacts. Only the AD targets
-/// (casadi, symforce, mlir, fmi3) do; for the rest we skip the (expensive)
-/// `lower_solve_artifacts` build entirely.
-fn template_uses_solve_artifacts(template: &str) -> bool {
-    template.contains("artifacts") || template.contains("jacobian")
-}
-
-fn render_solve_template_with_name(
-    dae_model: &Dae,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    let dae = scalarized_dae(dae_model)?;
-    // Build the lowered solve IR once and hand it to the codegen crate's lazy
-    // `from_serialize` render path, instead of materializing the whole IR as a
-    // `serde_json::Value` tree (the codegen-context OOM on large scalar models).
-    let solve =
-        lower_solve_problem(&dae).map_err(|err| CodegenError::template(err.to_string()))?;
-    let artifacts = if template_uses_solve_artifacts(template) {
-        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?
-    } else {
-        Default::default()
-    };
-    // The `dae` context object is small (the DAE keeps function calls as calls,
-    // not the lowered scalar ops), so it stays a serde_json::Value.
-    let dae_json = dae_to_template_json(&dae)?;
-    render_solve_template_with_dae_and_name(&dae_json, &solve, &artifacts, template, Some(model_name))
+fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
+    let dae = scalarized_dae(dae_model).map_err(CompilerError::TemplateError)?;
+    let problem = lower_solve_problem(&dae)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let artifacts = lower_solve_artifacts(&problem)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
+        .map_err(CompilerError::TemplateError)
 }
 
 impl CompilationResult {
+    pub fn new(
+        dae: Dae,
+        balance_detail: dae_analysis::BalanceDetail,
+        flat: FlatModel,
+        resolved: ResolvedTree,
+    ) -> Self {
+        Self {
+            dae,
+            balance_detail,
+            flat,
+            resolved,
+            solve_template_renderer: std::sync::OnceLock::new(),
+        }
+    }
+
     fn template_json_dae_only(&self) -> Result<Value, CompilerError> {
         dae_to_template_json(&self.dae).map_err(CompilerError::TemplateError)
     }
@@ -335,8 +336,23 @@ impl CompilationResult {
     ) -> Result<String, CompilerError> {
         match ir {
             TemplateIr::Dae => self.render_template_str_with_name(template, model_name),
-            TemplateIr::Solve => render_solve_template_with_name(&self.dae, template, model_name)
-                .map_err(CompilerError::TemplateError),
+            TemplateIr::Solve => {
+                // Build the template context once per compilation, straight
+                // from typed data: the previous path serialized the
+                // scalarized DAE plus the lowered solve problem to JSON and
+                // deserialized the problem back, per compilation - several
+                // seconds of round-trip on large models with the actual
+                // template rendering measured in milliseconds.
+                if self.solve_template_renderer.get().is_none() {
+                    let renderer = build_solve_template_renderer(&self.dae)?;
+                    let _ = self.solve_template_renderer.set(renderer);
+                }
+                self.solve_template_renderer
+                    .get()
+                    .expect("solve template renderer just initialized")
+                    .render_with_name(template, model_name)
+                    .map_err(CompilerError::TemplateError)
+            }
             TemplateIr::Flat => render_flat_template_with_name(&self.flat, template, model_name)
                 .map_err(CompilerError::TemplateError),
             TemplateIr::Ast => {
@@ -721,12 +737,12 @@ impl Compiler {
             eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
-        Ok(CompilationResult {
-            dae: result.dae,
-            balance_detail: result.balance_detail,
-            flat: result.flat,
+        Ok(CompilationResult::new(
+            result.dae,
+            result.balance_detail,
+            result.flat,
             resolved,
-        })
+        ))
     }
 
     /// Compile Modelica source code through the resolved AST stage only.
