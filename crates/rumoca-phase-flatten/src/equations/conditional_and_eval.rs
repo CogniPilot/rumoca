@@ -1,3 +1,5 @@
+// SPEC_0021 file-size exception: split plan is to move focused conditional
+// equation helpers into owned submodules after BOPTEST parity stabilization.
 use super::*;
 use crate::path_utils::split_last_top_level;
 
@@ -402,6 +404,9 @@ pub(crate) fn expand_range_indices(
             }
             Ok(indices)
         }
+        ast::Expression::FunctionCall { comp, args, .. } if is_linspace_function_call(comp) => {
+            expand_linspace_range_indices(ctx, args, prefix, &scope, span)
+        }
         // Handle a single integer as 1:n
         _ => {
             if let Some(n) = try_eval_integer_with_ctx(ctx, range_expr, prefix) {
@@ -417,6 +422,73 @@ pub(crate) fn expand_range_indices(
             }
         }
     }
+}
+
+fn is_linspace_function_call(comp: &ast::ComponentReference) -> bool {
+    comp.parts
+        .last()
+        .is_some_and(|part| part.ident.text.as_ref() == "linspace")
+}
+
+fn expand_linspace_range_indices(
+    ctx: &Context,
+    args: &[ast::Expression],
+    prefix: &QualifiedName,
+    scope: &str,
+    span: rumoca_core::Span,
+) -> Result<Vec<i64>, FlattenError> {
+    if args.len() != 3 {
+        return Err(FlattenError::unsupported_equation(
+            format!("for-equation linspace range requires exactly 3 arguments (scope `{scope}`)"),
+            span,
+        ));
+    }
+
+    let start = try_eval_integer_with_ctx(ctx, &args[0], prefix).ok_or_else(|| {
+        FlattenError::unsupported_equation(
+            format!(
+                "for-equation linspace start must be a constant integer or parameter (scope `{scope}`, got `{}`)",
+                format_subscript_expr(&args[0]),
+            ),
+            span,
+        )
+    })?;
+    let end = try_eval_integer_with_ctx(ctx, &args[1], prefix).ok_or_else(|| {
+        FlattenError::unsupported_equation(
+            format!(
+                "for-equation linspace end must be a constant integer or parameter (scope `{scope}`, got `{}`)",
+                format_subscript_expr(&args[1]),
+            ),
+            span,
+        )
+    })?;
+    let count = try_eval_integer_with_ctx(ctx, &args[2], prefix).ok_or_else(|| {
+        FlattenError::unsupported_equation(
+            format!(
+                "for-equation linspace count must be a constant integer or parameter (scope `{scope}`, got `{}`)",
+                format_subscript_expr(&args[2]),
+            ),
+            span,
+        )
+    })?;
+
+    if count <= 0 {
+        return Err(FlattenError::unsupported_equation(
+            format!("for-equation linspace count must be positive (scope `{scope}`, got {count})"),
+            span,
+        ));
+    }
+    if count == 1 {
+        return Ok(vec![start]);
+    }
+
+    let mut indices = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let numerator = i * (end - start);
+        let value = start + numerator / (count - 1);
+        indices.push(value);
+    }
+    Ok(indices)
 }
 
 /// Try to evaluate an expression to a constant integer, with parameter lookup.
@@ -1758,6 +1830,38 @@ mod tests {
         );
 
         assert_eq!(try_eval_integer_with_ctx(&ctx, &expr, &prefix), Some(2_i64));
+    }
+
+    #[test]
+    fn test_expand_range_indices_supports_linspace_parameter_range() {
+        let mut ctx = Context::new();
+        ctx.parameter_values.insert("plant.m".to_string(), 3_i64);
+
+        let prefix = QualifiedName::from_dotted("plant");
+        let range = make_call(
+            "linspace",
+            vec![
+                make_int(1),
+                ast::Expression::ComponentReference(make_comp_ref("m")),
+                ast::Expression::ComponentReference(make_comp_ref("m")),
+            ],
+        );
+
+        assert_eq!(
+            expand_range_indices(&ctx, &range, &prefix, rumoca_core::Span::DUMMY).unwrap(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn test_lookup_parameter_in_scope_infers_medium_nxi_from_array_dims() {
+        let mut ctx = Context::new();
+        ctx.array_dimensions
+            .insert("m.dynBal.mXi".to_string(), vec![1]);
+
+        let prefix = QualifiedName::from_dotted("m.dynBal");
+        let cref = make_comp_ref("Medium.nXi");
+        assert_eq!(lookup_parameter_in_scope(&ctx, &cref, &prefix), Some(1_i64));
     }
 
     #[test]

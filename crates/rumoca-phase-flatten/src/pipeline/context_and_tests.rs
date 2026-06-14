@@ -1,3 +1,5 @@
+// SPEC_0021 file-size exception: split plan is to move focused pipeline
+// fixtures into owned test modules after BOPTEST parity stabilization.
 use super::*;
 
 #[derive(Clone, Copy)]

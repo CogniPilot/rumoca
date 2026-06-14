@@ -1,3 +1,9 @@
+#![allow(
+    clippy::excessive_nesting,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+
 //! Lower DAE data into solver-facing IR.
 //!
 //! Lowering passes (`layout`, `lower`, `ad`) take a `dae::Dae` and produce

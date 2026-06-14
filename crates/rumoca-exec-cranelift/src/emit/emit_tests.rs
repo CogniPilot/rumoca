@@ -34,6 +34,75 @@ fn plan_row_keeps_seed_rows_on_general_runtime_plan() {
 }
 
 #[test]
+fn plan_row_keeps_external_call_rows_on_general_runtime_plan() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadP { dst: 1, index: 0 },
+        LinearOp::ExternalCall {
+            dst: 2,
+            function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusExchange,
+            args: [0, 1, 0, 0, 0, 0, 0, 0],
+            arg_count: 2,
+            output_index: 0,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+
+    let plan = plan_row(&row).expect("general plan");
+    assert!(matches!(plan, RowPlan::General(_)));
+}
+
+#[test]
+fn external_call_runtime_fails_closed_without_native_bridge() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadP { dst: 1, index: 0 },
+        LinearOp::ExternalCall {
+            dst: 2,
+            function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusExchange,
+            args: [0, 1, 0, 0, 0, 0, 0, 0],
+            arg_count: 2,
+            output_index: 0,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let plan = plan_row(&row).expect("general plan");
+    let mut scratch = Vec::new();
+
+    let err = execute_row(&plan, &mut scratch, &[3.0], &[5.0], 0.0, None, &[])
+        .expect_err("external calls require an explicit native bridge");
+
+    assert!(
+        matches!(err, CompileError::Backend(message) if message.contains("external function BuildingsEnergyPlusExchange")),
+        "external-call error should identify the function"
+    );
+}
+
+#[test]
+fn external_call_requires_initialized_argument_registers() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::ExternalCall {
+            dst: 2,
+            function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusExchange,
+            args: [0, 1, 0, 0, 0, 0, 0, 0],
+            arg_count: 2,
+            output_index: 0,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+
+    let err = match plan_row(&row) {
+        Ok(_) => panic!("undefined external-call arg should be rejected"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, CompileError::Backend(message) if message.contains("undefined register r1"))
+    );
+}
+
+#[test]
 fn compile_residual_rows_accepts_linear_solve_component() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },

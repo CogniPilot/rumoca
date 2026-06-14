@@ -286,7 +286,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
     ("crates/rumoca-eval-dae/src/statement.rs", 1),
     ("crates/rumoca-eval-flat/src/constant/mod.rs", 1),
     ("crates/rumoca-eval-flat/src/constant/function_eval.rs", 2),
-    ("crates/rumoca-eval-flat/src/phase_constant/mod.rs", 10),
+    ("crates/rumoca-eval-flat/src/phase_constant/mod.rs", 12),
     ("crates/rumoca-ir-ast/src/instance.rs", 2),
     ("crates/rumoca-ir-ast/src/lib.rs", 1),
     ("crates/rumoca-ir-ast/src/nodes.rs", 1),
@@ -307,15 +307,15 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
         1,
     ),
     ("crates/rumoca-phase-dae/src/pre_lowering.rs", 1),
-    ("crates/rumoca-phase-dae/src/reference_validation.rs", 14),
+    ("crates/rumoca-phase-dae/src/reference_validation.rs", 17),
     ("crates/rumoca-phase-flatten/src/array_comprehension.rs", 1),
     ("crates/rumoca-phase-flatten/src/ast_lower.rs", 6),
     ("crates/rumoca-phase-flatten/src/boolean_eval.rs", 1),
     (
         "crates/rumoca-phase-flatten/src/connections/equation_generation.rs",
-        1,
+        2,
     ),
-    ("crates/rumoca-phase-flatten/src/connections/mod.rs", 9),
+    ("crates/rumoca-phase-flatten/src/connections/mod.rs", 13),
     (
         "crates/rumoca-phase-flatten/src/connections/path_index.rs",
         10,
@@ -342,7 +342,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
     ),
     (
         "crates/rumoca-phase-flatten/src/pipeline/function_overrides_and_dims.rs",
-        9,
+        11,
     ),
     (
         "crates/rumoca-phase-flatten/src/pipeline/function_overrides_and_dims/flat_rewrite.rs",
@@ -395,15 +395,15 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
     ("crates/rumoca-phase-structural/src/projection_maps.rs", 2),
     ("crates/rumoca-phase-structural/src/runtime_defined.rs", 1),
     ("crates/rumoca-phase-structural/src/scalarize.rs", 2),
-    ("crates/rumoca-phase-typecheck/src/instanced.rs", 2),
+    ("crates/rumoca-phase-typecheck/src/instanced.rs", 3),
     ("crates/rumoca-phase-typecheck/src/lib.rs", 23),
     (
         "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
-        15,
+        16,
     ),
     (
         "crates/rumoca-phase-typecheck/src/typechecker/record_aliases.rs",
-        2,
+        3,
     ),
 ];
 

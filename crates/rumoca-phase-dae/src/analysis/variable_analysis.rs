@@ -971,10 +971,37 @@ fn is_builtin_or_runtime_intrinsic_function(name: &str) -> bool {
 }
 
 pub(crate) fn resolve_flat_function<'a>(name: &str, flat: &'a Model) -> Option<&'a Function> {
-    // Strict lookup only: function calls must already be fully resolved during
-    // compile/lower phases. No suffix/name heuristics here.
     let lookup_name = VarName::new(name);
-    flat.functions.get(&lookup_name)
+    if let Some(function) = flat.functions.get(&lookup_name) {
+        return Some(function);
+    }
+
+    let short_name = final_path_segment(name);
+    let mut matches = flat
+        .functions
+        .iter()
+        .filter(|(candidate, _)| final_path_segment(candidate.as_str()) == short_name)
+        .map(|(_, function)| function);
+    let function = matches.next()?;
+    if matches.next().is_none() {
+        Some(function)
+    } else {
+        None
+    }
+}
+
+fn final_path_segment(path: &str) -> &str {
+    let mut bracket_depth = 0usize;
+    let mut last_boundary = 0usize;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if bracket_depth == 0 => last_boundary = idx + ch.len_utf8(),
+            _ => {}
+        }
+    }
+    &path[last_boundary..]
 }
 
 fn validate_function_call_name(
@@ -1016,6 +1043,7 @@ fn validate_field_access_functions(
     span: Span,
     reachable_calls: &mut Vec<VarName>,
     callable_formals: Option<&HashSet<VarName>>,
+    origin: &str,
 ) -> Result<(), ToDaeError> {
     if let Expression::FunctionCall {
         name,
@@ -1025,7 +1053,14 @@ fn validate_field_access_functions(
     } = base
     {
         for arg in args {
-            validate_flat_expression_functions(arg, flat, span, reachable_calls, callable_formals)?;
+            validate_flat_expression_functions(
+                arg,
+                flat,
+                span,
+                reachable_calls,
+                callable_formals,
+                origin,
+            )?;
         }
 
         let selected_name = if args.is_empty() {
@@ -1085,7 +1120,7 @@ fn validate_field_access_functions(
         return Ok(());
     }
 
-    validate_flat_expression_functions(base, flat, span, reachable_calls, callable_formals)
+    validate_flat_expression_functions(base, flat, span, reachable_calls, callable_formals, origin)
 }
 
 struct FlatFunctionCallValidator<'a> {
@@ -1093,12 +1128,50 @@ struct FlatFunctionCallValidator<'a> {
     inherited_span: Span,
     reachable_calls: &'a mut Vec<VarName>,
     callable_formals: Option<&'a HashSet<VarName>>,
+    origin: String,
 }
 
 impl FlatFunctionCallValidator<'_> {
     fn child_span(&self, expr: &Expression) -> Span {
         expr.span().unwrap_or(self.inherited_span)
     }
+
+    fn maybe_debug_partial_medium_call(&self, name: &rumoca_core::Reference) {
+        if !partial_medium_call_debug_enabled() {
+            return;
+        }
+        let name = name.as_str();
+        if name.contains("Modelica.Media.Interfaces.PartialMedium.specificEnthalpy_pTX")
+            || name.contains("Modelica.Media.Interfaces.PartialMedium.setState_pTX")
+        {
+            log_partial_medium_call_debug(format!(
+                "partial medium call origin={} span={:?} name={}",
+                self.origin, self.inherited_span, name
+            ));
+        }
+    }
+}
+
+fn partial_medium_call_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(
+            target: "rumoca_phase_dae::partial_medium",
+            tracing::Level::DEBUG
+        )
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
+}
+
+fn log_partial_medium_call_debug(message: String) {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(target: "rumoca_phase_dae::partial_medium", message = %message);
+
+    #[cfg(not(feature = "tracing"))]
+    let _ = message;
 }
 
 impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
@@ -1130,6 +1203,7 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
         args: &[Expression],
         is_constructor: bool,
     ) -> Result<(), Self::Error> {
+        self.maybe_debug_partial_medium_call(name);
         if !is_constructor {
             validate_function_call_name(
                 name.as_str(),
@@ -1154,6 +1228,7 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
                 inherited_span: self.child_span(arg),
                 reachable_calls: self.reachable_calls,
                 callable_formals: self.callable_formals,
+                origin: self.origin.clone(),
             };
             child.visit_expression(arg)?;
         }
@@ -1171,6 +1246,7 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
                 inherited_span: self.child_span(arg),
                 reachable_calls: self.reachable_calls,
                 callable_formals: self.callable_formals,
+                origin: self.origin.clone(),
             };
             child.visit_expression(arg)?;
         }
@@ -1186,6 +1262,7 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
             span,
             self.reachable_calls,
             self.callable_formals,
+            &self.origin,
         )
     }
 }
@@ -1198,6 +1275,7 @@ impl FallibleStatementVisitor for FlatFunctionCallValidator<'_> {
             inherited_span,
             reachable_calls: self.reachable_calls,
             callable_formals: self.callable_formals,
+            origin: self.origin.clone(),
         };
         child.walk_statement(stmt)
     }
@@ -1228,6 +1306,7 @@ impl FallibleStatementVisitor for FlatFunctionCallValidator<'_> {
                 inherited_span: self.child_span(arg),
                 reachable_calls: self.reachable_calls,
                 callable_formals: self.callable_formals,
+                origin: self.origin.clone(),
             };
             child.visit_expression(arg)?;
         }
@@ -1241,12 +1320,14 @@ fn validate_flat_expression_functions(
     span: Span,
     reachable_calls: &mut Vec<VarName>,
     callable_formals: Option<&HashSet<VarName>>,
+    origin: &str,
 ) -> Result<(), ToDaeError> {
     let mut validator = FlatFunctionCallValidator {
         flat,
         inherited_span: expr.span().unwrap_or(span),
         reachable_calls,
         callable_formals,
+        origin: origin.to_string(),
     };
     validator.visit_expression(expr)
 }
@@ -1257,12 +1338,14 @@ fn validate_statement_functions(
     span: Span,
     reachable_calls: &mut Vec<VarName>,
     callable_formals: Option<&HashSet<VarName>>,
+    origin: &str,
 ) -> Result<(), ToDaeError> {
     let mut validator = FlatFunctionCallValidator {
         flat,
         inherited_span: statement_span(stmt).unwrap_or(span),
         reachable_calls,
         callable_formals,
+        origin: origin.to_string(),
     };
     validator.visit_statement(stmt)
 }
@@ -1288,17 +1371,25 @@ fn validate_when_equation_functions(
     equation: &rumoca_ir_flat::WhenEquation,
     flat: &Model,
     reachable_calls: &mut Vec<VarName>,
+    origin: &str,
 ) -> Result<(), ToDaeError> {
     match equation {
         rumoca_ir_flat::WhenEquation::Assign { value, span, .. } => {
-            validate_flat_expression_functions(value, flat, *span, reachable_calls, None)?
+            validate_flat_expression_functions(value, flat, *span, reachable_calls, None, origin)?
         }
         rumoca_ir_flat::WhenEquation::Reinit { value, span, .. } => {
-            validate_flat_expression_functions(value, flat, *span, reachable_calls, None)?
+            validate_flat_expression_functions(value, flat, *span, reachable_calls, None, origin)?
         }
         rumoca_ir_flat::WhenEquation::Assert {
             condition, span, ..
-        } => validate_flat_expression_functions(condition, flat, *span, reachable_calls, None)?,
+        } => validate_flat_expression_functions(
+            condition,
+            flat,
+            *span,
+            reachable_calls,
+            None,
+            origin,
+        )?,
         rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
         rumoca_ir_flat::WhenEquation::Conditional {
             branches,
@@ -1307,17 +1398,31 @@ fn validate_when_equation_functions(
             ..
         } => {
             for (condition, equations) in branches {
-                validate_flat_expression_functions(condition, flat, *span, reachable_calls, None)?;
+                validate_flat_expression_functions(
+                    condition,
+                    flat,
+                    *span,
+                    reachable_calls,
+                    None,
+                    origin,
+                )?;
                 for nested in equations {
-                    validate_when_equation_functions(nested, flat, reachable_calls)?;
+                    validate_when_equation_functions(nested, flat, reachable_calls, origin)?;
                 }
             }
             for nested in else_branch {
-                validate_when_equation_functions(nested, flat, reachable_calls)?;
+                validate_when_equation_functions(nested, flat, reachable_calls, origin)?;
             }
         }
         rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, span, .. } => {
-            validate_flat_expression_functions(function, flat, *span, reachable_calls, None)?
+            validate_flat_expression_functions(
+                function,
+                flat,
+                *span,
+                reachable_calls,
+                None,
+                origin,
+            )?
         }
     }
     Ok(())
@@ -1349,7 +1454,7 @@ fn validate_flat_variable_function_calls(
     flat: &Model,
     reachable_calls: &mut Vec<VarName>,
 ) -> Result<(), ToDaeError> {
-    for variable in flat.variables.values() {
+    for (name, variable) in &flat.variables {
         let is_param_or_const = matches!(
             variable.variability,
             rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
@@ -1368,7 +1473,14 @@ fn validate_flat_variable_function_calls(
         .into_iter()
         .flatten()
         {
-            validate_flat_expression_functions(expr, flat, Span::DUMMY, reachable_calls, None)?
+            validate_flat_expression_functions(
+                expr,
+                flat,
+                Span::DUMMY,
+                reachable_calls,
+                None,
+                &format!("variable:{name}"),
+            )?
         }
     }
     Ok(())
@@ -1385,6 +1497,7 @@ fn validate_flat_equation_function_calls(
             equation.span,
             reachable_calls,
             None,
+            &format!("equation:{:?}", equation.origin),
         )?
     }
     Ok(())
@@ -1405,6 +1518,7 @@ fn validate_flat_assertion_function_calls(
             assertion.span,
             reachable_calls,
             None,
+            "assertion:condition",
         )?;
         validate_flat_expression_functions(
             &assertion.message,
@@ -1412,9 +1526,17 @@ fn validate_flat_assertion_function_calls(
             assertion.span,
             reachable_calls,
             None,
+            "assertion:message",
         )?;
         if let Some(level) = &assertion.level {
-            validate_flat_expression_functions(level, flat, assertion.span, reachable_calls, None)?;
+            validate_flat_expression_functions(
+                level,
+                flat,
+                assertion.span,
+                reachable_calls,
+                None,
+                "assertion:level",
+            )?;
         }
     }
     Ok(())
@@ -1431,9 +1553,10 @@ fn validate_flat_when_function_calls(
             when.span,
             reachable_calls,
             None,
+            "when:condition",
         )?;
         for equation in &when.equations {
-            validate_when_equation_functions(equation, flat, reachable_calls)?;
+            validate_when_equation_functions(equation, flat, reachable_calls, "when:equation")?;
         }
     }
     Ok(())
@@ -1445,7 +1568,14 @@ fn validate_flat_algorithm_function_calls(
 ) -> Result<(), ToDaeError> {
     for algorithm in flat.algorithms.iter().chain(flat.initial_algorithms.iter()) {
         for statement in &algorithm.statements {
-            validate_statement_functions(statement, flat, algorithm.span, reachable_calls, None)?;
+            validate_statement_functions(
+                statement,
+                flat,
+                algorithm.span,
+                reachable_calls,
+                None,
+                "algorithm",
+            )?;
         }
     }
     Ok(())
@@ -1481,7 +1611,9 @@ fn validate_reachable_function_bodies(
                     function.span,
                     reachable_calls,
                     callable_formals.as_ref(),
-                )?;
+                    &format!("function-default:{function_name}"),
+                )
+                .map_err(|err| function_body_validation_context(err, function_name.as_str()))?;
             }
         }
         for statement in &function.body {
@@ -1491,10 +1623,22 @@ fn validate_reachable_function_bodies(
                 function.span,
                 reachable_calls,
                 callable_formals.as_ref(),
-            )?
+                &format!("function:{function_name}"),
+            )
+            .map_err(|err| function_body_validation_context(err, function_name.as_str()))?
         }
     }
     Ok(())
+}
+
+fn function_body_validation_context(err: ToDaeError, function_name: &str) -> ToDaeError {
+    match err {
+        ToDaeError::UnresolvedFunctionCall { name, span } => ToDaeError::UnresolvedFunctionCall {
+            name: format!("{name} (while validating reachable function {function_name})"),
+            span,
+        },
+        other => other,
+    }
 }
 
 pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeError> {

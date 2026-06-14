@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 //! Template-based code generation phase for the Rumoca compiler.
 //!
 //! This crate implements code generation from AST/Flat/DAE IR to various

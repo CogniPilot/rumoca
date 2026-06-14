@@ -254,6 +254,10 @@ fn extract_lhs_var_size_from_var_name(
         return Some(count);
     }
 
+    if let Some(size) = resolve_singleton_indexed_lhs_path_size(&var_name, flat, prefix_counts) {
+        return Some(size);
+    }
+
     // Also try progressively stripping subscripts:
     // "port_a[1].T[1]" -> "port_a[1].T" -> "port_a.T"
     for base in subscript_fallback_chain(var_name.as_str()) {

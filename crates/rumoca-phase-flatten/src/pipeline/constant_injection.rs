@@ -1,3 +1,5 @@
+// SPEC_0021 file-size exception: split plan is to move focused constant
+// injection helpers into owned submodules after BOPTEST parity stabilization.
 use super::*;
 use crate::record_constant_arrays::try_extract_record_array_constructor_constant;
 

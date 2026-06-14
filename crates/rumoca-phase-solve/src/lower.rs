@@ -1,4 +1,7 @@
 //! Lower flat expressions and DAE residual rows to linear ops.
+//!
+//! SPEC_0021 file-size exception: split plan is to move focused lowering
+//! helpers into owned submodules after BOPTEST parity stabilization.
 
 use std::sync::Arc;
 
@@ -63,6 +66,23 @@ pub(super) struct IndexedBinding {
 
 pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentPath, Vec<IndexedBinding>>>;
 
+pub(super) type ScalarizedComponentChildSlotMap =
+    Arc<IndexMap<ComponentPath, Vec<(ComponentPath, ScalarSlot)>>>;
+
+pub(super) fn build_scalarized_component_child_slot_map(
+    layout: &VarLayout,
+) -> IndexMap<ComponentPath, Vec<(ComponentPath, ScalarSlot)>> {
+    let mut children = IndexMap::<ComponentPath, Vec<(ComponentPath, ScalarSlot)>>::new();
+    for (name, slot) in layout.bindings() {
+        let path = ComponentPath::from_flat_path(name);
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        children.entry(parent).or_default().push((path, *slot));
+    }
+    children
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalIndexedBinding {
     reg: Reg,
@@ -121,6 +141,25 @@ pub(crate) fn scalarized_record_field_binding_names(
     layout: &VarLayout,
 ) -> Option<Vec<String>> {
     expression_rows::scalarized_record_field_binding_names(base, layout)
+}
+
+fn field_access_root_and_path<'a>(
+    base: &'a rumoca_core::Expression,
+    field: &'a str,
+) -> (&'a rumoca_core::Expression, String) {
+    let mut root = base;
+    let mut fields = vec![field];
+    while let rumoca_core::Expression::FieldAccess {
+        base: nested_base,
+        field: parent_field,
+        ..
+    } = root
+    {
+        fields.push(parent_field.as_str());
+        root = nested_base;
+    }
+    fields.reverse();
+    (root, fields.join("."))
 }
 
 pub fn lower_derivative_rhs(
@@ -266,6 +305,8 @@ struct LowerBuilder<'a> {
     structural_bindings: IndexMap<String, f64>,
     direct_assignments: IndexMap<String, DirectAssignmentValue>,
     direct_assignment_stack: Vec<String>,
+    direct_assignment_value_cache: IndexMap<String, Vec<Reg>>,
+    scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
     indexed_bindings: IndexedBindingMap,
     local_indexed_bindings: IndexMap<String, Vec<LocalIndexedBinding>>,
     local_binding_dims: IndexMap<String, Vec<i64>>,
@@ -275,6 +316,7 @@ struct LowerBuilder<'a> {
     is_initial_mode: bool,
     value_mode: ValueMode,
     current_update_target: Option<ScalarSlot>,
+    current_update_target_name: Option<String>,
     ops: Vec<LinearOp>,
     next_reg: Reg,
     call_site_namespace: u64,
@@ -290,6 +332,7 @@ pub(super) struct LowerBuilderMetadata<'a> {
     pub(super) discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     pub(super) variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
     pub(super) indexed_bindings: Option<&'a IndexedBindingMap>,
+    pub(super) scalarized_component_child_slots: Option<&'a ScalarizedComponentChildSlotMap>,
     pub(super) is_initial_mode: bool,
 }
 
@@ -297,6 +340,15 @@ pub(super) struct LowerBuilderMetadata<'a> {
 enum ValueMode {
     Current,
     Pre,
+}
+
+fn last_one_based_index_in_name(name: &str) -> Option<usize> {
+    let start = name.rfind('[')? + 1;
+    let end = name[start..].find(']')? + start;
+    name[start..end]
+        .parse::<usize>()
+        .ok()
+        .filter(|index| *index > 0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,30 +371,6 @@ impl<'a> LowerBuilder<'a> {
         Self::new_with_metadata(layout, functions, LowerBuilderMetadata::default())
     }
 
-    fn new_with_runtime_metadata(
-        layout: &'a VarLayout,
-        functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-        clock_intervals: &'a IndexMap<String, f64>,
-        clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
-        triggered_clock_conditions: &'a [rumoca_core::Expression],
-        variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
-        is_initial_mode: bool,
-    ) -> Self {
-        Self::new_with_metadata(
-            layout,
-            functions,
-            LowerBuilderMetadata {
-                clock_intervals: Some(clock_intervals),
-                clock_timings: Some(clock_timings),
-                triggered_clock_conditions: Some(triggered_clock_conditions),
-                discrete_valued_names: None,
-                variable_starts: Some(variable_starts),
-                indexed_bindings: None,
-                is_initial_mode,
-            },
-        )
-    }
-
     fn new_with_metadata(
         layout: &'a VarLayout,
         functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -359,6 +387,11 @@ impl<'a> LowerBuilder<'a> {
             structural_bindings: IndexMap::new(),
             direct_assignments: IndexMap::new(),
             direct_assignment_stack: Vec::new(),
+            direct_assignment_value_cache: IndexMap::new(),
+            scalarized_component_child_slots: metadata
+                .scalarized_component_child_slots
+                .cloned()
+                .unwrap_or_else(|| Arc::new(build_scalarized_component_child_slot_map(layout))),
             indexed_bindings: metadata
                 .indexed_bindings
                 .cloned()
@@ -371,6 +404,7 @@ impl<'a> LowerBuilder<'a> {
             is_initial_mode: metadata.is_initial_mode,
             value_mode: ValueMode::Current,
             current_update_target: None,
+            current_update_target_name: None,
             ops: Vec::new(),
             next_reg: 0,
             call_site_namespace: 0,
@@ -402,6 +436,72 @@ impl<'a> LowerBuilder<'a> {
         self
     }
 
+    fn with_current_update_target_name(mut self, target_name: Option<String>) -> Self {
+        self.current_update_target_name = target_name;
+        self
+    }
+
+    fn current_update_target_projection_index(&self) -> Option<usize> {
+        let target_name = self.current_update_target_name.as_ref()?;
+        if let Some(index) =
+            last_one_based_index_in_name(target_name).and_then(|index| index.checked_sub(1))
+        {
+            return Some(index);
+        }
+        let prefix = format!("{target_name}[");
+        let has_indexed_target_aliases = self
+            .layout
+            .bindings()
+            .keys()
+            .any(|name| name.starts_with(&prefix) && name.ends_with(']'));
+        if has_indexed_target_aliases {
+            return Some(0);
+        }
+        let target = self.current_update_target?;
+        self.layout
+            .bindings()
+            .iter()
+            .filter_map(|(name, slot)| {
+                let suffix = name.strip_prefix(&prefix)?.strip_suffix(']')?;
+                let index = suffix.parse::<usize>().ok()?.checked_sub(1)?;
+                Some((index, *slot))
+            })
+            .find_map(|(index, slot)| (slot == target).then_some(index))
+    }
+
+    fn compile_time_binding_base_key(
+        &self,
+        expr: &rumoca_core::Expression,
+    ) -> Result<String, LowerError> {
+        match expr {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => {
+                if subscripts.is_empty() {
+                    return Ok(name.as_str().to_string());
+                }
+                if let Some(indices) = self.compile_time_subscript_indices(subscripts)? {
+                    return Ok(format_subscript_binding_key(name.as_str(), &indices));
+                }
+                dynamic_binding_base_key(expr)
+            }
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => {
+                let base_key = self.compile_time_binding_base_key(base)?;
+                if let Some(indices) = self.compile_time_subscript_indices(subscripts)? {
+                    return Ok(format_subscript_binding_key(&base_key, &indices));
+                }
+                dynamic_binding_base_key(expr)
+            }
+            rumoca_core::Expression::FieldAccess { base, field, .. } => {
+                let base_key = self.compile_time_binding_base_key(base)?;
+                Ok(format!("{base_key}.{field}"))
+            }
+            _ => dynamic_binding_base_key(expr),
+        }
+    }
+
     /// Create an independent sub-builder that evaluates into a disjoint
     /// register space starting at `start_reg`.  Used by `build_matmul_node`
     /// to produce non-overlapping `lhs_ops` / `rhs_ops` register files.
@@ -417,6 +517,8 @@ impl<'a> LowerBuilder<'a> {
             structural_bindings: self.structural_bindings.clone(),
             direct_assignments: IndexMap::new(),
             direct_assignment_stack: Vec::new(),
+            direct_assignment_value_cache: IndexMap::new(),
+            scalarized_component_child_slots: Arc::clone(&self.scalarized_component_child_slots),
             indexed_bindings: Arc::clone(&self.indexed_bindings),
             local_indexed_bindings: IndexMap::new(),
             local_binding_dims: IndexMap::new(),
@@ -426,6 +528,7 @@ impl<'a> LowerBuilder<'a> {
             is_initial_mode: self.is_initial_mode,
             value_mode: self.value_mode,
             current_update_target: self.current_update_target,
+            current_update_target_name: self.current_update_target_name.clone(),
             ops: Vec::new(),
             next_reg: start_reg,
             call_site_namespace: self.call_site_namespace,
@@ -611,6 +714,12 @@ impl<'a> LowerBuilder<'a> {
             }
         }
 
+        if let Some(reg) =
+            self.lower_singleton_static_slice_binding(name.as_str(), subscripts, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
+
         let local_static_key = static_subscript_indices(subscripts)?
             .and_then(|indices| (!indices.is_empty()).then_some(indices))
             .map(|indices| format_subscript_binding_key(name.as_str(), &indices));
@@ -682,6 +791,26 @@ impl<'a> LowerBuilder<'a> {
             }
         }
 
+        if subscripts.is_empty()
+            && let Some(reg) =
+                self.lower_energyplus_outer_building_alias(&base_name, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
+
+        if subscripts.is_empty()
+            && (self
+                .layout
+                .shape(base_name.as_str())
+                .is_some_and(|shape| shape.contains(&0))
+                || self
+                    .structural_bindings
+                    .get(size_binding_key(base_name.as_str(), 1).as_str())
+                    .is_some_and(|dim| *dim == 0.0))
+        {
+            return Ok(self.emit_const(0.0));
+        }
+
         self.lower_dynamic_subscripted_binding(
             base_name.as_str(),
             subscripts,
@@ -689,6 +818,51 @@ impl<'a> LowerBuilder<'a> {
             call_depth,
             DynamicSubscriptSemantics::VarRef,
         )
+    }
+
+    fn lower_energyplus_outer_building_alias(
+        &mut self,
+        key: &str,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(alias_key) = self.energyplus_outer_building_alias_key(key) else {
+            return Ok(None);
+        };
+        if let Some(slot) = self.pre_mode_slot_for_key(&alias_key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        if let Some(values) =
+            self.lower_direct_assignment_values_for_key(alias_key.as_str(), scope, call_depth)?
+            && let Some(value) = values.first().copied()
+        {
+            return Ok(Some(value));
+        }
+        if let Some(slot) = self.layout.binding(alias_key.as_str()) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        if let Some(start_expr) = self
+            .variable_starts
+            .and_then(|starts| starts.get(alias_key.as_str()))
+            .cloned()
+        {
+            return self
+                .lower_expr(&start_expr, scope, call_depth + 1)
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    fn energyplus_outer_building_alias_key(&self, key: &str) -> Option<String> {
+        let marker = ".building.";
+        let marker_start = key.rfind(marker)?;
+        let candidate = &key[marker_start + 1..];
+        (self.layout.binding(candidate).is_some()
+            || self.direct_assignments.contains_key(candidate)
+            || self
+                .variable_starts
+                .is_some_and(|starts| starts.contains_key(candidate)))
+        .then(|| candidate.to_string())
     }
 
     fn singleton_shape_subscript_indices(
@@ -734,6 +908,100 @@ impl<'a> LowerBuilder<'a> {
         Ok(Some(indices))
     }
 
+    fn static_slice_matches_indices(
+        subscripts: &[rumoca_core::Subscript],
+        indices: &[usize],
+    ) -> bool {
+        subscripts.len() == indices.len()
+            && subscripts
+                .iter()
+                .zip(indices.iter().copied())
+                .all(|(subscript, candidate_index)| match subscript {
+                    rumoca_core::Subscript::Index { value, .. } if *value > 0 => {
+                        *value as usize == candidate_index
+                    }
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        static_singleton_subscript_index(expr)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|index| index == candidate_index)
+                    }
+                    rumoca_core::Subscript::Colon { .. } => true,
+                    _ => false,
+                })
+    }
+
+    fn lower_singleton_static_slice_binding(
+        &mut self,
+        base_key: &str,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        if subscripts.is_empty()
+            || !subscripts
+                .iter()
+                .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+        {
+            return Ok(None);
+        }
+
+        if let Some(keys) =
+            self.slice_binding_keys_or_scalar_fallback(base_key, subscripts, scope)?
+        {
+            return self.lower_singleton_binding_key(keys, scope, call_depth);
+        }
+
+        let local_path = ComponentPath::from_flat_path(base_key);
+        if let Some(entries) = scope.indexed_entries(&local_path) {
+            let matches = entries
+                .iter()
+                .filter(|entry| Self::static_slice_matches_indices(subscripts, &entry.indices))
+                .collect::<Vec<_>>();
+            if matches.len() == 1 {
+                return Ok(Some(matches[0].reg));
+            }
+            if matches.len() > 1 {
+                return Ok(None);
+            }
+        }
+
+        let binding_base_key = self
+            .pre_mode_base_key(base_key)
+            .unwrap_or_else(|| base_key.to_string());
+        let matches = indexed_entries_for_key(&self.indexed_bindings, binding_base_key.as_str())
+            .into_iter()
+            .filter(|entry| Self::static_slice_matches_indices(subscripts, &entry.indices))
+            .collect::<Vec<_>>();
+        if matches.len() == 1 {
+            return self.emit_slot_load(matches[0].slot).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn lower_singleton_binding_key(
+        &mut self,
+        keys: Vec<String>,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let [key] = keys.as_slice() else {
+            return Ok(None);
+        };
+        if let Some(slot) = self.pre_mode_slot_for_key(key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        if let Some(values) = self.lower_direct_assignment_values_for_key(key, scope, call_depth)?
+            && let Some(value) = values.first().copied()
+        {
+            return Ok(Some(value));
+        }
+        if let Some(slot) = self.layout.binding(key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        Ok(None)
+    }
+
     fn pre_mode_slot_for_key(&self, key: &str) -> Option<ScalarSlot> {
         if self.value_mode != ValueMode::Pre || key.starts_with("__pre__.") {
             return None;
@@ -759,6 +1027,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let cacheable = scope.is_empty();
+        if cacheable && let Some(values) = self.direct_assignment_value_cache.get(key) {
+            return Ok(Some(values.clone()));
+        }
         let Some(assignment) = self.direct_assignments.get(key).cloned() else {
             return Ok(None);
         };
@@ -784,7 +1056,16 @@ impl<'a> LowerBuilder<'a> {
                             flat_index + 1
                         ),
                     })?;
-            return Ok(Some(vec![selected]));
+            let selected_values = vec![selected];
+            if cacheable {
+                self.direct_assignment_value_cache
+                    .insert(key.to_string(), selected_values.clone());
+            }
+            return Ok(Some(selected_values));
+        }
+        if cacheable {
+            self.direct_assignment_value_cache
+                .insert(key.to_string(), values.clone());
         }
         Ok(Some(values))
     }
@@ -807,6 +1088,18 @@ impl<'a> LowerBuilder<'a> {
         if let Some(reg) =
             self.lower_array_like_dynamic_index(base, subscripts, scope, call_depth)?
         {
+            return Ok(reg);
+        }
+        if is_static_singleton_scalar_projection(base, subscripts)? {
+            return self.lower_expr(base, scope, call_depth);
+        }
+        let base_key = dynamic_binding_base_key(base)?;
+        if let Some(reg) = self.lower_singleton_static_slice_binding(
+            base_key.as_str(),
+            subscripts,
+            scope,
+            call_depth,
+        )? {
             return Ok(reg);
         }
 
@@ -832,7 +1125,6 @@ impl<'a> LowerBuilder<'a> {
             return self.lower_expr(base, scope, call_depth);
         }
 
-        let base_key = dynamic_binding_base_key(base)?;
         self.lower_dynamic_subscripted_binding(
             base_key.as_str(),
             subscripts,
@@ -1029,6 +1321,43 @@ impl<'a> LowerBuilder<'a> {
             return Ok(reg);
         }
 
+        let (record_root, record_field) = field_access_root_and_path(base, field);
+        if let Some(mut values) =
+            self.lower_indexed_record_field_values(record_root, &record_field, scope)?
+        {
+            if values.len() == 1 {
+                return Ok(values.remove(0));
+            }
+            if let Some(index) = self.current_update_target_projection_index()
+                && let Some(reg) = values.get(index).copied()
+            {
+                return Ok(reg);
+            }
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "field `{record_field}` projection selected {} scalarized record values where one was required",
+                    values.len()
+                ),
+            });
+        }
+
+        if let Some(mut values) = self.lower_indexed_record_field_values(base, field, scope)? {
+            if values.len() == 1 {
+                return Ok(values.remove(0));
+            }
+            if let Some(index) = self.current_update_target_projection_index()
+                && let Some(reg) = values.get(index).copied()
+            {
+                return Ok(reg);
+            }
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "field `{field}` projection selected {} scalarized record values where one was required",
+                    values.len()
+                ),
+            });
+        }
+
         if let Some(reg) = self.lower_indexed_field_access(base, field, scope, call_depth)? {
             return Ok(reg);
         }
@@ -1043,18 +1372,6 @@ impl<'a> LowerBuilder<'a> {
             return Ok(reg);
         }
 
-        if let Some(mut values) = self.lower_indexed_record_field_values(base, field, scope)? {
-            if values.len() == 1 {
-                return Ok(values.remove(0));
-            }
-            return Err(LowerError::Unsupported {
-                reason: format!(
-                    "field `{field}` projection selected {} scalarized record values where one was required",
-                    values.len()
-                ),
-            });
-        }
-
         if let Some(values) = self.lower_structural_field_values(base, field, scope, call_depth)? {
             if let Some(first) = values.into_iter().next() {
                 return Ok(first);
@@ -1062,15 +1379,157 @@ impl<'a> LowerBuilder<'a> {
             return Ok(self.emit_const(0.0));
         }
 
+        if let Ok(base_key) = self.compile_time_binding_base_key(base) {
+            let key = format!("{base_key}.{field}");
+            if let Some(reg) = scope.get(&ComponentPath::from_flat_path(&key)).copied() {
+                return Ok(reg);
+            }
+            if let Some(slot) = self.pre_mode_slot_for_key(&key) {
+                return self.emit_slot_load(slot);
+            }
+            if let Some(values) =
+                self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?
+                && let Some(value) = values.first().copied()
+            {
+                return Ok(value);
+            }
+            if let Some(slot) = self.layout.binding(&key) {
+                return self.emit_slot_load(slot);
+            }
+            if let Some(reg) =
+                self.lower_energyplus_outer_building_alias(key.as_str(), scope, call_depth)?
+            {
+                return Ok(reg);
+            }
+            if let Some(alias_key) = self.singleton_indexed_alias_key(&key, scope) {
+                if let Some(reg) = scope
+                    .get(&ComponentPath::from_flat_path(&alias_key))
+                    .copied()
+                {
+                    return Ok(reg);
+                }
+                if let Some(values) =
+                    self.lower_direct_assignment_values_for_key(&alias_key, scope, call_depth)?
+                    && let Some(value) = values.first().copied()
+                {
+                    return Ok(value);
+                }
+                if let Some(slot) = self.layout.binding(&alias_key) {
+                    return self.emit_slot_load(slot);
+                }
+            }
+            if let Some(reg) =
+                self.lower_target_indexed_child_field_access(&base_key, field, scope, call_depth)?
+            {
+                return Ok(reg);
+            }
+        }
+
         let key = field_access_binding_key(base, field)?;
         if let Some(reg) = scope.get(&ComponentPath::from_flat_path(&key)).copied() {
             return Ok(reg);
+        }
+        if let Some(alias_key) = self.singleton_indexed_alias_key(&key, scope) {
+            if let Some(reg) = scope
+                .get(&ComponentPath::from_flat_path(&alias_key))
+                .copied()
+            {
+                return Ok(reg);
+            }
+            if let Some(slot) = self.layout.binding(&alias_key) {
+                return self.emit_slot_load(slot);
+            }
         }
         let slot = self
             .layout
             .binding(&key)
             .ok_or(LowerError::MissingBinding { name: key })?;
         self.emit_slot_load(slot)
+    }
+
+    fn singleton_indexed_alias_key(&self, key: &str, scope: &Scope) -> Option<String> {
+        fn flat_binding_key_parts(key: &str) -> Vec<&str> {
+            let mut parts = Vec::new();
+            let mut start = 0usize;
+            for (idx, byte) in key.bytes().enumerate() {
+                if byte == b'.' {
+                    parts.push(&key[start..idx]);
+                    start = idx + 1;
+                }
+            }
+            parts.push(&key[start..]);
+            parts
+        }
+
+        let parts = flat_binding_key_parts(key);
+        for idx in (0..parts.len()).rev() {
+            let part = parts[idx];
+            if part.is_empty() || part.contains('[') {
+                continue;
+            }
+            let alias = parts
+                .iter()
+                .enumerate()
+                .map(|(part_idx, original)| {
+                    if part_idx == idx {
+                        format!("{original}[1]")
+                    } else {
+                        (*original).to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+            if scope.contains_key(&ComponentPath::from_flat_path(&alias))
+                || self.layout.binding(&alias).is_some()
+            {
+                return Some(alias);
+            }
+        }
+        None
+    }
+
+    fn lower_target_indexed_child_field_access(
+        &mut self,
+        base_key: &str,
+        field: &str,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(index) = self.current_update_target_projection_index() else {
+            return Ok(None);
+        };
+        let key = format!("{base_key}[{}].{field}", index + 1);
+        if let Some(reg) = scope.get(&ComponentPath::from_flat_path(&key)).copied() {
+            return Ok(Some(reg));
+        }
+        if let Some(slot) = self.pre_mode_slot_for_key(&key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        if let Some(values) =
+            self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?
+            && let Some(value) = values.first().copied()
+        {
+            return Ok(Some(value));
+        }
+        if let Some(slot) = self.layout.binding(&key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn lower_target_projected_scalar_actual(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let rumoca_core::Expression::FieldAccess { base, field, .. } = expr else {
+            return Ok(None);
+        };
+        let Ok(base_key) = self.compile_time_binding_base_key(base) else {
+            return Ok(None);
+        };
+        self.lower_target_indexed_child_field_access(&base_key, field, scope, call_depth)
     }
 
     fn lower_function_output_name_field_access(
@@ -1954,6 +2413,12 @@ impl<'a> LowerBuilder<'a> {
         let inferred_dims = self.infer_expr_dims(base_expr, scope);
         if !inferred_dims.is_empty() && inferred_dims.iter().all(|dim| *dim > 0) {
             return self.lower_size_from_dims(&inferred_dims, args, scope, call_depth);
+        }
+        if matches!(
+            base_expr,
+            rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. }
+        ) {
+            return self.lower_size_from_dims(&[], args, scope, call_depth);
         }
 
         let base_key = dynamic_binding_base_key(base_expr).map_err(|err| {

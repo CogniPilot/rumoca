@@ -122,6 +122,196 @@ fn test_simulation_template_rejects_external_function_with_stable_diagnostic() {
 }
 
 #[test]
+fn test_fmi_external_dependencies_manifest_renders_library_metadata() {
+    let mut dae = dae::Dae::new();
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+        Default::default(),
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("initialize_Modelica_EnergyPlus_9_6_0".to_string()),
+        output_name: None,
+        arg_names: vec![
+            "adapter".to_string(),
+            "isSynchronized".to_string(),
+            "nObj".to_string(),
+        ],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        include_directories: vec!["modelica://Buildings/Resources/C-Sources".to_string()],
+        ..Default::default()
+    });
+    dae.symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let rendered = render_template_with_name(
+        &dae,
+        builtin_template("fmi2", "externalDependencies.json.jinja"),
+        "ExternalEnergyPlusDiag_M",
+    )
+    .expect("external dependency manifest should render without enabling external calls");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&rendered).expect("manifest should be valid JSON");
+
+    assert_eq!(manifest["schema"], "rumoca.externalDependencies.v1");
+    assert_eq!(
+        manifest["functions"][0]["symbol"],
+        "initialize_Modelica_EnergyPlus_9_6_0"
+    );
+    assert_eq!(
+        manifest["functions"][0]["libraries"],
+        serde_json::json!(["ModelicaBuildingsEnergyPlus_9_6_0", "fmilib_shared"])
+    );
+    assert_eq!(
+        manifest["functions"][0]["include_directories"],
+        serde_json::json!(["modelica://Buildings/Resources/C-Sources"])
+    );
+
+    let libraries = render_template_with_name(
+        &dae,
+        builtin_template("fmi2", "externalLibraries.txt.jinja"),
+        "ExternalEnergyPlusDiag_M",
+    )
+    .expect("external library list should render from the same metadata");
+    assert_eq!(
+        libraries.lines().collect::<Vec<_>>(),
+        vec!["ModelicaBuildingsEnergyPlus_9_6_0", "fmilib_shared"]
+    );
+
+    let include_directories = render_template_with_name(
+        &dae,
+        builtin_template("fmi2", "externalIncludeDirectories.txt.jinja"),
+        "ExternalEnergyPlusDiag_M",
+    )
+    .expect("external include directory list should render from the same metadata");
+    assert_eq!(
+        include_directories.lines().collect::<Vec<_>>(),
+        vec!["modelica://Buildings/Resources/C-Sources"]
+    );
+}
+
+#[test]
+fn test_fmi_templates_render_json_function_body_key() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "UserFunction": {
+                "name": "UserFunction",
+                "inputs": [],
+                "outputs": [{"name": "y", "dims": [], "default": null}],
+                "locals": [],
+                "body": ["Return"],
+                "is_constructor": false,
+                "pure": true,
+                "external": null,
+                "derivatives": [],
+                "span": null
+            }
+        }),
+    );
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .unwrap_or_else(|err| panic!("{target} template should render function body: {err}"));
+
+        assert!(
+            rendered.contains("return y;"),
+            "{target} template should render the body key from JSON-backed functions:\n{rendered}"
+        );
+    }
+}
+
+#[test]
+fn test_fmi_function_body_renders_bare_component_reference_expression() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "ForwardInput": {
+                "name": "ForwardInput",
+                "inputs": [{"name": "x", "dims": [], "default": null}],
+                "outputs": [{"name": "y", "dims": [], "default": null}],
+                "locals": [],
+                "body": [{
+                    "Assignment": {
+                        "comp": {"local": false, "parts": [{"ident": "y", "subs": []}]},
+                        "value": {"local": false, "parts": [{"ident": "x", "subs": []}]}
+                    }
+                }],
+                "is_constructor": false,
+                "pure": true,
+                "external": null,
+                "derivatives": [],
+                "span": null
+            }
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .expect("FMI2 template should render component-reference expression values");
+
+    assert!(
+        rendered.contains("y = x;"),
+        "function body should render bare ComponentReference expressions:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_function_body_renders_spanned_expression_wrapper() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "ForwardSpannedInput": {
+                "name": "ForwardSpannedInput",
+                "inputs": [{"name": "x", "dims": [], "default": null}],
+                "outputs": [{"name": "y", "dims": [], "default": null}],
+                "locals": [],
+                "body": [{
+                    "Assignment": {
+                        "comp": {"local": false, "parts": [{"ident": "y", "subs": []}]},
+                        "value": {"expr": {"VarRef": {"name": {"name": "x"}, "subscripts": []}}, "span": null}
+                    }
+                }],
+                "is_constructor": false,
+                "pure": true,
+                "external": null,
+                "derivatives": [],
+                "span": null
+            }
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .expect("FMI2 template should render spanned expression wrappers");
+
+    assert!(
+        rendered.contains("y = x;"),
+        "function body should render expression wrappers:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_simulation_template_file_rejects_external_function_with_stable_diagnostic() {
     let mut dae = dae::Dae::new();
     let mut function = rumoca_core::Function::new("ExternalFileUser", Default::default());
@@ -684,6 +874,36 @@ fn test_render_solve_row_c_template_function_uses_dense_linear_solve_op() {
     assert!(rendered.contains("__rumoca_solve_linear_component"));
     assert!(rendered.contains("(double[]){2"));
     assert!(rendered.contains("(double[]){8"));
+}
+
+#[test]
+fn test_render_solve_row_c_template_function_renders_external_call_bridge() {
+    let row = vec![
+        rumoca_ir_solve::LinearOp::LoadY { dst: 0, index: 0 },
+        rumoca_ir_solve::LinearOp::LoadP { dst: 1, index: 1 },
+        rumoca_ir_solve::LinearOp::ExternalCall {
+            dst: 2,
+            function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusExchange,
+            args: [0, 1, 0, 0, 0, 0, 0, 0],
+            arg_count: 2,
+            output_index: 3,
+        },
+        rumoca_ir_solve::LinearOp::StoreOutput { src: 2 },
+    ];
+    let template =
+        r#"{{ render_solve_row_c(dae.row, {"time": "m->time", "y": "Y({})", "p": "P({})"}) }}"#;
+    let rendered = render_template_with_dae_json(
+        &serde_json::json!({
+            "row": row,
+        }),
+        template,
+    )
+    .unwrap();
+
+    assert_eq!(
+        rendered,
+        "RUMOCA_SOLVE_EXTERNAL_CALL(\"BuildingsEnergyPlusExchange\", 3, 2, (double[]){Y(0), P(1)})"
+    );
 }
 
 #[test]
@@ -1726,6 +1946,88 @@ fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
         !builtin_template("fmi3", "build.sh.jinja").contains("linux64"),
         "linux64 is the FMI 2 platform directory, not FMI 3"
     );
+}
+
+#[test]
+fn test_fmi_build_scripts_fail_closed_for_external_dependencies() {
+    for (target, expected_platform) in [
+        ("fmi2", "PLATFORM=linux64"),
+        ("fmi3", "PLATFORM=x86_64-linux"),
+    ] {
+        let script = builtin_template(target, "build.sh.jinja");
+        assert!(
+            script.contains(expected_platform),
+            "{target} build script should keep its FMI platform directory contract"
+        );
+        assert!(
+            script.contains("resources/externalDependencies.json"),
+            "{target} build script must consume generated external dependency metadata"
+        );
+        assert!(
+            script.contains("resources/externalLibraries.txt"),
+            "{target} build script must consume generated external library list"
+        );
+        assert!(
+            script.contains("resources/externalIncludeDirectories.txt"),
+            "{target} build script must consume generated external include directory list"
+        );
+        let external_include_dir = concat!("RUM", "OCA_", "EXTERNAL_INCLUDE_DIR");
+        let external_library_dir = concat!("RUM", "OCA_", "EXTERNAL_LIBRARY_DIR");
+        assert!(
+            script.contains(external_include_dir),
+            "{target} build script must require an explicit include directory for modelica:// include URIs"
+        );
+        assert!(
+            script.contains("missing external include directory"),
+            "{target} build script must fail closed when a declared include directory is absent"
+        );
+        assert!(
+            script.contains(external_library_dir),
+            "{target} build script must require an explicit external runtime library directory"
+        );
+        assert!(
+            script.contains("external runtime libraries declared"),
+            "{target} build script must fail closed when external libraries are declared without a runtime path"
+        );
+        assert!(
+            script.contains("missing external runtime library"),
+            "{target} build script must fail closed when a declared runtime library is absent"
+        );
+        assert!(
+            script.contains("resources/"),
+            "{target} FMU archive must include external dependency metadata resources"
+        );
+
+        let cmake = builtin_template(target, "CMakeLists.txt.jinja");
+        assert!(
+            cmake.contains("../resources/externalLibraries.txt"),
+            "{target} CMake build must consume generated external library list"
+        );
+        assert!(
+            cmake.contains("../resources/externalIncludeDirectories.txt"),
+            "{target} CMake build must consume generated external include directory list"
+        );
+        assert!(
+            cmake.contains(external_include_dir),
+            "{target} CMake build must require an explicit include directory for modelica:// include URIs"
+        );
+        assert!(
+            cmake.contains("missing external include directory"),
+            "{target} CMake build must fail closed when a declared include directory is absent"
+        );
+        assert!(
+            cmake.contains(external_library_dir),
+            "{target} CMake build must require an explicit external runtime library directory"
+        );
+        assert!(
+            cmake.contains("missing external runtime library"),
+            "{target} CMake build must fail closed when a declared runtime library is absent"
+        );
+        assert!(
+            cmake.contains("install(DIRECTORY"),
+            "{target} CMake install must include external dependency metadata resources"
+        );
+    }
 }
 
 #[test]

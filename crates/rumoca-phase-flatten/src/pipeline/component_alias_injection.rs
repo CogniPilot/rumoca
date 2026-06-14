@@ -1,12 +1,38 @@
 use super::*;
 use crate::path_utils::{split_first_top_level, split_path_with_indices};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ComponentStaticConstantKey {
     class_def_id: rumoca_core::DefId,
+    class_override_signature: Vec<ComponentClassOverrideSignature>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ComponentClassOverrideSignature {
+    active_type_name: String,
+    overrides: Vec<ComponentClassOverrideEntry>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ComponentClassOverrideEntry {
+    alias: String,
+    alias_def_id: rumoca_core::DefId,
+    target_def_id: rumoca_core::DefId,
+    modifier_args: String,
 }
 
 enum ComponentStaticConstantCacheEntry {
+    Cacheable(ScopedConstantDelta),
+    Uncacheable,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ClassOverrideConstantKey {
+    active_type_name: String,
+    overrides: Vec<ComponentClassOverrideEntry>,
+}
+
+enum ClassOverrideConstantCacheEntry {
     Cacheable(ScopedConstantDelta),
     Uncacheable,
 }
@@ -22,25 +48,6 @@ struct ScopedKeySnapshot {
     modified_constant_keys: rustc_hash::FxHashSet<String>,
 }
 
-impl ScopedKeySnapshot {
-    fn capture(ctx: &Context, scope: &str) -> Self {
-        Self {
-            parameter_values: scoped_keys(&ctx.parameter_values, scope),
-            real_parameter_values: scoped_keys(&ctx.real_parameter_values, scope),
-            boolean_parameter_values: scoped_keys(&ctx.boolean_parameter_values, scope),
-            enum_parameter_values: scoped_keys(&ctx.enum_parameter_values, scope),
-            constant_values: scoped_keys(&ctx.constant_values, scope),
-            array_dimensions: scoped_keys(&ctx.array_dimensions, scope),
-            modified_constant_keys: ctx
-                .modified_constant_keys
-                .iter()
-                .filter(|key| is_scoped_key(key, scope))
-                .cloned()
-                .collect(),
-        }
-    }
-}
-
 #[derive(Clone, Default)]
 struct ScopedConstantDelta {
     parameter_values: Vec<(String, i64)>,
@@ -54,6 +61,7 @@ struct ScopedConstantDelta {
 
 impl ScopedConstantDelta {
     fn capture(ctx: &Context, scope: &str, before: &ScopedKeySnapshot) -> Option<Self> {
+        const MAX_CAPTURE_DELTA_FOOTPRINT: usize = 50_000;
         let delta = Self {
             parameter_values: capture_map_delta(
                 &ctx.parameter_values,
@@ -94,7 +102,17 @@ impl ScopedConstantDelta {
                 .map(|key| scoped_key_suffix(key, scope).to_string())
                 .collect(),
         };
-        Some(delta)
+        (delta.footprint() <= MAX_CAPTURE_DELTA_FOOTPRINT).then_some(delta)
+    }
+
+    fn footprint(&self) -> usize {
+        self.parameter_values.len()
+            + self.real_parameter_values.len()
+            + self.boolean_parameter_values.len()
+            + self.enum_parameter_values.len()
+            + self.constant_values.len()
+            + self.array_dimensions.len()
+            + self.modified_constant_keys.len()
     }
 
     fn replay(&self, scope: &str, ctx: &mut Context) {
@@ -139,16 +157,6 @@ impl ScopedConstantDelta {
                 .insert(rebase_scoped_key(scope, suffix));
         }
     }
-}
-
-fn scoped_keys<V>(
-    map: &rustc_hash::FxHashMap<String, V>,
-    scope: &str,
-) -> rustc_hash::FxHashSet<String> {
-    map.keys()
-        .filter(|key| is_scoped_key(key, scope))
-        .cloned()
-        .collect()
 }
 
 fn is_scoped_key(key: &str, scope: &str) -> bool {
@@ -293,17 +301,42 @@ pub(crate) fn inject_component_instance_nested_class_constants(
         ComponentStaticConstantKey,
         ComponentStaticConstantCacheEntry,
     > = rustc_hash::FxHashMap::default();
-    for _ in 0..MAX_PASSES {
+    let mut class_override_cache: rustc_hash::FxHashMap<
+        ClassOverrideConstantKey,
+        ClassOverrideConstantCacheEntry,
+    > = rustc_hash::FxHashMap::default();
+    for pass in 0..MAX_PASSES {
         let mut cache_rejected = 0usize;
         let mut uncached = 0usize;
         let mut specialized_delta = 0usize;
         let prev = component_constant_footprint(ctx);
 
-        for (comp_scope_path, comp_scope, comp) in &component_scopes {
+        let progress_interval = component_alias_stats_interval();
+        for (index, (comp_scope_path, comp_scope, comp)) in component_scopes.iter().enumerate() {
             if comp_scope.is_empty() {
                 continue;
             }
+            if let Some(interval) = progress_interval
+                && interval > 0
+                && index > 0
+                && index % interval == 0
+            {
+                eprintln!(
+                    "[rumoca-component-alias] pass={} component={}/{} footprint={} static_cache={} class_override_cache={} cache_rejected={} uncached={} specialized_delta={}",
+                    pass + 1,
+                    index,
+                    component_scopes.len(),
+                    component_constant_footprint(ctx),
+                    static_cache.len(),
+                    class_override_cache.len(),
+                    cache_rejected,
+                    uncached,
+                    specialized_delta
+                );
+            }
             let type_name = comp.type_name.to_string();
+            let cache_class_overrides =
+                !component_scope_has_descendants(&component_index, comp_scope_path);
 
             let class_def = comp
                 .type_def_id
@@ -334,12 +367,16 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                 inject_cached_component_static_constants(ComponentStaticInjectCtx {
                     tree,
                     class_index,
+                    component_index: &component_index,
+                    comp_scope_path,
                     comp,
                     class_def,
                     classes_to_scan: &classes_to_scan,
                     class_context: &class_context,
                     comp_scope,
+                    cache_class_overrides,
                     static_cache: &mut static_cache,
+                    class_override_cache: &mut class_override_cache,
                     ctx,
                 });
             cache_rejected += static_result.cache_rejected;
@@ -349,10 +386,14 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                 inject_component_static_constants(
                     tree,
                     class_index,
+                    &component_index,
+                    comp_scope_path,
                     comp,
                     &classes_to_scan,
                     &class_context,
                     comp_scope,
+                    cache_class_overrides,
+                    &mut class_override_cache,
                     ctx,
                 );
             }
@@ -381,6 +422,20 @@ pub(crate) fn inject_component_instance_nested_class_constants(
         }
 
         let new = component_constant_footprint(ctx);
+        if component_alias_stats_enabled() {
+            eprintln!(
+                "[rumoca-component-alias] pass={} prev={} new={} components={} static_cache={} class_override_cache={} cache_rejected={} uncached={} specialized_delta={}",
+                pass + 1,
+                prev,
+                new,
+                component_scopes.len(),
+                static_cache.len(),
+                class_override_cache.len(),
+                cache_rejected,
+                uncached,
+                specialized_delta
+            );
+        }
         if new == prev {
             break;
         }
@@ -388,6 +443,14 @@ pub(crate) fn inject_component_instance_nested_class_constants(
             break;
         }
     }
+}
+
+fn component_alias_stats_enabled() -> bool {
+    false
+}
+
+fn component_alias_stats_interval() -> Option<usize> {
+    None
 }
 
 type ComponentScopeEntry<'a> = (
@@ -400,6 +463,7 @@ fn component_scopes_from_overlay(overlay: &InstanceOverlay) -> Vec<ComponentScop
     overlay
         .components
         .values()
+        .filter(|comp| !comp.is_primitive)
         .map(|comp| {
             let scope_path = comp.qualified_name.to_component_path();
             let scope = scope_path.to_flat_string();
@@ -420,15 +484,21 @@ fn component_index_from_scopes<'a>(
 struct ComponentStaticInjectCtx<'a, 'tree> {
     tree: &'a ClassTree,
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
+    component_index:
+        &'a rustc_hash::FxHashMap<rumoca_core::ComponentPath, &'a rumoca_ir_ast::InstanceData>,
+    comp_scope_path: &'a rumoca_core::ComponentPath,
     comp: &'a rumoca_ir_ast::InstanceData,
     class_def: &'a ClassDef,
     classes_to_scan: &'a [&'a ClassDef],
     class_context: &'a str,
     comp_scope: &'a str,
+    cache_class_overrides: bool,
     static_cache: &'a mut rustc_hash::FxHashMap<
         ComponentStaticConstantKey,
         ComponentStaticConstantCacheEntry,
     >,
+    class_override_cache:
+        &'a mut rustc_hash::FxHashMap<ClassOverrideConstantKey, ClassOverrideConstantCacheEntry>,
     ctx: &'a mut Context,
 }
 
@@ -440,23 +510,37 @@ struct StaticInjectResult {
 fn inject_cached_component_static_constants(
     mut request: ComponentStaticInjectCtx<'_, '_>,
 ) -> StaticInjectResult {
-    let Some(cache_key) = component_static_cache_key(request.comp, request.class_def) else {
+    let Some(cache_key) = component_static_cache_key(
+        request.comp,
+        request.class_def,
+        request.component_index,
+        request.comp_scope_path,
+    ) else {
         return StaticInjectResult {
             injected: false,
             cache_rejected: 0,
         };
     };
-    if let Some(result) = replay_component_static_cache(&mut request, cache_key) {
+    if let Some(result) = replay_component_static_cache(&mut request, &cache_key) {
         return result;
     }
-    let before = ScopedKeySnapshot::capture(request.ctx, request.comp_scope);
+    // Component-static constants are injected the first time a component scope is
+    // visited. At that point the scope has no pre-existing static keys; scanning
+    // every context map to prove an empty snapshot is O(components * constants)
+    // on large Fluid graphs. Use the empty baseline and let cache capture record
+    // the keys produced by this injection.
+    let before = ScopedKeySnapshot::default();
     inject_component_static_constants(
         request.tree,
         request.class_index,
+        request.component_index,
+        request.comp_scope_path,
         request.comp,
         request.classes_to_scan,
         request.class_context,
         request.comp_scope,
+        request.cache_class_overrides,
+        request.class_override_cache,
         request.ctx,
     );
     cache_component_static_delta(request, cache_key, &before)
@@ -465,28 +549,99 @@ fn inject_cached_component_static_constants(
 fn component_static_cache_key(
     comp: &rumoca_ir_ast::InstanceData,
     class_def: &ClassDef,
+    component_index: &rustc_hash::FxHashMap<
+        rumoca_core::ComponentPath,
+        &rumoca_ir_ast::InstanceData,
+    >,
+    comp_scope_path: &rumoca_core::ComponentPath,
 ) -> Option<ComponentStaticConstantKey> {
-    if comp.class_overrides.is_empty() && !component_scope_has_array_index(comp) {
-        class_def
-            .def_id
-            .map(|class_def_id| ComponentStaticConstantKey { class_def_id })
-    } else {
-        None
+    let class_def_id = class_def.def_id?;
+    if component_scope_has_descendants(component_index, comp_scope_path) {
+        return None;
     }
+    Some(ComponentStaticConstantKey {
+        class_def_id,
+        class_override_signature: component_class_override_signature(
+            comp,
+            component_index,
+            comp_scope_path,
+        ),
+    })
 }
 
-fn component_scope_has_array_index(comp: &rumoca_ir_ast::InstanceData) -> bool {
-    comp.qualified_name
-        .parts
-        .iter()
-        .any(|(name, subs)| !subs.is_empty() || name.contains('['))
+fn component_scope_has_descendants(
+    component_index: &rustc_hash::FxHashMap<
+        rumoca_core::ComponentPath,
+        &rumoca_ir_ast::InstanceData,
+    >,
+    comp_scope_path: &rumoca_core::ComponentPath,
+) -> bool {
+    component_index
+        .keys()
+        .any(|path| path.len() > comp_scope_path.len() && path.starts_with(comp_scope_path))
+}
+
+fn component_class_override_signature(
+    comp: &rumoca_ir_ast::InstanceData,
+    component_index: &rustc_hash::FxHashMap<
+        rumoca_core::ComponentPath,
+        &rumoca_ir_ast::InstanceData,
+    >,
+    comp_scope_path: &rumoca_core::ComponentPath,
+) -> Vec<ComponentClassOverrideSignature> {
+    let mut signature = Vec::new();
+    push_class_override_signature(&mut signature, &comp.type_name, &comp.class_overrides);
+
+    let mut path = comp_scope_path.parent();
+    while let Some(ancestor_path) = path {
+        if let Some(ancestor) = component_index.get(&ancestor_path)
+            && !ancestor.class_overrides.is_empty()
+        {
+            push_class_override_signature(
+                &mut signature,
+                &ancestor.type_name,
+                &ancestor.class_overrides,
+            );
+        }
+        path = ancestor_path.parent();
+    }
+    signature
+}
+
+fn push_class_override_signature(
+    signature: &mut Vec<ComponentClassOverrideSignature>,
+    active_type_name: &str,
+    class_overrides: &rumoca_ir_ast::ClassOverrideMap,
+) {
+    if class_overrides.is_empty() {
+        return;
+    }
+
+    signature.push(ComponentClassOverrideSignature {
+        active_type_name: active_type_name.to_string(),
+        overrides: class_override_entries(class_overrides),
+    });
+}
+
+fn class_override_entries(
+    class_overrides: &rumoca_ir_ast::ClassOverrideMap,
+) -> Vec<ComponentClassOverrideEntry> {
+    class_overrides
+        .values()
+        .map(|class_override| ComponentClassOverrideEntry {
+            alias: class_override.alias.clone(),
+            alias_def_id: class_override.alias_def_id,
+            target_def_id: class_override.target_def_id,
+            modifier_args: format!("{:?}", class_override.modifier_args),
+        })
+        .collect()
 }
 
 fn replay_component_static_cache(
     request: &mut ComponentStaticInjectCtx<'_, '_>,
-    cache_key: ComponentStaticConstantKey,
+    cache_key: &ComponentStaticConstantKey,
 ) -> Option<StaticInjectResult> {
-    match request.static_cache.get(&cache_key)? {
+    match request.static_cache.get(cache_key)? {
         ComponentStaticConstantCacheEntry::Cacheable(delta) => {
             delta.replay(request.comp_scope, &mut *request.ctx);
             Some(StaticInjectResult {
@@ -538,10 +693,20 @@ fn component_constant_footprint(ctx: &Context) -> usize {
 fn inject_component_static_constants(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    component_index: &rustc_hash::FxHashMap<
+        rumoca_core::ComponentPath,
+        &rumoca_ir_ast::InstanceData,
+    >,
+    comp_scope_path: &rumoca_core::ComponentPath,
     comp: &rumoca_ir_ast::InstanceData,
     classes_to_scan: &[&ClassDef],
     class_context: &str,
     comp_scope: &str,
+    cache_class_overrides: bool,
+    class_override_cache: &mut rustc_hash::FxHashMap<
+        ClassOverrideConstantKey,
+        ClassOverrideConstantCacheEntry,
+    >,
     ctx: &mut Context,
 ) {
     inject_component_declared_class_overrides(
@@ -550,6 +715,19 @@ fn inject_component_static_constants(
         comp_scope,
         comp,
         class_context,
+        cache_class_overrides,
+        class_override_cache,
+        ctx,
+    );
+    inject_ancestor_class_override_constants(
+        tree,
+        class_index,
+        component_index,
+        comp_scope_path,
+        comp_scope,
+        classes_to_scan,
+        cache_class_overrides,
+        class_override_cache,
         ctx,
     );
     inject_component_enclosing_class_constants(tree, class_index, comp_scope, class_context, ctx);
@@ -606,15 +784,200 @@ fn inject_scan_class_static_constants(
     }
 }
 
-pub(crate) fn inject_component_declared_class_overrides(
+fn inject_component_declared_class_overrides(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     comp_scope: &str,
     comp: &rumoca_ir_ast::InstanceData,
     _resolve_context: &str,
+    cache_class_overrides: bool,
+    class_override_cache: &mut rustc_hash::FxHashMap<
+        ClassOverrideConstantKey,
+        ClassOverrideConstantCacheEntry,
+    >,
     ctx: &mut Context,
 ) {
-    let active_alias = active_component_alias(&comp.type_name);
+    if !cache_class_overrides {
+        inject_class_override_constants_at_scope_uncached(
+            tree,
+            class_index,
+            comp_scope,
+            &comp.type_name,
+            &comp.class_overrides,
+            ctx,
+        );
+        return;
+    }
+    inject_class_override_constants_at_scope_cached(
+        tree,
+        class_index,
+        comp_scope,
+        &comp.type_name,
+        &comp.class_overrides,
+        class_override_cache,
+        ctx,
+    );
+}
+
+/// MLS §7.3: nested components such as `dynBal` inherit effective package aliases
+/// from ancestor instance redeclares even when the child instance overlay does not
+/// carry its own `class_overrides` entry.
+fn inject_ancestor_class_override_constants(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    component_index: &rustc_hash::FxHashMap<
+        rumoca_core::ComponentPath,
+        &rumoca_ir_ast::InstanceData,
+    >,
+    comp_scope_path: &rumoca_core::ComponentPath,
+    comp_scope: &str,
+    classes_to_scan: &[&ClassDef],
+    cache_class_overrides: bool,
+    class_override_cache: &mut rustc_hash::FxHashMap<
+        ClassOverrideConstantKey,
+        ClassOverrideConstantCacheEntry,
+    >,
+    ctx: &mut Context,
+) {
+    let mut path = comp_scope_path.parent();
+    while let Some(ancestor_path) = path {
+        let Some(ancestor) = component_index.get(&ancestor_path) else {
+            path = ancestor_path.parent();
+            continue;
+        };
+        if !ancestor.class_overrides.is_empty() {
+            let active_alias = active_component_alias(&ancestor.type_name);
+            let filtered_overrides = filtered_class_overrides_for_component(
+                &ancestor.class_overrides,
+                classes_to_scan,
+                active_alias,
+            );
+            if filtered_overrides.is_empty() {
+                path = ancestor_path.parent();
+                continue;
+            }
+            if !cache_class_overrides {
+                inject_class_override_constants_at_scope_uncached(
+                    tree,
+                    class_index,
+                    comp_scope,
+                    &ancestor.type_name,
+                    &filtered_overrides,
+                    ctx,
+                );
+                path = ancestor_path.parent();
+                continue;
+            }
+            inject_class_override_constants_at_scope_cached(
+                tree,
+                class_index,
+                comp_scope,
+                &ancestor.type_name,
+                &filtered_overrides,
+                class_override_cache,
+                ctx,
+            );
+        }
+        path = ancestor_path.parent();
+    }
+}
+
+fn filtered_class_overrides_for_component(
+    class_overrides: &rumoca_ir_ast::ClassOverrideMap,
+    classes_to_scan: &[&ClassDef],
+    active_alias: Option<&str>,
+) -> rumoca_ir_ast::ClassOverrideMap {
+    class_overrides
+        .iter()
+        .filter(|(_, class_override)| {
+            active_alias == Some(class_override.alias.as_str())
+                || classes_to_scan
+                    .iter()
+                    .any(|class_def| class_declares_nested_alias(class_def, &class_override.alias))
+        })
+        .map(|(key, value)| (*key, value.clone()))
+        .collect()
+}
+
+fn class_declares_nested_alias(class_def: &ClassDef, alias: &str) -> bool {
+    class_def.classes.contains_key(alias) || class_def.components.contains_key(alias)
+}
+
+fn inject_class_override_constants_at_scope_cached(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    comp_scope: &str,
+    active_type_name: &str,
+    class_overrides: &rumoca_ir_ast::ClassOverrideMap,
+    class_override_cache: &mut rustc_hash::FxHashMap<
+        ClassOverrideConstantKey,
+        ClassOverrideConstantCacheEntry,
+    >,
+    ctx: &mut Context,
+) {
+    if class_overrides.is_empty() {
+        return;
+    }
+
+    let cache_key = ClassOverrideConstantKey {
+        active_type_name: active_type_name.to_string(),
+        overrides: class_override_entries(class_overrides),
+    };
+    if let Some(entry) = class_override_cache.get(&cache_key) {
+        match entry {
+            ClassOverrideConstantCacheEntry::Cacheable(delta) => {
+                delta.replay(comp_scope, ctx);
+                return;
+            }
+            ClassOverrideConstantCacheEntry::Uncacheable => {}
+        }
+    }
+
+    let before = ScopedKeySnapshot::default();
+    inject_class_override_constants_at_scope_uncached(
+        tree,
+        class_index,
+        comp_scope,
+        active_type_name,
+        class_overrides,
+        ctx,
+    );
+    if let Some(delta) = ScopedConstantDelta::capture(ctx, comp_scope, &before) {
+        class_override_cache.insert(cache_key, ClassOverrideConstantCacheEntry::Cacheable(delta));
+    } else {
+        class_override_cache.insert(cache_key, ClassOverrideConstantCacheEntry::Uncacheable);
+    }
+}
+
+fn inject_class_override_constants_at_scope_uncached(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    comp_scope: &str,
+    active_type_name: &str,
+    class_overrides: &rumoca_ir_ast::ClassOverrideMap,
+    ctx: &mut Context,
+) {
+    let active_alias = active_component_alias(active_type_name);
+    for class_override in class_overrides.values() {
+        inject_single_class_override_constants_at_scope(
+            tree,
+            class_index,
+            comp_scope,
+            active_alias,
+            class_override,
+            ctx,
+        );
+    }
+}
+
+fn inject_single_class_override_constants_at_scope(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    comp_scope: &str,
+    active_alias: Option<&str>,
+    class_override: &rumoca_ir_ast::ClassOverride,
+    ctx: &mut Context,
+) {
     let lower_alias = |name: &str| {
         let mut chars = name.chars();
         let Some(first) = chars.next() else {
@@ -625,86 +988,142 @@ pub(crate) fn inject_component_declared_class_overrides(
         lowered
     };
 
-    for class_override in comp.class_overrides.values() {
-        let alias_name = &class_override.alias;
-        let def_id = class_override.target_def_id;
-        let Some(alias_class) = class_index.get(def_id) else {
-            continue;
-        };
-        if !matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
-            continue;
-        }
+    let alias_name = &class_override.alias;
+    let def_id = class_override.target_def_id;
+    let Some(alias_class) = class_index.get(def_id) else {
+        return;
+    };
+    if !matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
+        return;
+    }
 
-        let alias_resolve_context = tree.def_map.get(&def_id).map(String::as_str).unwrap_or("");
+    let alias_resolve_context = tree.def_map.get(&def_id).map(String::as_str).unwrap_or("");
+    let alias_scope = format!("{comp_scope}.{alias_name}");
+    let lowered_alias_name = lower_alias(alias_name);
+    let lowered_alias_scope =
+        (lowered_alias_name != *alias_name).then(|| format!("{comp_scope}.{lowered_alias_name}"));
 
-        let alias_scope = format!("{comp_scope}.{alias_name}");
+    for scope in std::iter::once(alias_scope.as_str())
+        .chain(lowered_alias_scope.as_deref())
+        .chain((active_alias == Some(alias_name.as_str())).then_some(comp_scope))
+    {
+        apply_class_override_modifier_constants(
+            tree,
+            class_index,
+            scope,
+            class_override,
+            alias_resolve_context,
+            ctx,
+        );
+    }
+
+    extract_constants_from_class_with_prefix_and_imports(
+        tree,
+        class_index,
+        &alias_scope,
+        alias_class,
+        alias_resolve_context,
+        ctx,
+    );
+    if let Some(lowered_alias_scope) = &lowered_alias_scope {
         extract_constants_from_class_with_prefix_and_imports(
+            tree,
+            class_index,
+            lowered_alias_scope,
+            alias_class,
+            alias_resolve_context,
+            ctx,
+        );
+        for ext in &alias_class.extends {
+            apply_extends_constants_for_scope(
+                tree,
+                class_index,
+                lowered_alias_scope,
+                ext,
+                alias_resolve_context,
+                ctx,
+            );
+        }
+    }
+    for ext in &alias_class.extends {
+        apply_extends_constants_for_scope(
             tree,
             class_index,
             &alias_scope,
-            alias_class,
+            ext,
             alias_resolve_context,
             ctx,
         );
-        let lowered_alias_name = lower_alias(alias_name);
-        if lowered_alias_name != *alias_name {
-            let lowered_alias_scope = format!("{comp_scope}.{lowered_alias_name}");
-            extract_constants_from_class_with_prefix_and_imports(
-                tree,
-                class_index,
-                &lowered_alias_scope,
-                alias_class,
-                alias_resolve_context,
-                ctx,
-            );
-            for ext in &alias_class.extends {
-                apply_extends_constants_for_scope(
-                    tree,
-                    class_index,
-                    &lowered_alias_scope,
-                    ext,
-                    alias_resolve_context,
-                    ctx,
-                );
-            }
-        }
-        for ext in &alias_class.extends {
-            apply_extends_constants_for_scope(
-                tree,
-                class_index,
-                &alias_scope,
-                ext,
-                alias_resolve_context,
-                ctx,
-            );
-        }
+    }
 
-        // Only expose unqualified component-scope constants (`comp_scope.nX`) for
-        // the alias actually used by this component's declared type. This avoids
-        // collisions from unrelated package aliases that happen to define the same
-        // constant names (e.g., fixedX, nX) in different media packages.
-        if active_alias != Some(alias_name.as_str()) {
-            continue;
-        }
+    // Only expose unqualified component-scope constants (`comp_scope.nX`) for
+    // the alias actually used by this component's declared type. This avoids
+    // collisions from unrelated package aliases that happen to define the same
+    // constant names (e.g., fixedX, nX) in different media packages.
+    if active_alias != Some(alias_name.as_str()) {
+        return;
+    }
 
-        extract_constants_from_class_with_prefix_and_imports(
+    extract_constants_from_class_with_prefix_and_imports(
+        tree,
+        class_index,
+        comp_scope,
+        alias_class,
+        alias_resolve_context,
+        ctx,
+    );
+    for ext in &alias_class.extends {
+        apply_extends_constants_for_scope(
             tree,
             class_index,
             comp_scope,
-            alias_class,
+            ext,
             alias_resolve_context,
             ctx,
         );
-        for ext in &alias_class.extends {
-            apply_extends_constants_for_scope(
+    }
+}
+
+fn apply_class_override_modifier_constants(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    scope: &str,
+    class_override: &rumoca_ir_ast::ClassOverride,
+    resolve_context: &str,
+    ctx: &mut Context,
+) {
+    for mod_expr in &class_override.modifier_args {
+        if let ast::Expression::Modification { .. } = mod_expr {
+            crate::constant_extraction::extract_extends_modification_expr(
                 tree,
                 class_index,
-                comp_scope,
-                ext,
-                alias_resolve_context,
+                scope,
+                mod_expr,
+                resolve_context,
+                ctx,
+            );
+            continue;
+        }
+        for nested in class_override_modifier_arg_expressions(mod_expr) {
+            crate::constant_extraction::extract_extends_modification_expr(
+                tree,
+                class_index,
+                scope,
+                nested,
+                resolve_context,
                 ctx,
             );
         }
+    }
+}
+
+fn class_override_modifier_arg_expressions(expr: &ast::Expression) -> Vec<&ast::Expression> {
+    match expr {
+        ast::Expression::ClassModification { modifications, .. } => modifications.iter().collect(),
+        ast::Expression::Modification { value, .. } => {
+            class_override_modifier_arg_expressions(value)
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -820,7 +1239,6 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
                 .join(&rumoca_core::ComponentPath::from_parts(
                     [child_name.clone()],
                 ));
-        let child_scope = child_scope_path.to_flat_string();
         let Some(child_inst) = request.component_index.get(&child_scope_path) else {
             continue;
         };
@@ -846,8 +1264,6 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
                     AliasPackageConstantCtx {
                         tree: request.tree,
                         class_index: request.class_index,
-                        comp_scope: request.comp_scope,
-                        child_scope: &child_scope,
                         alias_scope: &alias_scope,
                         package_context: &package_context,
                         ctx: &mut *request.ctx,
@@ -890,8 +1306,6 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
             AliasPackageConstantCtx {
                 tree: request.tree,
                 class_index: request.class_index,
-                comp_scope: request.comp_scope,
-                child_scope: &child_scope,
                 alias_scope: &alias_scope,
                 package_context: &package_context,
                 ctx: &mut *request.ctx,
@@ -904,8 +1318,6 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
 struct AliasPackageConstantCtx<'a, 'tree> {
     tree: &'a ClassTree,
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
-    comp_scope: &'a str,
-    child_scope: &'a str,
     alias_scope: &'a str,
     package_context: &'a str,
     ctx: &'a mut Context,
@@ -915,27 +1327,23 @@ fn inject_alias_package_constants(
     request: AliasPackageConstantCtx<'_, '_>,
     package_class: &ClassDef,
 ) {
-    for scope in [request.alias_scope, request.comp_scope, request.child_scope] {
-        extract_constants_from_class_with_prefix_and_imports(
+    extract_constants_from_class_with_prefix_and_imports(
+        request.tree,
+        request.class_index,
+        request.alias_scope,
+        package_class,
+        request.package_context,
+        &mut *request.ctx,
+    );
+    for ext in &package_class.extends {
+        apply_extends_constants_for_scope(
             request.tree,
             request.class_index,
-            scope,
-            package_class,
+            request.alias_scope,
+            ext,
             request.package_context,
             &mut *request.ctx,
         );
-    }
-    for ext in &package_class.extends {
-        for scope in [request.alias_scope, request.comp_scope, request.child_scope] {
-            apply_extends_constants_for_scope(
-                request.tree,
-                request.class_index,
-                scope,
-                ext,
-                request.package_context,
-                &mut *request.ctx,
-            );
-        }
     }
 }
 

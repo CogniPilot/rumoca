@@ -11,7 +11,7 @@ use rumoca_eval_solve::{
     try_eval_table_bound_value_in, try_eval_table_lookup_slope_value_in,
     try_eval_table_lookup_value_in, try_eval_time_table_next_event_value_in,
 };
-use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp};
+use rumoca_ir_solve::{BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, UnaryOp};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -644,6 +644,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             | LinearOp::ImpureRandomInteger { .. } => Err(CompileError::Backend(
                 "cranelift row compiler does not support discrete random solve-IR ops".to_string(),
             )),
+            LinearOp::ExternalCall { function, .. } => Err(external_call_compile_error(function)),
             LinearOp::Unary { dst, op, arg } => {
                 let x = lookup_reg(self.regs, arg)?;
                 let value = emit_unary_op(self.fb, self.module, self.math, op, x)?;
@@ -1277,6 +1278,7 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
             | LinearOp::ImpureRandomInit { .. }
             | LinearOp::ImpureRandom { .. }
             | LinearOp::ImpureRandomInteger { .. }
+            | LinearOp::ExternalCall { .. }
             | LinearOp::StoreOutput { .. }
     )
 }
@@ -1320,6 +1322,7 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
         | LinearOp::ImpureRandomInit { .. }
         | LinearOp::ImpureRandom { .. }
         | LinearOp::ImpureRandomInteger { .. }
+        | LinearOp::ExternalCall { .. }
         | LinearOp::StoreOutput { .. } => Err(CompileError::Backend(
             "attempted to lower non-simple runtime op onto the simple row path".to_string(),
         )),
@@ -1369,6 +1372,12 @@ fn max_reg_index(op: LinearOp) -> Option<usize> {
             imax,
             ..
         } => Some(dst.max(id).max(imin).max(imax) as usize),
+        LinearOp::ExternalCall {
+            dst,
+            args,
+            arg_count,
+            ..
+        } => Some(args.iter().copied().take(arg_count).fold(dst, u32::max) as usize),
         LinearOp::Move { dst, src } => Some(dst.max(src) as usize),
         LinearOp::LinearSolveComponent {
             dst,
@@ -1411,6 +1420,7 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::ImpureRandomInit { dst, .. }
         | LinearOp::ImpureRandom { dst, .. }
         | LinearOp::ImpureRandomInteger { dst, .. }
+        | LinearOp::ExternalCall { dst, .. }
         | LinearOp::Move { dst, .. }
         | LinearOp::LinearSolveComponent { dst, .. }
         | LinearOp::Unary { dst, .. }
@@ -1473,6 +1483,13 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
             validate_reg_defined(defined, imin)?;
             validate_reg_defined(defined, imax)
         }
+        LinearOp::ExternalCall {
+            args, arg_count, ..
+        } => args
+            .iter()
+            .copied()
+            .take(arg_count)
+            .try_for_each(|arg| validate_reg_defined(defined, arg)),
         LinearOp::Move { src, .. } => validate_reg_defined(defined, src),
         LinearOp::LinearSolveComponent {
             matrix_start,
@@ -1672,6 +1689,9 @@ fn execute_general_op(
         | LinearOp::ImpureRandomInit { dst, .. }
         | LinearOp::ImpureRandom { dst, .. }
         | LinearOp::ImpureRandomInteger { dst, .. } => set_reg_value(regs, dst as usize, 1.0),
+        LinearOp::ExternalCall { function, .. } => {
+            return Err(external_call_compile_error(function));
+        }
         LinearOp::Unary { dst, op, arg } => {
             let x = read_reg_value(regs, arg as usize);
             set_reg_value(regs, dst as usize, apply_unary(op, x));
@@ -1704,6 +1724,12 @@ fn execute_general_op(
         LinearOp::StoreOutput { .. } => {}
     }
     Ok(())
+}
+
+fn external_call_compile_error(function: ExternalFunctionKind) -> CompileError {
+    CompileError::Backend(format!(
+        "external function {function:?} requires a native runtime bridge not provided by rumoca-exec-cranelift"
+    ))
 }
 
 fn execute_general_table_op(

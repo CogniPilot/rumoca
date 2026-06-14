@@ -604,6 +604,9 @@ fn reject_external_functions_for_simulation_template(
     if !template_emits_simulation_function_bodies(template) {
         return Ok(());
     }
+    if external_function_codegen_opt_in_enabled() {
+        return Ok(());
+    }
     if let Some((name, _)) = dae_model
         .symbols
         .functions
@@ -622,6 +625,9 @@ fn reject_external_functions_in_json_for_simulation_template(
     if !template_emits_simulation_function_bodies(template) {
         return Ok(());
     }
+    if external_function_codegen_opt_in_enabled() {
+        return Ok(());
+    }
     let Some(functions) = dae_json
         .get("functions")
         .and_then(serde_json::Value::as_object)
@@ -636,6 +642,10 @@ fn reject_external_functions_in_json_for_simulation_template(
         return Err(CodegenError::external_function_not_callable(name.as_str()));
     }
     Ok(())
+}
+
+fn external_function_codegen_opt_in_enabled() -> bool {
+    false
 }
 
 fn template_emits_simulation_function_bodies(template: &str) -> bool {
@@ -1120,6 +1130,7 @@ fn create_environment() -> Environment<'static> {
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
+    env.add_filter("json", json_filter);
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.
@@ -1153,6 +1164,10 @@ fn create_environment() -> Environment<'static> {
     // Custom functions for statement rendering (MLS §12: function bodies)
     env.add_function("render_statement", render_statement_function);
     env.add_function("render_statements", render_statements_function);
+    env.add_function(
+        "render_function_statements",
+        render_function_statements_function,
+    );
 
     // Custom function for flat equation rendering (Model residual equations)
     env.add_function("render_flat_equation", render_flat_equation_function);
@@ -1291,6 +1306,11 @@ fn product_filter(value: Value) -> Value {
         }
     }
     Value::from(result)
+}
+
+/// Filter to render a template value as JSON.
+fn json_filter(value: Value) -> Result<String, minijinja::Error> {
+    serde_json::to_string(&value).map_err(|err| render_err(format!("JSON render failed: {err}")))
 }
 
 fn array_scalar_name_function(base_name: Value, dims: Value, linear_index: Value) -> RenderResult {
@@ -1686,6 +1706,19 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     render_statements(&stmts, &cfg, indent_str)
 }
 
+fn render_function_statements_function(
+    stmts: Value,
+    config: Value,
+    indent: Value,
+    return_value: Value,
+) -> RenderResult {
+    let mut cfg = ExprConfig::from_value(&config);
+    cfg.subscript_underscore = false;
+    cfg.return_value = return_value.as_str().map(|value| value.to_string());
+    let indent_str = indent.as_str().unwrap_or("    ");
+    render_statements(&stmts, &cfg, indent_str)
+}
+
 // ── ExprConfig and helpers ───────────────────────────────────────────
 
 /// Configuration for expression rendering.
@@ -1732,6 +1765,8 @@ pub(crate) struct ExprConfig {
     pub(crate) symbols: Option<Value>,
     /// Render-time substitutions for expression-level unrolling.
     pub(crate) substitutions: Vec<(String, String)>,
+    /// Optional C/Python expression returned for bare Modelica `return` statements.
+    pub(crate) return_value: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1769,6 +1804,7 @@ impl Default for ExprConfig {
             float_literals: false,
             symbols: None,
             substitutions: Vec::new(),
+            return_value: None,
         }
     }
 }
@@ -1879,6 +1915,11 @@ impl ExprConfig {
             && !val.is_none()
         {
             cfg.symbols = Some(val);
+        }
+        if let Some(s) = get_str_attr(v, "return_value")
+            && !s.is_empty()
+        {
+            cfg.return_value = Some(s);
         }
 
         cfg

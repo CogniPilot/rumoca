@@ -19,7 +19,23 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
                 field_access_binding_key(base, field)
                     .ok()
-                    .and_then(|key| self.layout.shape(&key).map(<[usize]>::to_vec))
+                    .and_then(|key| {
+                        self.local_binding_dims
+                            .get(&key)
+                            .map(|dims| {
+                                dims.iter()
+                                    .filter_map(|dim| (*dim > 0).then_some(*dim as usize))
+                                    .collect::<Vec<_>>()
+                            })
+                            .or_else(|| self.layout.shape(&key).map(<[usize]>::to_vec))
+                            .or_else(|| {
+                                let dims = infer_indexed_dims(&indexed_entries_for_key(
+                                    &self.indexed_bindings,
+                                    &key,
+                                ));
+                                (!dims.is_empty()).then_some(dims)
+                            })
+                    })
                     .or_else(|| self.infer_function_call_field_dims(base, field))
                     .unwrap_or_else(|| self.infer_expr_dims(base, scope))
             }
@@ -33,27 +49,28 @@ impl<'a> LowerBuilder<'a> {
                     .map(|arg| self.infer_expr_dims(arg, scope))
                     .unwrap_or_default()
             }
-            rumoca_core::Expression::FunctionCall { name, .. } => {
+            rumoca_core::Expression::FunctionCall { name, args, .. } => {
                 // Returning an empty Vec (scalar) when the function is unknown or has no
                 // declared first output is intentional: inference is best-effort.
                 // A `debug_assert!` gates the regression-prone case where the function IS
                 // known but its first output has non-empty dims — those must not silently
                 // collapse to scalar.
-                let maybe_output = self
-                    .lookup_function(name)
-                    .and_then(|function| function.outputs.first().cloned());
+                let inferred = self.infer_function_call_output_dims(name, args, scope);
                 debug_assert!(
-                    maybe_output
-                        .as_ref()
-                        .is_none_or(|o| !dims_i64_to_usize(&o.dims).is_empty()
-                            || o.dims.is_empty()),
+                    inferred.is_some()
+                        || self
+                            .lookup_function(name)
+                            .and_then(|function| function.outputs.first())
+                            .is_none_or(|output| {
+                                output.dims.is_empty()
+                                    || output.dims.iter().any(|dim| *dim <= 0)
+                                    || !dims_i64_to_usize(&output.dims).is_empty()
+                            }),
                     "function `{}` has non-scalar declared output dims but inference \
                      would return scalar — check dims_i64_to_usize is not lossy",
                     name.as_str()
                 );
-                maybe_output
-                    .map(|output| dims_i64_to_usize(&output.dims))
-                    .unwrap_or_default()
+                inferred.unwrap_or_default()
             }
             rumoca_core::Expression::Array {
                 elements,
@@ -75,6 +92,10 @@ impl<'a> LowerBuilder<'a> {
                 else_branch,
                 ..
             } => {
+                if let Some(selected) = self.compile_time_if_array_selection(branches, else_branch)
+                {
+                    return self.infer_expr_dims(selected, scope);
+                }
                 let else_dims = self.infer_expr_dims(else_branch, scope);
                 if !else_dims.is_empty() {
                     return else_dims;
@@ -96,6 +117,132 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::Expression::Literal { value: _, .. }
             | rumoca_core::Expression::Empty { .. } => Vec::new(),
         }
+    }
+
+    fn infer_function_call_output_dims(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+    ) -> Option<Vec<usize>> {
+        let function = self.lookup_function(name)?;
+        let output = function.outputs.first()?;
+        let declared = dims_i64_to_usize(&output.dims);
+        if !declared.is_empty() {
+            return Some(declared);
+        }
+        if output.dims.is_empty() {
+            return Some(Vec::new());
+        }
+        if output.shape_expr.len() != output.dims.len() {
+            return None;
+        }
+        output
+            .shape_expr
+            .iter()
+            .map(|subscript| {
+                self.infer_function_shape_dim(subscript, &function.inputs, args, scope)
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|dims| !dims.is_empty())
+    }
+
+    fn infer_function_shape_dim(
+        &self,
+        subscript: &rumoca_core::Subscript,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+    ) -> Option<usize> {
+        match subscript {
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value as usize),
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                self.infer_function_shape_expr_dim(expr, inputs, args, scope)
+            }
+            rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Index { .. } => None,
+        }
+    }
+
+    fn infer_function_shape_expr_dim(
+        &self,
+        expr: &rumoca_core::Expression,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+    ) -> Option<usize> {
+        match expr {
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(value),
+                ..
+            } if *value > 0 => Some(*value as usize),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Size,
+                args: size_args,
+                ..
+            } => self.infer_size_shape_expr_dim(size_args, inputs, args, scope),
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => {
+                let input_idx = inputs
+                    .iter()
+                    .position(|input| input.name == name.as_str())?;
+                let actual = function_actual_arg_for_input(name.as_str(), input_idx, args)?;
+                self.infer_positive_integer_expr(actual)
+            }
+            _ => None,
+        }
+    }
+
+    fn infer_positive_integer_expr(&self, expr: &rumoca_core::Expression) -> Option<usize> {
+        if let Some(value) = integer_literal_usize(expr) {
+            return Some(value);
+        }
+        if let Ok(value) = compile_time_index_expr(expr, &self.structural_bindings) {
+            return Some(value);
+        }
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = expr
+        else {
+            return None;
+        };
+        if !subscripts.is_empty() {
+            return None;
+        }
+        let start = self.variable_starts?.get(name.as_str())?;
+        integer_literal_usize(start)
+            .or_else(|| compile_time_index_expr(start, &self.structural_bindings).ok())
+    }
+
+    fn infer_size_shape_expr_dim(
+        &self,
+        size_args: &[rumoca_core::Expression],
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+    ) -> Option<usize> {
+        let rumoca_core::Expression::VarRef {
+            name: input_name,
+            subscripts,
+            ..
+        } = size_args.first()?
+        else {
+            return None;
+        };
+        if !subscripts.is_empty() {
+            return None;
+        }
+        let dim = size_args
+            .get(1)
+            .and_then(integer_literal_usize)
+            .unwrap_or(1);
+        let input_idx = inputs
+            .iter()
+            .position(|input| input.name == input_name.as_str())?;
+        let actual = function_actual_arg_for_input(input_name.as_str(), input_idx, args)?;
+        self.infer_expr_dims(actual, scope)
+            .get(dim.checked_sub(1)?)
+            .copied()
     }
 
     fn infer_tuple_flat_dims(
@@ -226,14 +373,17 @@ impl<'a> LowerBuilder<'a> {
         {
             return dims.iter().map(|dim| *dim as usize).collect();
         }
+        if scope.contains_key(&name_path) {
+            return Vec::new();
+        }
+        if let Some(shape) = self.layout.shape(name) {
+            return shape.to_vec();
+        }
         if let Some(values) = scoped_indexed_binding_values(scope, &name_path) {
             return vector_dims(values.len());
         }
         if let Some(values) = self.local_indexed_binding_values(name) {
             return vector_dims(values.len());
-        }
-        if let Some(shape) = self.layout.shape(name) {
-            return shape.to_vec();
         }
         let indexed_dims =
             infer_indexed_dims(&indexed_entries_for_key(&self.indexed_bindings, name));
@@ -570,8 +720,7 @@ impl<'a> LowerBuilder<'a> {
         let end = self.eval_compile_time_int(end, const_scope, context)?;
         let step = match step {
             Some(step) => self.eval_compile_time_int(step, const_scope, context)?,
-            None if end >= start => 1,
-            None => -1,
+            None => 1,
         };
         if step == 0 {
             return Err(LowerError::Unsupported {
@@ -665,4 +814,50 @@ impl<'a> LowerBuilder<'a> {
             _ => Vec::new(),
         }
     }
+}
+
+fn integer_literal_usize(expr: &rumoca_core::Expression) -> Option<usize> {
+    let rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(value),
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    (*value > 0).then_some(*value as usize)
+}
+
+fn function_actual_arg_for_input<'a>(
+    input_name: &str,
+    input_idx: usize,
+    args: &'a [rumoca_core::Expression],
+) -> Option<&'a rumoca_core::Expression> {
+    let named_prefix = format!("__rumoca_named_arg__.{input_name}");
+    for arg in args {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args: named_args,
+            ..
+        } = arg
+        else {
+            continue;
+        };
+        if name.as_str() == named_prefix {
+            return named_args.first();
+        }
+    }
+    args.iter()
+        .filter(|arg| !is_named_argument_expression(arg))
+        .nth(input_idx)
+}
+
+fn is_named_argument_expression(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: true,
+            ..
+        } if name.as_str().starts_with("__rumoca_named_arg__.")
+    )
 }

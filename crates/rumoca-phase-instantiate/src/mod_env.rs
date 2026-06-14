@@ -239,11 +239,17 @@ fn apply_component_modifier(
         component_type_allows_string_modifier(&target_comp.type_name.to_string())
     });
 
-    // INST-010: Check if target component is final in the target class (MLS §7.2.6)
-    if target_component
-        .as_ref()
-        .is_some_and(|target_comp| target_comp.is_final)
+    if let Some(target_comp) = target_component.as_ref()
+        && target_comp.is_final
     {
+        let qn = ast::QualifiedName::from_ident(target_name);
+        if prefixes.final_
+            && let Some(existing) = ctx.mod_env().get(&qn)
+            && existing.final_
+            && modification_forwards_to_existing(mod_expr, existing, ctx.mod_env())
+        {
+            return Ok(());
+        }
         return Err(Box::new(InstantiateError::redeclare_final(
             target_name,
             rumoca_core::Span::DUMMY,
@@ -321,6 +327,7 @@ fn apply_component_modifier(
                 eval_ctx.tree,
                 &eval_ctx.insert_ctx,
             )?;
+            preserve_redeclare_class_modifier(ctx, target_name, mod_expr, eval_ctx);
         }
     }
 
@@ -398,6 +405,26 @@ fn component_type_allows_string_modifier(type_name: &str) -> bool {
     rumoca_core::qualified_type_name_matches(type_name, "String")
 }
 
+fn modification_forwards_to_existing(
+    value: &ast::Expression,
+    existing: &rumoca_ir_ast::ModificationValue,
+    mod_env: &ast::ModificationEnvironment,
+) -> bool {
+    if existing.value == *value {
+        return true;
+    }
+    let ast::Expression::ComponentReference(cref) = value else {
+        return false;
+    };
+    if cref.parts.len() != 1 {
+        return false;
+    }
+    let qn = ast::QualifiedName::from_ident(cref.parts[0].ident.text.as_ref());
+    mod_env
+        .get(&qn)
+        .is_some_and(|outer| outer.value == existing.value)
+}
+
 fn insert_scoped_modifier_binding(
     ctx: &mut InstantiateContext,
     binding: ScopedModifierBinding,
@@ -428,6 +455,15 @@ fn insert_scoped_modifier_binding(
         .get(&key)
         .is_some_and(|existing| existing.final_ && !replace_parent)
     {
+        if prefixes.final_
+            && modification_forwards_to_existing(
+                &value,
+                ctx.mod_env().get(&key).expect("checked above"),
+                ctx.mod_env(),
+            )
+        {
+            return Ok(());
+        }
         return Err(Box::new(InstantiateError::redeclare_final(
             key.to_flat_string(),
             rumoca_core::Span::DUMMY,
@@ -481,7 +517,7 @@ fn collect_structural_integer_fields_from_sibling_reference(
         tree,
         mod_env,
         effective_components,
-        resolve_class_components: resolve_effective_components_for_eval,
+        resolve_class_components: &resolve_effective_components_for_eval,
     };
     source_component
         .modifications
@@ -810,7 +846,7 @@ fn resolve_modification_expr_with_depth(
         tree,
         mod_env,
         effective_components,
-        resolve_class_components: resolve_effective_components_for_eval,
+        resolve_class_components: &resolve_effective_components_for_eval,
     };
 
     // Resolve booleans first (e.g., useFilter=useFilter) so conditional

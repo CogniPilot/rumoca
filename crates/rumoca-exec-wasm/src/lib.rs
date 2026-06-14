@@ -370,7 +370,7 @@ fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
 
 #[cfg(test)]
 mod tests {
-    use rumoca_ir_solve::{BinaryOp, LinearOp, UnaryOp};
+    use rumoca_ir_solve::{BinaryOp, ExternalFunctionKind, LinearOp, UnaryOp};
     use wasmparser::FunctionBody;
     use wasmparser::Parser;
     use wasmparser::Payload;
@@ -486,5 +486,31 @@ mod tests {
         assert!(stats.saw_memory_export);
         assert_eq!(stats.function_bodies, 1);
         assert!(stats.op_count > 20);
+    }
+
+    #[test]
+    fn external_call_rows_fail_closed_without_wasm_bridge() {
+        let rows = vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            LinearOp::ExternalCall {
+                dst: 2,
+                function: ExternalFunctionKind::BuildingsEnergyPlusExchange,
+                args: [0, 1, 0, 0, 0, 0, 0, 0],
+                arg_count: 2,
+                output_index: 0,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]];
+
+        let err = match super::CompiledKernelWasm::from_rows(rows, 1, 1) {
+            Ok(_) => panic!("WASM external calls require an explicit host bridge"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(err, super::WasmCompileError::Backend(message) if message.contains("external function BuildingsEnergyPlusExchange")),
+            "external-call error should identify the function"
+        );
     }
 }

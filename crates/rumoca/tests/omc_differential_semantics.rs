@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 
-use tempfile::tempdir;
+use tempfile::tempdir_in;
 
 const ENCAPSULATED_SCOPE_SOURCE: &str = r#"
 package P
@@ -23,24 +23,25 @@ fn encapsulated_scope_rejection_matches_omc() {
         return;
     }
 
-    let dir = tempdir().expect("tempdir");
+    let cwd = std::env::current_dir().expect("current dir");
+    let dir = tempdir_in(cwd).expect("tempdir in mounted workspace");
+    let model_path = dir.path().join("EncapsulatedScope.mo");
+    let script_path = dir.path().join("check.mos");
+    fs::write(&model_path, ENCAPSULATED_SCOPE_SOURCE).expect("write model");
     fs::write(
-        dir.path().join("EncapsulatedScope.mo"),
-        ENCAPSULATED_SCOPE_SOURCE,
-    )
-    .expect("write model");
-    fs::write(
-        dir.path().join("check.mos"),
-        r#"loadFile("EncapsulatedScope.mo");
+        &script_path,
+        format!(
+            r#"loadFile("{}");
 checkModel(P.M);
 getErrorString();
 "#,
+            model_path.display()
+        ),
     )
     .expect("write OMC script");
 
     let omc = Command::new("omc")
-        .arg("check.mos")
-        .current_dir(dir.path())
+        .arg(&script_path)
         .output()
         .expect("run omc");
     let omc_output = format!(

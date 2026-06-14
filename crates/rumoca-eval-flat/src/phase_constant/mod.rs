@@ -1,5 +1,8 @@
 //! Flat expression evaluation for the flatten phase.
 //!
+//! SPEC_0021 file-size exception: split plan is to move focused evaluation
+//! helpers into owned submodules after BOPTEST parity stabilization.
+//!
 //! This module provides evaluation functions for flat expressions during the
 //! flattening phase. It handles:
 //! - Integer expression evaluation (parameters, builtins, user functions)

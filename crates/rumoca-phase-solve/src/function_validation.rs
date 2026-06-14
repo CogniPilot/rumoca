@@ -22,6 +22,62 @@ pub struct FunctionValidationError {
     pub reason: String,
 }
 
+fn external_function_unsupported_reason(func: &rumoca_core::Function) -> String {
+    let Some(external) = func.external.as_ref() else {
+        return "function is not external".to_string();
+    };
+    let symbol = external
+        .function_name
+        .as_deref()
+        .unwrap_or_else(|| func.name.as_str());
+    let output = external
+        .output_name
+        .as_deref()
+        .map(|name| format!(" output={name}"))
+        .unwrap_or_default();
+    let args = if external.arg_names.is_empty() {
+        "args=[]".to_string()
+    } else {
+        format!("args=[{}]", external.arg_names.join(", "))
+    };
+    let libraries = if external.libraries.is_empty() {
+        "libraries=[]".to_string()
+    } else {
+        format!("libraries=[{}]", external.libraries.join(", "))
+    };
+    let include_directories = if external.include_directories.is_empty() {
+        "include_directories=[]".to_string()
+    } else {
+        format!(
+            "include_directories=[{}]",
+            external.include_directories.join(", ")
+        )
+    };
+    let library_directories = if external.library_directories.is_empty() {
+        "library_directories=[]".to_string()
+    } else {
+        format!(
+            "library_directories=[{}]",
+            external.library_directories.join(", ")
+        )
+    };
+    format!(
+        "external function is not supported by this simulator: language={} symbol={}{} {} {} {} {}; runtime linker and native library packaging are required",
+        external.language,
+        symbol,
+        output,
+        args,
+        libraries,
+        include_directories,
+        library_directories
+    )
+}
+
+fn external_function_codegen_opt_in_enabled(func: &rumoca_core::Function) -> bool {
+    let _ = func;
+    false
+}
+
 fn resolve_dae_function_by_key<'a>(
     dae: &'a Dae,
     requested: &str,
@@ -197,10 +253,13 @@ pub(super) fn validate_sim_function_call_name(
         });
     };
 
-    if func.external.is_some() && !eval::is_runtime_special_function_name(func.name.as_str()) {
+    if func.external.is_some()
+        && !eval::is_runtime_special_function_name(func.name.as_str())
+        && !external_function_codegen_opt_in_enabled(func)
+    {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
-            reason: "external function is not supported by this simulator".to_string(),
+            reason: external_function_unsupported_reason(func),
         });
     }
 
@@ -254,6 +313,76 @@ mod dynamic_projection_tests {
         validate_sim_function_call_name(&dae, &VarName::new("Pkg.f.y[1]").into(), &aliases)
             .expect("indexed dynamic output projection should validate");
     }
+
+    #[test]
+    fn external_function_diagnostic_reports_runtime_symbol_and_args() {
+        let mut dae = Dae::default();
+        let mut function = rumoca_core::Function::new(
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+            Default::default(),
+        );
+        function.external = Some(rumoca_core::ExternalFunction {
+            language: "C".to_string(),
+            function_name: Some("initialize_Modelica_EnergyPlus_9_6_0".to_string()),
+            output_name: None,
+            arg_names: vec![
+                "adapter".to_string(),
+                "isSynchronized".to_string(),
+                "nObj".to_string(),
+            ],
+            libraries: vec![
+                "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+                "fmilib_shared".to_string(),
+            ],
+            include_directories: vec!["modelica://Buildings/Resources/C-Sources".to_string()],
+            ..Default::default()
+        });
+        dae.symbols
+            .functions
+            .insert(function.name.clone(), function);
+
+        let err = validate_sim_function_call_name(
+            &dae,
+            &VarName::new("Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize").into(),
+            &HashSet::new(),
+        )
+        .expect_err("external EnergyPlus C function must fail closed");
+
+        assert_eq!(
+            err.name,
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"
+        );
+        assert!(err.reason.contains("language=C"), "{}", err.reason);
+        assert!(
+            err.reason
+                .contains("symbol=initialize_Modelica_EnergyPlus_9_6_0"),
+            "{}",
+            err.reason
+        );
+        assert!(
+            err.reason.contains("args=[adapter, isSynchronized, nObj]"),
+            "{}",
+            err.reason
+        );
+        assert!(
+            err.reason
+                .contains("libraries=[ModelicaBuildingsEnergyPlus_9_6_0, fmilib_shared]"),
+            "{}",
+            err.reason
+        );
+        assert!(
+            err.reason
+                .contains("include_directories=[modelica://Buildings/Resources/C-Sources]"),
+            "{}",
+            err.reason
+        );
+        assert!(
+            err.reason
+                .contains("runtime linker and native library packaging are required"),
+            "{}",
+            err.reason
+        );
+    }
 }
 
 pub(super) fn validate_sim_component_function_call_name(
@@ -276,10 +405,13 @@ pub(super) fn validate_sim_component_function_call_name(
         });
     };
 
-    if func.external.is_some() && !eval::is_runtime_special_function_name(func.name.as_str()) {
+    if func.external.is_some()
+        && !eval::is_runtime_special_function_name(func.name.as_str())
+        && !external_function_codegen_opt_in_enabled(func)
+    {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
-            reason: "external function is not supported by this simulator".to_string(),
+            reason: external_function_unsupported_reason(func),
         });
     }
 

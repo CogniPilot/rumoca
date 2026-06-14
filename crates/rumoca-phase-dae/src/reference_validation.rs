@@ -117,7 +117,21 @@ fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) 
 }
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
-    rumoca_core::top_level_last_segment(candidate) == short
+    rumoca_core::top_level_last_segment(candidate) == final_path_segment(short)
+}
+
+fn final_path_segment(path: &str) -> &str {
+    let mut bracket_depth = 0usize;
+    let mut last_boundary = 0usize;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if bracket_depth == 0 => last_boundary = idx + ch.len_utf8(),
+            _ => {}
+        }
+    }
+    &path[last_boundary..]
 }
 
 fn enum_literal_alias_matches(candidate: &str, raw: &str) -> bool {
@@ -148,29 +162,41 @@ fn validate_constructor_field_selection(
         }
 
         let selected_name = format!("{}.{}", name.as_str(), field);
-        let Some(constructor) = functions.get(name.var_name()) else {
-            if crate::todae_debug_enabled() {
-                let mut candidates: Vec<String> =
-                    functions.keys().map(|f| f.as_str().to_string()).collect();
-                candidates.sort();
-                let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
-                let mut short_matches: Vec<String> = candidates
+        let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
+        let mut short_matches: Vec<(&VarName, &Function)> = Vec::new();
+        let constructor = if let Some(constructor) = functions.get(name.var_name()) {
+            constructor
+        } else {
+            short_matches.extend(
+                functions
                     .iter()
-                    .filter(|candidate| short_leaf_matches(candidate, &short))
-                    .cloned()
-                    .collect();
-                short_matches.sort();
-                crate::log_todae_debug(format!(
-                    "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_matches:?} total_functions={}",
+                    .filter(|(candidate, _)| short_leaf_matches(candidate.as_str(), &short)),
+            );
+            if short_matches.len() == 1 {
+                short_matches[0].1
+            } else {
+                if crate::todae_debug_enabled() {
+                    let mut candidates: Vec<String> =
+                        functions.keys().map(|f| f.as_str().to_string()).collect();
+                    candidates.sort();
+                    let mut short_match_names: Vec<String> = candidates
+                        .iter()
+                        .filter(|candidate| short_leaf_matches(candidate, &short))
+                        .cloned()
+                        .collect();
+                    short_match_names.sort();
+                    crate::log_todae_debug(format!(
+                        "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_match_names:?} total_functions={}",
+                        selected_name,
+                        args.len(),
+                        candidates.len()
+                    ));
+                }
+                return Err(ToDaeError::constructor_field_selection_unresolved(
                     selected_name,
-                    args.len(),
-                    candidates.len()
+                    span,
                 ));
             }
-            return Err(ToDaeError::constructor_field_selection_unresolved(
-                selected_name,
-                span,
-            ));
         };
 
         let field_known = constructor.inputs.iter().any(|param| param.name == field)
@@ -595,7 +621,8 @@ fn validate_function_references(
                     function.span,
                     Some(&function_scope),
                     known_refs,
-                )?;
+                )
+                .map_err(|err| function_reference_validation_context(err, function))?;
             }
         }
 
@@ -605,9 +632,66 @@ fn validate_function_references(
             function.span,
             Some(&function_scope),
             known_refs,
-        )?;
+        )
+        .map_err(|err| function_reference_validation_context(err, function))?;
     }
     Ok(())
+}
+
+fn function_reference_validation_context(
+    err: ToDaeError,
+    function: &rumoca_core::Function,
+) -> ToDaeError {
+    let function_name = function.name.as_str();
+    match err {
+        ToDaeError::UnresolvedReference { name, span } => ToDaeError::UnresolvedReference {
+            name: format!(
+                "{name} (while validating DAE function {function_name}{})",
+                dae_function_scope_debug_suffix(function)
+            ),
+            span,
+        },
+        other => other,
+    }
+}
+
+fn dae_function_scope_debug_suffix(function: &rumoca_core::Function) -> String {
+    if !dae_function_scope_debug_enabled() {
+        return String::new();
+    }
+    let inputs = function
+        .inputs
+        .iter()
+        .map(|param| format!("{}:{}", param.name, param.type_name))
+        .collect::<Vec<_>>()
+        .join(",");
+    let outputs = function
+        .outputs
+        .iter()
+        .map(|param| format!("{}:{}", param.name, param.type_name))
+        .collect::<Vec<_>>()
+        .join(",");
+    let locals = function
+        .locals
+        .iter()
+        .map(|param| format!("{}:{}", param.name, param.type_name))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(" inputs=[{inputs}] outputs=[{outputs}] locals=[{locals}]")
+}
+
+fn dae_function_scope_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(
+            target: "rumoca_phase_dae::function_scope",
+            tracing::Level::DEBUG
+        )
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
 }
 
 fn validate_statement_slice_references(
@@ -966,7 +1050,29 @@ fn function_scope_contains_reference(name: &str, scope: &HashSet<&str>) -> bool 
     if scope.contains(name) {
         return true;
     }
+    let normalized_top_level = path_utils::normalize_top_level_segment(name);
+    if normalized_top_level != name && scope.contains(normalized_top_level) {
+        return true;
+    }
+    if let Some(decomposed_name) = local_record_field_alias(name)
+        && scope.contains(decomposed_name.as_str())
+    {
+        return true;
+    }
     path_utils::get_top_level_prefix(name).is_some_and(|prefix| scope.contains(prefix.as_str()))
+}
+
+fn local_record_field_alias(name: &str) -> Option<String> {
+    let (record, field) = split_local_record_field_name(name)?;
+    if record.is_empty() || field.is_empty() || field.contains('.') {
+        return None;
+    }
+    Some(format!("{record}_{field}"))
+}
+
+fn split_local_record_field_name(name: &str) -> Option<(&str, &str)> {
+    let idx = name.find('.')?;
+    Some((&name[..idx], &name[idx + 1..]))
 }
 
 fn validate_expression_slice_references(
@@ -1100,24 +1206,86 @@ fn is_known_dae_reference(name: &rumoca_core::Reference, known_refs: &KnownRefer
         })
         || ancestor_sibling_reference_known(raw, known_refs)
         || elided_component_reference_known(raw, known_refs)
+        || inherited_medium_package_constant_reference_known(raw)
+        || ideal_gas_data_record_constant_reference_known(raw)
+        || weather_bus_field_reference_known(raw)
         || medium_package_constant_reference_known(raw, known_refs)
 }
 
 fn bare_medium_package_constant_known(raw: &str) -> bool {
     !path_utils::has_top_level_dot(raw)
+        && (is_partial_medium_constant_leaf(raw) || matches!(raw, "Water" | "Air"))
+}
+
+fn is_partial_medium_constant_leaf(raw: &str) -> bool {
+    matches!(
+        raw,
+        "reference_X"
+            | "reference_T"
+            | "reference_p"
+            | "p_default"
+            | "T_default"
+            | "X_default"
+            | "C_default"
+            | "nX"
+            | "nXi"
+            | "nC"
+            | "C_nominal"
+    )
+}
+
+fn inherited_medium_package_constant_reference_known(raw: &str) -> bool {
+    let parts = split_path_with_indices(raw);
+    let Some(leaf) = parts.last() else {
+        return false;
+    };
+    parts.len() >= 3 && parts.contains(&"Media") && is_partial_medium_constant_leaf(leaf)
+}
+
+fn ideal_gas_data_record_constant_reference_known(raw: &str) -> bool {
+    let parts = split_path_with_indices(raw);
+    parts.len() == 7
+        && parts[0] == "Modelica"
+        && parts[1] == "Media"
+        && parts[2] == "IdealGases"
+        && parts[3] == "Common"
+        && parts[4] == "SingleGasesData"
+        && matches!(parts[5], "Air" | "CO2" | "H2O")
+        && matches!(parts[6], "MM" | "R_s")
+}
+
+fn weather_bus_field_reference_known(raw: &str) -> bool {
+    let parts = split_path_with_indices(raw);
+    let Some(field) = parts.last() else {
+        return false;
+    };
+    parts.len() >= 2
+        && parts[..parts.len() - 1].contains(&"weaBus")
         && matches!(
-            raw,
-            "reference_X"
-                | "reference_T"
-                | "reference_p"
-                | "p_default"
-                | "T_default"
-                | "X_default"
-                | "nX"
-                | "nXi"
-                | "nC"
-                | "Water"
-                | "Air"
+            *field,
+            "TDryBul"
+                | "TWetBul"
+                | "TDewPoi"
+                | "TBlaSky"
+                | "relHum"
+                | "winSpe"
+                | "winDir"
+                | "HGloHor"
+                | "HDifHor"
+                | "HDirNor"
+                | "HHorIR"
+                | "nTot"
+                | "nOpa"
+                | "pAtm"
+                | "ceiHei"
+                | "cloTim"
+                | "lat"
+                | "lon"
+                | "solAlt"
+                | "solDec"
+                | "solHouAng"
+                | "solTim"
+                | "solZen"
         )
 }
 
@@ -1233,6 +1401,23 @@ mod tests {
     }
 
     #[test]
+    fn function_scope_accepts_top_level_subscripted_parameter_reference() {
+        let scope = HashSet::from(["state_X"]);
+        assert!(function_scope_contains_reference("state_X[Water]", &scope));
+        assert!(!function_scope_contains_reference(
+            "state_T_missing[Water]",
+            &scope
+        ));
+    }
+
+    #[test]
+    fn function_scope_accepts_decomposed_record_field_alias() {
+        let scope = HashSet::from(["per_V_flow"]);
+        assert!(function_scope_contains_reference("per.V_flow", &scope));
+        assert!(!function_scope_contains_reference("per.missing", &scope));
+    }
+
+    #[test]
     fn ancestor_sibling_reference_lookup_accepts_outer_modifier_parameter() {
         let known_refs = KnownReferenceIndex {
             flat_queries: build_flat_reference_query_set(
@@ -1306,9 +1491,56 @@ mod tests {
     }
 
     #[test]
+    fn inherited_medium_package_constant_lookup_accepts_partial_medium_constants() {
+        assert!(inherited_medium_package_constant_reference_known(
+            "Buildings.Media.Water.C_nominal",
+        ));
+        assert!(inherited_medium_package_constant_reference_known(
+            "Buildings.Media.Water.C_default",
+        ));
+        assert!(!inherited_medium_package_constant_reference_known(
+            "Buildings.Media.Water.missing",
+        ));
+        assert!(!inherited_medium_package_constant_reference_known(
+            "plant.medium.C_nominal",
+        ));
+    }
+
+    #[test]
+    fn ideal_gas_data_record_constant_lookup_accepts_msl_gas_properties() {
+        assert!(ideal_gas_data_record_constant_reference_known(
+            "Modelica.Media.IdealGases.Common.SingleGasesData.CO2.MM",
+        ));
+        assert!(ideal_gas_data_record_constant_reference_known(
+            "Modelica.Media.IdealGases.Common.SingleGasesData.Air.MM",
+        ));
+        assert!(ideal_gas_data_record_constant_reference_known(
+            "Modelica.Media.IdealGases.Common.SingleGasesData.H2O.R_s",
+        ));
+        assert!(!ideal_gas_data_record_constant_reference_known(
+            "Modelica.Media.IdealGases.Common.SingleGasesData.CO2.missing",
+        ));
+        assert!(!ideal_gas_data_record_constant_reference_known(
+            "Modelica.Media.IdealGases.Common.OtherData.CO2.MM",
+        ));
+    }
+
+    #[test]
+    fn weather_bus_field_lookup_accepts_buildings_weather_data_fields() {
+        assert!(weather_bus_field_reference_known("weaBus.TDryBul"));
+        assert!(weather_bus_field_reference_known("building.weaBus.TWetBul",));
+        assert!(weather_bus_field_reference_known(
+            "floor[1].zone.weaBus.winSpe",
+        ));
+        assert!(!weather_bus_field_reference_known("weaBus.missing"));
+        assert!(!weather_bus_field_reference_known("notWeather.TDryBul"));
+    }
+
+    #[test]
     fn bare_medium_package_constant_lookup_accepts_reference_composition() {
         assert!(bare_medium_package_constant_known("reference_X"));
         assert!(bare_medium_package_constant_known("nXi"));
+        assert!(bare_medium_package_constant_known("C_nominal"));
         assert!(!bare_medium_package_constant_known("unknown_reference_X"));
         assert!(!bare_medium_package_constant_known("medium.reference_X"));
     }

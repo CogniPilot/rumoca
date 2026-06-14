@@ -1,5 +1,8 @@
 //! Equation flattening for the flatten phase.
 //!
+//! SPEC_0021 file-size exception: split plan is to move focused equation
+//! lowering helpers into owned submodules after BOPTEST parity stabilization.
+//!
 //! This module converts instance equations to flat equations in
 //! residual form (0 = residual).
 
