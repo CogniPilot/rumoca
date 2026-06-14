@@ -1,4 +1,6 @@
-use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, ScalarSlot, UnaryOp};
+use rumoca_ir_solve::{
+    BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, RandomGenerator, Reg, ScalarSlot, UnaryOp,
+};
 
 use super::cse::{SlotLoadKey, canonical_binary_key};
 use super::{LowerBuilder, LowerError};
@@ -131,6 +133,43 @@ impl LowerBuilder<'_> {
             time,
         });
         dst
+    }
+
+    pub(super) fn emit_external_call(
+        &mut self,
+        function: ExternalFunctionKind,
+        args: &[Reg],
+    ) -> Result<Reg, LowerError> {
+        self.emit_external_call_output(function, args, 0)
+    }
+
+    pub(super) fn emit_external_call_output(
+        &mut self,
+        function: ExternalFunctionKind,
+        args: &[Reg],
+        output_index: usize,
+    ) -> Result<Reg, LowerError> {
+        if args.len() > 8 {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "external function {function:?} has {} scalar arguments; max supported is 8",
+                    args.len()
+                ),
+            });
+        }
+        let mut packed = [0; 8];
+        for (idx, arg) in args.iter().copied().enumerate() {
+            packed[idx] = arg;
+        }
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::ExternalCall {
+            dst,
+            function,
+            args: packed,
+            arg_count: args.len(),
+            output_index,
+        });
+        Ok(dst)
     }
 
     pub(super) fn emit_random_initial_state(

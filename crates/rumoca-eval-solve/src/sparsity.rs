@@ -144,6 +144,23 @@ pub fn row_seed_dependencies(program: &[LinearOp]) -> Vec<usize> {
                 let op_deps = union_regs(&deps, [id, imin, imax]);
                 set_reg_deps(&mut deps, dst, op_deps);
             }
+            LinearOp::ExternalCall {
+                dst,
+                args,
+                arg_count,
+                ..
+            } => {
+                let op_deps = args
+                    .iter()
+                    .copied()
+                    .take(arg_count)
+                    .map(|arg| reg_deps(&deps, arg))
+                    .fold(BTreeSet::new(), |mut out, deps| {
+                        out.extend(deps);
+                        out
+                    });
+                set_reg_deps(&mut deps, dst, op_deps);
+            }
             LinearOp::Unary { dst, arg, .. } => {
                 let op_deps = reg_deps(&deps, arg);
                 set_reg_deps(&mut deps, dst, op_deps);

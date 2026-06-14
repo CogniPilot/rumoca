@@ -3,7 +3,8 @@ mod linear_parts;
 mod projection;
 use super::{
     DirectAssignmentValue, IndexedBindingMap, LowerBuilder, LowerBuilderMetadata, LowerError,
-    Scope, compile_time, helpers::build_indexed_binding_map,
+    ScalarizedComponentChildSlotMap, Scope, build_scalarized_component_child_slot_map,
+    compile_time, helpers::build_indexed_binding_map,
 };
 pub(super) use equation_collection::*;
 use indexmap::IndexMap;
@@ -96,6 +97,8 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     analysis: &DerivativeRhsAnalysis,
 ) -> Result<ComputeBlock, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let scalarized_component_child_slots =
+        Arc::new(build_scalarized_component_child_slot_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
         equations: &analysis.equations,
         direct_assignments: &analysis.direct_assignments,
@@ -103,6 +106,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         layout,
         structural_bindings: &analysis.structural_bindings,
         indexed_bindings: &indexed_bindings,
+        scalarized_component_child_slots: &scalarized_component_child_slots,
     };
     let mut block = ComputeBlock::default();
     let mut pending_scalar_programs: Vec<Vec<LinearOp>> = Vec::new();
@@ -143,6 +147,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                 layout,
                 &analysis.structural_bindings,
                 &indexed_bindings,
+                &scalarized_component_child_slots,
             )?;
             block.nodes.push(node);
             for idx in component {
@@ -176,6 +181,8 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let analysis = analyze_derivative_rhs(dae_model);
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let scalarized_component_child_slots =
+        Arc::new(build_scalarized_component_child_slot_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
         equations: &analysis.equations,
         direct_assignments: &analysis.direct_assignments,
@@ -183,6 +190,7 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
         layout,
         structural_bindings: &analysis.structural_bindings,
         indexed_bindings: &indexed_bindings,
+        scalarized_component_child_slots: &scalarized_component_child_slots,
     };
 
     let mut rows = Vec::with_capacity(analysis.states.len());
@@ -220,6 +228,7 @@ struct DerivativeRhsLoweringContext<'a> {
     layout: &'a VarLayout,
     structural_bindings: &'a IndexMap<String, f64>,
     indexed_bindings: &'a IndexedBindingMap,
+    scalarized_component_child_slots: &'a ScalarizedComponentChildSlotMap,
 }
 
 pub(super) fn state_derivative_equation_flags(dae_model: &dae::Dae) -> Vec<bool> {
@@ -243,6 +252,7 @@ fn lower_state_derivative_row(
             ctx.layout,
             ctx.structural_bindings,
             ctx.indexed_bindings,
+            ctx.scalarized_component_child_slots,
         );
     }
     lower_coupled_row(
@@ -253,6 +263,7 @@ fn lower_state_derivative_row(
         ctx.layout,
         ctx.structural_bindings,
         ctx.indexed_bindings,
+        ctx.scalarized_component_child_slots,
     )
 }
 
@@ -326,6 +337,7 @@ fn lower_direct_row(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
         dae_model,
@@ -333,6 +345,7 @@ fn lower_direct_row(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
+        scalarized_component_child_slots,
     );
     let scope = Scope::new();
     let rhs = lower_state_component_expr(&mut builder, &equation.rhs, state, &scope)?;
@@ -396,6 +409,7 @@ fn lower_coupled_row(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let base_rows = coupled_rows_for_base(equations, state);
     if base_rows.len() < state.base_size {
@@ -411,6 +425,7 @@ fn lower_coupled_row(
         layout,
         structural_bindings,
         indexed_bindings,
+        scalarized_component_child_slots,
     )
 }
 
@@ -429,6 +444,7 @@ fn lower_linsolve_group(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<ComputeNode, LowerError> {
     let setup = build_dense_group_solve_setup(
         states,
@@ -438,6 +454,7 @@ fn lower_linsolve_group(
         layout,
         structural_bindings,
         indexed_bindings,
+        scalarized_component_child_slots,
     )?;
 
     Ok(ComputeNode::LinSolve {
@@ -464,6 +481,7 @@ fn lower_linsolve_group_component(
         ctx.layout,
         ctx.structural_bindings,
         ctx.indexed_bindings,
+        ctx.scalarized_component_child_slots,
     )?;
     let component = states
         .iter()
@@ -504,6 +522,7 @@ fn build_dense_group_solve_setup(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<DenseGroupSolveSetup, LowerError> {
     let n = states.len();
     let state_names = states
@@ -533,6 +552,7 @@ fn build_dense_group_solve_setup(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
+        scalarized_component_child_slots,
     );
     let scope = Scope::new();
     let mut matrix_regs = Vec::new();
@@ -600,6 +620,7 @@ fn lower_dense_solve_component(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
         dae_model,
@@ -607,6 +628,7 @@ fn lower_dense_solve_component(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
+        scalarized_component_child_slots,
     );
     let scope = Scope::new();
     let mut matrix_regs = Vec::new();
@@ -669,6 +691,7 @@ fn row_builder<'a>(
     direct_assignments: &IndexMap<String, DirectAssignmentValue>,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &'a IndexedBindingMap,
+    scalarized_component_child_slots: &'a ScalarizedComponentChildSlotMap,
 ) -> LowerBuilder<'a> {
     LowerBuilder::new_with_metadata(
         layout,
@@ -680,6 +703,7 @@ fn row_builder<'a>(
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
             indexed_bindings: Some(indexed_bindings),
+            scalarized_component_child_slots: Some(scalarized_component_child_slots),
             is_initial_mode: false,
         },
     )

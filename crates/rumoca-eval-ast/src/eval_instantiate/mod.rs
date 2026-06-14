@@ -14,6 +14,9 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
 
+pub type ResolveClassComponents<'a> =
+    dyn Fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component> + 'a;
+
 /// Maximum recursion depth for condition evaluation (prevents stack overflow)
 const MAX_CONDITION_DEPTH: usize = 10;
 
@@ -28,8 +31,7 @@ pub struct InstantiateEvalCtx<'a> {
     /// Resolve effective components of an arbitrary class (including inherited).
     /// Implementations must return the class's own components when inherited
     /// component expansion is unavailable.
-    pub resolve_class_components:
-        fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
+    pub resolve_class_components: &'a ResolveClassComponents<'a>,
 }
 
 #[derive(Copy, Clone)]
@@ -37,8 +39,7 @@ struct ConditionEvalEnv<'a> {
     mod_env: &'a ast::ModificationEnvironment,
     effective_components: &'a IndexMap<String, ast::Component>,
     tree: &'a ast::ClassTree,
-    resolve_class_components:
-        fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &'a ResolveClassComponents<'a>,
 }
 
 /// Look up a class by name in the class tree.
@@ -115,7 +116,7 @@ pub fn evaluate_component_condition(
         mod_env,
         effective_components,
         tree,
-        *resolve_class_components,
+        resolve_class_components,
         0,
     )
 }
@@ -125,10 +126,7 @@ fn evaluate_component_condition_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
 ) -> Option<bool> {
     if depth > MAX_CONDITION_DEPTH {
@@ -208,10 +206,7 @@ fn eval_param_ref(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
 ) -> Option<bool> {
     // Build qualified path for multi-part references (e.g., smpmData.useDamperCage)
@@ -389,10 +384,7 @@ fn evaluate_enum_equality_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
 ) -> Option<bool> {
     // Prevent deep recursion
@@ -436,10 +428,7 @@ fn enum_value_for_comparison_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<String> {
@@ -522,10 +511,7 @@ fn get_enum_value_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<String> {
@@ -886,8 +872,7 @@ pub(super) struct IntegerEvalEnv<'a> {
     mod_env: &'a ast::ModificationEnvironment,
     effective_components: &'a IndexMap<String, ast::Component>,
     tree: &'a ast::ClassTree,
-    resolve_class_components:
-        fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &'a ResolveClassComponents<'a>,
 }
 
 /// Try to evaluate an integer expression for array dimension expansion.
@@ -904,7 +889,7 @@ pub fn try_eval_integer_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) -
         mod_env,
         effective_components,
         tree,
-        *resolve_class_components,
+        resolve_class_components,
         0,
         None,
     )
@@ -915,10 +900,7 @@ fn try_eval_integer_expr_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
 ) -> Option<i64> {
     try_eval_integer_expr_with_depth_and_locals(
@@ -937,10 +919,7 @@ fn try_eval_integer_expr_with_depth_and_locals(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
     local_ints: Option<&FxHashMap<String, i64>>,
 ) -> Option<i64> {

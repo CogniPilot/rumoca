@@ -4,12 +4,14 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use rumoca::{CompilationResult, TemplateIr};
+use rumoca_compile::codegen::render_dae_template_with_json_and_name;
 use rumoca_compile::codegen::targets::{
     TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile, TargetManifest,
     TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     safe_target_join, validate_dae_target_capabilities,
 };
 use rumoca_compile::codegen::{DaeTemplateContext, dae_to_template_json};
+use serde_json::Value;
 
 pub(crate) fn compile_target(
     result: &CompilationResult,
@@ -123,19 +125,12 @@ fn compile_manifest_target(
         eprintln!("  {description}");
     }
 
-    let dae_context = if manifest.ir == TargetTemplateIr::Dae {
-        let template_dae = result.scalarized_template_dae();
-        let template_json = dae_to_template_json(&template_dae)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        Some(DaeTemplateContext::from_dae_json(&template_json))
-    } else {
-        None
-    };
+    let render_contexts = TemplateRenderContexts::new(result, manifest)?;
 
     for file in &manifest.files {
         write_manifest_file(
             result,
-            dae_context.as_ref(),
+            &render_contexts,
             bundle,
             manifest,
             file,
@@ -154,6 +149,72 @@ fn compile_manifest_target(
     }
 
     Ok(())
+}
+
+struct TemplateRenderContexts {
+    dae: Option<DaeTemplateContext>,
+    solve: Option<Value>,
+}
+
+impl TemplateRenderContexts {
+    fn new(result: &CompilationResult, manifest: &TargetManifest) -> Result<Self> {
+        let needs_dae = manifest.ir == TargetTemplateIr::Dae
+            || manifest
+                .files
+                .iter()
+                .any(|file| file.ir == Some(TargetTemplateIr::Dae));
+        let needs_solve = manifest.ir == TargetTemplateIr::Solve
+            || manifest
+                .files
+                .iter()
+                .any(|file| file.ir == Some(TargetTemplateIr::Solve));
+
+        let dae = if needs_dae {
+            let template_dae = result.scalarized_template_dae();
+            let template_json = dae_to_template_json(&template_dae)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Some(DaeTemplateContext::from_dae_json(&template_json))
+        } else {
+            None
+        };
+
+        let solve = if needs_solve {
+            Some(solve_template_json(result)?)
+        } else {
+            None
+        };
+
+        Ok(Self { dae, solve })
+    }
+}
+
+fn solve_template_json(result: &CompilationResult) -> Result<Value> {
+    let template_dae = result.scalarized_template_dae();
+    let mut value =
+        dae_to_template_json(&template_dae).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let solve = rumoca_sim::lower_solve_problem(&template_dae)
+        .context("Lower Solve IR for target template rendering")?;
+    let artifacts = rumoca_sim::lower_solve_artifacts(&solve)
+        .context("Lower Solve artifacts for target template rendering")?;
+    let mut solve_value =
+        serde_json::to_value(solve).context("Serialize Solve IR for target template rendering")?;
+    solve_value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Solve template JSON root must be an object"))?
+        .insert(
+            "artifacts".to_string(),
+            serde_json::to_value(artifacts)
+                .context("Serialize Solve artifacts for target template rendering")?,
+        );
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAE template JSON root must be an object"))?;
+    object.insert("solve".to_string(), solve_value);
+    object.insert(
+        "__ir_kind".to_string(),
+        serde_json::Value::String("solve".to_string()),
+    );
+    Ok(value)
 }
 
 fn validate_target_requirements(
@@ -243,19 +304,38 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 
 fn write_manifest_file(
     result: &CompilationResult,
-    dae_context: Option<&DaeTemplateContext>,
+    contexts: &TemplateRenderContexts,
     bundle: &TargetBundle,
     manifest: &TargetManifest,
     file: &TargetFile,
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let ir = template_ir_to_cli(manifest.ir);
+    let file_ir = file.ir.unwrap_or(manifest.ir);
+    let ir = template_ir_to_cli(file_ir);
     let render_template = |template: &str| -> Result<String> {
-        match (ir, dae_context) {
-            (TemplateIr::Dae, Some(context)) => context
-                .render_with_name(template, model_identifier)
-                .map_err(|error| anyhow::anyhow!(error.to_string())),
+        match file_ir {
+            TargetTemplateIr::Dae => {
+                let Some(context) = contexts.dae.as_ref() else {
+                    bail!(
+                        "target file '{}' requested DAE IR without DAE context",
+                        file.path
+                    )
+                };
+                context
+                    .render_with_name(template, model_identifier)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+            }
+            TargetTemplateIr::Solve => {
+                let Some(context) = contexts.solve.as_ref() else {
+                    bail!(
+                        "target file '{}' requested Solve IR without Solve context",
+                        file.path
+                    )
+                };
+                render_dae_template_with_json_and_name(context, template, model_identifier)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+            }
             _ => result
                 .render_template_str_with_name_and_ir(template, model_identifier, ir)
                 .map_err(|error| anyhow::anyhow!(error.to_string())),
@@ -386,6 +466,66 @@ end ScalarCudaSmoke;
 
     fn command_available(command: &str) -> bool {
         Command::new(command).arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn solve_target_can_render_dae_metadata_file_before_solve_files() {
+        let result = compile_scalar_cuda_smoke_demo();
+        let target_dir = tempfile::tempdir().expect("temp target dir");
+        std::fs::write(
+            target_dir.path().join("target.toml"),
+            r#"
+version = 1
+ir = "solve"
+name = "mixed-ir-target"
+
+[[files]]
+path = "resources/ir-kind.txt"
+template = "ir-kind.txt.jinja"
+ir = "dae"
+
+[[files]]
+path = "solve-kind.txt"
+template = "solve-kind.txt.jinja"
+"#,
+        )
+        .expect("write target manifest");
+        std::fs::write(
+            target_dir.path().join("ir-kind.txt.jinja"),
+            "metadata={{ ir_kind }} model={{ model_name }}",
+        )
+        .expect("write DAE template");
+        std::fs::write(
+            target_dir.path().join("solve-kind.txt.jinja"),
+            "runtime={{ ir_kind }} model={{ model_name }}",
+        )
+        .expect("write solve template");
+
+        let bundle = TargetBundle::load(
+            target_dir
+                .path()
+                .to_str()
+                .expect("target dir path should be utf-8"),
+        )
+        .expect("load temp target");
+        let manifest = bundle.parse_manifest().expect("parse temp manifest");
+        let out_dir = tempfile::tempdir().expect("temp output dir");
+
+        compile_manifest_target(
+            &result,
+            "ScalarCudaSmoke",
+            &bundle,
+            &manifest,
+            Some(out_dir.path().to_path_buf()),
+        )
+        .expect("mixed IR target should render");
+
+        let metadata = std::fs::read_to_string(out_dir.path().join("resources/ir-kind.txt"))
+            .expect("read DAE metadata file");
+        let runtime = std::fs::read_to_string(out_dir.path().join("solve-kind.txt"))
+            .expect("read solve file");
+        assert_eq!(metadata, "metadata=dae model=ScalarCudaSmoke");
+        assert_eq!(runtime, "runtime=solve model=ScalarCudaSmoke");
     }
 
     #[test]

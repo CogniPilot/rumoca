@@ -225,6 +225,11 @@ fn project_if_scalar_expr(
     span: rumoca_core::Span,
     ctx: &ProjectionContext<'_>,
 ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+    if let Some(selected) =
+        compile_time_if_selection(branches, else_branch, ctx.structural_bindings)
+    {
+        return project_expression_scalar_ctx(selected, ctx);
+    }
     let branches = branches
         .iter()
         .map(|(condition, branch)| {
@@ -523,10 +528,107 @@ pub(in crate::lower) fn expression_result_dims(
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } if is_div(op) => {
             binary_elementwise_result_dims(lhs, rhs, dae_model, structural_bindings)
         }
-        rumoca_core::Expression::If { else_branch, .. } => {
-            expression_result_dims(else_branch, dae_model, structural_bindings)
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            let selected = compile_time_if_selection(branches, else_branch, structural_bindings);
+            expression_result_dims(
+                selected.unwrap_or(else_branch),
+                dae_model,
+                structural_bindings,
+            )
         }
         _ => Ok(Vec::new()),
+    }
+}
+
+fn compile_time_if_selection<'expr>(
+    branches: &'expr [(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &'expr rumoca_core::Expression,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Option<&'expr rumoca_core::Expression> {
+    for (condition, branch) in branches {
+        let condition = projection_compile_time_scalar(condition, structural_bindings)?;
+        if condition != 0.0 {
+            return Some(branch);
+        }
+    }
+    Some(else_branch)
+}
+
+fn projection_compile_time_scalar(
+    expr: &rumoca_core::Expression,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Option<f64> {
+    match expr {
+        rumoca_core::Expression::Literal { value, .. } => projection_literal_to_f64(value),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let key = projection_compile_time_var_key(name, subscripts)?;
+            structural_bindings.get(key.as_str()).copied()
+        }
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            let value = projection_compile_time_scalar(rhs, structural_bindings)?;
+            match op {
+                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(value),
+                OpUnary::Minus | OpUnary::DotMinus => Some(-value),
+                OpUnary::Not => Some(f64::from(value == 0.0)),
+            }
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = projection_compile_time_scalar(lhs, structural_bindings)?;
+            let rhs = projection_compile_time_scalar(rhs, structural_bindings)?;
+            projection_compile_time_binary(op, lhs, rhs)
+        }
+        _ => None,
+    }
+}
+
+fn projection_literal_to_f64(value: &Literal) -> Option<f64> {
+    match value {
+        Literal::Real(value) => Some(*value),
+        Literal::Integer(value) => Some(*value as f64),
+        Literal::Boolean(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+fn projection_compile_time_var_key(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<String> {
+    if subscripts.is_empty() {
+        return Some(name.as_str().to_string());
+    }
+    let indices = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value as usize),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(dae::format_subscript_key(name.as_str(), &indices))
+}
+
+fn projection_compile_time_binary(op: &OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
+    match op {
+        OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
+        OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
+        OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
+        OpBinary::Div | OpBinary::DivElem => Some(lhs / rhs),
+        OpBinary::Exp | OpBinary::ExpElem => Some(lhs.powf(rhs)),
+        OpBinary::Lt => Some(f64::from(lhs < rhs)),
+        OpBinary::Le => Some(f64::from(lhs <= rhs)),
+        OpBinary::Gt => Some(f64::from(lhs > rhs)),
+        OpBinary::Ge => Some(f64::from(lhs >= rhs)),
+        OpBinary::Eq => Some(f64::from((lhs - rhs).abs() < f64::EPSILON)),
+        OpBinary::Neq => Some(f64::from((lhs - rhs).abs() >= f64::EPSILON)),
+        OpBinary::And => Some(f64::from(lhs != 0.0 && rhs != 0.0)),
+        OpBinary::Or => Some(f64::from(lhs != 0.0 || rhs != 0.0)),
+        OpBinary::Assign | OpBinary::Empty => None,
     }
 }
 

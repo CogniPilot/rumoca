@@ -361,6 +361,21 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
         return Some(size);
     }
 
+    if matches!(lhs.as_ref(), Expression::FieldAccess { .. })
+        && let Some(var_name) = render_lhs_path(lhs)
+        && let Some(size) = extract_lhs_var_size_from_var_name(
+            &Expression::VarRef {
+                name: var_name.into(),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            },
+            flat,
+            prefix_counts,
+        )
+    {
+        return Some(size);
+    }
+
     if let Expression::Index {
         base, subscripts, ..
     } = lhs.as_ref()
@@ -446,6 +461,30 @@ fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
     Some(out)
 }
 
+fn render_lhs_path(lhs: &Expression) -> Option<VarName> {
+    match lhs {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let mut out = name.as_str().to_string();
+            out.push_str(&render_subscript_suffix(subscripts)?);
+            Some(VarName::new(out))
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let mut out = render_lhs_path(base)?.as_str().to_string();
+            out.push_str(&render_subscript_suffix(subscripts)?);
+            Some(VarName::new(out))
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let base = render_lhs_path(base)?;
+            Some(VarName::new(format!("{}.{}", base.as_str(), field)))
+        }
+        _ => None,
+    }
+}
+
 /// Extract a variable name from an LHS expression.
 ///
 /// Handles:
@@ -498,6 +537,56 @@ pub(crate) fn extract_var_from_lhs(lhs: &Expression) -> Option<VarName> {
         }
         _ => None,
     }
+}
+
+fn resolve_singleton_indexed_lhs_path_size(
+    var_name: &VarName,
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    for candidate in singleton_indexed_path_candidates(var_name.as_str()) {
+        let candidate_name = VarName::new(candidate.clone());
+        if let Some(var) = flat.variables.get(&candidate_name) {
+            return Some(compute_var_size(&var.dims));
+        }
+        if let Some(&count) = prefix_counts.get(candidate.as_str()) {
+            return Some(count);
+        }
+    }
+    None
+}
+
+fn singleton_indexed_path_candidates(path: &str) -> Vec<String> {
+    let parts = split_lhs_path_parts(path);
+    let mut candidates = Vec::new();
+    for index in 0..parts.len() {
+        if parts[index].contains('[') {
+            continue;
+        }
+        let mut candidate = parts.clone();
+        candidate[index] = format!("{}[1]", candidate[index]);
+        candidates.push(candidate.join("."));
+    }
+    candidates
+}
+
+fn split_lhs_path_parts(path: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, ch) in path.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            '.' if depth == 0 => {
+                parts.push(path[start..index].to_string());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(path[start..].to_string());
+    parts
 }
 
 /// Create a Variable from a flat::Variable.

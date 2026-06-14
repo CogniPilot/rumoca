@@ -112,13 +112,27 @@ fn constructor_def_map(
 }
 
 /// Build a synthetic constructor signature for constructor-like class calls.
-pub(super) fn convert_constructor_signature(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
+pub(super) fn convert_constructor_signature<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
     def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
 ) -> Result<rumoca_core::Function, FlattenError> {
+    if let Some(function) = external_object_constructor_function(
+        tree,
+        class_index,
+        class_def,
+        qualified_name,
+        source_map,
+        def_map,
+        member_cache,
+    )? {
+        return Ok(function);
+    }
+
     let span = source_map.location_to_span(
         &class_def.location.file_name,
         class_def.location.start as usize,
@@ -146,6 +160,40 @@ pub(super) fn convert_constructor_signature(
     }
     normalize_function_local_references(&mut func);
     Ok(func)
+}
+
+fn external_object_constructor_function<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    qualified_name: &str,
+    source_map: &rumoca_core::SourceMap,
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<rumoca_core::Function>, FlattenError> {
+    let Some(constructor_def) = class_def.classes.get("constructor") else {
+        return Ok(None);
+    };
+    if constructor_def.class_type != rumoca_core::ClassType::Function
+        || constructor_def.external.is_none()
+    {
+        return Ok(None);
+    }
+
+    let nested_name = format!("{qualified_name}.constructor");
+    let mut function = super::convert_function(
+        tree,
+        class_index,
+        constructor_def,
+        &nested_name,
+        source_map,
+        def_map,
+        member_cache,
+    )?;
+    function.name = rumoca_core::VarName::new(qualified_name);
+    function.def_id = class_def.def_id;
+    function.is_constructor = true;
+    Ok(Some(function))
 }
 
 pub(super) fn normalize_function_local_references(function: &mut rumoca_core::Function) {

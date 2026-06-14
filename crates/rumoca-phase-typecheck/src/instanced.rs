@@ -55,57 +55,53 @@ impl TypeChecker {
         // Uses scope-aware evaluation so `nout = max(size(deltaq,1))` in component
         // `kinematicPTP` can resolve `deltaq` as `kinematicPTP.deltaq`.
         for instance_data in overlay.components.values() {
-            let path = instance_data.qualified_name.to_component_path();
-            let name = path.to_flat_string();
-            let scope = path
-                .parent()
-                .map(|path| path.to_flat_string())
-                .unwrap_or_default();
+            let name = instance_data.qualified_name.to_flat_string();
+            let scope = parent_scope(&name).unwrap_or_default();
 
             if let Some(ref binding) = instance_data.binding
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_integer_with_scope(binding, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_integer_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.add_integer(&name, value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_integer_with_scope(start, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_integer_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.add_integer(&name, value);
             }
 
             if let Some(ref binding) = instance_data.binding
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_boolean_with_scope(binding, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_boolean_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.booleans.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_boolean_with_scope(start, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_boolean_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.booleans.insert(name.clone(), value);
             }
 
             if let Some(ref binding) = instance_data.binding
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_real_with_scope(binding, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_real_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.reals.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_real_with_scope(start, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_real_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.reals.insert(name.clone(), value);
             }
 
             if let Some(ref binding) = instance_data.binding
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_enum_with_scope(binding, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_enum_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.enums.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) =
-                    rumoca_eval_ast::eval::eval_enum_with_scope(start, &self.eval_ctx, &scope)
+                    rumoca_eval_ast::eval::eval_enum_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.enums.insert(name.clone(), value);
             }

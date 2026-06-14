@@ -122,6 +122,22 @@ fn slice_indices_match(
     output_pos == output_tuple.len()
 }
 
+fn project_row_values_to_count(
+    values: Vec<Reg>,
+    scalar_count: usize,
+) -> Result<Vec<Reg>, LowerError> {
+    match values.len() {
+        1 => Ok(vec![values[0]; scalar_count]),
+        len if len == scalar_count => Ok(values),
+        len if len > scalar_count => Ok(values.into_iter().take(scalar_count).collect()),
+        len => Err(LowerError::Unsupported {
+            reason: format!(
+                "array expression width {len} is smaller than projected equation scalar count {scalar_count}"
+            ),
+        }),
+    }
+}
+
 fn indexed_record_field_key_indices(key: &str, base_key: &str, field: &str) -> Option<Vec<usize>> {
     let suffix = format!(".{field}");
     let indexed_base_key = key.strip_suffix(suffix.as_str())?;
@@ -562,6 +578,149 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
+    pub(in crate::lower) fn lower_array_like_values_projected_to_count(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        scope: &Scope,
+        call_depth: usize,
+        scalar_count: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        let result = match expr {
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => self.lower_if_array_like_values_projected_to_count(
+                branches,
+                else_branch,
+                scope,
+                call_depth,
+                scalar_count,
+            ),
+            rumoca_core::Expression::Binary { op, lhs, rhs, span } => self
+                .lower_binary_array_like_values_projected_to_count(
+                    op,
+                    lhs,
+                    rhs,
+                    *span,
+                    scope,
+                    call_depth,
+                    scalar_count,
+                ),
+            _ => {
+                let values = self.lower_array_like_values(expr, scope, call_depth)?;
+                project_row_values_to_count(values, scalar_count)
+            }
+        };
+        if let Some(span) = expr.span() {
+            result.map_err(|err| err.with_fallback_span(span))
+        } else {
+            result
+        }
+    }
+
+    fn lower_if_array_like_values_projected_to_count(
+        &mut self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+        scope: &Scope,
+        call_depth: usize,
+        scalar_count: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        if let Some(selected) = self.compile_time_if_array_selection(branches, else_branch) {
+            return self.lower_array_like_values_projected_to_count(
+                selected,
+                scope,
+                call_depth,
+                scalar_count,
+            );
+        }
+        let mut result = self.lower_array_like_values_projected_to_count(
+            else_branch,
+            scope,
+            call_depth,
+            scalar_count,
+        )?;
+        for (cond, value) in branches.iter().rev() {
+            let cond_reg = self.lower_expr(cond, scope, call_depth)?;
+            let branch_values = self.lower_array_like_values_projected_to_count(
+                value,
+                scope,
+                call_depth,
+                scalar_count,
+            )?;
+            if branch_values.len() != result.len() {
+                return Err(LowerError::Unsupported {
+                    reason: format!(
+                        "projected if-expression branch width {} does not match accumulated width {}",
+                        branch_values.len(),
+                        result.len()
+                    ),
+                });
+            }
+            result = branch_values
+                .into_iter()
+                .zip(result)
+                .map(|(if_true, if_false)| self.emit_select(cond_reg, if_true, if_false))
+                .collect();
+        }
+        Ok(result)
+    }
+
+    fn lower_binary_array_like_values_projected_to_count(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+        scalar_count: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        use rumoca_core::OpBinary as Op;
+
+        let Some(binary_op) = (match op {
+            Op::Add | Op::AddElem => Some(BinaryOp::Add),
+            Op::Sub | Op::SubElem => Some(BinaryOp::Sub),
+            Op::MulElem => Some(BinaryOp::Mul),
+            Op::DivElem => Some(BinaryOp::Div),
+            Op::ExpElem => Some(BinaryOp::Pow),
+            _ => None,
+        }) else {
+            let values = self.lower_array_like_values(
+                &rumoca_core::Expression::Binary {
+                    op: op.clone(),
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(rhs.clone()),
+                    span,
+                },
+                scope,
+                call_depth,
+            )?;
+            return project_row_values_to_count(values, scalar_count);
+        };
+
+        let lhs =
+            self.lower_array_like_values_projected_to_count(lhs, scope, call_depth, scalar_count)?;
+        let rhs =
+            self.lower_array_like_values_projected_to_count(rhs, scope, call_depth, scalar_count)?;
+        if lhs.len() != rhs.len() {
+            return Err(unsupported_at(
+                format!(
+                    "projected array operands have incompatible widths {} and {}",
+                    lhs.len(),
+                    rhs.len()
+                ),
+                span,
+            ));
+        }
+        Ok(lhs
+            .into_iter()
+            .zip(rhs)
+            .map(|(lhs, rhs)| self.emit_binary(binary_op, lhs, rhs))
+            .collect())
+    }
+
     fn lower_tuple_element_array_like_values(
         &mut self,
         expr: &rumoca_core::Expression,
@@ -615,6 +774,19 @@ impl<'a> LowerBuilder<'a> {
         }
         if let Some(values) =
             self.lower_structural_standard_array_values(name.as_str(), args, scope, call_depth)?
+        {
+            return Ok(values);
+        }
+        let dims = self.infer_expr_dims(fallback, scope);
+        let output_count = shape_size(&dims);
+        if output_count > 1
+            && let Some(values) = self.try_lower_energyplus_external_call_outputs(
+                name,
+                args,
+                scope,
+                call_depth,
+                output_count,
+            )?
         {
             return Ok(values);
         }
@@ -1146,24 +1318,12 @@ impl<'a> LowerBuilder<'a> {
             })
             .collect::<IndexMap<_, _>>();
 
-        let child_paths = self
-            .layout
-            .bindings()
-            .keys()
-            .filter_map(|name| {
-                let path = ComponentPath::from_flat_path(name);
-                let suffix = path.strip_prefix(base_path)?;
-                (suffix.len() == 1 && !values.contains_key(&path)).then_some(path)
-            })
-            .collect::<Vec<_>>();
+        let child_slots = self.scalarized_component_child_slots(base_path);
 
-        for path in child_paths {
-            let slot =
-                self.layout
-                    .binding(path.as_str())
-                    .ok_or_else(|| LowerError::MissingBinding {
-                        name: path.to_flat_string(),
-                    })?;
+        for (path, slot) in child_slots {
+            if values.contains_key(&path) {
+                continue;
+            }
             let reg = self.emit_slot_load(slot)?;
             values.insert(path, reg);
         }
@@ -1173,6 +1333,16 @@ impl<'a> LowerBuilder<'a> {
         }
 
         Ok(Some(values.into_values().collect()))
+    }
+
+    pub(in crate::lower) fn scalarized_component_child_slots(
+        &mut self,
+        base_path: &ComponentPath,
+    ) -> Vec<(ComponentPath, ScalarSlot)> {
+        self.scalarized_component_child_slots
+            .get(base_path)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn lower_subscripted_var_ref_array_like_values(

@@ -1129,8 +1129,8 @@ pub(crate) fn resolve_override_function_name(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<String> {
-    let scope = reference.component_scope()?;
-    let function_leaf = scope.leaf_ident()?;
+    let function_leaf = reference.last_segment();
+    let parent_alias = reference_parent_alias(reference);
     if let Some(source_package_def_id) = reference_source_package_def_id(reference, ctx)
         && let Some(package) = ctx.lexical_package_target()
         && ctx.package_chain_contains_def_id(&package, source_package_def_id)
@@ -1144,7 +1144,7 @@ pub(crate) fn resolve_override_function_name(
     {
         return Some(resolved);
     }
-    if scope.parent_ident().is_none() {
+    if parent_alias.is_none() {
         if let Some(source_package_def_id) = reference_source_package_def_id(reference, ctx)
             && let Some(package) =
                 ctx.concrete_override_package_for_source_package(source_package_def_id)
@@ -1206,7 +1206,7 @@ pub(crate) fn resolve_override_function_name(
         .filter(|resolved| resolved != reference.as_str());
     }
 
-    let package_alias = scope.parent_ident()?;
+    let package_alias = parent_alias?;
     let package = ctx.override_package(package_alias)?;
     // Only resolve through the alias-matched package when the call's actual
     // source package is unknown (a genuinely relative reference) or is part of
@@ -1222,6 +1222,13 @@ pub(crate) fn resolve_override_function_name(
     }
     resolve_function_in_package_chain_exposed(ctx.tree, ctx.class_index, package, function_leaf)
         .filter(|resolved| resolved != reference.as_str())
+}
+
+fn reference_parent_alias(reference: &rumoca_core::Reference) -> Option<&str> {
+    if let Some(scope) = reference.component_scope() {
+        return scope.parent_ident();
+    }
+    parent_scope(reference.as_str()).map(top_level_last_segment)
 }
 
 fn reference_package_scope(reference: &rumoca_core::Reference) -> Option<String> {
@@ -1520,11 +1527,14 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         &self,
         source_package_def_id: rumoca_core::DefId,
     ) -> Option<&'a OverrideTarget> {
-        let mut matches = self.override_packages.iter().filter(|package| {
-            package.active && self.package_chain_contains_def_id(package, source_package_def_id)
-        });
-        let package = matches.next()?;
-        matches.next().is_none().then_some(package)
+        let matches = self
+            .override_packages
+            .iter()
+            .filter(|package| {
+                package.active && self.package_chain_contains_def_id(package, source_package_def_id)
+            })
+            .collect::<Vec<_>>();
+        self.preferred_unique_override_package(matches)
     }
 
     fn concrete_override_package_for_source_package(
@@ -1536,12 +1546,27 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         {
             return Some(package);
         }
-        let mut matches = self
+        let matches = self
             .override_packages
             .iter()
-            .filter(|package| self.package_chain_contains_def_id(package, source_package_def_id));
-        let package = matches.next()?;
-        matches.next().is_none().then_some(package)
+            .filter(|package| self.package_chain_contains_def_id(package, source_package_def_id))
+            .collect::<Vec<_>>();
+        self.preferred_unique_override_package(matches)
+    }
+
+    fn preferred_unique_override_package(
+        &self,
+        matches: Vec<&'a OverrideTarget>,
+    ) -> Option<&'a OverrideTarget> {
+        if matches.len() == 1 {
+            return matches.first().copied();
+        }
+        let mut local_medium_matches = matches
+            .iter()
+            .copied()
+            .filter(|package| package.alias == "Medium");
+        let package = local_medium_matches.next()?;
+        local_medium_matches.next().is_none().then_some(package)
     }
 
     fn unique_active_override_package(&self) -> Option<&'a OverrideTarget> {

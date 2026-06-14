@@ -959,6 +959,15 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         return run_early_ir_dump(&artifact, &model, emit.is_json(), args.output);
     }
 
+    if matches!(args.emit, Some(EmitTarget::DaeJson)) {
+        let (result, _model) = compile_dae_allow_unbalanced_with_inferred_model(
+            &args.input,
+            args.diagnostics.verbose,
+        )?;
+        let rendered = serde_json::to_string_pretty(&result.dae)?;
+        return write_ir_dump(&rendered, CompilePhase::Dae, true, args.output);
+    }
+
     let (result, model) = compile_with_inferred_model(&args.input, args.diagnostics.verbose)?;
 
     // Structural / point inspection of the lowered model (shares the `sim
@@ -1434,6 +1443,26 @@ fn compile_with_inferred_model(
         .verbose(verbose)
         .source_roots(&source_roots);
     let result = compiler.compile_file(&args.model_file)?;
+    Ok((result, model))
+}
+
+fn compile_dae_allow_unbalanced_with_inferred_model(
+    args: &ModelInputArgs,
+    verbose: bool,
+) -> Result<(DaeCompilationResult, String)> {
+    ensure_model_file_readable(&args.model_file)?;
+    let model = match &args.options.model {
+        Some(model) => model.clone(),
+        None => infer_model_name(&args.model_file)?,
+    };
+
+    let source_roots = merged_source_root_paths(&args.options.source_roots);
+
+    let compiler = Compiler::new()
+        .model(&model)
+        .verbose(verbose)
+        .source_roots(&source_roots);
+    let result = compiler.compile_file_dae_allow_unbalanced_for_diagnostics(&args.model_file)?;
     Ok((result, model))
 }
 

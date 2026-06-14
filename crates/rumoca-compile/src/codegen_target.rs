@@ -95,6 +95,7 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
+    pub ir: Option<TargetTemplateIr>,
     pub mode: Option<String>,
 }
 

@@ -869,7 +869,7 @@ fn check_cross_class_restrictions(
 
         check_record_component_type_restriction(class, name, comp, &type_name, type_class, diags);
         check_partial_class_instantiation_restriction(
-            class, name, comp, &type_name, type_class, diags,
+            def, class, name, comp, &type_name, type_class, diags,
         );
         check_connector_variability_restriction(name, comp, type_class, diags);
     }
@@ -922,6 +922,7 @@ fn check_record_component_type_restriction(
 }
 
 fn check_partial_class_instantiation_restriction(
+    def: &StoredDefinition,
     class: &ClassDef,
     component_name: &str,
     comp: &ast::Component,
@@ -944,7 +945,7 @@ fn check_partial_class_instantiation_restriction(
     if matches!(tc.class_type, ClassType::Package | ClassType::Function) {
         return;
     }
-    if !tc.partial || type_name_has_replaceable_root(class, comp) {
+    if !tc.partial || type_name_has_replaceable_root(def, class, comp) {
         return;
     }
 
@@ -964,15 +965,63 @@ fn check_partial_class_instantiation_restriction(
     ));
 }
 
-fn type_name_has_replaceable_root(class: &ClassDef, comp: &ast::Component) -> bool {
+fn type_name_has_replaceable_root(
+    def: &StoredDefinition,
+    class: &ClassDef,
+    comp: &ast::Component,
+) -> bool {
     let Some(root) = comp.type_name.name.first().map(|token| token.text.as_ref()) else {
         return false;
     };
-    comp.type_name.name.len() > 1
-        && class
-            .classes
-            .get(root)
-            .is_some_and(|root_class| root_class.is_replaceable)
+    if comp.type_name.name.len() <= 1 {
+        return false;
+    }
+
+    find_replaceable_nested_class_in_hierarchy(def, class, root).is_some()
+}
+
+fn find_replaceable_nested_class_in_hierarchy<'a>(
+    def: &'a StoredDefinition,
+    root: &'a ClassDef,
+    nested_name: &str,
+) -> Option<&'a ClassDef> {
+    const MAX_DEPTH: usize = 32;
+
+    let mut to_visit = vec![root];
+    let mut visited_def_ids = HashSet::<DefId>::new();
+    let mut visited_names = HashSet::<String>::new();
+
+    for _ in 0..MAX_DEPTH {
+        if to_visit.is_empty() {
+            break;
+        }
+
+        let mut next = Vec::new();
+        for class in to_visit.drain(..) {
+            let already_seen = match class.def_id {
+                Some(def_id) => !visited_def_ids.insert(def_id),
+                None => !visited_names.insert(class.name.text.to_string()),
+            };
+            if already_seen {
+                continue;
+            }
+
+            if let Some(nested) = class.classes.get(nested_name)
+                && nested.is_replaceable
+            {
+                return Some(nested);
+            }
+
+            next.extend(class.extends.iter().filter_map(|ext| {
+                ext.base_def_id
+                    .and_then(|def_id| find_class_by_def_id(def, def_id))
+                    .or_else(|| find_class_by_name(def, &ext.base_name.to_string()))
+            }));
+        }
+        to_visit = next;
+    }
+
+    None
 }
 
 fn check_connector_variability_restriction(
@@ -1216,8 +1265,16 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
         }
         let mut refs = HashSet::new();
         if let Some(binding) = &comp.binding {
-            // Skip if-branches to avoid false cycles from conditional mutual deps
-            collect_component_refs(binding, &param_names, &mut refs, true);
+            // Bare self defaults (e.g. `parameter Real p = p`) are common in
+            // Modelica classes that require/expect an enclosing modifier
+            // `child(p = p)`. A class-level check cannot know whether the
+            // instantiated component will provide that modifier, so leave that
+            // case to instantiation/flattening while still rejecting real
+            // multi-parameter cycles such as `a = b; b = a`.
+            if !is_bare_reference_to(binding, name) {
+                // Skip if-branches to avoid false cycles from conditional mutual deps
+                collect_component_refs(binding, &param_names, &mut refs, true);
+            }
         }
         deps.insert(name.clone(), refs);
     }
@@ -1281,6 +1338,17 @@ fn has_cycle(
         on_stack.remove(node);
     }
     found_cycle
+}
+
+fn is_bare_reference_to(expr: &Expression, expected_name: &str) -> bool {
+    let Expression::ComponentReference(cref) = expr else {
+        return false;
+    };
+    let [part] = cref.parts.as_slice() else {
+        return false;
+    };
+    part.ident.text.as_ref() == expected_name
+        && part.subs.as_ref().is_none_or(|subs| subs.is_empty())
 }
 
 /// Collect component references from an expression that refer to known parameter names.

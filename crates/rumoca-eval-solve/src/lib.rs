@@ -81,6 +81,9 @@ pub enum EvalSolveError {
         table_id: f64,
         column: Option<f64>,
     },
+    ExternalFunction {
+        function: rumoca_ir_solve::ExternalFunctionKind,
+    },
     MissingInput {
         vector: &'static str,
         index: usize,
@@ -137,6 +140,10 @@ impl std::fmt::Display for EvalSolveError {
                     )
                 }
             }
+            Self::ExternalFunction { function } => write!(
+                f,
+                "external function {function:?} requires a native runtime bridge"
+            ),
             Self::MissingInput { vector, index, len } => write!(
                 f,
                 "missing {vector}[{index}] while evaluating Solve-IR row; vector length is {len}"
@@ -654,6 +661,9 @@ impl CheckedRowEvaluator<'_, '_, '_> {
                     self.input.context,
                 )?;
             }
+            LinearOp::ExternalCall { function, .. } => {
+                return Err(EvalSolveError::ExternalFunction { function });
+            }
             LinearOp::StoreOutput { src } => {
                 self.output = self.get(src)?;
             }
@@ -742,6 +752,9 @@ fn eval_row_prepared_fast(
             | LinearOp::ImpureRandomInteger { .. } => {
                 scratch.initialized.resize(input.register_count, true);
                 apply_random_op(regs, &mut scratch.initialized, op, input.t, input.context)?
+            }
+            LinearOp::ExternalCall { function, .. } => {
+                return Err(EvalSolveError::ExternalFunction { function });
             }
             LinearOp::StoreOutput { src } => output = regs[src as usize],
         }
@@ -1081,6 +1094,12 @@ fn max_register(op: &LinearOp) -> u32 {
             imax,
             ..
         } => dst.max(id).max(imin).max(imax),
+        LinearOp::ExternalCall {
+            dst,
+            args,
+            arg_count,
+            ..
+        } => args.iter().copied().take(arg_count).fold(dst, u32::max),
         LinearOp::StoreOutput { src } => src,
     }
 }
@@ -1173,6 +1192,13 @@ fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
                 && reg_initialized(initialized, imin)
                 && reg_initialized(initialized, imax)
         }
+        LinearOp::ExternalCall {
+            args, arg_count, ..
+        } => args
+            .iter()
+            .copied()
+            .take(arg_count)
+            .all(|arg| reg_initialized(initialized, arg)),
     }
 }
 

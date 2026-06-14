@@ -389,7 +389,11 @@ fn validate_redeclaration(
             .unwrap_or_else(|| component.type_name.to_string());
 
         // Try to resolve constraint type using def_id or tree lookup
-        let constraint_type = if let Some(def_id) = component.type_def_id
+        let constraint_type = if let Some(def_id) = component
+            .constrainedby
+            .as_ref()
+            .and_then(|name| name.def_id)
+            .or(component.type_def_id)
             && let Some(qualified) = tree.def_map.get(&def_id)
         {
             qualified.clone()
@@ -1081,7 +1085,7 @@ pub fn process_extends_with_cache(
 
         // MLS §7.2: Apply extends modifications after recursive merge so
         // transitively inherited targets are available.
-        apply_extends_modifications(&mut inherited, base_class, extend)?;
+        apply_extends_modifications(tree, &mut inherited, base_class, extend)?;
     }
 
     // Store in cache for reuse, then return
@@ -1106,6 +1110,7 @@ pub fn process_extends_with_cache(
 /// qualify the start expression with the parent type's lexical scope instead
 /// of the component instance prefix.
 fn apply_extends_modifications(
+    tree: &ast::ClassTree,
     target: &mut InheritedContent,
     base_class: &ast::ClassDef,
     extend: &ast::Extend,
@@ -1141,8 +1146,93 @@ fn apply_extends_modifications(
         )));
     }
 
+    apply_transitive_extends_redeclarations(tree, target, base_class, extend, extend_span)?;
     merge_nested_extends_modifications(target, extend);
     Ok(())
+}
+
+fn apply_transitive_extends_redeclarations(
+    tree: &ast::ClassTree,
+    target: &mut InheritedContent,
+    base_class: &ast::ClassDef,
+    extend: &ast::Extend,
+    extend_span: Span,
+) -> InstantiateResult<()> {
+    let mut validation_error: Option<Box<InstantiateError>> = None;
+    walk_extend_modifications(extend, |modification| {
+        let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
+            return;
+        };
+        if validation_error.is_some() {
+            return;
+        }
+        let target_name_owned = target_name.to_string();
+        if base_class.components.contains_key(&target_name_owned) {
+            return;
+        }
+        let Some(component) = target.components.get(&target_name_owned) else {
+            return;
+        };
+        let new_type = extract_redeclare_type_qualified(&modification.expr, tree);
+        let span = match redeclare_target_span(tree, &target_name_owned, modification, extend_span)
+        {
+            Ok(span) => span,
+            Err(err) => {
+                validation_error = Some(err);
+                return;
+            }
+        };
+        if let Err(err) = validate_redeclaration(
+            tree,
+            component,
+            &target_name_owned,
+            new_type.as_deref(),
+            span,
+        ) {
+            validation_error = Some(err);
+            return;
+        }
+        let Some(new_type_name) = new_type else {
+            return;
+        };
+        let Some(component) = target.components.get_mut(&target_name_owned) else {
+            return;
+        };
+        apply_redeclared_component_type(tree, component, &new_type_name);
+    });
+
+    if let Some(err) = validation_error {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn apply_redeclared_component_type(
+    tree: &ast::ClassTree,
+    comp: &mut ast::Component,
+    new_type_name: &str,
+) {
+    comp.type_name = rumoca_ir_ast::Name {
+        name: split_path_with_indices(new_type_name)
+            .into_iter()
+            .map(|part| rumoca_core::Token {
+                text: std::sync::Arc::from(part),
+                location: rumoca_core::Location::default(),
+                token_number: 0,
+                token_type: 0,
+            })
+            .collect(),
+        def_id: None,
+    };
+    comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
+        let short_name = top_level_last_segment(new_type_name);
+        tree.name_map.get(short_name).copied()
+    });
+
+    // MLS §7.3.2: Activate constraining-clause defaults for redeclared
+    // replaceable components.
+    activate_constrainedby_defaults_for_redeclare(comp);
 }
 
 /// Resolve a base class from an extends clause.
@@ -1531,29 +1621,7 @@ fn merge_class_content(
     // This updates the component's type so that instantiation uses the new type's fields
     for (comp_name, new_type_name) in &redeclare_types {
         if let Some(comp) = target.components.get_mut(comp_name) {
-            // Update the type_name to the new type
-            comp.type_name = rumoca_ir_ast::Name {
-                name: split_path_with_indices(new_type_name)
-                    .into_iter()
-                    .map(|part| rumoca_core::Token {
-                        text: std::sync::Arc::from(part),
-                        location: rumoca_core::Location::default(),
-                        token_number: 0,
-                        token_type: 0,
-                    })
-                    .collect(),
-                def_id: None,
-            };
-            // Update type_def_id by looking up the new type in the tree
-            comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
-                // Try with shorter name (last segment) for unqualified lookups
-                let short_name = top_level_last_segment(new_type_name);
-                tree.name_map.get(short_name).copied()
-            });
-
-            // MLS §7.3.2: Activate constraining-clause defaults for redeclared
-            // replaceable components.
-            activate_constrainedby_defaults_for_redeclare(comp);
+            apply_redeclared_component_type(tree, comp, new_type_name);
         }
     }
 

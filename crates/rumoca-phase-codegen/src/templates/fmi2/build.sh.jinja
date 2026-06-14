@@ -11,7 +11,56 @@ case "$(uname -s)" in
 esac
 
 mkdir -p binaries/$PLATFORM
-cc -shared -fPIC -O2 -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
+EXTERNAL_INCLUDE_ARGS=""
+if [ -s resources/externalIncludeDirectories.txt ]; then
+  EXTERNAL_INCLUDE_DIRECTORIES=$(awk 'NF && !seen[$0]++' resources/externalIncludeDirectories.txt)
+  for include_dir in $EXTERNAL_INCLUDE_DIRECTORIES; do
+    case "$include_dir" in
+      modelica://*)
+        if [ -z "${RUMOCA_EXTERNAL_INCLUDE_DIR:-}" ]; then
+          echo "external include directories declared in resources/externalDependencies.json; set RUMOCA_EXTERNAL_INCLUDE_DIR for modelica:// include URIs" >&2
+          exit 1
+        fi
+        EXTERNAL_INCLUDE_ARGS="$EXTERNAL_INCLUDE_ARGS -I$RUMOCA_EXTERNAL_INCLUDE_DIR"
+        ;;
+      *)
+        if [ ! -d "$include_dir" ]; then
+          echo "missing external include directory: $include_dir" >&2
+          exit 1
+        fi
+        EXTERNAL_INCLUDE_ARGS="$EXTERNAL_INCLUDE_ARGS -I$include_dir"
+        ;;
+    esac
+  done
+fi
 
-zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
+EXTERNAL_LIB_ARGS=""
+if [ -s resources/externalLibraries.txt ]; then
+  EXTERNAL_LIBRARIES=$(awk 'NF && !seen[$0]++' resources/externalLibraries.txt)
+  if [ -n "$EXTERNAL_LIBRARIES" ]; then
+    if [ -z "${RUMOCA_EXTERNAL_LIBRARY_DIR:-}" ]; then
+      echo "external runtime libraries declared in resources/externalDependencies.json; set RUMOCA_EXTERNAL_LIBRARY_DIR" >&2
+      exit 1
+    fi
+    for lib in $EXTERNAL_LIBRARIES; do
+      case "$PLATFORM" in
+        win*) lib_file="$RUMOCA_EXTERNAL_LIBRARY_DIR/$lib.$LIB_EXT" ;;
+        *)    lib_file="$RUMOCA_EXTERNAL_LIBRARY_DIR/lib$lib.$LIB_EXT" ;;
+      esac
+      if [ ! -f "$lib_file" ]; then
+        echo "missing external runtime library: $lib_file" >&2
+        exit 1
+      fi
+      EXTERNAL_LIB_ARGS="$EXTERNAL_LIB_ARGS -L$RUMOCA_EXTERNAL_LIBRARY_DIR -l$lib"
+    done
+  fi
+fi
+
+cc -shared -fPIC -O2 $EXTERNAL_INCLUDE_ARGS -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm $EXTERNAL_LIB_ARGS
+
+if [ -d resources ]; then
+  zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/ resources/
+else
+  zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
+fi
 echo "Created {{ model_name }}.fmu"

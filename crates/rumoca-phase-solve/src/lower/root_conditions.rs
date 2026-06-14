@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 struct RootRuntime<'a> {
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -7,18 +8,22 @@ struct RootRuntime<'a> {
     clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
     triggered_clock_conditions: &'a [rumoca_core::Expression],
     variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
+    scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
 }
 
 pub(super) fn lower_root_conditions(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    let scalarized_component_child_slots =
+        Arc::new(build_scalarized_component_child_slot_map(layout));
     let runtime = RootRuntime {
         functions: &dae_model.symbols.functions,
         clock_intervals: &dae_model.clocks.intervals,
         clock_timings: &dae_model.clocks.timings,
         triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
         variable_starts: &dae_model.metadata.variable_starts,
+        scalarized_component_child_slots,
     };
     let mut rows = Vec::with_capacity(
         dae_model.conditions.relations.len()
@@ -27,20 +32,14 @@ pub(super) fn lower_root_conditions(
     );
     for condition in &dae_model.conditions.relations {
         if root_condition_is_inactive(dae_model, condition) {
-            rows.push(lower_inactive_root_row(
-                layout,
-                &dae_model.symbols.functions,
-            ));
+            rows.push(lower_inactive_root_row(layout, &runtime));
         } else {
             rows.push(lower_root_condition_row(condition, layout, &runtime)?);
         }
     }
     for condition in &dae_model.events.synthetic_root_conditions {
         if root_condition_is_inactive(dae_model, condition) {
-            rows.push(lower_inactive_root_row(
-                layout,
-                &dae_model.symbols.functions,
-            ));
+            rows.push(lower_inactive_root_row(layout, &runtime));
         } else {
             rows.push(lower_synthetic_root_condition_row(
                 condition, layout, &runtime,
@@ -84,15 +83,7 @@ fn lower_root_condition_row(
     layout: &VarLayout,
     runtime: &RootRuntime<'_>,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = LowerBuilder::new_with_runtime_metadata(
-        layout,
-        runtime.functions,
-        runtime.clock_intervals,
-        runtime.clock_timings,
-        runtime.triggered_clock_conditions,
-        runtime.variable_starts,
-        false,
-    );
+    let mut builder = root_builder(layout, runtime);
     let scope = Scope::new();
     let root_value = match condition {
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => match op {
@@ -216,15 +207,7 @@ fn lower_synthetic_root_condition_row(
     // MLS Appendix B: root functions are real-valued zero-crossing functions.
     // Synthetic roots are precomputed signed residuals, not Boolean relation
     // expressions, so render the numeric residual directly.
-    let mut builder = LowerBuilder::new_with_runtime_metadata(
-        layout,
-        runtime.functions,
-        runtime.clock_intervals,
-        runtime.clock_timings,
-        runtime.triggered_clock_conditions,
-        runtime.variable_starts,
-        false,
-    );
+    let mut builder = root_builder(layout, runtime);
     let root_value = builder.lower_expr(condition, &Scope::new(), 0)?;
     builder.ops.push(LinearOp::StoreOutput { src: root_value });
     Ok(builder.ops)
@@ -235,15 +218,7 @@ fn lower_triggered_clock_condition_row(
     layout: &VarLayout,
     runtime: &RootRuntime<'_>,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = LowerBuilder::new_with_runtime_metadata(
-        layout,
-        runtime.functions,
-        runtime.clock_intervals,
-        runtime.clock_timings,
-        runtime.triggered_clock_conditions,
-        runtime.variable_starts,
-        false,
-    );
+    let mut builder = root_builder(layout, runtime);
     let root_value = lower_bool_condition_as_root(condition, &mut builder, &Scope::new())?;
     builder.ops.push(LinearOp::StoreOutput { src: root_value });
     Ok(builder.ops)
@@ -267,14 +242,28 @@ fn lower_bool_condition_as_root(
     Ok(builder.emit_select(cond, neg_one, pos_one))
 }
 
-fn lower_inactive_root_row(
-    layout: &VarLayout,
-    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-) -> Vec<LinearOp> {
-    let mut builder = LowerBuilder::new(layout, functions);
+fn lower_inactive_root_row(layout: &VarLayout, runtime: &RootRuntime<'_>) -> Vec<LinearOp> {
+    let mut builder = root_builder(layout, runtime);
     let positive = builder.emit_const(1.0);
     builder.ops.push(LinearOp::StoreOutput { src: positive });
     builder.ops
+}
+
+fn root_builder<'a>(layout: &'a VarLayout, runtime: &'a RootRuntime<'a>) -> LowerBuilder<'a> {
+    LowerBuilder::new_with_metadata(
+        layout,
+        runtime.functions,
+        LowerBuilderMetadata {
+            clock_intervals: Some(runtime.clock_intervals),
+            clock_timings: Some(runtime.clock_timings),
+            triggered_clock_conditions: Some(runtime.triggered_clock_conditions),
+            discrete_valued_names: None,
+            variable_starts: Some(runtime.variable_starts),
+            indexed_bindings: None,
+            scalarized_component_child_slots: Some(&runtime.scalarized_component_child_slots),
+            is_initial_mode: false,
+        },
+    )
 }
 
 fn root_condition_is_inactive(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {

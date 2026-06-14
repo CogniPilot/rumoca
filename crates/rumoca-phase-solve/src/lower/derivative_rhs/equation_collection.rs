@@ -181,7 +181,6 @@ pub(in crate::lower) fn insert_direct_assignment(
     }
 
     let repeat_period = direct_assignment_repeat_period(dae_model, &dims, &rhs);
-    assignments.insert(base.clone(), DirectAssignmentValue::full(rhs.clone()));
     for flat_index in 0..size {
         let key = dae::scalar_name_text_for_flat_index(&base, &dims, flat_index);
         assignments.insert(

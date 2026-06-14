@@ -104,6 +104,7 @@ impl TypeChecker {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn alias_field_key_range<'a>(
         sorted_keys: &'a [String],
         target_prefix: &str,
@@ -1776,20 +1777,30 @@ impl TypeChecker {
     }
 
     fn is_strict_component_member_owner(type_table: &TypeTable, owner_type: TypeId) -> bool {
+        let root = Self::resolve_alias_root(type_table, owner_type);
+        let Some(Type::Class(class_type)) = type_table.get(root) else {
+            return false;
+        };
+        if class_type.kind == ClassKind::Connector
+            && Self::is_bus_like_connector_type_name(&class_type.name)
+        {
+            return false;
+        }
         matches!(
-            type_table.get(Self::resolve_alias_root(type_table, owner_type)),
-            Some(Type::Class(class_type))
-                if matches!(
-                    class_type.kind,
-                    ClassKind::Class
-                        | ClassKind::Model
-                        | ClassKind::Block
-                        | ClassKind::Record
-                        | ClassKind::Connector
-                        | ClassKind::Type
-                        | ClassKind::Operator
-                )
+            class_type.kind,
+            ClassKind::Class
+                | ClassKind::Model
+                | ClassKind::Block
+                | ClassKind::Record
+                | ClassKind::Connector
+                | ClassKind::Type
+                | ClassKind::Operator
         )
+    }
+
+    fn is_bus_like_connector_type_name(type_name: &str) -> bool {
+        let leaf = rumoca_core::top_level_last_segment(type_name);
+        leaf == "SignalBus" || leaf.ends_with("Bus") || leaf.ends_with("BusArrays")
     }
 
     fn emit_unknown_component_member(

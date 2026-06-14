@@ -21,7 +21,9 @@
         "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
         "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
         "unsigned", "void", "volatile", "while", "inline", "restrict",
-        "m", "t", "time", "i", "n", "arr", "s", "sz", "ModelInstance", "Complex",
+        "m", "t", "time", "i", "n", "arr", "s", "sz", "value", "set", "reset", "suspend",
+        "resume", "active", "localActive", "newActive", "oldActive", "enableFire", "fire",
+        "condition", "t_start", "ModelInstance", "Complex",
         "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
     ]
 } %}
@@ -210,6 +212,16 @@ static int ModelicaStrings_scanInteger(double string, int startIndex, int unsign
 /* ExternalCombiTable constructor stub */
 static double Modelica_Blocks_Types_ExternalCombiTable1D() { return 0.0; }
 static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
+
+#ifndef RUMOCA_SOLVE_EXTERNAL_CALL
+static double __rumoca_solve_external_call_default(const char* function, int output_index, int arg_count, const double* args) {
+    (void)args;
+    fprintf(stderr, "Rumoca solve ExternalCall requires native runtime bridge: %s output_index=%d arg_count=%d\n", function, output_index, arg_count);
+    abort();
+    return NAN;
+}
+#define RUMOCA_SOLVE_EXTERNAL_CALL __rumoca_solve_external_call_default
+#endif
 
 /* Named argument passthrough macros */
 #define __rumoca_named_arg___tableName(x) (x)
@@ -653,8 +665,9 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% else %}
 {{ function_input_aliases(func) }}
 {{ function_locals_and_outputs(func) }}
-{% if func.body | length > 0 %}
-{{ render_statements(func.body, cfg, "    ") }}
+{% set func_body = func["body"] %}
+{% if func_body | length > 0 %}
+{{ render_function_statements(func_body, cfg, "    ", return_expr) }}
 {% endif %}
     return {{ return_expr }};
 {% endif %}
@@ -891,12 +904,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
@@ -908,12 +921,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
@@ -998,11 +1011,11 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};  /* {{ name }} */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}

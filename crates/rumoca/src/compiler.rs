@@ -628,6 +628,18 @@ impl Compiler {
         self.compile_str_dae(&source, path)
     }
 
+    /// Compile a Modelica file through DAE for diagnostics while retaining an
+    /// unbalanced DAE result.
+    pub fn compile_file_dae_allow_unbalanced_for_diagnostics(
+        &self,
+        path: &str,
+    ) -> Result<DaeCompilationResult, CompilerError> {
+        let source =
+            fs::read_to_string(path).map_err(|e| CompilerError::io_error(path, e.to_string()))?;
+
+        self.compile_str_dae_allow_unbalanced_for_diagnostics(&source, path)
+    }
+
     /// Compile a Modelica file from a Path through DAE only.
     pub fn compile_path_dae(&self, path: &Path) -> Result<DaeCompilationResult, CompilerError> {
         let path_str = path.to_string_lossy().to_string();
@@ -844,6 +856,41 @@ impl Compiler {
         }
 
         Ok(*result)
+    }
+
+    /// Compile Modelica source code through DAE for diagnostics while retaining
+    /// an unbalanced DAE result.
+    pub fn compile_str_dae_allow_unbalanced_for_diagnostics(
+        &self,
+        source: &str,
+        file_name: &str,
+    ) -> Result<DaeCompilationResult, CompilerError> {
+        let model_name = self
+            .model_name
+            .as_ref()
+            .ok_or(CompilerError::NoModelSpecified)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Compiling model through diagnostic DAE: {model_name}");
+            eprintln!("[rumoca] Source file: {file_name}");
+        }
+
+        let mut session = Session::new(SessionConfig::default());
+        self.load_required_source_roots(&mut session, source)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
+        }
+        self.load_local_compile_unit(&mut session, source, file_name)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Phase 3-6: Diagnostic DAE compile...");
+        }
+
+        session
+            .compile_model_dae_allow_unbalanced_for_diagnostics(model_name)
+            .map(|result| *result)
+            .map_err(CompilerError::ToDaeError)
     }
 }
 

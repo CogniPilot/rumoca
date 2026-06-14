@@ -663,6 +663,13 @@ fn reg_depends_on_y_index_memo(
                 || reg_depends_on_y_index_memo(row, imin, target_y_index, memo)
                 || reg_depends_on_y_index_memo(row, imax, target_y_index, memo)
         }
+        LinearOp::ExternalCall {
+            args, arg_count, ..
+        } => args
+            .iter()
+            .copied()
+            .take(arg_count)
+            .any(|arg| reg_depends_on_y_index_memo(row, arg, target_y_index, memo)),
         LinearOp::Const { .. }
         | LinearOp::LoadTime { .. }
         | LinearOp::LoadP { .. }

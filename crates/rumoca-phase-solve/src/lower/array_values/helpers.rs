@@ -555,10 +555,8 @@ pub(super) fn lower_static_range_values(
             return Ok(None);
         };
         value
-    } else if end_v >= start_v {
-        1.0
     } else {
-        -1.0
+        1.0
     };
 
     if !start_v.is_finite()

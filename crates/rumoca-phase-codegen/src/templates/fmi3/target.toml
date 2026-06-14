@@ -9,6 +9,21 @@ completion_message = """FMU sources compiled to: {{ out_dir }}
 Run ./build.sh to compile and package the .fmu"""
 
 [[files]]
+path = "resources/externalDependencies.json"
+template = "externalDependencies.json.jinja"
+ir = "dae"
+
+[[files]]
+path = "resources/externalLibraries.txt"
+template = "externalLibraries.txt.jinja"
+ir = "dae"
+
+[[files]]
+path = "resources/externalIncludeDirectories.txt"
+template = "externalIncludeDirectories.txt.jinja"
+ir = "dae"
+
+[[files]]
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
 

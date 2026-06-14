@@ -198,6 +198,12 @@ fn max_reg_in_op(op: &LinearOp) -> Reg {
         | LinearOp::ImpureRandomInit { dst, .. }
         | LinearOp::ImpureRandom { dst, .. }
         | LinearOp::ImpureRandomInteger { dst, .. } => dst,
+        LinearOp::ExternalCall {
+            dst,
+            args,
+            arg_count,
+            ..
+        } => args.iter().copied().take(arg_count).fold(dst, Reg::max),
         LinearOp::StoreOutput { src } => src,
     }
 }

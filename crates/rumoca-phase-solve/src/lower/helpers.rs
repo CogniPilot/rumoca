@@ -224,6 +224,9 @@ pub(super) fn dynamic_binding_base_key(
             let base_key = dynamic_binding_base_key(base)?;
             Ok(format!("{base_key}.{field}"))
         }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {
+            Ok("__rumoca_literal__".to_string())
+        }
         _ => Err(LowerError::Unsupported {
             reason: format!(
                 "unsupported base expression for dynamic binding path: {}",
@@ -327,7 +330,7 @@ pub(super) fn lower_index_expr(expr: &rumoca_core::Expression) -> Result<usize, 
     match lower_static_index_expr(expr)? {
         Some(index) => Ok(index),
         None => Err(LowerError::Unsupported {
-            reason: "dynamic subscript expressions are unsupported".to_string(),
+            reason: format!("dynamic subscript expressions are unsupported: {expr:?}"),
         }),
     }
 }

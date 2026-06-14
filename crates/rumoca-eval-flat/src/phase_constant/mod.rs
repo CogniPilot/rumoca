@@ -68,6 +68,10 @@ pub struct ParamEvalContext<'a> {
     pub array_dims: &'a FxHashMap<String, Vec<i64>>,
     /// Functions available for evaluation.
     pub functions: &'a FxHashMap<String, rumoca_core::Function>,
+    /// Optional prebuilt context for user function evaluation. Building this
+    /// context is expensive for full-building flattened models, so callers that
+    /// evaluate many parameter bindings in one pass can share it.
+    pub user_func_eval_ctx: Option<&'a EvalContext>,
     /// The fully qualified name of the variable whose binding we're evaluating.
     /// Used to resolve unqualified modification bindings to parent scope (MLS §7.2).
     pub var_context: Option<&'a str>,
@@ -90,6 +94,7 @@ impl<'a> ParamEvalContext<'a> {
             known_enums,
             array_dims,
             functions,
+            user_func_eval_ctx: None,
             var_context,
         }
     }
@@ -111,6 +116,7 @@ pub fn try_eval_flat_expr_integer_with_dims(
         known_enums: &FxHashMap::default(),
         array_dims,
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: None,
     };
     try_eval_integer_with_context(expr, &ctx)
@@ -438,17 +444,17 @@ fn resolve_in_parent_scope(
     let scope = ComponentPath::from_flat_path(var_context).parent()?;
     let name_path = ComponentPath::from_flat_path(name);
     if let Some(candidate) = lowercase_type_ref_candidate(&name_path, &scope)
-        && let Some(val) = known_ints.get(&candidate).copied()
+        && let Some(val) = get_copy_with_canonical_indices(known_ints, &candidate)
     {
         return Some(val);
     }
     for candidate in scoped_component_path_candidates(&name_path, &scope) {
-        if let Some(val) = known_ints.get(&candidate).copied() {
+        if let Some(val) = get_copy_with_canonical_indices(known_ints, &candidate) {
             return Some(val);
         }
     }
 
-    known_ints.get(name).copied()
+    get_copy_with_canonical_indices(known_ints, name)
 }
 
 fn lowercase_type_ref_candidate(name: &ComponentPath, scope: &ComponentPath) -> Option<String> {
@@ -482,7 +488,7 @@ fn lookup_unique_suffix_copy<T: Copy>(name: &str, values: &FxHashMap<String, T>)
     let mut found = None;
     for suffix in ComponentPath::from_flat_path(name).suffixes_excluding_self() {
         let candidate = suffix.to_flat_string();
-        if let Some(val) = values.get(&candidate).copied() {
+        if let Some(val) = get_copy_with_canonical_indices(values, &candidate) {
             if found.is_some() {
                 return None;
             }
@@ -490,6 +496,48 @@ fn lookup_unique_suffix_copy<T: Copy>(name: &str, values: &FxHashMap<String, T>)
         }
     }
     found
+}
+
+fn get_copy_with_canonical_indices<T: Copy>(values: &FxHashMap<String, T>, key: &str) -> Option<T> {
+    values.get(key).copied().or_else(|| {
+        canonicalize_array_indices_to_first(key)
+            .and_then(|canonical| values.get(&canonical).copied())
+    })
+}
+
+fn canonicalize_array_indices_to_first(path: &str) -> Option<String> {
+    let mut result = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+    let mut changed = false;
+    while let Some(ch) = chars.next() {
+        if ch != '[' {
+            result.push(ch);
+            continue;
+        }
+
+        let mut content = String::new();
+        let mut closed = false;
+        for inner in chars.by_ref() {
+            if inner == ']' {
+                closed = true;
+                break;
+            }
+            content.push(inner);
+        }
+
+        if closed && content.chars().all(|c| c.is_ascii_digit()) {
+            result.push_str("[1]");
+            changed |= content != "1";
+        } else {
+            result.push('[');
+            result.push_str(&content);
+            if closed {
+                result.push(']');
+            }
+        }
+    }
+
+    changed.then_some(result)
 }
 
 fn lookup_unique_suffix_cloned<T: Clone>(name: &str, values: &FxHashMap<String, T>) -> Option<T> {
@@ -520,7 +568,7 @@ fn resolve_varref_integer(name_str: &str, ctx: &ParamEvalContext) -> Option<i64>
     }
 
     // Direct lookup in integers
-    if let Some(val) = ctx.known_ints.get(name_str).copied() {
+    if let Some(val) = get_copy_with_canonical_indices(ctx.known_ints, name_str) {
         return Some(val);
     }
     // Try real parameters that are whole numbers (e.g., Real m = 3)
@@ -921,6 +969,7 @@ pub fn infer_array_dimensions_full_with_conds(
         known_enums,
         array_dims,
         functions: &functions,
+        user_func_eval_ctx: None,
         var_context: None,
     };
     infer_array_dimensions_with_context(expr, &ctx)
@@ -963,6 +1012,9 @@ fn infer_array_dimensions_with_context(
             else_branch,
             ..
         } => infer_if_dimensions_with_context(branches, else_branch, ctx),
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            infer_binary_dimensions_with_context(op, lhs, rhs, ctx)
+        }
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
             infer_user_function_call_dimensions(name, args, ctx)
         }
@@ -978,6 +1030,31 @@ fn infer_array_dimensions_with_context(
             let dims = lookup_array_dims_in_scope(name.as_str(), ctx.var_context, ctx.array_dims)?;
             project_dims_by_subscripts(&dims, subscripts, ctx)
         }
+        _ => None,
+    }
+}
+
+fn infer_binary_dimensions_with_context(
+    op: &rumoca_core::OpBinary,
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    ctx: &ParamEvalContext<'_>,
+) -> Option<Vec<i64>> {
+    if !matches!(
+        op,
+        rumoca_core::OpBinary::Add
+            | rumoca_core::OpBinary::Sub
+            | rumoca_core::OpBinary::Mul
+            | rumoca_core::OpBinary::Div
+    ) {
+        return None;
+    }
+    let lhs_dims = infer_array_dimensions_with_context(lhs, ctx);
+    let rhs_dims = infer_array_dimensions_with_context(rhs, ctx);
+    match (lhs_dims, rhs_dims) {
+        (Some(lhs_dims), Some(rhs_dims)) if lhs_dims == rhs_dims => Some(lhs_dims),
+        (Some(lhs_dims), None) if !lhs_dims.is_empty() => Some(lhs_dims),
+        (None, Some(rhs_dims)) if !rhs_dims.is_empty() => Some(rhs_dims),
         _ => None,
     }
 }
@@ -1034,6 +1111,7 @@ fn infer_user_function_call_dimensions(
         known_enums: ctx.known_enums,
         array_dims: ctx.array_dims,
         functions: ctx.functions,
+        user_func_eval_ctx: ctx.user_func_eval_ctx,
         var_context: None,
     };
 
@@ -1533,13 +1611,19 @@ fn eval_user_func_integer(
 
     // Try to find and evaluate the user-defined function using rumoca_eval_const
     let func = ctx.functions.get(name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
+    let owned_eval_ctx;
+    let eval_ctx = if let Some(eval_ctx) = ctx.user_func_eval_ctx {
+        eval_ctx
+    } else {
+        owned_eval_ctx = build_user_func_eval_ctx(ctx);
+        &owned_eval_ctx
+    };
     let arg_values = eval_func_args(args, ctx)?;
 
     let result = crate::constant::function_eval::eval_function_with_call_args(
         func,
         arg_values,
-        &eval_ctx,
+        eval_ctx,
         &crate::constant::function_eval::EvalLimits::default(),
         0,
         rumoca_core::Span::DUMMY,
@@ -1559,13 +1643,19 @@ pub fn eval_user_func_real(
 ) -> Option<f64> {
     let name_str = name.as_str();
     let func = ctx.functions.get(name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
+    let owned_eval_ctx;
+    let eval_ctx = if let Some(eval_ctx) = ctx.user_func_eval_ctx {
+        eval_ctx
+    } else {
+        owned_eval_ctx = build_user_func_eval_ctx(ctx);
+        &owned_eval_ctx
+    };
     let arg_values = eval_func_args(args, ctx)?;
 
     let result = crate::constant::function_eval::eval_function_with_call_args(
         func,
         arg_values,
-        &eval_ctx,
+        eval_ctx,
         &crate::constant::function_eval::EvalLimits::default(),
         0,
         rumoca_core::Span::DUMMY,
@@ -1729,6 +1819,16 @@ pub fn try_eval_flat_expr_enum(
     eval_enum_inner(expr, known_ints, known_bools, known_enums)
 }
 
+pub fn try_eval_flat_expr_enum_with_canonicalizer(
+    expr: &rumoca_core::Expression,
+    known_ints: &FxHashMap<String, i64>,
+    known_bools: &FxHashMap<String, bool>,
+    known_enums: &FxHashMap<String, String>,
+    canonicalizer: &EnumCanonicalizer,
+) -> Option<String> {
+    eval_enum_inner_with_canonicalizer(expr, known_ints, known_bools, known_enums, canonicalizer)
+}
+
 /// Check whether a dotted path is likely an enum literal reference.
 ///
 /// Enum literals can be globally qualified (`Modelica.Fluid.Types.Dynamics.X`)
@@ -1769,6 +1869,29 @@ fn resolve_enum_value(
     try_extract_enum_value(expr).map(|literal| canonicalize_enum_literal(&literal, known_enums))
 }
 
+fn resolve_enum_value_with_canonicalizer(
+    expr: &rumoca_core::Expression,
+    known_enums: &FxHashMap<String, String>,
+    canonicalizer: &EnumCanonicalizer,
+) -> Option<String> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+
+    let name_str = name.to_string();
+    if let Some(enum_val) = known_enums.get(&name_str) {
+        return Some(enum_val.clone());
+    }
+
+    try_extract_enum_value(expr).map(|literal| canonicalizer.canonicalize(&literal))
+}
+
 /// Inner enum evaluation.
 fn eval_enum_inner(
     expr: &rumoca_core::Expression,
@@ -1783,6 +1906,30 @@ fn eval_enum_inner(
             ..
         } => eval_enum_if(branches, else_branch, known_ints, known_bools, known_enums),
         _ => resolve_enum_value(expr, known_enums),
+    }
+}
+
+fn eval_enum_inner_with_canonicalizer(
+    expr: &rumoca_core::Expression,
+    known_ints: &FxHashMap<String, i64>,
+    known_bools: &FxHashMap<String, bool>,
+    known_enums: &FxHashMap<String, String>,
+    canonicalizer: &EnumCanonicalizer,
+) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => eval_enum_if_with_canonicalizer(
+            branches,
+            else_branch,
+            known_ints,
+            known_bools,
+            known_enums,
+            canonicalizer,
+        ),
+        _ => resolve_enum_value_with_canonicalizer(expr, known_enums, canonicalizer),
     }
 }
 
@@ -1819,10 +1966,127 @@ fn eval_enum_if(
     if all_same { Some(else_value) } else { None }
 }
 
+fn eval_enum_if_with_canonicalizer(
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    known_ints: &FxHashMap<String, i64>,
+    known_bools: &FxHashMap<String, bool>,
+    known_enums: &FxHashMap<String, String>,
+    canonicalizer: &EnumCanonicalizer,
+) -> Option<String> {
+    let mut unknown_branch_values: Vec<String> = Vec::new();
+    for (cond, then_expr) in branches {
+        match try_eval_flat_expr_boolean(cond, known_ints, known_bools, known_enums) {
+            Some(true) => {
+                return eval_enum_inner_with_canonicalizer(
+                    then_expr,
+                    known_ints,
+                    known_bools,
+                    known_enums,
+                    canonicalizer,
+                );
+            }
+            Some(false) => continue,
+            None => unknown_branch_values.push(eval_enum_inner_with_canonicalizer(
+                then_expr,
+                known_ints,
+                known_bools,
+                known_enums,
+                canonicalizer,
+            )?),
+        }
+    }
+
+    let else_value = eval_enum_inner_with_canonicalizer(
+        else_branch,
+        known_ints,
+        known_bools,
+        known_enums,
+        canonicalizer,
+    )?;
+    if unknown_branch_values.is_empty() {
+        return Some(else_value);
+    }
+
+    let all_same = unknown_branch_values
+        .iter()
+        .all(|value| enum_values_equivalent_with_canonicalizer(value, &else_value, canonicalizer));
+    if all_same { Some(else_value) } else { None }
+}
+
 fn enum_values_equivalent(lhs: &str, rhs: &str, known_enums: &FxHashMap<String, String>) -> bool {
     let lhs_norm = canonicalize_enum_literal(lhs, known_enums);
     let rhs_norm = canonicalize_enum_literal(rhs, known_enums);
     rumoca_core::enum_values_equal(&lhs_norm, &rhs_norm)
+}
+
+fn enum_values_equivalent_with_canonicalizer(
+    lhs: &str,
+    rhs: &str,
+    canonicalizer: &EnumCanonicalizer,
+) -> bool {
+    let lhs_norm = canonicalizer.canonicalize(lhs);
+    let rhs_norm = canonicalizer.canonicalize(rhs);
+    rumoca_core::enum_values_equal(&lhs_norm, &rhs_norm)
+}
+
+struct EnumCanonicalMatch {
+    value: String,
+    segments: usize,
+    ambiguous: bool,
+}
+
+pub struct EnumCanonicalizer {
+    matches: FxHashMap<String, EnumCanonicalMatch>,
+}
+
+impl EnumCanonicalizer {
+    pub fn new(known_enums: &FxHashMap<String, String>) -> Self {
+        let mut matches = FxHashMap::default();
+        for value in known_enums.values() {
+            let parts = split_path_with_indices(value);
+            if parts.len() < 2 {
+                continue;
+            }
+            let segments = parts.len();
+            for start in 0..parts.len().saturating_sub(1) {
+                let suffix = parts[start..].join(".");
+                matches
+                    .entry(suffix)
+                    .and_modify(|entry: &mut EnumCanonicalMatch| {
+                        if segments > entry.segments {
+                            entry.value = value.clone();
+                            entry.segments = segments;
+                            entry.ambiguous = false;
+                        } else if segments == entry.segments && entry.value != *value {
+                            entry.ambiguous = true;
+                        }
+                    })
+                    .or_insert_with(|| EnumCanonicalMatch {
+                        value: value.clone(),
+                        segments,
+                        ambiguous: false,
+                    });
+            }
+        }
+        Self { matches }
+    }
+
+    pub fn canonicalize(&self, literal: &str) -> String {
+        let parts = split_path_with_indices(literal);
+        if parts.len() < 2 {
+            return literal.to_string();
+        }
+        for start in 0..parts.len().saturating_sub(1) {
+            let suffix = parts[start..].join(".");
+            if let Some(entry) = self.matches.get(&suffix)
+                && !entry.ambiguous
+            {
+                return entry.value.clone();
+            }
+        }
+        literal.to_string()
+    }
 }
 
 /// Canonicalize a potentially partially-qualified enum literal using known enum values.

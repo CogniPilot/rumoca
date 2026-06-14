@@ -88,6 +88,18 @@ pub enum RandomGenerator {
     Xorshift1024Star,
 }
 
+/// Native external function families preserved in Solve IR.
+///
+/// These are explicit runtime dependencies. Interpreters that do not provide
+/// the native runtime must fail closed instead of substituting constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalFunctionKind {
+    BuildingsEnergyPlusSpawnExternalObject,
+    BuildingsEnergyPlusInitialize,
+    BuildingsEnergyPlusGetParameters,
+    BuildingsEnergyPlusExchange,
+}
+
 /// Flat linear operation stream (no strings, no dynamic dispatch).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LinearOp {
@@ -197,6 +209,16 @@ pub enum LinearOp {
         imax: Reg,
         call_site: u64,
     },
+    /// Native external function call. `args[..arg_count]` are initialized
+    /// scalar argument registers; non-scalar native handles are represented by
+    /// the function kind and must be resolved by the external runtime bridge.
+    ExternalCall {
+        dst: Reg,
+        function: ExternalFunctionKind,
+        args: [Reg; 8],
+        arg_count: usize,
+        output_index: usize,
+    },
     Unary {
         dst: Reg,
         op: UnaryOp,
@@ -246,6 +268,7 @@ impl LinearOp {
             | Self::ImpureRandomInit { dst, .. }
             | Self::ImpureRandom { dst, .. }
             | Self::ImpureRandomInteger { dst, .. }
+            | Self::ExternalCall { dst, .. }
             | Self::Unary { dst, .. }
             | Self::Binary { dst, .. }
             | Self::Compare { dst, .. }

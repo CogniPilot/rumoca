@@ -6,9 +6,10 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
 use super::{
-    EqFilterContext, classify_equations, collect_discrete_valued_lhs_target_counts,
-    collect_explicit_discrete_assignments, expand_record_field_equation, output_alias_skip_reason,
-    output_has_component_equation,
+    EqFilterContext, classify_equations, collect_discrete_valued_binding_targets,
+    collect_discrete_valued_lhs_target_counts, collect_explicit_discrete_assignments,
+    collect_explicit_discrete_assignments_with_binding_targets, expand_record_field_equation,
+    output_alias_skip_reason, output_has_component_equation,
 };
 use crate::ToDaeError;
 
@@ -511,6 +512,70 @@ fn test_discrete_alias_assignment_orients_to_unowned_rhs() {
 
     assert!(assignments.contains_key(&rumoca_core::VarName::new("state.phase")));
     assert!(!assignments.contains_key(&rumoca_core::VarName::new("phase")));
+}
+
+#[test]
+fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
+    let mut dae_model = dae::Dae::new();
+    for name in [
+        "stateGraphRoot.suspend",
+        "stateGraphRoot.subgraphStatePort.suspend",
+    ] {
+        dae_model.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name)),
+        );
+    }
+
+    let mut flat_model = flat::Model::new();
+    flat_model.add_variable(
+        rumoca_core::VarName::new("stateGraphRoot.suspend"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("stateGraphRoot.suspend"),
+            is_primitive: true,
+            is_discrete_type: true,
+            binding: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(false),
+                span: Span::DUMMY,
+            }),
+            ..Default::default()
+        },
+    );
+    flat_model.add_variable(
+        rumoca_core::VarName::new("stateGraphRoot.subgraphStatePort.suspend"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("stateGraphRoot.subgraphStatePort.suspend"),
+            is_primitive: true,
+            is_discrete_type: true,
+            ..Default::default()
+        },
+    );
+    flat_model.equations.push(flat::Equation::new(
+        residual(
+            var_ref("stateGraphRoot.suspend"),
+            var_ref("stateGraphRoot.subgraphStatePort.suspend"),
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "stateGraphRoot".to_string(),
+        },
+    ));
+
+    let counts = collect_discrete_valued_lhs_target_counts(&dae_model, &flat_model);
+    let binding_targets = collect_discrete_valued_binding_targets(&dae_model, &flat_model);
+    let assignments = collect_explicit_discrete_assignments_with_binding_targets(
+        &flat_model.equations[0].residual,
+        &dae_model,
+        &counts,
+        &binding_targets,
+    )
+    .unwrap()
+    .expect("binding-owned alias assignment");
+
+    assert!(assignments.contains_key(&rumoca_core::VarName::new(
+        "stateGraphRoot.subgraphStatePort.suspend"
+    )));
+    assert!(!assignments.contains_key(&rumoca_core::VarName::new("stateGraphRoot.suspend")));
 }
 
 #[test]

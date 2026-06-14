@@ -324,12 +324,19 @@ impl TypeChecker {
             .collect();
 
         const MAX_PASSES: usize = 5;
+        let mut cleared_alias_scopes = HashSet::new();
         for _ in 0..MAX_PASSES {
             let prev =
                 ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
 
             for data in overlay.components.values() {
-                Self::apply_instance_class_overrides(tree, &component_index, data, ctx);
+                Self::apply_instance_class_overrides(
+                    tree,
+                    &component_index,
+                    data,
+                    ctx,
+                    &mut cleared_alias_scopes,
+                );
             }
 
             let new =
@@ -351,6 +358,7 @@ impl TypeChecker {
         component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
         data: &rumoca_ir_ast::InstanceData,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        cleared_alias_scopes: &mut HashSet<String>,
     ) {
         if data.class_overrides.is_empty() {
             return;
@@ -370,6 +378,7 @@ impl TypeChecker {
                 &class_override.alias,
                 class_override.target_def_id,
                 ctx,
+                cleared_alias_scopes,
             );
         }
     }
@@ -382,6 +391,7 @@ impl TypeChecker {
         alias: &str,
         def_id: DefId,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        cleared_alias_scopes: &mut HashSet<String>,
     ) {
         if Self::try_apply_forwarded_parent_alias_constants(
             tree,
@@ -400,7 +410,7 @@ impl TypeChecker {
         let alias_scope = format!("{comp_scope}.{alias}");
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
         // package constants in the local alias scope.
-        Self::clear_alias_scope_values(ctx, &alias_scope);
+        Self::clear_alias_scope_values_once(ctx, &alias_scope, cleared_alias_scopes);
         Self::extract_override_class_constants(tree, &alias_scope, def_id, ctx);
 
         // For declarations like `Medium.BaseProperties medium`, expose
@@ -1042,13 +1052,33 @@ impl TypeChecker {
         alias: &str,
     ) {
         let prefix = format!("{alias}.");
-        ctx.integers.retain(|k, _| !k.starts_with(&prefix));
-        ctx.reals.retain(|k, _| !k.starts_with(&prefix));
-        ctx.booleans.retain(|k, _| !k.starts_with(&prefix));
-        ctx.enums.retain(|k, _| !k.starts_with(&prefix));
-        ctx.dimensions.retain(|k, _| !k.starts_with(&prefix));
-        ctx.enum_sizes.retain(|k, _| !k.starts_with(&prefix));
-        ctx.enum_ordinals.retain(|k, _| !k.starts_with(&prefix));
+        Self::retain_without_prefix_if_present(&mut ctx.integers, &prefix);
+        Self::retain_without_prefix_if_present(&mut ctx.reals, &prefix);
+        Self::retain_without_prefix_if_present(&mut ctx.booleans, &prefix);
+        Self::retain_without_prefix_if_present(&mut ctx.enums, &prefix);
+        Self::retain_without_prefix_if_present(&mut ctx.dimensions, &prefix);
+        Self::retain_without_prefix_if_present(&mut ctx.enum_sizes, &prefix);
+        Self::retain_without_prefix_if_present(&mut ctx.enum_ordinals, &prefix);
+    }
+
+    fn clear_alias_scope_values_once(
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        alias: &str,
+        cleared_alias_scopes: &mut HashSet<String>,
+    ) {
+        if cleared_alias_scopes.insert(alias.to_string()) {
+            Self::clear_alias_scope_values(ctx, alias);
+        }
+    }
+
+    fn retain_without_prefix_if_present<T>(
+        values: &mut rustc_hash::FxHashMap<String, T>,
+        prefix: &str,
+    ) {
+        if values.is_empty() || !values.keys().any(|key| key.starts_with(prefix)) {
+            return;
+        }
+        values.retain(|key, _| !key.starts_with(prefix));
     }
 
     /// Collect `(alias, def_id)` pairs from direct model extends redeclare modifiers.
@@ -1442,11 +1472,18 @@ impl TypeChecker {
         if ancestors.is_empty() {
             return;
         }
+        let mut cleared_nested_scopes = HashSet::new();
         const MAX_PASSES: usize = 5;
         for _pass in 0..MAX_PASSES {
             let prev_count = ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len();
             for ancestor in &ancestors {
-                Self::extract_nested_class_constants_from(tree, ancestor, model_name, ctx);
+                Self::extract_nested_class_constants_from(
+                    tree,
+                    ancestor,
+                    model_name,
+                    ctx,
+                    &mut cleared_nested_scopes,
+                );
             }
             let new_count = ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len();
             if new_count == prev_count {
@@ -1461,12 +1498,13 @@ impl TypeChecker {
         class_def: &ClassDef,
         model_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        cleared_nested_scopes: &mut HashSet<String>,
     ) {
         // Walk nested class declarations (e.g., `package Medium = SomeMedium`)
         for (nested_name, nested_class) in &class_def.classes {
             // MLS §5.3: local nested class/package names shadow imported aliases.
             // Clear stale alias-prefixed values before seeding this class scope.
-            Self::clear_alias_scope_values(ctx, nested_name);
+            Self::clear_alias_scope_values_once(ctx, nested_name, cleared_nested_scopes);
             // Extract constants directly from the nested class
             Self::extract_class_constants(nested_name, nested_class, ctx);
             // Follow extends chains to concrete types and extract their constants

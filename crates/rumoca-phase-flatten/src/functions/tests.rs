@@ -61,6 +61,22 @@ fn ast_comp_ref(parts: &[&str]) -> ast::ComponentReference {
     }
 }
 
+fn string_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::String,
+        token: token(value),
+        span: Span::DUMMY,
+    }
+}
+
+fn named_arg(name: &str, value: ast::Expression) -> ast::Expression {
+    ast::Expression::NamedArgument {
+        name: token(name),
+        value: Arc::new(value),
+        span: Span::DUMMY,
+    }
+}
+
 #[test]
 fn canonicalize_collected_function_calls_uses_unique_suffix_match() {
     let mut flat = flat::Model::new();
@@ -913,13 +929,16 @@ fn test_constructor_signature_preserves_local_default_references() {
     tree.def_map.insert(n_def, "Pkg.C.N".to_string());
     let source_map = rumoca_core::SourceMap::new();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut member_cache = qualify::MemberDefIdCache::default();
 
     let constructor = convert_constructor_signature(
+        &tree,
         &class_index,
         &class_def,
         "Pkg.C",
         &source_map,
         &tree.def_map,
+        &mut member_cache,
     )
     .unwrap();
 
@@ -932,6 +951,113 @@ fn test_constructor_signature_preserves_local_default_references() {
         n_param.default,
         Some(rumoca_core::Expression::VarRef { ref name, .. }) if name.as_str() == "orientation"
     ));
+}
+
+#[test]
+fn test_external_object_constructor_signature_uses_local_external_constructor() {
+    let object_def = rumoca_core::DefId::new(11);
+    let constructor_def = rumoca_core::DefId::new(12);
+    let idf_def = rumoca_core::DefId::new(13);
+    let adapter_def = rumoca_core::DefId::new(14);
+    let constructor = ast::ClassDef {
+        def_id: Some(constructor_def),
+        name: token("constructor"),
+        class_type: rumoca_core::ClassType::Function,
+        pure: false,
+        components: ast::AstIndexMap::from_iter([
+            (
+                "idfName".to_string(),
+                ast::Component {
+                    name: "idfName".to_string(),
+                    def_id: Some(idf_def),
+                    type_name: ast::Name::from_string("String"),
+                    causality: rumoca_core::Causality::Input(token("input")),
+                    ..Default::default()
+                },
+            ),
+            (
+                "adapter".to_string(),
+                ast::Component {
+                    name: "adapter".to_string(),
+                    def_id: Some(adapter_def),
+                    type_name: ast::Name::from_string("Pkg.SpawnExternalObject"),
+                    causality: rumoca_core::Causality::Output(token("output")),
+                    ..Default::default()
+                },
+            ),
+        ]),
+        external: Some(ast::ExternalFunction {
+            language: Some("C".to_string()),
+            function_name: Some(token("allocate_Modelica_EnergyPlus_9_6_0")),
+            output: Some(ast_comp_ref(&["adapter"])),
+            args: vec![ast::Expression::ComponentReference(ast_comp_ref(&[
+                "idfName",
+            ]))],
+            annotation: vec![named_arg(
+                "Library",
+                ast::Expression::Array {
+                    elements: vec![
+                        string_expr("ModelicaBuildingsEnergyPlus_9_6_0"),
+                        string_expr("fmilib_shared"),
+                    ],
+                    is_matrix: false,
+                    span: Span::DUMMY,
+                },
+            )],
+        }),
+        ..Default::default()
+    };
+    let class_def = ast::ClassDef {
+        def_id: Some(object_def),
+        name: token("SpawnExternalObject"),
+        class_type: rumoca_core::ClassType::Class,
+        classes: ast::AstIndexMap::from_iter([("constructor".to_string(), constructor)]),
+        ..Default::default()
+    };
+    let mut tree = ast::ClassTree::default();
+    tree.def_map
+        .insert(object_def, "Pkg.SpawnExternalObject".to_string());
+    tree.def_map.insert(
+        constructor_def,
+        "Pkg.SpawnExternalObject.constructor".to_string(),
+    );
+    tree.def_map.insert(
+        idf_def,
+        "Pkg.SpawnExternalObject.constructor.idfName".to_string(),
+    );
+    tree.def_map.insert(
+        adapter_def,
+        "Pkg.SpawnExternalObject.constructor.adapter".to_string(),
+    );
+    let source_map = rumoca_core::SourceMap::new();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut member_cache = qualify::MemberDefIdCache::default();
+
+    let function = convert_constructor_signature(
+        &tree,
+        &class_index,
+        &class_def,
+        "Pkg.SpawnExternalObject",
+        &source_map,
+        &tree.def_map,
+        &mut member_cache,
+    )
+    .unwrap();
+
+    assert_eq!(function.name.as_str(), "Pkg.SpawnExternalObject");
+    assert_eq!(function.def_id, Some(object_def));
+    assert!(function.is_constructor);
+    let external = function.external.expect("external constructor metadata");
+    assert_eq!(
+        external.function_name.as_deref(),
+        Some("allocate_Modelica_EnergyPlus_9_6_0")
+    );
+    assert_eq!(external.output_name.as_deref(), Some("adapter"));
+    assert_eq!(external.arg_names, vec!["idfName"]);
+    assert_eq!(
+        external.libraries,
+        vec!["ModelicaBuildingsEnergyPlus_9_6_0", "fmilib_shared"]
+    );
 }
 
 #[test]

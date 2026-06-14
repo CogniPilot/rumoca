@@ -53,6 +53,7 @@ pub fn build_var_layout_with_solver_len(dae_model: &dae::Dae, solver_len: usize)
         &mut shape_spans,
         &mut indexed_bindings,
     );
+    insert_nested_scalar_index_aliases(&bindings, &mut indexed_bindings);
 
     VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
         bindings,
@@ -347,6 +348,59 @@ fn insert_array_constant_bindings(
     }
 }
 
+fn insert_nested_scalar_index_aliases(
+    bindings: &IndexMap<String, ScalarSlot>,
+    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
+) {
+    for (name, slot) in bindings {
+        for (alias_key, indices) in nested_scalar_index_aliases(name) {
+            let entries = indexed_bindings
+                .entry(ComponentPath::from_flat_path(&alias_key))
+                .or_default();
+            if entries
+                .iter()
+                .any(|entry| entry.indices == indices && entry.slot == *slot)
+            {
+                continue;
+            }
+            entries.push(IndexedScalarSlot {
+                indices,
+                slot: *slot,
+            });
+        }
+    }
+}
+
+fn nested_scalar_index_aliases(name: &str) -> Vec<(String, Vec<usize>)> {
+    let mut aliases = Vec::new();
+    let mut search_start = 0usize;
+    while let Some(open_rel) = name[search_start..].find('[') {
+        let open = search_start + open_rel;
+        let Some(close_rel) = name[open..].find(']') else {
+            break;
+        };
+        let close = open + close_rel;
+        if let Some(indices) = parse_positive_indices(&name[open + 1..close]) {
+            let mut alias = String::with_capacity(name.len() - (close - open + 1));
+            alias.push_str(&name[..open]);
+            alias.push_str(&name[close + 1..]);
+            if alias != name && !alias.is_empty() {
+                aliases.push((alias, indices));
+            }
+        }
+        search_start = close + 1;
+    }
+    aliases
+}
+
+fn parse_positive_indices(raw: &str) -> Option<Vec<usize>> {
+    let indices = raw
+        .split(',')
+        .map(|part| part.trim().parse::<usize>().ok().filter(|value| *value > 0))
+        .collect::<Option<Vec<_>>>()?;
+    (!indices.is_empty()).then_some(indices)
+}
+
 fn insert_var_shape(
     shapes: &mut IndexMap<String, Vec<usize>>,
     shape_spans: &mut IndexMap<String, Span>,
@@ -626,6 +680,38 @@ mod tests {
         assert_eq!(
             eval_const_values(&builtin(rumoca_core::BuiltinFunction::Rem), &ordinals),
             Some(vec![-1.5])
+        );
+    }
+
+    #[test]
+    fn nested_scalar_index_aliases_expose_connector_array_field_base() {
+        let aliases = nested_scalar_index_aliases("iOn[1].inPort[2].set");
+        assert!(aliases.contains(&("iOn.inPort[2].set".to_string(), vec![1])));
+        assert!(aliases.contains(&("iOn[1].inPort.set".to_string(), vec![2])));
+    }
+
+    #[test]
+    fn insert_nested_scalar_index_aliases_maps_existing_slots() {
+        let mut bindings = IndexMap::new();
+        bindings.insert("iOn[1].inPort[1].set".to_string(), scalar_slot_p(10));
+        bindings.insert("iOn[1].inPort[2].set".to_string(), scalar_slot_p(11));
+        let mut indexed_bindings = IndexMap::new();
+
+        insert_nested_scalar_index_aliases(&bindings, &mut indexed_bindings);
+
+        let entries = indexed_bindings
+            .get(&ComponentPath::from_flat_path("iOn[1].inPort.set"))
+            .expect("connector array field alias should exist");
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.indices == vec![1] && entry.slot == scalar_slot_p(10) })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.indices == vec![2] && entry.slot == scalar_slot_p(11) })
         );
     }
 }

@@ -526,6 +526,13 @@ fn validate_op_inputs(
         | solve::LinearOp::ImpureRandomInteger { .. } => {
             validate_random_op_inputs(context, op_idx, op, defined)
         }
+        solve::LinearOp::ExternalCall {
+            args, arg_count, ..
+        } => args
+            .iter()
+            .copied()
+            .take(*arg_count)
+            .try_for_each(|arg| validate_defined_reg(context, op_idx, arg, defined)),
     }
 }
 

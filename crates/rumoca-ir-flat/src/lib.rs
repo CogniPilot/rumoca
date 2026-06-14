@@ -155,6 +155,14 @@ pub struct Model {
     /// this correction tracks how many excess equation scalars exist.
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
+    /// Scalar count of outside stream connector equations (MLS §15.1).
+    ///
+    /// Stream connector equations are structural `inStream`/`actualStream`
+    /// equations, not ordinary connection equalities. Flatten tracks their
+    /// count separately so DAE balance can account for them without generating
+    /// incorrect potential-equation aliases for stream variables.
+    #[serde(default)]
+    pub stream_interface_equation_count: usize,
     /// Enumeration literal ordinal map (MLS §4.9.5, 1-based ordinals).
     ///
     /// Keys are canonical literal paths (e.g.

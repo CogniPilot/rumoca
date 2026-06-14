@@ -554,6 +554,24 @@ fn solver_residual_equation(
     !is_state_derivative_row
         && !static_runtime_tail_equation(dae_model, runtime_tail_updates, eq)
         && runtime_assignment_equation(dae_model, runtime_tail_updates, eq).is_none()
+        && !energyplus_spawn_external_object_binding(eq)
+}
+
+pub(crate) fn energyplus_spawn_external_object_binding(eq: &dae::Equation) -> bool {
+    let Some(target) = eq
+        .lhs
+        .as_ref()
+        .map(|lhs| lhs.as_str().to_string())
+        .or_else(|| {
+            eq.origin
+                .strip_prefix("binding equation for ")
+                .map(str::trim)
+                .map(ToOwned::to_owned)
+        })
+    else {
+        return false;
+    };
+    target.ends_with(".adapter")
 }
 
 fn build_implicit_rhs_rows(
@@ -797,6 +815,12 @@ fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
             imax,
             ..
         } => def_use(dst, None, vec![id, imin, imax]),
+        Op::ExternalCall {
+            dst,
+            args,
+            arg_count,
+            ..
+        } => def_use(dst, None, args.iter().copied().take(arg_count).collect()),
         Op::StoreOutput { src } => RowDefUseOp::Store { src },
     }
 }
@@ -1078,7 +1102,7 @@ fn lower_continuous_row_targets<'a>(
             dae_model,
             eq,
             layout,
-            eq.scalar_count.max(1),
+            eq.scalar_count,
         )?);
     }
     Ok(targets)

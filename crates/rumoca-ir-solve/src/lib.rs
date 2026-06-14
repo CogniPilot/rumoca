@@ -16,7 +16,9 @@ pub use layout::{
     IndexedScalarSlot, ScalarSlot, VarLayout, VarLayoutShapeContractError, scalar_slot_p,
     scalar_slot_y,
 };
-pub use linear_op::{BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, UnaryOp};
+pub use linear_op::{
+    BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, RandomGenerator, Reg, UnaryOp,
+};
 pub use visitor::{
     LinearOpSliceKind, SolveVisitor, VisitScope, walk_compute_block, walk_compute_node,
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,

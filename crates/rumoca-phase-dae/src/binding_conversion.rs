@@ -539,7 +539,10 @@ fn collect_unknowns(flat: &Model, state_vars: &IndexSet<VarName>) -> HashSet<Var
             let kind = classification::classify_variable(var, state_vars);
             matches!(
                 kind,
-                VariableKind::State | VariableKind::Algebraic | VariableKind::Output
+                VariableKind::State
+                    | VariableKind::Algebraic
+                    | VariableKind::Output
+                    | VariableKind::Discrete
             )
         })
         .map(|(name, _)| name.clone())
@@ -761,6 +764,39 @@ mod tests {
             &unknowns,
             &unknown_prefix_children
         ));
+    }
+
+    #[test]
+    fn test_collect_unknowns_includes_discrete_valued_variables() {
+        let mut flat = Model::new();
+        flat.add_variable(
+            VarName::new("stateGraphRoot.suspend"),
+            flat::Variable {
+                name: VarName::new("stateGraphRoot.suspend"),
+                variability: rumoca_core::Variability::Empty,
+                is_primitive: true,
+                is_discrete_type: true,
+                binding: Some(Expression::Literal {
+                    value: rumoca_core::Literal::Boolean(false),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                ..Default::default()
+            },
+        );
+        flat.add_variable(
+            VarName::new("stateGraphRoot.subgraphStatePort.suspend"),
+            flat::Variable {
+                name: VarName::new("stateGraphRoot.subgraphStatePort.suspend"),
+                variability: rumoca_core::Variability::Empty,
+                is_primitive: true,
+                is_discrete_type: true,
+                ..Default::default()
+            },
+        );
+
+        let unknowns = collect_unknowns(&flat, &IndexSet::new());
+        assert!(unknowns.contains(&VarName::new("stateGraphRoot.suspend")));
+        assert!(unknowns.contains(&VarName::new("stateGraphRoot.subgraphStatePort.suspend")));
     }
 
     #[test]
