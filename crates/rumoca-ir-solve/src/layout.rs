@@ -358,7 +358,7 @@ fn validate_indexed_constant_shape(
             span,
         });
     };
-    if entries.len() != count {
+    if entries.len() < count {
         return Err(VarLayoutShapeContractError::ShapeOutOfBounds {
             variable: name.to_string(),
             start: 0,
@@ -536,6 +536,40 @@ mod tests {
             0,
         )
         .expect("constant array shape is represented by indexed constant slots");
+
+        assert_eq!(layout.validate_shape_contract(), Ok(()));
+    }
+
+    #[test]
+    fn layout_shape_contract_accepts_extra_indexed_constant_aliases() {
+        let bindings = IndexMap::from([("table".to_string(), ScalarSlot::Constant(1.0))]);
+        let shapes = IndexMap::from([("table".to_string(), vec![2])]);
+        let indexed_bindings = IndexMap::from([(
+            ComponentPath::from_flat_path("table"),
+            vec![
+                IndexedScalarSlot {
+                    indices: vec![1],
+                    slot: ScalarSlot::Constant(1.0),
+                },
+                IndexedScalarSlot {
+                    indices: vec![2],
+                    slot: ScalarSlot::Constant(2.0),
+                },
+                IndexedScalarSlot {
+                    indices: vec![3],
+                    slot: ScalarSlot::Constant(3.0),
+                },
+            ],
+        )]);
+
+        let layout = VarLayout::try_from_parts_with_shapes_and_indexed_bindings(
+            bindings,
+            shapes,
+            indexed_bindings,
+            0,
+            0,
+        )
+        .expect("extra constant aliases should not invalidate declared shape coverage");
 
         assert_eq!(layout.validate_shape_contract(), Ok(()));
     }

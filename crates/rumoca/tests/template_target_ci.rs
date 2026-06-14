@@ -196,9 +196,16 @@ fn assert_rendered_template(
         .render_template_str_with_name_and_ir(template, "Smoke", ir)
         .unwrap_or_else(|err| panic!("render template {target_name}:{template_name}: {err}"));
     assert!(
-        !content.trim().is_empty(),
+        !content.trim().is_empty() || template_can_render_empty(template_name),
         "target {target_name} rendered empty content for {template_name}"
     );
+}
+
+fn template_can_render_empty(template_name: &str) -> bool {
+    matches!(
+        template_name,
+        "externalLibraries.txt.jinja" | "externalIncludeDirectories.txt.jinja"
+    )
 }
 
 fn render_support_templates(

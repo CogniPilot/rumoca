@@ -9,11 +9,15 @@ use tempfile::Builder;
 #[cfg(feature = "template-runtime-tests")]
 fn python_command() -> &'static str {
     for candidate in ["python3", "python"] {
-        if Command::new(candidate).arg("--version").output().is_ok() {
+        if Command::new(candidate)
+            .args(["-c", "import sympy"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
             return candidate;
         }
     }
-    panic!("expected python3 or python to be available for SymPy template regression tests");
+    panic!("expected python3 or python with sympy installed for SymPy template regression tests");
 }
 
 fn render_template(source: &str, model_name: &str, file_name: &str) -> String {

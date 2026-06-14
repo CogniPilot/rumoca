@@ -37,11 +37,15 @@ const C_TOLERANCE: f64 = 0.05;
 #[cfg(feature = "template-runtime-tests")]
 fn python_command() -> &'static str {
     for candidate in ["python3", "python"] {
-        if Command::new(candidate).arg("--version").output().is_ok() {
+        if Command::new(candidate)
+            .args(["-c", "import casadi, numpy, sympy"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
             return candidate;
         }
     }
-    panic!("expected python3 or python to be available");
+    panic!("expected python3 or python with casadi, numpy, and sympy installed");
 }
 
 fn cc_command() -> &'static str {
