@@ -847,7 +847,10 @@ jobs:
           cp editors/wasm/rumoca.png gh-pages/
           cp editors/wasm/coi-serviceworker.js gh-pages/
           cp -r editors/wasm/src gh-pages/
-          cp -r editors/wasm/vendor gh-pages/
+          # vendor/ holds symlinks to the single-source viz assets in
+          # crates/rumoca-viz-web/web/; -L dereferences them so the deployed
+          # site gets real files, not dangling links.
+          cp -rL editors/wasm/vendor gh-pages/
 
           sed \
               -e "s|window.rumocaWasmPkgBase = '../../pkg';|window.rumocaWasmPkgBase = './pkg';|g" \
