@@ -479,8 +479,8 @@ fn validate_discrete_valued_solved_form(dae_model: &dae::Dae) -> Result<(), ToDa
         if let Some(previous) = assignments.insert(lhs.clone(), equation) {
             return Err(ToDaeError::discrete_solved_form_violation(
                 format!(
-                    "duplicate f_m assignment target `{lhs}` (new origin='{}', prior origin='{}')",
-                    equation.origin, previous.origin
+                    "duplicate f_m assignment target `{lhs}` (new origin='{}', prior origin='{}', new rhs={:?}, prior rhs={:?})",
+                    equation.origin, previous.origin, equation.rhs, previous.rhs
                 ),
                 equation.span,
             ));

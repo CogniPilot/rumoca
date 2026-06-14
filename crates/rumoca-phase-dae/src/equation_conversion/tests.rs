@@ -608,6 +608,44 @@ fn test_discrete_alias_assignment_preserves_indexed_lhs_target() {
 }
 
 #[test]
+fn test_discrete_alias_assignment_orients_exact_indexed_duplicate_to_unowned_rhs() {
+    let mut dae_model = dae::Dae::new();
+    for name in [
+        "pipeB1B2.mediums[1].phase",
+        "pipeB1B2.mediums[1].state.phase",
+    ] {
+        dae_model.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name)),
+        );
+    }
+
+    let mut counts = HashMap::new();
+    counts.insert(rumoca_core::VarName::new("pipeB1B2.mediums[1].phase"), 2);
+    counts.insert(
+        rumoca_core::VarName::new("pipeB1B2.mediums[1].state.phase"),
+        0,
+    );
+
+    let assignments = collect_explicit_discrete_assignments_with_binding_targets(
+        &residual(
+            var_ref("pipeB1B2.mediums[1].phase"),
+            var_ref("pipeB1B2.mediums[1].state.phase"),
+        ),
+        &dae_model,
+        &counts,
+        &HashSet::new(),
+    )
+    .unwrap()
+    .expect("indexed duplicate alias assignment");
+
+    assert!(assignments.contains_key(&rumoca_core::VarName::new(
+        "pipeB1B2.mediums[1].state.phase"
+    )));
+    assert!(!assignments.contains_key(&rumoca_core::VarName::new("pipeB1B2.mediums[1].phase")));
+}
+
+#[test]
 fn test_output_has_component_equation_matches_unsubscripted_base() {
     let outputs_with_component_eqs: HashSet<rumoca_core::VarName> =
         [rumoca_core::VarName::new("y")].into_iter().collect();

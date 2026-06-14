@@ -1349,9 +1349,6 @@ fn collect_oriented_discrete_alias_assignment(
     if lhs_target == rhs_target {
         return Ok(None);
     }
-    if lhs_target.as_str().contains('[') {
-        return Ok(None);
-    }
     if !is_discrete_valued_target(dae, &lhs_target) || !is_discrete_valued_target(dae, &rhs_target)
     {
         return Ok(None);
@@ -1379,6 +1376,20 @@ fn collect_oriented_discrete_alias_assignment(
             detail: format!("missing discrete-valued LHS definition count for `{rhs_target}`"),
             span: rumoca_core::span_to_source_span(rhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
         })?;
+
+    if lhs_target.as_str().contains('[') {
+        let exact_lhs_definitions = discrete_valued_lhs_counts
+            .get(&lhs_target)
+            .copied()
+            .unwrap_or(0);
+        if exact_lhs_definitions <= 1 || rhs_definitions != 0 {
+            return Ok(None);
+        }
+        let mut result = HashMap::new();
+        result.insert(rhs_target, lhs.clone());
+        return Ok(Some(result));
+    }
+
     if lhs_definitions <= 1 || rhs_definitions != 0 {
         return Ok(None);
     }

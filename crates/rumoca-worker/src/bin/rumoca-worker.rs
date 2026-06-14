@@ -1421,7 +1421,9 @@ fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
 
 fn run_worker_entry(args: Args) -> Result<(), String> {
     if let Some(cpu_core_id) = args.cpu_core_id {
-        pin_current_thread_to_cpu_core(cpu_core_id)?;
+        if let Err(error) = pin_current_thread_to_cpu_core(cpu_core_id) {
+            eprintln!("warning: {error}; continuing without CPU pinning");
+        }
     }
     match (args.request_json.as_ref(), args.source_root_path.as_ref()) {
         (Some(_), None) => run_worker(args),
