@@ -3,7 +3,9 @@ use super::instantiate_component;
 use super::source_scope::component_declaration_source_scope;
 use super::type_overrides::TypeOverrideMap;
 use super::{InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components};
-use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
+use rumoca_eval_ast::eval_instantiate::{
+    InstantiateEvalCtx, ResolveClassComponents, try_eval_integer_expr,
+};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
@@ -18,6 +20,7 @@ pub(super) struct ArrayExpansionScope<'a> {
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
     pub(super) type_overrides: &'a TypeOverrideMap,
     pub(super) imports: &'a [(String, String)],
+    pub(super) resolve_class_components: &'a ResolveClassComponents<'a>,
 }
 
 pub(super) fn expand_array_component(
@@ -147,6 +150,7 @@ pub(super) fn expand_array_component(
             scope.effective_components,
             scope.type_overrides,
             scope.imports,
+            scope.resolve_class_components,
         );
         ctx.pop_path();
 
@@ -411,7 +415,7 @@ fn try_eval_structural_array_expr(
                 tree,
                 mod_env,
                 effective_components,
-                resolve_class_components: resolve_effective_components_for_eval,
+                resolve_class_components: &resolve_effective_components_for_eval,
             };
             let n = try_eval_integer_expr(&eval_ctx, count_expr)?;
             let len = n.max(0) as usize;
@@ -469,7 +473,7 @@ fn try_eval_structural_array_expr(
                 tree,
                 mod_env,
                 effective_components,
-                resolve_class_components: resolve_effective_components_for_eval,
+                resolve_class_components: &resolve_effective_components_for_eval,
             };
             let m = try_eval_integer_expr(&eval_ctx, &args[0])?;
             let values = symmetric_orientation_values(m)?;
@@ -669,7 +673,7 @@ fn eval_range_bounds(
                 tree,
                 mod_env,
                 effective_components,
-                resolve_class_components: resolve_effective_components_for_eval,
+                resolve_class_components: &resolve_effective_components_for_eval,
             };
             let s = try_eval_integer_expr(&eval_ctx, start)?;
             let e = try_eval_integer_expr(&eval_ctx, end)?;
@@ -1139,6 +1143,7 @@ mod tests {
         index_array_expression_for_element, index_binding_for_element,
         pre_resolve_array_modifications, resolve_mod_to_array,
     };
+    use crate::resolve_effective_components_for_eval;
     use crate::type_overrides::TypeOverrideMap;
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
@@ -1237,6 +1242,7 @@ mod tests {
             effective_components: &effective_components,
             type_overrides: &type_overrides,
             imports: &imports,
+            resolve_class_components: &resolve_effective_components_for_eval,
         };
         let source = make_comp_ref_expr(&["outer", "x"]);
         let parent_mod = ast::ModificationValue::with_source_scope(
@@ -1279,6 +1285,7 @@ mod tests {
             effective_components: &effective_components,
             type_overrides: &type_overrides,
             imports: &imports,
+            resolve_class_components: &resolve_effective_components_for_eval,
         };
         let binding = make_comp_ref_expr(&["plug", "pin"]);
 

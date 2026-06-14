@@ -1,0 +1,7 @@
+{%- for _func_name, function in dae.functions | items -%}
+{%- if function.external -%}
+{%- for library in function.external.libraries -%}
+{{ library }}
+{% endfor -%}
+{%- endif -%}
+{%- endfor -%}

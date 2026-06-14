@@ -210,7 +210,7 @@ fn eval_range(
     let end = eval_scalar(end, bindings, shapes)?;
     let step = step
         .map(|expr| eval_scalar(expr, bindings, shapes))
-        .unwrap_or_else(|| Some(if end >= start { 1.0 } else { -1.0 }))?;
+        .unwrap_or(Some(1.0))?;
     if step.abs() <= f64::EPSILON {
         return None;
     }

@@ -119,7 +119,8 @@ pub fn seeds_affecting_regs(ops: &[LinearOp]) -> HashMap<Reg, Vec<usize>> {
             | LinearOp::RandomState { dst, .. }
             | LinearOp::ImpureRandomInit { dst, .. }
             | LinearOp::ImpureRandom { dst, .. }
-            | LinearOp::ImpureRandomInteger { dst, .. } => {
+            | LinearOp::ImpureRandomInteger { dst, .. }
+            | LinearOp::ExternalCall { dst, .. } => {
                 // Conservative: we don't track through these; leave dst absent from
                 // the map so callers treat it as "unknown / all seeds".
                 let _ = dst;

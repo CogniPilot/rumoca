@@ -119,9 +119,20 @@ fn is_sub_op(binary: &Value) -> bool {
 
 /// Render a list of statements to a string.
 pub(crate) fn render_statements(stmts: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
-    let len = stmts
-        .len()
-        .ok_or_else(|| render_err("statement list is not a sequence"))?;
+    if stmts.is_none() || stmts.is_undefined() {
+        return Ok(String::new());
+    }
+    let len = stmts.len().ok_or_else(|| {
+        let mut preview = stmts.to_string();
+        if preview.len() > 512 {
+            preview.truncate(512);
+            preview.push_str("...");
+        }
+        render_err(format!(
+            "statement list is not a sequence: kind={}, value={preview}",
+            stmts.kind()
+        ))
+    })?;
 
     let mut stmt_strs = Vec::new();
     for i in 0..len {
@@ -146,7 +157,7 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     if let Some(s) = stmt.as_str() {
         return match s {
             "Empty" => Ok(String::new()),
-            "Return" => Ok(format!("{indent}return")),
+            "Return" => Ok(render_return_statement(cfg, indent)),
             "Break" => Ok(format!("{indent}break")),
             _ => Err(render_err(format!("unhandled statement variant: {s}"))),
         };
@@ -163,7 +174,7 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     }
     if let Ok(ret) = get_field(stmt, "Return") {
         let _ = ret;
-        return Ok(format!("{indent}return"));
+        return Ok(render_return_statement(cfg, indent));
     }
     if let Ok(brk) = get_field(stmt, "Break") {
         let _ = brk;
@@ -192,6 +203,13 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     }
 
     Err(render_err(format!("unhandled statement: {stmt}")))
+}
+
+fn render_return_statement(cfg: &ExprConfig, indent: &str) -> String {
+    cfg.return_value.as_ref().map_or_else(
+        || format!("{indent}return;"),
+        |value| format!("{indent}return {value};"),
+    )
 }
 
 /// Render an assignment statement: comp := value
@@ -260,11 +278,12 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
     let mut result = String::new();
 
     // Get indices (loop variables)
-    let indices = for_stmt.get_attr("indices").ok();
-    let equations = for_stmt.get_attr("equations").ok();
+    let indices = non_empty_attr(for_stmt, "indices");
+    let equations = non_empty_attr(for_stmt, "equations");
 
     // Extract first index (simplification: handle one index for now)
     let (loop_var, range_parts) = extract_for_loop_index(&indices, cfg)?;
+    let loop_var = super::emitted_symbol_or_fallback(&loop_var, cfg);
 
     // Generate for loop header based on config
     match cfg.if_style {
@@ -484,11 +503,16 @@ fn parse_colon_range(s: &str) -> Option<ForRange> {
 fn render_while_statement(while_stmt: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let mut result = String::new();
 
-    let cond = while_stmt
+    let block = non_empty_attr(while_stmt, "block");
+    let cond_source = block.as_ref().unwrap_or(while_stmt);
+    let cond = cond_source
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
         .unwrap_or_else(|_| "true".to_string());
-    let stmts = statement_block_statements(while_stmt);
+    let stmts = block
+        .as_ref()
+        .and_then(statement_block_statements)
+        .or_else(|| statement_block_statements(while_stmt));
 
     match cfg.if_style {
         IfStyle::Ternary => {
@@ -522,8 +546,8 @@ fn render_if_statement(if_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Rende
     let mut result = String::new();
     let next_indent = format!("{indent}    ");
 
-    let cond_blocks = if_stmt.get_attr("cond_blocks").ok();
-    let else_block = if_stmt.get_attr("else_block").ok();
+    let cond_blocks = non_empty_attr(if_stmt, "cond_blocks");
+    let else_block = non_empty_attr(if_stmt, "else_block");
 
     // Render condition blocks
     if let Some(ref blocks) = cond_blocks {
@@ -533,6 +557,7 @@ fn render_if_statement(if_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Rende
     // Handle else block
     if let Some(ref else_val) = else_block
         && !else_val.is_none()
+        && !else_val.is_undefined()
     {
         result.push_str(&render_if_else_block(else_val, cfg, indent, &next_indent)?);
     }
@@ -615,10 +640,14 @@ fn render_if_branch(
 }
 
 fn statement_block_statements(block: &Value) -> Option<Value> {
-    block
-        .get_attr("stmts")
+    non_empty_attr(block, "stmts").or_else(|| non_empty_attr(block, "statements"))
+}
+
+fn non_empty_attr(value: &Value, attr: &'static str) -> Option<Value> {
+    value
+        .get_attr(attr)
         .ok()
-        .or_else(|| block.get_attr("statements").ok())
+        .filter(|field| !field.is_none() && !field.is_undefined())
 }
 
 /// Render the else block of an if statement.
@@ -775,7 +804,7 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
 // ── Component reference rendering ────────────────────────────────────
 
 /// Render an AST ComponentReference to a string.
-fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> RenderResult {
+pub(crate) fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Some(s) = comp.as_str() {
         return Ok(super::emitted_symbol_or_fallback(s, cfg));
     }

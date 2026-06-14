@@ -17,6 +17,7 @@ use crate::boolean_eval::{
     try_resolve_enum_value,
 };
 use crate::errors::FlattenError;
+use crate::pipeline::try_eval_const_boolean_with_scope;
 use crate::static_subscripts::try_constant_integer;
 use crate::{Context, qualify_expression_imports_with_def_map};
 
@@ -313,7 +314,106 @@ fn lookup_parameter_in_scope(
         }
     }
 
+    // MLS §7.3: `Medium.nXi` in conservation-balance scopes can be recovered from
+    // already-instantiated medium-sized arrays when package constants were not
+    // materialized as scalar parameters during constant injection.
+    if is_type_ref
+        && cr.parts.len() >= 2
+        && let Some(val) = infer_medium_size_constant_from_type_ref(ctx, cr, prefix)
+    {
+        return Some(val);
+    }
+
     None
+}
+
+/// Infer package size constants referenced through replaceable type aliases.
+///
+/// Example: in `ConservationEquation`, `Medium.nXi` can be recovered from the
+/// first dimension of `mXi`, `XiOut`, or similar arrays already sized during
+/// instantiation even when `medium.nXi` was not injected as a scalar parameter.
+fn infer_medium_size_constant_from_type_ref(
+    ctx: &Context,
+    cr: &ast::ComponentReference,
+    prefix: &ast::QualifiedName,
+) -> Option<i64> {
+    let constant_name = cr.parts.last()?.ident.text.as_ref();
+    let array_candidates: &[&str] = match constant_name {
+        "nXi" => &[
+            "Xi",
+            "mXi",
+            "XiOut",
+            "mXiOut",
+            "XiOut_internal",
+            "mbXi_flow",
+        ],
+        "nX" => &["X"],
+        "nC" => &[
+            "C",
+            "COut",
+            "mC",
+            "COut_internal",
+            "C_flow_internal",
+            "s",
+            "extraPropertiesNames",
+            "C_nominal",
+        ],
+        "nS" => &["substanceNames"],
+        _ => return None,
+    };
+
+    let first = cr.parts.first()?.ident.text.as_ref();
+    if !first.starts_with(char::is_uppercase) {
+        return None;
+    }
+    let lowered = {
+        let mut chars = first.chars();
+        let head = chars.next()?;
+        head.to_lowercase().collect::<String>() + chars.as_str()
+    };
+
+    let mut current = Some(prefix.clone());
+    while let Some(scope_qn) = current {
+        let scope = scope_qn.to_flat_string();
+        for candidate in array_candidates {
+            for key in medium_size_array_lookup_keys(&scope, &lowered, candidate) {
+                if let Some(dims) = lookup_array_dims_with_unindexed_scope(ctx, &key)
+                    && let Some(size) = medium_size_from_array_dims(constant_name, &dims)
+                {
+                    return Some(size);
+                }
+            }
+        }
+        current = get_parent_prefix(&scope_qn);
+    }
+
+    None
+}
+
+fn medium_size_array_lookup_keys(
+    scope: &str,
+    lowered_alias: &str,
+    array_name: &str,
+) -> [String; 2] {
+    [
+        if scope.is_empty() {
+            array_name.to_string()
+        } else {
+            format!("{scope}.{array_name}")
+        },
+        if scope.is_empty() {
+            format!("{lowered_alias}.{array_name}")
+        } else {
+            format!("{scope}.{lowered_alias}.{array_name}")
+        },
+    ]
+}
+
+fn medium_size_from_array_dims(constant_name: &str, dims: &[i64]) -> Option<i64> {
+    match constant_name {
+        "nXi" | "nX" | "nC" | "nS" => dims.last().copied(),
+        _ => None,
+    }
 }
 
 /// Try looking up a type reference with the first part lowercased.
@@ -333,7 +433,7 @@ fn try_lowercase_type_ref(
     // Add remaining parts as-is
     parts.extend(cr.parts[1..].iter().map(format_component_ref_part));
     let lowered_name = parts.join(".");
-    ctx.get_integer_param(&lowered_name)
+    lookup_integer_param_with_unindexed_scope(ctx, &lowered_name)
 }
 
 /// Try looking up an instance-qualified reference with the first part uppercased.
@@ -350,7 +450,7 @@ fn try_uppercase_instance_ref(
     parts.push(uppered);
     parts.extend(cr.parts[1..].iter().map(format_component_ref_part));
     let uppered_name = parts.join(".");
-    ctx.get_integer_param(&uppered_name)
+    lookup_integer_param_with_unindexed_scope(ctx, &uppered_name)
 }
 
 /// Infer medium-style size constants from known array dimensions in scope.
@@ -1648,11 +1748,12 @@ fn try_select_branch_for_mismatched_if(
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<FlattenedEquations, FlattenError> {
+    let scope = prefix.to_flat_string();
     for block in cond_blocks {
-        if let Some(true) = try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
+        if let Some(true) = try_eval_const_boolean_with_scope(&block.cond, ctx, &scope) {
             return flatten_equations_list(ctx, &block.eqs, prefix, span, origin, def_map);
         }
-        if let Some(false) = try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
+        if let Some(false) = try_eval_const_boolean_with_scope(&block.cond, ctx, &scope) {
             continue;
         }
         // Can't evaluate this condition at all

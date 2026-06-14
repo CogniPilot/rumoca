@@ -1557,6 +1557,42 @@ fn active_package_alias_rewrites_inherited_partial_function_call() {
 }
 
 #[test]
+fn fully_qualified_partial_function_prefers_local_medium_alias_when_multiple_media_match() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages = vec![
+        OverrideTarget {
+            alias: "Medium".to_string(),
+            ..override_target("AliasMedium", ids.alias_pkg, ClassType::Package)
+        },
+        OverrideTarget {
+            alias: "MediumAir".to_string(),
+            ..override_target("ConcreteMedium", ids.concrete_pkg, ClassType::Package)
+        },
+    ];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+    let mut expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("PartialMedium.density"),
+        args: vec![core_var("state")],
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::FunctionCall { name, .. } = expr else {
+        panic!("expected rewritten function call");
+    };
+    assert_eq!(name.as_str(), "AliasMedium.density");
+}
+
+#[test]
 fn leaves_unknown_member_function_calls_unmarked() {
     let tree = ClassTree::new();
     let mut override_functions = OverrideFunctionMap::default();

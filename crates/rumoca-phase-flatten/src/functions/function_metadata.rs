@@ -5,6 +5,12 @@ pub(super) fn convert_external_function(
     ext: &rumoca_ir_ast::ExternalFunction,
     _default_name: &str,
 ) -> rumoca_core::ExternalFunction {
+    let mut metadata = ExternalAnnotationMetadata::default();
+    for annotation in &ext.annotation {
+        metadata.raw.push(annotation.to_string());
+        collect_external_annotation(annotation, &mut metadata);
+    }
+
     rumoca_core::ExternalFunction {
         language: ext.language.clone().unwrap_or_else(|| "C".to_string()),
         function_name: ext.function_name.as_ref().map(|t| t.text.to_string()),
@@ -33,6 +39,159 @@ pub(super) fn convert_external_function(
                 }
             })
             .collect(),
+        libraries: metadata.libraries,
+        include_directories: metadata.include_directories,
+        library_directories: metadata.library_directories,
+        includes: metadata.includes,
+        annotation: metadata.raw,
+    }
+}
+
+#[derive(Debug, Default)]
+struct ExternalAnnotationMetadata {
+    raw: Vec<String>,
+    libraries: Vec<String>,
+    include_directories: Vec<String>,
+    library_directories: Vec<String>,
+    includes: Vec<String>,
+}
+
+fn collect_external_annotation(expr: &ast::Expression, metadata: &mut ExternalAnnotationMetadata) {
+    match expr {
+        ast::Expression::NamedArgument { name, value, .. } => {
+            collect_external_annotation_value(name.text.as_ref(), value, metadata);
+        }
+        ast::Expression::Modification { target, value, .. } => {
+            if let Some(name) = component_reference_simple_name(target) {
+                collect_external_annotation_value(name, value, metadata);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_external_annotation_value(
+    name: &str,
+    value: &ast::Expression,
+    metadata: &mut ExternalAnnotationMetadata,
+) {
+    let values = string_values(value);
+    match name {
+        "Library" => extend_unique(&mut metadata.libraries, values),
+        "IncludeDirectory" => extend_unique(&mut metadata.include_directories, values),
+        "LibraryDirectory" => extend_unique(&mut metadata.library_directories, values),
+        "Include" => extend_unique(&mut metadata.includes, values),
+        _ => {}
+    }
+}
+
+fn component_reference_simple_name(reference: &ast::ComponentReference) -> Option<&str> {
+    let [part] = reference.parts.as_slice() else {
+        return None;
+    };
+    if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
+        return None;
+    }
+    Some(part.ident.text.as_ref())
+}
+
+fn string_values(expr: &ast::Expression) -> Vec<String> {
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::String,
+            token,
+            ..
+        } => vec![token.text.trim_matches('"').to_string()],
+        ast::Expression::Array { elements, .. } => {
+            elements.iter().flat_map(string_values).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn extend_unique(target: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !value.is_empty() && !target.contains(&value) {
+            target.push(value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod external_annotation_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
+            text: Arc::from(text),
+            ..Default::default()
+        }
+    }
+
+    fn string_expr(value: &str) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::String,
+            token: token(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn named_arg(name: &str, value: ast::Expression) -> ast::Expression {
+        ast::Expression::NamedArgument {
+            name: token(name),
+            value: Arc::new(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn convert_external_function_preserves_library_annotation_metadata() {
+        let external = rumoca_ir_ast::ExternalFunction {
+            language: Some("C".to_string()),
+            function_name: Some(token("initialize_Modelica_EnergyPlus_9_6_0")),
+            args: vec![],
+            annotation: vec![
+                named_arg(
+                    "Library",
+                    ast::Expression::Array {
+                        elements: vec![
+                            string_expr("ModelicaBuildingsEnergyPlus_9_6_0"),
+                            string_expr("fmilib_shared"),
+                        ],
+                        is_matrix: false,
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                ),
+                named_arg(
+                    "IncludeDirectory",
+                    string_expr("modelica://Buildings/Resources/C-Sources"),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let converted = convert_external_function(&external, "initialize");
+
+        assert_eq!(converted.language, "C");
+        assert_eq!(
+            converted.function_name.as_deref(),
+            Some("initialize_Modelica_EnergyPlus_9_6_0")
+        );
+        assert_eq!(
+            converted.libraries,
+            vec!["ModelicaBuildingsEnergyPlus_9_6_0", "fmilib_shared"]
+        );
+        assert_eq!(
+            converted.include_directories,
+            vec!["modelica://Buildings/Resources/C-Sources"]
+        );
+        assert!(
+            converted
+                .annotation
+                .iter()
+                .any(|item| item.contains("Library"))
+        );
     }
 }
 

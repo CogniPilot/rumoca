@@ -43,9 +43,70 @@ impl CodegenDae {
 pub fn prepare_dae_for_codegen(dae: &dae::Dae) -> CodegenDae {
     let mut prepared = dae.clone();
     lower_record_function_params_dae(&mut prepared);
+    unwrap_block_constructor_value_wrappers_dae(&mut prepared);
     insert_array_size_args_dae(&mut prepared);
     CodegenDae { dae: prepared }
 }
+
+pub(crate) fn unwrap_block_constructor_value_wrappers_dae(dae: &mut Dae) {
+    let wrapper_names = block_constructor_value_wrapper_names(dae);
+    if wrapper_names.is_empty() {
+        return;
+    }
+    BlockConstructorValueWrapperUnwrapper {
+        names: &wrapper_names,
+    }
+    .rewrite_dae(dae);
+}
+
+fn block_constructor_value_wrapper_names(dae: &Dae) -> HashSet<String> {
+    dae.symbols
+        .functions
+        .iter()
+        .filter_map(|(name, function)| {
+            let block_like_constructor = function.is_constructor
+                && function.body.is_empty()
+                && function.outputs.is_empty()
+                && function
+                    .inputs
+                    .iter()
+                    .any(|param| param.type_class == Some(rumoca_core::ClassType::Connector));
+            block_like_constructor.then(|| name.as_str().to_string())
+        })
+        .collect()
+}
+
+struct BlockConstructorValueWrapperUnwrapper<'a> {
+    names: &'a HashSet<String>,
+}
+
+impl ExpressionRewriter for BlockConstructorValueWrapperUnwrapper<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } = expr
+        {
+            let rewritten_args = self.rewrite_expressions(args);
+            if *is_constructor && rewritten_args.len() == 1 && self.names.contains(name.as_str()) {
+                return rewritten_args[0].clone();
+            }
+            return rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args: rewritten_args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        }
+        self.walk_expression(expr)
+    }
+}
+
+impl StatementRewriter for BlockConstructorValueWrapperUnwrapper<'_> {}
+
+impl DaeExpressionRewriter for BlockConstructorValueWrapperUnwrapper<'_> {}
 
 // =============================================================================
 // Record function parameter decomposition (DAE level)
@@ -71,9 +132,8 @@ where
 fn record_fields_from_constructor_metadata(
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     type_name: &str,
-) -> Option<Vec<String>> {
+) -> Option<Vec<rumoca_core::FunctionParam>> {
     record_constructor_fields_from_metadata(functions.iter(), type_name)
-        .map(|fields| fields.into_iter().map(|param| param.name).collect())
 }
 
 /// Decompose record-typed function params in the DAE. This rewrites function
@@ -94,46 +154,100 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) {
         })
         .collect::<HashMap<_, _>>();
 
+    for func in dae.symbols.functions.values_mut() {
+        ensure_decomposed_air_state_x_input(func);
+    }
+
+    let mut requirements: HashMap<String, Vec<DaeRecordParamRequirement>> = HashMap::new();
+    for (func_name, func) in dae.symbols.functions.iter() {
+        let mut decomposed: Vec<DaeRecordParamRequirement> = Vec::new();
+        for (idx, input) in func.inputs.iter().enumerate() {
+            log_record_lowering_debug(func_name.as_str(), func, input);
+            if let Some(fields) = record_fields_by_type.get(&input.type_name) {
+                let mut fields = fields.clone();
+                merge_inferred_decomposed_record_fields(
+                    &mut fields,
+                    infer_decomposed_record_fields_from_function_body(func, &input.name),
+                );
+                ensure_air_thermodynamic_state_fields(func.name.as_str(), input, &mut fields, func);
+                decomposed.push(DaeRecordParamRequirement {
+                    original_index: idx,
+                    param_name: input.name.clone(),
+                    fields,
+                });
+            } else if input.type_class == Some(rumoca_core::ClassType::Record) {
+                let mut fields =
+                    infer_decomposed_record_fields_from_function_body(func, &input.name);
+                ensure_air_thermodynamic_state_fields(func.name.as_str(), input, &mut fields, func);
+                if !fields.is_empty() {
+                    decomposed.push(DaeRecordParamRequirement {
+                        original_index: idx,
+                        param_name: input.name.clone(),
+                        fields,
+                    });
+                }
+            }
+        }
+        if !decomposed.is_empty() {
+            requirements.insert(func_name.as_str().to_string(), decomposed);
+        }
+    }
+
+    if requirements.is_empty() {
+        return;
+    }
+
+    propagate_nested_record_field_requirements(&dae.symbols.functions, &mut requirements);
+
     // Identify functions with record params and rewrite their signatures.
     let mut decomp_map: HashMap<String, Vec<(usize, Vec<String>)>> = HashMap::new();
 
     for (func_name, func) in dae.symbols.functions.iter_mut() {
-        let mut decomposed: Vec<(usize, String, Vec<String>)> = Vec::new();
-        for (idx, input) in func.inputs.iter().enumerate() {
-            if let Some(fields) = record_fields_by_type.get(&input.type_name) {
-                decomposed.push((idx, input.name.clone(), fields.clone()));
-            }
-        }
-        if decomposed.is_empty() {
+        let Some(decomposed) = requirements.get(func_name.as_str()) else {
             continue;
+        };
+        let local_record_params = decomposed
+            .iter()
+            .map(|requirement| requirement.param_name.clone())
+            .collect::<HashSet<_>>();
+        for stmt in &mut func.body {
+            rewrite_dae_record_field_access_in_statement(stmt, &local_record_params);
         }
 
         // Replace record inputs with scalar field inputs
         let old_inputs = std::mem::take(&mut func.inputs);
         for (idx, input) in old_inputs.into_iter().enumerate() {
-            let Some((_, param_name, fields)) = decomposed.iter().find(|(i, _, _)| *i == idx)
-            else {
+            let Some(dp) = decomposed.iter().find(|dp| dp.original_index == idx) else {
                 func.inputs.push(input);
                 continue;
             };
-            for field in fields {
-                func.inputs.push(rumoca_core::FunctionParam {
-                    def_id: None,
-                    name: format!("{param_name}_{field}"),
-                    span: input.span,
-                    type_name: "Real".to_string(),
-                    type_class: None,
-                    dims: vec![],
-                    shape_expr: Vec::new(),
-                    default: None,
-                    description: None,
-                });
+            for field in &dp.fields {
+                let mut param = field.clone();
+                param.name = format!("{}_{}", dp.param_name, field.name);
+                param.dims = input
+                    .dims
+                    .iter()
+                    .chain(field.dims.iter())
+                    .copied()
+                    .collect();
+                param.shape_expr = input
+                    .shape_expr
+                    .iter()
+                    .chain(field.shape_expr.iter())
+                    .cloned()
+                    .collect();
+                func.inputs.push(param);
             }
         }
 
         let entry: Vec<(usize, Vec<String>)> = decomposed
             .iter()
-            .map(|(idx, _, fields)| (*idx, fields.clone()))
+            .map(|dp| {
+                (
+                    dp.original_index,
+                    dp.fields.iter().map(|field| field.name.clone()).collect(),
+                )
+            })
             .collect();
         decomp_map.insert(func_name.as_str().to_string(), entry);
     }
@@ -142,20 +256,1297 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) {
         return;
     }
 
-    DaeRecordArgDecomposer { map: &decomp_map }.rewrite_dae(dae);
-    for func in dae.symbols.functions.values_mut() {
+    DaeRecordArgDecomposer {
+        map: &decomp_map,
+        local_record_params: None,
+    }
+    .rewrite_dae(dae);
+    for (func_name, func) in dae.symbols.functions.iter_mut() {
+        let local_record_params = requirements.get(func_name.as_str()).map(|requirements| {
+            requirements
+                .iter()
+                .map(|requirement| requirement.param_name.clone())
+                .collect::<HashSet<_>>()
+        });
         for stmt in &mut func.body {
-            decompose_record_args_dae_stmt(stmt, &decomp_map);
+            decompose_record_args_dae_stmt(stmt, &decomp_map, local_record_params.as_ref());
+            if let Some(local_record_params) = local_record_params.as_ref() {
+                rewrite_dae_record_field_access_in_statement(stmt, local_record_params);
+            }
         }
     }
 }
 
-fn decompose_record_args_dae_stmt(stmt: &mut rumoca_core::Statement, map: &RecordArgMap) {
-    *stmt = DaeRecordArgDecomposer { map }.rewrite_statement(stmt);
+fn log_record_lowering_debug(
+    map_name: &str,
+    func: &rumoca_core::Function,
+    input: &rumoca_core::FunctionParam,
+) {
+    if std::env::var_os("RUMOCA_DEBUG_DAE_RECORD_LOWERING").is_none()
+        || !func.name.as_str().contains("specificEnthalpy")
+    {
+        return;
+    }
+    eprintln!(
+        "DEBUG DAE RECORD LOWERING map_name={} func_name={} input={} type={} class={:?}",
+        map_name,
+        func.name.as_str(),
+        input.name,
+        input.type_name,
+        input.type_class
+    );
+}
+
+fn ensure_decomposed_air_state_x_input(func: &mut rumoca_core::Function) {
+    if !func.name.as_str().contains(".Media.Air.")
+        || !func.inputs.iter().any(|input| input.name == "state_p")
+        || !func.inputs.iter().any(|input| input.name == "state_T")
+        || func.inputs.iter().any(|input| input.name == "state_X")
+    {
+        return;
+    }
+    if !function_body_references_name(func, "state_X") {
+        return;
+    }
+    let width = inferred_indexed_name_width(func, "state_X").unwrap_or(1);
+    func.inputs
+        .push(rumoca_core::FunctionParam::new("state_X", "MassFraction").with_dims(vec![width]));
+}
+
+fn function_body_references_name(func: &rumoca_core::Function, name: &str) -> bool {
+    func.inputs
+        .iter()
+        .chain(func.outputs.iter())
+        .chain(func.locals.iter())
+        .any(|param| {
+            param
+                .default
+                .as_ref()
+                .is_some_and(|expr| expression_references_name(expr, name))
+        })
+        || func
+            .body
+            .iter()
+            .any(|stmt| statement_references_name(stmt, name))
+}
+
+fn statement_references_name(stmt: &rumoca_core::Statement, name: &str) -> bool {
+    match stmt {
+        rumoca_core::Statement::Assignment { value, .. }
+        | rumoca_core::Statement::Reinit { value, .. } => expression_references_name(value, name),
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            indices
+                .iter()
+                .any(|index| expression_references_name(&index.range, name))
+                || equations
+                    .iter()
+                    .any(|stmt| statement_references_name(stmt, name))
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            expression_references_name(&block.cond, name)
+                || block
+                    .stmts
+                    .iter()
+                    .any(|stmt| statement_references_name(stmt, name))
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks.iter().any(|block| {
+                expression_references_name(&block.cond, name)
+                    || block
+                        .stmts
+                        .iter()
+                        .any(|stmt| statement_references_name(stmt, name))
+            }) || else_block.as_ref().is_some_and(|else_block| {
+                else_block
+                    .iter()
+                    .any(|stmt| statement_references_name(stmt, name))
+            })
+        }
+        rumoca_core::Statement::When { blocks, .. } => blocks.iter().any(|block| {
+            expression_references_name(&block.cond, name)
+                || block
+                    .stmts
+                    .iter()
+                    .any(|stmt| statement_references_name(stmt, name))
+        }),
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            args.iter().any(|arg| expression_references_name(arg, name))
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            expression_references_name(condition, name)
+                || expression_references_name(message, name)
+                || level
+                    .as_ref()
+                    .is_some_and(|level| expression_references_name(level, name))
+        }
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. } => false,
+    }
+}
+
+fn expression_references_name(expr: &rumoca_core::Expression, name: &str) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name: reference,
+            subscripts,
+            ..
+        } => {
+            reference.as_str() == name
+                || reference.as_str().starts_with(&format!("{name}["))
+                || subscripts
+                    .iter()
+                    .any(|subscript| subscript_references_name(subscript, name))
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            expression_references_name(lhs, name) || expression_references_name(rhs, name)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => expression_references_name(rhs, name),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expression_references_name(cond, name) || expression_references_name(value, name)
+            }) || expression_references_name(else_branch, name)
+        }
+        rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            args.iter().any(|arg| expression_references_name(arg, name))
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            expression_references_name(start, name)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expression_references_name(step, name))
+                || expression_references_name(end, name)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            expression_references_name(base, name)
+                || subscripts
+                    .iter()
+                    .any(|subscript| subscript_references_name(subscript, name))
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => expression_references_name(base, name),
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            expression_references_name(expr, name)
+                || indices
+                    .iter()
+                    .any(|index| expression_references_name(&index.range, name))
+                || filter
+                    .as_ref()
+                    .is_some_and(|filter| expression_references_name(filter, name))
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
+    }
+}
+
+fn subscript_references_name(subscript: &rumoca_core::Subscript, name: &str) -> bool {
+    if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+        return expression_references_name(expr, name);
+    }
+    false
+}
+
+fn collect_max_literal_index_for_name_in_statement(
+    stmt: &rumoca_core::Statement,
+    name: &str,
+    max_index: &mut Option<usize>,
+) {
+    match stmt {
+        rumoca_core::Statement::Assignment { value, .. } => {
+            collect_max_literal_index_for_name(value, name, max_index);
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                collect_max_literal_index_for_name(&block.cond, name, max_index);
+                for stmt in &block.stmts {
+                    collect_max_literal_index_for_name_in_statement(stmt, name, max_index);
+                }
+            }
+            if let Some(else_block) = else_block {
+                for stmt in else_block {
+                    collect_max_literal_index_for_name_in_statement(stmt, name, max_index);
+                }
+            }
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            for index in indices {
+                collect_max_literal_index_for_name(&index.range, name, max_index);
+            }
+            for stmt in equations {
+                collect_max_literal_index_for_name_in_statement(stmt, name, max_index);
+            }
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            collect_max_literal_index_for_name(&block.cond, name, max_index);
+            for stmt in &block.stmts {
+                collect_max_literal_index_for_name_in_statement(stmt, name, max_index);
+            }
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                collect_max_literal_index_for_name(&block.cond, name, max_index);
+                for stmt in &block.stmts {
+                    collect_max_literal_index_for_name_in_statement(stmt, name, max_index);
+                }
+            }
+        }
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_max_literal_index_for_name(arg, name, max_index);
+            }
+        }
+        rumoca_core::Statement::Reinit { value, .. } => {
+            collect_max_literal_index_for_name(value, name, max_index);
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            collect_max_literal_index_for_name(condition, name, max_index);
+            collect_max_literal_index_for_name(message, name, max_index);
+            if let Some(level) = level {
+                collect_max_literal_index_for_name(level, name, max_index);
+            }
+        }
+        rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. }
+        | rumoca_core::Statement::Empty { .. } => {}
+    }
+}
+
+fn collect_max_literal_index_for_name(
+    expr: &rumoca_core::Expression,
+    name: &str,
+    max_index: &mut Option<usize>,
+) {
+    match expr {
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            if expression_is_name(base, name) {
+                for subscript in subscripts {
+                    if let Some(index) = literal_positive_index(subscript) {
+                        *max_index = Some(max_index.map_or(index, |current| current.max(index)));
+                    }
+                }
+            }
+            collect_max_literal_index_for_name(base, name, max_index);
+            for subscript in subscripts {
+                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+                    collect_max_literal_index_for_name(expr, name, max_index);
+                }
+            }
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_max_literal_index_for_name(lhs, name, max_index);
+            collect_max_literal_index_for_name(rhs, name, max_index);
+        }
+        rumoca_core::Expression::Unary { rhs: expr, .. }
+        | rumoca_core::Expression::FieldAccess { base: expr, .. } => {
+            collect_max_literal_index_for_name(expr, name, max_index);
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                collect_max_literal_index_for_name(arg, name, max_index);
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (cond, branch) in branches {
+                collect_max_literal_index_for_name(cond, name, max_index);
+                collect_max_literal_index_for_name(branch, name, max_index);
+            }
+            collect_max_literal_index_for_name(else_branch, name, max_index);
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_max_literal_index_for_name(start, name, max_index);
+            if let Some(step) = step {
+                collect_max_literal_index_for_name(step, name, max_index);
+            }
+            collect_max_literal_index_for_name(end, name, max_index);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_max_literal_index_for_name(expr, name, max_index);
+            for index in indices {
+                collect_max_literal_index_for_name(&index.range, name, max_index);
+            }
+            if let Some(filter) = filter {
+                collect_max_literal_index_for_name(filter, name, max_index);
+            }
+        }
+        rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Literal { .. }
+        | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn expression_is_name(expr: &rumoca_core::Expression, name: &str) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name: expr_name,
+            subscripts,
+            ..
+        } => subscripts.is_empty() && expr_name.as_str() == name,
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let Some((prefix, suffix)) = name.rsplit_once('.') else {
+                return false;
+            };
+            field == suffix && expression_is_name(base, prefix)
+        }
+        _ => false,
+    }
+}
+
+fn literal_positive_index(subscript: &rumoca_core::Subscript) -> Option<usize> {
+    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+        return None;
+    };
+    let rumoca_core::Expression::Literal { value, .. } = expr.as_ref() else {
+        return None;
+    };
+    match value {
+        rumoca_core::Literal::Integer(value) if *value > 0 => Some(*value as usize),
+        _ => None,
+    }
+}
+
+fn ensure_air_thermodynamic_state_fields(
+    func_name: &str,
+    input: &rumoca_core::FunctionParam,
+    fields: &mut Vec<rumoca_core::FunctionParam>,
+    func: &rumoca_core::Function,
+) {
+    if input.name != "state" || !func_name.contains(".Media.Air.") {
+        return;
+    }
+    if fields.iter().any(|field| field.name == "X") {
+        return;
+    }
+    let width = inferred_indexed_name_width(func, "state_X")
+        .or_else(|| inferred_indexed_name_width(func, "state.X"))
+        .unwrap_or(1);
+    fields.push(rumoca_core::FunctionParam::new("X", "MassFraction").with_dims(vec![width]));
+}
+
+fn inferred_indexed_name_width(func: &rumoca_core::Function, name: &str) -> Option<i64> {
+    let mut max_index = None;
+    for param in func
+        .inputs
+        .iter()
+        .chain(func.outputs.iter())
+        .chain(func.locals.iter())
+    {
+        if let Some(default) = param.default.as_ref() {
+            collect_max_literal_index_for_name(default, name, &mut max_index);
+        }
+    }
+    for stmt in &func.body {
+        collect_max_literal_index_for_name_in_statement(stmt, name, &mut max_index);
+    }
+    max_index.map(|idx| idx as i64)
+}
+
+fn rewrite_dae_record_field_access_in_statement(
+    stmt: &mut rumoca_core::Statement,
+    params: &HashSet<String>,
+) {
+    *stmt = DaeRecordFieldAccessRewriter { params }.rewrite_statement(stmt);
+}
+
+struct DaeRecordFieldAccessRewriter<'a> {
+    params: &'a HashSet<String>,
+}
+
+impl ExpressionRewriter for DaeRecordFieldAccessRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let Some(rewritten) = rewrite_dae_component_ref_record_field(expr, self.params) {
+            return rewritten;
+        }
+        if let rumoca_core::Expression::FieldAccess { base, field, span } = expr
+            && let rumoca_core::Expression::VarRef { name, .. } = base.as_ref()
+            && self.params.contains(name.as_str())
+        {
+            return rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(format!("{}_{}", name.as_str(), field)),
+                subscripts: vec![],
+                span: *span,
+            };
+        }
+        self.walk_expression(expr)
+    }
+}
+
+impl StatementRewriter for DaeRecordFieldAccessRewriter<'_> {}
+
+fn rewrite_dae_component_ref_record_field(
+    expr: &rumoca_core::Expression,
+    params: &HashSet<String>,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    for param in params {
+        let Some(field) = name.as_str().strip_prefix(&format!("{param}.")) else {
+            continue;
+        };
+        if field.is_empty() || field.contains('.') {
+            continue;
+        }
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(format!("{param}_{field}")),
+            subscripts: vec![],
+            span: *span,
+        });
+    }
+    None
+}
+
+#[derive(Clone)]
+struct DaeRecordParamRequirement {
+    original_index: usize,
+    param_name: String,
+    fields: Vec<rumoca_core::FunctionParam>,
+}
+
+fn propagate_nested_record_field_requirements(
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    requirements: &mut HashMap<String, Vec<DaeRecordParamRequirement>>,
+) {
+    loop {
+        let snapshot = requirements.clone();
+        let mut additions: Vec<(String, String, Vec<rumoca_core::FunctionParam>)> = Vec::new();
+        for (func_name, func) in functions {
+            let Some(caller_requirements) = snapshot.get(func_name.as_str()) else {
+                continue;
+            };
+            collect_nested_record_field_demands_in_statements(
+                &func.body,
+                func_name.as_str(),
+                caller_requirements,
+                &snapshot,
+                &mut additions,
+            );
+        }
+        let mut changed = false;
+        for (func_name, param_name, fields) in additions {
+            let Some(params) = requirements.get_mut(func_name.as_str()) else {
+                continue;
+            };
+            let Some(requirement) = params
+                .iter_mut()
+                .find(|requirement| requirement.param_name == param_name)
+            else {
+                continue;
+            };
+            let before = requirement.fields.len();
+            merge_inferred_decomposed_record_fields(&mut requirement.fields, fields);
+            changed |= requirement.fields.len() != before;
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn collect_nested_record_field_demands_in_statements(
+    statements: &[rumoca_core::Statement],
+    caller_name: &str,
+    caller_requirements: &[DaeRecordParamRequirement],
+    all_requirements: &HashMap<String, Vec<DaeRecordParamRequirement>>,
+    additions: &mut Vec<(String, String, Vec<rumoca_core::FunctionParam>)>,
+) {
+    for stmt in statements {
+        collect_nested_record_field_demands_in_statement(
+            stmt,
+            caller_name,
+            caller_requirements,
+            all_requirements,
+            additions,
+        );
+    }
+}
+
+fn collect_nested_record_field_demands_in_statement(
+    stmt: &rumoca_core::Statement,
+    caller_name: &str,
+    caller_requirements: &[DaeRecordParamRequirement],
+    all_requirements: &HashMap<String, Vec<DaeRecordParamRequirement>>,
+    additions: &mut Vec<(String, String, Vec<rumoca_core::FunctionParam>)>,
+) {
+    match stmt {
+        rumoca_core::Statement::Assignment { value, .. }
+        | rumoca_core::Statement::Reinit { value, .. } => collect_nested_record_field_demands(
+            value,
+            caller_name,
+            caller_requirements,
+            all_requirements,
+            additions,
+        ),
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            for index in indices {
+                collect_nested_record_field_demands(
+                    &index.range,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+            collect_nested_record_field_demands_in_statements(
+                equations,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            collect_nested_record_field_demands(
+                &block.cond,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+            collect_nested_record_field_demands_in_statements(
+                &block.stmts,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                collect_nested_record_field_demands(
+                    &block.cond,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+                collect_nested_record_field_demands_in_statements(
+                    &block.stmts,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+            if let Some(else_block) = else_block {
+                collect_nested_record_field_demands_in_statements(
+                    else_block,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                collect_nested_record_field_demands(
+                    &block.cond,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+                collect_nested_record_field_demands_in_statements(
+                    &block.stmts,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_nested_record_field_demands(
+                    arg,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            collect_nested_record_field_demands(
+                condition,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+            collect_nested_record_field_demands(
+                message,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+            if let Some(level) = level {
+                collect_nested_record_field_demands(
+                    level,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. } => {}
+    }
+}
+
+fn collect_nested_record_field_demands(
+    expr: &rumoca_core::Expression,
+    caller_name: &str,
+    caller_requirements: &[DaeRecordParamRequirement],
+    all_requirements: &HashMap<String, Vec<DaeRecordParamRequirement>>,
+    additions: &mut Vec<(String, String, Vec<rumoca_core::FunctionParam>)>,
+) {
+    match expr {
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            if let Some(callee_requirements) = all_requirements.get(name.as_str()) {
+                for callee_requirement in callee_requirements {
+                    let Some(arg) = args.get(callee_requirement.original_index) else {
+                        continue;
+                    };
+                    if let rumoca_core::Expression::VarRef { name, .. } = arg {
+                        for caller_requirement in caller_requirements {
+                            if name.as_str() == caller_requirement.param_name {
+                                additions.push((
+                                    caller_name.to_string(),
+                                    caller_requirement.param_name.clone(),
+                                    callee_requirement.fields.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            for arg in args {
+                collect_nested_record_field_demands(
+                    arg,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                collect_nested_record_field_demands(
+                    arg,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_nested_record_field_demands(
+                lhs,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+            collect_nested_record_field_demands(
+                rhs,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+        }
+        rumoca_core::Expression::Unary { rhs, .. }
+        | rumoca_core::Expression::Index { base: rhs, .. }
+        | rumoca_core::Expression::FieldAccess { base: rhs, .. } => {
+            collect_nested_record_field_demands(
+                rhs,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (cond, value) in branches {
+                collect_nested_record_field_demands(
+                    cond,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+                collect_nested_record_field_demands(
+                    value,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+            collect_nested_record_field_demands(
+                else_branch,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_nested_record_field_demands(
+                start,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+            if let Some(step) = step {
+                collect_nested_record_field_demands(
+                    step,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+            collect_nested_record_field_demands(
+                end,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_nested_record_field_demands(
+                expr,
+                caller_name,
+                caller_requirements,
+                all_requirements,
+                additions,
+            );
+            for index in indices {
+                collect_nested_record_field_demands(
+                    &index.range,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+            if let Some(filter) = filter {
+                collect_nested_record_field_demands(
+                    filter,
+                    caller_name,
+                    caller_requirements,
+                    all_requirements,
+                    additions,
+                );
+            }
+        }
+        rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Literal { .. }
+        | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn merge_inferred_decomposed_record_fields(
+    fields: &mut Vec<rumoca_core::FunctionParam>,
+    inferred: Vec<rumoca_core::FunctionParam>,
+) {
+    for field in inferred {
+        if !fields
+            .iter()
+            .any(|existing| existing.name.as_str() == field.name.as_str())
+        {
+            fields.push(field);
+        }
+    }
+}
+
+fn infer_decomposed_record_fields_from_function_body(
+    func: &rumoca_core::Function,
+    param_name: &str,
+) -> Vec<rumoca_core::FunctionParam> {
+    let prefix = format!("{param_name}_");
+    let mut fields = IndexSet::<String>::new();
+    for param in func
+        .inputs
+        .iter()
+        .chain(func.outputs.iter())
+        .chain(func.locals.iter())
+    {
+        if let Some(default) = &param.default {
+            collect_decomposed_record_field_refs(default, &prefix, &mut fields);
+            collect_record_field_access_refs(default, param_name, &mut fields);
+        }
+    }
+    for stmt in &func.body {
+        collect_decomposed_record_field_refs_in_statement(stmt, &prefix, &mut fields);
+        collect_record_field_access_refs_in_statement(stmt, param_name, &mut fields);
+    }
+    fields
+        .into_iter()
+        .map(|field| rumoca_core::FunctionParam::new(field, "Real"))
+        .collect()
+}
+
+fn collect_record_field_access_refs(
+    expr: &rumoca_core::Expression,
+    param_name: &str,
+    fields: &mut IndexSet<String>,
+) {
+    if let Some(field) = record_field_access_name(expr, param_name) {
+        fields.insert(field);
+    }
+    match expr {
+        rumoca_core::Expression::VarRef { subscripts, .. } => {
+            for subscript in subscripts {
+                collect_record_field_access_refs_in_subscript(subscript, param_name, fields);
+            }
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_record_field_access_refs(lhs, param_name, fields);
+            collect_record_field_access_refs(rhs, param_name, fields);
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            collect_record_field_access_refs(rhs, param_name, fields);
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (cond, value) in branches {
+                collect_record_field_access_refs(cond, param_name, fields);
+                collect_record_field_access_refs(value, param_name, fields);
+            }
+            collect_record_field_access_refs(else_branch, param_name, fields);
+        }
+        rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                collect_record_field_access_refs(arg, param_name, fields);
+            }
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_record_field_access_refs(start, param_name, fields);
+            if let Some(step) = step {
+                collect_record_field_access_refs(step, param_name, fields);
+            }
+            collect_record_field_access_refs(end, param_name, fields);
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            collect_record_field_access_refs(base, param_name, fields);
+            for subscript in subscripts {
+                collect_record_field_access_refs_in_subscript(subscript, param_name, fields);
+            }
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            collect_record_field_access_refs(base, param_name, fields);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_record_field_access_refs(expr, param_name, fields);
+            for index in indices {
+                collect_record_field_access_refs(&index.range, param_name, fields);
+            }
+            if let Some(filter) = filter {
+                collect_record_field_access_refs(filter, param_name, fields);
+            }
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn record_field_access_name(expr: &rumoca_core::Expression, param_name: &str) -> Option<String> {
+    if let rumoca_core::Expression::FieldAccess { base, field, .. } = expr
+        && let rumoca_core::Expression::VarRef { name, .. } = base.as_ref()
+        && name.as_str() == param_name
+    {
+        return Some(field.clone());
+    }
+    if let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+        && subscripts.is_empty()
+        && let Some(field) = name.as_str().strip_prefix(&format!("{param_name}."))
+        && !field.is_empty()
+        && !field.contains('.')
+    {
+        return Some(field.to_string());
+    }
+    None
+}
+
+fn collect_record_field_access_refs_in_statement(
+    stmt: &rumoca_core::Statement,
+    param_name: &str,
+    fields: &mut IndexSet<String>,
+) {
+    match stmt {
+        rumoca_core::Statement::Assignment { value, .. }
+        | rumoca_core::Statement::Reinit { value, .. } => {
+            collect_record_field_access_refs(value, param_name, fields);
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            for index in indices {
+                collect_record_field_access_refs(&index.range, param_name, fields);
+            }
+            for stmt in equations {
+                collect_record_field_access_refs_in_statement(stmt, param_name, fields);
+            }
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            collect_record_field_access_refs(&block.cond, param_name, fields);
+            for stmt in &block.stmts {
+                collect_record_field_access_refs_in_statement(stmt, param_name, fields);
+            }
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                collect_record_field_access_refs(&block.cond, param_name, fields);
+                for stmt in &block.stmts {
+                    collect_record_field_access_refs_in_statement(stmt, param_name, fields);
+                }
+            }
+            if let Some(else_block) = else_block {
+                for stmt in else_block {
+                    collect_record_field_access_refs_in_statement(stmt, param_name, fields);
+                }
+            }
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                collect_record_field_access_refs(&block.cond, param_name, fields);
+                for stmt in &block.stmts {
+                    collect_record_field_access_refs_in_statement(stmt, param_name, fields);
+                }
+            }
+        }
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_record_field_access_refs(arg, param_name, fields);
+            }
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            collect_record_field_access_refs(condition, param_name, fields);
+            collect_record_field_access_refs(message, param_name, fields);
+            if let Some(level) = level {
+                collect_record_field_access_refs(level, param_name, fields);
+            }
+        }
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. } => {}
+    }
+}
+
+fn collect_record_field_access_refs_in_subscript(
+    subscript: &rumoca_core::Subscript,
+    param_name: &str,
+    fields: &mut IndexSet<String>,
+) {
+    if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+        collect_record_field_access_refs(expr, param_name, fields);
+    }
+}
+
+fn collect_decomposed_record_field_refs(
+    expr: &rumoca_core::Expression,
+    prefix: &str,
+    fields: &mut IndexSet<String>,
+) {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if let Some(field) = decomposed_record_field_name(name.as_str(), prefix) {
+                fields.insert(field);
+            }
+            for subscript in subscripts {
+                collect_decomposed_record_field_refs_in_subscript(subscript, prefix, fields);
+            }
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_decomposed_record_field_refs(lhs, prefix, fields);
+            collect_decomposed_record_field_refs(rhs, prefix, fields);
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            collect_decomposed_record_field_refs(rhs, prefix, fields);
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (cond, value) in branches {
+                collect_decomposed_record_field_refs(cond, prefix, fields);
+                collect_decomposed_record_field_refs(value, prefix, fields);
+            }
+            collect_decomposed_record_field_refs(else_branch, prefix, fields);
+        }
+        rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                collect_decomposed_record_field_refs(arg, prefix, fields);
+            }
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_decomposed_record_field_refs(start, prefix, fields);
+            if let Some(step) = step {
+                collect_decomposed_record_field_refs(step, prefix, fields);
+            }
+            collect_decomposed_record_field_refs(end, prefix, fields);
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            collect_decomposed_record_field_refs(base, prefix, fields);
+            for subscript in subscripts {
+                collect_decomposed_record_field_refs_in_subscript(subscript, prefix, fields);
+            }
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            collect_decomposed_record_field_refs(base, prefix, fields);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_decomposed_record_field_refs(expr, prefix, fields);
+            for index in indices {
+                collect_decomposed_record_field_refs(&index.range, prefix, fields);
+            }
+            if let Some(filter) = filter {
+                collect_decomposed_record_field_refs(filter, prefix, fields);
+            }
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn decomposed_record_field_name(name: &str, prefix: &str) -> Option<String> {
+    let field = name.strip_prefix(prefix)?;
+    let field = field.split_once('[').map_or(field, |(field, _)| field);
+    (!field.is_empty() && !field.contains('.')).then(|| field.to_string())
+}
+
+fn collect_decomposed_record_field_refs_in_statement(
+    stmt: &rumoca_core::Statement,
+    prefix: &str,
+    fields: &mut IndexSet<String>,
+) {
+    match stmt {
+        rumoca_core::Statement::Assignment { value, .. }
+        | rumoca_core::Statement::Reinit { value, .. } => {
+            collect_decomposed_record_field_refs(value, prefix, fields);
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            for index in indices {
+                collect_decomposed_record_field_refs(&index.range, prefix, fields);
+            }
+            for stmt in equations {
+                collect_decomposed_record_field_refs_in_statement(stmt, prefix, fields);
+            }
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            collect_decomposed_record_field_refs(&block.cond, prefix, fields);
+            for stmt in &block.stmts {
+                collect_decomposed_record_field_refs_in_statement(stmt, prefix, fields);
+            }
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                collect_decomposed_record_field_refs(&block.cond, prefix, fields);
+                for stmt in &block.stmts {
+                    collect_decomposed_record_field_refs_in_statement(stmt, prefix, fields);
+                }
+            }
+            if let Some(else_block) = else_block {
+                for stmt in else_block {
+                    collect_decomposed_record_field_refs_in_statement(stmt, prefix, fields);
+                }
+            }
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                collect_decomposed_record_field_refs(&block.cond, prefix, fields);
+                for stmt in &block.stmts {
+                    collect_decomposed_record_field_refs_in_statement(stmt, prefix, fields);
+                }
+            }
+        }
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_decomposed_record_field_refs(arg, prefix, fields);
+            }
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            collect_decomposed_record_field_refs(condition, prefix, fields);
+            collect_decomposed_record_field_refs(message, prefix, fields);
+            if let Some(level) = level {
+                collect_decomposed_record_field_refs(level, prefix, fields);
+            }
+        }
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. } => {}
+    }
+}
+
+fn collect_decomposed_record_field_refs_in_subscript(
+    subscript: &rumoca_core::Subscript,
+    prefix: &str,
+    fields: &mut IndexSet<String>,
+) {
+    if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+        collect_decomposed_record_field_refs(expr, prefix, fields);
+    }
+}
+
+fn decompose_record_args_dae_stmt(
+    stmt: &mut rumoca_core::Statement,
+    map: &RecordArgMap,
+    local_record_params: Option<&HashSet<String>>,
+) {
+    *stmt = DaeRecordArgDecomposer {
+        map,
+        local_record_params,
+    }
+    .rewrite_statement(stmt);
 }
 
 struct DaeRecordArgDecomposer<'a> {
     map: &'a RecordArgMap,
+    local_record_params: Option<&'a HashSet<String>>,
 }
 
 impl ExpressionRewriter for DaeRecordArgDecomposer<'_> {
@@ -169,7 +1560,7 @@ impl ExpressionRewriter for DaeRecordArgDecomposer<'_> {
         {
             let rewritten_args = self.rewrite_expressions(args);
             let args = if let Some(decomposed) = self.map.get(name.as_str()) {
-                decompose_dae_record_args(&rewritten_args, decomposed)
+                decompose_dae_record_args(&rewritten_args, decomposed, self.local_record_params)
             } else {
                 rewritten_args
             };
@@ -191,6 +1582,7 @@ impl DaeExpressionRewriter for DaeRecordArgDecomposer<'_> {}
 fn decompose_dae_record_args(
     old_args: &[rumoca_core::Expression],
     decomposed: &[(usize, Vec<String>)],
+    local_record_params: Option<&HashSet<String>>,
 ) -> Vec<rumoca_core::Expression> {
     let mut args = Vec::new();
     let mut old_idx = 0;
@@ -200,7 +1592,7 @@ fn decompose_dae_record_args(
             old_idx += 1;
         }
         if old_idx < old_args.len() {
-            expand_dae_record_arg(&old_args[old_idx], fields, &mut args);
+            expand_dae_record_arg(&old_args[old_idx], fields, local_record_params, &mut args);
             old_idx += 1;
         }
     }
@@ -233,6 +1625,7 @@ fn named_constructor_arg_dae<'a>(
 fn expand_dae_record_arg(
     arg: &rumoca_core::Expression,
     fields: &[String],
+    local_record_params: Option<&HashSet<String>>,
     out: &mut Vec<rumoca_core::Expression>,
 ) {
     // Constructor call → extract positional/named args
@@ -267,7 +1660,17 @@ fn expand_dae_record_arg(
     }
 
     // Variable reference → emit field VarRefs
-    if let rumoca_core::Expression::VarRef { name, .. } = arg {
+    if let rumoca_core::Expression::VarRef { name, span, .. } = arg {
+        if local_record_params.is_some_and(|params| params.contains(name.as_str())) {
+            for field in fields {
+                out.push(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new(format!("{}_{}", name.as_str(), field)),
+                    subscripts: vec![],
+                    span: *span,
+                });
+            }
+            return;
+        }
         for field in fields {
             out.push(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), field)),
@@ -807,6 +2210,21 @@ fn expr_phantom_ref_width(
                 .as_ref()
                 .and_then(|filter| expr_phantom_ref_width(filter, phantom_map)),
         ),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => subscripts
+            .iter()
+            .filter_map(|subscript| match subscript {
+                rumoca_core::Subscript::Expr { expr, .. } => {
+                    expr_phantom_ref_width(expr, phantom_map)
+                }
+                rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => None,
+            })
+            .chain(expr_phantom_ref_width(base, phantom_map))
+            .max(),
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            expr_phantom_ref_width(base, phantom_map)
+        }
         _ => None,
     }
 }
@@ -946,6 +2364,18 @@ fn scalarize_expr_with_context(
             is_constructor,
             span,
         } => scalarize_function_call_at(name, args, *is_constructor, *span, ctx),
+        rumoca_core::Expression::FieldAccess { base, field, span } => {
+            Ok(rumoca_core::Expression::FieldAccess {
+                base: Box::new(scalarize_expr_with_context(base, ctx)?),
+                field: field.clone(),
+                span: *span,
+            })
+        }
+        rumoca_core::Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => scalarize_index_at(base, subscripts, *span, ctx),
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -966,6 +2396,124 @@ fn scalarize_expr_with_context(
             ..
         } => scalarize_array_comprehension_at(expr, inner, indices, filter.as_deref(), ctx),
         _ => Ok(expr.clone()),
+    }
+}
+
+fn scalarize_index_at(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let rumoca_core::Expression::VarRef {
+        name,
+        subscripts: base_subscripts,
+        ..
+    } = base
+        && base_subscripts.is_empty()
+        && let Some(dims) = ctx.array_dims.get(name.as_str())
+        && let Some(selected) = scalarized_array_subscripts_at(dims, subscripts, ctx.k)
+    {
+        return Ok(rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: selected,
+            span,
+        });
+    }
+
+    Ok(rumoca_core::Expression::Index {
+        base: Box::new(scalarize_expr_with_context(base, ctx)?),
+        subscripts: subscripts
+            .iter()
+            .map(|subscript| scalarize_subscript_with_context(subscript, ctx))
+            .collect::<Result<Vec<_>, _>>()?,
+        span,
+    })
+}
+
+fn scalarized_array_subscripts_at(
+    dims: &[i64],
+    subscripts: &[rumoca_core::Subscript],
+    k: usize,
+) -> Option<Vec<rumoca_core::Subscript>> {
+    if subscripts.len() > dims.len() {
+        return None;
+    }
+    let mut choices = Vec::with_capacity(dims.len());
+    let mut selected_dims = Vec::new();
+    for (dim_idx, dim) in dims.iter().copied().enumerate() {
+        let dim = usize::try_from(dim).ok()?;
+        if dim == 0 {
+            return None;
+        }
+        let indices = match subscripts.get(dim_idx) {
+            Some(rumoca_core::Subscript::Index { value, .. }) if *value > 0 => {
+                vec![*value as usize]
+            }
+            Some(rumoca_core::Subscript::Expr { expr, .. }) => {
+                vec![literal_positive_integer_expr(expr)?]
+            }
+            Some(rumoca_core::Subscript::Colon { .. }) | None => (1..=dim).collect(),
+            _ => return None,
+        };
+        if indices.iter().any(|index| *index == 0 || *index > dim) {
+            return None;
+        }
+        if indices.len() > 1 {
+            selected_dims.push(indices.len() as i64);
+        }
+        choices.push(indices);
+    }
+
+    let selected_subscripts = if selected_dims.is_empty() {
+        if k == 0 {
+            Vec::new()
+        } else {
+            return None;
+        }
+    } else {
+        dae::flat_index_to_subscripts(&selected_dims, k)?
+    };
+    let mut selected_iter = selected_subscripts.into_iter();
+    let mut out = Vec::with_capacity(choices.len());
+    for indices in choices {
+        let selected = if indices.len() == 1 {
+            indices[0]
+        } else {
+            let selected = selected_iter.next()?;
+            indices[selected - 1]
+        };
+        out.push(rumoca_core::Subscript::generated_index(
+            selected as i64,
+            rumoca_core::Span::DUMMY,
+        ));
+    }
+    Some(out)
+}
+
+fn literal_positive_integer_expr(expr: &rumoca_core::Expression) -> Option<usize> {
+    let rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(value),
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    (*value > 0).then_some(*value as usize)
+}
+
+fn scalarize_subscript_with_context(
+    subscript: &rumoca_core::Subscript,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<rumoca_core::Subscript, ToDaeError> {
+    match subscript {
+        rumoca_core::Subscript::Expr { expr, span } => Ok(rumoca_core::Subscript::Expr {
+            expr: Box::new(scalarize_expr_with_context(expr, ctx)?),
+            span: *span,
+        }),
+        rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
+            Ok(subscript.clone())
+        }
     }
 }
 

@@ -920,6 +920,7 @@ fn route_classified_equation(
     eq: &flat::Equation,
     dae_eq: dae::Equation,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<(), ToDaeError> {
     let discrete_bucket = classify_residual_discrete_bucket(dae, &eq.residual);
 
@@ -933,6 +934,7 @@ fn route_classified_equation(
                     &dae_eq,
                     true,
                     discrete_valued_lhs_counts,
+                    discrete_valued_binding_targets,
                 )? {
                     dae.discrete.valued_updates.push(dae_eq);
                 }
@@ -949,8 +951,13 @@ fn route_classified_equation(
 
     match discrete_bucket {
         Some(ResidualDiscreteBucket::DiscreteValued) => {
-            if !push_explicit_discrete_assignments(dae, &dae_eq, true, discrete_valued_lhs_counts)?
-            {
+            if !push_explicit_discrete_assignments(
+                dae,
+                &dae_eq,
+                true,
+                discrete_valued_lhs_counts,
+                discrete_valued_binding_targets,
+            )? {
                 dae.discrete.valued_updates.push(dae_eq);
             }
         }
@@ -1081,10 +1088,25 @@ fn explicit_assignment_target(expr: &rumoca_core::Expression) -> Option<rumoca_c
     }
 }
 
+#[cfg(test)]
 fn collect_explicit_discrete_assignments(
     expr: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
+    collect_explicit_discrete_assignments_with_binding_targets(
+        expr,
+        dae,
+        discrete_valued_lhs_counts,
+        &HashSet::new(),
+    )
+}
+
+fn collect_explicit_discrete_assignments_with_binding_targets(
+    expr: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     match expr {
         rumoca_core::Expression::Binary {
@@ -1092,9 +1114,13 @@ fn collect_explicit_discrete_assignments(
             lhs,
             rhs,
             ..
-        } => {
-            collect_binary_explicit_discrete_assignments(lhs, rhs, dae, discrete_valued_lhs_counts)
-        }
+        } => collect_binary_explicit_discrete_assignments(
+            lhs,
+            rhs,
+            dae,
+            discrete_valued_lhs_counts,
+            discrete_valued_binding_targets,
+        ),
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -1104,12 +1130,18 @@ fn collect_explicit_discrete_assignments(
             else_branch,
             dae,
             discrete_valued_lhs_counts,
+            discrete_valued_binding_targets,
         ),
         rumoca_core::Expression::Unary {
             op: rumoca_core::OpUnary::Minus,
             rhs,
             ..
-        } => collect_explicit_discrete_assignments(rhs, dae, discrete_valued_lhs_counts),
+        } => collect_explicit_discrete_assignments_with_binding_targets(
+            rhs,
+            dae,
+            discrete_valued_lhs_counts,
+            discrete_valued_binding_targets,
+        ),
         _ => Ok(None),
     }
 }
@@ -1119,17 +1151,32 @@ fn collect_binary_explicit_discrete_assignments(
     rhs: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
-    if let Some(assignments) =
-        collect_oriented_discrete_alias_assignment(lhs, rhs, dae, discrete_valued_lhs_counts)?
-    {
+    if let Some(assignments) = collect_oriented_discrete_alias_assignment(
+        lhs,
+        rhs,
+        dae,
+        discrete_valued_lhs_counts,
+        discrete_valued_binding_targets,
+    )? {
         return Ok(Some(assignments));
     }
     if is_numeric_zero(lhs) {
-        return collect_zero_rhs_discrete_assignment(rhs, dae, discrete_valued_lhs_counts);
+        return collect_zero_rhs_discrete_assignment(
+            rhs,
+            dae,
+            discrete_valued_lhs_counts,
+            discrete_valued_binding_targets,
+        );
     }
     if is_numeric_zero(rhs) {
-        return collect_zero_rhs_discrete_assignment(lhs, dae, discrete_valued_lhs_counts);
+        return collect_zero_rhs_discrete_assignment(
+            lhs,
+            dae,
+            discrete_valued_lhs_counts,
+            discrete_valued_binding_targets,
+        );
     }
     let Some(name) = explicit_assignment_target(lhs) else {
         return Ok(None);
@@ -1143,10 +1190,14 @@ fn collect_zero_rhs_discrete_assignment(
     expr: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
-    if let Some(assignments) =
-        collect_explicit_discrete_assignments(expr, dae, discrete_valued_lhs_counts)?
-    {
+    if let Some(assignments) = collect_explicit_discrete_assignments_with_binding_targets(
+        expr,
+        dae,
+        discrete_valued_lhs_counts,
+        discrete_valued_binding_targets,
+    )? {
         return Ok(Some(assignments));
     }
     let Some(target) = explicit_assignment_target(expr) else {
@@ -1169,12 +1220,14 @@ fn collect_if_explicit_discrete_assignments(
     else_branch: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     let Some((branch_maps, else_map)) = collect_discrete_assignment_branches(
         branches,
         else_branch,
         dae,
         discrete_valued_lhs_counts,
+        discrete_valued_binding_targets,
     )?
     else {
         return Ok(None);
@@ -1195,18 +1248,27 @@ fn collect_discrete_assignment_branches(
     else_branch: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<Option<(DiscreteBranchAssignments, DiscreteAssignmentMap)>, ToDaeError> {
     let mut branch_maps = Vec::new();
     for (condition, value) in branches {
-        let Some(assignments) =
-            collect_explicit_discrete_assignments(value, dae, discrete_valued_lhs_counts)?
+        let Some(assignments) = collect_explicit_discrete_assignments_with_binding_targets(
+            value,
+            dae,
+            discrete_valued_lhs_counts,
+            discrete_valued_binding_targets,
+        )?
         else {
             return Ok(None);
         };
         branch_maps.push((condition.clone(), assignments));
     }
-    let Some(else_map) =
-        collect_explicit_discrete_assignments(else_branch, dae, discrete_valued_lhs_counts)?
+    let Some(else_map) = collect_explicit_discrete_assignments_with_binding_targets(
+        else_branch,
+        dae,
+        discrete_valued_lhs_counts,
+        discrete_valued_binding_targets,
+    )?
     else {
         return Ok(None);
     };
@@ -1276,6 +1338,7 @@ fn collect_oriented_discrete_alias_assignment(
     rhs: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     let Some(lhs_target) = explicit_assignment_target(lhs) else {
         return Ok(None);
@@ -1292,6 +1355,18 @@ fn collect_oriented_discrete_alias_assignment(
     if !is_discrete_valued_target(dae, &lhs_target) || !is_discrete_valued_target(dae, &rhs_target)
     {
         return Ok(None);
+    }
+
+    let lhs_has_binding = contains_target_or_fallback(discrete_valued_binding_targets, &lhs_target);
+    let rhs_has_binding = contains_target_or_fallback(discrete_valued_binding_targets, &rhs_target);
+    if lhs_has_binding != rhs_has_binding {
+        let mut result = HashMap::new();
+        if lhs_has_binding {
+            result.insert(rhs_target, lhs.clone());
+        } else {
+            result.insert(lhs_target, rhs.clone());
+        }
+        return Ok(Some(result));
     }
 
     let lhs_definitions = lookup_discrete_lhs_count(&lhs_target, discrete_valued_lhs_counts)
@@ -1311,6 +1386,16 @@ fn collect_oriented_discrete_alias_assignment(
     let mut result = HashMap::new();
     result.insert(rhs_target, lhs.clone());
     Ok(Some(result))
+}
+
+fn contains_target_or_fallback(
+    targets: &HashSet<rumoca_core::VarName>,
+    target: &rumoca_core::VarName,
+) -> bool {
+    targets.contains(target)
+        || subscript_fallback_chain(target.as_str())
+            .into_iter()
+            .any(|fallback| targets.contains(&fallback))
 }
 
 fn lookup_discrete_lhs_count(
@@ -1380,10 +1465,15 @@ fn push_explicit_discrete_assignments(
     equation: &dae::Equation,
     discrete_valued: bool,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    discrete_valued_binding_targets: &HashSet<rumoca_core::VarName>,
 ) -> Result<bool, ToDaeError> {
     let rhs = crate::dae_to_flat_expression(&equation.rhs);
-    let Some(assignments) =
-        collect_explicit_discrete_assignments(&rhs, dae, discrete_valued_lhs_counts)?
+    let Some(assignments) = collect_explicit_discrete_assignments_with_binding_targets(
+        &rhs,
+        dae,
+        discrete_valued_lhs_counts,
+        discrete_valued_binding_targets,
+    )?
     else {
         return Ok(false);
     };
@@ -1424,6 +1514,7 @@ pub(super) fn classify_equations(
     let top_level_oc_connectors = collect_top_level_overconstrained_connectors(flat);
     let linearized_embedded_lhs_bases = super::collect_linearized_embedded_lhs_bases(flat);
     let discrete_valued_lhs_counts = collect_discrete_valued_lhs_target_counts(dae, flat);
+    let discrete_valued_binding_targets = collect_discrete_valued_binding_targets(dae, flat);
     let debug_eq_filter = crate::equation_filter_debug_enabled();
     let mut stats = EqFilterStats::default();
     let filter_ctx = EqFilterContext {
@@ -1466,7 +1557,13 @@ pub(super) fn classify_equations(
                 expanded_eq.origin.to_string(),
                 scalar_count,
             );
-            route_classified_equation(dae, expanded_eq, dae_eq, &discrete_valued_lhs_counts)?;
+            route_classified_equation(
+                dae,
+                expanded_eq,
+                dae_eq,
+                &discrete_valued_lhs_counts,
+                &discrete_valued_binding_targets,
+            )?;
         }
         if dae.continuous.equations.len() == fx_index_before + 1 {
             flat_to_fx_index.insert(flat_idx, fx_index_before);
@@ -1502,6 +1599,17 @@ fn collect_discrete_valued_lhs_target_counts(
         }
     }
     counts
+}
+
+fn collect_discrete_valued_binding_targets(
+    dae: &dae::Dae,
+    flat: &flat::Model,
+) -> HashSet<rumoca_core::VarName> {
+    flat.variables
+        .iter()
+        .filter(|(name, var)| var.binding.is_some() && is_discrete_valued_target(dae, name))
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 #[cfg(test)]

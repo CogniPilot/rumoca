@@ -104,13 +104,13 @@ impl From<minijinja::Error> for CodegenError {
             if let Some(source) = err.template_source() {
                 let span = compute_line_span(source, line);
                 return CodegenError::TemplateRenderError {
-                    message: format!("{err:#}"),
+                    message: format!("{err}"),
                     src: NamedSource::new(tmpl_name, source.to_string()),
                     span,
                 };
             }
         }
-        CodegenError::template(format!("{err:#}"))
+        CodegenError::template(format!("{err}"))
     }
 }
 

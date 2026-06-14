@@ -763,6 +763,44 @@ fn render_solve_op_for(
         store_solve_reg(regs, dst, expr);
         return Ok(output);
     }
+    if let Ok(value) = get_field(op, "ExternalCall") {
+        let dst = solve_field_usize(&value, "dst")?;
+        let function = solve_variant_name(&get_field(&value, "function")?)?;
+        let output_index = solve_field_usize(&value, "output_index")?;
+        let arg_count = solve_field_usize(&value, "arg_count")?;
+        let args =
+            get_field(&value, "args").map_err(|_| render_err("ExternalCall missing args field"))?;
+        let args_len = args
+            .len()
+            .ok_or_else(|| render_err("ExternalCall args field is not a sequence"))?;
+        if arg_count > args_len {
+            return Err(render_err(format!(
+                "ExternalCall arg_count {arg_count} exceeds args length {args_len}"
+            )));
+        }
+        let mut rendered_args = Vec::with_capacity(arg_count);
+        for i in 0..arg_count {
+            let reg = args
+                .get_item(&Value::from(i))
+                .map_err(|err| render_err(format!("ExternalCall arg {i} inaccessible: {err}")))?
+                .as_usize()
+                .ok_or_else(|| render_err(format!("ExternalCall arg {i} is not a register")))?;
+            rendered_args.push(solve_reg(regs, reg)?);
+        }
+        let args_expr = if rendered_args.is_empty() {
+            "NULL".to_string()
+        } else {
+            format!("(double[]){{{}}}", rendered_args.join(", "))
+        };
+        store_solve_reg(
+            regs,
+            dst,
+            format!(
+                "RUMOCA_SOLVE_EXTERNAL_CALL(\"{function}\", {output_index}, {arg_count}, {args_expr})"
+            ),
+        );
+        return Ok(output);
+    }
     if let Ok(value) = get_field(op, "Unary") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;

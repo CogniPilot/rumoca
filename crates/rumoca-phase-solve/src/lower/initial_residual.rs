@@ -30,11 +30,12 @@ pub fn initial_residual_equations<'a>(
         .iter()
         .enumerate()
         .filter(|(row_idx, equation)| {
-            !state_derivative_rows
-                .get(*row_idx)
-                .copied()
-                .unwrap_or(false)
-                || derivative_row_constrains_initial_unknown(layout, equation)
+            !crate::energyplus_spawn_external_object_binding(equation)
+                && (!state_derivative_rows
+                    .get(*row_idx)
+                    .copied()
+                    .unwrap_or(false)
+                    || derivative_row_constrains_initial_unknown(layout, equation))
         })
         .map(|(_, eq)| eq)
         .chain(

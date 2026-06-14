@@ -747,6 +747,59 @@ fn test_scalarize_ignores_vector_equations_without_phantom_refs() {
 }
 
 #[test]
+fn test_scalarize_vector_equation_projects_indexed_record_field_slice() {
+    let mut dae = Dae::new();
+
+    for name in ["T1[1]", "T1[2]", "ele[1].vol1.T", "ele[2].vol1.T"] {
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(name.into()),
+        );
+    }
+
+    let mut ele = dae::Variable::new(rumoca_core::VarName::new("ele"));
+    ele.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("ele"), ele);
+
+    let ele_slice = rumoca_core::Expression::Index {
+        base: Box::new(var_ref("ele")),
+        subscripts: vec![rumoca_core::Subscript::Colon {
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let rhs = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(ele_slice),
+            field: "vol1".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "T".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae.continuous.equations.push(dae::Equation::residual_array(
+        sub(var_ref("T1"), rhs),
+        Span::DUMMY,
+        "record field slice vector equation",
+        2,
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.continuous.equations.len(), 2);
+    assert_eq!(
+        all_var_names(&dae.continuous.equations[0].rhs),
+        vec!["T1[1]", "ele[1]"]
+    );
+    assert_eq!(
+        all_var_names(&dae.continuous.equations[1].rhs),
+        vec!["T1[2]", "ele[2]"]
+    );
+}
+
+#[test]
 fn test_scalarize_preserves_declared_matrix_vector_equations() {
     let mut dae = Dae::new();
 

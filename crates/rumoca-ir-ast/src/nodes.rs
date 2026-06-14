@@ -393,6 +393,9 @@ pub struct ExternalFunction {
     pub output: Option<ComponentReference>,
     /// Arguments passed to the external function.
     pub args: Vec<Expression>,
+    /// Annotation arguments on the external declaration (MLS §12.9), such as
+    /// Library, IncludeDirectory, LibraryDirectory, and Include.
+    pub annotation: Vec<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

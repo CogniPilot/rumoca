@@ -184,21 +184,42 @@ impl TypeChecker {
         if record_aliases.is_empty() || values.is_empty() {
             return false;
         }
-        let mut sorted_keys: Vec<String> = values.keys().cloned().collect();
-        sorted_keys.sort_unstable();
 
+        let mut aliases_by_target_head: rustc_hash::FxHashMap<&str, Vec<usize>> =
+            rustc_hash::FxHashMap::default();
+        let target_prefixes: Vec<String> = record_aliases
+            .iter()
+            .enumerate()
+            .map(|(index, (_, alias_target))| {
+                aliases_by_target_head
+                    .entry(Self::alias_head(alias_target))
+                    .or_default()
+                    .push(index);
+                format!("{alias_target}.")
+            })
+            .collect();
         let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
-        for (alias_source, alias_target) in record_aliases {
-            Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
-            let target_prefix = format!("{alias_target}.");
-            for field_name in Self::alias_field_key_range(&sorted_keys, &target_prefix) {
-                Self::queue_alias_field_update(
-                    alias_source,
-                    &target_prefix,
-                    field_name,
-                    values,
-                    &mut updates,
-                );
+        for field_name in values.keys() {
+            let Some(alias_indices) = aliases_by_target_head.get(Self::alias_head(field_name))
+            else {
+                continue;
+            };
+            for index in alias_indices {
+                let (alias_source, alias_target) = &record_aliases[*index];
+                if field_name == alias_target {
+                    Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
+                    continue;
+                }
+                let target_prefix = &target_prefixes[*index];
+                if field_name.starts_with(target_prefix) {
+                    Self::queue_alias_field_update(
+                        alias_source,
+                        target_prefix,
+                        field_name,
+                        values,
+                        &mut updates,
+                    );
+                }
             }
         }
 
@@ -210,5 +231,11 @@ impl TypeChecker {
             }
         }
         progress
+    }
+
+    fn alias_head(path: &str) -> &str {
+        split_first_top_level(path)
+            .map(|(head, _)| head)
+            .unwrap_or(path)
     }
 }

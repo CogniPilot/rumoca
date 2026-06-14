@@ -296,13 +296,49 @@ pub(super) fn resolve_redeclare_value_def_id(
     value: &ast::Expression,
     mod_env: Option<&ast::ModificationEnvironment>,
 ) -> Option<DefId> {
-    resolve_redeclare_value_def_id_with_depth(tree, value, mod_env, 0)
+    resolve_redeclare_value_def_id_with_overrides(tree, value, mod_env, None)
+}
+
+pub(super) fn resolve_redeclare_value_def_id_with_overrides(
+    tree: &ast::ClassTree,
+    value: &ast::Expression,
+    mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: Option<&TypeOverrideMap>,
+) -> Option<DefId> {
+    resolve_redeclare_value_def_id_with_depth(tree, value, mod_env, type_overrides, 0)
+}
+
+fn apply_redeclare_type_override(
+    type_overrides: Option<&TypeOverrideMap>,
+    cref: &ast::ComponentReference,
+    def_id: DefId,
+) -> DefId {
+    type_overrides
+        .and_then(|overrides| {
+            overrides
+                .target_for_reference(cref)
+                .or_else(|| overrides.target_for_alias_def_id(def_id))
+        })
+        .unwrap_or(def_id)
+}
+
+fn resolve_redeclare_reference_def_id(
+    tree: &ast::ClassTree,
+    cref: &ast::ComponentReference,
+    mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: Option<&TypeOverrideMap>,
+    depth: usize,
+) -> Option<DefId> {
+    let def_id = resolve_cref_def_id(tree, cref)
+        .or_else(|| resolve_cref_via_mod_env(tree, cref, mod_env, type_overrides, depth))?;
+    Some(apply_redeclare_type_override(type_overrides, cref, def_id))
 }
 
 fn resolve_redeclare_value_def_id_with_depth(
     tree: &ast::ClassTree,
     value: &ast::Expression,
     mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: Option<&TypeOverrideMap>,
     depth: usize,
 ) -> Option<DefId> {
     const MAX_REDECLARE_RESOLVE_DEPTH: usize = 8;
@@ -311,15 +347,22 @@ fn resolve_redeclare_value_def_id_with_depth(
     }
 
     match value {
-        ast::Expression::Modification { value, .. } => {
-            resolve_redeclare_value_def_id_with_depth(tree, value, mod_env, depth + 1)
+        ast::Expression::Modification { value, .. } => resolve_redeclare_value_def_id_with_depth(
+            tree,
+            value,
+            mod_env,
+            type_overrides,
+            depth + 1,
+        ),
+        ast::Expression::ClassModification { target, .. } => {
+            resolve_redeclare_reference_def_id(tree, target, mod_env, type_overrides, depth)
         }
-        ast::Expression::ClassModification { target, .. } => resolve_cref_def_id(tree, target)
-            .or_else(|| resolve_cref_via_mod_env(tree, target, mod_env, depth)),
-        ast::Expression::FunctionCall { comp, .. } => resolve_cref_def_id(tree, comp)
-            .or_else(|| resolve_cref_via_mod_env(tree, comp, mod_env, depth)),
-        ast::Expression::ComponentReference(cref) => resolve_cref_def_id(tree, cref)
-            .or_else(|| resolve_cref_via_mod_env(tree, cref, mod_env, depth)),
+        ast::Expression::FunctionCall { comp, .. } => {
+            resolve_redeclare_reference_def_id(tree, comp, mod_env, type_overrides, depth)
+        }
+        ast::Expression::ComponentReference(cref) => {
+            resolve_redeclare_reference_def_id(tree, cref, mod_env, type_overrides, depth)
+        }
         _ => None,
     }
 }
@@ -328,6 +371,7 @@ fn resolve_cref_via_mod_env(
     tree: &ast::ClassTree,
     cref: &ast::ComponentReference,
     mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: Option<&TypeOverrideMap>,
     depth: usize,
 ) -> Option<DefId> {
     let mod_env = mod_env?;
@@ -336,7 +380,13 @@ fn resolve_cref_via_mod_env(
     if mod_value.value == ast::Expression::ComponentReference(cref.clone()) {
         return None;
     }
-    resolve_redeclare_value_def_id_with_depth(tree, &mod_value.value, Some(mod_env), depth + 1)
+    resolve_redeclare_value_def_id_with_depth(
+        tree,
+        &mod_value.value,
+        Some(mod_env),
+        type_overrides,
+        depth + 1,
+    )
 }
 
 fn cref_to_qualified_name(cref: &ast::ComponentReference) -> Option<ast::QualifiedName> {
@@ -412,7 +462,8 @@ pub(super) fn apply_type_override<'a>(
         .or_else(|| type_overrides.target_for_name(&comp.type_name));
     // Instance-level package redeclarations in active mod_env are more specific
     // than enclosing-class defaults when resolving dotted member types.
-    let mod_env_override = resolve_dotted_type_from_mod_env(tree, &comp.type_name, mod_env);
+    let mod_env_override =
+        resolve_dotted_type_from_mod_env(tree, &comp.type_name, mod_env, type_overrides);
     let prefix_override = (|| {
         let (prefix, rest) = name_prefix_and_rest(&comp.type_name)?;
         let prefix_override = type_overrides.target_for_path(&prefix)?;
@@ -424,7 +475,7 @@ pub(super) fn apply_type_override<'a>(
             .or(Some(prefix_override))
     })();
 
-    let override_def_id = exact_override.or(mod_env_override).or(prefix_override);
+    let override_def_id = exact_override.or(prefix_override).or(mod_env_override);
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {
@@ -439,11 +490,17 @@ fn resolve_dotted_type_from_mod_env(
     tree: &ast::ClassTree,
     type_name: &ast::Name,
     mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: &TypeOverrideMap,
 ) -> Option<DefId> {
     let mod_env = mod_env?;
     let (prefix, rest) = name_prefix_and_rest(type_name)?;
     let mv = mod_env.get(&prefix)?;
-    let pkg_def_id = resolve_redeclare_value_def_id(tree, &mv.value, Some(mod_env))?;
+    let pkg_def_id = resolve_redeclare_value_def_id_with_overrides(
+        tree,
+        &mv.value,
+        Some(mod_env),
+        Some(type_overrides),
+    )?;
     let pkg_class = tree.get_class_by_def_id(pkg_def_id)?;
     find_member_type_path_segments(tree, pkg_class, &rest)
         .and_then(|member| member.def_id)
@@ -577,6 +634,7 @@ pub(super) fn extract_component_class_overrides(
     comp: &ast::Component,
     target_class: Option<&ast::ClassDef>,
     mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: &TypeOverrideMap,
 ) -> InstantiateResult<ast::ClassOverrideMap> {
     let mut overrides = IndexMap::default();
     let Some(target_class) = target_class else {
@@ -588,39 +646,107 @@ pub(super) fn extract_component_class_overrides(
             continue;
         }
 
-        let Some(nested_class) = find_nested_class_in_hierarchy(tree, target_class, target_name)
-        else {
+        insert_class_override_from_component_redeclare(
+            tree,
+            target_class,
+            comp,
+            target_name,
+            mod_expr,
+            mod_env,
+            type_overrides,
+            &mut overrides,
+        )?;
+    }
+
+    for (key, mod_expr) in &comp.modifications {
+        let Some(target_name) = key.strip_prefix(CONSTRAINEDBY_MOD_PREFIX) else {
             continue;
         };
-        validate_component_class_redeclare_target(tree, target_name, nested_class, mod_expr)?;
-        let Some(alias_def_id) = nested_class.def_id else {
-            return Err(Box::new(InstantiateError::redeclare_error(
-                target_name,
-                "resolved redeclare target has no DefId",
-                location_to_span(&nested_class.location, &tree.source_map),
-            )));
-        };
-        let resolved_def_id =
-            resolve_redeclare_value_def_id(tree, mod_expr, mod_env).or_else(|| {
-                class_redeclare_target_ref(mod_expr)
-                    .and_then(|target| target.def_id.or_else(|| resolve_cref_def_id(tree, &target)))
-            });
-
-        if let Some(def_id) = resolved_def_id {
-            overrides.insert(
-                alias_def_id,
-                ast::ClassOverride::new(
-                    target_name.clone(),
-                    alias_def_id,
-                    def_id,
-                    class_redeclare_target_ref(mod_expr),
-                )
-                .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
-            );
+        if comp.modifications.contains_key(target_name) {
+            continue;
         }
+        if class_redeclare_target_ref(mod_expr).is_none() {
+            continue;
+        }
+
+        insert_class_override_from_component_redeclare(
+            tree,
+            target_class,
+            comp,
+            target_name,
+            mod_expr,
+            mod_env,
+            type_overrides,
+            &mut overrides,
+        )?;
     }
 
     Ok(overrides)
+}
+
+const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
+
+fn find_redeclare_target_class_in_hierarchy<'a>(
+    tree: &'a ast::ClassTree,
+    target_class: Option<&'a ast::ClassDef>,
+    comp: &ast::Component,
+    target_name: &str,
+) -> Option<&'a ast::ClassDef> {
+    if let Some(target_class) = target_class
+        && let Some(nested) = find_nested_class_in_hierarchy(tree, target_class, target_name)
+    {
+        return Some(nested);
+    }
+
+    comp.type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        .and_then(|comp_type| find_nested_class_in_hierarchy(tree, comp_type, target_name))
+}
+
+fn insert_class_override_from_component_redeclare(
+    tree: &ast::ClassTree,
+    target_class: &ast::ClassDef,
+    comp: &ast::Component,
+    target_name: &str,
+    mod_expr: &ast::Expression,
+    mod_env: Option<&ast::ModificationEnvironment>,
+    type_overrides: &TypeOverrideMap,
+    overrides: &mut ast::ClassOverrideMap,
+) -> InstantiateResult<()> {
+    let Some(nested_class) =
+        find_redeclare_target_class_in_hierarchy(tree, Some(target_class), comp, target_name)
+    else {
+        return Ok(());
+    };
+    validate_component_class_redeclare_target(tree, target_name, nested_class, mod_expr)?;
+    let Some(alias_def_id) = nested_class.def_id else {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            target_name,
+            "resolved redeclare target has no DefId",
+            location_to_span(&nested_class.location, &tree.source_map),
+        )));
+    };
+    let resolved_def_id = resolve_redeclare_value_def_id_with_overrides(
+        tree,
+        mod_expr,
+        mod_env,
+        Some(type_overrides),
+    );
+
+    if let Some(def_id) = resolved_def_id {
+        overrides.insert(
+            alias_def_id,
+            ast::ClassOverride::new(
+                target_name.to_string(),
+                alias_def_id,
+                def_id,
+                class_redeclare_target_ref(mod_expr),
+            )
+            .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
+        );
+    }
+
+    Ok(())
 }
 
 fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {

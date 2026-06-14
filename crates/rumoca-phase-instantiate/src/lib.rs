@@ -53,15 +53,17 @@ mod type_lookup;
 mod type_overrides;
 
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, evaluate_array_dimensions, evaluate_component_condition, extract_binding,
-    extract_bool_params_with_mods, extract_int_params_with_mods, generate_array_indices,
-    propagate_record_alias_integer_params,
+    InstantiateEvalCtx, ResolveClassComponents, evaluate_array_dimensions,
+    evaluate_component_condition, extract_binding, extract_bool_params_with_mods,
+    extract_int_params_with_mods, generate_array_indices, propagate_record_alias_integer_params,
 };
 
 use rumoca_core::Diagnostics;
 use rumoca_core::{DefId, Span, TypeId, split_path_with_indices};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use std::cell::RefCell;
+use std::sync::OnceLock;
 
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
@@ -266,6 +268,8 @@ pub struct InstantiateContext {
     /// Active package/type redeclarations inherited from enclosing component scopes.
     active_type_overrides: Vec<TypeOverrideMap>,
     active_package_constant_aliases: Vec<(String, DefId)>,
+    /// Diagnostic-only count of entered class instantiations.
+    instantiated_class_entries: u64,
 }
 
 impl InstantiateContext {
@@ -312,6 +316,7 @@ impl InstantiateContext {
             source_scope_index: SourceScopeIndex::default(),
             active_type_overrides: Vec::new(),
             active_package_constant_aliases: Vec::new(),
+            instantiated_class_entries: 0,
         }
     }
 
@@ -675,6 +680,34 @@ impl Default for InstantiateContext {
     }
 }
 
+fn instantiate_progress_interval() -> Option<u64> {
+    static INTERVAL: OnceLock<Option<u64>> = OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        std::env::var("RUMOCA_INSTANTIATE_PROGRESS_INTERVAL")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+    })
+}
+
+fn maybe_log_instantiation_progress(ctx: &mut InstantiateContext, class: &ast::ClassDef) {
+    ctx.instantiated_class_entries += 1;
+    let Some(interval) = instantiate_progress_interval() else {
+        return;
+    };
+    if ctx.instantiated_class_entries % interval != 0 {
+        return;
+    }
+
+    eprintln!(
+        "[rumoca-instantiate] classes={} depth={} class={} path={}",
+        ctx.instantiated_class_entries,
+        ctx.context_path.len(),
+        class.name.text,
+        ctx.current_path().to_flat_string(),
+    );
+}
+
 /// Instantiate a ast::ResolvedTree, finding and instantiating the named model.
 ///
 /// This is the main entry point for instantiation.
@@ -795,6 +828,7 @@ fn retry_with_synthetic_inners(
             &empty_siblings,
             &empty_type_overrides,
             &[],
+            &resolve_effective_components_for_eval,
         )
         .is_err()
         {
@@ -949,6 +983,7 @@ fn instantiate_class(
 ) -> InstantiateResult<()> {
     ctx.validate_depth_limit(class, &tree.source_map)?;
     ctx.enter_instantiation_class(class, &tree.source_map)?;
+    maybe_log_instantiation_progress(ctx, class);
     ctx.push_inner_scope(); // Push a new inner scope for this class (MLS §5.4)
     let result = (|| {
         let instance_id = overlay.alloc_id();
@@ -975,11 +1010,33 @@ fn instantiate_class(
         // Extract integer parameter values for for-loop range evaluation
         // This enables proper handling of patterns like:
         // for k in 1:m loop connect(plug_p.pin[k], resistor[k].p); end for;
+        let eval_inheritance_cache = RefCell::new(InheritanceCache::default());
+        let eval_effective_components_cache =
+            RefCell::new(IndexMap::<DefId, IndexMap<String, ast::Component>>::default());
+        let resolve_eval_components = |tree: &ast::ClassTree, class: &ast::ClassDef| {
+            if let Some(def_id) = class.def_id
+                && let Some(cached) = eval_effective_components_cache.borrow().get(&def_id)
+            {
+                return cached.clone();
+            }
+            let components = get_effective_components_with_cache(
+                tree,
+                class,
+                &mut eval_inheritance_cache.borrow_mut(),
+            )
+            .expect("inheritance must be validated before resolving components for eval");
+            if let Some(def_id) = class.def_id {
+                eval_effective_components_cache
+                    .borrow_mut()
+                    .insert(def_id, components.clone());
+            }
+            components
+        };
         let eval_ctx = InstantiateEvalCtx {
             tree,
             mod_env: ctx.mod_env(),
             effective_components,
-            resolve_class_components: resolve_effective_components_for_eval,
+            resolve_class_components: &resolve_eval_components,
         };
         let int_params = extract_int_params_with_mods(&eval_ctx);
         ctx.register_known_int_params(&qualified_name, &int_params);
@@ -1005,6 +1062,7 @@ fn instantiate_class(
             ctx,
             overlay,
             &component_imports,
+            &resolve_eval_components,
         )?;
 
         // Rebuild merged integer params after nested component instantiation so that
@@ -1079,16 +1137,26 @@ fn instantiate_effective_components(
     ctx: &mut InstantiateContext,
     overlay: &mut ast::InstanceOverlay,
     imports: &[(String, String)],
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> InstantiateResult<()> {
     let array_expansion_scope = ArrayExpansionScope {
         tree,
         effective_components,
         type_overrides,
         imports,
+        resolve_class_components,
     };
 
     for (name, comp) in effective_components {
-        if mark_disabled_component_if_needed(comp, name, ctx, effective_components, tree, overlay) {
+        if mark_disabled_component_if_needed(
+            comp,
+            name,
+            ctx,
+            effective_components,
+            tree,
+            overlay,
+            resolve_class_components,
+        ) {
             continue;
         }
 
@@ -1104,7 +1172,7 @@ fn instantiate_effective_components(
             ctx.mod_env(),
             effective_components,
             tree,
-            resolve_effective_components_for_eval,
+            resolve_class_components,
         );
         if let Some(dims) = dims.as_ref()
             && dims.contains(&0)
@@ -1137,6 +1205,7 @@ fn instantiate_effective_components(
             effective_components,
             type_overrides,
             imports,
+            resolve_class_components,
         )?;
         ctx.pop_path();
     }
@@ -1150,6 +1219,7 @@ fn mark_disabled_component_if_needed(
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
     overlay: &mut ast::InstanceOverlay,
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> bool {
     // MLS §4.8: Conditional components
     // Evaluate the condition and skip components where condition is false.
@@ -1161,7 +1231,7 @@ fn mark_disabled_component_if_needed(
             tree,
             mod_env: ctx.mod_env(),
             effective_components,
-            resolve_class_components: resolve_effective_components_for_eval,
+            resolve_class_components,
         };
         evaluate_component_condition(&eval_ctx, cond) == Some(false)
     });
@@ -1539,6 +1609,7 @@ fn instantiate_component(
     effective_components: &IndexMap<String, ast::Component>,
     type_overrides: &TypeOverrideMap,
     imports: &[(String, String)],
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> InstantiateResult<()> {
     let type_name = comp.type_name.to_string();
 
@@ -1572,8 +1643,15 @@ fn instantiate_component(
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
     merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
 
-    let (dims, dims_expr) =
-        resolve_component_shape(tree, comp, ctx, class_def, effective_components, imports);
+    let (dims, dims_expr) = resolve_component_shape(
+        tree,
+        comp,
+        ctx,
+        class_def,
+        effective_components,
+        imports,
+        resolve_class_components,
+    );
 
     let type_id = if is_primitive {
         resolve_primitive_type_id(tree, &type_name, class_def)
@@ -1680,9 +1758,15 @@ fn resolve_component_shape(
     class_def: Option<&ast::ClassDef>,
     effective_components: &IndexMap<String, ast::Component>,
     imports: &[(String, String)],
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> (Vec<i64>, Vec<ast::Subscript>) {
-    let type_dims =
-        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components);
+    let type_dims = resolve_type_alias_dimensions(
+        tree,
+        class_def,
+        ctx.mod_env(),
+        effective_components,
+        resolve_class_components,
+    );
     resolve_component_dimensions(
         comp,
         &type_dims,
@@ -1690,6 +1774,7 @@ fn resolve_component_shape(
         effective_components,
         tree,
         imports,
+        resolve_class_components,
     )
 }
 

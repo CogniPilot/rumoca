@@ -1190,6 +1190,17 @@ pub struct ExternalFunction {
     pub output_name: Option<String>,
     /// Argument names passed to the external function.
     pub arg_names: Vec<String>,
+    /// Library names from external function annotation(Library=...).
+    pub libraries: Vec<String>,
+    /// Include directory URIs from annotation(IncludeDirectory=...).
+    pub include_directories: Vec<String>,
+    /// Library directory URIs from annotation(LibraryDirectory=...).
+    pub library_directories: Vec<String>,
+    /// Raw include snippets from annotation(Include=...).
+    pub includes: Vec<String>,
+    /// Raw external annotation arguments, retained for diagnostics and future
+    /// platform-specific native library packaging.
+    pub annotation: Vec<String>,
 }
 
 /// Function derivative annotation (MLS §12.7.1).

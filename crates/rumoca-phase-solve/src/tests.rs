@@ -764,6 +764,37 @@ fn solve_problem_lowers_generated_condition_memory_initial_updates() {
 }
 
 #[test]
+fn solve_problem_skips_zero_length_initial_residual_targets() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("vol.Xi"),
+        array_var("vol.Xi", &[0]),
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("vol.XiOut_internal"),
+        array_var("vol.XiOut_internal", &[0]),
+    );
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                var("vol.Xi"),
+                var("vol.XiOut_internal"),
+            ),
+            Default::default(),
+            "zero-length initial species binding",
+            0,
+        ));
+
+    let problem = lower_solve_problem(&dae_model)
+        .expect("zero-length initial equation should not need a scalar target");
+
+    assert!(problem.initialization.row_targets.is_empty());
+}
+
+#[test]
 fn solve_problem_zero_fills_missing_non_state_implicit_rows_for_templates() {
     let mut dae_model = dae::Dae::default();
     dae_model

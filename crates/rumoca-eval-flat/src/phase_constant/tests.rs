@@ -93,6 +93,7 @@ fn empty_param_context<'a>(
         known_enums,
         array_dims,
         functions,
+        user_func_eval_ctx: None,
         var_context: None,
     }
 }
@@ -154,6 +155,7 @@ fn eval_integer_div_operator_requires_exact_quotient() {
         known_enums: &known_enums,
         array_dims: &array_dims,
         functions: &functions,
+        user_func_eval_ctx: None,
         var_context: None,
     };
     assert_eq!(try_eval_integer_with_context(&expr, &ctx), None);
@@ -382,6 +384,7 @@ fn eval_integer_div_builtin_remains_truncating() {
         known_enums: &known_enums,
         array_dims: &array_dims,
         functions: &functions,
+        user_func_eval_ctx: None,
         var_context: None,
     };
     assert_eq!(try_eval_integer_with_context(&expr, &ctx), Some(3));
@@ -587,6 +590,7 @@ fn eval_integer_if_uses_canonicalized_enum_condition() {
         known_enums: &known_enums,
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: Some("pipe.nFMDistributed"),
     };
 
@@ -643,6 +647,7 @@ fn eval_integer_if_resolves_unqualified_enum_condition_with_var_context() {
         known_enums: &known_enums,
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: Some("Bessel.na"),
     };
 
@@ -663,6 +668,7 @@ fn eval_integer_prefers_scoped_unqualified_name_over_global_name() {
         known_enums: &FxHashMap::default(),
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: Some("machine.rotor.converter.orientation"),
     };
 
@@ -730,6 +736,7 @@ fn eval_integer_if_handles_integer_builtin_with_scoped_enum_conditions() {
         known_enums: &known_enums,
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: Some("Bessel.na"),
     };
 
@@ -795,6 +802,7 @@ fn eval_integer_field_access_resolves_overqualified_suffix() {
         known_enums: &FxHashMap::default(),
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: Some("stack.cell[1,1].cell.cellData.nRC"),
     };
 
@@ -819,6 +827,7 @@ fn eval_integer_if_returns_common_value_when_condition_unknown() {
         known_enums: &FxHashMap::default(),
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
         var_context: None,
     };
 

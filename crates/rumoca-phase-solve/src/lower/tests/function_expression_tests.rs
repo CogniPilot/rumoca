@@ -874,6 +874,59 @@ fn lower_expression_binds_record_function_result_to_flattened_record_inputs() {
 }
 
 #[test]
+fn lower_expression_synthesizes_missing_flattened_record_field_from_sibling_actuals() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("s.p"), scalar_var("s.p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("s.T"), scalar_var("s.T"));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("s.X"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("s.X"),
+            dims: vec![1],
+            ..Default::default()
+        },
+    );
+
+    let mut cp = rumoca_core::Function::new("My.specificHeatCapacityCp", rumoca_core::Span::DUMMY);
+    cp.inputs.push(function_param("state_p"));
+    cp.inputs.push(function_param("state_T"));
+    cp.inputs.push(function_param_with_dims("state_X", &[1]));
+    cp.outputs.push(function_param("cp"));
+    cp.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("cp"),
+        value: var_index("state_X", 1),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model.symbols.functions.insert(cp.name.clone(), cp);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.specificHeatCapacityCp").into(),
+        args: vec![var("s.p"), var("s.T")],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("missing flattened record field should synthesize from sibling actuals");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "s.p", 101325.0);
+    set_y_value(&layout, &mut y, "s.T", 300.0);
+    set_y_value(&layout, &mut y, "s.X[1]", 0.25);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 0.25).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_projects_record_field_from_function_result() {
     let mut dae_model = dae::Dae::default();
     dae_model

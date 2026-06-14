@@ -1422,6 +1422,61 @@ fn test_infer_equation_scalar_count_connector_field_array_alias() {
 }
 
 #[test]
+fn test_infer_equation_scalar_count_indexed_component_field_lhs_uses_field_width() {
+    let mut flat = Model::new();
+    for i in 1..=4 {
+        for field in ["C_outflow", "m_flow", "p", "h_outflow"] {
+            let name = format!("src[{i}].ports[1].{field}");
+            flat.add_variable(
+                VarName::new(name.clone()),
+                flat::Variable {
+                    name: VarName::new(name),
+                    is_primitive: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    let lhs = Expression::FieldAccess {
+        base: Box::new(Expression::FieldAccess {
+            base: Box::new(Expression::Index {
+                base: Box::new(Expression::VarRef {
+                    name: VarName::new("src").into(),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                subscripts: vec![rumoca_core::Subscript::Index {
+                    value: 1,
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "ports".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "C_outflow".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 1,
+        "indexed component field LHS must use the selected field width, not the whole component prefix"
+    );
+}
+
+#[test]
 fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
     let mut flat = Model::new();
 

@@ -1,8 +1,11 @@
 use super::find_class_in_tree;
+#[cfg(test)]
 use super::inheritance::resolve_effective_components_for_eval;
 use rumoca_core::is_builtin_type;
 use rumoca_core::{DefId, split_path_with_indices};
-use rumoca_eval_ast::eval_instantiate::{evaluate_array_dimensions, try_eval_integer_shape_expr};
+use rumoca_eval_ast::eval_instantiate::{
+    ResolveClassComponents, evaluate_array_dimensions, try_eval_integer_shape_expr,
+};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
@@ -65,6 +68,7 @@ pub(super) fn resolve_type_alias_dimensions(
     class_def: Option<&ast::ClassDef>,
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> Vec<i64> {
     let subscripts = collect_type_alias_subscripts(tree, class_def);
     if subscripts.is_empty() {
@@ -77,7 +81,7 @@ pub(super) fn resolve_type_alias_dimensions(
         mod_env,
         effective_components,
         tree,
-        resolve_effective_components_for_eval,
+        resolve_class_components,
     )
     .unwrap_or_default()
 }
@@ -89,6 +93,7 @@ pub(super) fn resolve_component_dimensions(
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
     imports: &[(String, String)],
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> (Vec<i64>, Vec<ast::Subscript>) {
     let mut dims = Vec::new();
     let mut dims_expr = Vec::new();
@@ -104,6 +109,7 @@ pub(super) fn resolve_component_dimensions(
             effective_components,
             tree,
             imports,
+            resolve_class_components,
         ) {
             if needs_late_recompute {
                 // Defer symbolic dimensions to later phases that have full local
@@ -177,6 +183,7 @@ fn eval_shape_expr_dims(
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
     imports: &[(String, String)],
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> Option<Vec<i64>> {
     let mut dims = Vec::with_capacity(shape_expr.len());
     for sub in shape_expr {
@@ -191,7 +198,7 @@ fn eval_shape_expr_dims(
             mod_env,
             effective_components,
             tree,
-            resolve_effective_components_for_eval,
+            resolve_class_components,
         )?;
         if dim < 0 {
             return None;
@@ -325,7 +332,10 @@ fn qualify_component_ref_imports(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_component_dimensions, resolve_type_alias_dimensions};
+    use super::{
+        resolve_component_dimensions, resolve_effective_components_for_eval,
+        resolve_type_alias_dimensions,
+    };
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
     use std::sync::Arc;
@@ -385,6 +395,7 @@ mod tests {
             &IndexMap::default(),
             &ast::ClassTree::default(),
             &[],
+            &resolve_effective_components_for_eval,
         );
         assert_eq!(dims, vec![2, 4]);
         assert!(dims_expr.is_empty());
@@ -404,6 +415,7 @@ mod tests {
             &IndexMap::default(),
             &ast::ClassTree::default(),
             &[],
+            &resolve_effective_components_for_eval,
         );
         assert_eq!(dims, vec![2]);
         assert!(dims_expr.is_empty());
@@ -423,6 +435,7 @@ mod tests {
             &IndexMap::default(),
             &ast::ClassTree::default(),
             &[],
+            &resolve_effective_components_for_eval,
         );
         assert!(dims.is_empty());
         assert_eq!(dims_expr.len(), 1);
@@ -455,6 +468,7 @@ mod tests {
             &effective_components,
             &ast::ClassTree::default(),
             &[],
+            &resolve_effective_components_for_eval,
         );
         assert!(dims.is_empty());
         assert_eq!(dims_expr.len(), 1);
@@ -479,6 +493,7 @@ mod tests {
             &IndexMap::default(),
             &ast::ClassTree::default(),
             &[],
+            &resolve_effective_components_for_eval,
         );
         assert!(
             dims.is_empty(),
@@ -528,6 +543,7 @@ mod tests {
             class_def,
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
+            &resolve_effective_components_for_eval,
         );
         assert_eq!(dims, vec![4]);
     }

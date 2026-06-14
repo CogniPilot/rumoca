@@ -461,6 +461,11 @@ pub(crate) fn lookup_with_qualified_scope<V: Clone + PartialEq>(
         if let Some(val) = map.get(&qualified) {
             return Some(val.clone());
         }
+        if let Some(canonical) = canonicalize_array_indices_to_first(&qualified)
+            && let Some(val) = map.get(&canonical)
+        {
+            return Some(val.clone());
+        }
         current_scope = match current_scope {
             Some(scope) if !scope.is_empty() => scope.parent(),
             _ => break,
@@ -470,7 +475,47 @@ pub(crate) fn lookup_with_qualified_scope<V: Clone + PartialEq>(
     if let Some(val) = map.get(&bare_name) {
         return Some(val.clone());
     }
+    if let Some(canonical) = canonicalize_array_indices_to_first(&bare_name)
+        && let Some(val) = map.get(&canonical)
+    {
+        return Some(val.clone());
+    }
     None
+}
+
+fn canonicalize_array_indices_to_first(path: &str) -> Option<String> {
+    let mut result = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+    let mut changed = false;
+    while let Some(ch) = chars.next() {
+        if ch != '[' {
+            result.push(ch);
+            continue;
+        }
+
+        let mut content = String::new();
+        let mut closed = false;
+        for inner in chars.by_ref() {
+            if inner == ']' {
+                closed = true;
+                break;
+            }
+            content.push(inner);
+        }
+
+        if closed && content.chars().all(|c| c.is_ascii_digit()) {
+            result.push_str("[1]");
+            changed |= content != "1";
+        } else {
+            result.push('[');
+            result.push_str(&content);
+            if closed {
+                result.push(']');
+            }
+        }
+    }
+
+    changed.then_some(result)
 }
 
 /// Scope-aware constant integer evaluation.

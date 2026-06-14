@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_core::ExpressionRewriter;
 
 impl<'a> LowerBuilder<'a> {
     pub(in crate::lower) fn lower_compile_time_indexed_local_value(
@@ -99,11 +100,29 @@ impl<'a> LowerBuilder<'a> {
         let values = self.lower_array_like_values(base, scope, call_depth)?;
         let index_tuples = one_based_index_tuples(&dims);
         if values.len() != index_tuples.len() {
+            let base_key = dynamic_binding_base_key(base).ok();
+            let scope_indexed_count = base_key
+                .as_ref()
+                .and_then(|key| {
+                    scope
+                        .indexed_entries(&ComponentPath::from_flat_path(key))
+                        .map(|entries| entries.len())
+                })
+                .unwrap_or(0);
+            let local_indexed_count = base_key
+                .as_ref()
+                .and_then(|key| self.local_indexed_bindings.get(key))
+                .map(Vec::len)
+                .unwrap_or(0);
             return Err(LowerError::Unsupported {
                 reason: format!(
-                    "array-like dynamic index shape mismatch: {} values for shape {:?}",
+                    "array-like dynamic index shape mismatch for base {:?} key {:?}: {} values for shape {:?} (scope indexed {}, local indexed {})",
+                    base,
+                    base_key,
                     values.len(),
-                    dims
+                    dims,
+                    scope_indexed_count,
+                    local_indexed_count
                 ),
             });
         }
@@ -330,7 +349,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Vec<usize>, LowerError> {
         let _ = scope;
-        let const_scope = IndexMap::new();
+        let const_scope = &self.local_const_bindings;
         let indices = match expr {
             rumoca_core::Expression::Range {
                 start, step, end, ..
@@ -339,7 +358,7 @@ impl<'a> LowerBuilder<'a> {
                     start,
                     step.as_deref(),
                     end,
-                    &const_scope,
+                    const_scope,
                     "array slice range",
                 )?;
                 values
@@ -353,7 +372,7 @@ impl<'a> LowerBuilder<'a> {
             }
             _ => vec![self.eval_compile_time_positive_index(
                 expr,
-                &const_scope,
+                const_scope,
                 "array slice index",
             )?],
         };
@@ -369,7 +388,19 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        if let Some(values) = self.lower_indexed_record_field_values(base, field, scope)? {
+        if let Ok(base_key) = self.compile_time_binding_base_key(base) {
+            let key = format!("{base_key}.{field}");
+            if let Some(values) = self.lower_indexed_binding_values(key.as_str())? {
+                return Ok(values);
+            }
+            if let Some(values) = self.lower_record_field_array_values(key.as_str())? {
+                return Ok(values);
+            }
+        }
+        let (record_root, record_field) = field_access_root_and_path(base, field);
+        if let Some(values) =
+            self.lower_indexed_record_field_values(record_root, &record_field, scope)?
+        {
             return Ok(values);
         }
         if let Some(values) =
@@ -452,7 +483,7 @@ impl<'a> LowerBuilder<'a> {
         else {
             return Ok(None);
         };
-        let Ok(base_key) = dynamic_binding_base_key(indexed_base) else {
+        let Ok(base_key) = self.compile_time_binding_base_key(indexed_base) else {
             return Ok(None);
         };
         let field_keys = self.indexed_record_field_keys(base_key.as_str(), field);
@@ -583,18 +614,21 @@ impl<'a> LowerBuilder<'a> {
         if output.dims.is_empty() {
             return function_output_values(output, scope);
         }
+        let resolved_output_dims = self
+            .resolve_function_param_shape(output)
+            .or_else(|| self.local_binding_dims.get(&output.name).cloned());
+        if let Some(dims) = resolved_output_dims {
+            if self.known_empty_local_arrays.contains(output.name.as_str()) {
+                return Ok(Vec::new());
+            }
+            let mut resolved = output.clone();
+            resolved.dims = dims;
+            return function_output_values(&resolved, scope);
+        }
         if let Some(values) = self.local_indexed_binding_values(&output.name) {
             return Ok(values);
         }
-        let Some(dims) = self.local_binding_dims.get(&output.name) else {
-            return function_output_values(output, scope);
-        };
-        if self.known_empty_local_arrays.contains(output.name.as_str()) {
-            return Ok(Vec::new());
-        }
-        let mut resolved = output.clone();
-        resolved.dims = dims.clone();
-        function_output_values(&resolved, scope)
+        function_output_values(output, scope)
     }
 
     pub(in crate::lower) fn lower_function_output_projection_values(
@@ -1081,7 +1115,16 @@ impl<'a> LowerBuilder<'a> {
             {
                 return Ok(());
             }
-            out.extend(self.lower_array_like_values(expr, ctx.scope, ctx.call_depth)?);
+            let saved_const_bindings = self.local_const_bindings.clone();
+            self.local_const_bindings.extend(
+                ctx.const_scope
+                    .iter()
+                    .map(|(key, value)| (key.clone(), *value)),
+            );
+            let selected_expr = substitute_compile_time_vars(expr, ctx.const_scope);
+            let result = self.lower_array_like_values(&selected_expr, ctx.scope, ctx.call_depth);
+            self.local_const_bindings = saved_const_bindings;
+            out.extend(result?);
             return Ok(());
         }
 
@@ -1236,13 +1279,24 @@ impl<'a> LowerBuilder<'a> {
         let mut runtime_branches = Vec::new();
         let mut selected_static_branch = None;
         for (cond, value) in branches {
-            match lower_static_condition_truth(cond)? {
+            let compile_time_truth = self
+                .eval_compile_time_expr(cond, &self.local_const_bindings)
+                .ok()
+                .map(|value| value != 0.0);
+            match compile_time_truth {
                 Some(false) => {}
                 Some(true) => {
                     selected_static_branch = Some(value);
                     break;
                 }
-                None => runtime_branches.push((cond, value)),
+                None => match lower_static_condition_truth(cond)? {
+                    Some(false) => {}
+                    Some(true) => {
+                        selected_static_branch = Some(value);
+                        break;
+                    }
+                    None => runtime_branches.push((cond, value)),
+                },
             }
         }
 
@@ -1257,5 +1311,46 @@ impl<'a> LowerBuilder<'a> {
             result = self.emit_select(cond_reg, value_reg, result);
         }
         Ok(result)
+    }
+}
+
+fn substitute_compile_time_vars(
+    expr: &rumoca_core::Expression,
+    values: &IndexMap<String, f64>,
+) -> rumoca_core::Expression {
+    let mut substitution = CompileTimeVarSubstitution { values };
+    substitution.rewrite_expression(expr)
+}
+
+struct CompileTimeVarSubstitution<'a> {
+    values: &'a IndexMap<String, f64>,
+}
+
+impl ExpressionRewriter for CompileTimeVarSubstitution<'_> {
+    fn walk_var_ref_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if subscripts.is_empty()
+            && let Some(value) = self.values.get(name.as_str())
+        {
+            let rounded = value.round();
+            let literal = if (*value - rounded).abs() <= f64::EPSILON {
+                rumoca_core::Literal::Integer(rounded as i64)
+            } else {
+                rumoca_core::Literal::Real(*value)
+            };
+            return rumoca_core::Expression::Literal {
+                value: literal,
+                span,
+            };
+        }
+        rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: self.rewrite_subscripts(subscripts),
+            span,
+        }
     }
 }

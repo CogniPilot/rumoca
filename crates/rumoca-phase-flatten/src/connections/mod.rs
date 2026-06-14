@@ -19,6 +19,7 @@
 //! - Inside connector (component port): sign = +1
 //! - Outside connector (model boundary): sign = -1
 
+use indexmap::IndexSet;
 use rumoca_core::{Span, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -346,6 +347,7 @@ enum ConnectionKind {
     Flow,
     Potential,
     Stream,
+    StreamAlias,
 }
 
 /// Union-Find data structure for building connection sets.
@@ -1390,10 +1392,13 @@ fn stream_set_touches_top_level_connector(
     flat: &flat::Model,
     vars: &[rumoca_core::VarName],
 ) -> bool {
-    vars.iter().any(|var| {
-        first_path_segment_without_index(var.as_str())
-            .is_some_and(|prefix| flat.top_level_connectors.contains(prefix))
-    })
+    vars.iter()
+        .any(|var| stream_var_is_top_level_connector(flat, var))
+}
+
+fn stream_var_is_top_level_connector(flat: &flat::Model, var: &rumoca_core::VarName) -> bool {
+    first_path_segment_without_index(var.as_str())
+        .is_some_and(|prefix| flat.top_level_connectors.contains(prefix))
 }
 
 fn classify_stream_vars_by_presence(
@@ -1413,11 +1418,85 @@ fn classify_stream_vars_by_presence(
     (defined, undefined)
 }
 
+fn collect_interface_stream_vars(
+    connections: &[&ast::InstanceConnection],
+    flat: &flat::Model,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
+    var_index: &ConnectionVarIndex,
+) -> IndexSet<rumoca_core::VarName> {
+    let mut result = IndexSet::new();
+    for conn in connections {
+        for path_qn in [&conn.a, &conn.b] {
+            let path = path_qn.to_flat_string();
+            if connection_endpoint_is_interface_stream_member(&path, &conn.scope) {
+                collect_stream_endpoint_vars(&path, flat, var_index, &mut result);
+                continue;
+            }
+            if !connection_endpoint_is_interface_connector(&path, &conn.scope) {
+                continue;
+            }
+            for var in find_sub_variables_indexed(&path, prefix_children, var_index) {
+                if flat.variables.get(&var).is_some_and(|v| v.stream) {
+                    result.insert(var);
+                }
+            }
+        }
+    }
+    result
+}
+
+fn connection_endpoint_is_interface_stream_member(path: &str, scope: &str) -> bool {
+    let path_parts = split_path_with_indices(path);
+    let scope_parts = split_path_with_indices(scope);
+    if scope_parts.len() > path_parts.len() {
+        return false;
+    }
+    for (path_part, scope_part) in path_parts.iter().zip(scope_parts.iter()) {
+        if strip_array_index(path_part) != strip_array_index(scope_part) {
+            return false;
+        }
+    }
+    path_parts.len() == scope_parts.len() + 2
+}
+
+fn collect_stream_endpoint_vars(
+    path: &str,
+    flat: &flat::Model,
+    var_index: &ConnectionVarIndex,
+    result: &mut IndexSet<rumoca_core::VarName>,
+) {
+    let direct = rumoca_core::VarName::new(path);
+    if is_stream_variable(flat, &direct) {
+        result.insert(direct);
+        return;
+    }
+    for candidate in find_exact_match_with_array_expansion(path, var_index) {
+        if flat.variables.get(&candidate).is_some_and(|v| v.stream) {
+            result.insert(candidate);
+        }
+    }
+}
+
+fn connection_endpoint_is_interface_connector(path: &str, scope: &str) -> bool {
+    let path_parts = split_path_with_indices(path);
+    let scope_parts = split_path_with_indices(scope);
+    if scope_parts.len() > path_parts.len() {
+        return false;
+    }
+    for (path_part, scope_part) in path_parts.iter().zip(scope_parts.iter()) {
+        if strip_array_index(path_part) != strip_array_index(scope_part) {
+            return false;
+        }
+    }
+    path_parts.len() == scope_parts.len() + 1
+}
+
 fn append_stream_connection_sets_for_group(
     flat: &flat::Model,
     vars: Vec<rumoca_core::VarName>,
     existing_lhs_vars: &std::collections::HashSet<rumoca_core::VarName>,
     existing_var_refs: &mut Option<std::collections::HashSet<rumoca_core::VarName>>,
+    interface_stream_vars: &IndexSet<rumoca_core::VarName>,
     result: &mut Vec<ConnectionSet>,
     span: rumoca_core::Span,
 ) {
@@ -1435,18 +1514,6 @@ fn append_stream_connection_sets_for_group(
     undefined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
     defined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
 
-    if touches_top_level {
-        if undefined_streams.len() >= 2 {
-            result.push(ConnectionSet {
-                variables: undefined_streams,
-                kind: ConnectionKind::Stream,
-                scope: String::new(),
-                span,
-            });
-        }
-        return;
-    }
-
     let refs = existing_var_refs.get_or_insert_with(|| collect_existing_var_refs(flat));
     let (referenced_streams, mut still_undefined) =
         classify_stream_vars_by_presence(flat, undefined_streams, refs);
@@ -1459,9 +1526,28 @@ fn append_stream_connection_sets_for_group(
     still_undefined.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
 
     if let Some(anchor) = defined_streams.first().cloned() {
+        let mut top_level_streams = Vec::new();
         for missing in still_undefined {
+            if touches_top_level && stream_var_is_top_level_connector(flat, &missing) {
+                top_level_streams.push(missing);
+                continue;
+            }
+            if !stream_alias_target_needs_connection_equation(&missing, interface_stream_vars) {
+                log_stream_alias_skip(&missing, &anchor, interface_stream_vars);
+                continue;
+            }
+            log_stream_alias_emit(&missing, &anchor);
             result.push(ConnectionSet {
                 variables: vec![missing, anchor.clone()],
+                kind: ConnectionKind::StreamAlias,
+                scope: String::new(),
+                span,
+            });
+        }
+        if touches_top_level && !top_level_streams.is_empty() {
+            top_level_streams.push(anchor);
+            result.push(ConnectionSet {
+                variables: top_level_streams,
                 kind: ConnectionKind::Stream,
                 scope: String::new(),
                 span,
@@ -1478,6 +1564,63 @@ fn append_stream_connection_sets_for_group(
             span,
         });
     }
+}
+
+fn stream_alias_target_needs_connection_equation(
+    missing: &rumoca_core::VarName,
+    _interface_stream_vars: &IndexSet<rumoca_core::VarName>,
+) -> bool {
+    !is_internal_balance_port_stream(missing.as_str())
+        || is_internal_balance_port_stream_alias_required(missing.as_str())
+}
+
+fn is_internal_balance_port_stream(path: &str) -> bool {
+    path.contains(".dynBal.ports[")
+}
+
+fn is_internal_balance_port_stream_alias_required(path: &str) -> bool {
+    path.ends_with(".h_outflow") || path.ends_with(".C_outflow")
+}
+
+fn stream_alias_debug_matches(
+    missing: &rumoca_core::VarName,
+    anchor: &rumoca_core::VarName,
+) -> bool {
+    let Some(filter) = std::env::var_os("RUMOCA_DEBUG_STREAM_ALIAS") else {
+        return false;
+    };
+    let filter = filter.to_string_lossy();
+    filter.is_empty()
+        || filter == "1"
+        || missing.as_str().contains(filter.as_ref())
+        || anchor.as_str().contains(filter.as_ref())
+}
+
+fn log_stream_alias_skip(
+    missing: &rumoca_core::VarName,
+    anchor: &rumoca_core::VarName,
+    interface_stream_vars: &IndexSet<rumoca_core::VarName>,
+) {
+    if !stream_alias_debug_matches(missing, anchor) {
+        return;
+    }
+    eprintln!(
+        "DEBUG STREAM_ALIAS skip missing={} anchor={} interface_count={}",
+        missing.as_str(),
+        anchor.as_str(),
+        interface_stream_vars.len()
+    );
+}
+
+fn log_stream_alias_emit(missing: &rumoca_core::VarName, anchor: &rumoca_core::VarName) {
+    if !stream_alias_debug_matches(missing, anchor) {
+        return;
+    }
+    eprintln!(
+        "DEBUG STREAM_ALIAS emit missing={} anchor={}",
+        missing.as_str(),
+        anchor.as_str()
+    );
 }
 
 /// Build connection sets from individual connections.
@@ -1502,10 +1645,11 @@ fn build_connection_sets(
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> Vec<ConnectionSet> {
+) -> (Vec<ConnectionSet>, usize) {
     let mut potential_uf = UnionFind::new();
     let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
+    let mut stream_interface_equation_count = 0usize;
 
     // SPEC_0008: every generated connection equation carries the originating
     // connect() span. Track the first connect() span seen for each variable
@@ -1600,6 +1744,9 @@ fn build_connection_sets(
     if !stream_sets.is_empty() {
         let existing_lhs_vars = collect_existing_lhs_vars(flat);
         let mut existing_var_refs: Option<std::collections::HashSet<rumoca_core::VarName>> = None;
+        let interface_stream_vars =
+            collect_interface_stream_vars(connections, flat, prefix_children, var_index);
+        stream_interface_equation_count = interface_stream_vars.len();
         for (_root, vars) in stream_sets {
             let span = representative_span(&vars, &var_first_span);
             append_stream_connection_sets_for_group(
@@ -1607,13 +1754,14 @@ fn build_connection_sets(
                 vars,
                 &existing_lhs_vars,
                 &mut existing_var_refs,
+                &interface_stream_vars,
                 &mut result,
                 span,
             );
         }
     }
 
-    result
+    (result, stream_interface_equation_count)
 }
 
 // =============================================================================

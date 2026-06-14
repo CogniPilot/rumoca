@@ -201,6 +201,584 @@ fn test_stream_connection_does_not_generate_potential_equality() {
 }
 
 #[test]
+fn test_stream_interface_alias_generated_when_anchor_is_defined() {
+    let mut flat = flat::Model::new();
+    for name in ["port.h_outflow", "component.port.h_outflow"] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new("component.port.h_outflow")),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: Span::DUMMY,
+            },
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "component.port".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_ident("port"),
+            b: ast::QualifiedName::from_dotted("component.port"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: String::new(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("stream alias processing");
+
+    assert_eq!(flat.equations.len(), 2);
+    assert!(matches!(
+        flat.equations[1].origin,
+        flat::EquationOrigin::Connection { .. }
+    ));
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("port.h_outflow"))
+            .is_some_and(|var| var.connected)
+    );
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("component.port.h_outflow"))
+            .is_some_and(|var| var.connected)
+    );
+}
+
+#[test]
+fn test_stream_interface_alias_expands_collapsed_stream_endpoint() {
+    let mut flat = flat::Model::new();
+    for name in ["port.h_outflow", "component.port.h_outflow"] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                dims: vec![2],
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new("component.port.h_outflow")),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: Span::DUMMY,
+            },
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "component.port".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("port.h_outflow[2]"),
+            b: ast::QualifiedName::from_dotted("component.port.h_outflow[2]"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: String::new(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false)
+        .expect("collapsed stream endpoint alias processing");
+
+    assert_eq!(flat.equations.len(), 2);
+    assert!(matches!(
+        flat.equations[1].origin,
+        flat::EquationOrigin::Connection { .. }
+    ));
+}
+
+#[test]
+fn test_stream_non_interface_alias_generated_for_explicit_connector_port() {
+    let mut flat = flat::Model::new();
+    for name in [
+        "wrapper.sensor.port.h_outflow",
+        "wrapper.source.port.h_outflow",
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new("wrapper.source.port.h_outflow")),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: Span::DUMMY,
+            },
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "wrapper.source.port".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("wrapper.sensor.port"),
+            b: ast::QualifiedName::from_dotted("wrapper.source.port"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: "wrapper".to_string(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("non-interface stream alias processing");
+
+    assert_eq!(flat.equations.len(), 2);
+    assert!(matches!(
+        flat.equations[1].origin,
+        flat::EquationOrigin::Connection { .. }
+    ));
+}
+
+#[test]
+fn test_outside_stream_connectors_are_counted_without_equality_aliases() {
+    let mut flat = flat::Model::new();
+    for name in ["port_a.h_outflow", "port_b.h_outflow"] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("port_a"),
+            b: ast::QualifiedName::from_dotted("port_b"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: String::new(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("outside stream connector processing");
+
+    assert_eq!(flat.equations.len(), 0);
+    assert_eq!(flat.stream_interface_equation_count, 2);
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("port_a.h_outflow"))
+            .is_some_and(|var| var.connected)
+    );
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("port_b.h_outflow"))
+            .is_some_and(|var| var.connected)
+    );
+}
+
+#[test]
+fn test_stream_internal_dynbal_port_alias_is_not_generated() {
+    let mut flat = flat::Model::new();
+    for name in [
+        "wrapper.vol.dynBal.ports[1].Xi_outflow",
+        "wrapper.source.port.Xi_outflow",
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new("wrapper.source.port.Xi_outflow")),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: Span::DUMMY,
+            },
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "wrapper.source.port".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("wrapper.vol.dynBal.ports[1]"),
+            b: ast::QualifiedName::from_dotted("wrapper.source.port"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: "wrapper.vol.dynBal".to_string(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false)
+        .expect("internal dynBal stream alias processing");
+
+    assert_eq!(flat.equations.len(), 1);
+}
+
+#[test]
+fn test_stream_internal_dynbal_energy_port_alias_is_generated() {
+    let mut flat = flat::Model::new();
+    for name in [
+        "wrapper.vol.dynBal.ports[1].h_outflow",
+        "wrapper.source.port.h_outflow",
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new("wrapper.source.port.h_outflow")),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: Span::DUMMY,
+            },
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "wrapper.source.port".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("wrapper.vol.dynBal.ports[1]"),
+            b: ast::QualifiedName::from_dotted("wrapper.source.port"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: "wrapper.vol.dynBal".to_string(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false)
+        .expect("internal dynBal energy stream alias processing");
+
+    assert_eq!(flat.equations.len(), 2);
+    assert!(matches!(
+        flat.equations[1].origin,
+        flat::EquationOrigin::Connection { .. }
+    ));
+}
+
+#[test]
+fn test_stream_pass_through_alias_generated_from_defined_dynbal_port() {
+    let mut flat = flat::Model::new();
+    for name in [
+        "wrapper.vol.dynBal.ports[1].h_outflow",
+        "wrapper.vol.ports[1].h_outflow",
+        "wrapper.port_b.h_outflow",
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new(
+                "wrapper.vol.dynBal.ports[1].h_outflow",
+            )),
+            var_to_expr(&rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h")),
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "wrapper.vol.dynBal".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports"),
+                b: ast::QualifiedName::from_dotted("wrapper.vol.dynBal.ports"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper.vol".to_string(),
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports[1]"),
+                b: ast::QualifiedName::from_dotted("wrapper.port_b"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper".to_string(),
+            },
+        ],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("stream pass-through alias processing");
+
+    let origins = flat
+        .equations
+        .iter()
+        .map(|eq| eq.origin.to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin.contains("wrapper.vol.ports[1].h_outflow")),
+        "vol.ports stream alias should be generated from dynBal anchor: {origins:?}"
+    );
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin.contains("wrapper.port_b.h_outflow")),
+        "outer port_b stream alias should be generated from dynBal anchor: {origins:?}"
+    );
+}
+
+#[test]
+fn test_stream_pass_through_alias_generated_for_all_array_ports() {
+    let mut flat = flat::Model::new();
+    for name in [
+        "wrapper.vol.dynBal.ports[1].h_outflow",
+        "wrapper.vol.dynBal.ports[2].h_outflow",
+        "wrapper.vol.ports[1].h_outflow",
+        "wrapper.vol.ports[2].h_outflow",
+        "wrapper.port_a.h_outflow",
+        "wrapper.port_b.h_outflow",
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    for idx in 1..=2 {
+        flat.add_equation(flat::Equation::new(
+            create_equality_residual(
+                var_to_expr(&rumoca_core::VarName::new(format!(
+                    "wrapper.vol.dynBal.ports[{idx}].h_outflow"
+                ))),
+                var_to_expr(&rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h")),
+            ),
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "wrapper.vol.dynBal".to_string(),
+            },
+        ));
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports"),
+                b: ast::QualifiedName::from_dotted("wrapper.vol.dynBal.ports"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper.vol".to_string(),
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports[1]"),
+                b: ast::QualifiedName::from_dotted("wrapper.port_a"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper".to_string(),
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports[2]"),
+                b: ast::QualifiedName::from_dotted("wrapper.port_b"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper".to_string(),
+            },
+        ],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false)
+        .expect("array stream pass-through alias processing");
+
+    let origins = flat
+        .equations
+        .iter()
+        .map(|eq| eq.origin.to_string())
+        .collect::<Vec<_>>();
+    for expected in [
+        "wrapper.vol.ports[1].h_outflow",
+        "wrapper.vol.ports[2].h_outflow",
+        "wrapper.port_a.h_outflow",
+        "wrapper.port_b.h_outflow",
+    ] {
+        assert!(
+            origins.iter().any(|origin| origin.contains(expected)),
+            "stream alias should be generated for {expected}: {origins:?}"
+        );
+    }
+}
+
+#[test]
+fn test_stream_pass_through_alias_survives_top_level_boundary_port() {
+    let mut flat = flat::Model::new();
+    flat.top_level_connectors.insert("port_b".to_string());
+    for name in [
+        "wrapper.vol.dynBal.ports[1].h_outflow",
+        "wrapper.vol.ports[1].h_outflow",
+        "wrapper.port_b.h_outflow",
+        "port_b.h_outflow",
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                stream: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(flat::Equation::new(
+        create_equality_residual(
+            var_to_expr(&rumoca_core::VarName::new(
+                "wrapper.vol.dynBal.ports[1].h_outflow",
+            )),
+            var_to_expr(&rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h")),
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "wrapper.vol.dynBal".to_string(),
+        },
+    ));
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports"),
+                b: ast::QualifiedName::from_dotted("wrapper.vol.dynBal.ports"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper.vol".to_string(),
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.vol.ports[1]"),
+                b: ast::QualifiedName::from_dotted("wrapper.port_b"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: "wrapper".to_string(),
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("wrapper.port_b"),
+                b: ast::QualifiedName::from_dotted("port_b"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: String::new(),
+            },
+        ],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false)
+        .expect("top-level boundary stream pass-through alias processing");
+
+    let origins = flat
+        .equations
+        .iter()
+        .map(|eq| eq.origin.to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin.contains("wrapper.vol.ports[1].h_outflow")),
+        "internal vol.ports stream alias should not be suppressed by top-level boundary: {origins:?}"
+    );
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin.contains("wrapper.port_b.h_outflow")),
+        "internal component port stream alias should not be suppressed by top-level boundary: {origins:?}"
+    );
+    assert!(
+        origins
+            .iter()
+            .all(|origin| !origin.contains("connection equation: port_b.h_outflow")),
+        "top-level stream boundary must not be converted into an equality alias: {origins:?}"
+    );
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("port_b.h_outflow"))
+            .is_some_and(|var| var.connected),
+        "top-level stream boundary should still be marked connected"
+    );
+}
+
+#[test]
 fn test_connector_path_with_structural_member_expands_nonstructural_members() {
     let mut flat = flat::Model::new();
     for name in ["a", "b"] {

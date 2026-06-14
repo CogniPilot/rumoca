@@ -1534,11 +1534,13 @@ fn convert_callable<'tree>(
         .map(Some),
         class_type if is_callable_class_type(class_type) => {
             Ok(Some(convert_constructor_signature(
+                tree,
                 class_index,
                 class_def,
                 qualified_name,
                 source_map,
                 def_map,
+                member_cache,
             )?))
         }
         _ => Ok(None),

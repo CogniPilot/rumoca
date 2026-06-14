@@ -472,6 +472,7 @@ fn make_expression_context_dispatch_class() -> ClassDef {
         ]],
         external: Some(ExternalFunction {
             args: vec![make_int(13)],
+            annotation: vec![make_int(14)],
             ..Default::default()
         }),
         ..Default::default()
@@ -495,6 +496,7 @@ fn assert_expression_contexts_seen(seen: &[ExpressionContext]) {
     assert!(seen.contains(&ExpressionContext::StatementAssertLevel));
     assert!(seen.contains(&ExpressionContext::StatementFunctionOutput));
     assert!(seen.contains(&ExpressionContext::ExternalArgument));
+    assert!(seen.contains(&ExpressionContext::ExternalAnnotation));
 }
 
 #[test]

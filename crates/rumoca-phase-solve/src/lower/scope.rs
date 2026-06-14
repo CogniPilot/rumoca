@@ -91,6 +91,10 @@ impl Scope {
         entries.into_iter().collect()
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.frames.iter().all(|frame| frame.bindings.is_empty())
+    }
+
     pub(super) fn indexed_values(&self, path: &ComponentPath) -> Option<Vec<Reg>> {
         let bindings = self.indexed_entries(path)?;
         if bindings.is_empty() {

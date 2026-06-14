@@ -1121,6 +1121,9 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_modelica_add_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
+    if let Some(rhs_expr) = synthesize_modelica_multiswitch_expr_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
     if let Some(rhs_expr) = synthesize_boptest_plant_stage_condition_plr_rhs(&name_str) {
         return Ok(rhs_expr);
     }
@@ -1149,27 +1152,6 @@ fn alg_rhs_for_var_with_aliases(
     {
         return Ok(rhs_expr);
     }
-    if let Ok(iter) = equations.try_iter() {
-        for eq in iter {
-            if let Some(rhs_expr) = find_algebraic_rhs_direct(&eq, &name_str, &cfg)? {
-                let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
-                if c_rhs_is_supported(&rhs_expr) {
-                    return Ok(rhs_expr);
-                }
-            }
-        }
-    }
-    if let Ok(iter) = equations.try_iter() {
-        for eq in iter {
-            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg)? {
-                let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
-                if c_rhs_is_supported(&rhs_expr) {
-                    return Ok(rhs_expr);
-                }
-            }
-        }
-    }
-
     let Some(candidate_equations) = alg_equation_candidates_for_var(&equations, &name_str) else {
         if let Some(rhs_expr) = synthesize_fluid_sensor_mnor_flow_rhs(&name_str) {
             return Ok(rhs_expr);
@@ -1237,6 +1219,24 @@ fn alg_rhs_for_var_with_aliases(
         }
         return Ok("0.0".to_string());
     };
+
+    for eq in &candidate_equations {
+        if let Some(rhs_expr) = find_algebraic_rhs_direct(eq, &name_str, &cfg)? {
+            let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
+            if c_rhs_is_supported(&rhs_expr) {
+                return Ok(rhs_expr);
+            }
+        }
+    }
+    for eq in &candidate_equations {
+        if let Some(rhs_expr) = find_algebraic_rhs(eq, &name_str, &cfg)? {
+            let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
+            if c_rhs_is_supported(&rhs_expr) {
+                return Ok(rhs_expr);
+            }
+        }
+    }
+
     let mut first_supported_rhs = None;
     let mut best_supported_rhs: Option<(isize, String)> = None;
     let prefer_conditional_rhs = is_logical_switch_output_var(&name_str);
@@ -4391,6 +4391,14 @@ fn synthesize_modelica_add_rhs(var_name: &str, aliases: &HashSet<String>) -> Opt
     Some(format!("(({k1} * {u1}) + ({k2} * {u2}))"))
 }
 
+fn synthesize_modelica_multiswitch_expr_rhs(var_name: &str) -> Option<String> {
+    let (base, index) = parse_indexed_ref(var_name)?;
+    if !base.ends_with(".expr") {
+        return None;
+    }
+    Some((index.saturating_sub(1)).to_string())
+}
+
 fn synthesize_boptest_zone_ctot_flow_input_rhs(
     var_name: &str,
     aliases: &HashSet<String>,
@@ -7508,6 +7516,11 @@ fn render_direct_rhs_for_lhs(
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
     if is_var_ref_of(lhs, var_name) {
+        if let Some((_base_name, index)) = parse_indexed_ref(var_name)
+            && let Some(projected) = render_array_expr_at_index(rhs, index, cfg)
+        {
+            return Ok(Some(projected));
+        }
         return render_expression(rhs, cfg).map(Some);
     }
     if let Some(index) = array_lhs_element_index(lhs, var_name) {
@@ -7586,6 +7599,12 @@ fn find_algebraic_rhs_assignment(
             if let Some(update_expr) = items.get(1) {
                 return render_expression(update_expr, cfg).map(Some);
             }
+        }
+
+        if let Some((_base_name, index)) = parse_indexed_ref(var_name)
+            && let Some(projected) = render_array_expr_at_index(&rhs, index, cfg)
+        {
+            return Ok(Some(projected));
         }
 
         // Fall back to rendering the entire RHS (for non-guarded cases)
@@ -8053,6 +8072,10 @@ fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> O
         return render_builtin_array_expr_at_index(&builtin, index, cfg);
     }
 
+    if let Ok(call) = get_field(expr, "FunctionCall") {
+        return render_function_array_expr_at_index(&call, index, cfg);
+    }
+
     None
 }
 
@@ -8154,6 +8177,7 @@ fn render_builtin_array_expr_at_index(
     let func_name = get_field(builtin, "function").ok()?.to_string();
     let args = get_field(builtin, "args").ok()?;
     match func_name.as_str() {
+        "Linspace" => render_linspace_array_expr_at_index(&args, index, cfg),
         "Smooth" => {
             let inner = args.get_item(&Value::from(1)).ok()?;
             render_array_expr_at_index_or_scalar(&inner, index, cfg)
@@ -8170,6 +8194,40 @@ fn render_builtin_array_expr_at_index(
         }
         _ => None,
     }
+}
+
+fn render_function_array_expr_at_index(
+    call: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let name = get_field(call, "name").ok()?;
+    let raw_name = render_serialized_name(&name);
+    if top_level_last_segment(&raw_name) != "linspace" {
+        return None;
+    }
+    let args = get_field(call, "args").ok()?;
+    render_linspace_array_expr_at_index(&args, index, cfg)
+}
+
+fn render_linspace_array_expr_at_index(
+    args: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if args.len()? != 3 || index == 0 {
+        return None;
+    }
+    let start = args.get_item(&Value::from(0)).ok()?;
+    let stop = args.get_item(&Value::from(1)).ok()?;
+    let count = args.get_item(&Value::from(2)).ok()?;
+    let start = render_expression(&start, cfg).ok()?;
+    let stop = render_expression(&stop, cfg).ok()?;
+    let count = render_expression(&count, cfg).ok()?;
+    let offset = index - 1;
+    Some(format!(
+        "((({count}) <= 1.0) ? ({start}) : (({start}) + (({stop}) - ({start})) * ({offset}.0 / (({count}) - 1.0))))"
+    ))
 }
 
 /// Flatten a Value expression tree of Add/Sub into signed terms.

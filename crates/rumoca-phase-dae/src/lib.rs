@@ -388,6 +388,13 @@ fn finalize_lowered_dae(
         dedupe_equivalent_explicit_assignments(&mut dae.discrete.real_updates);
         dedupe_equivalent_explicit_assignments(&mut dae.discrete.valued_updates);
     });
+    run_todae_phase(
+        todae_subphase_timing,
+        "unwrap_block_constructor_value_wrappers",
+        || {
+            dae_lowering::unwrap_block_constructor_value_wrappers_dae(dae);
+        },
+    );
     run_todae_phase(todae_subphase_timing, "appendix_b_validation", || {
         appendix_b_validation::validate_appendix_b_invariants(dae)
     })?;
@@ -395,6 +402,7 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "metadata_counts", || {
         // MLS §4.7 / §4.8 / §9.4: propagate interface counts from flatten.
         dae.metadata.interface_flow_count = count_interface_flows(flat);
+        dae.metadata.stream_interface_equation_count = flat.stream_interface_equation_count;
         dae.metadata.oc_break_edge_scalar_count = flat.oc_break_edge_scalar_count;
         let oc_correction = count_overconstrained_interface(flat, state_vars)?;
         if oc_correction >= 0 {
@@ -406,6 +414,13 @@ fn finalize_lowered_dae(
         Ok::<(), ToDaeError>(())
     })?;
 
+    run_todae_phase(
+        todae_subphase_timing,
+        "record_function_param_lowering",
+        || {
+            dae_lowering::lower_record_function_params_dae(dae);
+        },
+    );
     run_todae_phase(
         todae_subphase_timing,
         "constructor_selection_validation",
@@ -429,11 +444,95 @@ fn finalize_lowered_dae(
     }
 
     if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae) != 0 {
+        log_balance_debug(dae);
         let (equations, unknowns) = balance::equations_unknowns(dae);
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }
 
     Ok(())
+}
+
+fn log_balance_debug(dae: &dae::Dae) {
+    if std::env::var_os("RUMOCA_DEBUG_BALANCE_DETAIL").is_none() {
+        return;
+    }
+    let detail = balance::balance_detail(dae);
+    eprintln!("DEBUG DAE BALANCE DETAIL:\n{detail}");
+    for line in balance::balance_counted_prefix_debug_lines(dae) {
+        eprintln!("{line}");
+    }
+    for line in balance::balance_prefix_delta_debug_lines(dae) {
+        eprintln!("{line}");
+    }
+    for line in balance::discrete_valued_prefix_delta_debug_lines(dae) {
+        eprintln!("{line}");
+    }
+    let mut origins = std::collections::BTreeMap::<String, usize>::new();
+    for equation in &dae.continuous.equations {
+        let origin = balance_debug_origin_key(equation.origin.as_str());
+        *origins.entry(origin).or_default() += equation.scalar_count;
+    }
+    let mut origins = origins.into_iter().collect::<Vec<_>>();
+    origins.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
+    eprintln!("DEBUG DAE CONTINUOUS EQUATION ORIGIN SCALARS TOP:");
+    for (origin, count) in origins.into_iter().take(80) {
+        eprintln!("  {count:>8} {origin}");
+    }
+    eprintln!("DEBUG DAE BALANCE COUNTED ORIGIN REASONS TOP:");
+    for entry in balance::balance_origin_reasons(dae).into_iter().take(80) {
+        eprintln!(
+            "  {:>8} cont={:>8} input_only={:>8} {}",
+            entry.continuous_unknown_scalars + entry.input_only_scalars,
+            entry.continuous_unknown_scalars,
+            entry.input_only_scalars,
+            entry.origin
+        );
+    }
+    eprintln!("DEBUG DAE UNCLASSIFIED CONTINUOUS REFS TOP:");
+    for entry in balance::balance_unclassified_refs(dae).into_iter().take(80) {
+        eprintln!("  {:>8} {}", entry.scalar_count, entry.name);
+    }
+    let mut unknowns = std::collections::BTreeMap::<String, usize>::new();
+    for (name, variable) in dae
+        .variables
+        .states
+        .iter()
+        .chain(dae.variables.algebraics.iter())
+        .chain(dae.variables.outputs.iter())
+    {
+        let key = balance_debug_var_prefix(name.as_str());
+        *unknowns.entry(key).or_default() += variable.size();
+    }
+    let mut unknowns = unknowns.into_iter().collect::<Vec<_>>();
+    unknowns.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
+    eprintln!("DEBUG DAE CONTINUOUS UNKNOWN PREFIX SCALARS TOP:");
+    for (prefix, count) in unknowns.into_iter().take(80) {
+        eprintln!("  {count:>8} {prefix}");
+    }
+}
+
+fn balance_debug_origin_key(origin: &str) -> String {
+    if let Some((prefix, _)) = origin.split_once(" for ") {
+        return prefix.to_string();
+    }
+    if let Some((prefix, _)) = origin.split_once(" in ") {
+        return prefix.to_string();
+    }
+    if let Some((prefix, _)) = origin.split_once(':') {
+        return prefix.to_string();
+    }
+    origin.to_string()
+}
+
+fn balance_debug_var_prefix(name: &str) -> String {
+    let mut parts = name.split('.').take(4).collect::<Vec<_>>();
+    if parts.is_empty() {
+        return name.to_string();
+    }
+    while parts.len() > 1 && parts.last().is_some_and(|part| part.contains('[')) {
+        parts.pop();
+    }
+    parts.join(".")
 }
 
 fn ir_boundary_validation_enabled() -> bool {

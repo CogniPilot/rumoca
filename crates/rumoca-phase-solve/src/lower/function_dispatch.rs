@@ -1,4 +1,64 @@
 use super::*;
+use rumoca_ir_solve::ExternalFunctionKind;
+
+fn energyplus_external_function_kind(name: &str) -> Option<ExternalFunctionKind> {
+    match name {
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusSpawnExternalObject)
+        }
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusInitialize)
+        }
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusGetParameters)
+        }
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusExchange)
+        }
+        _ => None,
+    }
+}
+
+fn energyplus_external_arg_is_native_handle(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: true,
+            ..
+        } if name.as_str()
+            == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+    )
+}
+
+fn energyplus_external_arg_name_is_non_numeric_metadata(
+    function_name: &str,
+    arg_name: &str,
+) -> bool {
+    if function_name != "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject" {
+        return false;
+    }
+    matches!(
+        arg_name,
+        "modelicaNameBuilding"
+            | "modelicaInstanceName"
+            | "spawnExe"
+            | "idfVersion"
+            | "idfName"
+            | "epwName"
+            | "epName"
+            | "fmuName"
+            | "buildingsRootFileLocation"
+            | "jsonName"
+            | "jsonKeysValues"
+            | "parOutNames"
+            | "parOutUnits"
+            | "inpNames"
+            | "inpUnits"
+            | "outNames"
+            | "outUnits"
+    )
+}
 
 impl<'a> LowerBuilder<'a> {
     pub(super) fn lower_function_call(
@@ -86,6 +146,11 @@ impl<'a> LowerBuilder<'a> {
             {
                 return Ok(reg);
             }
+            if let Some(reg) =
+                self.try_lower_energyplus_external_call(name, args, caller_scope, call_depth)?
+            {
+                return Ok(reg);
+            }
             return Err(LowerError::Unsupported {
                 reason: format!(
                     "external function call `{}` cannot be inlined",
@@ -113,6 +178,84 @@ impl<'a> LowerBuilder<'a> {
 
             Ok(this.emit_const(0.0))
         })
+    }
+
+    fn try_lower_energyplus_external_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(kind) = energyplus_external_function_kind(name.as_str()) else {
+            return Ok(None);
+        };
+        let scalar_args =
+            self.lower_energyplus_external_scalar_args(name, args, caller_scope, call_depth)?;
+        self.emit_external_call(kind, &scalar_args).map(Some)
+    }
+
+    pub(super) fn try_lower_energyplus_external_call_outputs(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+        output_count: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let Some(kind) = energyplus_external_function_kind(name.as_str()) else {
+            return Ok(None);
+        };
+        let scalar_args =
+            self.lower_energyplus_external_scalar_args(name, args, caller_scope, call_depth)?;
+        let mut outputs = Vec::with_capacity(output_count);
+        for output_index in 0..output_count {
+            outputs.push(self.emit_external_call_output(kind, &scalar_args, output_index)?);
+        }
+        Ok(Some(outputs))
+    }
+
+    fn lower_energyplus_external_scalar_args(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        let (named_args, positional_args) =
+            function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
+        let positional_arg_names = self
+            .lookup_function(name)
+            .map(|function| {
+                function
+                    .inputs
+                    .iter()
+                    .map(|input| input.name.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut scalar_args = Vec::new();
+        for (index, arg) in positional_args.into_iter().enumerate() {
+            if positional_arg_names.get(index).is_some_and(|arg_name| {
+                energyplus_external_arg_name_is_non_numeric_metadata(name.as_str(), arg_name)
+            }) {
+                continue;
+            }
+            if energyplus_external_arg_is_native_handle(arg) {
+                continue;
+            }
+            scalar_args.push(self.lower_expr(arg, caller_scope, call_depth + 1)?);
+        }
+        for (arg_name, arg) in named_args {
+            if arg_name == "adapter"
+                || energyplus_external_arg_name_is_non_numeric_metadata(name.as_str(), &arg_name)
+                || energyplus_external_arg_is_native_handle(arg)
+            {
+                continue;
+            }
+            scalar_args.push(self.lower_expr(arg, caller_scope, call_depth + 1)?);
+        }
+        Ok(scalar_args)
     }
 
     pub(super) fn lookup_function_closure(

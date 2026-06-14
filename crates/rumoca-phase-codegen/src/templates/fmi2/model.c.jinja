@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 {# Configuration for render_expr - C style #}
 {% set c_symbol_policy = {
@@ -21,7 +22,9 @@
         "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
         "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
         "unsigned", "void", "volatile", "while", "inline", "restrict",
-        "m", "t", "time", "i", "n", "arr", "s", "sz", "ModelInstance", "Complex",
+        "m", "t", "time", "i", "n", "arr", "s", "sz", "value", "set", "reset", "suspend",
+        "resume", "active", "localActive", "newActive", "oldActive", "enableFire", "fire",
+        "condition", "t_start", "ModelInstance", "Complex",
         "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
     ]
 } %}
@@ -34,6 +37,7 @@
 {% set solve_pre_param_bindings = solve.solve_layout.pre_param_bindings if solve is defined and solve.solve_layout is defined and solve.solve_layout.pre_param_bindings is defined else [] %}
 {% set solve_derivative_rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else [] %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
+{% set c_builtin_function_names = ["abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "cosh", "exp", "floor", "log", "log10", "round", "sin", "sinh", "sqrt", "tan", "tanh", "trunc"] %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
 
@@ -193,6 +197,16 @@ static int ModelicaStrings_scanInteger(double string, int startIndex, int unsign
 /* ExternalCombiTable constructor stub — returns dummy table ID */
 static double Modelica_Blocks_Types_ExternalCombiTable1D() { return 0.0; }
 static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
+
+#ifndef RUMOCA_SOLVE_EXTERNAL_CALL
+static double __rumoca_solve_external_call_default(const char* function, int output_index, int arg_count, const double* args) {
+    (void)args;
+    fprintf(stderr, "Rumoca solve ExternalCall requires native runtime bridge: %s output_index=%d arg_count=%d\n", function, output_index, arg_count);
+    abort();
+    return NAN;
+}
+#define RUMOCA_SOLVE_EXTERNAL_CALL __rumoca_solve_external_call_default
+#endif
 
 /* Named argument passthrough macros — the __rumoca_named_arg__ prefix is
  * generated for named arguments in external function calls. Strip the prefix
@@ -511,7 +525,7 @@ static void snapshot_pre_parameters(ModelInstance* m) {
  * User-Defined Functions — Forward Declarations
  * ========================================================================= */
 {% for func_name, func in dae.functions | items %}
-{% if func.outputs | length == 1 %}
+{% if func.outputs | length == 1 and not (func_name | last_segment in c_builtin_function_names) %}
 static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p.dims %}const double* {{ symbol(symbols, p.name) }}, int {{ symbol(symbols, p.name) }}_size{% else %}double {{ symbol(symbols, p.name) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %});
 {% endif %}
 {% endfor %}
@@ -520,7 +534,7 @@ static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p
  * User-Defined Functions — Definitions
  * ========================================================================= */
 {% for func_name, func in dae.functions | items %}
-{% if func.outputs | length == 1 %}
+{% if func.outputs | length == 1 and not (func_name | last_segment in c_builtin_function_names) %}
 static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p.dims %}const double* {{ symbol(symbols, p.name) }}, int {{ symbol(symbols, p.name) }}_size{% else %}double {{ symbol(symbols, p.name) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}) {
 {% if is_self_call(func_name, func) %}
     /* Builtin wrapper — delegate to C standard library */
@@ -532,13 +546,11 @@ static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p
 {% endfor %}
     return 0.0;
 {% elif func.external %}
-    /* External {{ func.external.language }} function */
-{% if func.external.output_name %}
-    return {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
-{% else %}
-    {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
-    return {{ symbol(symbols, func.outputs[0].name) }};
-{% endif %}
+    /* External {{ func.external.language }} function — requires native runtime bridge */
+{% for p in func.inputs %}    (void){{ symbol(symbols, p.name) }};
+{% if p.dims %}    (void){{ symbol(symbols, p.name) }}_size;
+{% endif %}{% endfor %}
+    return RUMOCA_SOLVE_EXTERNAL_CALL("{{ func.external.function_name | default(symbol(symbols, func_name)) }}", 0, 0, NULL);
 {% else %}
 {% for p in func.locals %}
 {% if p.dims %}
@@ -553,8 +565,9 @@ static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p
 {% if func.outputs | length > 0 %}
     double {{ symbol(symbols, func.outputs[0].name) }} = 0.0;
 {% endif %}
-{% if func.body | length > 0 %}
-{{ render_statements(func.body, cfg, "    ") }}
+{% set func_body = func["body"] %}
+{% if func_body | length > 0 %}
+{{ render_function_statements(func_body, cfg, "    ", symbol(symbols, func.outputs[0].name)) }}
 {% endif %}
 {% if func.outputs | length > 0 %}
     return {{ symbol(symbols, func.outputs[0].name) }};
@@ -750,12 +763,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
@@ -767,12 +780,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
@@ -859,11 +872,11 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};  /* {{ name }} */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}

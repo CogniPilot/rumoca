@@ -1,0 +1,25 @@
+{
+  "schema": "rumoca.externalDependencies.v1",
+  "model": {{ model_name | json }},
+  "functions": [
+{%- set ns = namespace(first=true) -%}
+{%- for func_name, function in dae.functions | items -%}
+{%- if function.external -%}
+{%- if not ns.first %},{% endif %}
+    {
+      "modelica_function": {{ func_name | json }},
+      "language": {{ function.external.language | json }},
+      "symbol": {{ (function.external.function_name | default(func_name)) | json }},
+      "output": {{ function.external.output_name | default(value="") | json }},
+      "arguments": {{ function.external.arg_names | json }},
+      "libraries": {{ function.external.libraries | json }},
+      "include_directories": {{ function.external.include_directories | json }},
+      "library_directories": {{ function.external.library_directories | json }},
+      "includes": {{ function.external.includes | json }},
+      "annotation": {{ function.external.annotation | json }}
+    }
+{%- set ns.first = false -%}
+{%- endif -%}
+{%- endfor %}
+  ]
+}

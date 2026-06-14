@@ -1,7 +1,8 @@
 use super::{
-    IntegerEvalEnv, MAX_EXPR_EVAL_DEPTH, ast, eval_integer_binary, eval_integer_function_call,
-    evaluate_component_condition_with_depth, try_eval_bool_expr_with_depth_and_locals,
-    try_eval_bool_expr_with_local_values, try_eval_integer_expr_with_depth_and_locals,
+    IntegerEvalEnv, MAX_EXPR_EVAL_DEPTH, ResolveClassComponents, ast, eval_integer_binary,
+    eval_integer_function_call, evaluate_component_condition_with_depth,
+    try_eval_bool_expr_with_depth_and_locals, try_eval_bool_expr_with_local_values,
+    try_eval_integer_expr_with_depth_and_locals,
 };
 use rustc_hash::FxHashMap;
 
@@ -668,10 +669,7 @@ pub fn evaluate_array_dimensions(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &ast::AstIndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> ast::AstIndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> Option<Vec<i64>> {
     // Prefer shape_expr because it reflects active modifications.
     // Fall back to precomputed shape only if expression evaluation fails.
@@ -700,10 +698,7 @@ fn eval_shape_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &ast::AstIndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> ast::AstIndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> Option<Vec<i64>> {
     let mut dims = Vec::with_capacity(shape_expr.len());
     for sub in shape_expr {
@@ -738,10 +733,7 @@ pub fn try_eval_integer_shape_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &ast::AstIndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> ast::AstIndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> Option<i64> {
     try_eval_integer_shape_expr_with_depth(
         expr,
@@ -758,10 +750,7 @@ fn try_eval_integer_shape_expr_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &ast::AstIndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> ast::AstIndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
 ) -> Option<i64> {
     if depth > MAX_EXPR_EVAL_DEPTH {
@@ -848,10 +837,7 @@ fn eval_integer_shape_component_ref(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &ast::AstIndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> ast::AstIndexMap<String, ast::Component>,
+    resolve_class_components: &ResolveClassComponents<'_>,
     depth: usize,
 ) -> Option<i64> {
     if depth > MAX_EXPR_EVAL_DEPTH {
@@ -1343,7 +1329,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
 
         assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(3));
@@ -1379,7 +1365,7 @@ mod tests {
             tree: &tree,
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
 
         assert_eq!(try_eval_integer_expr(&ctx, &expr), None);
@@ -1404,7 +1390,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
         let value = evaluate_component_condition(&ctx, &condition);
 
@@ -1431,7 +1417,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
 
         assert_eq!(evaluate_component_condition(&ctx, &condition), Some(true));
@@ -1454,7 +1440,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
         let value = evaluate_component_condition(&ctx, &condition);
 
@@ -1515,7 +1501,7 @@ mod tests {
             &ast::ModificationEnvironment::new(),
             &components,
             &ast::ClassTree::new(),
-            no_op_resolve_class_components,
+            &no_op_resolve_class_components,
         );
 
         assert_eq!(dims, Some(vec![2]));
@@ -1574,7 +1560,7 @@ mod tests {
             &ast::ModificationEnvironment::new(),
             &components,
             &ast::ClassTree::new(),
-            no_op_resolve_class_components,
+            &no_op_resolve_class_components,
         );
 
         // Non-compile-time condition should keep dimension-expression evaluation
@@ -1601,7 +1587,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
 
         let value = try_eval_integer_expr(
@@ -1637,7 +1623,7 @@ mod tests {
             &ast::ModificationEnvironment::new(),
             &components,
             &ast::ClassTree::new(),
-            no_op_resolve_class_components,
+            &no_op_resolve_class_components,
         );
 
         assert_eq!(dims, Some(vec![2]));
@@ -1696,7 +1682,7 @@ mod tests {
             &mod_env,
             &components,
             &ast::ClassTree::new(),
-            no_op_resolve_class_components,
+            &no_op_resolve_class_components,
         );
 
         assert_eq!(dims, Some(vec![3, 2]));
@@ -1720,7 +1706,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
 
         let value = try_eval_integer_expr(
@@ -1741,7 +1727,7 @@ mod tests {
             tree: &ast::ClassTree::new(),
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
         let value = try_eval_integer_expr(&ctx, &expr);
 
@@ -1786,7 +1772,7 @@ mod tests {
             tree: &tree,
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
 
         assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(2));

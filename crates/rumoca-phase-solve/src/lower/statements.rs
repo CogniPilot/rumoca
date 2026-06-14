@@ -459,6 +459,32 @@ impl<'a> LowerBuilder<'a> {
         rhs: &rumoca_core::Expression,
         const_scope: &IndexMap<String, f64>,
     ) -> Result<f64, LowerError> {
+        if matches!(op, rumoca_core::OpBinary::And) {
+            match self.eval_compile_time_expr(lhs, const_scope) {
+                Ok(value) if value == 0.0 => return Ok(0.0),
+                Ok(_) => {
+                    let rhs = self.eval_compile_time_expr(rhs, const_scope)?;
+                    return Ok(bool_to_f64(rhs != 0.0));
+                }
+                Err(lhs_err) => match self.eval_compile_time_expr(rhs, const_scope) {
+                    Ok(value) if value == 0.0 => return Ok(0.0),
+                    _ => return Err(lhs_err),
+                },
+            }
+        }
+        if matches!(op, rumoca_core::OpBinary::Or) {
+            match self.eval_compile_time_expr(lhs, const_scope) {
+                Ok(value) if value != 0.0 => return Ok(1.0),
+                Ok(_) => {
+                    let rhs = self.eval_compile_time_expr(rhs, const_scope)?;
+                    return Ok(bool_to_f64(rhs != 0.0));
+                }
+                Err(lhs_err) => match self.eval_compile_time_expr(rhs, const_scope) {
+                    Ok(value) if value != 0.0 => return Ok(1.0),
+                    _ => return Err(lhs_err),
+                },
+            }
+        }
         let l = self.eval_compile_time_expr(lhs, const_scope)?;
         let r = self.eval_compile_time_expr(rhs, const_scope)?;
         match op {
@@ -473,8 +499,8 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::OpBinary::Ge => Ok(bool_to_f64(l >= r)),
             rumoca_core::OpBinary::Eq => Ok(bool_to_f64((l - r).abs() < f64::EPSILON)),
             rumoca_core::OpBinary::Neq => Ok(bool_to_f64((l - r).abs() >= f64::EPSILON)),
-            rumoca_core::OpBinary::And => Ok(bool_to_f64(l != 0.0 && r != 0.0)),
-            rumoca_core::OpBinary::Or => Ok(bool_to_f64(l != 0.0 || r != 0.0)),
+            rumoca_core::OpBinary::And => unreachable!("handled before operand evaluation"),
+            rumoca_core::OpBinary::Or => unreachable!("handled before operand evaluation"),
             rumoca_core::OpBinary::Assign | rumoca_core::OpBinary::Empty => {
                 Err(LowerError::Unsupported {
                     reason: "unsupported operator in for-loop range expression".to_string(),
@@ -583,15 +609,25 @@ impl<'a> LowerBuilder<'a> {
         } = expr
         else {
             let dims = self.infer_expr_dims(expr, &Scope::new());
-            return dims
-                .get(dim.saturating_sub(1))
-                .copied()
-                .map(|value| value as f64)
-                .ok_or_else(|| LowerError::Unsupported {
-                    reason: format!(
-                        "size() in for-loop range requires known expression dimension {dim}"
-                    ),
-                });
+            if let Some(value) = dims.get(dim.saturating_sub(1)).copied() {
+                return Ok(value as f64);
+            }
+            if dims.is_empty()
+                && dim == 1
+                && matches!(
+                    expr,
+                    rumoca_core::Expression::Literal { .. }
+                        | rumoca_core::Expression::Empty { .. }
+                        | rumoca_core::Expression::Index { .. }
+                )
+            {
+                return Ok(1.0);
+            }
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "size() in for-loop range requires known expression dimension {dim}"
+                ),
+            });
         };
         if !subscripts.is_empty() {
             return Ok(1.0);

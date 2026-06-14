@@ -50,7 +50,7 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
         mod_env,
         effective_components,
         tree,
-        *resolve_class_components,
+        resolve_class_components,
         None,
         0,
     )?;
@@ -171,7 +171,7 @@ pub fn extract_int_params_with_mods(ctx: &InstantiateEvalCtx) -> FxHashMap<Strin
             mod_env,
             effective_components,
             tree,
-            *resolve_class_components,
+            resolve_class_components,
             0,
         )
     });
@@ -194,7 +194,7 @@ pub fn extract_int_params_with_mods(ctx: &InstantiateEvalCtx) -> FxHashMap<Strin
                 mod_env,
                 effective_components,
                 tree,
-                *resolve_class_components,
+                resolve_class_components,
                 0,
             ) {
                 int_params.insert(dotted_key, value);

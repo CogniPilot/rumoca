@@ -1,0 +1,7 @@
+{%- for _func_name, function in dae.functions | items -%}
+{%- if function.external -%}
+{%- for directory in function.external.include_directories -%}
+{{ directory }}
+{% endfor -%}
+{%- endif -%}
+{%- endfor -%}

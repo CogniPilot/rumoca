@@ -42,6 +42,9 @@ pub(crate) fn is_variant(value: &Value, name: &str) -> bool {
 
 /// Recursively render an expression to a string.
 pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult {
+    if let Ok(inner) = get_field(expr, "expr") {
+        return render_expression(&inner, cfg);
+    }
     if let Ok(binary) = get_field(expr, "Binary") {
         return render_binary(&binary, cfg);
     }
@@ -83,6 +86,9 @@ pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult 
     }
     if let Ok(named) = get_field(expr, "NamedArgument") {
         return render_named_argument(&named, cfg);
+    }
+    if get_field(expr, "parts").is_ok() {
+        return super::render_stmt::render_component_ref(expr, cfg);
     }
     // Unit variants (e.g. Empty) serialize as plain strings, not objects,
     // so get_field() won't match them — check string representation instead.

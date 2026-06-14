@@ -213,6 +213,26 @@ fn inst_008_no_cyclic_binding() {
     );
 }
 
+#[test]
+fn inst_008_bare_self_default_can_be_overridden_by_parent_modifier() {
+    expect_success(
+        r#"
+        model Child
+            parameter Real p = p;
+            Real x;
+        equation
+            x = p;
+        end Child;
+
+        model Test
+            parameter Real p = 2;
+            Child child(p = p);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
 // =============================================================================
 // INST-010: Final immutability
 // "Element defined as final cannot be modified by modification or redeclaration"

@@ -352,6 +352,9 @@ impl AdBuilder {
             | LinearOp::ImpureRandomInteger { .. } => {
                 Err(unsupported("random solve-IR ops are discrete-only"))
             }
+            LinearOp::ExternalCall { .. } => Err(unsupported(
+                "external function solve-IR ops require a native runtime bridge",
+            )),
             LinearOp::Unary { dst, op, arg } => self.lower_unary(dst, op, arg),
             LinearOp::Binary { dst, op, lhs, rhs } => self.lower_binary(dst, op, lhs, rhs),
             LinearOp::Compare { dst, op, lhs, rhs } => self.lower_compare(dst, op, lhs, rhs),

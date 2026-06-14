@@ -456,7 +456,7 @@ fn test_extract_int_params_record_alias_prefers_rebound_field_values() {
         tree: &tree,
         mod_env: &mod_env,
         effective_components: &effective_components,
-        resolve_class_components: resolve_effective_components_for_eval,
+        resolve_class_components: &resolve_effective_components_for_eval,
     };
     let int_params = extract_int_params_with_mods(&eval_ctx);
 
@@ -625,6 +625,85 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
         shared_classes.len(),
         1,
         "late inner resolution should instantiate the shared inner once"
+    );
+    assert_eq!(shared_classes[0].equations.len(), 1);
+}
+
+#[test]
+fn test_multiple_late_outer_refs_share_single_inner_instance() {
+    let state_id = DefId::new(110);
+    let uses_outer_id = DefId::new(111);
+    let root_id = DefId::new(112);
+
+    let state = ast::ClassDef {
+        def_id: Some(state_id),
+        name: make_token("State"),
+        components: [("x".to_string(), make_component("x", "Real", None))]
+            .into_iter()
+            .collect(),
+        equations: vec![make_simple_equation("x", 1)],
+        ..Default::default()
+    };
+
+    let mut outer_shared = make_component("shared", "State", Some(state_id));
+    outer_shared.outer = true;
+    let uses_outer = ast::ClassDef {
+        def_id: Some(uses_outer_id),
+        name: make_token("UsesOuter"),
+        components: [("shared".to_string(), outer_shared)].into_iter().collect(),
+        ..Default::default()
+    };
+
+    let child_a = make_component("childA", "UsesOuter", Some(uses_outer_id));
+    let child_b = make_component("childB", "UsesOuter", Some(uses_outer_id));
+    let mut inner_shared = make_component("shared", "State", Some(state_id));
+    inner_shared.inner = true;
+    let root = ast::ClassDef {
+        def_id: Some(root_id),
+        name: make_token("Root"),
+        components: [
+            ("childA".to_string(), child_a),
+            ("childB".to_string(), child_b),
+            ("shared".to_string(), inner_shared),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("State".to_string(), state);
+    tree.definitions
+        .classes
+        .insert("UsesOuter".to_string(), uses_outer);
+    tree.definitions.classes.insert("Root".to_string(), root);
+    tree.def_map.insert(state_id, "State".to_string());
+    tree.def_map.insert(uses_outer_id, "UsesOuter".to_string());
+    tree.def_map.insert(root_id, "Root".to_string());
+
+    let outcome = instantiate_model_with_outcome(&tree, "Root");
+    let InstantiationOutcome::Success(overlay) = outcome else {
+        panic!("multiple late outer refs should resolve to the declared inner");
+    };
+
+    assert_eq!(
+        overlay.outer_prefix_to_inner.get("childA.shared"),
+        Some(&"shared".to_string())
+    );
+    assert_eq!(
+        overlay.outer_prefix_to_inner.get("childB.shared"),
+        Some(&"shared".to_string())
+    );
+
+    let shared_classes: Vec<_> = overlay
+        .classes
+        .values()
+        .filter(|class| class.qualified_name.to_flat_string() == "shared")
+        .collect();
+    assert_eq!(
+        shared_classes.len(),
+        1,
+        "multiple outer users must not duplicate the shared inner class instance"
     );
     assert_eq!(shared_classes[0].equations.len(), 1);
 }

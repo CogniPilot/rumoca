@@ -656,6 +656,50 @@ end Ball;
     }
 
     #[test]
+    fn test_parse_external_function_annotation() {
+        let source = r#"
+function initialize
+  input Integer adapter;
+  input Boolean isSynchronized;
+  input Integer nObj;
+  external "C" initialize_Modelica_EnergyPlus_9_6_0(adapter, isSynchronized, nObj)
+    annotation(
+      IncludeDirectory="modelica://Buildings/Resources/C-Sources",
+      Library={"ModelicaBuildingsEnergyPlus_9_6_0","fmilib_shared"});
+end initialize;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let function = ast
+            .classes
+            .get("initialize")
+            .expect("function should exist");
+        let external = function.external.as_ref().expect("external declaration");
+
+        assert_eq!(external.language.as_deref(), Some("C"));
+        assert_eq!(
+            external
+                .function_name
+                .as_ref()
+                .map(|token| token.text.as_ref()),
+            Some("initialize_Modelica_EnergyPlus_9_6_0")
+        );
+        assert_eq!(external.args.len(), 3);
+        assert_eq!(external.annotation.len(), 2);
+        assert!(
+            external
+                .annotation
+                .iter()
+                .any(|expr| expr.to_string().contains("IncludeDirectory"))
+        );
+        assert!(
+            external
+                .annotation
+                .iter()
+                .any(|expr| expr.to_string().contains("Library"))
+        );
+    }
+
+    #[test]
     fn test_parse_to_ast_simple() {
         let source = r#"model Test end Test;"#;
         let ast = parse_to_ast(source, "test.mo");

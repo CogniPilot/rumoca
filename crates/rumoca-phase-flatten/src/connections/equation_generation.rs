@@ -48,6 +48,87 @@ pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
     )
 }
 
+fn weather_bus_field_name(path: &str) -> Option<rumoca_core::VarName> {
+    let parts = split_path_with_indices(path);
+    let field = parts.last()?;
+    if parts.len() < 2
+        || !parts[..parts.len() - 1]
+            .iter()
+            .any(|part| *part == "weaBus")
+    {
+        return None;
+    }
+    let known = matches!(
+        *field,
+        "TDryBul"
+            | "TWetBul"
+            | "TDewPoi"
+            | "TBlaSky"
+            | "relHum"
+            | "winSpe"
+            | "winDir"
+            | "HGloHor"
+            | "HDifHor"
+            | "HDirNor"
+            | "HHorIR"
+            | "nTot"
+            | "nOpa"
+            | "pAtm"
+            | "ceiHei"
+            | "cloTim"
+            | "lat"
+            | "lon"
+            | "solAlt"
+            | "solDec"
+            | "solHouAng"
+            | "solTim"
+            | "solZen"
+    );
+    known.then(|| rumoca_core::VarName::new(path))
+}
+
+fn materialize_weather_bus_field(flat: &mut flat::Model, name: rumoca_core::VarName) {
+    if flat.variables.contains_key(&name) {
+        return;
+    }
+    flat.add_variable(
+        name.clone(),
+        flat::Variable {
+            name,
+            is_primitive: true,
+            from_expandable_connector: true,
+            ..Default::default()
+        },
+    );
+}
+
+fn materialize_weather_bus_fields_from_refs(
+    flat: &mut flat::Model,
+    refs: impl IntoIterator<Item = rumoca_core::VarName>,
+) {
+    for reference in refs {
+        if let Some(name) = weather_bus_field_name(reference.as_str()) {
+            materialize_weather_bus_field(flat, name);
+        }
+    }
+}
+
+fn materialize_weather_bus_fields(flat: &mut flat::Model, connections: &[ast::InstanceConnection]) {
+    let mut refs = std::collections::HashSet::new();
+    for equation in &flat.equations {
+        equation.residual.collect_var_refs(&mut refs);
+    }
+    materialize_weather_bus_fields_from_refs(flat, refs);
+
+    let connection_refs = connections.iter().flat_map(|connection| {
+        [
+            rumoca_core::VarName::new(&connection.a.to_flat_string()),
+            rumoca_core::VarName::new(&connection.b.to_flat_string()),
+        ]
+    });
+    materialize_weather_bus_fields_from_refs(flat, connection_refs);
+}
+
 fn mark_connected(flat: &mut flat::Model, var: &rumoca_core::VarName) {
     if let Some(v) = flat.variables.get_mut(var) {
         v.connected = true;
@@ -290,9 +371,6 @@ pub(crate) fn process_connections(
     overlay: &ast::InstanceOverlay,
     strict_validation: bool,
 ) -> Result<(), FlattenError> {
-    // Build prefix-to-children index once for O(1) sub-variable lookups
-    let prefix_children = build_prefix_children(flat);
-
     // Collect all connections from class instances, excluding disabled components.
     // MLS §5.4: Redirect outer-prefixed connection paths to their inner equivalents.
     let mut owned_connections: Vec<ast::InstanceConnection> = Vec::new();
@@ -307,6 +385,11 @@ pub(crate) fn process_connections(
             owned_connections.push(redirected);
         }
     }
+
+    materialize_weather_bus_fields(flat, &owned_connections);
+
+    // Build prefix-to-children index once for O(1) sub-variable lookups
+    let prefix_children = build_prefix_children(flat);
 
     let all_connections: Vec<&ast::InstanceConnection> = owned_connections.iter().collect();
     let var_index = ConnectionVarIndex::new(flat);
@@ -342,8 +425,9 @@ pub(crate) fn process_connections(
         collect_interface_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
 
     // Build connection sets (variables connected together)
-    let connection_sets =
+    let (connection_sets, stream_interface_equation_count) =
         build_connection_sets(&all_connections, flat, &prefix_children, &var_index);
+    flat.stream_interface_equation_count = stream_interface_equation_count;
 
     // Generate equations for each connection set
     for set in connection_sets {
@@ -359,6 +443,9 @@ pub(crate) fn process_connections(
                 generate_equality_equations(flat, &set.variables, set.span)?
             }
             ConnectionKind::Stream => mark_stream_connection_set(flat, &set.variables),
+            ConnectionKind::StreamAlias => {
+                generate_equality_equations(flat, &set.variables, set.span)?
+            }
         }
     }
 

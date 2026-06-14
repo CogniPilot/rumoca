@@ -574,6 +574,13 @@ pub struct DaeMetadata {
     #[serde(default)]
     pub interface_flow_count: usize,
 
+    /// Count of outside stream connector equations (MLS §15.1).
+    ///
+    /// These equations belong to stream `inStream`/`actualStream` semantics and
+    /// are tracked separately from ordinary connection equality equations.
+    #[serde(default)]
+    pub stream_interface_equation_count: usize,
+
     /// Overconstrained interface balance correction (MLS §4.8, §9.4).
     ///
     /// For overconstrained connector types (e.g., QuasiStatic Reference), this is:

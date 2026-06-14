@@ -164,17 +164,28 @@ pub(super) fn shift_modifications_down(ctx: &mut InstantiateContext, comp_name: 
 ///
 /// MLS §7.3: `redeclare package Medium = Medium` inside component modifiers should
 /// forward to the enclosing class's active `Medium` redeclare, not the local default.
+fn class_modification_expr(mod_expr: &ast::Expression) -> Option<&ast::Expression> {
+    match mod_expr {
+        ast::Expression::ClassModification { .. } => Some(mod_expr),
+        ast::Expression::Modification { value, .. } => class_modification_expr(value),
+        _ => None,
+    }
+}
+
 pub(super) fn remap_redeclare_class_modifier(
     mod_expr: &ast::Expression,
     target_name: &str,
     type_overrides: &TypeOverrideMap,
 ) -> ast::Expression {
+    let Some(class_mod) = class_modification_expr(mod_expr) else {
+        return mod_expr.clone();
+    };
     let ast::Expression::ClassModification {
         target,
         modifications,
         span,
         ..
-    } = mod_expr
+    } = class_mod
     else {
         return mod_expr.clone();
     };
@@ -195,18 +206,34 @@ pub(super) fn remap_redeclare_class_modifier(
 
     let mut remapped_target = target.clone();
     remapped_target.def_id = Some(override_def_id);
-    ast::Expression::ClassModification {
+    let remapped_class_mod = ast::Expression::ClassModification {
         target: remapped_target,
         modifications: modifications.clone(),
         each_flags: Vec::new(),
         final_flags: Vec::new(),
         redeclare_flags: Vec::new(),
         span: *span,
+    };
+
+    match mod_expr {
+        ast::Expression::Modification {
+            target: outer_target,
+            span: outer_span,
+            ..
+        } => ast::Expression::Modification {
+            target: outer_target.clone(),
+            value: std::sync::Arc::new(remapped_class_mod),
+            span: *outer_span,
+        },
+        _ => remapped_class_mod,
     }
 }
 
 fn is_self_forwarding_redeclare(mod_expr: &ast::Expression, target_name: &str) -> bool {
-    let ast::Expression::ClassModification { target, .. } = mod_expr else {
+    let Some(class_mod) = class_modification_expr(mod_expr) else {
+        return false;
+    };
+    let ast::Expression::ClassModification { target, .. } = class_mod else {
         return false;
     };
     target
@@ -228,7 +255,7 @@ pub(super) fn resolve_component_nested_type_overrides(
     type_overrides: &TypeOverrideMap,
 ) -> InstantiateResult<NestedTypeOverrides> {
     let mut class_overrides =
-        extract_component_class_overrides(tree, comp, class_def, Some(mod_env))?;
+        extract_component_class_overrides(tree, comp, class_def, Some(mod_env), type_overrides)?;
     let mut has_forwarding_class_redeclare = false;
 
     if let Some(target_class) = class_def {
@@ -277,7 +304,8 @@ pub(super) fn resolve_component_nested_type_overrides(
 }
 
 fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {
-    let ast::Expression::ClassModification { target, .. } = mod_expr else {
+    let class_mod = class_modification_expr(mod_expr)?;
+    let ast::Expression::ClassModification { target, .. } = class_mod else {
         return None;
     };
     Some(target.clone())
