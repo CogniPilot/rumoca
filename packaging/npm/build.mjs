@@ -118,18 +118,23 @@ const ensureLicenseInBindCrate = async () => {
   }
 };
 
+// The hand-written JS runtime that ships alongside the crate's wasm-bindgen
+// output lives next to the Rust at crates/rumoca-bind-wasm/js/ (it version-locks
+// with the crate's API and is the package's runtime, not playground app code).
+const wasmJsDir = path.join(repoRoot, "crates", "rumoca-bind-wasm", "js");
+
 const copyEditorWorkers = async (pkgDir) => {
   await fs.copyFile(
-    path.join(repoRoot, "editors", "wasm", "rumoca_worker.js"),
+    path.join(wasmJsDir, "rumoca_worker.js"),
     path.join(pkgDir, "rumoca_worker.js"),
   );
   await fs.copyFile(
-    path.join(repoRoot, "editors", "wasm", "parse_worker.js"),
+    path.join(wasmJsDir, "parse_worker.js"),
     path.join(pkgDir, "parse_worker.js"),
   );
   // WebGPU RK4 driver, exposed to consumers as `@cognipilot/rumoca/gpu`.
   await fs.copyFile(
-    path.join(repoRoot, "editors", "wasm", "rumoca_gpu.js"),
+    path.join(wasmJsDir, "rumoca_gpu.js"),
     path.join(pkgDir, "rumoca_gpu.js"),
   );
 };
@@ -166,7 +171,7 @@ const buildDiffsolAddon = async (pkgDir, args) => {
   // The driver (feature-detect + lazy-load + dispatch), exposed as
   // `@cognipilot/rumoca/diffsol`.
   await fs.copyFile(
-    path.join(repoRoot, "editors", "wasm", "rumoca_diffsol.js"),
+    path.join(wasmJsDir, "rumoca_diffsol.js"),
     path.join(pkgDir, "rumoca_diffsol.js"),
   );
   await fs.rm(tmpDir, { recursive: true, force: true });

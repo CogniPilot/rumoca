@@ -1665,7 +1665,10 @@ pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
         "editors/wasm/src/modules/diagnostics_panel.js",
         "editors/wasm/src/modules/monaco_setup.js",
         "editors/wasm/src/modules/modelica_language.js",
-        "editors/wasm/rumoca_worker.js",
+        "crates/rumoca-bind-wasm/js/rumoca_worker.js",
+        "crates/rumoca-bind-wasm/js/parse_worker.js",
+        "crates/rumoca-bind-wasm/js/rumoca_gpu.js",
+        "crates/rumoca-bind-wasm/js/rumoca_diffsol.js",
         "docs/user-guide/live/rumoca-live.js",
     ];
     for file in js_checks {
