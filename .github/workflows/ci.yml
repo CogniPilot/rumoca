@@ -1283,20 +1283,14 @@ jobs:
           echo "=== Release assets ==="
           ls -la release-assets/
 
-      # Create GitHub Release (idempotent: a re-run after a later step failed,
-      # e.g. a transient npm/PyPI publish error, must not abort on an
-      # already-existing release).
+      # Create GitHub Release. Deploy is gated to the tag-push event (see the
+      # job `if:` above), so this runs exactly once per release and a fresh tag
+      # never collides with an existing release.
       - name: Create GitHub Release
         run: |
-          set -euo pipefail
-          tag='${{ steps.tag.outputs.name }}'
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; skipping creation."
-          else
-            gh release create "$tag" \
-              --title "Release $tag" \
-              --generate-notes
-          fi
+          gh release create ${{ steps.tag.outputs.name }} \
+            --title "Release ${{ steps.tag.outputs.name }}" \
+            --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

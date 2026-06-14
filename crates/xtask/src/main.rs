@@ -278,9 +278,14 @@ struct ReleaseArgs {
     /// Create git tag vX.Y.Z
     #[arg(long)]
     tag: bool,
-    /// Push main and tag in one git push (implies --commit --tag)
+    /// Phase 1: commit the version bump and push it to main (implies --commit).
+    /// Does not tag; deploy is driven by the tag push in phase 2.
     #[arg(long)]
     push: bool,
+    /// Phase 2: tag the (already-pushed) release commit and push only the tag
+    /// (implies --tag). The tag push is what triggers the release/deploy CI.
+    #[arg(long)]
+    push_tag: bool,
 }
 
 #[derive(Debug, Args, Clone)]
