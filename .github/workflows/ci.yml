@@ -870,11 +870,10 @@ jobs:
 
   deploy-pages:
     name: Deploy Pages
-    # Publish the docs/WASM site only on a release (a v* tag on the commit),
-    # not on every main merge. detect-release-tag resolves the tag via
-    # `git tag --points-at`, so this fires for both the co-pushed main+tag
-    # release and a tag pushed onto an already-merged commit.
-    if: github.event_name == 'push' && needs.detect-release-tag.outputs.is_release == 'true'
+    # Publish the docs/WASM site only on a release. Gated to the tag-push event
+    # (not the co-pushed main branch ref) so a `git push origin main vX.Y.Z`
+    # deploys exactly once instead of racing a duplicate from the branch push.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
     needs: [detect-release-tag, build-wasm]
     runs-on: ubuntu-24.04
     environment:
@@ -1142,7 +1141,11 @@ jobs:
   # ============================================================================
   deploy:
     name: Deploy
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.detect-release-tag.outputs.is_release == 'true'
+    # Gated to the tag-push event only. A release pushes main and the v* tag
+    # together, which fires two CI runs (branch + tag); deploying on both made
+    # the second run fail on "Release.tag_name already exists". Tag-only means
+    # the release/publish path runs exactly once.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
     needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
@@ -1280,12 +1283,20 @@ jobs:
           echo "=== Release assets ==="
           ls -la release-assets/
 
-      # Create GitHub Release
+      # Create GitHub Release (idempotent: a re-run after a later step failed,
+      # e.g. a transient npm/PyPI publish error, must not abort on an
+      # already-existing release).
       - name: Create GitHub Release
         run: |
-          gh release create ${{ steps.tag.outputs.name }} \
-            --title "Release ${{ steps.tag.outputs.name }}" \
-            --generate-notes
+          set -euo pipefail
+          tag='${{ steps.tag.outputs.name }}'
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping creation."
+          else
+            gh release create "$tag" \
+              --title "Release $tag" \
+              --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
