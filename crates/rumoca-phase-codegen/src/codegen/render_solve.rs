@@ -55,11 +55,11 @@ impl Object for SolveRowsValue {
 /// element is a `SolveStencilValue` the stencil renderer can downcast.
 #[derive(Debug)]
 pub(super) struct SolveStencilsValue {
-    families: Arc<Vec<super::stencil::AffineRowFamily>>,
+    families: Arc<Vec<RenderAffineStencil>>,
 }
 
 impl SolveStencilsValue {
-    pub(super) fn new(families: Vec<super::stencil::AffineRowFamily>) -> Self {
+    pub(super) fn new(families: Vec<RenderAffineStencil>) -> Self {
         Self {
             families: Arc::new(families),
         }
@@ -88,12 +88,12 @@ impl Object for SolveStencilsValue {
 
 #[derive(Debug)]
 pub(super) struct SolveStencilValue {
-    families: Arc<Vec<super::stencil::AffineRowFamily>>,
+    families: Arc<Vec<RenderAffineStencil>>,
     index: usize,
 }
 
 impl SolveStencilValue {
-    fn family(&self) -> &super::stencil::AffineRowFamily {
+    fn family(&self) -> &RenderAffineStencil {
         &self.families[self.index]
     }
 }
@@ -125,6 +125,15 @@ pub(super) fn render_solve_stencil_wgsl_function(stencil: Value, config: Value) 
         ));
     };
     render_stencil_family_expr_wgsl(stencil.family(), &config)
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RenderAffineStencil {
+    pub(super) start_row: usize,
+    pub(super) count: usize,
+    pub(super) base_ops: Vec<solve::LinearOp>,
+    pub(super) load_strides: Vec<solve::AffineStencilLoadStride>,
+    pub(super) const_strides: Vec<solve::AffineStencilConstStride>,
 }
 
 #[derive(Debug)]
@@ -862,17 +871,14 @@ fn render_solve_row_for(
 /// row offset `r` (a `u32` in the emitting kernel): loads with stride 0
 /// keep their literal index; stride 1 renders `base + r`; larger strides
 /// render `base + r * stride`.
-fn render_stencil_family_expr_wgsl(
-    family: &super::stencil::AffineRowFamily,
-    config: &Value,
-) -> RenderResult {
+fn render_stencil_family_expr_wgsl(family: &RenderAffineStencil, config: &Value) -> RenderResult {
     let cfg = SolveRowCConfig::from_value(config);
     let mut overrides = std::collections::HashMap::new();
-    for &(position, stride) in &family.load_strides {
-        if stride == 0 {
+    for stride in &family.load_strides {
+        if stride.stride == 0 {
             continue;
         }
-        let (pattern_is_y, base_index) = match &family.base_ops[position] {
+        let (pattern_is_y, base_index) = match &family.base_ops[stride.op_position] {
             solve::LinearOp::LoadY { index, .. } => (true, *index),
             solve::LinearOp::LoadP { index, .. } => (false, *index),
             other => {
@@ -881,17 +887,36 @@ fn render_stencil_family_expr_wgsl(
                 )));
             }
         };
-        let index_expr = if stride == 1 {
+        let index_expr = if stride.stride == 1 {
             format!("{base_index}u + r")
         } else {
-            format!("{base_index}u + r * {stride}u")
+            format!("{}u + r * {}u", base_index, stride.stride)
         };
         let access = if pattern_is_y {
             cfg.y_access_expr(&index_expr)
         } else {
             cfg.p_access_expr(&index_expr)
         };
-        overrides.insert(position, access);
+        overrides.insert(stride.op_position, access);
+    }
+    for stride in &family.const_strides {
+        if stride.stride == 0.0 {
+            continue;
+        }
+        let base_value = match &family.base_ops[stride.op_position] {
+            solve::LinearOp::Const { value, .. } => *value,
+            other => {
+                return Err(render_err(format!(
+                    "stencil const stride targets a non-const op: {other:?}"
+                )));
+            }
+        };
+        let value_expr = if stride.stride == 1.0 {
+            format!("{base_value:?} + f32(r)")
+        } else {
+            format!("{base_value:?} + f32(r) * {:?}", stride.stride)
+        };
+        overrides.insert(stride.op_position, value_expr);
     }
     render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
 }
@@ -918,10 +943,12 @@ fn render_solve_row_typed_with_overrides(
     for (position, op) in ops.iter().enumerate() {
         if let Some(access) = access_overrides.get(&position) {
             let dst = match op {
-                solve::LinearOp::LoadY { dst, .. } | solve::LinearOp::LoadP { dst, .. } => *dst,
+                solve::LinearOp::LoadY { dst, .. }
+                | solve::LinearOp::LoadP { dst, .. }
+                | solve::LinearOp::Const { dst, .. } => *dst,
                 other => {
                     return Err(render_err(format!(
-                        "stencil access override targets a non-load op: {other:?}"
+                        "stencil override targets a non-load/non-const op: {other:?}"
                     )));
                 }
             };

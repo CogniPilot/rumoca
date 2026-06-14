@@ -62,6 +62,53 @@ fn solve_problem_with_scalar_derivative_rows() -> solve::SolveProblem {
     problem
 }
 
+fn solve_problem_with_affine_stencil_derivative() -> solve::SolveProblem {
+    let mut problem = solve::SolveProblem::default();
+    problem.continuous.derivative_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::AffineStencil {
+            count: 8,
+            domain: solve::AffineStencilDomain {
+                index_names: vec!["i".to_string()],
+                iterations: (0..8)
+                    .map(|idx| solve::AffineStencilIteration {
+                        index_values: vec![idx + 1],
+                    })
+                    .collect(),
+            },
+            base_ops: vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::LoadY { dst: 1, index: 0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::Unary {
+                    dst: 3,
+                    op: solve::UnaryOp::Neg,
+                    arg: 2,
+                },
+                solve::LinearOp::StoreOutput { src: 3 },
+            ],
+            load_strides: vec![
+                solve::AffineStencilLoadStride {
+                    op_position: 0,
+                    stride: 0,
+                },
+                solve::AffineStencilLoadStride {
+                    op_position: 1,
+                    stride: 1,
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span: rumoca_core::Span::DUMMY,
+        }],
+    };
+    problem
+}
+
 #[test]
 fn test_wgsl_solve_builtin_target_renders_row_parallel_kernel() {
     let problem = solve_problem_with_scalar_derivative_rows();
@@ -84,6 +131,27 @@ fn test_wgsl_solve_builtin_target_renders_row_parallel_kernel() {
     assert!(
         !rendered.contains(" ? "),
         "WGSL output must not contain C ternaries: {rendered}"
+    );
+}
+
+#[test]
+fn test_wgsl_solve_builtin_target_renders_native_stencil_kernel() {
+    let problem = solve_problem_with_affine_stencil_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("wgsl-solve", "model_solve.wgsl.jinja"),
+        "StencilDemo",
+    )
+    .expect("wgsl-solve template should render native stencil node");
+
+    assert!(rendered.contains("fn derivative_rhs_stencil0"));
+    assert!(rendered.contains("const ROWS: u32 = 8u;"));
+    assert!(rendered.contains("out[0u + r] = (-(((p[0]) * (y[0u + r]))));"));
+    assert!(
+        !rendered.contains("fn derivative_rhs_chunk0"),
+        "pure stencil block should not emit residual chunk: {rendered}"
     );
 }
 
@@ -123,4 +191,24 @@ fn test_wgsl_solve_layout_manifest_renders_bindings() {
     assert_eq!(parsed["kernel_prefix"], "derivative_rhs_chunk");
     assert_eq!(parsed["chunks"], 1);
     assert_eq!(parsed["rows"], 2);
+}
+
+#[test]
+fn test_wgsl_solve_layout_manifest_reports_native_stencil_kernel() {
+    let problem = solve_problem_with_affine_stencil_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("wgsl-solve", "model_layout.json.jinja"),
+        "StencilDemo",
+    )
+    .expect("wgsl-solve layout manifest should render native stencil node");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&rendered).expect("layout manifest must be valid JSON");
+    assert_eq!(parsed["rows"], 8);
+    assert_eq!(parsed["chunks"], 0);
+    assert_eq!(parsed["kernels"][0]["entry"], "derivative_rhs_stencil0");
+    assert_eq!(parsed["kernels"][0]["rows"], 8);
 }

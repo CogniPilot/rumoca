@@ -134,7 +134,9 @@ fn solve_render_context_value_with_dae(
     let solve_value = Value::from_serialize(solve_problem);
     let artifacts_value = Value::from_serialize(artifacts);
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
-    let derivative_nodes = Value::from_serialize(&solve_problem.continuous.derivative_rhs.nodes);
+    let derivative_nodes = Value::from_serialize(c_renderable_derivative_nodes(
+        &solve_problem.continuous.derivative_rhs,
+    ));
     let implicit_rows =
         rumoca_eval_solve::to_scalar_program_block(&solve_problem.continuous.implicit_rhs);
     // Jacobian rows prefer the full AD jacobian (state + parameter seed
@@ -176,4 +178,29 @@ fn solve_render_context_value_with_dae(
             solve_jacobian_rows => jacobian_rows,
         },
     })
+}
+
+pub(super) fn c_renderable_derivative_nodes(
+    block: &solve::ComputeBlock,
+) -> Vec<solve::ComputeNode> {
+    block
+        .nodes
+        .iter()
+        .filter_map(c_renderable_derivative_node)
+        .collect()
+}
+
+fn c_renderable_derivative_node(node: &solve::ComputeNode) -> Option<solve::ComputeNode> {
+    match node {
+        solve::ComputeNode::MatMul { .. } | solve::ComputeNode::ScalarPrograms(_) => {
+            Some(node.clone())
+        }
+        _ => {
+            let block = solve::ComputeBlock {
+                nodes: vec![node.clone()],
+            };
+            let scalar = rumoca_eval_solve::to_scalar_program_block(&block);
+            (!scalar.is_empty()).then_some(solve::ComputeNode::ScalarPrograms(scalar))
+        }
+    }
 }

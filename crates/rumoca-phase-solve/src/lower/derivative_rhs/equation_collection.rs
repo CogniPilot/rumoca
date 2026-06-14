@@ -7,7 +7,7 @@ pub(in crate::lower) fn collect_derivative_equations(
 ) -> Result<(Vec<DerivativeEquation>, Vec<bool>), LowerError> {
     let mut equations = Vec::new();
     let mut flags = Vec::with_capacity(dae_model.continuous.equations.len());
-    for equation in &dae_model.continuous.equations {
+    for (equation_index, equation) in dae_model.continuous.equations.iter().enumerate() {
         let before = equations.len();
         if let Some(projected) =
             function_projected_residuals(&equation.rhs, dae_model, structural_bindings)?
@@ -20,6 +20,7 @@ pub(in crate::lower) fn collect_derivative_equations(
                     dae_model,
                     structural_bindings,
                     Some(1),
+                    equation_index,
                 );
             }
             flags.push(equations.len() > before);
@@ -32,6 +33,7 @@ pub(in crate::lower) fn collect_derivative_equations(
             dae_model,
             structural_bindings,
             Some(equation.scalar_count),
+            equation_index,
         );
         flags.push(equations.len() > before);
     }
@@ -45,6 +47,7 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     scalar_count: Option<usize>,
+    source_equation_index: usize,
 ) {
     if let Some(mut rows) = derivative_equations_from_residual(
         residual,
@@ -53,6 +56,9 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
         structural_bindings,
         scalar_count,
     ) {
+        for row in &mut rows {
+            row.source_equation_index = Some(source_equation_index);
+        }
         equations.append(&mut rows);
     }
 }
@@ -300,6 +306,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
                 coefficients,
                 rhs: rhs_without_remainder(rhs.clone(), remainder),
                 span: residual.span().unwrap_or(rumoca_core::Span::DUMMY),
+                source_equation_index: None,
             });
         }
         if let Some((coefficients, remainder)) = derivative_linear_parts(rhs, ctx)
@@ -309,6 +316,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
                 coefficients,
                 rhs: rhs_without_remainder(lhs.clone(), remainder),
                 span: residual.span().unwrap_or(rumoca_core::Span::DUMMY),
+                source_equation_index: None,
             });
         }
     }
@@ -317,6 +325,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
             coefficients,
             rhs: rhs_without_remainder(zero_expr(), remainder),
             span: residual.span().unwrap_or(rumoca_core::Span::DUMMY),
+            source_equation_index: None,
         });
     }
     None
@@ -644,6 +653,7 @@ pub(in crate::lower) fn build_affine_vector_derivative_equations(
                     coefficients: IndexMap::from([(key, coefficient_values[idx].clone())]),
                     rhs,
                     span,
+                    source_equation_index: None,
                 }
             })
             .collect(),
@@ -811,6 +821,7 @@ pub(in crate::lower) fn build_matrix_derivative_equations(
                 coefficients,
                 rhs,
                 span,
+                source_equation_index: None,
             })
             .collect(),
     )

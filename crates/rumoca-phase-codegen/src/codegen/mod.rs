@@ -843,12 +843,9 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     let uses_linear_solve = scalar_program_block_uses_linear_solve_component(&scalar_programs);
     let nodes = Value::from_serialize(&block.nodes);
     let program_spans = Value::from_serialize(&scalar_programs.program_spans);
-    // Affine row families (stencils) let GPU backends emit one parametric
-    // kernel per family instead of one switch case per row; rows not in a
-    // family stay addressable through `stencil_residual_rows`.
-    let partition = stencil::partition_rows(&scalar_programs.programs);
-    let stencil_residual_rows = Value::from_serialize(&partition.residual_rows);
-    let stencils = Value::from_object(render_solve::SolveStencilsValue::new(partition.families));
+    let (stencils, residual_rows) = stencil_template_partition(block);
+    let stencil_residual_rows = Value::from_serialize(&residual_rows);
+    let stencils = Value::from_object(render_solve::SolveStencilsValue::new(stencils));
     // Rows go to templates as typed objects: per-row serde bridging made
     // rendering the dominant compile cost on large models.
     let programs = Value::from_object(render_solve::SolveRowsValue::new(scalar_programs.programs));
@@ -864,6 +861,43 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
         tensor_node_count => block.tensor_node_count(),
         scalar_programs_use_linear_solve_component => uses_linear_solve,
     })
+}
+
+fn stencil_template_partition(
+    block: &solve::ComputeBlock,
+) -> (Vec<render_solve::RenderAffineStencil>, Vec<usize>) {
+    let mut stencils = Vec::new();
+    let mut residual_rows = Vec::new();
+    let mut start_row = 0;
+    for node in &block.nodes {
+        match node {
+            solve::ComputeNode::AffineStencil {
+                count,
+                base_ops,
+                load_strides,
+                const_strides,
+                ..
+            } => {
+                stencils.push(render_solve::RenderAffineStencil {
+                    start_row,
+                    count: *count,
+                    base_ops: base_ops.clone(),
+                    load_strides: load_strides.clone(),
+                    const_strides: const_strides.clone(),
+                });
+                start_row += count;
+            }
+            other => {
+                let len = solve::ComputeBlock {
+                    nodes: vec![other.clone()],
+                }
+                .len();
+                residual_rows.extend(start_row..start_row + len);
+                start_row += len;
+            }
+        }
+    }
+    (stencils, residual_rows)
 }
 
 fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
@@ -993,7 +1027,7 @@ pub fn render_template_with_dae_json(
         dae_value.clone()
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json);
+    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
     let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
@@ -1026,7 +1060,7 @@ pub fn render_template_with_dae_json_and_name(
         dae_value.clone()
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json);
+    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
     let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
     let tmpl = env.get_template("inline")?;
     let result = tmpl.render(minijinja::context! {
@@ -1093,12 +1127,20 @@ fn solve_artifacts_for_template_blocks(
     Ok(artifacts)
 }
 
-fn solve_derivative_nodes_from_dae_json(dae_json: &serde_json::Value) -> Value {
-    Value::from_serialize(
-        dae_json
-            .pointer("/solve/continuous/derivative_rhs/nodes")
-            .unwrap_or(&serde_json::Value::Array(Vec::new())),
-    )
+fn solve_derivative_nodes_from_dae_json(
+    dae_json: &serde_json::Value,
+) -> Result<Value, CodegenError> {
+    let Some(nodes) = dae_json.pointer("/solve/continuous/derivative_rhs/nodes") else {
+        return Ok(Value::from_serialize(Vec::<serde_json::Value>::new()));
+    };
+    let block_json = serde_json::json!({ "nodes": nodes });
+    let block: solve::ComputeBlock =
+        serde_json::from_value(block_json).map_err(|err| CodegenError::SerializationFailed {
+            message: format!("Solve derivative nodes template context: {err}"),
+        })?;
+    Ok(Value::from_serialize(
+        solve_renderer::c_renderable_derivative_nodes(&block),
+    ))
 }
 
 fn solve_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
@@ -1875,8 +1917,6 @@ mod local_tests {
     }
 }
 
-mod stencil;
-
 mod solve_renderer;
 pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;
@@ -1885,6 +1925,8 @@ use solve_renderer::solve_render_context_value;
 mod codegen_tests;
 #[cfg(test)]
 mod fmi_template_tests;
+#[cfg(test)]
+mod stencil_codegen_tests;
 #[cfg(test)]
 mod strict_render_tests;
 #[cfg(test)]

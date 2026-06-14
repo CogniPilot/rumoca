@@ -258,6 +258,17 @@ impl SolveVisitor for JacSparsityVisitor {
                 }
                 self.row_offset += n;
             }
+
+            ComputeNode::AffineStencil {
+                base_ops, count, ..
+            } => {
+                let reg_seeds = seeds_affecting_regs(base_ops);
+                let row_seeds = sorted_unique_seeds_from_regs(&reg_seeds);
+                for out_row in self.row_offset..self.row_offset + count {
+                    push_row_for_seeds(&mut self.column_rows, row_seeds.iter().copied(), out_row);
+                }
+                self.row_offset += count;
+            }
         }
         Ok(())
     }
