@@ -18,65 +18,7 @@ const RESULTS_RUNTIME_STYLE: &str = concat!(
     "font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }",
     "#resultsRoot { height: 100%; }",
 );
-const RESULTS_STATE_STORAGE_HELPERS_JS: &str = r#"
-const root = document.getElementById('resultsRoot');
-const storageKey = ['rumoca-results', window.location.pathname || 'inline', modelName, 'state'].join(':');
-function readStoredJson(key) {
-  try {
-    const raw = globalThis.localStorage ? globalThis.localStorage.getItem(key) : null;
-    return raw ? JSON.parse(raw) : null;
-  } catch (_) {
-    return null;
-  }
-}
-function writeStoredJson(key, value) {
-  if (!globalThis.localStorage) return;
-  try {
-    globalThis.localStorage.setItem(key, JSON.stringify(value));
-  } catch (_) {
-    // ignore storage failures
-  }
-}
-function cloneView(view) {
-  return Object.assign({}, view || {}, {
-    y: Array.isArray(view && view.y) ? [...view.y] : [],
-    scatterSeries: Array.isArray(view && view.scatterSeries)
-      ? view.scatterSeries.map((series) => Object.assign({}, series))
-      : undefined,
-  });
-}
-"#;
-const RESULTS_READ_ONLY_BRIDGE_JS: &str = r#"
-const persistedState = readStoredJson(storageKey) || {};
-const bridge = {
-  notify(message) {
-    if (message) {
-      console.info('[rumoca-results]', message);
-    }
-  },
-  persistState(nextState) {
-    writeStoredJson(storageKey, Object.assign({}, readStoredJson(storageKey) || {}, nextState || {}));
-  },
-};
-"#;
-const RESULTS_APP_MOUNT_JS: &str = r#"
-const app = globalThis.RumocaResultsApp.createResultsApp({
-  root,
-  model: modelName,
-  modelRef: { model: modelName },
-  payload: runPayload,
-  views: configuredViews,
-  metrics: runMetrics,
-  activeViewId: typeof persistedState.activeViewId === 'string' ? persistedState.activeViewId : undefined,
-  bridge,
-  allowViewEditing: false,
-});
-window.addEventListener('beforeunload', () => {
-  if (app && typeof app.dispose === 'function') {
-    app.dispose();
-  }
-});
-"#;
+const RESULTS_MOUNT_JS: &str = include_str!("../web/results_mount.js");
 
 pub struct ResultsHtmlDocument<'a> {
     pub model_name: &'a str,
@@ -149,6 +91,7 @@ fn build_results_html_body(bootstrap_script: &str) -> String {
          <script>{UPLOT_JS}</script>\n\
          <script>{VISUALIZATION_SHARED_JS}</script>\n\
          <script>{RESULTS_APP_JS}</script>\n\
+         <script>{RESULTS_MOUNT_JS}</script>\n\
          <script>\n{bootstrap_script}\n</script>\n\
          </body>"
     )
@@ -156,13 +99,13 @@ fn build_results_html_body(bootstrap_script: &str) -> String {
 
 fn build_bootstrap_script(inline: &InlineJsonBindings) -> String {
     format!(
-        "const modelName = {model_json};\n\
-         const runPayload = {payload_json};\n\
-         const configuredViews = {views_json};\n\
-         const runMetrics = {metrics_json};\n\
-         {RESULTS_STATE_STORAGE_HELPERS_JS}\n\
-         {RESULTS_READ_ONLY_BRIDGE_JS}\n\
-         {RESULTS_APP_MOUNT_JS}",
+        "globalThis.RumocaResultsReport.mount({{\n\
+         root: document.getElementById('resultsRoot'),\n\
+         model: {model_json},\n\
+         payload: {payload_json},\n\
+         views: {views_json},\n\
+         metrics: {metrics_json},\n\
+         }});",
         model_json = inline.model_json,
         payload_json = inline.payload_json,
         views_json = inline.views_json,
