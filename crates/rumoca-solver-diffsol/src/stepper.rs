@@ -5,10 +5,7 @@
 use diffsol::{OdeSolverMethod, VectorHost};
 use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
 use rumoca_ir_solve as solve;
-use rumoca_solver::{
-    SimOptions, event_solver_step_cap, implicit_residual_is_zero_through_interval,
-    runtime_root_event_application_time,
-};
+use rumoca_solver::{SimOptions, event_solver_step_cap, runtime_root_event_application_time};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -488,9 +485,9 @@ where
 
 fn step_solver_by<Eqn, S>(
     solver: &Rc<RefCell<S>>,
-    model: &OdeModel,
-    params: &RuntimeParameters,
-    opts: &SimOptions,
+    _model: &OdeModel,
+    _params: &RuntimeParameters,
+    _opts: &SimOptions,
     dt: f64,
 ) -> Result<StepAdvance, SimError>
 where
@@ -506,30 +503,39 @@ where
         solver.state().t
     };
     let target = current_t + dt;
-    {
-        let solver_ref = solver.borrow();
-        let params_ref = params.borrow();
-        if implicit_residual_is_zero_through_interval(
-            model,
-            solver_ref.state().y.as_slice(),
-            params_ref.as_slice(),
-            current_t,
-            target,
-            opts.atol.max(1.0e-12),
-        )? {
-            drop(solver_ref);
-            *solver.borrow_mut().state_mut().t = target;
+    // NOTE: deliberately no `implicit_residual_is_zero_through_interval`
+    // fast-path here. Bumping `state_mut().t = target` to skip a "steady"
+    // interval jumps the solver clock forward while leaving the BDF multistep
+    // history at the old time, so the history times go inconsistent the moment
+    // the model leaves equilibrium — exactly the kind of corruption that makes
+    // a stiff long-horizon solve collapse at the next transition. The batch
+    // dense-output path (`advance_output_interval` in `lib.rs`) has no such
+    // shortcut and completes the full horizon; mirror it.
+    let mut solver = solver.borrow_mut();
+    // Advance with the solver's own adaptive steps and land on `target` via
+    // dense output (`state_mut_back`), rather than pinning a stop time at every
+    // output sample. `set_stop_time(target)` forces a shortened, awkward final
+    // step onto each output instant; on stiff models (e.g. the rover thermal
+    // system at its lunar louver/thermostat crossings) that constrained step
+    // repeatedly fails the Newton iteration and the solve collapses
+    // (~"nonlinear solver failures" at the same instant every run). Free-running
+    // the step and rewinding into the just-completed step keeps the natural step
+    // size, which is exactly what the batch dense-output path does
+    // (`advance_output_interval` / `state_mut_back` in `lib.rs`) and why the
+    // batch path completes the full horizon where the interactive stepper used
+    // to collapse.
+    loop {
+        if solver.state().t >= target {
+            solver
+                .state_mut_back(target)
+                .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
             return Ok(StepAdvance::default());
         }
-    }
-    let mut solver = solver.borrow_mut();
-    solver
-        .set_stop_time(target)
-        .map_err(|err| SimError::SolverError(format!("Failed to set stop time: {err}")))?;
-    loop {
         match solver_call("BDF step", || solver.step()) {
-            Ok(diffsol::OdeSolverStopReason::TstopReached) => return Ok(StepAdvance::default()),
-            Ok(diffsol::OdeSolverStopReason::InternalTimestep) => continue,
+            Ok(
+                diffsol::OdeSolverStopReason::TstopReached
+                | diffsol::OdeSolverStopReason::InternalTimestep,
+            ) => continue,
             Ok(diffsol::OdeSolverStopReason::RootFound(_, _)) => {
                 return Ok(StepAdvance { hit_root: true });
             }

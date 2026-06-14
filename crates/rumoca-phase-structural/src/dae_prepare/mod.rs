@@ -1447,13 +1447,28 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
 
         let mut demoted_this_round = false;
         for (candidate, definition) in definitions {
-            let Some((_state_names, state_name_set, _when_assigned_states)) =
+            let Some((state_names, state_name_set, _when_assigned_states)) =
                 direct_demotion_round_context(dae)
             else {
                 return total_demoted;
             };
             let state_name = VarName::new(candidate);
             if !dae.variables.states.contains_key(&state_name) {
+                continue;
+            }
+            // A state that already owns an assignable standalone derivative row
+            // (`der(state) = ...`) genuinely integrates; treating it as a
+            // constrained dummy strands that ODE and misroutes the state into
+            // the algebraic partition (the Solve-IR refresh then fails with
+            // "algebraic refresh row N cannot be solved for '<state>'"). Such a
+            // state is never a dummy derivative — only constrained states that
+            // lack their own derivative row are. If the row width cannot be
+            // resolved, fall back to the prior behaviour rather than masking it.
+            if state_has_standalone_der_equation(dae, &state_name, &state_names).unwrap_or(false) {
+                crate::structural_trace!(
+                    "[sim-trace] constrained-dummy skip state={} (has standalone der row)",
+                    state_name.as_str()
+                );
                 continue;
             }
             let der_map = build_relaxed_derivative_map(dae);

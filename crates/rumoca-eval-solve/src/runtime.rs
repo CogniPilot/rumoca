@@ -647,10 +647,19 @@ impl SolveRuntime {
             self.row_eval_context(),
         )?;
         match row.assignment_target {
+            // `raw - current_target` is only valid when the row evaluates to the
+            // target's *value* (an expression in the other unknowns). A row that
+            // reads its own target is already a residual in it — e.g. a flow-sum
+            // `... + own + ... = 0` whose `raw` is affine in `own` with a +1
+            // coefficient. Subtracting `own` there cancels that dependence and
+            // leaves a residual with zero slope, so the linear solve reports the
+            // target as undeterminable. Use the bare residual in that case (same
+            // as assignment-shape rows), which Newton-solves correctly.
             Some(own)
                 if !self
                     .implicit_scalar_rhs
-                    .row_has_assignment_shape(row.row_idx) =>
+                    .row_has_assignment_shape(row.row_idx)
+                    && !self.implicit_scalar_rhs.row_reads_y(row.row_idx, own) =>
             {
                 Ok(raw - solver_y[own])
             }

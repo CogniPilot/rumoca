@@ -426,6 +426,17 @@ struct SimCommandArgs {
     #[arg(long)]
     dt: Option<f64>,
 
+    /// Absolute solver tolerance (overrides the model's `experiment(Tolerance=…)`
+    /// and the backend default). Pair with --rtol to match a host's tolerance
+    /// policy exactly (e.g. lunica's 1e-4 atol/rtol).
+    #[arg(long)]
+    atol: Option<f64>,
+
+    /// Relative solver tolerance (overrides the model's `experiment(Tolerance=…)`
+    /// and the backend default).
+    #[arg(long)]
+    rtol: Option<f64>,
+
     /// Output file path for simulation report (default: <MODEL>_results.html)
     #[arg(short, long)]
     output: Option<String>,
@@ -920,6 +931,8 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
             model: &compiled_model,
             t_end: args.t_end.unwrap_or(config.sim.t_end),
             dt: args.dt.or(Some(config.sim.dt)),
+            atol: args.atol,
+            rtol: args.rtol,
             solver_mode,
             solver_label: &solver_label,
             output: args.output.as_deref().or(config.sim.output.as_deref()),
@@ -1196,6 +1209,8 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
         model: &model,
         t_end: args.t_end.unwrap_or(1.0),
         dt: args.dt,
+        atol: args.atol,
+        rtol: args.rtol,
         solver_mode: solver.into(),
         solver_label: solver.as_label(),
         output: args.output.as_deref(),
@@ -1789,6 +1804,8 @@ struct SimulationRun<'a> {
     model: &'a str,
     t_end: f64,
     dt: Option<f64>,
+    atol: Option<f64>,
+    rtol: Option<f64>,
     solver_mode: SimSolverMode,
     solver_label: &'a str,
     output: Option<&'a str>,
@@ -1808,7 +1825,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         );
     }
 
-    let opts = SimOptions {
+    let mut opts = SimOptions {
         t_end: run.t_end,
         dt: run.dt,
         solver_mode: run.solver_mode,
@@ -1817,6 +1834,14 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         diffsol_method: DiffsolMethod::from_external_name(run.solver_label).unwrap_or_default(),
         ..SimOptions::default()
     };
+    // Explicit --atol/--rtol override the backend default so a host's tolerance
+    // policy can be reproduced exactly from the CLI.
+    if let Some(atol) = run.atol {
+        opts.atol = atol;
+    }
+    if let Some(rtol) = run.rtol {
+        opts.rtol = rtol;
+    }
 
     eprintln!("Simulating {} to t={}...", run.model, run.t_end);
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
