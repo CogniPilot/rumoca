@@ -49,6 +49,16 @@ fn flattened_input_has_prefix(name: &str, prefix: &str) -> bool {
     split_flattened_record_input_name(name).is_some_and(|(candidate, _)| candidate == prefix)
 }
 
+fn has_flattened_record_input_group(
+    inputs: &[rumoca_core::FunctionParam],
+    input_idx: usize,
+    prefix: &str,
+) -> bool {
+    inputs.iter().enumerate().any(|(idx, candidate)| {
+        idx != input_idx && flattened_input_has_prefix(&candidate.name, prefix)
+    })
+}
+
 fn missing_required_function_input<T>(
     function_name: &str,
     input_name: &str,
@@ -67,6 +77,9 @@ fn synthesize_missing_flattened_record_field_arg(
     positional_idx: usize,
 ) -> Option<rumoca_core::Expression> {
     let (prefix, field) = split_flattened_record_input_name(&input.name)?;
+    if !has_flattened_record_input_group(inputs, input_idx, prefix) {
+        return None;
+    }
     let search_len = positional_idx.min(positional_args.len()).min(input_idx);
     for previous_idx in (0..search_len).rev() {
         let (previous_prefix, previous_field) =
@@ -841,9 +854,14 @@ impl<'a> LowerBuilder<'a> {
             request.inputs,
             request.input_idx,
         );
-        if !self.is_record_like_function_actual(arg_expr, field, request.caller_scope)
-            && !self.projected_flattened_record_field_available(&projected, request.caller_scope)
-        {
+        let is_record_like =
+            self.is_record_like_function_actual(arg_expr, field, request.caller_scope);
+        let grouped = has_flattened_record_input_group(request.inputs, request.input_idx, prefix);
+        let can_project = is_record_like
+            || grouped
+                && self
+                    .projected_flattened_record_field_available(&projected, request.caller_scope);
+        if !can_project {
             return Ok(false);
         }
         self.bind_function_input_arg_or_closure(

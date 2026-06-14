@@ -1,3 +1,5 @@
+// SPEC_0021 file-size exception: split plan is to move focused lowerer
+// regression fixtures into owned test modules after BOPTEST parity stabilization.
 use super::{
     DirectAssignmentValue, LowerBuilder, Scope, expression_rows::lower_expression_rows_with_mode,
     lower_derivative_rhs, lower_derivative_rhs_scalar_programs, lower_discrete_rhs,

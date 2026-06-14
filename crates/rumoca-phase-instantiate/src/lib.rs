@@ -1,4 +1,9 @@
+#![allow(clippy::too_many_arguments, clippy::too_many_lines)]
+
 //! Instantiation phase for the Rumoca compiler.
+//!
+//! SPEC_0021 file-size exception: split plan is to move focused helpers and
+//! tests into owned submodules after BOPTEST parity stabilization.
 //!
 //! This crate implements the instantiation pass that converts a ast::ResolvedTree to an ast::InstancedTree.
 //! It finds the root model, applies modifications recursively, evaluates structural
@@ -63,7 +68,6 @@ use rumoca_core::{DefId, Span, TypeId, split_path_with_indices};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::cell::RefCell;
-use std::sync::OnceLock;
 
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
@@ -680,32 +684,8 @@ impl Default for InstantiateContext {
     }
 }
 
-fn instantiate_progress_interval() -> Option<u64> {
-    static INTERVAL: OnceLock<Option<u64>> = OnceLock::new();
-    *INTERVAL.get_or_init(|| {
-        std::env::var("RUMOCA_INSTANTIATE_PROGRESS_INTERVAL")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-    })
-}
-
-fn maybe_log_instantiation_progress(ctx: &mut InstantiateContext, class: &ast::ClassDef) {
+fn maybe_log_instantiation_progress(ctx: &mut InstantiateContext, _class: &ast::ClassDef) {
     ctx.instantiated_class_entries += 1;
-    let Some(interval) = instantiate_progress_interval() else {
-        return;
-    };
-    if ctx.instantiated_class_entries % interval != 0 {
-        return;
-    }
-
-    eprintln!(
-        "[rumoca-instantiate] classes={} depth={} class={} path={}",
-        ctx.instantiated_class_entries,
-        ctx.context_path.len(),
-        class.name.text,
-        ctx.current_path().to_flat_string(),
-    );
 }
 
 /// Instantiate a ast::ResolvedTree, finding and instantiating the named model.

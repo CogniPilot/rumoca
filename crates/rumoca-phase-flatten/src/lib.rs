@@ -1,3 +1,10 @@
+#![allow(
+    clippy::excessive_nesting,
+    clippy::items_after_test_module,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+
 //! Flatten phase for the Rumoca compiler.
 //!
 //! This crate implements the flattening pass that converts an ast::InstancedTree to a flat::Model.

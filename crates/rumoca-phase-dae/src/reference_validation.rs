@@ -117,7 +117,21 @@ fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) 
 }
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
-    rumoca_core::top_level_last_segment(candidate) == short
+    rumoca_core::top_level_last_segment(candidate) == final_path_segment(short)
+}
+
+fn final_path_segment(path: &str) -> &str {
+    let mut bracket_depth = 0usize;
+    let mut last_boundary = 0usize;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if bracket_depth == 0 => last_boundary = idx + ch.len_utf8(),
+            _ => {}
+        }
+    }
+    &path[last_boundary..]
 }
 
 fn enum_literal_alias_matches(candidate: &str, raw: &str) -> bool {
@@ -148,29 +162,41 @@ fn validate_constructor_field_selection(
         }
 
         let selected_name = format!("{}.{}", name.as_str(), field);
-        let Some(constructor) = functions.get(name.var_name()) else {
-            if crate::todae_debug_enabled() {
-                let mut candidates: Vec<String> =
-                    functions.keys().map(|f| f.as_str().to_string()).collect();
-                candidates.sort();
-                let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
-                let mut short_matches: Vec<String> = candidates
+        let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
+        let mut short_matches: Vec<(&VarName, &Function)> = Vec::new();
+        let constructor = if let Some(constructor) = functions.get(name.var_name()) {
+            constructor
+        } else {
+            short_matches.extend(
+                functions
                     .iter()
-                    .filter(|candidate| short_leaf_matches(candidate, &short))
-                    .cloned()
-                    .collect();
-                short_matches.sort();
-                crate::log_todae_debug(format!(
-                    "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_matches:?} total_functions={}",
+                    .filter(|(candidate, _)| short_leaf_matches(candidate.as_str(), &short)),
+            );
+            if short_matches.len() == 1 {
+                short_matches[0].1
+            } else {
+                if crate::todae_debug_enabled() {
+                    let mut candidates: Vec<String> =
+                        functions.keys().map(|f| f.as_str().to_string()).collect();
+                    candidates.sort();
+                    let mut short_match_names: Vec<String> = candidates
+                        .iter()
+                        .filter(|candidate| short_leaf_matches(candidate, &short))
+                        .cloned()
+                        .collect();
+                    short_match_names.sort();
+                    crate::log_todae_debug(format!(
+                        "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_match_names:?} total_functions={}",
+                        selected_name,
+                        args.len(),
+                        candidates.len()
+                    ));
+                }
+                return Err(ToDaeError::constructor_field_selection_unresolved(
                     selected_name,
-                    args.len(),
-                    candidates.len()
+                    span,
                 ));
             }
-            return Err(ToDaeError::constructor_field_selection_unresolved(
-                selected_name,
-                span,
-            ));
         };
 
         let field_known = constructor.inputs.iter().any(|param| param.name == field)
@@ -630,7 +656,7 @@ fn function_reference_validation_context(
 }
 
 fn dae_function_scope_debug_suffix(function: &rumoca_core::Function) -> String {
-    if std::env::var_os("RUMOCA_DEBUG_DAE_FUNCTION_SCOPE").is_none() {
+    if !dae_function_scope_debug_enabled() {
         return String::new();
     }
     let inputs = function
@@ -652,6 +678,20 @@ fn dae_function_scope_debug_suffix(function: &rumoca_core::Function) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(" inputs=[{inputs}] outputs=[{outputs}] locals=[{locals}]")
+}
+
+fn dae_function_scope_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(
+            target: "rumoca_phase_dae::function_scope",
+            tracing::Level::DEBUG
+        )
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
 }
 
 fn validate_statement_slice_references(
@@ -1023,11 +1063,16 @@ fn function_scope_contains_reference(name: &str, scope: &HashSet<&str>) -> bool 
 }
 
 fn local_record_field_alias(name: &str) -> Option<String> {
-    let (record, field) = name.split_once('.')?;
+    let (record, field) = split_local_record_field_name(name)?;
     if record.is_empty() || field.is_empty() || field.contains('.') {
         return None;
     }
     Some(format!("{record}_{field}"))
+}
+
+fn split_local_record_field_name(name: &str) -> Option<(&str, &str)> {
+    let idx = name.find('.')?;
+    Some((&name[..idx], &name[idx + 1..]))
 }
 
 fn validate_expression_slice_references(
@@ -1194,9 +1239,7 @@ fn inherited_medium_package_constant_reference_known(raw: &str) -> bool {
     let Some(leaf) = parts.last() else {
         return false;
     };
-    parts.len() >= 3
-        && parts.iter().any(|part| *part == "Media")
-        && is_partial_medium_constant_leaf(leaf)
+    parts.len() >= 3 && parts.contains(&"Media") && is_partial_medium_constant_leaf(leaf)
 }
 
 fn ideal_gas_data_record_constant_reference_known(raw: &str) -> bool {
@@ -1217,9 +1260,7 @@ fn weather_bus_field_reference_known(raw: &str) -> bool {
         return false;
     };
     parts.len() >= 2
-        && parts[..parts.len() - 1]
-            .iter()
-            .any(|part| *part == "weaBus")
+        && parts[..parts.len() - 1].contains(&"weaBus")
         && matches!(
             *field,
             "TDryBul"

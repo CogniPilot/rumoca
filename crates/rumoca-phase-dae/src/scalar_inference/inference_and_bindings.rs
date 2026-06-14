@@ -247,15 +247,15 @@ fn extract_lhs_var_size_from_var_name(
         return Some(compute_var_size(&var.dims[n..]));
     }
 
-    if let Some(size) = resolve_singleton_indexed_lhs_path_size(&var_name, flat, prefix_counts) {
-        return Some(size);
-    }
-
     // Variable not found directly - check for expanded record components.
     if let Some(&count) = prefix_counts.get(var_name.as_str())
         && count > 0
     {
         return Some(count);
+    }
+
+    if let Some(size) = resolve_singleton_indexed_lhs_path_size(&var_name, flat, prefix_counts) {
+        return Some(size);
     }
 
     // Also try progressively stripping subscripts:

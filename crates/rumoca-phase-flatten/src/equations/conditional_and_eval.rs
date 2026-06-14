@@ -1,3 +1,5 @@
+// SPEC_0021 file-size exception: split plan is to move focused conditional
+// equation helpers into owned submodules after BOPTEST parity stabilization.
 use super::*;
 use crate::path_utils::split_last_top_level;
 
@@ -482,7 +484,7 @@ fn expand_linspace_range_indices(
 
     let mut indices = Vec::with_capacity(count as usize);
     for i in 0..count {
-        let numerator = i64::from(i) * (end - start);
+        let numerator = i * (end - start);
         let value = start + numerator / (count - 1);
         indices.push(value);
     }

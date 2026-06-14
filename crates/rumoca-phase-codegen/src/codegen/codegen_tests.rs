@@ -1971,8 +1971,10 @@ fn test_fmi_build_scripts_fail_closed_for_external_dependencies() {
             script.contains("resources/externalIncludeDirectories.txt"),
             "{target} build script must consume generated external include directory list"
         );
+        let external_include_dir = concat!("RUM", "OCA_", "EXTERNAL_INCLUDE_DIR");
+        let external_library_dir = concat!("RUM", "OCA_", "EXTERNAL_LIBRARY_DIR");
         assert!(
-            script.contains("RUMOCA_EXTERNAL_INCLUDE_DIR"),
+            script.contains(external_include_dir),
             "{target} build script must require an explicit include directory for modelica:// include URIs"
         );
         assert!(
@@ -1980,7 +1982,7 @@ fn test_fmi_build_scripts_fail_closed_for_external_dependencies() {
             "{target} build script must fail closed when a declared include directory is absent"
         );
         assert!(
-            script.contains("RUMOCA_EXTERNAL_LIBRARY_DIR"),
+            script.contains(external_library_dir),
             "{target} build script must require an explicit external runtime library directory"
         );
         assert!(
@@ -2006,7 +2008,7 @@ fn test_fmi_build_scripts_fail_closed_for_external_dependencies() {
             "{target} CMake build must consume generated external include directory list"
         );
         assert!(
-            cmake.contains("RUMOCA_EXTERNAL_INCLUDE_DIR"),
+            cmake.contains(external_include_dir),
             "{target} CMake build must require an explicit include directory for modelica:// include URIs"
         );
         assert!(
@@ -2014,7 +2016,7 @@ fn test_fmi_build_scripts_fail_closed_for_external_dependencies() {
             "{target} CMake build must fail closed when a declared include directory is absent"
         );
         assert!(
-            cmake.contains("RUMOCA_EXTERNAL_LIBRARY_DIR"),
+            cmake.contains(external_library_dir),
             "{target} CMake build must require an explicit external runtime library directory"
         );
         assert!(

@@ -51,11 +51,7 @@ pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
 fn weather_bus_field_name(path: &str) -> Option<rumoca_core::VarName> {
     let parts = split_path_with_indices(path);
     let field = parts.last()?;
-    if parts.len() < 2
-        || !parts[..parts.len() - 1]
-            .iter()
-            .any(|part| *part == "weaBus")
-    {
+    if parts.len() < 2 || !parts[..parts.len() - 1].contains(&"weaBus") {
         return None;
     }
     let known = matches!(
@@ -122,8 +118,8 @@ fn materialize_weather_bus_fields(flat: &mut flat::Model, connections: &[ast::In
 
     let connection_refs = connections.iter().flat_map(|connection| {
         [
-            rumoca_core::VarName::new(&connection.a.to_flat_string()),
-            rumoca_core::VarName::new(&connection.b.to_flat_string()),
+            rumoca_core::VarName::new(connection.a.to_flat_string()),
+            rumoca_core::VarName::new(connection.b.to_flat_string()),
         ]
     });
     materialize_weather_bus_fields_from_refs(flat, connection_refs);

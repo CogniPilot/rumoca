@@ -1481,9 +1481,9 @@ impl<'a> LowerBuilder<'a> {
         if is_static_singleton_scalar_projection(base, subscripts)? {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
         }
-        let base_key = dynamic_binding_base_key(base)?;
-        if let Some(keys) =
-            self.slice_binding_keys_or_scalar_fallback(base_key.as_str(), subscripts, scope)?
+        if let Ok(base_key) = dynamic_binding_base_key(base)
+            && let Some(keys) =
+                self.slice_binding_keys_or_scalar_fallback(base_key.as_str(), subscripts, scope)?
         {
             return self.load_binding_keys(&keys);
         }

@@ -391,6 +391,7 @@
     "class_type": "Model",
     "variable_starts": {},
     "interface_flow_count": 0,
+    "stream_interface_equation_count": 0,
     "overconstrained_interface_count": 0,
     "oc_break_edge_scalar_count": 0,
     "model_description": "Schema golden derived from Modelica.Blocks.Examples.LogicalNetwork1 surface: Boolean network with timed trigger"

@@ -971,10 +971,37 @@ fn is_builtin_or_runtime_intrinsic_function(name: &str) -> bool {
 }
 
 pub(crate) fn resolve_flat_function<'a>(name: &str, flat: &'a Model) -> Option<&'a Function> {
-    // Strict lookup only: function calls must already be fully resolved during
-    // compile/lower phases. No suffix/name heuristics here.
     let lookup_name = VarName::new(name);
-    flat.functions.get(&lookup_name)
+    if let Some(function) = flat.functions.get(&lookup_name) {
+        return Some(function);
+    }
+
+    let short_name = final_path_segment(name);
+    let mut matches = flat
+        .functions
+        .iter()
+        .filter(|(candidate, _)| final_path_segment(candidate.as_str()) == short_name)
+        .map(|(_, function)| function);
+    let function = matches.next()?;
+    if matches.next().is_none() {
+        Some(function)
+    } else {
+        None
+    }
+}
+
+fn final_path_segment(path: &str) -> &str {
+    let mut bracket_depth = 0usize;
+    let mut last_boundary = 0usize;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if bracket_depth == 0 => last_boundary = idx + ch.len_utf8(),
+            _ => {}
+        }
+    }
+    &path[last_boundary..]
 }
 
 fn validate_function_call_name(
@@ -1110,19 +1137,41 @@ impl FlatFunctionCallValidator<'_> {
     }
 
     fn maybe_debug_partial_medium_call(&self, name: &rumoca_core::Reference) {
-        if std::env::var_os("RUMOCA_DEBUG_PARTIAL_MEDIUM_CALLS").is_none() {
+        if !partial_medium_call_debug_enabled() {
             return;
         }
         let name = name.as_str();
         if name.contains("Modelica.Media.Interfaces.PartialMedium.specificEnthalpy_pTX")
             || name.contains("Modelica.Media.Interfaces.PartialMedium.setState_pTX")
         {
-            eprintln!(
-                "RUMOCA_DEBUG_PARTIAL_MEDIUM_CALL origin={} span={:?} name={}",
+            log_partial_medium_call_debug(format!(
+                "partial medium call origin={} span={:?} name={}",
                 self.origin, self.inherited_span, name
-            );
+            ));
         }
     }
+}
+
+fn partial_medium_call_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(
+            target: "rumoca_phase_dae::partial_medium",
+            tracing::Level::DEBUG
+        )
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
+}
+
+fn log_partial_medium_call_debug(message: String) {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(target: "rumoca_phase_dae::partial_medium", message = %message);
+
+    #[cfg(not(feature = "tracing"))]
+    let _ = message;
 }
 
 impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {

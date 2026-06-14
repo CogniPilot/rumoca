@@ -1,5 +1,8 @@
 //! DAE balance arithmetic.
 //!
+//! SPEC_0021 file-size exception: split plan is to move focused balance
+//! diagnostics into owned submodules after BOPTEST parity stabilization.
+//!
 //! This is the single canonical implementation of balance checking for the
 //! Rumoca DAE IR. All other crates must call these functions rather than
 //! reimplementing the formula (AGENTS.md: "Balance arithmetic lives in
@@ -212,8 +215,8 @@ pub fn equations_unknowns(dae_model: &dae::Dae) -> (usize, usize) {
     let raw_balance = raw_equations - unknowns as i64;
     let effective_brk = brk.min(raw_balance.max(0));
     let equations = (raw_equations - effective_brk) as usize;
-    if std::env::var_os("RUMOCA_DEBUG_BALANCE_DETAIL").is_some() {
-        eprintln!(
+    if balance_debug_enabled() {
+        log_balance_debug_line(format!(
             "DEBUG BALANCE DETAIL: equations={} unknowns={} balance={} state={} alg={} out={} z_unknown={} m_unknown={} f_x={} f_z={} f_m={} f_c={} stream={} effective_stream={} iflow={} effective_iflow={} oc={} effective_oc={} brk={} effective_brk={}",
             equations,
             unknowns,
@@ -235,7 +238,7 @@ pub fn equations_unknowns(dae_model: &dae::Dae) -> (usize, usize) {
             effective_oc_interface,
             detail.oc_break_edge_scalar_count,
             effective_brk
-        );
+        ));
     }
     (equations, unknowns)
 }
@@ -246,13 +249,10 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
     let component_defined_targets =
         collect_component_defined_targets_for_balance(dae_model, &continuous_unknowns);
     let mut connection_rank = ConnectionUpdateRank::new(IndexSet::new());
-    let debug_connection_rank = std::env::var_os("RUMOCA_DEBUG_CONNECTION_RANK").is_some();
-    let debug_connection_rank_summary =
-        std::env::var_os("RUMOCA_DEBUG_CONNECTION_RANK_SUMMARY").is_some();
-    let debug_class_summary = std::env::var_os("RUMOCA_DEBUG_F_X_CLASS_SUMMARY").is_some();
-    let debug_prefix_filter = std::env::var("RUMOCA_DEBUG_F_X_PREFIX_FILTER")
-        .ok()
-        .filter(|value| !value.is_empty());
+    let debug_connection_rank = balance_debug_enabled();
+    let debug_connection_rank_summary = balance_debug_enabled();
+    let debug_class_summary = balance_debug_enabled();
+    let debug_prefix_filter = None;
     let mut connection_raw = 0usize;
     let mut connection_counted = 0usize;
     let mut connection_drops = std::collections::BTreeMap::<String, (usize, usize)>::new();
@@ -301,10 +301,10 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
                         entry.1 += count;
                     }
                     if debug_connection_rank && count != eq.scalar_count {
-                        eprintln!(
+                        log_balance_debug_line(format!(
                             "DEBUG CONTINUOUS CONNECTION RANK DROP: {} -> {} | {}",
                             eq.scalar_count, count, eq.origin
-                        );
+                        ));
                     }
                     debug_f_x_prefix_filter(
                         &debug_prefix_filter,
@@ -352,20 +352,20 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
     if debug_connection_rank_summary {
         let mut drops = connection_drops.into_iter().collect::<Vec<_>>();
         drops.sort_by_key(|(_, (raw, counted))| std::cmp::Reverse(raw.saturating_sub(*counted)));
-        eprintln!(
+        log_balance_debug_line(format!(
             "DEBUG CONTINUOUS CONNECTION RANK SUMMARY: raw={} counted={} dropped={}",
             connection_raw,
             connection_counted,
             connection_raw.saturating_sub(connection_counted)
-        );
+        ));
         for (key, (raw, counted)) in drops.into_iter().take(80) {
-            eprintln!(
+            log_balance_debug_line(format!(
                 "  drop={:>6} raw={:>6} counted={:>6} {}",
                 raw.saturating_sub(counted),
                 raw,
                 counted,
                 key
-            );
+            ));
         }
     }
     count
@@ -389,10 +389,10 @@ fn debug_f_x_prefix_filter(
     if !text.contains(filter) {
         return;
     }
-    eprintln!(
+    log_balance_debug_line(format!(
         "DEBUG F_X FILTER {status}: count={count} scalar_count={} key={} lhs={:?} origin={} refs={:?}",
         eq.scalar_count, key, eq.lhs, eq.origin, refs
-    );
+    ));
 }
 
 fn push_balance_debug_map_to_stderr(
@@ -403,10 +403,29 @@ fn push_balance_debug_map_to_stderr(
     let total: usize = counts.values().sum();
     let mut counts = counts.into_iter().collect::<Vec<_>>();
     counts.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    eprintln!("DEBUG DAE BALANCE {label}: total={total}");
+    log_balance_debug_line(format!("DEBUG DAE BALANCE {label}: total={total}"));
     for (key, count) in counts.into_iter().take(limit) {
-        eprintln!("  {count:>8} {key}");
+        log_balance_debug_line(format!("  {count:>8} {key}"));
     }
+}
+
+fn balance_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(target: "rumoca_phase_dae::debug", tracing::Level::DEBUG)
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
+}
+
+fn log_balance_debug_line(message: String) {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(target: "rumoca_phase_dae::debug", message = %message);
+
+    #[cfg(not(feature = "tracing"))]
+    let _ = message;
 }
 
 #[derive(Debug, Clone)]
@@ -779,14 +798,31 @@ fn equation_debug_prefix(
 }
 
 fn debug_name_prefix(name: &str) -> String {
-    let mut parts = name.split('.');
-    let Some(first) = parts.next() else {
+    let parts = first_two_debug_path_segments(name);
+    let Some(first) = parts.first() else {
         return name.to_string();
     };
-    let Some(second) = parts.next() else {
-        return first.to_string();
+    let Some(second) = parts.get(1) else {
+        return (*first).to_string();
     };
     format!("{first}.{second}")
+}
+
+fn first_two_debug_path_segments(name: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (idx, byte) in name.bytes().enumerate() {
+        if byte != b'.' {
+            continue;
+        }
+        out.push(&name[start..idx]);
+        if out.len() == 2 {
+            return out;
+        }
+        start = idx + 1;
+    }
+    out.push(&name[start..]);
+    out
 }
 
 pub fn balance_origin_reasons(dae_model: &dae::Dae) -> Vec<BalanceOriginReason> {
@@ -956,13 +992,9 @@ fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> usize {
     let connection_anchors =
         collect_discrete_connection_balance_anchors(dae_model, &discrete_input_names);
     let mut connection_rank = ConnectionUpdateRank::new(connection_anchors);
-    let debug_connection_rank = std::env::var_os("RUMOCA_DEBUG_DISCRETE_CONNECTION_RANK").is_some();
-    let debug_connection_rank_summary =
-        std::env::var_os("RUMOCA_DEBUG_DISCRETE_CONNECTION_RANK_SUMMARY").is_some();
-    let debug_connection_rank_filter =
-        std::env::var("RUMOCA_DEBUG_DISCRETE_CONNECTION_RANK_FILTER")
-            .ok()
-            .filter(|value| !value.is_empty());
+    let debug_connection_rank = balance_debug_enabled();
+    let debug_connection_rank_summary = balance_debug_enabled();
+    let debug_connection_rank_filter: Option<String> = None;
     let mut connection_raw = 0usize;
     let mut connection_counted = 0usize;
     let mut connection_drops = std::collections::BTreeMap::<String, (usize, usize)>::new();
@@ -991,10 +1023,10 @@ fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> usize {
                     .as_deref()
                     .is_none_or(|filter| discrete_connection_rank_debug_text(eq).contains(filter))
             {
-                eprintln!(
+                log_balance_debug_line(format!(
                     "DEBUG DISCRETE CONNECTION RANK DROP: {} -> {} | lhs={:?} | {}",
                     eq.scalar_count, count, eq.lhs, eq.origin
-                );
+                ));
             }
             scalar_count += count;
             continue;
@@ -1004,20 +1036,20 @@ fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> usize {
     if debug_connection_rank_summary {
         let mut drops = connection_drops.into_iter().collect::<Vec<_>>();
         drops.sort_by_key(|(_, (raw, counted))| std::cmp::Reverse(raw.saturating_sub(*counted)));
-        eprintln!(
+        log_balance_debug_line(format!(
             "DEBUG DISCRETE CONNECTION RANK SUMMARY: raw={} counted={} dropped={}",
             connection_raw,
             connection_counted,
             connection_raw.saturating_sub(connection_counted)
-        );
+        ));
         for (key, (raw, counted)) in drops.into_iter().take(80) {
-            eprintln!(
+            log_balance_debug_line(format!(
                 "  drop={:>6} raw={:>6} counted={:>6} {}",
                 raw.saturating_sub(counted),
                 raw,
                 counted,
                 key
-            );
+            ));
         }
     }
     scalar_count
@@ -1373,7 +1405,7 @@ fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> usi
             );
         }
     }
-    if std::env::var_os("RUMOCA_DEBUG_DISCRETE_UNKNOWNS").is_some() {
+    if balance_debug_enabled() {
         for (name, variable) in &dae_model.variables.discrete_valued {
             let excluded = variable_overlaps_any(name, &dae_model.variables.inputs)
                 || name_matches_set(name, &discrete_input_names);
@@ -1383,14 +1415,14 @@ fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> usi
                 .unwrap_or(0)
                 .min(variable.size());
             if excluded || count < variable.size() {
-                eprintln!(
+                log_balance_debug_line(format!(
                     "DEBUG DISCRETE UNKNOWN COUNT: name={} size={} count={} excluded={} causality={:?}",
                     name,
                     variable.size(),
                     count,
                     excluded,
                     variable.causality
-                );
+                ));
             }
         }
     }

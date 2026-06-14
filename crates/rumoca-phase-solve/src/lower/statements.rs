@@ -461,13 +461,13 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<f64, LowerError> {
         if matches!(op, rumoca_core::OpBinary::And) {
             match self.eval_compile_time_expr(lhs, const_scope) {
-                Ok(value) if value == 0.0 => return Ok(0.0),
+                Ok(0.0) => return Ok(0.0),
                 Ok(_) => {
                     let rhs = self.eval_compile_time_expr(rhs, const_scope)?;
                     return Ok(bool_to_f64(rhs != 0.0));
                 }
                 Err(lhs_err) => match self.eval_compile_time_expr(rhs, const_scope) {
-                    Ok(value) if value == 0.0 => return Ok(0.0),
+                    Ok(0.0) => return Ok(0.0),
                     _ => return Err(lhs_err),
                 },
             }

@@ -1,4 +1,7 @@
 //! Lower flat expressions and DAE residual rows to linear ops.
+//!
+//! SPEC_0021 file-size exception: split plan is to move focused lowering
+//! helpers into owned submodules after BOPTEST parity stabilization.
 
 use std::sync::Arc;
 
@@ -1445,7 +1448,20 @@ impl<'a> LowerBuilder<'a> {
     }
 
     fn singleton_indexed_alias_key(&self, key: &str, scope: &Scope) -> Option<String> {
-        let parts = key.split('.').collect::<Vec<_>>();
+        fn flat_binding_key_parts(key: &str) -> Vec<&str> {
+            let mut parts = Vec::new();
+            let mut start = 0usize;
+            for (idx, byte) in key.bytes().enumerate() {
+                if byte == b'.' {
+                    parts.push(&key[start..idx]);
+                    start = idx + 1;
+                }
+            }
+            parts.push(&key[start..]);
+            parts
+        }
+
+        let parts = flat_binding_key_parts(key);
         for idx in (0..parts.len()).rev() {
             let part = parts[idx];
             if part.is_empty() || part.contains('[') {

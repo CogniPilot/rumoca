@@ -74,16 +74,8 @@ fn external_function_unsupported_reason(func: &rumoca_core::Function) -> String 
 }
 
 fn external_function_codegen_opt_in_enabled(func: &rumoca_core::Function) -> bool {
-    let enabled = std::env::var("RUMOCA_ALLOW_EXTERNAL_FUNCTIONS_FOR_SOLVE_CODEGEN")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
-    if !enabled {
-        return false;
-    }
-    let Some(external) = func.external.as_ref() else {
-        return false;
-    };
-    external.language == "C" && !external.libraries.is_empty()
+    let _ = func;
+    false
 }
 
 fn resolve_dae_function_by_key<'a>(

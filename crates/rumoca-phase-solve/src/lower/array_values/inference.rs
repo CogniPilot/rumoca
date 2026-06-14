@@ -62,7 +62,9 @@ impl<'a> LowerBuilder<'a> {
                             .lookup_function(name)
                             .and_then(|function| function.outputs.first())
                             .is_none_or(|output| {
-                                dims_i64_to_usize(&output.dims).is_empty() == output.dims.is_empty()
+                                output.dims.is_empty()
+                                    || output.dims.iter().any(|dim| *dim <= 0)
+                                    || !dims_i64_to_usize(&output.dims).is_empty()
                             }),
                     "function `{}` has non-scalar declared output dims but inference \
                      would return scalar — check dims_i64_to_usize is not lossy",

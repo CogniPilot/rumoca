@@ -645,9 +645,7 @@ fn reject_external_functions_in_json_for_simulation_template(
 }
 
 fn external_function_codegen_opt_in_enabled() -> bool {
-    std::env::var("RUMOCA_ALLOW_EXTERNAL_FUNCTIONS_FOR_SOLVE_CODEGEN")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
+    false
 }
 
 fn template_emits_simulation_function_bodies(template: &str) -> bool {

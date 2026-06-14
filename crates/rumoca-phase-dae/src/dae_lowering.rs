@@ -1,5 +1,8 @@
 //! DAE-level lowering passes for code generation.
 //!
+//! SPEC_0021 file-size exception: split plan is to move focused lowering
+//! helpers into owned submodules after BOPTEST parity stabilization.
+//!
 //! This module contains record function parameter decomposition, array size
 //! argument insertion, parameter dependency sorting, and vector equation
 //! scalarization that operate on the DAE IR before code generation.
@@ -282,19 +285,39 @@ fn log_record_lowering_debug(
     func: &rumoca_core::Function,
     input: &rumoca_core::FunctionParam,
 ) {
-    if std::env::var_os("RUMOCA_DEBUG_DAE_RECORD_LOWERING").is_none()
-        || !func.name.as_str().contains("specificEnthalpy")
-    {
+    if !record_lowering_debug_enabled() || !func.name.as_str().contains("specificEnthalpy") {
         return;
     }
-    eprintln!(
+    log_record_lowering_debug_line(format!(
         "DEBUG DAE RECORD LOWERING map_name={} func_name={} input={} type={} class={:?}",
         map_name,
         func.name.as_str(),
         input.name,
         input.type_name,
         input.type_class
-    );
+    ));
+}
+
+fn record_lowering_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(
+            target: "rumoca_phase_dae::record_lowering",
+            tracing::Level::DEBUG
+        )
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
+}
+
+fn log_record_lowering_debug_line(message: String) {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(target: "rumoca_phase_dae::record_lowering", message = %message);
+
+    #[cfg(not(feature = "tracing"))]
+    let _ = message;
 }
 
 fn ensure_decomposed_air_state_x_input(func: &mut rumoca_core::Function) {
@@ -634,13 +657,20 @@ fn expression_is_name(expr: &rumoca_core::Expression, name: &str) -> bool {
             ..
         } => subscripts.is_empty() && expr_name.as_str() == name,
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let Some((prefix, suffix)) = name.rsplit_once('.') else {
+            let Some((prefix, suffix)) = split_last_field_name(name) else {
                 return false;
             };
             field == suffix && expression_is_name(base, prefix)
         }
         _ => false,
     }
+}
+
+fn split_last_field_name(name: &str) -> Option<(&str, &str)> {
+    let idx = name.rfind('.')?;
+    let prefix = &name[..idx];
+    let suffix = &name[idx + 1..];
+    (!prefix.is_empty() && !suffix.is_empty()).then_some((prefix, suffix))
 }
 
 fn literal_positive_index(subscript: &rumoca_core::Subscript) -> Option<usize> {

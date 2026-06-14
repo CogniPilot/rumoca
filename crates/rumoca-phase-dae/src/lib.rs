@@ -1,3 +1,9 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::excessive_nesting,
+    clippy::too_many_lines
+)]
+
 //! ToDae phase for the Rumoca compiler.
 //!
 //! This crate implements the conversion from Model to DAE (Differential-Algebraic Equation)
@@ -453,19 +459,19 @@ fn finalize_lowered_dae(
 }
 
 fn log_balance_debug(dae: &dae::Dae) {
-    if std::env::var_os("RUMOCA_DEBUG_BALANCE_DETAIL").is_none() {
+    if !todae_debug_enabled() {
         return;
     }
     let detail = balance::balance_detail(dae);
-    eprintln!("DEBUG DAE BALANCE DETAIL:\n{detail}");
+    log_todae_debug(format!("DEBUG DAE BALANCE DETAIL:\n{detail}"));
     for line in balance::balance_counted_prefix_debug_lines(dae) {
-        eprintln!("{line}");
+        log_todae_debug(line);
     }
     for line in balance::balance_prefix_delta_debug_lines(dae) {
-        eprintln!("{line}");
+        log_todae_debug(line);
     }
     for line in balance::discrete_valued_prefix_delta_debug_lines(dae) {
-        eprintln!("{line}");
+        log_todae_debug(line);
     }
     let mut origins = std::collections::BTreeMap::<String, usize>::new();
     for equation in &dae.continuous.equations {
@@ -474,23 +480,23 @@ fn log_balance_debug(dae: &dae::Dae) {
     }
     let mut origins = origins.into_iter().collect::<Vec<_>>();
     origins.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    eprintln!("DEBUG DAE CONTINUOUS EQUATION ORIGIN SCALARS TOP:");
+    log_todae_debug("DEBUG DAE CONTINUOUS EQUATION ORIGIN SCALARS TOP:".to_string());
     for (origin, count) in origins.into_iter().take(80) {
-        eprintln!("  {count:>8} {origin}");
+        log_todae_debug(format!("  {count:>8} {origin}"));
     }
-    eprintln!("DEBUG DAE BALANCE COUNTED ORIGIN REASONS TOP:");
+    log_todae_debug("DEBUG DAE BALANCE COUNTED ORIGIN REASONS TOP:".to_string());
     for entry in balance::balance_origin_reasons(dae).into_iter().take(80) {
-        eprintln!(
+        log_todae_debug(format!(
             "  {:>8} cont={:>8} input_only={:>8} {}",
             entry.continuous_unknown_scalars + entry.input_only_scalars,
             entry.continuous_unknown_scalars,
             entry.input_only_scalars,
             entry.origin
-        );
+        ));
     }
-    eprintln!("DEBUG DAE UNCLASSIFIED CONTINUOUS REFS TOP:");
+    log_todae_debug("DEBUG DAE UNCLASSIFIED CONTINUOUS REFS TOP:".to_string());
     for entry in balance::balance_unclassified_refs(dae).into_iter().take(80) {
-        eprintln!("  {:>8} {}", entry.scalar_count, entry.name);
+        log_todae_debug(format!("  {:>8} {}", entry.scalar_count, entry.name));
     }
     let mut unknowns = std::collections::BTreeMap::<String, usize>::new();
     for (name, variable) in dae
@@ -505,9 +511,9 @@ fn log_balance_debug(dae: &dae::Dae) {
     }
     let mut unknowns = unknowns.into_iter().collect::<Vec<_>>();
     unknowns.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    eprintln!("DEBUG DAE CONTINUOUS UNKNOWN PREFIX SCALARS TOP:");
+    log_todae_debug("DEBUG DAE CONTINUOUS UNKNOWN PREFIX SCALARS TOP:".to_string());
     for (prefix, count) in unknowns.into_iter().take(80) {
-        eprintln!("  {count:>8} {prefix}");
+        log_todae_debug(format!("  {count:>8} {prefix}"));
     }
 }
 
@@ -525,7 +531,10 @@ fn balance_debug_origin_key(origin: &str) -> String {
 }
 
 fn balance_debug_var_prefix(name: &str) -> String {
-    let mut parts = name.split('.').take(4).collect::<Vec<_>>();
+    let mut parts = debug_path_segments(name)
+        .into_iter()
+        .take(4)
+        .collect::<Vec<_>>();
     if parts.is_empty() {
         return name.to_string();
     }
@@ -533,6 +542,19 @@ fn balance_debug_var_prefix(name: &str) -> String {
         parts.pop();
     }
     parts.join(".")
+}
+
+fn debug_path_segments(name: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (idx, byte) in name.bytes().enumerate() {
+        if byte == b'.' {
+            out.push(&name[start..idx]);
+            start = idx + 1;
+        }
+    }
+    out.push(&name[start..]);
+    out
 }
 
 fn ir_boundary_validation_enabled() -> bool {

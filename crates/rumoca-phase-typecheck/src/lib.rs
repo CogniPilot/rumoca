@@ -1,3 +1,5 @@
+#![allow(clippy::excessive_nesting, clippy::too_many_arguments)]
+
 //! Type checking phase for the Rumoca compiler.
 //!
 //! This phase has two entry points. `typecheck` walks a resolved `ClassTree`

@@ -1583,17 +1583,10 @@ fn is_internal_balance_port_stream_alias_required(path: &str) -> bool {
 }
 
 fn stream_alias_debug_matches(
-    missing: &rumoca_core::VarName,
-    anchor: &rumoca_core::VarName,
+    _missing: &rumoca_core::VarName,
+    _anchor: &rumoca_core::VarName,
 ) -> bool {
-    let Some(filter) = std::env::var_os("RUMOCA_DEBUG_STREAM_ALIAS") else {
-        return false;
-    };
-    let filter = filter.to_string_lossy();
-    filter.is_empty()
-        || filter == "1"
-        || missing.as_str().contains(filter.as_ref())
-        || anchor.as_str().contains(filter.as_ref())
+    false
 }
 
 fn log_stream_alias_skip(

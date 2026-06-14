@@ -446,13 +446,11 @@ pub(crate) fn inject_component_instance_nested_class_constants(
 }
 
 fn component_alias_stats_enabled() -> bool {
-    std::env::var_os("RUMOCA_COMPONENT_ALIAS_STATS").is_some()
+    false
 }
 
 fn component_alias_stats_interval() -> Option<usize> {
-    std::env::var("RUMOCA_COMPONENT_ALIAS_STATS_INTERVAL")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+    None
 }
 
 type ComponentScopeEntry<'a> = (
@@ -897,7 +895,7 @@ fn filtered_class_overrides_for_component(
                     .iter()
                     .any(|class_def| class_declares_nested_alias(class_def, &class_override.alias))
         })
-        .map(|(key, value)| (key.clone(), value.clone()))
+        .map(|(key, value)| (*key, value.clone()))
         .collect()
 }
 

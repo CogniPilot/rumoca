@@ -242,21 +242,18 @@ fn apply_component_modifier(
     if let Some(target_comp) = target_component.as_ref()
         && target_comp.is_final
     {
-        if component_is_final_parameter(target_comp) {
-            let qn = ast::QualifiedName::from_ident(target_name);
-            if ctx
-                .mod_env()
-                .get(&qn)
-                .is_some_and(|existing| existing.final_)
-            {
-                return Ok(());
-            }
-        } else {
-            return Err(Box::new(InstantiateError::redeclare_final(
-                target_name,
-                rumoca_core::Span::DUMMY,
-            )));
+        let qn = ast::QualifiedName::from_ident(target_name);
+        if prefixes.final_
+            && let Some(existing) = ctx.mod_env().get(&qn)
+            && existing.final_
+            && modification_forwards_to_existing(mod_expr, existing, ctx.mod_env())
+        {
+            return Ok(());
         }
+        return Err(Box::new(InstantiateError::redeclare_final(
+            target_name,
+            rumoca_core::Span::DUMMY,
+        )));
     }
 
     match mod_expr {
@@ -406,14 +403,6 @@ fn modifier_target_component(
 
 fn component_type_allows_string_modifier(type_name: &str) -> bool {
     rumoca_core::qualified_type_name_matches(type_name, "String")
-}
-
-fn component_is_final_parameter(comp: &ast::Component) -> bool {
-    comp.is_final
-        && matches!(
-            comp.variability,
-            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-        )
 }
 
 fn modification_forwards_to_existing(
