@@ -755,6 +755,10 @@ jobs:
   # ============================================================================
   build-wasm:
     name: Build WASM
+    # Release artifacts are built on PRs (pre-merge validation) and on the
+    # release tag (the run that deploys). A direct main push doesn't rebuild,
+    # so a release commit's heavy build runs exactly once — on the tag.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -889,6 +893,8 @@ jobs:
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
+    # Built on PRs and on the release tag only (see Build WASM note).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -1020,6 +1026,8 @@ jobs:
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
+    # Built on PRs and on the release tag only (see Build WASM note).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -1091,6 +1099,8 @@ jobs:
 
   build-python-sdist:
     name: Build Python sdist
+    # Built on PRs and on the release tag only (see Build WASM note).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
