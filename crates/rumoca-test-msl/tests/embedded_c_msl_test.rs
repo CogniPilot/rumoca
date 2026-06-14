@@ -205,7 +205,7 @@ fn make_test_harness(
 
 int main(void) {{
     {safe_name}_t m;
-    {safe_name}_init(&m);
+    startup(&m);
 
     double t = 0.0;
     double dt = {dt};
@@ -216,7 +216,7 @@ int main(void) {{
 
     for (int step = 0; step <= n_steps; step++) {{
         printf("{printf_fmt}\n", t, {printf_args});
-        {safe_name}_step(&m, t, dt);
+        dostep(&m, dt);
         t += dt;
     }}
 

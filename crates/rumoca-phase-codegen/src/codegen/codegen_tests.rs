@@ -1885,10 +1885,51 @@ fn test_embedded_c_templates_render_solve_ir() {
     .unwrap();
 
     assert!(header.contains("EMBEDDEDDEMO_DERIVATIVE_LEN = 1"));
+    assert!(header.contains("void startup(EmbeddedDemo_t *m);"));
+    assert!(header.contains("void dostep(EmbeddedDemo_t *m, real_t dt);"));
+    assert!(header.contains("void recalibrate(EmbeddedDemo_t *m);"));
     assert!(source.contains("out[0] ="));
     assert!(source.contains("m->time"));
     assert!(source.contains("2.0"));
-    assert!(source.contains("EmbeddedDemo_derivative_rhs(m, dx);"));
+    assert!(source.contains("derivative_rhs(m, dx);"));
+    assert!(source.contains("void dostep(EmbeddedDemo_t *m, real_t dt)"));
+}
+
+#[test]
+fn test_embedded_c_templates_render_periodic_clock_schedule() {
+    let mut solve = solve::SolveProblem::with_derivative_rhs(
+        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::default()),
+    );
+    solve
+        .clocks
+        .periodic_event_schedules
+        .push(solve::PeriodicEventSchedule {
+            period_seconds: 0.01,
+            phase_seconds: 0.0,
+        });
+    let artifacts = solve::SolveArtifacts::default();
+
+    let header = render_solve_template_with_name(
+        &solve,
+        &artifacts,
+        builtin_template("embedded-c", "model.h.jinja"),
+        "EmbeddedClock",
+    )
+    .unwrap();
+    let source = render_solve_template_with_name(
+        &solve,
+        &artifacts,
+        builtin_template("embedded-c", "model.c.jinja"),
+        "EmbeddedClock",
+    )
+    .unwrap();
+
+    assert!(header.contains("EMBEDDEDCLOCK_PERIODIC_EVENT_LEN = 1"));
+    assert!(header.contains("next_periodic_event[1]"));
+    assert!(source.contains("static void process_periodic_events"));
+    assert!(source.contains("const real_t period = 0.01;"));
+    assert!(source.contains("m->next_periodic_event[0] = 0"));
+    assert!(!source.contains("does not yet support periodic clock events"));
 }
 
 #[test]
