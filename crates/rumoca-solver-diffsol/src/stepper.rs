@@ -536,8 +536,27 @@ where
                 diffsol::OdeSolverStopReason::TstopReached
                 | diffsol::OdeSolverStopReason::InternalTimestep,
             ) => continue,
-            Ok(diffsol::OdeSolverStopReason::RootFound(_, _)) => {
-                return Ok(StepAdvance { hit_root: true });
+            Ok(diffsol::OdeSolverStopReason::RootFound(t_root, _)) => {
+                // The free-running step overshoots the root (the solver state
+                // sits at the natural step end, past `t_root`). The caller's
+                // event handling assumes the solver is *at* the event instant,
+                // so rewind onto it via dense output before signalling — exactly
+                // what the batch path does in `handle_root_crossing`. Without
+                // this the projection and event reset run against a post-root
+                // state at the wrong time and the next solve diverges to NaN.
+                if t_root <= target {
+                    solver
+                        .state_mut_back(t_root)
+                        .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+                    return Ok(StepAdvance { hit_root: true });
+                }
+                // Root lies beyond the requested interval: land on `target` and
+                // defer the crossing to the next step, which resumes from
+                // `target` and re-detects it.
+                solver
+                    .state_mut_back(target)
+                    .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+                return Ok(StepAdvance::default());
             }
             Err(err) => return Err(err),
         }

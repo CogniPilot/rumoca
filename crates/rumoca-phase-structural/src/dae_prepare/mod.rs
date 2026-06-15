@@ -640,6 +640,26 @@ fn state_has_standalone_der_equation(
     Ok(matched_rows >= required_rows)
 }
 
+/// True when the constrained-dummy defining expression for `state_name`
+/// references another state, i.e. the defining constraint genuinely couples
+/// two differential states (a high-index DAE: e.g. `w1 = ratio * w2`).
+///
+/// Such a coupling demands dummy-derivative reduction even though the state
+/// also owns its own derivative row — that is precisely the case the
+/// dummy-derivative method exists for. By contrast, a state whose only
+/// "defining" equation is an alias to a non-state algebraic (e.g. a thermal
+/// capacitor's `T = port.T`) is not coupled to another state's dynamics; it
+/// integrates freely and must not be demoted.
+fn defining_expr_couples_other_state(
+    defining_expr: &Expression,
+    state_name: &VarName,
+    state_names: &[VarName],
+) -> bool {
+    state_names
+        .iter()
+        .any(|other| other != state_name && expr_contains_var(defining_expr, other))
+}
+
 pub fn eq_contains_any_state_der(rhs: &Expression, state_names: &[VarName]) -> bool {
     let matcher = DerivativeNameMatcher::from_var_names(state_names);
     eq_contains_any_state_der_with_matcher(rhs, &matcher)
@@ -1457,16 +1477,25 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
                 continue;
             }
             // A state that already owns an assignable standalone derivative row
-            // (`der(state) = ...`) genuinely integrates; treating it as a
+            // (`der(state) = ...`) and whose defining constraint does NOT couple
+            // it to another state genuinely integrates; treating it as a
             // constrained dummy strands that ODE and misroutes the state into
             // the algebraic partition (the Solve-IR refresh then fails with
-            // "algebraic refresh row N cannot be solved for '<state>'"). Such a
-            // state is never a dummy derivative — only constrained states that
-            // lack their own derivative row are. If the row width cannot be
+            // "algebraic refresh row N cannot be solved for '<state>'"). Skip
+            // such a state. But when the defining constraint couples two states
+            // (a high-index DAE such as `w1 = ratio * w2`), dummy-derivative
+            // reduction is exactly what is required even though the state owns a
+            // derivative row — demote it as before. If the row width cannot be
             // resolved, fall back to the prior behaviour rather than masking it.
-            if state_has_standalone_der_equation(dae, &state_name, &state_names).unwrap_or(false) {
+            if state_has_standalone_der_equation(dae, &state_name, &state_names).unwrap_or(false)
+                && !defining_expr_couples_other_state(
+                    &definition.defining_expr,
+                    &state_name,
+                    &state_names,
+                )
+            {
                 crate::structural_trace!(
-                    "[sim-trace] constrained-dummy skip state={} (has standalone der row)",
+                    "[sim-trace] constrained-dummy skip state={} (has standalone der row, no state coupling)",
                     state_name.as_str()
                 );
                 continue;
