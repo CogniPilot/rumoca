@@ -4,20 +4,127 @@
 {%- endif -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
 {%- set rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs -%}
+{%- set root_rows = solve.events.root_conditions.programs if solve.events is defined and solve.events.root_conditions is defined else [] -%}
+{%- set relation_targets = solve.events.root_relation_memory_targets if solve.events is defined and solve.events.root_relation_memory_targets is defined else [] -%}
+{%- set discrete_rows = solve.discrete.rhs.programs if solve.discrete is defined and solve.discrete.rhs is defined else [] -%}
+{%- set discrete_targets = solve.discrete.update_targets if solve.discrete is defined and solve.discrete.update_targets is defined else [] -%}
+{%- set dynamic_events = solve.events.dynamic_time_event_names if solve.events is defined and solve.events.dynamic_time_event_names is defined else [] -%}
+{%- set event_actions = solve.events.actions if solve.events is defined and solve.events.actions is defined else [] -%}
+{%- set periodic_events = solve.clocks.periodic_event_schedules if solve.clocks is defined and solve.clocks.periodic_event_schedules is defined else [] -%}
+{%- if dynamic_events | length > 0 -%}
+{{ fail("embedded-c target does not yet support dynamic time events") }}
+{%- endif -%}
+{%- if event_actions | length > 0 -%}
+{{ fail("embedded-c target does not yet support event actions") }}
+{%- endif -%}
 {%- set cfg = {"time": "m->time", "y": "m->y[{}]", "p": "m->p[{}]"} -%}
+{%- set assign_cfg = {"y_set": "set_y(m, {}, {})", "p_set": "set_p(m, {}, {})"} -%}
 #include "{{ model_name }}.h"
 
 #include <math.h>
 #include <string.h>
 
-void {{ model_name }}_init({{ model_name }}_t *m) {
-    if (!m) {
-        return;
+static inline void set_y({{ model_name }}_t *m, int index, real_t value) {
+    if (index >= 0 && index < {{ model_name | upper }}_Y_LEN) {
+        m->y[index] = value;
     }
-    memset(m, 0, sizeof(*m));
 }
 
-void {{ model_name }}_derivative_rhs(const {{ model_name }}_t *m, real_t *out) {
+static inline void set_p({{ model_name }}_t *m, int index, real_t value) {
+    if (index >= 0 && index < {{ model_name | upper }}_P_LEN) {
+        m->p[index] = value;
+    }
+}
+
+static inline int event_crossed(real_t previous, real_t current) {
+    return (previous < 0.0 && current >= 0.0) || (previous > 0.0 && current <= 0.0);
+}
+
+static inline real_t relation_memory_value(real_t previous, real_t current) {
+    if (current < 0.0) {
+        return 1.0;
+    }
+    if (current > 0.0) {
+        return 0.0;
+    }
+    if (previous > 0.0) {
+        return 1.0;
+    }
+    return 0.0;
+}
+
+static inline int time_reached(real_t time, real_t event_time) {
+    const real_t tol = 1.0e-12 * (fabs(time) + fabs(event_time) + 1.0);
+    return time + tol >= event_time;
+}
+
+#define RUMOCA_MAX_LINEAR_SOLVE 8
+static inline real_t __rumoca_solve_linear_component(
+    const real_t *A_in,
+    const real_t *b_in,
+    int n,
+    int component
+) {
+    if (n <= 0 || n > RUMOCA_MAX_LINEAR_SOLVE || component < 0 || component >= n) {
+        return NAN;
+    }
+
+    real_t A[RUMOCA_MAX_LINEAR_SOLVE][RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    real_t b[RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    for (int row = 0; row < n; row++) {
+        b[row] = b_in[row];
+        for (int col = 0; col < n; col++) {
+            A[row][col] = A_in[row * n + col];
+        }
+    }
+
+    for (int col = 0; col < n; col++) {
+        int pivot = col;
+        real_t pivot_abs = fabs(A[col][col]);
+        for (int row = col + 1; row < n; row++) {
+            real_t candidate = fabs(A[row][col]);
+            if (candidate > pivot_abs) {
+                pivot = row;
+                pivot_abs = candidate;
+            }
+        }
+        if (pivot_abs < 1.0e-12) {
+            return NAN;
+        }
+        if (pivot != col) {
+            for (int j = col; j < n; j++) {
+                real_t tmp = A[col][j];
+                A[col][j] = A[pivot][j];
+                A[pivot][j] = tmp;
+            }
+            real_t tmp_b = b[col];
+            b[col] = b[pivot];
+            b[pivot] = tmp_b;
+        }
+
+        real_t inv_pivot = 1.0 / A[col][col];
+        for (int row = col + 1; row < n; row++) {
+            real_t factor = A[row][col] * inv_pivot;
+            A[row][col] = 0.0;
+            for (int j = col + 1; j < n; j++) {
+                A[row][j] -= factor * A[col][j];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+
+    real_t x[RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    for (int row = n - 1; row >= 0; row--) {
+        real_t sum = b[row];
+        for (int col = row + 1; col < n; col++) {
+            sum -= A[row][col] * x[col];
+        }
+        x[row] = sum / A[row][row];
+    }
+    return x[component];
+}
+
+static void derivative_rhs(const {{ model_name }}_t *m, real_t *out) {
     if (!m || !out) {
         return;
     }
@@ -29,16 +136,110 @@ void {{ model_name }}_derivative_rhs(const {{ model_name }}_t *m, real_t *out) {
 {%- endfor %}
 }
 
-void {{ model_name }}_step({{ model_name }}_t *m, real_t dt) {
+static void event_indicators({{ model_name }}_t *m, real_t *out) {
+    if (!m || !out) {
+        return;
+    }
+{%- for row in root_rows %}
+    out[{{ loop.index0 }}] = {{ render_solve_row_c(row, cfg) }};
+{%- else %}
+    (void)m;
+    (void)out;
+{%- endfor %}
+}
+
+{%- if discrete_rows | length > 0 %}
+static void discrete_updates({{ model_name }}_t *m) {
+    real_t values[{{ discrete_rows | length }}];
+{%- for row in discrete_rows %}
+    values[{{ loop.index0 }}] = {{ render_solve_row_c(row, cfg) }};
+{%- endfor %}
+{%- for target in discrete_targets %}
+    {{ render_solve_slot_assign_c(target, "values[" ~ loop.index0 ~ "]", assign_cfg) }}
+{%- endfor %}
+}
+{%- endif %}
+
+static void process_periodic_events({{ model_name }}_t *m, real_t previous_time) {
+{%- if periodic_events | length > 0 %}
+{%- for sched in periodic_events %}
+    {
+        const int index = {{ loop.index0 }};
+        const real_t period = {{ sched.period_seconds }};
+        const real_t phase = {{ sched.phase_seconds }};
+        if (period > 0.0 && time_reached(m->time, phase)) {
+            while (time_reached(previous_time, m->next_periodic_event[index])) {
+                m->next_periodic_event[index] += period;
+            }
+            while (time_reached(m->time, m->next_periodic_event[index])) {
+{%- if discrete_rows | length > 0 %}
+                discrete_updates(m);
+{%- endif %}
+                m->next_periodic_event[index] += period;
+            }
+        }
+    }
+{%- endfor %}
+{%- else %}
+    (void)m;
+    (void)previous_time;
+{%- endif %}
+}
+
+void startup({{ model_name }}_t *m) {
     if (!m) {
         return;
     }
+    memset(m, 0, sizeof(*m));
+{%- for sched in periodic_events %}
+    m->next_periodic_event[{{ loop.index0 }}] = {{ sched.phase_seconds }};
+{%- endfor %}
+{%- if discrete_rows | length > 0 %}
+    discrete_updates(m);
+{%- endif %}
+    event_indicators(m, m->event_indicators);
+    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
+}
+
+void recalibrate({{ model_name }}_t *m) {
+    if (!m) {
+        return;
+    }
+{%- if root_rows | length > 0 %}
+    int crossed = 0;
+    event_indicators(m, m->event_indicators);
+    for (int i = 0; i < {{ model_name | upper }}_EVENT_INDICATOR_LEN; i++) {
+        if (event_crossed(m->event_indicators_prev[i], m->event_indicators[i])) {
+            crossed = 1;
+        }
+    }
+{%- for target in relation_targets %}
+    if (event_crossed(m->event_indicators_prev[{{ loop.index0 }}], m->event_indicators[{{ loop.index0 }}])) {
+        {{ render_optional_solve_slot_assign_c(target, "relation_memory_value(m->event_indicators_prev[" ~ loop.index0 ~ "], m->event_indicators[" ~ loop.index0 ~ "])", assign_cfg) }}
+    }
+{%- endfor %}
+    if (crossed) {
+{%- if discrete_rows | length > 0 %}
+        discrete_updates(m);
+{%- endif %}
+    }
+    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
+{%- endif %}
+}
+
+void dostep({{ model_name }}_t *m, real_t dt) {
+    if (!m) {
+        return;
+    }
+    real_t previous_time = m->time;
     real_t dx[{{ rows | length if rows | length > 0 else 1 }}] = {0};
-    {{ model_name }}_derivative_rhs(m, dx);
+    derivative_rhs(m, dx);
 {%- for _row in rows %}
     if ({{ loop.index0 }} < {{ model_name | upper }}_STATE_LEN) {
         m->y[{{ loop.index0 }}] += dt * dx[{{ loop.index0 }}];
     }
 {%- endfor %}
     m->time += dt;
+    process_periodic_events(m, previous_time);
+    recalibrate(m);
 }

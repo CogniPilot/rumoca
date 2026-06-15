@@ -1,0 +1,75 @@
+# Rumoca SIL Configuration
+#
+# This file drives the simulator's flatbuffer protocol via .bfbs reflection.
+# Change the schema paths and field routing to work with any flatbuffer-based
+# flight controller — no code changes needed.
+
+[sim]
+dt = 0.00125      # Simulation timestep [s] (800 Hz)
+realtime = true    # Wall-clock pacing (false = fast-as-possible)
+test = false       # Scripted test flight sequence
+
+[autopilot]
+command = "/home/micah/cognipilot/ws/cerebri/build/zephyr/zephyr.exe"
+
+[udp]
+listen = "0.0.0.0:4244"
+send = "127.0.0.1:4242"
+
+[schema]
+bfbs = [
+    "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
+    "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
+]
+
+# ── Inbound: motor commands from Cerebri ──────────────────────────────────
+#
+# Cerebri sends MotorOutput at each control tick.  The `scale` multiplier
+# converts the normalised 0‥1 motor value to rad/s for the physics model.
+
+[receive]
+root_type = "cerebri2.topic.MotorOutput"
+
+[receive.route]
+"motors.m0" = { var = "omega_m1", scale = 1100.0 }
+"motors.m1" = { var = "omega_m2", scale = 1100.0 }
+"motors.m2" = { var = "omega_m3", scale = 1100.0 }
+"motors.m3" = { var = "omega_m4", scale = 1100.0 }
+"armed"     = { var = "armed" }
+"test_mode" = { var = "test_mode" }
+
+# ── Outbound: sensor data to Cerebri ──────────────────────────────────────
+#
+# We pack a SimInput (file id "C2SI") containing IMU + RC data.
+
+[send]
+root_type = "cerebri2.sil.SimInput"
+
+[send.route]
+"gyro.x"  = { var = "gyro_x" }
+"gyro.y"  = { var = "gyro_y" }
+"gyro.z"  = { var = "gyro_z" }
+"accel.x" = { var = "accel_x" }
+"accel.y" = { var = "accel_y" }
+"accel.z" = { var = "accel_z" }
+
+"rc.ch0"  = { var = "rc_0" }
+"rc.ch1"  = { var = "rc_1" }
+"rc.ch2"  = { var = "rc_2" }
+"rc.ch3"  = { var = "rc_3" }
+"rc.ch4"  = { var = "rc_4" }
+"rc.ch5"  = { var = "rc_5" }
+"rc.ch6"  = { var = "rc_6" }
+"rc.ch7"  = { var = "rc_7" }
+"rc.ch8"  = { var = "rc_8" }
+"rc.ch9"  = { var = "rc_9" }
+"rc.ch10" = { var = "rc_10" }
+"rc.ch11" = { var = "rc_11" }
+"rc.ch12" = { var = "rc_12" }
+"rc.ch13" = { var = "rc_13" }
+"rc.ch14" = { var = "rc_14" }
+"rc.ch15" = { var = "rc_15" }
+
+"rc_link_quality" = { var = "rc_link_quality" }
+"rc_valid"        = { var = "rc_valid" }
+"imu_valid"       = { var = "imu_valid" }

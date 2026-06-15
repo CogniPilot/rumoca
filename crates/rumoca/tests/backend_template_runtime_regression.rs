@@ -532,8 +532,10 @@ fn embedded_c_renders_solve_ir(source: &str, model_name: &str) {
             .render_template_str_with_name_and_ir(template, model_name, TemplateIr::Solve)
             .expect("Embedded C should render from Solve IR");
         assert!(
-            rendered.contains("_derivative_rhs") || rendered.contains("_DERIVATIVE_LEN"),
-            "expected embedded-C Solve-IR runtime surface in rendered template, got:\n{rendered}"
+            rendered.contains("void startup(")
+                || rendered.contains("void dostep(")
+                || rendered.contains("_DERIVATIVE_LEN"),
+            "expected embedded-C GALEC-like runtime surface in rendered template, got:\n{rendered}"
         );
     }
 }

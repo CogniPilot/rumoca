@@ -6,6 +6,9 @@
 {%- set y_len = solve.layout.y_scalars -%}
 {%- set p_len = solve.layout.p_scalars -%}
 {%- set derivative_len = solve_blocks.continuous.derivative_rhs.output_count -%}
+{%- set root_len = solve.events.root_conditions.programs | length if solve.events is defined and solve.events.root_conditions is defined else 0 -%}
+{%- set periodic_events = solve.clocks.periodic_event_schedules if solve.clocks is defined and solve.clocks.periodic_event_schedules is defined else [] -%}
+{%- set periodic_len = periodic_events | length -%}
 #pragma once
 
 #include <stddef.h>
@@ -16,15 +19,20 @@ enum {
     {{ model_name | upper }}_Y_LEN = {{ y_len }},
     {{ model_name | upper }}_P_LEN = {{ p_len }},
     {{ model_name | upper }}_STATE_LEN = {{ solve.solve_layout.state_scalar_count }},
-    {{ model_name | upper }}_DERIVATIVE_LEN = {{ derivative_len }}
+    {{ model_name | upper }}_DERIVATIVE_LEN = {{ derivative_len }},
+    {{ model_name | upper }}_EVENT_INDICATOR_LEN = {{ root_len }},
+    {{ model_name | upper }}_PERIODIC_EVENT_LEN = {{ periodic_len }}
 };
 
 typedef struct {
     real_t time;
     real_t y[{{ y_len if y_len > 0 else 1 }}];
     real_t p[{{ p_len if p_len > 0 else 1 }}];
+    real_t event_indicators[{{ root_len if root_len > 0 else 1 }}];
+    real_t event_indicators_prev[{{ root_len if root_len > 0 else 1 }}];
+    real_t next_periodic_event[{{ periodic_len if periodic_len > 0 else 1 }}];
 } {{ model_name }}_t;
 
-void {{ model_name }}_init({{ model_name }}_t *m);
-void {{ model_name }}_derivative_rhs(const {{ model_name }}_t *m, real_t *out);
-void {{ model_name }}_step({{ model_name }}_t *m, real_t dt);
+void startup({{ model_name }}_t *m);
+void dostep({{ model_name }}_t *m, real_t dt);
+void recalibrate({{ model_name }}_t *m);

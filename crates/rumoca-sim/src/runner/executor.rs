@@ -352,7 +352,6 @@ struct FbTransport {
     udp: UdpTransport,
     pack: Box<dyn PackCodec>,
     unpack: Box<dyn UnpackCodec>,
-    recv_expected: usize,
 }
 
 /// Immutable per-frame context: FB transport (if any), mapper, and channels.
@@ -562,17 +561,14 @@ fn setup_fb_transport(cfg: &SimulationConfig) -> Result<Option<FbTransport>> {
         .context("FB config present but missing [receive] section")?;
     let pack = rumoca_codec::build_pack(schema_cfg, send_cfg).context("Build pack codec")?;
     let unpack = rumoca_codec::build_unpack(schema_cfg, recv_cfg).context("Build unpack codec")?;
-    let recv_expected = unpack.expected_size();
     let udp_cfg = resolve_udp(cfg).context("FB config present but no [transport.udp] section")?;
     eprintln!("  UDP listen: {}", udp_cfg.listen);
     eprintln!("  UDP send:   {}", udp_cfg.send);
-    eprintln!("  Expecting {recv_expected}-byte receive packets");
     let udp = UdpTransport::bind(udp_cfg)?;
     Ok(Some(FbTransport {
         udp,
         pack,
         unpack,
-        recv_expected,
     }))
 }
 
@@ -743,10 +739,8 @@ impl FrameCtx<'_> {
             return false;
         };
         state.pkt_count += 1;
-        if n == fb.recv_expected {
-            let values = fb.unpack.unpack(&state.recv_buf[..n]);
-            apply_received(&values, stepper, engine);
-        }
+        let values = fb.unpack.unpack(&state.recv_buf[..n]);
+        apply_received(&values, stepper, engine);
         true
     }
 
@@ -794,13 +788,10 @@ impl FrameCtx<'_> {
         let Some(fb) = self.fb else {
             return;
         };
-        let expected = fb.recv_expected;
         fb.udp.drain(&mut state.recv_buf, |datagram| {
             state.pkt_count += 1;
-            if datagram.len() == expected {
-                let values = fb.unpack.unpack(datagram);
-                apply_received(&values, stepper, engine);
-            }
+            let values = fb.unpack.unpack(datagram);
+            apply_received(&values, stepper, engine);
         });
     }
 }

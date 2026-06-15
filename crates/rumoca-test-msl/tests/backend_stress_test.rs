@@ -761,7 +761,7 @@ fn embedded_c_simulate(
 
 int main(void) {{
     {model_name}_t m;
-    {model_name}_init(&m);
+    startup(&m);
 
     double t = 0.0;
     double dt = {dt};
@@ -775,7 +775,7 @@ int main(void) {{
         printf("\n");
 
         if (i < steps) {{
-            {model_name}_step(&m, t, dt);
+            dostep(&m, dt);
             t += dt;
         }}
     }}
