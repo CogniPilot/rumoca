@@ -45,8 +45,10 @@ Modelica source (.mo)
 | Numeric sim, numeric C/Rust kernels, JIT, MLIR, CUDA/GPU | Solve | Register-machine plus tensor-program bytecode consumed by execution adapters |
 
 **Template/codegen ownership:** `rumoca-phase-codegen` renders text. Execution
-adapters wrap toolchains, packaging, runtime calls, or JIT APIs; they must not
-own semantics, DAE lowering, structural rewrites, or template policy.
+adapters wrap toolchains, packaging, runtime calls, or JIT APIs; no semantics,
+DAE lowering, rewrites, or template policy.
+
+**Neutral codegen:** render IR only; no product shims.
 
 ---
 

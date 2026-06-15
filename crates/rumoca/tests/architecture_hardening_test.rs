@@ -64,6 +64,34 @@ fn test_no_direct_dot_tokenization_for_model_paths() {
 }
 
 #[test]
+fn test_builtin_codegen_has_no_kelvin_or_boptest_adapters() {
+    let root = workspace_root();
+    let codegen_root = root.join("crates/rumoca-phase-codegen/src");
+    let mut rs_files = Vec::new();
+    collect_rs_files(&codegen_root, &mut rs_files);
+
+    let banned_terms = ["boptest", "top_down", "top-down", "kelvin"];
+    let mut offenders = Vec::new();
+
+    for path in rs_files {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let lower = content.to_ascii_lowercase();
+        for term in banned_terms {
+            if lower.contains(term) {
+                offenders.push(format!("{} contains {term}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "Rumoca built-in codegen must stay project-neutral; Kelvin/BOPTEST adapters belong in Kelvin: {offenders:?}"
+    );
+}
+
+#[test]
 fn test_semantic_code_does_not_add_textual_model_path_recovery() {
     assert_semantic_code_does_not_add_textual_model_path_recovery();
 }
