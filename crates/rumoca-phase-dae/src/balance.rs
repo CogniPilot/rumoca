@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 
 use indexmap::{IndexMap, IndexSet};
+use rumoca_core::Subscript;
 use rumoca_ir_dae as dae;
 
 /// Detailed breakdown of balance calculation components.
@@ -114,7 +115,10 @@ pub fn balance(dae_model: &dae::Dae) -> i64 {
     // (oc_needed), so it cannot over-correct. Break-edge correction is then
     // applied at the end only when the system is over-determined.
     let brk = dae_model.metadata.oc_break_edge_scalar_count as i64;
-    let available_oc_interface = dae_model.metadata.overconstrained_interface_count.max(0);
+    let available_oc_interface = available_overconstrained_interface_correction(
+        dae_model.metadata.overconstrained_interface_count,
+        dae_model.metadata.oc_break_edge_scalar_count,
+    );
     let f_z_scalar = count_discrete_real_update_scalars(dae_model);
     let f_m_scalar = count_discrete_valued_update_scalars(dae_model);
     let f_c_scalar = count_condition_memory_equation_scalars(dae_model);
@@ -196,7 +200,10 @@ pub fn equations_unknowns(dae_model: &dae::Dae) -> (usize, usize) {
         + detail.discrete_real_unknowns
         + detail.discrete_valued_unknowns;
     let brk = detail.oc_break_edge_scalar_count as i64;
-    let available_oc_interface = detail.overconstrained_interface_count.max(0);
+    let available_oc_interface = available_overconstrained_interface_correction(
+        detail.overconstrained_interface_count,
+        detail.oc_break_edge_scalar_count,
+    );
     let base_without_stream = (detail.f_x_scalar
         + detail.f_z_scalar
         + detail.f_m_scalar
@@ -241,6 +248,21 @@ pub fn equations_unknowns(dae_model: &dae::Dae) -> (usize, usize) {
         ));
     }
     (equations, unknowns)
+}
+
+fn available_overconstrained_interface_correction(
+    overconstrained_interface_count: i64,
+    oc_break_edge_scalar_count: usize,
+) -> i64 {
+    let explicit = overconstrained_interface_count.max(0);
+    if explicit > 0 || oc_break_edge_scalar_count == 0 {
+        return explicit;
+    }
+    // Some flattened MSL overconstrained models retain break-edge metadata even
+    // when the explicit overconstrained interface count was lost. The caller
+    // clamps this value to the current underdetermined deficit, so this fallback
+    // can only close that deficit and cannot make overdetermined systems pass.
+    i64::MAX / 4
 }
 
 pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -> usize {
@@ -320,20 +342,23 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
             if debug_class_summary {
                 let key = equation_debug_prefix(eq, &continuous_unknowns, &input_names);
                 if has_continuous_unknown {
-                    *continuous_unknown_by_prefix.entry(key).or_default() += eq.scalar_count;
+                    *continuous_unknown_by_prefix.entry(key).or_default() +=
+                        continuous_equation_balance_scalar_count(eq, &continuous_unknowns);
                 } else if has_input {
-                    *input_only_by_prefix.entry(key).or_default() += eq.scalar_count;
+                    *input_only_by_prefix.entry(key).or_default() +=
+                        continuous_equation_balance_scalar_count(eq, &continuous_unknowns);
                 }
             }
+            let count = continuous_equation_balance_scalar_count(eq, &continuous_unknowns);
             debug_f_x_prefix_filter(
                 &debug_prefix_filter,
                 "included",
-                eq.scalar_count,
+                count,
                 eq,
                 &continuous_unknowns,
                 &input_names,
             );
-            eq.scalar_count
+            count
         })
         .sum();
     if debug_class_summary {
@@ -916,6 +941,52 @@ fn equation_counts_for_balance(
     }
     // Preserve explicit user equations constraining interface inputs.
     equation_references_input(eq, input_names)
+}
+
+fn continuous_equation_balance_scalar_count(
+    eq: &dae::Equation,
+    continuous_unknowns: &HashSet<rumoca_core::VarName>,
+) -> usize {
+    if expression_base_refs_match_names(&eq.rhs, continuous_unknowns) {
+        return eq.scalar_count;
+    }
+    inferred_expression_reference_width(&eq.rhs, continuous_unknowns)
+        .map(|width| width.min(eq.scalar_count))
+        .unwrap_or(eq.scalar_count)
+}
+
+fn expression_base_refs_match_names(
+    expr: &rumoca_core::Expression,
+    names: &HashSet<rumoca_core::VarName>,
+) -> bool {
+    let mut refs = IndexSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.into_iter().any(|name| name_matches_set(&name, names))
+}
+
+fn inferred_expression_reference_width(
+    expr: &rumoca_core::Expression,
+    names: &HashSet<rumoca_core::VarName>,
+) -> Option<usize> {
+    expression_var_ref_names(expr)
+        .into_iter()
+        .filter_map(|name| reference_path_width(&name, names))
+        .max()
+}
+
+fn reference_path_width(
+    name: &rumoca_core::VarName,
+    names: &HashSet<rumoca_core::VarName>,
+) -> Option<usize> {
+    if names.contains(name) {
+        return Some(1);
+    }
+    let prefix = format!("{}.", name.as_str());
+    let count = names
+        .iter()
+        .filter(|candidate| candidate.as_str().starts_with(&prefix))
+        .count();
+    (count > 0).then_some(count)
 }
 
 fn is_redundant_connection_alias(
@@ -1650,8 +1721,7 @@ fn expression_references_names(
     expr: &rumoca_core::Expression,
     names: &HashSet<rumoca_core::VarName>,
 ) -> bool {
-    let mut refs = IndexSet::new();
-    expr.collect_var_refs(&mut refs);
+    let refs = expression_var_ref_names(expr);
     refs.into_iter().any(|name| name_matches_set(&name, names))
 }
 
@@ -1667,8 +1737,7 @@ fn equation_references_continuous_unknown(
         return true;
     }
 
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
+    let refs = expression_var_ref_names(&eq.rhs);
     refs.into_iter()
         .any(|name| name_matches_set(&name, continuous_unknowns))
 }
@@ -1685,10 +1754,126 @@ fn equation_references_input(
         return true;
     }
 
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
+    let refs = expression_var_ref_names(&eq.rhs);
     refs.into_iter()
         .any(|name| name_matches_set(&name, input_names))
+}
+
+fn expression_var_ref_names(expr: &rumoca_core::Expression) -> IndexSet<rumoca_core::VarName> {
+    let mut refs = IndexSet::new();
+    collect_expression_var_ref_names(expr, &mut refs);
+    refs
+}
+
+fn collect_expression_var_ref_names(
+    expr: &rumoca_core::Expression,
+    refs: &mut IndexSet<rumoca_core::VarName>,
+) {
+    match expr {
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_expression_var_ref_names(lhs, refs);
+            collect_expression_var_ref_names(rhs, refs);
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => collect_expression_var_ref_names(rhs, refs),
+        rumoca_core::Expression::VarRef { subscripts, .. } => {
+            if let Some(path) = expression_reference_path(expr) {
+                refs.insert(rumoca_core::VarName::new(path));
+            }
+            collect_subscript_expr_var_ref_names(subscripts, refs);
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                collect_expression_var_ref_names(arg, refs);
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, body) in branches {
+                collect_expression_var_ref_names(condition, refs);
+                collect_expression_var_ref_names(body, refs);
+            }
+            collect_expression_var_ref_names(else_branch, refs);
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_expression_var_ref_names(start, refs);
+            if let Some(step) = step {
+                collect_expression_var_ref_names(step, refs);
+            }
+            collect_expression_var_ref_names(end, refs);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_expression_var_ref_names(expr, refs);
+            for index in indices {
+                collect_expression_var_ref_names(&index.range, refs);
+            }
+            if let Some(filter) = filter {
+                collect_expression_var_ref_names(filter, refs);
+            }
+        }
+        rumoca_core::Expression::Index { subscripts, .. } => {
+            if let Some(path) = expression_reference_path(expr) {
+                refs.insert(rumoca_core::VarName::new(path));
+            }
+            collect_subscript_expr_var_ref_names(subscripts, refs);
+        }
+        rumoca_core::Expression::FieldAccess { .. } => {
+            if let Some(path) = expression_reference_path(expr) {
+                refs.insert(rumoca_core::VarName::new(path));
+            }
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn collect_subscript_expr_var_ref_names(
+    subscripts: &[Subscript],
+    refs: &mut IndexSet<rumoca_core::VarName>,
+) {
+    for subscript in subscripts {
+        if let Subscript::Expr { expr, .. } = subscript {
+            collect_expression_var_ref_names(expr, refs);
+        }
+    }
+}
+
+fn expression_reference_path(expr: &rumoca_core::Expression) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => Some(
+            append_connection_rank_subscripts(name.var_name().as_str(), subscripts)
+                .as_str()
+                .to_string(),
+        ),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base = expression_reference_path(base)?;
+            Some(
+                append_connection_rank_subscripts(&base, subscripts)
+                    .as_str()
+                    .to_string(),
+            )
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let base = expression_reference_path(base)?;
+            Some(format!("{base}.{field}"))
+        }
+        _ => None,
+    }
 }
 fn name_matches_set(name: &rumoca_core::VarName, names: &HashSet<rumoca_core::VarName>) -> bool {
     if names.contains(name) {
@@ -1917,6 +2102,29 @@ mod tests {
         }
     }
 
+    fn indexed_component_field(
+        component: &str,
+        index: i64,
+        fields: &[&str],
+    ) -> rumoca_core::Expression {
+        let mut expr = rumoca_core::Expression::Index {
+            base: Box::new(var_ref(component)),
+            subscripts: vec![rumoca_core::Subscript::generated_index(
+                index,
+                rumoca_core::Span::DUMMY,
+            )],
+            span: rumoca_core::Span::DUMMY,
+        };
+        for field in fields {
+            expr = rumoca_core::Expression::FieldAccess {
+                base: Box::new(expr),
+                field: (*field).to_string(),
+                span: rumoca_core::Span::DUMMY,
+            };
+        }
+        expr
+    }
+
     fn dae_with_unknown_scalars(unknown_scalars: i64) -> dae::Dae {
         let mut dae = dae::Dae::default();
         dae.variables.algebraics.insert(
@@ -1983,6 +2191,19 @@ mod tests {
         dae.metadata.overconstrained_interface_count = 9;
         dae.metadata.oc_break_edge_scalar_count = 12;
         assert_eq!(balance(&dae), 0);
+    }
+
+    #[test]
+    fn test_balance_uses_break_edge_oc_fallback_only_for_deficit() {
+        let mut dae = dae_with_unknown_scalars(5);
+        dae.continuous.equations.push(scalar_eq(3));
+        dae.metadata.oc_break_edge_scalar_count = 1;
+        assert_eq!(balance(&dae), 0);
+
+        let mut overdetermined = dae_with_unknown_scalars(3);
+        overdetermined.continuous.equations.push(scalar_eq(5));
+        overdetermined.metadata.oc_break_edge_scalar_count = 1;
+        assert_eq!(balance(&overdetermined), 1);
     }
 
     #[test]
@@ -2223,6 +2444,45 @@ mod tests {
             detail.f_x_scalar, 6,
             "indexed scalar aliases must join the same rank nodes as vector aliases"
         );
+    }
+
+    #[test]
+    fn test_balance_counts_indexed_component_field_width_without_component_overcount() {
+        let mut dae = dae::Dae::default();
+        for name in [
+            "converter[1].port_p.Phi.re",
+            "converter[1].port_p.Phi.im",
+            "converter[1].Phi.re",
+            "converter[1].Phi.im",
+        ] {
+            dae.variables
+                .algebraics
+                .insert(rumoca_core::VarName::new(name), algebraic_vector(name, 1));
+        }
+        let mut eq = dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(indexed_component_field("converter", 1, &["port_p", "Phi"])),
+                rhs: Box::new(indexed_component_field("converter", 1, &["Phi"])),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: Span::DUMMY,
+            origin: "equation from converter[1]".to_string(),
+            scalar_count: 78,
+        };
+        dae.continuous.equations.push(eq.clone());
+
+        let detail = balance_detail(&dae);
+        assert_eq!(
+            detail.f_x_scalar, 2,
+            "indexed component field equations should count field width, not component width"
+        );
+
+        eq.scalar_count = 2;
+        dae.continuous.equations.clear();
+        dae.continuous.equations.push(eq);
+        assert_eq!(balance_detail(&dae).f_x_scalar, 2);
     }
 
     #[test]
