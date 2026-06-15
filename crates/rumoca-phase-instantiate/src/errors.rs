@@ -24,6 +24,7 @@
 //! | EI029 | InvalidBreakName | §7.4 |
 //! | EI030 | InstantiationDepthLimit | implementation limit |
 //! | EI031 | InstantiationCycle | recursive class/type graph |
+//! | EI032 | InvalidTypeAttribute | §4.4.4 |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
 
@@ -47,6 +48,15 @@ pub enum InstantiateError {
     #[error("model `{name}` not found")]
     #[diagnostic(code(rumoca::instantiate::EI001))]
     ModelNotFoundWithSpan {
+        name: String,
+        #[label("referenced here")]
+        span: SourceSpan,
+    },
+
+    /// Type not found with span.
+    #[error("type `{name}` not found")]
+    #[diagnostic(code(rumoca::instantiate::EI030))]
+    TypeNotFound {
         name: String,
         #[label("referenced here")]
         span: SourceSpan,
@@ -271,6 +281,19 @@ pub enum InstantiateError {
         #[label("recursive instantiation re-enters this class")]
         span: SourceSpan,
     },
+
+    /// Invalid predefined type attribute value.
+    #[error("invalid value for type attribute `{attribute}`: {value}")]
+    #[diagnostic(
+        code(rumoca::instantiate::EI032),
+        help("MLS §4.4.4: predefined type attributes must use values from their declared type")
+    )]
+    InvalidTypeAttribute {
+        attribute: String,
+        value: String,
+        #[label("invalid attribute value")]
+        span: SourceSpan,
+    },
 }
 
 impl InstantiateError {
@@ -279,6 +302,7 @@ impl InstantiateError {
         model_not_found_with_span,
         ModelNotFoundWithSpan { name: String }
     );
+    error_constructor!(type_not_found, TypeNotFound { name: String });
     error_constructor!(invalid_mod_path, InvalidModPath { path: String });
     error_constructor!(
         mod_type_mismatch,

@@ -3,10 +3,7 @@ use std::cell::RefCell;
 use crate::component_base_name;
 use indexmap::IndexSet;
 use rumoca_core::ExpressionVisitor;
-use rumoca_core::{
-    BuiltinFunction, Expression, Literal, Reference, Subscript, VarName, VarNameId,
-    split_last_top_level,
-};
+use rumoca_core::{BuiltinFunction, Expression, Literal, Reference, Subscript, VarName, VarNameId};
 
 pub fn parse_embedded_subscripts(name: &str) -> Option<Vec<i64>> {
     rumoca_core::parse_scalar_name(name).map(|scalar| scalar.indices)
@@ -53,8 +50,13 @@ pub fn subscripts_match_indices(subscripts: &[Subscript], expected: &[i64]) -> b
 }
 
 pub fn split_complex_field_suffix(name: &str) -> Option<(&str, &str)> {
-    let (base, field) = split_last_top_level(name)?;
-    matches!(field, "re" | "im").then_some((base, field))
+    // `.re`/`.im` at the very end of a name is always a top-level field
+    // suffix: a bracket-embedded dot cannot be final (a `]` would follow).
+    let base_len = name.len().checked_sub(3)?;
+    match &name[base_len..] {
+        ".re" | ".im" => Some((&name[..base_len], &name[base_len + 1..])),
+        _ => None,
+    }
 }
 
 pub fn complex_base_alias_match(base_or_field: &str, other: &str) -> bool {
@@ -72,11 +74,20 @@ fn has_complex_field_suffix_candidate(name: &str) -> bool {
 }
 
 fn segment_may_be_complex_field(segment: &str) -> bool {
-    matches!(segment, "re" | "im") || segment.starts_with("re[") || segment.starts_with("im[")
+    component_base_name(segment).is_some_and(|base| matches!(base.as_str(), "re" | "im"))
 }
 
-fn has_subscript_syntax(name: &str) -> bool {
-    name.as_bytes().contains(&b'[')
+fn base_name_for_valid_component(name: &str) -> Option<String> {
+    component_base_name(name)
+}
+
+fn valid_component_has_embedded_subscripts(name: &str) -> Option<bool> {
+    base_name_for_valid_component(name).map(|base| base != name)
+}
+
+fn valid_unsubscripted_component_id(name: &VarName) -> Option<VarNameId> {
+    base_name_for_valid_component(name.as_str())
+        .and_then(|base| (base == name.as_str()).then_some(name.id()))
 }
 
 fn reference_base_id(name: &Reference) -> Option<VarNameId> {
@@ -84,9 +95,6 @@ fn reference_base_id(name: &Reference) -> Option<VarNameId> {
 }
 
 fn var_name_base_id(name: &VarName) -> Option<VarNameId> {
-    if !has_subscript_syntax(name.as_str()) {
-        return Some(name.id());
-    }
     cached_base_id(name)
 }
 
@@ -96,16 +104,18 @@ thread_local! {
 }
 
 fn cached_base_id(name: &VarName) -> Option<VarNameId> {
-    if !has_subscript_syntax(name.as_str()) {
-        return Some(name.id());
-    }
     BASE_NAME_ID_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(base_id) = cache.get(&name.id()) {
             return *base_id;
         }
-        let base_id =
-            component_base_name(name.as_str()).map(|base_name| VarName::new(base_name).id());
+        let base_id = base_name_for_valid_component(name.as_str()).map(|base_name| {
+            if base_name == name.as_str() {
+                name.id()
+            } else {
+                VarName::new(base_name).id()
+            }
+        });
         cache.insert(name.id(), base_id);
         base_id
     })
@@ -157,8 +167,13 @@ pub fn var_ref_matches_unknown(
         return false;
     }
 
-    let name_has_embedded = has_subscript_syntax(name.as_str());
-    let unknown_has_embedded = has_subscript_syntax(unknown.as_str());
+    let Some(name_has_embedded) = valid_component_has_embedded_subscripts(name.as_str()) else {
+        return false;
+    };
+    let Some(unknown_has_embedded) = valid_component_has_embedded_subscripts(unknown.as_str())
+    else {
+        return false;
+    };
     if name_has_embedded != unknown_has_embedded {
         let embedded_name = if name_has_embedded {
             name.as_str()
@@ -206,18 +221,20 @@ impl ExpressionVisitor for ContainsVarChecker<'_> {
     }
 }
 
-fn scalar_subscript_string(sub: &Subscript) -> Option<String> {
+fn scalar_subscript_index(sub: &Subscript) -> Option<usize> {
     match sub {
-        Subscript::Index { value, .. } => Some(value.to_string()),
+        Subscript::Index { value, .. } => usize::try_from(*value).ok().filter(|index| *index > 0),
         Subscript::Expr { expr, .. } => match expr.as_ref() {
             Expression::Literal {
                 value: Literal::Integer(i),
                 ..
-            } => Some(i.to_string()),
+            } => usize::try_from(*i).ok().filter(|index| *index > 0),
             Expression::Literal {
                 value: Literal::Real(v),
                 ..
-            } if v.is_finite() && v.fract() == 0.0 => Some((*v as i64).to_string()),
+            } if v.is_finite() && v.fract() == 0.0 => {
+                usize::try_from(*v as i64).ok().filter(|index| *index > 0)
+            }
             _ => None,
         },
         _ => None,
@@ -228,11 +245,11 @@ fn append_subscripts(base: String, subscripts: &[Subscript]) -> Option<String> {
     if subscripts.is_empty() {
         return Some(base);
     }
-    let mut idx = Vec::with_capacity(subscripts.len());
+    let mut indices = Vec::with_capacity(subscripts.len());
     for sub in subscripts {
-        idx.push(scalar_subscript_string(sub)?);
+        indices.push(scalar_subscript_index(sub)?);
     }
-    Some(format!("{base}[{}]", idx.join(",")))
+    Some(crate::format_subscript_key(&base, &indices))
 }
 
 fn expr_exact_name(expr: &Expression) -> Option<String> {
@@ -274,7 +291,7 @@ pub fn expr_refers_to_var(expr: &Expression, var_name: &VarName) -> bool {
         return true;
     }
     // For indexed targets, require exact index/path match to avoid cross-index collisions.
-    if var_name.as_str().contains('[') {
+    if valid_component_has_embedded_subscripts(var_name.as_str()).unwrap_or(false) {
         return false;
     }
     let Some(expr_base) = expr_base_name_inner(expr) else {
@@ -298,7 +315,7 @@ impl DerivativeNameMatcher {
         let mut base_names = IndexSet::new();
         for name in names {
             exact_names.insert(name.id());
-            if !name.as_str().contains('[') && component_base_name(name.as_str()).is_some() {
+            if valid_unsubscripted_component_id(name).is_some() {
                 base_names.insert(name.id());
             }
         }
@@ -340,7 +357,11 @@ impl DerivativeNameMatcher {
     }
 
     fn base_name_matches(&self, name: &Reference) -> bool {
-        if !name.as_str().contains('[') {
+        let Some(has_embedded_subscripts) = valid_component_has_embedded_subscripts(name.as_str())
+        else {
+            return false;
+        };
+        if !has_embedded_subscripts {
             return self.base_names.contains(&name.var_name().id());
         }
         component_base_name(name.as_str())
@@ -356,12 +377,7 @@ struct SingleDerivativeNameMatcher {
 
 impl SingleDerivativeNameMatcher {
     fn from_var_name(name: &VarName) -> Self {
-        let base_name =
-            if !name.as_str().contains('[') && component_base_name(name.as_str()).is_some() {
-                Some(name.id())
-            } else {
-                None
-            };
+        let base_name = valid_unsubscripted_component_id(name);
         Self {
             exact_name: name.id(),
             base_name,
@@ -404,7 +420,11 @@ impl SingleDerivativeNameMatcher {
         let Some(base_id) = self.base_name else {
             return false;
         };
-        if !name.as_str().contains('[') {
+        let Some(has_embedded_subscripts) = valid_component_has_embedded_subscripts(name.as_str())
+        else {
+            return false;
+        };
+        if !has_embedded_subscripts {
             return name.var_name().id() == base_id;
         }
         component_base_name(name.as_str())

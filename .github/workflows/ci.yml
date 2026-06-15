@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ['main']
+    tags: ['v*']
   pull_request:
     branches: ['main']
 
@@ -27,7 +28,7 @@ permissions:
 jobs:
   detect-release-tag:
     name: Detect release tag on commit
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     outputs:
       is_release: ${{ steps.detect.outputs.is_release }}
@@ -240,8 +241,11 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo xtask verify examples
 
+      # `!cancelled()` keeps the test step running when the example smoke step
+      # fails, so a smoke regression cannot hide test failures (the job still
+      # fails on the smoke step).
       - name: Run tests (Linux monitored)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         env:
           REQUIRE_MSL_FMT_DRIFT: "1"
         shell: bash
@@ -263,7 +267,7 @@ jobs:
           cargo xtask verify workspace
 
       - name: Run tests
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && !cancelled()
         env:
           REQUIRE_MSL_FMT_DRIFT: "1"
         run: cargo xtask verify workspace
@@ -274,34 +278,36 @@ jobs:
   template-runtime-tests:
     name: Template Runtime Tests
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/cognipilot/rumoca-dev:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - name: Install Rust toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
-
-      - name: Install Python template runtime dependencies
-        run: python3 -m pip install --upgrade pip numpy sympy casadi
+          apt-get update
+          apt-get install -y libudev-dev
 
       - name: Cache cargo
         uses: actions/cache@v5
         continue-on-error: true
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+            /opt/rumoca/cargo/registry
+            /opt/rumoca/cargo/git
           key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # No-op once the dev image ships it (core-requirements.txt); kept so the
+      # symforce runtime tests exercise the real package even on a stale image
+      # instead of silently skipping.
+      - name: Ensure symforce runtime dependency
+        run: pip install --no-cache-dir 'symforce==0.11.0'
 
       - name: Run template runtime checks
         run: cargo xtask verify template-runtimes
@@ -546,20 +552,17 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
+      # Track the latest OpenModelica from the official Ubuntu apt repository
+      # (same channel developers install locally) instead of pinning .deb
+      # versions. The quality-gate context check compares the *numeric release*
+      # only (1.27.0~dev.beta.1 ≡ 1.27.0), so channel rebuilds don't trip the
+      # gate; an actual release bump fails loudly until the baseline is
+      # re-promoted from a CI artifact of the new version.
       - name: Install OpenModelica
         shell: bash
         run: |
           set -euo pipefail
-          omc_version="1.26.8-1"
-          expected_omc_version="OpenModelica ${omc_version%-1}"
-          if command -v omc >/dev/null 2>&1; then
-            current_omc_version="$(omc --version)"
-            echo "OpenModelica already available: $current_omc_version"
-            if [[ "$current_omc_version" == "$expected_omc_version" ]]; then
-              exit 0
-            fi
-            echo "Replacing OpenModelica with pinned CI version $expected_omc_version"
-          fi
+          omc_channel="stable"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
@@ -567,28 +570,19 @@ jobs:
             clang \
             cmake \
             curl \
+            gnupg \
             libexpat1-dev \
             liblapack-dev \
+            lsb-release \
             unzip \
             zip
-          omc_deb_dir="$(mktemp -d)"
-          trap 'rm -rf "$omc_deb_dir"' EXIT
-          omc_deb_base="https://build.openmodelica.org/apt/pool/contrib-noble"
-          for package in \
-            "omc-common_${omc_version}_all.deb" \
-            "libomcsimulation_${omc_version}_amd64.deb" \
-            "libomc_${omc_version}_amd64.deb" \
-            "omc_${omc_version}_amd64.deb"
-          do
-            curl -fsSL -o "$omc_deb_dir/$package" "$omc_deb_base/$package"
-          done
-          sudo apt-get install -y --no-install-recommends "$omc_deb_dir"/*.deb
-          installed_omc_version="$(omc --version)"
-          if [[ "$installed_omc_version" != "$expected_omc_version" ]]; then
-            echo "Expected $expected_omc_version, got $installed_omc_version" >&2
-            exit 1
-          fi
-          echo "$installed_omc_version"
+          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
+            | sudo tee /etc/apt/sources.list.d/openmodelica.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends omc
+          omc --version
 
       - name: Clean stale MSL results
         shell: bash
@@ -761,6 +755,10 @@ jobs:
   # ============================================================================
   build-wasm:
     name: Build WASM
+    # Release artifacts are built on PRs (pre-merge validation) and on the
+    # release tag (the run that deploys). A direct main push doesn't rebuild,
+    # so a release commit's heavy build runs exactly once — on the tag.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -797,6 +795,24 @@ jobs:
       - name: Run WASM CI gate
         run: cargo xtask wasm test
 
+      - name: Build optimized npm packages
+        # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
+        # via the gate above. BOTH packages compile Modelica and emit code from
+        # every IR (AST/flat/DAE/solve) — they are equally capable for codegen.
+        # The only difference is the bundled solver RUNTIME for in-package
+        # simulation:
+        #   full-web -> @cognipilot/rumoca       (+ rk45 runtime; browser-safe —
+        #                                          diffsol is excluded, it pulls a
+        #                                          non-browser-safe relaxed-SIMD graph)
+        #   core     -> @cognipilot/rumoca-core  (no bundled solver — bring your own)
+        # These overwrite the gate's unoptimized full-web so gh-pages and the
+        # wasm-package artifact (published on release by the deploy job) both
+        # get the optimized build.
+        if: github.event_name == 'push'
+        run: |
+          node packaging/npm/build.mjs --profile release --variant full-web --optimize
+          node packaging/npm/build.mjs --profile release --variant core --optimize
+
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
 
@@ -818,6 +834,12 @@ jobs:
           cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_gpu.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          # Lazy diffsol addon (driver + its separate relaxed-SIMD module), so
+          # the live examples can run stiff solves on supporting browsers.
+          cp "pkg/$PKG_SUBDIR/rumoca_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_diffsol_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
           cp "pkg/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
           cp "pkg/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
           cp -r "pkg/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
@@ -852,8 +874,11 @@ jobs:
 
   deploy-pages:
     name: Deploy Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RUMOCA_DEPLOY_PAGES == 'true'
-    needs: [build-wasm]
+    # Publish the docs/WASM site only on a release. Gated to the tag-push event
+    # (not the co-pushed main branch ref) so a `git push origin main vX.Y.Z`
+    # deploys exactly once instead of racing a duplicate from the branch push.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, build-wasm]
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
@@ -868,6 +893,8 @@ jobs:
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
+    # Built on PRs and on the release tag only (see Build WASM note).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -999,6 +1026,8 @@ jobs:
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
+    # Built on PRs and on the release tag only (see Build WASM note).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -1070,6 +1099,8 @@ jobs:
 
   build-python-sdist:
     name: Build Python sdist
+    # Built on PRs and on the release tag only (see Build WASM note).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1120,8 +1151,12 @@ jobs:
   # ============================================================================
   deploy:
     name: Deploy
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-rust-binaries, build-python-wheels, build-python-sdist]
+    # Gated to the tag-push event only. A release pushes main and the v* tag
+    # together, which fires two CI runs (branch + tag); deploying on both made
+    # the second run fail on "Release.tag_name already exists". Tag-only means
+    # the release/publish path runs exactly once.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1132,11 +1167,17 @@ jobs:
 
       - name: Verify tag is on main
         run: |
-          if ! git tag --points-at "${{ github.sha }}" | grep -Fx "${{ needs.detect-release-tag.outputs.tag }}" >/dev/null; then
-            echo "::error::Detected release tag '${{ needs.detect-release-tag.outputs.tag }}' is not on commit ${{ github.sha }}"
+          tag='${{ needs.detect-release-tag.outputs.tag }}'
+          if ! git tag --points-at "${{ github.sha }}" | grep -Fx "$tag" >/dev/null; then
+            echo "::error::Release tag '$tag' does not point at built commit ${{ github.sha }}"
             exit 1
           fi
-          echo "Release tag '${{ needs.detect-release-tag.outputs.tag }}' points to current main commit"
+          git fetch --no-tags --depth=2147483647 origin main
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "::error::Release tag '$tag' commit ${{ github.sha }} is not on origin/main; refusing to release"
+            exit 1
+          fi
+          echo "Release tag '$tag' points to commit ${{ github.sha }} on origin/main"
 
       - name: Get tag name
         id: tag
@@ -1252,7 +1293,9 @@ jobs:
           echo "=== Release assets ==="
           ls -la release-assets/
 
-      # Create GitHub Release
+      # Create GitHub Release. Deploy is gated to the tag-push event (see the
+      # job `if:` above), so this runs exactly once per release and a fresh tag
+      # never collides with an existing release.
       - name: Create GitHub Release
         run: |
           gh release create ${{ steps.tag.outputs.name }} \
@@ -1337,5 +1380,37 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Setup Node.js for npm publish
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish npm package to npmjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Two packages: the batteries-included build and the compile/codegen
+          # build (no solver runtime). Both are wasm-opt'd in build-wasm.
+          for variant in release-full-web release-core; do
+            pkg_dir="artifacts/wasm-package/$variant"
+            if [ ! -f "$pkg_dir/package.json" ]; then
+              echo "::error::npm package not found at $pkg_dir (build-wasm must build the $variant variant)"
+              exit 1
+            fi
+            name="$(node -p "require('./$pkg_dir/package.json').name")"
+            version="$(node -p "require('./$pkg_dir/package.json').version")"
+            echo "Preparing to publish $name@$version"
+            # Idempotent like the PyPI --skip-existing above: re-running a release
+            # must not fail just because a version is already on the registry.
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already published; skipping."
+              continue
+            fi
+            npm publish "$pkg_dir" --access public
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Rust binary and VS Code extension artifacts are distributed via GitHub Releases.

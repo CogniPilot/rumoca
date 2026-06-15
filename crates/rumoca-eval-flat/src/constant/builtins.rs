@@ -611,10 +611,24 @@ fn eval_cat(args: &[Value], span: Span) -> Result<Value, EvalError> {
     Ok(Value::Array(result))
 }
 
-// String: convert value to string
+// String: convert a scalar non-String value to String (MLS §3.7.1).
 fn eval_string_convert(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
-    Ok(Value::String(args[0].to_string()))
+    let value = match &args[0] {
+        Value::Real(value) => value.to_string(),
+        Value::Integer(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Enum(_, literal) => literal.clone(),
+        Value::String(_) => return Err(EvalError::type_mismatch("non-String", "String", span)),
+        Value::Array(_) | Value::Record(_) => {
+            return Err(EvalError::type_mismatch(
+                "scalar non-String",
+                args[0].type_name(),
+                span,
+            ));
+        }
+    };
+    Ok(Value::String(value))
 }
 
 /// isEqual: Compare two arrays/matrices for numerical equality.

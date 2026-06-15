@@ -1,6 +1,7 @@
 use crate::ToDaeError;
 use crate::path_utils::{normalized_top_level_names, path_is_in_top_level_set};
 use indexmap::IndexSet;
+use rumoca_core::SourceSpan;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
@@ -122,7 +123,7 @@ pub(crate) fn count_overconstrained_interface(
         for (rec_path, &comp_id) in &comp_of {
             let matches = rec_path.starts_with(pot_root.as_str())
                 || pot_root.starts_with(*rec_path)
-                || crate::path_utils::rendered_top_level_segment(rec_path)
+                || crate::path_utils::first_rendered_segment(rec_path)
                     .is_some_and(|prefix| pot_root.starts_with(prefix));
             if matches && !has_root[comp_id] {
                 // Select this potential root (first one encountered per component)
@@ -262,6 +263,78 @@ fn relabel_component_ids(comp_of: &mut FxHashMap<&str, usize>, keep: usize, repl
             *v = keep;
         }
     }
+}
+
+/// MLS §9.4 / CONN-014, CONN-015: required spanning-tree edges
+/// (Connections.branch) must form a forest, and no two definite roots may be
+/// connected through required edges.
+pub(crate) fn validate_connection_graph(flat: &flat::Model) -> Result<(), ToDaeError> {
+    let mut parent: FxHashMap<&str, &str> = FxHashMap::default();
+
+    fn find<'a>(parent: &FxHashMap<&'a str, &'a str>, mut node: &'a str) -> &'a str {
+        while let Some(&up) = parent.get(node) {
+            if up == node {
+                break;
+            }
+            node = up;
+        }
+        node
+    }
+
+    for (a, b) in &flat.branches {
+        parent.entry(a.as_str()).or_insert(a.as_str());
+        parent.entry(b.as_str()).or_insert(b.as_str());
+        let root_a = find(&parent, a.as_str());
+        let root_b = find(&parent, b.as_str());
+        if root_a == root_b {
+            // CONN-014: this required edge closes a cycle.
+            return Err(ToDaeError::InvalidConnectionGraph {
+                detail: format!(
+                    "Connections.branch({a}, {b}) closes a cycle among required spanning-tree edges"
+                ),
+                span: connection_graph_span(flat, a),
+            });
+        }
+        parent.insert(root_a, root_b);
+    }
+
+    // CONN-015: at most one definite root per required-edge tree.
+    let mut root_of_tree: FxHashMap<&str, &str> = FxHashMap::default();
+    for root in &flat.definite_roots {
+        // Match the declared root to a branch endpoint (the root may name the
+        // connector or a record inside it).
+        let Some(node) = parent.keys().copied().find(|node| {
+            *node == root.as_str()
+                || node.starts_with(root.as_str()) && node.as_bytes().get(root.len()) == Some(&b'.')
+                || root.starts_with(*node) && root.as_bytes().get(node.len()) == Some(&b'.')
+        }) else {
+            continue;
+        };
+        let tree = find(&parent, node);
+        if let Some(previous) = root_of_tree.insert(tree, root.as_str())
+            && previous != root.as_str()
+        {
+            return Err(ToDaeError::InvalidConnectionGraph {
+                detail: format!(
+                    "definite roots '{previous}' and '{root}' are connected through required spanning-tree edges"
+                ),
+                span: connection_graph_span(flat, root),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Span of a variable under the given connector path, for pointing the user
+/// at the offending part of the connection graph.
+fn connection_graph_span(flat: &flat::Model, path: &str) -> SourceSpan {
+    let span = flat
+        .variables
+        .values()
+        .find(|var| var.name.as_str().starts_with(path))
+        .map(|var| var.source_span)
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    rumoca_core::span_to_source_span(span)
 }
 
 #[cfg(test)]

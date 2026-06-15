@@ -416,3 +416,25 @@ fn pkg_package_with_class() {
     "#,
     );
 }
+
+// =============================================================================
+// PKG-004: MODELICAPATH search
+// "Top-level names lookup starts lexically before searching MODELICAPATH"
+// (an unknown top-level package is a loud resolve error)
+// =============================================================================
+
+#[test]
+fn pkg_004_unknown_top_level_package_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            UnknownTopLevelPkg.Foo f;
+            Real x(start = 0);
+        equation
+            der(x) = 1;
+        end Test;
+    "#,
+        "Test",
+        "ER002",
+    );
+}

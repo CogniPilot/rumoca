@@ -1,3 +1,5 @@
+import { registerModelicaLanguage } from './modelica_language.js';
+
 export function setupMonacoWorkspace({ monaco, sendLanguageCommand, layoutAllEditors }) {
     let editor;
     const sourceEditorOptions = {
@@ -26,14 +28,8 @@ end Ball;`,
         semanticHighlighting: true,
         'semanticHighlighting.enabled': true
     };
-monaco.languages.register({ id: 'modelica' });
+registerModelicaLanguage(monaco);
 monaco.languages.register({ id: 'jinja2' });
-monaco.languages.setLanguageConfiguration('modelica', {
-    comments: {
-        lineComment: '//',
-        blockComment: ['/*', '*/']
-    }
-});
 monaco.languages.setLanguageConfiguration('jinja2', {
     comments: {
         blockComment: ['{#', '#}']
@@ -243,66 +239,6 @@ monaco.languages.registerCompletionItemProvider('jinja2', {
         const dynamicCompletions = getDynamicDaeCompletions(window.currentDaeForCompletions);
 
         return { suggestions: [...dynamicCompletions, ...daeFields, ...snippets] };
-    }
-});
-
-monaco.languages.setMonarchTokensProvider('modelica', {
-    keywords: [
-        'algorithm', 'and', 'annotation', 'assert', 'block', 'break',
-        'class', 'connect', 'connector', 'constant', 'constrainedby',
-        'der', 'discrete', 'each', 'else', 'elseif', 'elsewhen',
-        'encapsulated', 'end', 'enumeration', 'equation', 'expandable',
-        'extends', 'external', 'false', 'final', 'flow', 'for',
-        'function', 'if', 'import', 'impure', 'in', 'initial',
-        'inner', 'input', 'loop', 'model', 'not', 'operator',
-        'or', 'outer', 'output', 'package', 'parameter', 'partial',
-        'protected', 'public', 'pure', 'record', 'redeclare',
-        'replaceable', 'return', 'stream', 'then', 'true', 'type',
-        'when', 'while', 'within'
-    ],
-    types: ['Real', 'Integer', 'Boolean', 'String'],
-    builtins: [
-        // Event/state functions
-        'der', 'pre', 'edge', 'change', 'initial', 'terminal', 'sample',
-        'smooth', 'delay', 'cardinality', 'homotopy', 'semiLinear',
-        'inStream', 'actualStream', 'getInstanceName', 'spatialDistribution',
-        'reinit', 'assert', 'terminate',
-        // Math functions
-        'abs', 'sign', 'sqrt', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-        'sinh', 'cosh', 'tanh', 'exp', 'log', 'log10',
-        'floor', 'ceil', 'mod', 'rem', 'div', 'integer',
-        // Array functions
-        'size', 'ndims', 'scalar', 'vector', 'matrix', 'transpose',
-        'outerProduct', 'symmetric', 'cross', 'skew', 'identity', 'diagonal',
-        'zeros', 'ones', 'fill', 'linspace', 'min', 'max', 'sum', 'product', 'cat',
-        // Builtin variables/special names frequently used in expressions
-        'time', 'noEvent', 'Connections'
-    ],
-    tokenizer: {
-        root: [
-            [/[a-zA-Z_]\w*/, {
-                cases: {
-                    '@keywords': 'keyword',
-                    '@types': 'type',
-                    '@builtins': 'predefined',
-                    '@default': 'identifier'
-                }
-            }],
-            [/[{}()\[\]]/, 'delimiter.bracket'],
-            [/[;,.]/, 'delimiter'],
-            // Comments must be matched before '/' operator tokens.
-            [/\/\/.*$/, 'comment'],
-            [/\/\*/, 'comment', '@comment'],
-            [/[<>=!]+/, 'operator'],
-            [/[+\-*\/^:]/, 'operator'],
-            [/\d+\.?\d*([eE][-+]?\d+)?/, 'number'],
-            [/"([^"\\]|\\.)*"/, 'string'],
-        ],
-        comment: [
-            [/[^/*]+/, 'comment'],
-            [/\*\//, 'comment', '@pop'],
-            [/[/*]/, 'comment']
-        ],
     }
 });
 

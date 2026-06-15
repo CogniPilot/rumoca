@@ -27,7 +27,7 @@
         "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
     ]
 } %}
-{% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy) %}
+{% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy, dae.symbol_aliases) %}
 {% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
 {% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
 {% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}

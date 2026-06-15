@@ -15,7 +15,7 @@ use crate::Context;
 use crate::FlattenError;
 use crate::connections_builtin::extract_potential_root_priority;
 use crate::equations::build_qualified_name;
-use crate::path_utils::{find_last_top_level_dot, split_path_with_indices, strip_array_index};
+use crate::path_utils::{scope_split, segments, strip_array_index};
 
 /// Result of the VCG spanning tree computation.
 pub(crate) struct VcgResult {
@@ -342,8 +342,8 @@ fn build_vcg_node_index<'a>(vcg_nodes: &FxHashSet<&'a str>) -> VcgNodeIndex<'a> 
 fn extract_overconstrained_suffixes(vcg_nodes: &FxHashSet<&str>) -> FxHashSet<String> {
     let mut suffixes = FxHashSet::default();
     for node in vcg_nodes {
-        if let Some(dot_pos) = find_last_top_level_dot(node) {
-            suffixes.insert(node[dot_pos..].to_string());
+        if let Some((_, leaf)) = scope_split(node) {
+            suffixes.insert(format!(".{leaf}"));
         }
     }
     suffixes
@@ -477,8 +477,8 @@ fn normalize_edge_key(a: &str, b: &str) -> (String, String) {
 /// resolution may wildcard omitted array indices, but it must preserve any
 /// indices explicitly named in the connect/root/branch endpoint.
 fn vcg_endpoint_matches_node(endpoint: &str, candidate: &str) -> bool {
-    let endpoint_parts = split_path_with_indices(endpoint);
-    let candidate_parts = split_path_with_indices(candidate);
+    let endpoint_parts = segments(endpoint);
+    let candidate_parts = segments(candidate);
     if endpoint_parts.len() != candidate_parts.len() {
         return false;
     }
@@ -488,7 +488,8 @@ fn vcg_endpoint_matches_node(endpoint: &str, candidate: &str) -> bool {
         .zip(candidate_parts)
         .all(|(endpoint_part, candidate_part)| {
             strip_array_index(endpoint_part) == strip_array_index(candidate_part)
-                && (!endpoint_part.contains('[') || endpoint_part == candidate_part)
+                && (rumoca_core::split_trailing_subscript_suffix(endpoint_part).is_none()
+                    || endpoint_part == candidate_part)
         })
 }
 

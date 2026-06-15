@@ -5,24 +5,24 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("test.p"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("test.p"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("test.conn.field"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("test.conn.field"),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             connected: true,
             dims: vec![2, 3],
             ..Default::default()
-        },
+        }),
     );
 
     add_component_equation(&mut flat, "test.conn[1].field[2]", make_var_ref("test.p"));
@@ -51,10 +51,15 @@ fn test_model_description_propagation() {
     let mut flat = flat::Model::new();
     flat.model_description = Some("Test model description".to_string());
 
-    // Add a simple variable to make it valid
+    // Add a simple variable to make it valid. Producers must attach the
+    // structured component reference (DAE provenance contract).
     let var = rumoca_ir_flat::Variable {
         name: "x".into(),
         variability: rumoca_core::Variability::Parameter(Default::default()),
+        component_ref: rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("x"),
+            rumoca_core::Span::DUMMY,
+        ),
         ..Default::default()
     };
     flat.add_variable("x".into(), var);

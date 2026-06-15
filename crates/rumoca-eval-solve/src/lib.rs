@@ -17,7 +17,7 @@ use std::{
 
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
-    SolveEventPartition, UnaryOp,
+    SolveEventMessagePart, SolveEventPartition, UnaryOp,
 };
 
 mod compute_block_scalarize;
@@ -118,6 +118,13 @@ pub enum EvalSolveError {
         rows: usize,
         actions: usize,
     },
+    MissingRuntimeState {
+        operation: &'static str,
+    },
+    RandomStateProjectionOutOfBounds {
+        index: usize,
+        len: usize,
+    },
 }
 
 impl std::fmt::Display for EvalSolveError {
@@ -182,6 +189,14 @@ impl std::fmt::Display for EvalSolveError {
             Self::EventActionConditionMismatch { rows, actions } => write!(
                 f,
                 "event action condition row count {rows} does not match event action count {actions}"
+            ),
+            Self::MissingRuntimeState { operation } => write!(
+                f,
+                "missing simulation runtime state while evaluating Solve-IR {operation}"
+            ),
+            Self::RandomStateProjectionOutOfBounds { index, len } => write!(
+                f,
+                "random state projection index {index} is out of bounds for state length {len}"
             ),
         }
     }
@@ -464,23 +479,47 @@ pub fn eval_event_action_request(
         match action.kind {
             SolveEventActionKind::Assert => {
                 return Ok(EventActionRequest::AssertionFailed {
-                    message: action
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "assertion failed".to_string()),
+                    message: eval_event_action_message(action, y, p, t, context)?,
                 });
             }
             SolveEventActionKind::Terminate => {
                 return Ok(EventActionRequest::Terminate {
-                    message: action
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "simulation terminated".to_string()),
+                    message: eval_event_action_message(action, y, p, t, context)?,
                 });
             }
         }
     }
     Ok(EventActionRequest::Continue)
+}
+
+fn eval_event_action_message(
+    action: &rumoca_ir_solve::SolveEventAction,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    context: RowEvalContext<'_>,
+) -> Result<String, EvalSolveError> {
+    let mut message = String::new();
+    for part in &action.message.parts {
+        match part {
+            SolveEventMessagePart::Text(text) => message.push_str(text),
+            SolveEventMessagePart::Number(row) => {
+                message.push_str(&eval_event_message_number(row, y, p, t, context)?);
+            }
+        }
+    }
+    Ok(message)
+}
+
+fn eval_event_message_number(
+    row: &[LinearOp],
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    context: RowEvalContext<'_>,
+) -> Result<String, EvalSolveError> {
+    let value = eval_row_with_context(row, y, p, t, context)?;
+    Ok(format!("{value}"))
 }
 
 pub fn eval_row(
@@ -866,7 +905,7 @@ fn apply_random_op(
                 regs,
                 initialized,
                 dst,
-                projected_random_value(&values, state_index),
+                projected_random_value(&values, state_index)?,
             )?;
         }
         LinearOp::RandomResult {
@@ -892,7 +931,7 @@ fn apply_random_op(
                 regs,
                 initialized,
                 dst,
-                projected_random_value(&next_state, state_index),
+                projected_random_value(&next_state, state_index)?,
             )?;
         }
         LinearOp::ImpureRandomInit { dst, seed } => {
@@ -905,7 +944,7 @@ fn apply_random_op(
                 regs,
                 initialized,
                 dst,
-                impure_random_sample(id, call_site, t, impure_random_mutex(context)),
+                impure_random_sample(id, call_site, t, impure_random_mutex(context)?),
             )?;
         }
         LinearOp::ImpureRandomInteger {
@@ -925,7 +964,7 @@ fn apply_random_op(
             };
             let span = (hi - lo + 1).max(1) as f64;
             let y = lo as f64
-                + (impure_random_sample(id, call_site, t, impure_random_mutex(context)) * span)
+                + (impure_random_sample(id, call_site, t, impure_random_mutex(context)?) * span)
                     .floor();
             set(regs, initialized, dst, y.clamp(lo as f64, hi as f64))?;
         }

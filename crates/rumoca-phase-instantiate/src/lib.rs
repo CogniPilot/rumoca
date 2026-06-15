@@ -1,9 +1,4 @@
-#![allow(clippy::too_many_arguments, clippy::too_many_lines)]
-
 //! Instantiation phase for the Rumoca compiler.
-//!
-//! SPEC_0021 file-size exception: split plan is to move focused helpers and
-//! tests into owned submodules after BOPTEST parity stabilization.
 //!
 //! This crate implements the instantiation pass that converts a ast::ResolvedTree to an ast::InstancedTree.
 //! It finds the root model, applies modifications recursively, evaluates structural
@@ -42,6 +37,7 @@
 
 mod array_expansion;
 mod attributes;
+mod component_loop;
 mod connections;
 mod dims;
 mod errors;
@@ -51,6 +47,8 @@ mod instance_sections;
 mod mod_env;
 mod nested_scope;
 mod package_constant_imports;
+mod path_utils;
+mod plug_compat;
 mod source_scope;
 mod templates;
 mod traversal_adapter;
@@ -58,19 +56,21 @@ mod type_lookup;
 mod type_overrides;
 
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, ResolveClassComponents, evaluate_array_dimensions,
-    evaluate_component_condition, extract_binding, extract_bool_params_with_mods,
-    extract_int_params_with_mods, generate_array_indices, propagate_record_alias_integer_params,
+    InstantiateEvalCtx, evaluate_array_dimensions, evaluate_component_condition, extract_binding,
+    extract_bool_params_with_mods, extract_int_params_with_mods, generate_array_indices,
+    propagate_record_alias_integer_params,
 };
 
 use rumoca_core::Diagnostics;
-use rumoca_core::{DefId, Span, TypeId, split_path_with_indices};
+use rumoca_core::{DefId, Span, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
-use std::cell::RefCell;
 
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
+use component_loop::{
+    ComponentImports, component_flow_stream, component_type_id, instantiate_effective_components,
+};
 use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
@@ -272,8 +272,6 @@ pub struct InstantiateContext {
     /// Active package/type redeclarations inherited from enclosing component scopes.
     active_type_overrides: Vec<TypeOverrideMap>,
     active_package_constant_aliases: Vec<(String, DefId)>,
-    /// Diagnostic-only count of entered class instantiations.
-    instantiated_class_entries: u64,
 }
 
 impl InstantiateContext {
@@ -320,7 +318,6 @@ impl InstantiateContext {
             source_scope_index: SourceScopeIndex::default(),
             active_type_overrides: Vec::new(),
             active_package_constant_aliases: Vec::new(),
-            instantiated_class_entries: 0,
         }
     }
 
@@ -405,253 +402,6 @@ impl InstantiateContext {
             merged.insert(k.clone(), *v);
         }
         merged
-    }
-
-    fn resolve_integer_modifier_aliases(
-        &self,
-        local: &mut rustc_hash::FxHashMap<String, i64>,
-        mod_env: &ast::ModificationEnvironment,
-    ) {
-        for (path, value) in &mod_env.active {
-            let key = path.to_flat_string();
-            if key.is_empty() {
-                continue;
-            }
-            let Some(value) =
-                self.eval_integer_modifier_alias(&value.value, value.source_scope.as_ref(), local)
-            else {
-                continue;
-            };
-            local.insert(key, value);
-        }
-    }
-
-    fn refresh_integer_component_bindings(
-        &self,
-        local: &mut rustc_hash::FxHashMap<String, i64>,
-        effective_components: &IndexMap<String, ast::Component>,
-    ) {
-        for _ in 0..8 {
-            let mut changed = false;
-            for (name, component) in effective_components {
-                changed |= self.refresh_integer_component_binding(name, component, local);
-            }
-            if !changed {
-                break;
-            }
-        }
-    }
-
-    fn refresh_integer_component_binding(
-        &self,
-        name: &str,
-        component: &ast::Component,
-        local: &mut rustc_hash::FxHashMap<String, i64>,
-    ) -> bool {
-        let Some(value_expr) = integer_component_binding_expr(component) else {
-            return false;
-        };
-        let Some(value) = self.eval_integer_modifier_alias(value_expr, None, local) else {
-            return false;
-        };
-        local.insert(name.to_string(), value) != Some(value)
-    }
-
-    fn eval_integer_modifier_alias(
-        &self,
-        expr: &ast::Expression,
-        source_scope: Option<&ast::QualifiedName>,
-        local: &rustc_hash::FxHashMap<String, i64>,
-    ) -> Option<i64> {
-        match expr {
-            ast::Expression::Terminal {
-                terminal_type: ast::TerminalType::UnsignedInteger,
-                token,
-                ..
-            } => token.text.parse().ok(),
-            ast::Expression::ComponentReference(reference)
-                if !reference.parts.is_empty()
-                    && reference.parts.iter().all(|part| part.subs.is_none()) =>
-            {
-                self.lookup_integer_modifier_reference(reference, source_scope, local)
-            }
-            ast::Expression::Unary { op, rhs, .. } => {
-                let value = self.eval_integer_modifier_alias(rhs, source_scope, local)?;
-                match op {
-                    rumoca_core::OpUnary::Minus => Some(-value),
-                    rumoca_core::OpUnary::Plus => Some(value),
-                    _ => None,
-                }
-            }
-            ast::Expression::Binary { op, lhs, rhs, .. } => {
-                let lhs = self.eval_integer_modifier_alias(lhs, source_scope, local)?;
-                let rhs = self.eval_integer_modifier_alias(rhs, source_scope, local)?;
-                rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
-            }
-            ast::Expression::Parenthesized { inner, .. } => {
-                self.eval_integer_modifier_alias(inner, source_scope, local)
-            }
-            ast::Expression::FunctionCall { comp, args, .. } => {
-                self.eval_integer_modifier_function(comp, args, source_scope, local)
-            }
-            ast::Expression::If {
-                branches,
-                else_branch,
-                ..
-            } => self.eval_integer_if_modifier_alias(branches, else_branch, source_scope, local),
-            _ => None,
-        }
-    }
-
-    fn eval_integer_if_modifier_alias(
-        &self,
-        branches: &[(ast::Expression, ast::Expression)],
-        else_branch: &ast::Expression,
-        source_scope: Option<&ast::QualifiedName>,
-        local: &rustc_hash::FxHashMap<String, i64>,
-    ) -> Option<i64> {
-        for (condition, value) in branches {
-            if self.eval_bool_modifier_alias(condition, source_scope, local)? {
-                return self.eval_integer_modifier_alias(value, source_scope, local);
-            }
-        }
-        self.eval_integer_modifier_alias(else_branch, source_scope, local)
-    }
-
-    fn eval_bool_modifier_alias(
-        &self,
-        expr: &ast::Expression,
-        source_scope: Option<&ast::QualifiedName>,
-        local: &rustc_hash::FxHashMap<String, i64>,
-    ) -> Option<bool> {
-        match expr {
-            ast::Expression::Terminal {
-                terminal_type: ast::TerminalType::Bool,
-                token,
-                ..
-            } => match token.text.as_ref() {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => None,
-            },
-            ast::Expression::Parenthesized { inner, .. } => {
-                self.eval_bool_modifier_alias(inner, source_scope, local)
-            }
-            ast::Expression::Unary {
-                op: rumoca_core::OpUnary::Not,
-                rhs,
-                ..
-            } => Some(!self.eval_bool_modifier_alias(rhs, source_scope, local)?),
-            ast::Expression::Binary { op, lhs, rhs, .. } => match op {
-                rumoca_core::OpBinary::And => Some(
-                    self.eval_bool_modifier_alias(lhs, source_scope, local)?
-                        && self.eval_bool_modifier_alias(rhs, source_scope, local)?,
-                ),
-                rumoca_core::OpBinary::Or => Some(
-                    self.eval_bool_modifier_alias(lhs, source_scope, local)?
-                        || self.eval_bool_modifier_alias(rhs, source_scope, local)?,
-                ),
-                rumoca_core::OpBinary::Eq
-                | rumoca_core::OpBinary::Neq
-                | rumoca_core::OpBinary::Lt
-                | rumoca_core::OpBinary::Le
-                | rumoca_core::OpBinary::Gt
-                | rumoca_core::OpBinary::Ge => {
-                    let lhs = self.eval_integer_modifier_alias(lhs, source_scope, local)?;
-                    let rhs = self.eval_integer_modifier_alias(rhs, source_scope, local)?;
-                    match op {
-                        rumoca_core::OpBinary::Eq => Some(lhs == rhs),
-                        rumoca_core::OpBinary::Neq => Some(lhs != rhs),
-                        rumoca_core::OpBinary::Lt => Some(lhs < rhs),
-                        rumoca_core::OpBinary::Le => Some(lhs <= rhs),
-                        rumoca_core::OpBinary::Gt => Some(lhs > rhs),
-                        rumoca_core::OpBinary::Ge => Some(lhs >= rhs),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            },
-            ast::Expression::FunctionCall { comp, args, .. } => {
-                self.eval_bool_modifier_function(comp, args, source_scope, local)
-            }
-            _ => None,
-        }
-    }
-
-    fn eval_bool_modifier_function(
-        &self,
-        comp: &ast::ComponentReference,
-        args: &[ast::Expression],
-        source_scope: Option<&ast::QualifiedName>,
-        local: &rustc_hash::FxHashMap<String, i64>,
-    ) -> Option<bool> {
-        let name = comp.parts.last()?.ident.text.as_ref();
-        match name {
-            "isPowerOf2" if args.len() == 1 => {
-                let value = self.eval_integer_modifier_alias(&args[0], source_scope, local)?;
-                Some(value > 0 && (value & (value - 1)) == 0)
-            }
-            _ => None,
-        }
-    }
-
-    fn eval_integer_modifier_function(
-        &self,
-        comp: &ast::ComponentReference,
-        args: &[ast::Expression],
-        source_scope: Option<&ast::QualifiedName>,
-        local: &rustc_hash::FxHashMap<String, i64>,
-    ) -> Option<i64> {
-        let name = comp.parts.last()?.ident.text.as_ref();
-        let eval = |expr| self.eval_integer_modifier_alias(expr, source_scope, local);
-        match name {
-            "integer" if args.len() == 1 => eval(&args[0]),
-            "div" if args.len() == 2 => {
-                let lhs = eval(&args[0])?;
-                let rhs = eval(&args[1])?;
-                rumoca_core::eval_integer_div_builtin(lhs, rhs)
-            }
-            "max" if args.len() == 2 => Some(eval(&args[0])?.max(eval(&args[1])?)),
-            "min" if args.len() == 2 => Some(eval(&args[0])?.min(eval(&args[1])?)),
-            "numberOfSymmetricBaseSystems" if args.len() == 1 => {
-                number_of_symmetric_base_systems(eval(&args[0])?)
-            }
-            _ => None,
-        }
-    }
-
-    fn lookup_integer_modifier_reference(
-        &self,
-        reference: &ast::ComponentReference,
-        source_scope: Option<&ast::QualifiedName>,
-        local: &rustc_hash::FxHashMap<String, i64>,
-    ) -> Option<i64> {
-        let name = rumoca_core::ComponentPath::from_parts(
-            reference.parts.iter().map(|part| part.ident.text.as_ref()),
-        );
-        if name.as_str().contains('.')
-            && let Some(value) = self.known_int_params.get(name.as_str())
-        {
-            return Some(*value);
-        }
-        if let Some(value) = local.get(name.as_str()) {
-            return Some(*value);
-        }
-        if let Some(value) = self.known_int_params.get(name.as_str()) {
-            return Some(*value);
-        }
-        let scope = source_scope
-            .map(ast::QualifiedName::to_component_path)
-            .unwrap_or_default();
-        for candidate in rumoca_core::scoped_component_path_candidates(&name, &scope) {
-            if let Some(value) = local.get(candidate.as_str()) {
-                return Some(*value);
-            }
-            if let Some(value) = self.known_int_params.get(candidate.as_str()) {
-                return Some(*value);
-            }
-        }
-        None
     }
 
     /// Check if we're inside a flow record.
@@ -931,10 +681,6 @@ impl Default for InstantiateContext {
     }
 }
 
-fn maybe_log_instantiation_progress(ctx: &mut InstantiateContext, _class: &ast::ClassDef) {
-    ctx.instantiated_class_entries += 1;
-}
-
 /// Instantiate a ast::ResolvedTree, finding and instantiating the named model.
 ///
 /// This is the main entry point for instantiation.
@@ -984,14 +730,8 @@ fn create_synthetic_inner_component(
     ast::Component {
         name: mi.name.clone(),
         type_name: rumoca_ir_ast::Name {
-            name: split_path_with_indices(&mi.type_name)
-                .into_iter()
-                .map(|s| rumoca_core::Token {
-                    text: s.to_string().into(),
-                    ..rumoca_core::Token::default()
-                })
-                .collect(),
             def_id: mi.type_def_id,
+            ..rumoca_ir_ast::Name::from_string(&mi.type_name)
         },
         type_def_id: mi.type_def_id,
         inner: true,
@@ -1054,8 +794,7 @@ fn retry_with_synthetic_inners(
             &mut overlay,
             &empty_siblings,
             &empty_type_overrides,
-            &[],
-            &resolve_effective_components_for_eval,
+            ComponentImports::EMPTY,
         )
         .is_err()
         {
@@ -1210,7 +949,6 @@ fn instantiate_class(
 ) -> InstantiateResult<()> {
     ctx.validate_depth_limit(class, &tree.source_map)?;
     ctx.enter_instantiation_class(class, &tree.source_map)?;
-    maybe_log_instantiation_progress(ctx, class);
     ctx.push_inner_scope(); // Push a new inner scope for this class (MLS §5.4)
     let result = (|| {
         let instance_id = overlay.alloc_id();
@@ -1237,37 +975,13 @@ fn instantiate_class(
         // Extract integer parameter values for for-loop range evaluation
         // This enables proper handling of patterns like:
         // for k in 1:m loop connect(plug_p.pin[k], resistor[k].p); end for;
-        let eval_inheritance_cache = RefCell::new(InheritanceCache::default());
-        let eval_effective_components_cache =
-            RefCell::new(IndexMap::<DefId, IndexMap<String, ast::Component>>::default());
-        let resolve_eval_components = |tree: &ast::ClassTree, class: &ast::ClassDef| {
-            if let Some(def_id) = class.def_id
-                && let Some(cached) = eval_effective_components_cache.borrow().get(&def_id)
-            {
-                return cached.clone();
-            }
-            let components = get_effective_components_with_cache(
-                tree,
-                class,
-                &mut eval_inheritance_cache.borrow_mut(),
-            )
-            .expect("inheritance must be validated before resolving components for eval");
-            if let Some(def_id) = class.def_id {
-                eval_effective_components_cache
-                    .borrow_mut()
-                    .insert(def_id, components.clone());
-            }
-            components
-        };
         let eval_ctx = InstantiateEvalCtx {
             tree,
             mod_env: ctx.mod_env(),
             effective_components,
-            resolve_class_components: &resolve_eval_components,
+            resolve_class_components: &resolve_effective_components_for_eval,
         };
-        let mut int_params = extract_int_params_with_mods(&eval_ctx);
-        ctx.resolve_integer_modifier_aliases(&mut int_params, ctx.mod_env());
-        ctx.refresh_integer_component_bindings(&mut int_params, effective_components);
+        let int_params = extract_int_params_with_mods(&eval_ctx);
         ctx.register_known_int_params(&qualified_name, &int_params);
 
         // Instantiate each effective component (MLS §4.8 conditional components)
@@ -1290,13 +1004,11 @@ fn instantiate_class(
             &type_overrides,
             ctx,
             overlay,
-            &component_imports,
-            &resolve_eval_components,
+            ComponentImports {
+                qualification: &component_imports,
+                attributes: &resolved_imports,
+            },
         )?;
-
-        ctx.resolve_integer_modifier_aliases(&mut int_params, ctx.mod_env());
-        ctx.refresh_integer_component_bindings(&mut int_params, effective_components);
-        ctx.register_known_int_params(&qualified_name, &int_params);
 
         // Rebuild merged integer params after nested component instantiation so that
         // record-field integers (e.g., cellData.nRC) are available for top-level
@@ -1363,120 +1075,6 @@ fn instantiate_class(
     result
 }
 
-fn number_of_symmetric_base_systems(phases: i64) -> Option<i64> {
-    if phases < 1 {
-        return None;
-    }
-    let mut systems = 1_i64;
-    let mut n = phases;
-    while n % 2 == 0 && n > 2 {
-        systems *= 2;
-        n /= 2;
-    }
-    Some(systems)
-}
-
-fn integer_component_binding_expr(component: &ast::Component) -> Option<&ast::Expression> {
-    if !matches!(
-        component.variability,
-        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-    ) {
-        return None;
-    }
-    if let Some(binding) = component.binding.as_ref() {
-        return Some(binding);
-    }
-    if component.has_explicit_binding
-        && !component.start_is_modification
-        && !matches!(component.start, ast::Expression::Empty { .. })
-    {
-        return Some(&component.start);
-    }
-    None
-}
-
-fn instantiate_effective_components(
-    tree: &ast::ClassTree,
-    effective_components: &IndexMap<String, ast::Component>,
-    type_overrides: &TypeOverrideMap,
-    ctx: &mut InstantiateContext,
-    overlay: &mut ast::InstanceOverlay,
-    imports: &[(String, String)],
-    resolve_class_components: &ResolveClassComponents<'_>,
-) -> InstantiateResult<()> {
-    let array_expansion_scope = ArrayExpansionScope {
-        tree,
-        effective_components,
-        type_overrides,
-        imports,
-        resolve_class_components,
-    };
-
-    for (name, comp) in effective_components {
-        if mark_disabled_component_if_needed(
-            comp,
-            name,
-            ctx,
-            effective_components,
-            tree,
-            overlay,
-            resolve_class_components,
-        ) {
-            continue;
-        }
-
-        // MLS §7.3: Apply type override for replaceable type redeclarations.
-        let comp_ref = apply_type_override(tree, comp, type_overrides, Some(ctx.mod_env()));
-        let comp = comp_ref.as_ref();
-        let type_name = comp.type_name.to_string();
-
-        let qualified_shape_expr = qualify_shape_subscripts_imports(&comp.shape_expr, imports);
-        let dims = evaluate_array_dimensions(
-            &comp.shape,
-            &qualified_shape_expr,
-            ctx.mod_env(),
-            effective_components,
-            tree,
-            resolve_class_components,
-        );
-        if let Some(dims) = dims.as_ref()
-            && dims.contains(&0)
-        {
-            register_zero_sized_array_component(ctx, overlay, name, dims);
-            continue;
-        }
-
-        let type_info = lookup_type_info(tree, comp, &type_name);
-        let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
-
-        if should_expand {
-            expand_array_component(
-                &array_expansion_scope,
-                name,
-                comp,
-                dims.as_ref().unwrap(),
-                ctx,
-                overlay,
-            )?;
-            continue;
-        }
-
-        ctx.push_path(name);
-        instantiate_component(
-            tree,
-            comp,
-            ctx,
-            overlay,
-            effective_components,
-            type_overrides,
-            imports,
-            resolve_class_components,
-        )?;
-        ctx.pop_path();
-    }
-    Ok(())
-}
-
 fn mark_disabled_component_if_needed(
     comp: &ast::Component,
     name: &str,
@@ -1484,7 +1082,6 @@ fn mark_disabled_component_if_needed(
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
     overlay: &mut ast::InstanceOverlay,
-    resolve_class_components: &ResolveClassComponents<'_>,
 ) -> bool {
     // MLS §4.8: Conditional components
     // Evaluate the condition and skip components where condition is false.
@@ -1496,7 +1093,7 @@ fn mark_disabled_component_if_needed(
             tree,
             mod_env: ctx.mod_env(),
             effective_components,
-            resolve_class_components,
+            resolve_class_components: &resolve_effective_components_for_eval,
         };
         evaluate_component_condition(&eval_ctx, cond) == Some(false)
     });
@@ -1608,8 +1205,7 @@ fn resolve_inner_outer_type_name(
     if let Some(qualified) = comp
         .type_def_id
         .and_then(|def_id| tree.def_map.get(&def_id))
-        && rumoca_core::top_level_last_segment(qualified)
-            == rumoca_core::top_level_last_segment(type_name)
+        && path_utils::class_name_leaf(qualified) == path_utils::class_name_leaf(type_name)
     {
         return qualified.clone();
     }
@@ -1626,24 +1222,23 @@ fn resolve_type_name_in_source_scope(
     type_name: &str,
     source_scope: &ast::QualifiedName,
 ) -> Option<String> {
-    let mut scope = source_scope.to_flat_string();
-    loop {
-        let candidate = if scope.is_empty() {
-            type_name.to_string()
-        } else {
-            format!("{scope}.{type_name}")
-        };
-        if tree.name_map.contains_key(&candidate) {
-            return Some(candidate);
-        }
-
-        let Some(parent_end) = rumoca_core::find_last_top_level_dot(&scope) else {
-            break;
-        };
-        scope.truncate(parent_end);
-    }
-
-    None
+    // Walk the structured scope's prefixes from innermost outwards; the
+    // candidate names are composed, never re-parsed.
+    (0..=source_scope.parts.len())
+        .rev()
+        .map(|end| {
+            let prefix = source_scope.parts[..end]
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            if prefix.is_empty() {
+                type_name.to_string()
+            } else {
+                format!("{prefix}.{type_name}")
+            }
+        })
+        .find(|candidate| tree.name_map.contains_key(candidate))
 }
 
 fn resolve_pending_outer_refs_for_inner(
@@ -1858,14 +1453,6 @@ fn validate_partial_component_instantiation(
     )))
 }
 
-///
-/// Note (MLS §4.8): Conditional components are handled in `instantiate_class`.
-/// Components whose condition evaluates to false are skipped and recorded
-/// in `overlay.disabled_components`. The flatten phase filters out connections
-/// and equations involving disabled components.
-///
-/// MLS §10.1: Array components of structured types (connectors, models) are expanded
-/// to indexed instances. For example, `Resistor r[3]` becomes `r[1]`, `r[2]`, `r[3]`.
 fn instantiate_component(
     tree: &ast::ClassTree,
     comp: &ast::Component,
@@ -1873,8 +1460,7 @@ fn instantiate_component(
     overlay: &mut ast::InstanceOverlay,
     effective_components: &IndexMap<String, ast::Component>,
     type_overrides: &TypeOverrideMap,
-    imports: &[(String, String)],
-    resolve_class_components: &ResolveClassComponents<'_>,
+    imports: ComponentImports<'_>,
 ) -> InstantiateResult<()> {
     let type_name = comp.type_name.to_string();
 
@@ -1895,15 +1481,16 @@ fn instantiate_component(
         binding_source,
         binding_source_scope,
         binding_from_modification,
-    } = prepare_component_binding_info(tree, comp, ctx, effective_components, is_discrete_type)?;
+    } = prepare_component_binding_info(
+        tree,
+        comp,
+        ctx,
+        effective_components,
+        is_discrete_type,
+        imports.attributes,
+    )?;
 
-    // Extract flow/stream from connection prefix (MLS §9.3)
-    // Also inherit from parent for record fields (e.g., `flow Complex i` → i.re and i.im are flow)
-    let (flow, stream) = match &comp.connection {
-        rumoca_ir_ast::Connection::Flow(_) => (true, false),
-        rumoca_ir_ast::Connection::Stream(_) => (false, true),
-        rumoca_ir_ast::Connection::Empty => (ctx.inherited_flow(), ctx.inherited_stream()),
-    };
+    let (flow, stream) = component_flow_stream(comp, ctx);
 
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
     merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
@@ -1914,15 +1501,10 @@ fn instantiate_component(
         ctx,
         class_def,
         effective_components,
-        imports,
-        resolve_class_components,
-    );
+        imports.qualification,
+    )?;
 
-    let type_id = if is_primitive {
-        resolve_primitive_type_id(tree, &type_name, class_def)
-    } else {
-        TypeId::UNKNOWN
-    };
+    let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let binding_scope_for_record_expansion = binding_scope_for_record_expansion(
         &qualified_name,
@@ -2004,7 +1586,7 @@ fn validated_component_type_info<'a>(
     qualified_name: &ast::QualifiedName,
     type_name: &str,
 ) -> InstantiateResult<TypeInfo<'a>> {
-    let type_info = lookup_type_info(tree, comp, type_name);
+    let type_info = lookup_type_info(tree, comp, type_name)?;
     validate_partial_component_instantiation(
         tree,
         comp,
@@ -2023,24 +1605,17 @@ fn resolve_component_shape(
     class_def: Option<&ast::ClassDef>,
     effective_components: &IndexMap<String, ast::Component>,
     imports: &[(String, String)],
-    resolve_class_components: &ResolveClassComponents<'_>,
-) -> (Vec<i64>, Vec<ast::Subscript>) {
-    let type_dims = resolve_type_alias_dimensions(
-        tree,
-        class_def,
-        ctx.mod_env(),
-        effective_components,
-        resolve_class_components,
-    );
-    resolve_component_dimensions(
+) -> InstantiateResult<(Vec<i64>, Vec<ast::Subscript>)> {
+    let type_dims =
+        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components)?;
+    Ok(resolve_component_dimensions(
         comp,
         &type_dims,
         ctx.mod_env(),
         effective_components,
         tree,
         imports,
-        resolve_class_components,
-    )
+    ))
 }
 
 struct ComponentBindingInfo {
@@ -2057,9 +1632,21 @@ fn prepare_component_binding_info(
     ctx: &mut InstantiateContext,
     effective_components: &IndexMap<String, ast::Component>,
     is_discrete_type: bool,
+    imports: &[(String, String)],
 ) -> InstantiateResult<ComponentBindingInfo> {
-    let (mut attrs, mut binding, binding_source, binding_source_scope, binding_from_modification) =
-        extract_component_attrs_and_binding(comp, ctx.mod_env());
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: ctx.mod_env(),
+        effective_components,
+        resolve_class_components: &resolve_effective_components_for_eval,
+    };
+    let ComponentAttrsAndBinding {
+        mut attrs,
+        mut binding,
+        binding_source,
+        binding_source_scope,
+        binding_from_modification,
+    } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
@@ -2238,7 +1825,7 @@ fn instantiate_nested_class(
             binding_scope_for_record_expansion.cloned(),
             nested_class,
             &targeted_keys,
-        );
+        )?;
     }
 
     // Step 2.6: Scope the mod_env to only contain entries relevant to this nested class.

@@ -5,10 +5,10 @@ use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
 use crate::{
     EvalSolveError, PreparedRowEval, RowEvalContext, RowEvalScratch, RowInputRequirements,
-    SimulationRuntimeState, eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked,
-    record_solve_block_eval, required_registers, row_input_requirements,
-    row_register_flow_is_valid, to_scalar_program_block, validate_input_requirements,
-    validate_output_len,
+    SimulationRuntimeState, compute_block_scalarize::scalarize_affine_stencil,
+    eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked, record_solve_block_eval,
+    required_registers, row_input_requirements, row_register_flow_is_valid,
+    to_scalar_program_block, validate_input_requirements, validate_output_len,
 };
 
 /// Reusable evaluator for one Solve-IR row block.
@@ -234,6 +234,23 @@ impl PreparedScalarProgramBlock {
             validate_inputs: true,
             label: "target_row",
         })
+    }
+
+    /// True when the row's program loads the given solver-Y slot.
+    pub fn row_reads_y(&self, row_idx: usize, y_index: usize) -> bool {
+        self.block
+            .programs
+            .get(row_idx)
+            .is_some_and(|row| row_loads_y_index(row, y_index))
+    }
+
+    /// True when the row was lowered with an explicit assignment shape
+    /// (`target = expr`); its full program then evaluates the residual, while
+    /// shapeless rows with an implicit target evaluate the target value.
+    pub fn row_has_assignment_shape(&self, row_idx: usize) -> bool {
+        self.row_assignment_shapes
+            .get(row_idx)
+            .is_some_and(|shape| shape.is_some())
     }
 
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
@@ -912,6 +929,19 @@ impl PreparedComputeNode {
                 rhs_start: *rhs_start,
                 n: *n,
             },
+            ComputeNode::AffineStencil {
+                count,
+                base_ops,
+                load_strides,
+                const_strides,
+                span,
+                ..
+            } => Self::ScalarPrograms(PreparedScalarProgramBlock::new(
+                ScalarProgramBlock::with_program_spans(
+                    scalarize_affine_stencil(base_ops, load_strides, const_strides, *count),
+                    std::iter::repeat_n(*span, *count).collect(),
+                ),
+            )),
         }
     }
 

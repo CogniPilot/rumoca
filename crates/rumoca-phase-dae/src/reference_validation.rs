@@ -13,8 +13,6 @@ type StatementBlock = rumoca_core::StatementBlock;
 type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
 
-use rumoca_core::split_path_with_indices;
-
 struct KnownReferenceIndex {
     flat_queries: HashSet<String>,
     dae_queries: HashSet<String>,
@@ -67,7 +65,7 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
     for name in names {
         queries.insert(name.to_string());
         insert_ancestor_reference_queries(&mut queries, name);
-        if !path_utils::has_top_level_dot(name) && path_utils::has_top_level_subscript(name) {
+        if !path_utils::is_nested_name(name) && path_utils::has_top_level_subscript(name) {
             insert_reference_query_alias(
                 &mut queries,
                 path_utils::normalize_top_level_segment(name),
@@ -78,23 +76,7 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
 }
 
 pub(crate) fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<String> {
-    let mut queries = HashSet::with_capacity(ordinals.len().saturating_mul(2));
-    for literal in ordinals.keys() {
-        queries.insert(literal.clone());
-        if let Some(alias) = alternate_enum_literal_alias(literal) {
-            queries.insert(alias);
-        }
-    }
-    queries
-}
-
-fn alternate_enum_literal_alias(name: &str) -> Option<String> {
-    let (prefix, literal) = rumoca_core::split_last_top_level(name)?;
-    if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
-        let unquoted = &literal[1..literal.len() - 1];
-        return Some(format!("{prefix}.{unquoted}"));
-    }
-    Some(format!("{prefix}.'{literal}'"))
+    ordinals.keys().cloned().collect()
 }
 
 fn insert_reference_query_alias(queries: &mut HashSet<String>, name: &str) {
@@ -117,31 +99,7 @@ fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) 
 }
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
-    rumoca_core::top_level_last_segment(candidate) == final_path_segment(short)
-}
-
-fn final_path_segment(path: &str) -> &str {
-    let mut bracket_depth = 0usize;
-    let mut last_boundary = 0usize;
-    for (idx, ch) in path.char_indices() {
-        match ch {
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth = bracket_depth.saturating_sub(1),
-            '.' if bracket_depth == 0 => last_boundary = idx + ch.len_utf8(),
-            _ => {}
-        }
-    }
-    &path[last_boundary..]
-}
-
-fn enum_literal_alias_matches(candidate: &str, raw: &str) -> bool {
-    let raw_literal = rumoca_core::top_level_last_segment(raw);
-    let candidate_literal = rumoca_core::top_level_last_segment(candidate);
-    raw_literal == candidate_literal && is_quoted_enum_literal(raw_literal)
-}
-
-fn is_quoted_enum_literal(segment: &str) -> bool {
-    segment.len() >= 2 && segment.starts_with('\'') && segment.ends_with('\'')
+    path_utils::leaf_segment(candidate) == short
 }
 
 fn validate_constructor_field_selection(
@@ -162,41 +120,29 @@ fn validate_constructor_field_selection(
         }
 
         let selected_name = format!("{}.{}", name.as_str(), field);
-        let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
-        let mut short_matches: Vec<(&VarName, &Function)> = Vec::new();
-        let constructor = if let Some(constructor) = functions.get(name.var_name()) {
-            constructor
-        } else {
-            short_matches.extend(
-                functions
+        let Some(constructor) = functions.get(name.var_name()) else {
+            if crate::todae_debug_enabled() {
+                let mut candidates: Vec<String> =
+                    functions.keys().map(|f| f.as_str().to_string()).collect();
+                candidates.sort();
+                let short = name.last_segment().to_string();
+                let mut short_matches: Vec<String> = candidates
                     .iter()
-                    .filter(|(candidate, _)| short_leaf_matches(candidate.as_str(), &short)),
-            );
-            if short_matches.len() == 1 {
-                short_matches[0].1
-            } else {
-                if crate::todae_debug_enabled() {
-                    let mut candidates: Vec<String> =
-                        functions.keys().map(|f| f.as_str().to_string()).collect();
-                    candidates.sort();
-                    let mut short_match_names: Vec<String> = candidates
-                        .iter()
-                        .filter(|candidate| short_leaf_matches(candidate, &short))
-                        .cloned()
-                        .collect();
-                    short_match_names.sort();
-                    crate::log_todae_debug(format!(
-                        "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_match_names:?} total_functions={}",
-                        selected_name,
-                        args.len(),
-                        candidates.len()
-                    ));
-                }
-                return Err(ToDaeError::constructor_field_selection_unresolved(
+                    .filter(|candidate| short_leaf_matches(candidate, &short))
+                    .cloned()
+                    .collect();
+                short_matches.sort();
+                crate::log_todae_debug(format!(
+                    "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_matches:?} total_functions={}",
                     selected_name,
-                    span,
+                    args.len(),
+                    candidates.len()
                 ));
             }
+            return Err(ToDaeError::constructor_field_selection_unresolved(
+                selected_name,
+                span,
+            ));
         };
 
         let field_known = constructor.inputs.iter().any(|param| param.name == field)
@@ -489,11 +435,44 @@ pub(super) fn validate_dae_references(
     known_flat_var_names: &HashSet<String>,
 ) -> Result<(), ToDaeError> {
     let known_refs = KnownReferenceIndex::build(dae, known_flat_var_names);
+    validate_variable_provenance(dae)?;
     validate_variable_reference_attributes(dae, &known_refs)?;
     validate_equation_rhs_references(dae, &known_refs)?;
     validate_relation_references(dae, &known_refs)?;
     validate_function_references(dae, &known_refs)?;
     Ok(())
+}
+
+/// Phase contract: every DAE variable carries a structured component
+/// reference. Source variables keep the reference produced by flatten;
+/// generated variables (event conditions, `__pre__` parameters) attach a
+/// generated reference at their creation site. Downstream passes consume this
+/// provenance instead of re-deriving structure from rendered names.
+fn validate_variable_provenance(dae: &Dae) -> Result<(), ToDaeError> {
+    struct ProvenanceValidator {
+        result: Result<(), ToDaeError>,
+    }
+    impl rumoca_ir_dae::DaeVisitor for ProvenanceValidator {
+        fn visit_variable(
+            &mut self,
+            _partition: rumoca_ir_dae::DaeVariablePartition,
+            name: &rumoca_core::VarName,
+            variable: &rumoca_ir_dae::Variable,
+        ) {
+            if self.result.is_ok() && variable.component_ref.is_none() {
+                self.result = Err(ToDaeError::runtime_contract_violation_at(
+                    format!(
+                        "DAE variable `{}` has no structured component reference; its producer must attach one (generated variables included)",
+                        name.as_str()
+                    ),
+                    variable.source_span,
+                ));
+            }
+        }
+    }
+    let mut validator = ProvenanceValidator { result: Ok(()) };
+    validator.visit_variables(&dae.variables);
+    validator.result
 }
 
 fn validate_variable_reference_attributes(
@@ -621,8 +600,7 @@ fn validate_function_references(
                     function.span,
                     Some(&function_scope),
                     known_refs,
-                )
-                .map_err(|err| function_reference_validation_context(err, function))?;
+                )?;
             }
         }
 
@@ -632,66 +610,9 @@ fn validate_function_references(
             function.span,
             Some(&function_scope),
             known_refs,
-        )
-        .map_err(|err| function_reference_validation_context(err, function))?;
+        )?;
     }
     Ok(())
-}
-
-fn function_reference_validation_context(
-    err: ToDaeError,
-    function: &rumoca_core::Function,
-) -> ToDaeError {
-    let function_name = function.name.as_str();
-    match err {
-        ToDaeError::UnresolvedReference { name, span } => ToDaeError::UnresolvedReference {
-            name: format!(
-                "{name} (while validating DAE function {function_name}{})",
-                dae_function_scope_debug_suffix(function)
-            ),
-            span,
-        },
-        other => other,
-    }
-}
-
-fn dae_function_scope_debug_suffix(function: &rumoca_core::Function) -> String {
-    if !dae_function_scope_debug_enabled() {
-        return String::new();
-    }
-    let inputs = function
-        .inputs
-        .iter()
-        .map(|param| format!("{}:{}", param.name, param.type_name))
-        .collect::<Vec<_>>()
-        .join(",");
-    let outputs = function
-        .outputs
-        .iter()
-        .map(|param| format!("{}:{}", param.name, param.type_name))
-        .collect::<Vec<_>>()
-        .join(",");
-    let locals = function
-        .locals
-        .iter()
-        .map(|param| format!("{}:{}", param.name, param.type_name))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(" inputs=[{inputs}] outputs=[{outputs}] locals=[{locals}]")
-}
-
-fn dae_function_scope_debug_enabled() -> bool {
-    #[cfg(feature = "tracing")]
-    {
-        tracing::enabled!(
-            target: "rumoca_phase_dae::function_scope",
-            tracing::Level::DEBUG
-        )
-    }
-    #[cfg(not(feature = "tracing"))]
-    {
-        false
-    }
 }
 
 fn validate_statement_slice_references(
@@ -1050,29 +971,7 @@ fn function_scope_contains_reference(name: &str, scope: &HashSet<&str>) -> bool 
     if scope.contains(name) {
         return true;
     }
-    let normalized_top_level = path_utils::normalize_top_level_segment(name);
-    if normalized_top_level != name && scope.contains(normalized_top_level) {
-        return true;
-    }
-    if let Some(decomposed_name) = local_record_field_alias(name)
-        && scope.contains(decomposed_name.as_str())
-    {
-        return true;
-    }
     path_utils::get_top_level_prefix(name).is_some_and(|prefix| scope.contains(prefix.as_str()))
-}
-
-fn local_record_field_alias(name: &str) -> Option<String> {
-    let (record, field) = split_local_record_field_name(name)?;
-    if record.is_empty() || field.is_empty() || field.contains('.') {
-        return None;
-    }
-    Some(format!("{record}_{field}"))
-}
-
-fn split_local_record_field_name(name: &str) -> Option<(&str, &str)> {
-    let idx = name.find('.')?;
-    Some((&name[..idx], &name[idx + 1..]))
 }
 
 fn validate_expression_slice_references(
@@ -1173,28 +1072,18 @@ fn is_known_dae_reference(name: &rumoca_core::Reference, known_refs: &KnownRefer
     if known_refs.enum_literal_queries.contains(raw) {
         return true;
     }
-    if known_refs
-        .enum_literal_queries
-        .iter()
-        .any(|candidate| enum_literal_alias_matches(candidate, raw))
-    {
-        return true;
-    }
     if known_refs.flat_queries.contains(raw) || known_refs.dae_queries.contains(raw) {
         return true;
     }
     // Accept short leaf-name aliases for enum literals. General variable
     // references must already be resolved/qualified by earlier phases; accepting
     // arbitrary leaf matches lets typos like `x` bind to unrelated `comp.x`.
-    if !path_utils::has_top_level_dot(raw)
+    if !path_utils::is_nested_name(raw)
         && known_refs
             .enum_literal_queries
             .iter()
             .any(|candidate| short_leaf_matches(candidate, raw))
     {
-        return true;
-    }
-    if bare_medium_package_constant_known(raw) {
         return true;
     }
 
@@ -1204,177 +1093,6 @@ fn is_known_dae_reference(name: &rumoca_core::Reference, known_refs: &KnownRefer
             known_refs.flat_queries.contains(candidate.as_str())
                 || known_refs.dae_queries.contains(candidate.as_str())
         })
-        || ancestor_sibling_reference_known(raw, known_refs)
-        || elided_component_reference_known(raw, known_refs)
-        || inherited_medium_package_constant_reference_known(raw)
-        || ideal_gas_data_record_constant_reference_known(raw)
-        || weather_bus_field_reference_known(raw)
-        || medium_package_constant_reference_known(raw, known_refs)
-}
-
-fn bare_medium_package_constant_known(raw: &str) -> bool {
-    !path_utils::has_top_level_dot(raw)
-        && (is_partial_medium_constant_leaf(raw) || matches!(raw, "Water" | "Air"))
-}
-
-fn is_partial_medium_constant_leaf(raw: &str) -> bool {
-    matches!(
-        raw,
-        "reference_X"
-            | "reference_T"
-            | "reference_p"
-            | "p_default"
-            | "T_default"
-            | "X_default"
-            | "C_default"
-            | "nX"
-            | "nXi"
-            | "nC"
-            | "C_nominal"
-    )
-}
-
-fn inherited_medium_package_constant_reference_known(raw: &str) -> bool {
-    let parts = split_path_with_indices(raw);
-    let Some(leaf) = parts.last() else {
-        return false;
-    };
-    parts.len() >= 3 && parts.contains(&"Media") && is_partial_medium_constant_leaf(leaf)
-}
-
-fn ideal_gas_data_record_constant_reference_known(raw: &str) -> bool {
-    let parts = split_path_with_indices(raw);
-    parts.len() == 7
-        && parts[0] == "Modelica"
-        && parts[1] == "Media"
-        && parts[2] == "IdealGases"
-        && parts[3] == "Common"
-        && parts[4] == "SingleGasesData"
-        && matches!(parts[5], "Air" | "CO2" | "H2O")
-        && matches!(parts[6], "MM" | "R_s")
-}
-
-fn weather_bus_field_reference_known(raw: &str) -> bool {
-    let parts = split_path_with_indices(raw);
-    let Some(field) = parts.last() else {
-        return false;
-    };
-    parts.len() >= 2
-        && parts[..parts.len() - 1].contains(&"weaBus")
-        && matches!(
-            *field,
-            "TDryBul"
-                | "TWetBul"
-                | "TDewPoi"
-                | "TBlaSky"
-                | "relHum"
-                | "winSpe"
-                | "winDir"
-                | "HGloHor"
-                | "HDifHor"
-                | "HDirNor"
-                | "HHorIR"
-                | "nTot"
-                | "nOpa"
-                | "pAtm"
-                | "ceiHei"
-                | "cloTim"
-                | "lat"
-                | "lon"
-                | "solAlt"
-                | "solDec"
-                | "solHouAng"
-                | "solTim"
-                | "solZen"
-        )
-}
-
-fn ancestor_sibling_reference_known(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
-    let parts = split_path_with_indices(raw);
-    if parts.len() <= 2 {
-        return false;
-    }
-    let leaf = parts[parts.len() - 1];
-    for prefix_len in (1..parts.len() - 1).rev() {
-        let mut candidate = parts[..prefix_len].join(".");
-        candidate.push('.');
-        candidate.push_str(leaf);
-        if known_refs.flat_queries.contains(candidate.as_str())
-            || known_refs.dae_queries.contains(candidate.as_str())
-        {
-            return true;
-        }
-        let normalized = path_utils::strip_all_subscripts(&candidate);
-        if normalized != candidate
-            && (known_refs.flat_queries.contains(normalized.as_str())
-                || known_refs.dae_queries.contains(normalized.as_str()))
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn medium_package_constant_reference_known(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
-    let parts = split_path_with_indices(raw);
-    let Some(medium_idx) = parts.iter().position(|part| *part == "medium") else {
-        return false;
-    };
-    if medium_idx + 2 >= parts.len() {
-        return false;
-    }
-    if matches!(parts[medium_idx + 1], "dryair" | "steam")
-        && matches!(parts[medium_idx + 2], "R" | "MM" | "cp" | "cv")
-        && medium_idx + 3 == parts.len()
-    {
-        return true;
-    }
-    let suffix = parts[medium_idx + 1..].join(".");
-    reference_suffix_known(suffix.as_str(), &known_refs.flat_queries)
-        || reference_suffix_known(suffix.as_str(), &known_refs.dae_queries)
-}
-
-fn reference_suffix_known(suffix: &str, refs: &HashSet<String>) -> bool {
-    refs.iter().any(|candidate| {
-        if candidate == suffix {
-            return true;
-        }
-        let candidate_parts = split_path_with_indices(candidate);
-        let suffix_parts = split_path_with_indices(suffix);
-        candidate_parts.len() > suffix_parts.len()
-            && candidate_parts[candidate_parts.len() - suffix_parts.len()..] == suffix_parts[..]
-    })
-}
-
-fn elided_component_reference_known(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
-    let parts = split_path_with_indices(raw);
-    if parts.len() <= 3 {
-        return false;
-    }
-
-    for start in 1..parts.len() - 1 {
-        for end in start + 1..parts.len() {
-            let candidate = parts
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, part)| (idx < start || idx >= end).then_some(*part))
-                .collect::<Vec<_>>()
-                .join(".");
-            if known_refs.flat_queries.contains(candidate.as_str())
-                || known_refs.dae_queries.contains(candidate.as_str())
-            {
-                return true;
-            }
-            let normalized = path_utils::strip_all_subscripts(&candidate);
-            if normalized != candidate
-                && (known_refs.flat_queries.contains(normalized.as_str())
-                    || known_refs.dae_queries.contains(normalized.as_str()))
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -1401,155 +1119,12 @@ mod tests {
     }
 
     #[test]
-    fn function_scope_accepts_top_level_subscripted_parameter_reference() {
-        let scope = HashSet::from(["state_X"]);
-        assert!(function_scope_contains_reference("state_X[Water]", &scope));
-        assert!(!function_scope_contains_reference(
-            "state_T_missing[Water]",
-            &scope
-        ));
-    }
-
-    #[test]
-    fn function_scope_accepts_decomposed_record_field_alias() {
-        let scope = HashSet::from(["per_V_flow"]);
-        assert!(function_scope_contains_reference("per.V_flow", &scope));
-        assert!(!function_scope_contains_reference("per.missing", &scope));
-    }
-
-    #[test]
-    fn ancestor_sibling_reference_lookup_accepts_outer_modifier_parameter() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: build_flat_reference_query_set(
-                ["coil.cooCoi.ele[1].X2_start"].into_iter(),
-            ),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
-        };
-        assert!(ancestor_sibling_reference_known(
-            "coil.cooCoi.ele[1].vol2.dynBal.X2_start",
-            &known_refs,
-        ));
-        assert!(!ancestor_sibling_reference_known(
-            "coil.cooCoi.ele[1].vol2.dynBal.missing",
-            &known_refs,
-        ));
-    }
-
-    #[test]
-    fn elided_component_reference_lookup_accepts_parent_record_array_parameter() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: build_flat_reference_query_set(
-                ["plant.chillerPlant.datChi[1].QEva_flow_nominal"].into_iter(),
-            ),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
-        };
-        assert!(elided_component_reference_known(
-            "plant.chillerPlant.mulChiSys.datChi[1].QEva_flow_nominal",
-            &known_refs,
-        ));
-        assert!(elided_component_reference_known(
-            "plant.chillerPlant.cooTowWithByp.mulCooTowSys.datChi[1].QEva_flow_nominal",
-            &known_refs,
-        ));
-        assert!(!elided_component_reference_known(
-            "plant.chillerPlant.mulChiSys.datChi[1].missing",
-            &known_refs,
-        ));
-    }
-
-    #[test]
-    fn medium_package_constant_lookup_accepts_material_property_suffix() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: HashSet::new(),
-            dae_queries: build_dae_reference_query_set(
-                ["Buildings.Media.Air.dryair.cp"].into_iter(),
-            ),
-            enum_literal_queries: HashSet::new(),
-        };
-        assert!(medium_package_constant_reference_known(
-            "floor.fan.vol.dynBal.medium.dryair.cp",
-            &known_refs,
-        ));
-        assert!(medium_package_constant_reference_known(
-            "floor.fan.vol.dynBal.medium.steam.R",
-            &KnownReferenceIndex {
-                flat_queries: HashSet::new(),
-                dae_queries: HashSet::new(),
-                enum_literal_queries: HashSet::new(),
-            },
-        ));
-        assert!(!medium_package_constant_reference_known(
-            "floor.fan.vol.dynBal.other.dryair.cp",
-            &known_refs,
-        ));
-        assert!(!medium_package_constant_reference_known(
-            "floor.fan.vol.dynBal.medium.dryair.missing",
-            &known_refs,
-        ));
-    }
-
-    #[test]
-    fn inherited_medium_package_constant_lookup_accepts_partial_medium_constants() {
-        assert!(inherited_medium_package_constant_reference_known(
-            "Buildings.Media.Water.C_nominal",
-        ));
-        assert!(inherited_medium_package_constant_reference_known(
-            "Buildings.Media.Water.C_default",
-        ));
-        assert!(!inherited_medium_package_constant_reference_known(
-            "Buildings.Media.Water.missing",
-        ));
-        assert!(!inherited_medium_package_constant_reference_known(
-            "plant.medium.C_nominal",
-        ));
-    }
-
-    #[test]
-    fn ideal_gas_data_record_constant_lookup_accepts_msl_gas_properties() {
-        assert!(ideal_gas_data_record_constant_reference_known(
-            "Modelica.Media.IdealGases.Common.SingleGasesData.CO2.MM",
-        ));
-        assert!(ideal_gas_data_record_constant_reference_known(
-            "Modelica.Media.IdealGases.Common.SingleGasesData.Air.MM",
-        ));
-        assert!(ideal_gas_data_record_constant_reference_known(
-            "Modelica.Media.IdealGases.Common.SingleGasesData.H2O.R_s",
-        ));
-        assert!(!ideal_gas_data_record_constant_reference_known(
-            "Modelica.Media.IdealGases.Common.SingleGasesData.CO2.missing",
-        ));
-        assert!(!ideal_gas_data_record_constant_reference_known(
-            "Modelica.Media.IdealGases.Common.OtherData.CO2.MM",
-        ));
-    }
-
-    #[test]
-    fn weather_bus_field_lookup_accepts_buildings_weather_data_fields() {
-        assert!(weather_bus_field_reference_known("weaBus.TDryBul"));
-        assert!(weather_bus_field_reference_known("building.weaBus.TWetBul",));
-        assert!(weather_bus_field_reference_known(
-            "floor[1].zone.weaBus.winSpe",
-        ));
-        assert!(!weather_bus_field_reference_known("weaBus.missing"));
-        assert!(!weather_bus_field_reference_known("notWeather.TDryBul"));
-    }
-
-    #[test]
-    fn bare_medium_package_constant_lookup_accepts_reference_composition() {
-        assert!(bare_medium_package_constant_known("reference_X"));
-        assert!(bare_medium_package_constant_known("nXi"));
-        assert!(bare_medium_package_constant_known("C_nominal"));
-        assert!(!bare_medium_package_constant_known("unknown_reference_X"));
-        assert!(!bare_medium_package_constant_known("medium.reference_X"));
-    }
-
-    #[test]
-    fn enum_literal_queries_accept_quoted_and_unquoted_aliases() {
+    fn enum_literal_queries_preserve_flattened_aliases() {
         let mut ordinals = IndexMap::new();
         ordinals.insert("StateSelect.prefer".to_string(), 4);
+        ordinals.insert("StateSelect.'prefer'".to_string(), 4);
         ordinals.insert("Color.'deep red'".to_string(), 7);
+        ordinals.insert("Color.deep red".to_string(), 7);
 
         let queries = build_enum_literal_query_set(&ordinals);
 
@@ -1586,6 +1161,11 @@ mod tests {
             "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
             0,
         );
+        ordinals.insert(
+            "Modelica.Electrical.Digital.Interfaces.Logic.U".to_string(),
+            0,
+        );
+        ordinals.insert("gate.L.'U'".to_string(), 0);
 
         let known = KnownReferenceIndex {
             flat_queries: HashSet::new(),

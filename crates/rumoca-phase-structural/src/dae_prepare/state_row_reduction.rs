@@ -488,10 +488,12 @@ pub fn demote_states_without_assignable_derivative_rows(dae: &mut Dae) -> usize 
 /// MLS Appendix B / SPEC_0003: retained states require retained derivative
 /// rows. This combines the existing no-derivative and no-assignable-row
 /// demotions without adding logging, timeout, or backend policy.
-pub fn demote_states_without_retained_derivative_rows(dae: &mut Dae) -> (usize, usize) {
+pub fn demote_states_without_retained_derivative_rows(
+    dae: &mut Dae,
+) -> Result<(usize, usize), StructuralError> {
     let n_no_derivative_refs = demote_states_without_derivative_refs(dae);
     let n_unassignable_derivative_rows = demote_states_without_assignable_derivative_rows(dae);
-    (n_no_derivative_refs, n_unassignable_derivative_rows)
+    Ok((n_no_derivative_refs, n_unassignable_derivative_rows))
 }
 
 /// Phase-1 structural index reduction.
@@ -500,10 +502,12 @@ pub fn demote_states_without_retained_derivative_rows(dae: &mut Dae) -> (usize, 
 /// referencing that state and differentiate it once with symbolic chain-rule.
 /// The differentiated equation must explicitly contain `der(state)` to be
 /// accepted; otherwise it is discarded.
-pub fn index_reduce_missing_state_derivatives_once(dae: &mut Dae) -> usize {
+pub fn index_reduce_missing_state_derivatives_once(
+    dae: &mut Dae,
+) -> Result<usize, StructuralError> {
     let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
     if state_names.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let state_name_set: HashSet<String> = state_names
         .iter()
@@ -516,7 +520,7 @@ pub fn index_reduce_missing_state_derivatives_once(dae: &mut Dae) -> usize {
     let mut used_eq = HashSet::new();
 
     for state_name in &state_names {
-        if state_has_standalone_der_equation(dae, state_name, &state_names) {
+        if state_has_standalone_der_equation(dae, state_name, &state_names)? {
             continue;
         }
 
@@ -578,7 +582,7 @@ pub fn index_reduce_missing_state_derivatives_once(dae: &mut Dae) -> usize {
         }
     }
 
-    changed
+    Ok(changed)
 }
 
 fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
@@ -622,17 +626,17 @@ fn is_indexed_component_of_state(expr: &Expression, state_name: &VarName) -> boo
             .is_some_and(|scalar| scalar.base == state_name.as_str())
 }
 
-pub fn index_reduce_missing_state_derivatives(dae: &mut Dae) -> usize {
+pub fn index_reduce_missing_state_derivatives(dae: &mut Dae) -> Result<usize, StructuralError> {
     let max_rounds = dae.variables.states.len().clamp(1, 8);
     let mut total_changed = 0usize;
     for _round in 0..max_rounds {
-        let changed = index_reduce_missing_state_derivatives_once(dae);
+        let changed = index_reduce_missing_state_derivatives_once(dae)?;
         if changed == 0 {
             break;
         }
         total_changed += changed;
     }
-    total_changed
+    Ok(total_changed)
 }
 
 /// Regularisation epsilon levels to try, from most accurate to least.

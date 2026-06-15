@@ -184,8 +184,10 @@ fn lower_dae_to_solve_model_inner(
     visible_expressions: Option<Vec<VisibleExpression>>,
     metadata_dae_model: Option<&dae::Dae>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
-    let visible_expressions =
-        visible_expressions.unwrap_or_else(|| visible_expressions_for_dae(&dae_model));
+    let visible_expressions = match visible_expressions {
+        Some(visible_expressions) => visible_expressions,
+        None => visible_expressions_for_dae(&dae_model).map_err(SolveModelLowerError::Lower)?,
+    };
     let state_count = scalar_count(dae_model.variables.states.values());
     let eval_runtime = Arc::new(EvalRuntimeState::default());
     let base_parameters =
@@ -255,14 +257,18 @@ fn lower_visible_observations(
     let mut names = Vec::new();
     let mut rows = Vec::new();
     let mut program_spans = Vec::new();
+    let structural_bindings = crate::lower::structural_bindings_for_dae(dae_model);
+    let indexed_bindings = crate::lower::indexed_bindings_for_layout(layout);
     for visible in visible_expressions {
         if is_unbound_identity_observation(layout, visible) {
             continue;
         }
-        match crate::lower::lower_observation_rhs(
+        match crate::lower::lower_observation_rhs_with_structural_bindings(
             dae_model,
             layout,
             std::slice::from_ref(&visible.expr),
+            &structural_bindings,
+            &indexed_bindings,
         ) {
             Ok(mut lowered) => {
                 append_visible_names(&mut names, &visible.name, lowered.len());
@@ -309,26 +315,26 @@ fn should_skip_unbound_observation(
 fn observation_missing_binding_name(err: &LowerError) -> Option<&str> {
     match err {
         LowerError::MissingBinding { name } => Some(name.as_str()),
-        LowerError::Unsupported { reason } | LowerError::UnsupportedAt { reason, .. } => reason
-            .strip_prefix("missing variable binding `")
-            .and_then(|tail| tail.strip_suffix('`')),
-        LowerError::Spanned { source, .. } => observation_missing_binding_name(source),
+        LowerError::Spanned { source, .. } | LowerError::WithContext { source, .. } => {
+            observation_missing_binding_name(source)
+        }
         _ => None,
     }
 }
 
+/// Observation (visible-expression) declines: constructs the solve lowering
+/// cannot express yet. Classification is variant-based; an error that is not
+/// one of these typed declines fails the compile.
 fn should_skip_unsupported_observation(err: &LowerError) -> bool {
     match err {
-        LowerError::Unsupported { reason } | LowerError::UnsupportedAt { reason, .. } => {
-            reason == "dynamic subscript expressions are unsupported"
-                || reason.starts_with("size() in for-loop range requires known dimension")
-                || reason.contains("has no actual argument or default binding")
-                || reason.starts_with("unsupported base expression for dynamic binding path:")
+        LowerError::DynamicSubscript
+        | LowerError::ForRangeUnknownDimension { .. }
+        | LowerError::MissingActualArgument { .. }
+        | LowerError::DynamicBindingBase { .. }
+        | LowerError::MissingFunction { .. } => true,
+        LowerError::Spanned { source, .. } | LowerError::WithContext { source, .. } => {
+            should_skip_unsupported_observation(source)
         }
-        LowerError::InvalidFunction { reason, .. } => {
-            reason.contains("has no actual argument or default binding")
-        }
-        LowerError::Spanned { source, .. } => should_skip_unsupported_observation(source),
         _ => false,
     }
 }
@@ -345,37 +351,133 @@ fn is_unbound_identity_observation(layout: &solve::VarLayout, visible: &VisibleE
         )
 }
 
-pub fn visible_expressions_for_dae(dae_model: &dae::Dae) -> Vec<VisibleExpression> {
+pub fn visible_expressions_for_dae(
+    dae_model: &dae::Dae,
+) -> Result<Vec<VisibleExpression>, LowerError> {
     let solver_len =
         solver_visible_scalar_count(dae_model).max(dae_model.continuous.equations.len());
-    let mut names = collect_visible_solver_names(dae_model, solver_len);
-    names.extend(collect_visible_runtime_names(dae_model));
-    names.into_iter().map(VisibleExpression::var_ref).collect()
+    let mut expressions = collect_visible_solver_expressions(dae_model, solver_len)?;
+    expressions.extend(collect_visible_runtime_expressions(dae_model)?);
+    Ok(expressions)
 }
 
-fn collect_visible_solver_names(dae_model: &dae::Dae, solver_len: usize) -> Vec<String> {
-    let mut names = dae_model
+fn collect_visible_solver_expressions(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+) -> Result<Vec<VisibleExpression>, LowerError> {
+    let mut expressions = dae_model
         .variables
         .states
         .iter()
         .chain(dae_model.variables.algebraics.iter())
         .chain(dae_model.variables.outputs.iter())
         .filter(|(name, _)| !crate::layout::is_runtime_parameter_tail_variable(dae_model, name))
-        .flat_map(|(name, var)| scalar_names(name.as_str(), var))
+        .map(|(name, var)| visible_expressions_for_variable(name, var))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
-    names.truncate(solver_len);
-    names
+    expressions.truncate(solver_len);
+    Ok(expressions)
 }
 
-fn collect_visible_runtime_names(dae_model: &dae::Dae) -> Vec<String> {
+fn collect_visible_runtime_expressions(
+    dae_model: &dae::Dae,
+) -> Result<Vec<VisibleExpression>, LowerError> {
     dae_model
         .variables
         .inputs
         .iter()
         .chain(dae_model.variables.discrete_reals.iter())
         .chain(dae_model.variables.discrete_valued.iter())
-        .flat_map(|(name, var)| scalar_names(name.as_str(), var))
+        .map(|(name, var)| visible_expressions_for_variable(name, var))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|groups| groups.into_iter().flatten().collect())
+}
+
+fn visible_expressions_for_variable(
+    name: &rumoca_core::VarName,
+    var: &dae::Variable,
+) -> Result<Vec<VisibleExpression>, LowerError> {
+    let size = var.size();
+    if size <= 1 && var.dims.is_empty() {
+        return Ok(vec![visible_expression_for_variable_scalar(
+            name,
+            var,
+            name.as_str().to_string(),
+            Vec::new(),
+        )?]);
+    }
+    (0..size)
+        .map(|idx| {
+            let subscripts = dae::flat_index_to_subscripts(&var.dims, idx).ok_or_else(|| {
+                LowerError::ContractViolation {
+                    reason: format!(
+                        "visible expression scalar index {idx} is outside variable `{}` shape",
+                        name.as_str()
+                    ),
+                    span: var.source_span,
+                }
+            })?;
+            visible_expression_for_variable_scalar(
+                name,
+                var,
+                dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, idx),
+                subscripts,
+            )
+        })
         .collect()
+}
+
+fn visible_expression_for_variable_scalar(
+    name: &rumoca_core::VarName,
+    var: &dae::Variable,
+    scalar_name: String,
+    subscripts: Vec<usize>,
+) -> Result<VisibleExpression, LowerError> {
+    let reference = match var.origin {
+        dae::VariableOrigin::Generated => rumoca_core::Reference::generated(name.as_str()),
+        dae::VariableOrigin::Source => {
+            #[cfg(test)]
+            if var.source_span.is_dummy() {
+                return Ok(VisibleExpression {
+                    name: scalar_name,
+                    expr: rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::generated(name.as_str()),
+                        subscripts: subscripts
+                            .into_iter()
+                            .map(|index| {
+                                rumoca_core::Subscript::index(index as i64, var.source_span)
+                            })
+                            .collect(),
+                        span: var.source_span,
+                    },
+                });
+            }
+            let component_ref =
+                var.component_ref
+                    .clone()
+                    .ok_or_else(|| LowerError::ContractViolation {
+                        reason: format!(
+                            "source DAE variable `{}` lost structured component-reference metadata before visible observation lowering",
+                            name.as_str()
+                        ),
+                        span: var.source_span,
+                    })?;
+            rumoca_core::Reference::from_component_reference(component_ref)
+        }
+    };
+    Ok(VisibleExpression {
+        name: scalar_name,
+        expr: rumoca_core::Expression::VarRef {
+            name: reference,
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| rumoca_core::Subscript::index(index as i64, var.source_span))
+                .collect(),
+            span: var.source_span,
+        },
+    })
 }
 
 fn order_state_derivative_rows(
@@ -604,11 +706,15 @@ fn start_values(
     }
     if var.size() == 0 && !var.dims.is_empty() {
         let raw = if var.dims.len() >= 2 {
-            eval_matrix_values(expr, env)
-                .map(|matrix| matrix.into_iter().flatten().collect())
-                .unwrap_or_else(|| eval_array_values::<f64>(expr, env))
+            match eval_matrix_values(expr, env) {
+                Ok(Some(matrix)) => matrix.into_iter().flatten().collect(),
+                Ok(None) => {
+                    eval_array_values::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?
+                }
+                Err(err) => return Err(eval_start_error(var, err)),
+            }
         } else {
-            eval_array_values::<f64>(expr, env)
+            eval_array_values::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?
         };
         if raw.is_empty() {
             return Err(eval_start_error(
@@ -1085,6 +1191,10 @@ fn build_variable_meta(
     let mut by_scalar = IndexMap::new();
     for (name, var, role, is_state) in vars {
         let (value_type, variability, time_domain) = variable_meta_classification(role, is_state);
+        let start_text = var.start.as_ref().map(|expr| format!("{expr:?}"));
+        let min_text = var.min.as_ref().map(|expr| format!("{expr:?}"));
+        let max_text = var.max.as_ref().map(|expr| format!("{expr:?}"));
+        let nominal_text = var.nominal.as_ref().map(|expr| format!("{expr:?}"));
         for scalar_name in scalar_names(name.as_str(), var) {
             let time_domain = if continuous_real_role_is_event_discontinuous(
                 role,
@@ -1106,10 +1216,10 @@ fn build_variable_meta(
                     variability: variability.clone(),
                     time_domain: time_domain.clone(),
                     unit: var.unit.clone(),
-                    start: var.start.as_ref().map(|expr| format!("{expr:?}")),
-                    min: var.min.as_ref().map(|expr| format!("{expr:?}")),
-                    max: var.max.as_ref().map(|expr| format!("{expr:?}")),
-                    nominal: var.nominal.as_ref().map(|expr| format!("{expr:?}")),
+                    start: start_text.clone(),
+                    min: min_text.clone(),
+                    max: max_text.clone(),
+                    nominal: nominal_text.clone(),
                     fixed: var.fixed,
                     description: var.description.clone(),
                 },
@@ -1133,19 +1243,41 @@ fn continuous_real_role_is_event_discontinuous(
 
 fn event_discontinuous_scalar_names(dae_model: &dae::Dae) -> IndexSet<String> {
     let event_discrete_names = event_discrete_scalar_names(dae_model);
+    let event_discrete_bases = base_name_index(&event_discrete_names);
     let mut definitions = continuous_definition_expressions(dae_model);
     let mut event_discontinuous = IndexSet::new();
+    let mut event_discontinuous_bases: IndexMap<String, Vec<String>> = IndexMap::new();
     loop {
         let before = event_discontinuous.len();
+        let mut found = Vec::new();
         for (scalar_name, exprs) in &definitions {
             if event_discontinuous.contains(scalar_name) {
                 continue;
             }
             if exprs.iter().any(|expr| {
-                expression_is_event_discontinuous(expr, &event_discrete_names, &event_discontinuous)
+                expression_is_event_discontinuous(
+                    expr,
+                    ScalarNameLookup {
+                        names: &event_discrete_names,
+                        base_index: &event_discrete_bases,
+                    },
+                    ScalarNameLookup {
+                        names: &event_discontinuous,
+                        base_index: &event_discontinuous_bases,
+                    },
+                )
             }) {
-                event_discontinuous.insert(scalar_name.clone());
+                found.push(scalar_name.clone());
             }
+        }
+        for scalar_name in found {
+            if let Some(base) = dae::component_base_name(&scalar_name) {
+                event_discontinuous_bases
+                    .entry(base)
+                    .or_default()
+                    .push(scalar_name.clone());
+            }
+            event_discontinuous.insert(scalar_name);
         }
         if event_discontinuous.len() == before {
             return event_discontinuous;
@@ -1166,7 +1298,7 @@ fn event_discrete_scalar_names(dae_model: &dae::Dae) -> IndexSet<String> {
 
 fn continuous_definition_expressions(
     dae_model: &dae::Dae,
-) -> IndexMap<String, Vec<rumoca_core::Expression>> {
+) -> IndexMap<String, Vec<&rumoca_core::Expression>> {
     let continuous_vars = dae_model
         .variables
         .states
@@ -1180,35 +1312,45 @@ fn continuous_definition_expressions(
         .values()
         .flat_map(|names| names.iter().cloned())
         .collect::<IndexSet<_>>();
+    let continuous_base_index = base_name_index(&continuous_names);
+    let continuous_lookup = ScalarNameLookup {
+        names: &continuous_names,
+        base_index: &continuous_base_index,
+    };
     let mut definitions = IndexMap::new();
     for eq in &dae_model.continuous.equations {
         if let Some(lhs) = eq.lhs.as_ref() {
-            add_continuous_lhs_definitions(&mut definitions, &continuous_vars, lhs, &eq.rhs);
+            add_continuous_lhs_definitions(
+                &mut definitions,
+                &continuous_vars,
+                lhs.var_name(),
+                &eq.rhs,
+            );
             continue;
         }
-        collect_residual_continuous_definitions(&eq.rhs, &continuous_names, &mut definitions);
+        collect_residual_continuous_definitions(&eq.rhs, continuous_lookup, &mut definitions);
     }
     definitions
 }
 
-fn add_continuous_lhs_definitions(
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn add_continuous_lhs_definitions<'m>(
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
     continuous_vars: &IndexMap<rumoca_core::VarName, Vec<String>>,
     lhs: &rumoca_core::VarName,
-    rhs: &rumoca_core::Expression,
+    rhs: &'m rumoca_core::Expression,
 ) {
     let Some(scalars) = continuous_vars.get(lhs) else {
         return;
     };
     for scalar_name in scalars {
-        add_continuous_definition(definitions, scalar_name, rhs.clone());
+        add_continuous_definition(definitions, scalar_name, rhs);
     }
 }
 
-fn add_continuous_definition(
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn add_continuous_definition<'m>(
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
     scalar_name: &str,
-    expr: rumoca_core::Expression,
+    expr: &'m rumoca_core::Expression,
 ) {
     definitions
         .entry(scalar_name.to_string())
@@ -1216,10 +1358,10 @@ fn add_continuous_definition(
         .push(expr);
 }
 
-fn collect_residual_continuous_definitions(
-    expr: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn collect_residual_continuous_definitions<'m>(
+    expr: &'m rumoca_core::Expression,
+    continuous_names: ScalarNameLookup<'_>,
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     match expr {
         rumoca_core::Expression::Binary {
@@ -1237,34 +1379,34 @@ fn collect_residual_continuous_definitions(
     }
 }
 
-fn collect_sub_residual_definitions(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn collect_sub_residual_definitions<'m>(
+    lhs: &'m rumoca_core::Expression,
+    rhs: &'m rumoca_core::Expression,
+    continuous_names: ScalarNameLookup<'_>,
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     let mut targets = IndexSet::new();
     for scalar_name in continuous_ref_scalar_names(lhs, continuous_names) {
-        add_continuous_definition(definitions, &scalar_name, rhs.clone());
+        add_continuous_definition(definitions, &scalar_name, rhs);
         targets.insert(scalar_name);
     }
     for scalar_name in continuous_ref_scalar_names(rhs, continuous_names) {
-        add_continuous_definition(definitions, &scalar_name, lhs.clone());
+        add_continuous_definition(definitions, &scalar_name, lhs);
         targets.insert(scalar_name);
     }
     targets
 }
 
-fn collect_if_residual_definitions(
-    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-    else_branch: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
-    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+fn collect_if_residual_definitions<'m>(
+    branches: &'m [(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &'m rumoca_core::Expression,
+    continuous_names: ScalarNameLookup<'_>,
+    definitions: &mut IndexMap<String, Vec<&'m rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     let mut guards = Vec::new();
     let mut targets = IndexSet::new();
     for (condition, branch_expr) in branches {
-        guards.push(condition.clone());
+        guards.push(condition);
         targets.extend(collect_residual_continuous_definitions(
             branch_expr,
             continuous_names,
@@ -1278,7 +1420,7 @@ fn collect_if_residual_definitions(
     ));
     for scalar_name in &targets {
         for guard in &guards {
-            add_continuous_definition(definitions, scalar_name, guard.clone());
+            add_continuous_definition(definitions, scalar_name, guard);
         }
     }
     targets
@@ -1286,7 +1428,7 @@ fn collect_if_residual_definitions(
 
 fn continuous_ref_scalar_names(
     expr: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
+    continuous_names: ScalarNameLookup<'_>,
 ) -> Vec<String> {
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
@@ -1296,25 +1438,45 @@ fn continuous_ref_scalar_names(
     };
     event_dependency_ref_names(name, subscripts)
         .into_iter()
-        .flat_map(|candidate| matching_scalar_names(continuous_names, &candidate))
+        .flat_map(|candidate| continuous_names.matching_scalar_names(&candidate))
         .collect()
 }
 
-fn matching_scalar_names(names: &IndexSet<String>, candidate: &str) -> Vec<String> {
-    if names.contains(candidate) {
-        return vec![candidate.to_string()];
+/// Scalar-name membership with subscript-stripped base names indexed once,
+/// so per-reference candidate checks avoid re-parsing every set entry.
+#[derive(Clone, Copy)]
+struct ScalarNameLookup<'a> {
+    names: &'a IndexSet<String>,
+    base_index: &'a IndexMap<String, Vec<String>>,
+}
+
+fn base_name_index(names: &IndexSet<String>) -> IndexMap<String, Vec<String>> {
+    let mut index: IndexMap<String, Vec<String>> = IndexMap::new();
+    for name in names {
+        if let Some(base) = dae::component_base_name(name) {
+            index.entry(base).or_default().push(name.clone());
+        }
     }
-    names
-        .iter()
-        .filter(|name| dae::component_base_name(name).as_deref() == Some(candidate))
-        .cloned()
-        .collect()
+    index
+}
+
+impl ScalarNameLookup<'_> {
+    fn contains(&self, candidate: &str) -> bool {
+        self.names.contains(candidate) || self.base_index.contains_key(candidate)
+    }
+
+    fn matching_scalar_names(&self, candidate: &str) -> Vec<String> {
+        if self.names.contains(candidate) {
+            return vec![candidate.to_string()];
+        }
+        self.base_index.get(candidate).cloned().unwrap_or_default()
+    }
 }
 
 fn expression_is_event_discontinuous(
     expr: &rumoca_core::Expression,
-    event_discrete_names: &IndexSet<String>,
-    event_discontinuous_names: &IndexSet<String>,
+    event_discrete_names: ScalarNameLookup<'_>,
+    event_discontinuous_names: ScalarNameLookup<'_>,
 ) -> bool {
     let mut checker = EventDiscontinuityChecker {
         event_discrete_names,
@@ -1327,8 +1489,8 @@ fn expression_is_event_discontinuous(
 }
 
 struct EventDiscontinuityChecker<'a> {
-    event_discrete_names: &'a IndexSet<String>,
-    event_discontinuous_names: &'a IndexSet<String>,
+    event_discrete_names: ScalarNameLookup<'a>,
+    event_discontinuous_names: ScalarNameLookup<'a>,
     found: bool,
     no_event_depth: usize,
 }
@@ -1347,8 +1509,8 @@ impl ExpressionVisitor for EventDiscontinuityChecker<'_> {
     ) {
         let names = event_dependency_ref_names(name, subscripts);
         if names.iter().any(|name| {
-            event_name_set_contains(self.event_discrete_names, name)
-                || event_name_set_contains(self.event_discontinuous_names, name)
+            self.event_discrete_names.contains(name)
+                || self.event_discontinuous_names.contains(name)
         }) {
             self.found = true;
             return;
@@ -1430,13 +1592,6 @@ fn event_dependency_ref_names(
         names.push(dae::format_subscript_key(&base, &indices));
     }
     names
-}
-
-fn event_name_set_contains(names: &IndexSet<String>, candidate: &str) -> bool {
-    names.contains(candidate)
-        || names
-            .iter()
-            .any(|name| dae::component_base_name(name).as_deref() == Some(candidate))
 }
 
 fn variable_meta_classification(

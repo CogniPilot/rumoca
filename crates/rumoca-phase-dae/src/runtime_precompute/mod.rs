@@ -146,11 +146,11 @@ fn prune_time_only_relation_roots(
 
     let old_relations = std::mem::take(&mut dae_model.conditions.relations);
     let old_conditions = std::mem::take(&mut dae_model.conditions.equations);
-    let condition_name = old_conditions
-        .first()
-        .and_then(|equation| equation.lhs.as_ref())
-        .map(|lhs| dae::component_base_name(lhs.as_str()).unwrap_or_else(|| lhs.as_str().into()))
-        .unwrap_or_else(|| "c".to_string());
+    let condition_name = condition_variable_name_from_equation(
+        old_conditions
+            .first()
+            .ok_or_else(|| runtime_contract("condition relation set has no equations", None))?,
+    )?;
     let mut kept_relations = Vec::with_capacity(old_relations.len());
     let mut kept_conditions = Vec::with_capacity(old_conditions.len());
     let mut replacements = Vec::with_capacity(old_relations.len());
@@ -167,7 +167,7 @@ fn prune_time_only_relation_roots(
 
         let condition_index = kept_relations.len() + 1;
         kept_conditions.push(dae::Equation::explicit(
-            rumoca_core::VarName::new(format!("{condition_name}[{condition_index}]")),
+            generated_condition_reference(&condition_name, condition_index, equation.span),
             relation.clone(),
             equation.span,
             equation.origin,
@@ -180,6 +180,56 @@ fn prune_time_only_relation_roots(
     dae_model.conditions.equations = kept_conditions;
     rewrite_condition_memory_references(dae_model, &condition_name, &replacements);
     Ok(())
+}
+
+fn condition_variable_name_from_equation(equation: &dae::Equation) -> Result<String, ToDaeError> {
+    let Some(lhs) = equation.lhs.as_ref() else {
+        return Err(runtime_contract(
+            "condition equation is missing generated condition lhs",
+            Some(equation.span),
+        ));
+    };
+    let Some(component_ref) = lhs.component_ref() else {
+        return Err(runtime_contract(
+            format!(
+                "condition equation lhs `{}` has no structured component reference",
+                lhs.as_str()
+            ),
+            Some(equation.span),
+        ));
+    };
+    if component_ref.parts.len() != 1 {
+        return Err(runtime_contract(
+            format!(
+                "condition equation lhs `{}` has invalid generated component reference shape",
+                lhs.as_str()
+            ),
+            Some(equation.span),
+        ));
+    }
+    Ok(component_ref.parts[0].ident.clone())
+}
+
+fn generated_condition_reference(
+    condition_name: &str,
+    condition_index: usize,
+    span: rumoca_core::Span,
+) -> rumoca_core::Reference {
+    rumoca_core::Reference::generated_component(
+        condition_name,
+        vec![rumoca_core::Subscript::generated_index(
+            condition_index as i64,
+            span,
+        )],
+        span,
+    )
+}
+
+fn runtime_contract(detail: impl Into<String>, span: Option<rumoca_core::Span>) -> ToDaeError {
+    match span {
+        Some(span) => ToDaeError::runtime_contract_violation_at(detail, span),
+        None => ToDaeError::runtime_contract_violation(detail),
+    }
 }
 
 fn condition_memory_is_referenced(
@@ -331,7 +381,7 @@ fn condition_memory_ref(
     span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
+        name: rumoca_core::Reference::generated(name),
         subscripts: vec![rumoca_core::Subscript::generated_index(index as i64, span)],
         span,
     }
@@ -389,8 +439,12 @@ fn collect_array_elements_scalar_entries(
         .iter()
         .enumerate()
         .filter_map(|(index, element)| {
-            eval_scalar_const_expr(element, values)
-                .map(|value| (format!("{}[{}]", name.as_str(), index + 1), value))
+            eval_scalar_const_expr(element, values).map(|value| {
+                (
+                    dae::format_subscript_key(name.as_str(), &[index + 1]),
+                    value,
+                )
+            })
         })
         .collect()
 }
@@ -424,13 +478,13 @@ fn collect_range_scalar_entries(
     let mut index = 1usize;
     if step_value > 0.0 {
         while current <= end_value + 1.0e-12 && index <= 10_000 {
-            entries.push((format!("{}[{}]", name.as_str(), index), current));
+            entries.push((dae::format_subscript_key(name.as_str(), &[index]), current));
             current += step_value;
             index += 1;
         }
     } else {
         while current >= end_value - 1.0e-12 && index <= 10_000 {
-            entries.push((format!("{}[{}]", name.as_str(), index), current));
+            entries.push((dae::format_subscript_key(name.as_str(), &[index]), current));
             current += step_value;
             index += 1;
         }

@@ -5,6 +5,7 @@
 [![CI](https://github.com/climamind/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/climamind/rumoca/actions/workflows/ci.yml)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-2ea44f?logo=github)](https://climamind.github.io/rumoca/)
 [![PyPI](https://img.shields.io/pypi/v/rumoca)](https://pypi.org/project/rumoca/)
+[![npm](https://img.shields.io/npm/v/@cognipilot/rumoca)](https://www.npmjs.com/package/@cognipilot/rumoca)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **[Try Rumoca in your browser](https://climamind.github.io/rumoca/)** (no installation required).
@@ -426,4 +427,4 @@ Compiler-affecting changes should still follow:
 
 ## License
 
-Apache-2.0 (`LICENSE`)
+Rumoca is licensed under the [Apache License 2.0](LICENSE).

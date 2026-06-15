@@ -2,7 +2,7 @@
 //!
 //! Keeps string/index normalization logic isolated from connection-set orchestration.
 
-use crate::path_utils::{split_path_with_indices, strip_array_index};
+use crate::path_utils::{segments as path_segments_of, strip_array_index};
 use rumoca_ir_flat as flat;
 use std::cmp::Ordering;
 
@@ -92,8 +92,8 @@ pub(super) fn extract_suffix(full_name: &str, prefix: &str) -> Option<(String, S
     }
 
     // Try matching with array indices.
-    let prefix_segments = split_path_with_indices(prefix);
-    let name_parts = split_path_with_indices(full_name);
+    let prefix_segments = path_segments_of(prefix);
+    let name_parts = path_segments_of(full_name);
 
     if name_parts.len() <= prefix_segments.len() {
         return None;
@@ -134,7 +134,7 @@ pub(super) fn extract_array_index(s: &str) -> Option<String> {
 }
 
 pub(super) fn first_array_index_group(path: &str) -> Option<String> {
-    split_path_with_indices(path)
+    path_segments_of(path)
         .into_iter()
         .filter_map(extract_array_index)
         .find_map(|indices| {
@@ -196,8 +196,8 @@ pub(super) fn scalarize_collapsed_connector_element(
     if !flat.variables.contains_key(var) {
         return var.clone();
     }
-    let path_segments = split_path_with_indices(path);
-    let var_parts = split_path_with_indices(var.as_str());
+    let path_segments = path_segments_of(path);
+    let var_parts = path_segments_of(var.as_str());
     let upto = path_segments.len().min(var_parts.len());
     let mut missing_index: Option<String> = None;
     for i in 0..upto {
@@ -218,7 +218,7 @@ pub(super) fn scalarize_collapsed_connector_element(
 
 /// True when any segment in a connector path contains an explicit array index.
 pub(super) fn path_has_explicit_index(path: &str) -> bool {
-    split_path_with_indices(path)
+    path_segments_of(path)
         .iter()
         .any(|segment| extract_array_index(segment).is_some())
 }
@@ -227,8 +227,11 @@ pub(super) fn path_has_explicit_index(path: &str) -> bool {
 ///
 /// Example: `"[1][2]" -> vec!["[1]", "[2]"]`.
 fn extract_index_groups(indices: &str) -> Vec<String> {
+    if indices.is_empty() {
+        return Vec::new();
+    }
     balanced_index_groups(indices)
-        .unwrap_or_default()
+        .expect("index pattern must contain balanced bracket groups")
         .into_iter()
         .map(str::to_string)
         .collect()
@@ -272,7 +275,7 @@ fn matching_index_group_end(text: &str, start: usize) -> Option<usize> {
 /// - `indices="[1][2]"`, `path="s[1].p"` -> `"[2]"`
 /// - `indices="[1]"`, `path="resistor[1].p"` -> `""`
 pub(super) fn strip_explicit_path_indices(indices: &str, path: &str) -> String {
-    let explicit_count = split_path_with_indices(path)
+    let explicit_count = path_segments_of(path)
         .into_iter()
         .filter(|segment| extract_array_index(segment).is_some())
         .count();
@@ -299,8 +302,8 @@ pub(super) fn strip_explicit_index_count(indices: &str, explicit_count: usize) -
 /// - full=`plug_p.pin[2].i`, prefix=`plug_p.pin` => true
 /// - full=`resistor[1].p.i`, prefix=`resistor.p` => false (missing index is not on last segment)
 pub(super) fn missing_index_on_last_prefix_segment(full_name: &str, prefix: &str) -> bool {
-    let prefix_segments = split_path_with_indices(prefix);
-    let name_parts = split_path_with_indices(full_name);
+    let prefix_segments = path_segments_of(prefix);
+    let name_parts = path_segments_of(full_name);
     if name_parts.len() <= prefix_segments.len() || prefix_segments.is_empty() {
         return false;
     }

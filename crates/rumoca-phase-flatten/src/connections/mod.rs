@@ -28,14 +28,13 @@ use rustc_hash::FxHashMap;
 
 use crate::errors::FlattenError;
 use crate::path_utils::{
-    first_path_segment_without_index, split_path_with_indices, strip_array_index,
+    first_path_segment_without_index, leaf_segment, segments as path_segments_of, strip_array_index,
 };
 
 mod equation_generation;
 mod path_index;
-pub(crate) use equation_generation::connection_involves_disabled;
-pub(crate) use equation_generation::process_connections;
 use equation_generation::*;
+pub(crate) use equation_generation::{connection_involves_disabled, process_connections};
 use path_index::*;
 
 /// Context for array output connection operations.
@@ -60,7 +59,7 @@ struct ConnectionBuildCtx<'a> {
 /// Precomputed lookup structures for connection path matching.
 ///
 /// Built once per connection-processing pass to avoid repeated full scans and
-/// repeated `split_path_with_indices` work in hot loops.
+/// repeated `path_segments_of` work in hot loops.
 struct ConnectionVarIndex {
     /// Variables indexed by normalized base prefix (indices stripped), for
     /// connector-subvariable expansion lookups.
@@ -89,7 +88,7 @@ impl ConnectionVarIndex {
             FxHashMap::default();
 
         for var_name in var_names {
-            let parsed_parts: Vec<String> = split_path_with_indices(var_name.as_str())
+            let parsed_parts: Vec<String> = path_segments_of(var_name.as_str())
                 .into_iter()
                 .map(std::borrow::ToOwned::to_owned)
                 .collect();
@@ -150,7 +149,7 @@ struct ConnectionSubMatchIndex {
 
 impl ConnectionSubMatchIndex {
     fn new(path: &str, subs: &[rumoca_core::VarName], var_index: &ConnectionVarIndex) -> Self {
-        let path_segments = split_path_with_indices(path);
+        let path_segments = path_segments_of(path);
         let path_explicit_index_count = path_segments
             .iter()
             .filter(|segment| extract_array_index(segment).is_some())
@@ -173,7 +172,7 @@ impl ConnectionSubMatchIndex {
             let b_parts = if let Some(parts) = var_index.parsed_parts(var) {
                 parts
             } else {
-                fallback_parts = split_path_with_indices(var.as_str())
+                fallback_parts = path_segments_of(var.as_str())
                     .into_iter()
                     .map(std::borrow::ToOwned::to_owned)
                     .collect::<Vec<_>>();
@@ -515,6 +514,7 @@ fn validate_connections(
 
             // Validate array dimension compatibility (CONN-008)
             validate_dimension_compatibility(flat, &var_a, &var_b, span)?;
+            validate_quantity_compatibility(flat, &var_a, &var_b, span)?;
             continue;
         }
 
@@ -541,6 +541,7 @@ struct ValidationVarInfo {
     flow: bool,
     type_id: TypeId,
     dims: Vec<i64>,
+    quantity: Option<String>,
 }
 
 struct ExpandedValidationCtx<'a> {
@@ -561,6 +562,7 @@ fn get_validation_var_info(
             flow: v.flow,
             type_id: v.type_id,
             dims: v.dims.clone(),
+            quantity: v.quantity.clone(),
         });
     }
 
@@ -583,6 +585,7 @@ fn get_validation_var_info(
         // MLS array indexing semantics: indexing a subset of dimensions
         // preserves remaining dimensions (e.g., A[1] for A[2,3] yields [3]).
         dims,
+        quantity: base_var.quantity.clone(),
     })
 }
 
@@ -617,6 +620,32 @@ fn validate_flow_consistency(
                 var_b.as_str(),
                 if is_flow_b { "flow" } else { "non-flow" }
             ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that connected variables agree on the quantity attribute.
+///
+/// Per CONN-005 (MLS §9.2): variables with non-empty quantity attributes
+/// must match.
+fn validate_quantity_compatibility(
+    flat: &flat::Model,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
+    span: Span,
+) -> Result<(), FlattenError> {
+    let quantity_a = get_validation_var_info(flat, var_a).and_then(|v| v.quantity);
+    let quantity_b = get_validation_var_info(flat, var_b).and_then(|v| v.quantity);
+    if let (Some(qa), Some(qb)) = (&quantity_a, &quantity_b)
+        && !qa.is_empty()
+        && !qb.is_empty()
+        && qa != qb
+    {
+        return Err(FlattenError::incompatible_connectors(
+            format!("{} (quantity: {qa})", var_a.as_str()),
+            format!("{} (quantity: {qb})", var_b.as_str()),
             span,
         ));
     }
@@ -723,7 +752,7 @@ fn composition_full_reduced_pair(
 }
 
 fn path_leaf_without_indices(path: &str) -> &str {
-    let leaf = rumoca_core::top_level_last_segment(path);
+    let leaf = leaf_segment(path);
     leaf.split_once('[').map_or(leaf, |(head, _)| head)
 }
 
@@ -749,6 +778,7 @@ fn validate_expanded_connector_connection(
         validate_flow_consistency(ctx.flat, sub_a, &var_b_match, ctx.span)?;
         validate_type_compatibility(ctx.flat, ctx.type_roots, sub_a, &var_b_match, ctx.span)?;
         validate_dimension_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
+        validate_quantity_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
     }
     Ok(())
 }
@@ -791,7 +821,7 @@ fn find_exact_match_with_array_expansion(
     path: &str,
     var_index: &ConnectionVarIndex,
 ) -> Vec<rumoca_core::VarName> {
-    let segments = split_path_with_indices(path);
+    let segments = path_segments_of(path);
     if segments.is_empty() {
         return Vec::new();
     }
@@ -833,7 +863,7 @@ fn find_sub_variables_with_array_expansion_indexed(
     prefix: &str,
     var_index: &ConnectionVarIndex,
 ) -> Vec<rumoca_core::VarName> {
-    let segments = split_path_with_indices(prefix);
+    let segments = path_segments_of(prefix);
     if segments.is_empty() {
         return Vec::new();
     }
@@ -1050,7 +1080,7 @@ fn connect_output_to_array_element(
 /// Returns Some((base_var_name, index)) if path ends with [n] and the base is
 /// an array variable in the flat model.
 fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(rumoca_core::VarName, i64)> {
-    let parts = split_path_with_indices(path);
+    let parts = path_segments_of(path);
     let last = parts.last()?;
     let idx_group = extract_array_index(last)?;
     let idx = parse_single_index_group_value(&idx_group)?;
@@ -1202,7 +1232,7 @@ fn connect_sub_variable(
             };
             let index_in_bounds = projected_dims.is_empty()
                 || projected_indices_within_dims(&idx_suffix, projected_dims);
-            let idx_already_present = split_path_with_indices(conn_b.as_str())
+            let idx_already_present = path_segments_of(conn_b.as_str())
                 .iter()
                 .filter_map(|part| extract_array_index(part))
                 .any(|idx| idx == idx_suffix);
@@ -1446,8 +1476,8 @@ fn collect_interface_stream_vars(
 }
 
 fn connection_endpoint_is_interface_stream_member(path: &str, scope: &str) -> bool {
-    let path_parts = split_path_with_indices(path);
-    let scope_parts = split_path_with_indices(scope);
+    let path_parts = path_segments_of(path);
+    let scope_parts = path_segments_of(scope);
     if scope_parts.len() > path_parts.len() {
         return false;
     }
@@ -1478,8 +1508,8 @@ fn collect_stream_endpoint_vars(
 }
 
 fn connection_endpoint_is_interface_connector(path: &str, scope: &str) -> bool {
-    let path_parts = split_path_with_indices(path);
-    let scope_parts = split_path_with_indices(scope);
+    let path_parts = path_segments_of(path);
+    let scope_parts = path_segments_of(scope);
     if scope_parts.len() > path_parts.len() {
         return false;
     }
@@ -1633,12 +1663,15 @@ fn log_stream_alias_emit(missing: &rumoca_core::VarName, anchor: &rumoca_core::V
 ///
 /// Potential (equality) connection sets use a global union-find since
 /// N-1 equality equations give the same count whether split or merged.
+/// Connection sets plus the raw stream groups (the semantic stream
+/// connection sets used for the MLS §15.2 inStream rewrite, independent of
+/// the balance-oriented stream ConnectionSets).
 fn build_connection_sets(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> (Vec<ConnectionSet>, usize) {
+) -> (Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>, usize) {
     let mut potential_uf = UnionFind::new();
     let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
@@ -1734,6 +1767,7 @@ fn build_connection_sets(
     }
 
     let stream_sets = stream_uf.get_sets();
+    let mut raw_stream_groups: Vec<Vec<rumoca_core::VarName>> = Vec::new();
     if !stream_sets.is_empty() {
         let existing_lhs_vars = collect_existing_lhs_vars(flat);
         let mut existing_var_refs: Option<std::collections::HashSet<rumoca_core::VarName>> = None;
@@ -1741,6 +1775,7 @@ fn build_connection_sets(
             collect_interface_stream_vars(connections, flat, prefix_children, var_index);
         stream_interface_equation_count = interface_stream_vars.len();
         for (_root, vars) in stream_sets {
+            raw_stream_groups.push(vars.clone());
             let span = representative_span(&vars, &var_first_span);
             append_stream_connection_sets_for_group(
                 flat,
@@ -1754,7 +1789,7 @@ fn build_connection_sets(
         }
     }
 
-    (result, stream_interface_equation_count)
+    (result, raw_stream_groups, stream_interface_equation_count)
 }
 
 // =============================================================================

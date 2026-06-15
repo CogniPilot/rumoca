@@ -30,6 +30,41 @@ fn builtin_has_array_like_lowering(
             && is_array_like_sample_value_form(args)
 }
 
+fn required_array_builtin_arg(
+    args: &[rumoca_core::Expression],
+    function: rumoca_core::BuiltinFunction,
+    index: usize,
+) -> Result<&rumoca_core::Expression, LowerError> {
+    args.get(index)
+        .ok_or_else(|| LowerError::ContractViolation {
+            reason: format!(
+                "{function:?} array lowering requires argument {}",
+                index + 1
+            ),
+            span: rumoca_core::Span::DUMMY,
+        })
+}
+
+fn require_array_builtin_arity(
+    args: &[rumoca_core::Expression],
+    function: rumoca_core::BuiltinFunction,
+    expected: usize,
+) -> Result<(), LowerError> {
+    if args.len() == expected {
+        return Ok(());
+    }
+    Err(LowerError::ContractViolation {
+        reason: format!(
+            "{function:?} requires {expected} argument(s), got {}",
+            args.len()
+        ),
+        span: args
+            .first()
+            .and_then(rumoca_core::Expression::span)
+            .unwrap_or(rumoca_core::Span::DUMMY),
+    })
+}
+
 impl<'a> LowerBuilder<'a> {
     pub(in crate::lower) fn lower_builtin_first_array_like_value(
         &mut self,
@@ -37,13 +72,17 @@ impl<'a> LowerBuilder<'a> {
         args: &[rumoca_core::Expression],
         scope: &Scope,
         call_depth: usize,
+        span: rumoca_core::Span,
     ) -> Result<Reg, LowerError> {
         let values =
             self.lower_known_builtin_array_like_values(function, args, scope, call_depth)?;
-        Ok(values
+        values
             .first()
             .copied()
-            .unwrap_or_else(|| self.emit_const(0.0)))
+            .ok_or_else(|| LowerError::ContractViolation {
+                reason: format!("{function:?} produced no scalar values in scalar context"),
+                span,
+            })
     }
 
     pub(super) fn lower_builtin_array_like_values(
@@ -96,10 +135,10 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::BuiltinFunction::Scalar => {
                 self.lower_scalar_array_like_values(args, scope, call_depth)
             }
-            rumoca_core::BuiltinFunction::Vector | rumoca_core::BuiltinFunction::Matrix => args
-                .first()
-                .map(|arg| self.lower_array_like_values(arg, scope, call_depth))
-                .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
+            rumoca_core::BuiltinFunction::Vector | rumoca_core::BuiltinFunction::Matrix => {
+                let arg = required_array_builtin_arg(args, function, 0)?;
+                self.lower_array_like_values(arg, scope, call_depth)
+            }
             rumoca_core::BuiltinFunction::Cross => {
                 self.lower_cross_array_like_values(args, scope, call_depth)
             }
@@ -112,36 +151,34 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::BuiltinFunction::Symmetric => {
                 self.lower_symmetric_array_like_values(args, scope, call_depth)
             }
-            rumoca_core::BuiltinFunction::NoEvent => args
-                .first()
-                .map(|arg| self.lower_array_like_values(arg, scope, call_depth))
-                .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-            rumoca_core::BuiltinFunction::Smooth => args
-                .get(1)
-                .map(|arg| self.lower_array_like_values(arg, scope, call_depth))
-                .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-            rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => args
-                .first()
-                .map(|arg| {
-                    self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
-                })
-                .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-            function => match unary_array_builtin_op(&function) {
-                Some(op) => args
-                    .first()
-                    .map(|arg| {
-                        self.lower_array_like_values(arg, scope, call_depth)
-                            .map(|values| {
-                                values
-                                    .into_iter()
-                                    .map(|value| self.emit_unary(op, value))
-                                    .collect()
-                            })
-                    })
-                    .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-                None => unreachable!("non-array builtin handled by scalar fallback"),
-            },
+            rumoca_core::BuiltinFunction::NoEvent => {
+                let arg = required_array_builtin_arg(args, function, 0)?;
+                self.lower_array_like_values(arg, scope, call_depth)
+            }
+            rumoca_core::BuiltinFunction::Smooth => {
+                let arg = required_array_builtin_arg(args, function, 1)?;
+                self.lower_array_like_values(arg, scope, call_depth)
+            }
+            rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => {
+                let arg = required_array_builtin_arg(args, function, 0)?;
+                self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
+            }
+            function => {
+                if let Some(op) = unary_array_builtin_op(&function) {
+                    let arg = required_array_builtin_arg(args, function, 0)?;
+                    let values = self.lower_array_like_values(arg, scope, call_depth)?;
+                    return Ok(self.emit_unary_array_values(op, values));
+                }
+                unreachable!("non-array builtin handled by scalar fallback")
+            }
         }
+    }
+
+    fn emit_unary_array_values(&mut self, op: UnaryOp, values: Vec<Reg>) -> Vec<Reg> {
+        values
+            .into_iter()
+            .map(|value| self.emit_unary(op, value))
+            .collect()
     }
 
     fn lower_der_array_like_values(
@@ -149,10 +186,13 @@ impl<'a> LowerBuilder<'a> {
         args: &[rumoca_core::Expression],
         scope: &Scope,
     ) -> Result<Vec<Reg>, LowerError> {
-        let dims = args
-            .first()
-            .map(|arg| self.infer_expr_dims(arg, scope))
-            .unwrap_or_default();
+        let Some(arg) = args.first() else {
+            return Err(LowerError::ContractViolation {
+                reason: "der() array lowering requires one argument".to_string(),
+                span: rumoca_core::Span::DUMMY,
+            });
+        };
+        let dims = self.infer_expr_dims(arg, scope)?;
         let count = shape_size_or_scalar(&dims);
         let zero = self.emit_const(0.0);
         Ok(vec![zero; count])
@@ -198,9 +238,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         args: &[rumoca_core::Expression],
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(dim) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        let dim = required_array_builtin_arg(args, rumoca_core::BuiltinFunction::Identity, 0)?;
         let n = self.eval_compile_time_positive_index(
             dim,
             &self.local_const_bindings,
@@ -219,9 +257,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(arg) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        let arg = required_array_builtin_arg(args, rumoca_core::BuiltinFunction::Diagonal, 0)?;
         let values = self.lower_array_like_values(arg, scope, call_depth)?;
         let n = values.len();
         let zero = self.emit_const(0.0);
@@ -239,17 +275,17 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(arg) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        let arg = required_array_builtin_arg(args, rumoca_core::BuiltinFunction::Transpose, 0)?;
         let values = self.lower_array_like_values(arg, scope, call_depth)?;
-        match self.infer_expr_dims(arg, scope).as_slice() {
-            [] | [_] => Ok(values),
+        match self.infer_expr_dims(arg, scope)?.as_slice() {
+            [] | [_] => Err(LowerError::Unsupported {
+                reason: "transpose() requires an array with at least two dimensions".to_string(),
+            }),
             [rows, cols] if values.len() == rows * cols => {
                 Ok(transpose_flat_matrix_regs(&values, *rows, *cols))
             }
             dims => Err(LowerError::Unsupported {
-                reason: format!("transpose requires scalar, vector, or matrix input, got {dims:?}"),
+                reason: format!("transpose() requires a matrix input, got shape {dims:?}"),
             }),
         }
     }
@@ -260,16 +296,19 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
+        require_array_builtin_arity(args, rumoca_core::BuiltinFunction::Linspace, 3)?;
         let [start_expr, stop_expr, count_expr] = args else {
-            return Ok(vec![self.emit_const(0.0)]);
+            unreachable!("linspace arity checked above")
         };
         let count = self.eval_compile_time_positive_index(
             count_expr,
             &self.local_const_bindings,
             "linspace count",
         )?;
-        if count == 1 {
-            return Ok(vec![self.lower_expr(start_expr, scope, call_depth)?]);
+        if count < 2 {
+            return Err(LowerError::Unsupported {
+                reason: "linspace() count must be at least 2".to_string(),
+            });
         }
         let start = self.lower_expr(start_expr, scope, call_depth)?;
         let stop = self.lower_expr(stop_expr, scope, call_depth)?;
@@ -291,9 +330,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(arg) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        let arg = required_array_builtin_arg(args, rumoca_core::BuiltinFunction::Scalar, 0)?;
         let values = self.lower_array_like_values(arg, scope, call_depth)?;
         match values.as_slice() {
             [value] => Ok(vec![*value]),
@@ -391,11 +428,9 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(arg) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        let arg = required_array_builtin_arg(args, rumoca_core::BuiltinFunction::Symmetric, 0)?;
         let values = self.lower_array_like_values(arg, scope, call_depth)?;
-        let dims = self.infer_expr_dims(arg, scope);
+        let dims = self.infer_expr_dims(arg, scope)?;
         let [rows, cols] = dims.as_slice() else {
             return Err(LowerError::Unsupported {
                 reason: format!("symmetric() requires a square matrix, got shape {dims:?}"),
@@ -428,7 +463,10 @@ impl<'a> LowerBuilder<'a> {
         context: &str,
     ) -> Result<usize, LowerError> {
         if dims.is_empty() {
-            return Ok(1);
+            return Err(LowerError::ContractViolation {
+                reason: format!("{context}() requires at least one dimension argument"),
+                span: rumoca_core::Span::DUMMY,
+            });
         }
         let const_scope = &self.local_const_bindings;
         let mut count = 1usize;
@@ -465,9 +503,16 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(value_expr) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        if args.len() < 2 {
+            return Err(LowerError::ContractViolation {
+                reason: format!("fill() requires at least 2 arguments, got {}", args.len()),
+                span: args
+                    .first()
+                    .and_then(rumoca_core::Expression::span)
+                    .unwrap_or(rumoca_core::Span::DUMMY),
+            });
+        }
+        let value_expr = &args[0];
         let count = self.fill_element_count(&args[1..])?;
         let value = self.lower_expr(value_expr, scope, call_depth)?;
         Ok(vec![value; count])
@@ -475,7 +520,10 @@ impl<'a> LowerBuilder<'a> {
 
     fn fill_element_count(&self, dims: &[rumoca_core::Expression]) -> Result<usize, LowerError> {
         if dims.is_empty() {
-            return Ok(1);
+            return Err(LowerError::ContractViolation {
+                reason: "fill() requires at least one dimension argument".to_string(),
+                span: rumoca_core::Span::DUMMY,
+            });
         }
         let const_scope = &self.local_const_bindings;
         let mut count = 1usize;
@@ -503,9 +551,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(arg) = args.first() else {
-            return Ok(vec![self.emit_const(0.0)]);
-        };
+        let arg = args.first().ok_or_else(|| LowerError::ContractViolation {
+            reason: format!("{call_name} array lowering requires one argument"),
+            span: rumoca_core::Span::DUMMY,
+        })?;
         match intrinsic_short_name(call_name) {
             // MLS §16.4 / §16.5.1: previous(v) is element-wise for array
             // arguments and reads the previous clock tick value.

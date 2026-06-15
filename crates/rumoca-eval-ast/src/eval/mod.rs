@@ -9,7 +9,6 @@ use rumoca_core::{Causality, ClassType, OpBinary, OpUnary};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, IntegerBinaryOperator, PrimaryLabel, Span,
     eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin,
-    find_last_top_level_dot,
 };
 use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript, TerminalType};
 use rustc_hash::FxHashMap;
@@ -33,23 +32,21 @@ fn lookup_by_scope<'a, T>(name: &str, scope: &str, map: &'a FxHashMap<String, T>
         return map.get(name);
     }
 
-    let mut scope_end = scope.len();
     let mut qualified = String::with_capacity(scope.len() + 1 + name.len());
-    loop {
-        let current_scope = &scope[..scope_end];
+    let mut try_scope = |current_scope: &str| {
         qualified.clear();
         qualified.push_str(current_scope);
         qualified.push('.');
         qualified.push_str(name);
-
-        if let Some(val) = map.get(qualified.as_str()) {
-            return Some(val);
-        }
-
-        let Some(pos) = find_last_top_level_dot(current_scope) else {
-            break;
-        };
-        scope_end = pos;
+        map.get(qualified.as_str())
+    };
+    if let Some(val) = try_scope(scope) {
+        return Some(val);
+    }
+    if let Some(val) =
+        rumoca_core::find_map_top_level_splits_rev(scope, |base, _suffix| try_scope(base))
+    {
+        return Some(val);
     }
 
     map.get(name)
@@ -1340,8 +1337,7 @@ fn infer_matrix_row_dims(
     let mut expected_rows = None;
     let mut cols = 0usize;
     for element in elements {
-        let dims =
-            infer_dimensions_from_binding_with_scope(element, ctx, scope).unwrap_or_default();
+        let dims = infer_dimensions_from_binding_with_scope(element, ctx, scope)?;
         let (entry_rows, entry_cols) = matrix_entry_dims(&dims, single_entry)?;
         match expected_rows {
             Some(expected) if expected != entry_rows => return None,
@@ -1350,7 +1346,7 @@ fn infer_matrix_row_dims(
         }
         cols += entry_cols;
     }
-    Some((expected_rows.unwrap_or(0), cols))
+    Some((expected_rows?, cols))
 }
 
 fn matrix_entry_dims(dims: &[usize], single_entry: bool) -> Option<(usize, usize)> {

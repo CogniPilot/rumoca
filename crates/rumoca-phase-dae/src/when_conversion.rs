@@ -13,9 +13,12 @@ use crate::{
         discrete_partition,
         variable_analysis::{self, resolve_flat_function},
     },
-    compute_var_size, dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
-    flat_to_dae_var_name, resolve_embedded_subscript_size,
+    compute_var_size, dae_to_flat_expression, dae_to_flat_var_name,
+    flat_to_dae_expression_with_refs, flat_to_dae_var_name, resolve_embedded_subscript_size,
 };
+
+#[cfg(test)]
+use crate::flat_to_dae_expression;
 
 /// Compute scalar count for a when-equation target variable.
 fn when_target_scalar_count(target: &rumoca_core::VarName, flat: &flat::Model) -> usize {
@@ -31,7 +34,7 @@ fn when_target_scalar_count(target: &rumoca_core::VarName, flat: &flat::Model) -
 
 fn target_ref(target: &rumoca_core::VarName) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: target.clone().into(),
+        name: crate::convert::structured_target_reference(target),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
     }
@@ -112,8 +115,8 @@ fn build_when_assignment_eq(
     }
     Some(ConvertedWhenEquation {
         equation: dae::Equation::explicit_with_scalar_count(
-            flat_to_dae_var_name(target),
-            flat_to_dae_expression(rhs),
+            crate::convert::structured_target_reference(&flat_to_dae_var_name(target)),
+            flat_to_dae_expression_with_refs(rhs, flat),
             span,
             origin.to_string(),
             scalar_count,
@@ -200,7 +203,7 @@ fn insert_when_assignment(
             "internal error: when-equation conversion produced equation without LHS",
         ));
     };
-    let target = dae_to_flat_var_name(&target);
+    let target = dae_to_flat_var_name(target.var_name());
 
     if assignments.insert(target.clone(), converted).is_some() {
         return Err(ToDaeError::internal(format!(
@@ -323,7 +326,7 @@ pub(crate) fn convert_when_clause(
     flat: &flat::Model,
 ) -> Result<dae::WhenClause, ToDaeError> {
     let mut dae_when = dae::WhenClause::new(
-        flat_to_dae_expression(&when.condition),
+        flat_to_dae_expression_with_refs(&when.condition, flat),
         when.span,
         "when clause".to_string(),
     );
@@ -334,7 +337,12 @@ pub(crate) fn convert_when_clause(
             dae_when.equation_inactive_rhs.push(dae_eq.inactive_rhs);
         }
     }
-    collect_when_actions(&when.equations, &when.condition, &mut dae_when.actions)?;
+    collect_when_actions(
+        &when.equations,
+        &when.condition,
+        flat,
+        &mut dae_when.actions,
+    )?;
 
     Ok(dae_when)
 }
@@ -342,6 +350,7 @@ pub(crate) fn convert_when_clause(
 fn collect_when_actions(
     equations: &[flat::WhenEquation],
     guard: &rumoca_core::Expression,
+    flat: &flat::Model,
     actions: &mut Vec<dae::DaeEventAction>,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
@@ -354,13 +363,12 @@ fn collect_when_actions(
                 origin,
             } => {
                 actions.push(dae::DaeEventAction {
-                    condition: flat_to_dae_expression(&and_expr(
-                        guard.clone(),
-                        not_expr(condition.clone(), *span),
-                        *span,
-                    )),
+                    condition: flat_to_dae_expression_with_refs(
+                        &and_expr(guard.clone(), not_expr(condition.clone(), *span), *span),
+                        flat,
+                    ),
                     kind: dae::DaeEventActionKind::Assert {
-                        message: message.clone(),
+                        message: flat_to_dae_expression_with_refs(message, flat),
                     },
                     span: *span,
                     origin: origin.clone(),
@@ -371,9 +379,9 @@ fn collect_when_actions(
                 span,
                 origin,
             } => actions.push(dae::DaeEventAction {
-                condition: flat_to_dae_expression(guard),
+                condition: flat_to_dae_expression_with_refs(guard, flat),
                 kind: dae::DaeEventActionKind::Terminate {
-                    message: message.clone(),
+                    message: flat_to_dae_expression_with_refs(message, flat),
                 },
                 span: *span,
                 origin: origin.clone(),
@@ -390,6 +398,7 @@ fn collect_when_actions(
                     collect_when_actions(
                         branch_equations,
                         &and_expr(guard.clone(), condition.clone(), *span),
+                        flat,
                         actions,
                     )?;
                 }
@@ -398,7 +407,7 @@ fn collect_when_actions(
                     .fold(guard.clone(), |acc, cond| {
                         and_expr(acc, not_expr(cond, *span), *span)
                     });
-                collect_when_actions(else_branch, &else_guard, actions)?;
+                collect_when_actions(else_branch, &else_guard, flat, actions)?;
             }
             flat::WhenEquation::Assign { .. } | flat::WhenEquation::FunctionCallOutputs { .. } => {}
         }
@@ -513,7 +522,7 @@ mod tests {
         let mut assignments = IndexMap::new();
         let target = rumoca_core::VarName::new("x");
         let eq = dae::Equation::explicit(
-            flat_to_dae_var_name(&target),
+            crate::convert::structured_target_reference(&flat_to_dae_var_name(&target)),
             flat_to_dae_expression(&rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
                 span: rumoca_core::Span::DUMMY,

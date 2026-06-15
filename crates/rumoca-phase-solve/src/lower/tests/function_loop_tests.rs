@@ -286,7 +286,7 @@ fn lower_expression_uses_actual_matrix_shape_for_function_input_size() {
         .functions
         .insert(rumoca_core::VarName::new("My.rowCount"), row_count);
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("My.rowCount").into(),
         args: vec![var("sourceTable")],

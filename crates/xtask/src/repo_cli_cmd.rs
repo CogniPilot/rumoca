@@ -14,7 +14,7 @@ use crate::{
     completion_cmd, repo_root, run_status,
 };
 
-fn rum_cli_install_package_dir(root: &Path) -> PathBuf {
+fn xtask_cli_install_package_dir(root: &Path) -> PathBuf {
     root.join("crates/xtask")
 }
 
@@ -297,7 +297,7 @@ pub(crate) fn shell_profile_update(
             snippet: format!("export PATH={}:\"$PATH\"", shell_single_quote(&bin_dir)),
         }),
         ShellKind::Fish => Some(ShellProfileUpdate {
-            path: home_dir.join(".config/fish/conf.d/rum-path.fish"),
+            path: home_dir.join(".config/fish/conf.d/xtask-path.fish"),
             snippet: format!(
                 "if not contains -- {} $PATH\n    set -gx PATH {} $PATH\nend",
                 shell_single_quote(&bin_dir),
@@ -333,7 +333,7 @@ pub(crate) fn completion_install_plan(
     let script_contents = completion_cmd::render(completion_shell, &mut command).ok()?;
     match shell {
         ShellKind::Bash => {
-            let script_path = home_dir.join(".local/share/bash-completion/completions/rum");
+            let script_path = home_dir.join(".local/share/bash-completion/completions/xtask");
             let quoted = shell_single_quote(&script_path.display().to_string());
             Some(CompletionInstallPlan {
                 script_path: script_path.clone(),
@@ -348,7 +348,7 @@ pub(crate) fn completion_install_plan(
             let completions_dir = home_dir.join(".zfunc");
             let quoted_dir = shell_single_quote(&completions_dir.display().to_string());
             Some(CompletionInstallPlan {
-                script_path: completions_dir.join("_rum"),
+                script_path: completions_dir.join("_xtask"),
                 script_contents,
                 profile_update: Some(ShellProfileUpdate {
                     path: home_dir.join(".zshrc"),
@@ -359,12 +359,12 @@ pub(crate) fn completion_install_plan(
             })
         }
         ShellKind::Fish => Some(CompletionInstallPlan {
-            script_path: home_dir.join(".config/fish/completions/rum.fish"),
+            script_path: home_dir.join(".config/fish/completions/xtask.fish"),
             script_contents,
             profile_update: None,
         }),
         ShellKind::PowerShell => {
-            let script_path = home_dir.join("Documents/PowerShell/Completions/rum.ps1");
+            let script_path = home_dir.join("Documents/PowerShell/Completions/xtask.ps1");
             let quoted = powershell_single_quote(&script_path.display().to_string());
             Some(CompletionInstallPlan {
                 script_path,
@@ -492,7 +492,7 @@ fn print_path_update_status(changed: bool, updated_label: &str, existing_label: 
     println!("{label} {}.", path.display());
 }
 
-pub(crate) fn cmd_install_rum_cli(args: RepoCliInstallArgs) -> Result<()> {
+pub(crate) fn cmd_install_xtask_cli(args: RepoCliInstallArgs) -> Result<()> {
     let root = repo_root();
     let bin_dir = cargo_bin_dir_hint().context("could not determine cargo bin directory")?;
     let launcher_path = xtask_cli_launcher_path(&bin_dir);
@@ -507,7 +507,7 @@ pub(crate) fn cmd_install_rum_cli(args: RepoCliInstallArgs) -> Result<()> {
     );
     println!(
         "The launcher quietly builds `xtask` when needed, then runs it from {}.",
-        rum_cli_install_package_dir(&root).display()
+        xtask_cli_install_package_dir(&root).display()
     );
     let shell = current_shell_kind();
     let home_dir = user_home_dir();

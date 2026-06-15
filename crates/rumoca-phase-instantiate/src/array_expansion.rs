@@ -3,9 +3,7 @@ use super::instantiate_component;
 use super::source_scope::component_declaration_source_scope;
 use super::type_overrides::TypeOverrideMap;
 use super::{InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components};
-use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, ResolveClassComponents, try_eval_integer_expr,
-};
+use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
@@ -19,8 +17,7 @@ pub(super) struct ArrayExpansionScope<'a> {
     pub(super) tree: &'a ast::ClassTree,
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
     pub(super) type_overrides: &'a TypeOverrideMap,
-    pub(super) imports: &'a [(String, String)],
-    pub(super) resolve_class_components: &'a ResolveClassComponents<'a>,
+    pub(super) imports: super::ComponentImports<'a>,
 }
 
 pub(super) fn expand_array_component(
@@ -96,7 +93,7 @@ pub(super) fn expand_array_component(
 
     for idx in indices {
         scalar_comp.start =
-            indexed_array_component_start(scope.tree, scope.effective_components, comp, &idx);
+            indexed_array_component_start(scope.tree, scope.effective_components, comp, &idx)?;
 
         // MLS §10.1: When an array component has a binding (e.g., `v1[m] = plug1.pin.v`),
         // each expanded element `v1[k]` gets the indexed binding `plug1.pin[k].v`.
@@ -108,7 +105,7 @@ pub(super) fn expand_array_component(
                 scope.effective_components,
                 binding,
                 &idx,
-            ));
+            )?);
         }
 
         // MLS §7.2.5: Distribute non-`each` modifications per array element.
@@ -120,7 +117,7 @@ pub(super) fn expand_array_component(
             scope.tree,
             scope.effective_components,
             &idx,
-        );
+        )?;
 
         // Ensure scalar element instantiation sees the indexed binding (MLS §10.1).
         // Without this scoped override, a parent unindexed modifier entry for this
@@ -137,7 +134,7 @@ pub(super) fn expand_array_component(
                     &idx,
                     mod_env_binding.as_ref(),
                     binding_source_scope.clone(),
-                ),
+                )?,
             );
         }
 
@@ -150,7 +147,6 @@ pub(super) fn expand_array_component(
             scope.effective_components,
             scope.type_overrides,
             scope.imports,
-            scope.resolve_class_components,
         );
         ctx.pop_path();
 
@@ -175,12 +171,14 @@ fn indexed_array_component_start(
     parent_components: &IndexMap<String, ast::Component>,
     comp: &ast::Component,
     idx: &[i64],
-) -> ast::Expression {
+) -> InstantiateResult<ast::Expression> {
     if comp.start_has_each || matches!(comp.start, ast::Expression::Empty { .. }) {
-        return comp.start.clone();
+        return Ok(comp.start.clone());
     }
-    index_array_expression_for_element(tree, parent_components, &comp.start, idx)
-        .unwrap_or_else(|| comp.start.clone())
+    Ok(
+        index_array_expression_for_element(tree, parent_components, &comp.start, idx)?
+            .unwrap_or_else(|| comp.start.clone()),
+    )
 }
 
 fn array_element_binding_modification(
@@ -189,13 +187,13 @@ fn array_element_binding_modification(
     idx: &[i64],
     parent_mod: Option<&ast::ModificationValue>,
     binding_source_scope: Option<ast::QualifiedName>,
-) -> ast::ModificationValue {
+) -> InstantiateResult<ast::ModificationValue> {
     let Some(parent_mod) = parent_mod else {
-        return ast::ModificationValue::with_source_scope(
+        return Ok(ast::ModificationValue::with_source_scope(
             binding_expr.clone(),
             Some(binding_expr.clone()),
             binding_source_scope,
-        );
+        ));
     };
     let source = parent_mod
         .source
@@ -203,9 +201,14 @@ fn array_element_binding_modification(
         .map(|source_expr| {
             index_binding_for_element(scope.tree, scope.effective_components, source_expr, idx)
         })
+        .transpose()?
         .or_else(|| Some(binding_expr.clone()));
     let source_scope = parent_mod.source_scope.clone().or(binding_source_scope);
-    ast::ModificationValue::with_source_scope(binding_expr.clone(), source, source_scope)
+    Ok(ast::ModificationValue::with_source_scope(
+        binding_expr.clone(),
+        source,
+        source_scope,
+    ))
 }
 
 /// Pre-resolve non-`each` modifications that have array values.
@@ -265,7 +268,7 @@ fn distribute_component_ref_mods_for_element(
     tree: &ast::ClassTree,
     parent_components: &IndexMap<String, ast::Component>,
     indices: &[i64],
-) {
+) -> InstantiateResult<()> {
     for (name, expr) in &original_comp.modifications {
         if original_comp.each_modifications.contains(name)
             || resolved_mod_names.contains(name.as_str())
@@ -273,11 +276,12 @@ fn distribute_component_ref_mods_for_element(
             continue;
         }
 
-        let indexed = index_binding_for_element(tree, parent_components, expr, indices);
+        let indexed = index_binding_for_element(tree, parent_components, expr, indices)?;
         if !matches!(indexed, ast::Expression::ArrayIndex { .. }) {
             scalar_comp.modifications.insert(name.clone(), indexed);
         }
     }
+    Ok(())
 }
 
 /// Resolve a modification expression to its value, handling component references.
@@ -913,7 +917,7 @@ pub(super) fn index_binding_for_element(
     parent_components: &IndexMap<String, ast::Component>,
     binding: &ast::Expression,
     indices: &[i64],
-) -> ast::Expression {
+) -> InstantiateResult<ast::Expression> {
     let make_subscripts = || -> Vec<ast::Subscript> {
         indices
             .iter()
@@ -938,31 +942,31 @@ pub(super) fn index_binding_for_element(
         // MLS §10.5.1: if we cannot prove which part introduces array
         // dimensions, preserve the binding shape as `(cref)[k]` instead of
         // guessing a field position.
-        let Some(pos) = find_array_part(tree, parent_components, &cref.parts) else {
-            return ast::Expression::ArrayIndex {
+        let Some(pos) = find_array_part(tree, parent_components, &cref.parts)? else {
+            return Ok(ast::Expression::ArrayIndex {
                 base: Arc::new(binding.clone()),
                 subscripts: make_subscripts(),
                 span: binding.span(),
-            };
+            });
         };
         let mut new_ref = cref.clone();
         new_ref.parts[pos] = ast::ComponentRefPart {
             ident: new_ref.parts[pos].ident.clone(),
             subs: Some(make_subscripts()),
         };
-        return ast::Expression::ComponentReference(new_ref);
+        return Ok(ast::Expression::ComponentReference(new_ref));
     }
 
     if let Some(indexed) = index_non_component_reference_binding(binding, indices) {
-        return indexed;
+        return Ok(indexed);
     }
 
     // Fallback for non-ast::ComponentReference bindings: wrap with ArrayIndex
-    ast::Expression::ArrayIndex {
+    Ok(ast::Expression::ArrayIndex {
         base: Arc::new(binding.clone()),
         subscripts: make_subscripts(),
         span: binding.span(),
-    }
+    })
 }
 
 fn index_non_component_reference_binding(
@@ -986,47 +990,51 @@ fn index_array_expression_for_element(
     parent_components: &IndexMap<String, ast::Component>,
     expr: &ast::Expression,
     indices: &[i64],
-) -> Option<ast::Expression> {
+) -> InstantiateResult<Option<ast::Expression>> {
     match expr {
         ast::Expression::Array { .. } | ast::Expression::ArrayComprehension { .. } => {
-            index_non_component_reference_binding(expr, indices)
+            Ok(index_non_component_reference_binding(expr, indices))
         }
         ast::Expression::ComponentReference(cref) => {
             index_component_reference_array_part(tree, parent_components, cref, expr, indices)
         }
         ast::Expression::Binary { op, lhs, rhs, span } => {
             let indexed_lhs =
-                index_array_expression_for_element(tree, parent_components, lhs, indices);
+                index_array_expression_for_element(tree, parent_components, lhs, indices)?;
             let indexed_rhs =
-                index_array_expression_for_element(tree, parent_components, rhs, indices);
+                index_array_expression_for_element(tree, parent_components, rhs, indices)?;
             if indexed_lhs.is_none() && indexed_rhs.is_none() {
-                return None;
+                return Ok(None);
             }
-            Some(ast::Expression::Binary {
+            Ok(Some(ast::Expression::Binary {
                 op: op.clone(),
                 lhs: Arc::new(indexed_lhs.unwrap_or_else(|| lhs.as_ref().clone())),
                 rhs: Arc::new(indexed_rhs.unwrap_or_else(|| rhs.as_ref().clone())),
                 span: *span,
-            })
+            }))
         }
         ast::Expression::Unary { op, rhs, span } => {
-            index_array_expression_for_element(tree, parent_components, rhs, indices).map(
-                |indexed_rhs| ast::Expression::Unary {
-                    op: op.clone(),
-                    rhs: Arc::new(indexed_rhs),
-                    span: *span,
-                },
+            Ok(
+                index_array_expression_for_element(tree, parent_components, rhs, indices)?.map(
+                    |indexed_rhs| ast::Expression::Unary {
+                        op: op.clone(),
+                        rhs: Arc::new(indexed_rhs),
+                        span: *span,
+                    },
+                ),
             )
         }
         ast::Expression::Parenthesized { inner, span } => {
-            index_array_expression_for_element(tree, parent_components, inner, indices).map(
-                |indexed_inner| ast::Expression::Parenthesized {
-                    inner: Arc::new(indexed_inner),
-                    span: *span,
-                },
+            Ok(
+                index_array_expression_for_element(tree, parent_components, inner, indices)?.map(
+                    |indexed_inner| ast::Expression::Parenthesized {
+                        inner: Arc::new(indexed_inner),
+                        span: *span,
+                    },
+                ),
             )
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -1036,11 +1044,13 @@ fn index_component_reference_array_part(
     cref: &ast::ComponentReference,
     expr: &ast::Expression,
     indices: &[i64],
-) -> Option<ast::Expression> {
+) -> InstantiateResult<Option<ast::Expression>> {
     if cref.parts.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let pos = find_array_part(tree, parent_components, &cref.parts)?;
+    let Some(pos) = find_array_part(tree, parent_components, &cref.parts)? else {
+        return Ok(None);
+    };
     let subscripts = indices
         .iter()
         .map(|&i| {
@@ -1059,7 +1069,7 @@ fn index_component_reference_array_part(
         ident: indexed.parts[pos].ident.clone(),
         subs: Some(subscripts),
     };
-    Some(ast::Expression::ComponentReference(indexed))
+    Ok(Some(ast::Expression::ComponentReference(indexed)))
 }
 
 fn index_array_comprehension_for_element(
@@ -1099,29 +1109,35 @@ fn find_array_part(
     tree: &ast::ClassTree,
     parent_components: &IndexMap<String, ast::Component>,
     parts: &[rumoca_ir_ast::ComponentRefPart],
-) -> Option<usize> {
+) -> InstantiateResult<Option<usize>> {
     // Use Cow-like pattern: borrow parent_components for the first lookup,
     // only allocate owned components when we need to traverse deeper.
     let mut owned: Option<IndexMap<String, ast::Component>>;
     let mut current: &IndexMap<String, ast::Component> = parent_components;
 
     for (i, part) in parts.iter().enumerate() {
-        let comp = current.get(part.ident.text.as_ref())?;
+        let Some(comp) = current.get(part.ident.text.as_ref()) else {
+            return Ok(None);
+        };
         if !comp.shape.is_empty() || !comp.shape_expr.is_empty() {
-            return Some(i);
+            return Ok(Some(i));
         }
         if i + 1 < parts.len() {
-            let class = lookup_class_def(tree, comp)?;
-            let effective = get_effective_components(tree, class).unwrap_or_default();
+            let Some(class) = lookup_class_def(tree, comp) else {
+                return Ok(None);
+            };
+            let effective = get_effective_components(tree, class)?;
             owned = Some(if effective.is_empty() {
                 class.components.clone()
             } else {
                 effective
             });
-            current = owned.as_ref().unwrap();
+            current = owned
+                .as_ref()
+                .expect("owned effective components must be present after insertion");
         }
     }
-    None
+    Ok(None)
 }
 
 /// Look up the ast::ClassDef for a ast::Component's type using the class tree.
@@ -1143,7 +1159,6 @@ mod tests {
         index_array_expression_for_element, index_binding_for_element,
         pre_resolve_array_modifications, resolve_mod_to_array,
     };
-    use crate::resolve_effective_components_for_eval;
     use crate::type_overrides::TypeOverrideMap;
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
@@ -1241,8 +1256,10 @@ mod tests {
             tree: &tree,
             effective_components: &effective_components,
             type_overrides: &type_overrides,
-            imports: &imports,
-            resolve_class_components: &resolve_effective_components_for_eval,
+            imports: crate::ComponentImports {
+                qualification: &imports,
+                attributes: &[],
+            },
         };
         let source = make_comp_ref_expr(&["outer", "x"]);
         let parent_mod = ast::ModificationValue::with_source_scope(
@@ -1257,7 +1274,8 @@ mod tests {
             &[2],
             Some(&parent_mod),
             Some(ast::QualifiedName::from_dotted("declarationScope")),
-        );
+        )
+        .expect("array element binding modification should succeed");
 
         assert_eq!(
             value.source_scope.map(|scope| scope.to_flat_string()),
@@ -1284,8 +1302,10 @@ mod tests {
             tree: &tree,
             effective_components: &effective_components,
             type_overrides: &type_overrides,
-            imports: &imports,
-            resolve_class_components: &resolve_effective_components_for_eval,
+            imports: crate::ComponentImports {
+                qualification: &imports,
+                attributes: &[],
+            },
         };
         let binding = make_comp_ref_expr(&["plug", "pin"]);
 
@@ -1295,7 +1315,8 @@ mod tests {
             &[1],
             None,
             Some(ast::QualifiedName::from_dotted("Model.Source")),
-        );
+        )
+        .expect("array element binding modification should succeed");
 
         assert_eq!(
             value.source_scope.map(|scope| scope.to_flat_string()),
@@ -1392,7 +1413,8 @@ mod tests {
             &parent_components,
             &binding,
             &[2],
-        );
+        )
+        .expect("array element binding should index proven array part");
 
         let ast::Expression::ComponentReference(cref) = indexed else {
             panic!("expected indexed component reference");
@@ -1421,7 +1443,8 @@ mod tests {
             &IndexMap::default(),
             &binding,
             &[1],
-        );
+        )
+        .expect("array element binding should preserve unproven reference as ArrayIndex");
 
         let ast::Expression::ArrayIndex {
             base, subscripts, ..
@@ -1461,7 +1484,8 @@ mod tests {
             &IndexMap::default(),
             &binding,
             &[2, 1],
-        );
+        )
+        .expect("array comprehension projection should succeed");
         let ast::Expression::Terminal { token, .. } = indexed else {
             panic!("multi-index comprehension should project to a concrete element expression");
         };
@@ -1490,7 +1514,8 @@ mod tests {
             &IndexMap::default(),
             &binding,
             &[2],
-        );
+        )
+        .expect("array comprehension projection should succeed");
 
         let ast::Expression::Binary { rhs, .. } = indexed else {
             panic!("array comprehension should project to expression body");
@@ -1531,6 +1556,7 @@ mod tests {
             &start,
             &[2],
         )
+        .expect("array-valued start projection should not fail")
         .expect("array-valued start should project to one scalar element");
 
         let ast::Expression::Binary { lhs, rhs, .. } = indexed else {
@@ -1579,7 +1605,8 @@ mod tests {
             &IndexMap::default(),
             &binding,
             &[2, 1],
-        );
+        )
+        .expect("nested array comprehension projection should succeed");
         let ast::Expression::Terminal { token, .. } = indexed else {
             panic!("nested comprehensions should project to a concrete element expression");
         };
@@ -1625,7 +1652,8 @@ mod tests {
         );
 
         let binding = make_comp_ref_expr(&["stackData", "cellData"]);
-        let indexed = index_binding_for_element(&tree, &parent_components, &binding, &[2, 1]);
+        let indexed = index_binding_for_element(&tree, &parent_components, &binding, &[2, 1])
+            .expect("nested array part indexing should succeed");
 
         let ast::Expression::ComponentReference(cref) = indexed else {
             panic!("expected indexed nested component reference");
@@ -1702,7 +1730,8 @@ mod tests {
             &ast::ClassTree::default(),
             &parent_components,
             &[2],
-        );
+        )
+        .expect("component-reference modifier distribution should succeed");
 
         let ast::Expression::ComponentReference(cref) = scalar_comp
             .modifications

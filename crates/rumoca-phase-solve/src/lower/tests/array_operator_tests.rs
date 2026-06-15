@@ -55,7 +55,7 @@ fn lower_expression_lowers_vector_vector_multiply_as_scalar_product() {
         },
     );
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let expr = mul(var("k"), var("u"));
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("MLS §10.6.5 vector product should lower");
@@ -87,7 +87,7 @@ fn lower_residual_projects_scalarized_record_refs_in_array_row() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout).expect("scalarized record refs should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "a.re", 1.0);
@@ -117,7 +117,7 @@ fn lower_complex_field_access_projects_parent_refs_from_scalarized_bindings() {
         field: "re".to_string(),
         span: rumoca_core::Span::DUMMY,
     };
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("complex field access should project scalarized parent refs");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -148,7 +148,7 @@ fn lower_residual_keeps_real_scalar_binary_factor_unprojected_in_complex_product
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("Real scalar arithmetic should not be projected as Complex fields");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -189,7 +189,7 @@ fn lower_expression_selects_dynamic_scalarized_record_field_index() {
     };
     let expr = field_access(pin_k, "v");
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("dynamic record field index should lower through structured selectors");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -211,7 +211,7 @@ fn lower_expression_selects_dynamic_scalarized_record_field_index() {
         rumoca_core::Span::DUMMY,
         "connector field projection",
     ));
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("residual row should select dynamic scalarized record field");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -269,7 +269,7 @@ fn lower_residual_projects_unflagged_complex_constructor_in_scalarized_record_ro
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("unflagged Complex constructor should still project as record constructor");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -330,7 +330,7 @@ fn lower_residual_preserves_row_matrix_literal_shape_for_matrix_vector_product()
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("row matrix literals should keep matrix shape through Solve lowering");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -383,7 +383,7 @@ fn lower_residual_lowers_slice_of_scalarized_record_field_array() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("scalarized record field slice should lower as vector residual");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -418,7 +418,7 @@ fn lower_expression_lowers_sum_of_scalarized_record_field_array() {
             span: rumoca_core::Span::DUMMY,
         }],
     );
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("sum over scalarized record field array should lower");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -461,7 +461,7 @@ fn lower_residual_lowers_sum_of_nested_scalarized_record_field_array() {
         ),
     )));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("sum over nested scalarized record field array should lower");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -500,7 +500,7 @@ fn lower_residual_lowers_sum_of_assignment_only_scalarized_record_field_array() 
             .algebraics
             .insert(rumoca_core::VarName::new(&i_name), scalar_var(&i_name));
         dae_model.continuous.equations.push(dae::Equation {
-            lhs: Some(rumoca_core::VarName::new(&name)),
+            lhs: Some(rumoca_core::VarName::new(&name).into()),
             rhs: rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Mul,
                 lhs: Box::new(var(&v_name)),
@@ -527,7 +527,7 @@ fn lower_residual_lowers_sum_of_assignment_only_scalarized_record_field_array() 
         ),
     )));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("sum over assignment-only scalarized record field array should lower");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -554,7 +554,7 @@ fn lower_residual_keeps_slot_backed_assignment_targets_slot_backed() {
         .algebraics
         .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("x")),
+        lhs: Some(rumoca_core::VarName::new("x").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(99.0),
             span: rumoca_core::Span::DUMMY,
@@ -571,7 +571,7 @@ fn lower_residual_keeps_slot_backed_assignment_targets_slot_backed() {
         var("x"),
     )));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("slot-backed assignment target should lower through layout slot");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -627,7 +627,7 @@ fn lower_residual_lowers_structural_slice_times_state_vector_as_scalar_product()
         span: rumoca_core::Span::DUMMY,
     };
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("der(x[1])")),
+        lhs: Some(rumoca_core::VarName::new("der(x[1])").into()),
         rhs: mul(slice, var("x")),
         span: Default::default(),
         // MLS §10.6.5: vector * vector is a scalar product even when one
@@ -636,7 +636,7 @@ fn lower_residual_lowers_structural_slice_times_state_vector_as_scalar_product()
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("MLS §10.6.5 vector scalar product residual should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -647,4 +647,82 @@ fn lower_residual_lowers_structural_slice_times_state_vector_as_scalar_product()
     let (_, output) = eval_linear_ops(&rows[0], &[2.0, 3.0], &p, 0.0);
 
     assert_eq!(output, Some(-90.0));
+}
+
+fn record_array_member_slice_expr(base: &str, field: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::Index {
+            base: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name(base),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            subscripts: vec![rumoca_core::Subscript::Colon {
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: field.to_string(),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+#[test]
+fn record_array_member_slice_loads_dense_elements() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["pin[1].v", "pin[2].v"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = builtin(
+        rumoca_core::BuiltinFunction::Sum,
+        vec![record_array_member_slice_expr("pin", "v")],
+    );
+
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("dense member slice should lower");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[10.0, 20.0], &[], 0.0);
+    assert_eq!(read_reg(&regs, lowered.result), 30.0);
+}
+
+#[test]
+fn record_array_member_slice_with_numbering_gap_is_a_contract_violation() {
+    // The slice probe loads `pin[1].v`, `pin[2].v`, ... until the first
+    // missing element, so a gap in the scalarized numbering must fail
+    // loudly instead of silently truncating the slice at the gap.
+    let mut dae_model = dae::Dae::default();
+    for name in ["pin[1].v", "pin[3].v"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = builtin(
+        rumoca_core::BuiltinFunction::Sum,
+        vec![record_array_member_slice_expr("pin", "v")],
+    );
+
+    lower_expression(&expr, &layout, &IndexMap::new())
+        .expect_err("a gapped member slice must not lower");
+
+    // The probe-path backstop itself: a probe that stopped after element 1
+    // while element 3 exists in the layout is a contract violation.
+    let functions = IndexMap::new();
+    let builder = crate::lower::LowerBuilder::new(&layout, &functions);
+    let err = builder
+        .ensure_dense_record_array_slice("pin", "v", 1, rumoca_core::Span::DUMMY)
+        .expect_err("a gap behind the probe stopping point must be rejected");
+    assert!(
+        err.to_string().contains("not densely scalarized"),
+        "unexpected error: {err}"
+    );
+    builder
+        .ensure_dense_record_array_slice("pin", "v", 3, rumoca_core::Span::DUMMY)
+        .expect("a probe that covered every element is dense");
 }

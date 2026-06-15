@@ -4,13 +4,13 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use rumoca::{CompilationResult, TemplateIr};
+use rumoca_compile::codegen::dae_to_template_json;
 use rumoca_compile::codegen::render_dae_template_with_json_and_name;
 use rumoca_compile::codegen::targets::{
     TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile, TargetManifest,
     TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     safe_target_join, validate_dae_target_capabilities,
 };
-use rumoca_compile::codegen::{DaeTemplateContext, dae_to_template_json};
 use serde_json::Value;
 
 pub(crate) fn compile_target(
@@ -152,7 +152,7 @@ fn compile_manifest_target(
 }
 
 struct TemplateRenderContexts {
-    dae: Option<DaeTemplateContext>,
+    dae: Option<Value>,
     solve: Option<Value>,
 }
 
@@ -173,7 +173,7 @@ impl TemplateRenderContexts {
             let template_dae = result.scalarized_template_dae();
             let template_json = dae_to_template_json(&template_dae)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            Some(DaeTemplateContext::from_dae_json(&template_json))
+            Some(template_json)
         } else {
             None
         };
@@ -322,8 +322,7 @@ fn write_manifest_file(
                         file.path
                     )
                 };
-                context
-                    .render_with_name(template, model_identifier)
+                render_dae_template_with_json_and_name(context, template, model_identifier)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))
             }
             TargetTemplateIr::Solve => {

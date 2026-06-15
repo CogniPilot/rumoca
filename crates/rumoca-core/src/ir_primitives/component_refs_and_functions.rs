@@ -1,4 +1,5 @@
 use super::*;
+use crate::strip_array_index;
 use std::borrow::Borrow;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +38,73 @@ impl ComponentReference {
     pub fn last_ident(&self) -> Option<&str> {
         self.parts.last().map(|part| part.ident.as_str())
     }
+
+    /// Build a reference from a rendered flat declaration path.
+    ///
+    /// Each top-level segment becomes one part; subscript text (if any) stays
+    /// embedded in the ident, matching how declaration paths are rendered.
+    pub fn from_flat_segments(path: &str, span: Span, def_id: Option<DefId>) -> Self {
+        Self {
+            local: false,
+            span,
+            parts: split_path_with_indices(path)
+                .into_iter()
+                .map(|segment| ComponentRefPart {
+                    ident: segment.to_string(),
+                    span,
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id,
+        }
+    }
+}
+
+pub fn component_reference_from_flat_name(
+    name: &VarName,
+    span: Span,
+) -> Option<ComponentReference> {
+    let parts = name
+        .segments()
+        .into_iter()
+        .map(|segment| component_ref_part_from_flat_segment(segment, span))
+        .collect::<Option<Vec<_>>>()?;
+    (!parts.is_empty()).then_some(ComponentReference {
+        local: false,
+        span,
+        parts,
+        def_id: None,
+    })
+}
+
+fn component_ref_part_from_flat_segment(segment: &str, span: Span) -> Option<ComponentRefPart> {
+    let mut base = segment;
+    let mut groups = Vec::new();
+    while let Some((next_base, raw_subscripts)) = split_trailing_subscript_suffix(base) {
+        groups.push(component_ref_subscripts_from_flat_suffix(
+            raw_subscripts,
+            span,
+        )?);
+        base = next_base;
+    }
+    (!base.is_empty()).then_some(ComponentRefPart {
+        ident: base.to_string(),
+        span,
+        subs: groups.into_iter().rev().flatten().collect(),
+    })
+}
+
+fn component_ref_subscripts_from_flat_suffix(raw: &str, span: Span) -> Option<Vec<Subscript>> {
+    raw.split(',')
+        .map(str::trim)
+        .map(|subscript| match subscript {
+            ":" => Some(Subscript::colon(span)),
+            _ => subscript
+                .parse::<i64>()
+                .ok()
+                .map(|value| Subscript::index(value, span)),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,11 +174,26 @@ impl ComponentPath {
     }
 
     pub fn from_flat_path(path: &str) -> Self {
-        Self::from_parts(
-            split_path_with_indices(path)
-                .into_iter()
-                .filter(|part| !part.is_empty()),
-        )
+        // The interner has already segmented every name it has seen; reuse
+        // those boundaries instead of re-parsing. `from_parts` re-joins (and
+        // thereby normalizes empty segments), so only fall back to it when
+        // normalization would change the text.
+        let interned = VarName::new(path);
+        let parts: Vec<String> = interned
+            .segments()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        if interned.as_str().len() == path.len() && !parts.is_empty() {
+            let joined_len: usize = parts.iter().map(|part| part.len() + 1).sum::<usize>() - 1;
+            if joined_len == path.len() {
+                return Self {
+                    name: interned,
+                    parts,
+                };
+            }
+        }
+        Self::from_parts(parts)
     }
 
     pub fn from_parts(parts: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -120,7 +203,10 @@ impl ComponentPath {
     }
 
     pub fn from_reference(reference: &Reference) -> Self {
-        Self::from_flat_path(reference.as_str())
+        reference
+            .component_ref()
+            .map(Self::from_component_reference)
+            .unwrap_or_else(|| Self::from_flat_path(reference.as_str()))
     }
 
     pub fn from_component_reference(reference: &ComponentReference) -> Self {
@@ -141,6 +227,10 @@ impl ComponentPath {
 
     pub fn parts(&self) -> &[String] {
         &self.parts
+    }
+
+    pub fn into_parts(self) -> Vec<String> {
+        self.parts
     }
 
     pub fn parent(&self) -> Option<Self> {
@@ -444,59 +534,18 @@ pub fn component_ref_to_base_reference(comp: &ComponentReference) -> Reference {
 
 /// Return a component-path base name with all bracketed subscripts removed.
 pub fn component_path_base_name(name: &str) -> Option<String> {
-    if name.is_empty() {
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.contains("..") {
         return None;
     }
-    if !name.as_bytes().contains(&b'[') {
-        let malformed = name.as_bytes().contains(&b']')
-            || name.starts_with('.')
-            || name.ends_with('.')
-            || name.contains("..");
-        return (!malformed).then(|| name.to_string());
-    }
-
     let mut parts = Vec::new();
-    let mut segment_start = 0usize;
-    let mut depth = 0i32;
-
-    for (idx, ch) in name.char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                if depth == 0 {
-                    return None;
-                }
-                depth -= 1;
-            }
-            '.' if depth == 0 => {
-                if segment_start >= idx {
-                    return None;
-                }
-                let segment = &name[segment_start..idx];
-                let base = segment
-                    .split_once('[')
-                    .map(|(base, _)| base)
-                    .unwrap_or(segment);
-                if base.is_empty() {
-                    return None;
-                }
-                parts.push(base.to_string());
-                segment_start = idx + 1;
-            }
-            _ => {}
+    for segment in split_path_with_indices(name) {
+        let base = strip_array_index(segment);
+        if base.is_empty() || base.contains('[') || base.contains(']') {
+            return None;
         }
+        parts.push(base.to_string());
     }
-
-    if depth != 0 || segment_start >= name.len() {
-        return None;
-    }
-    let tail = &name[segment_start..];
-    let base = tail.split_once('[').map(|(base, _)| base).unwrap_or(tail);
-    if base.is_empty() {
-        return None;
-    }
-    parts.push(base.to_string());
-    Some(parts.join("."))
+    (!parts.is_empty()).then(|| parts.join("."))
 }
 
 pub(super) fn derivative_state_name(name: &VarName) -> VarName {
@@ -783,5 +832,53 @@ impl FunctionParamShapeContractError {
             | Self::NegativeShapeIndex { span, .. }
             | Self::ShapeExprLengthMismatch { span, .. } => *span,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn component_path_from_reference_uses_structured_component_reference() {
+        let component_ref = ComponentReference {
+            local: false,
+            span: Span::DUMMY,
+            parts: vec![
+                ComponentRefPart {
+                    ident: "plant".to_string(),
+                    span: Span::DUMMY,
+                    subs: Vec::new(),
+                },
+                ComponentRefPart {
+                    ident: "motor".to_string(),
+                    span: Span::DUMMY,
+                    subs: vec![Subscript::Index {
+                        value: 2,
+                        span: Span::DUMMY,
+                    }],
+                },
+                ComponentRefPart {
+                    ident: "tau".to_string(),
+                    span: Span::DUMMY,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(DefId::new(7)),
+        };
+        let reference =
+            Reference::with_component_reference("flat_display_is_not_authoritative", component_ref);
+
+        let path = ComponentPath::from_reference(&reference);
+
+        assert_eq!(
+            path.parts(),
+            &[
+                "plant".to_string(),
+                "motor[2]".to_string(),
+                "tau".to_string()
+            ]
+        );
+        assert_eq!(path.to_flat_string(), "plant.motor[2].tau");
     }
 }

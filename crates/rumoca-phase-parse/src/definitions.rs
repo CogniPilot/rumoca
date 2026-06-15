@@ -520,24 +520,23 @@ fn is_operator_record(class_type: &modelica_grammar_trait::ClassType) -> bool {
     }
 }
 
-/// Check if a function is pure (MLS §12.3).
-/// Functions are pure by default. Returns false only when declared with `impure`.
-fn is_pure_function(class_type: &modelica_grammar_trait::ClassType) -> bool {
+/// Function purity (MLS §12.3): `(pure, declared)`. Functions are pure by
+/// default; `declared` records whether the source wrote `pure`/`impure`
+/// explicitly (external functions without it are deprecated, FUNC-032).
+fn function_purity(class_type: &modelica_grammar_trait::ClassType) -> (bool, bool) {
     if let modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(f) = class_type {
-        // Check if impure keyword is present
         if let Some(ref opt1) = f.class_type_opt1 {
-            // If it's Impure, return false; if Pure or absent, return true
-            !matches!(
+            let pure = !matches!(
                 opt1.class_type_opt1_group,
                 modelica_grammar_trait::ClassTypeOpt1Group::Impure(_)
-            )
+            );
+            (pure, true)
         } else {
-            // No pure/impure keyword means pure by default
-            true
+            (true, false)
         }
     } else {
-        // Non-function classes - default to true (doesn't really matter)
-        true
+        // Non-function classes - purity is not meaningful.
+        (true, false)
     }
 }
 
@@ -573,6 +572,8 @@ struct ClassConversionContext {
     operator_record: bool,
     /// True if the function is pure (MLS §12.3). Functions are pure by default.
     pure: bool,
+    /// True when `pure`/`impure` was written explicitly.
+    purity_declared: bool,
 }
 
 impl ClassConversionContext {
@@ -584,7 +585,8 @@ impl ClassConversionContext {
             partial: ast.class_prefixes.class_prefixes_opt.is_some(),
             expandable: is_expandable_connector(&ast.class_prefixes.class_type),
             operator_record: is_operator_record(&ast.class_prefixes.class_type),
-            pure: is_pure_function(&ast.class_prefixes.class_type),
+            pure: function_purity(&ast.class_prefixes.class_type).0,
+            purity_declared: function_purity(&ast.class_prefixes.class_type).1,
         }
     }
 }
@@ -615,6 +617,7 @@ fn convert_standard_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
+        purity_declared: ctx.purity_declared,
         causality: rumoca_core::Causality::Empty,
         equation_keyword: spec.composition.equation_keyword.clone(),
         initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
@@ -683,6 +686,7 @@ fn convert_extends_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
+        purity_declared: ctx.purity_declared,
         causality: rumoca_core::Causality::Empty,
         equation_keyword: spec.composition.equation_keyword.clone(),
         initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
@@ -732,6 +736,7 @@ fn convert_enum_class_specifier(
         expandable: false,
         operator_record: false,
         pure: true, // Enums are not functions
+        purity_declared: false,
         causality: rumoca_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
@@ -793,6 +798,7 @@ fn convert_type_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
+        purity_declared: ctx.purity_declared,
         causality,
         equation_keyword: None,
         initial_equation_keyword: None,
@@ -871,6 +877,7 @@ fn convert_function_partial_class_specifier(
         expandable: false,
         operator_record: false,
         pure: ctx.pure,
+        purity_declared: ctx.purity_declared,
         causality: rumoca_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
@@ -934,6 +941,7 @@ fn convert_der_class_specifier(
         expandable: false,
         operator_record: false,
         pure: ctx.pure,
+        purity_declared: ctx.purity_declared,
         causality: rumoca_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,

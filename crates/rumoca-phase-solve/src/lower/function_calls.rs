@@ -49,129 +49,15 @@ fn flattened_input_has_prefix(name: &str, prefix: &str) -> bool {
     split_flattened_record_input_name(name).is_some_and(|(candidate, _)| candidate == prefix)
 }
 
-fn has_flattened_record_input_group(
-    inputs: &[rumoca_core::FunctionParam],
-    input_idx: usize,
-    prefix: &str,
-) -> bool {
-    inputs.iter().enumerate().any(|(idx, candidate)| {
-        idx != input_idx && flattened_input_has_prefix(&candidate.name, prefix)
-    })
-}
-
 fn missing_required_function_input<T>(
     function_name: &str,
     input_name: &str,
 ) -> Result<T, LowerError> {
-    Err(LowerError::InvalidFunction {
-        name: function_name.to_string(),
-        reason: format!("required input `{input_name}` has no actual argument or default binding"),
+    Err(LowerError::MissingActualArgument {
+        function: function_name.to_string(),
+        what: "required input",
+        input: input_name.to_string(),
     })
-}
-
-fn synthesize_missing_flattened_record_field_arg(
-    input: &rumoca_core::FunctionParam,
-    inputs: &[rumoca_core::FunctionParam],
-    input_idx: usize,
-    positional_args: &[&rumoca_core::Expression],
-    positional_idx: usize,
-) -> Option<rumoca_core::Expression> {
-    let (prefix, field) = split_flattened_record_input_name(&input.name)?;
-    if !has_flattened_record_input_group(inputs, input_idx, prefix) {
-        return None;
-    }
-    let search_len = positional_idx.min(positional_args.len()).min(input_idx);
-    for previous_idx in (0..search_len).rev() {
-        let (previous_prefix, previous_field) =
-            split_flattened_record_input_name(&inputs.get(previous_idx)?.name)?;
-        if previous_prefix != prefix {
-            continue;
-        }
-        let base =
-            flattened_record_field_actual_base(positional_args[previous_idx], previous_field)?;
-        return Some(record_field_access_expr(base, field));
-    }
-    None
-}
-
-fn flattened_record_field_actual_base(
-    expr: &rumoca_core::Expression,
-    field: &str,
-) -> Option<rumoca_core::Expression> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name,
-            subscripts,
-            span,
-        } if subscripts.is_empty() => {
-            let base = name.as_str().strip_suffix(&format!(".{field}"))?;
-            Some(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new(base),
-                subscripts: vec![],
-                span: *span,
-            })
-        }
-        rumoca_core::Expression::FieldAccess {
-            base,
-            field: actual_field,
-            ..
-        } if actual_field == field => Some((**base).clone()),
-        _ => None,
-    }
-}
-
-fn record_field_access_expr(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expression {
-    rumoca_core::Expression::FieldAccess {
-        span: base.span().unwrap_or(rumoca_core::Span::DUMMY),
-        base: Box::new(base),
-        field: field.to_string(),
-    }
-}
-
-fn flattened_record_positional_projected_arg(
-    arg_expr: &rumoca_core::Expression,
-    prefix: &str,
-    field: &str,
-    inputs: &[rumoca_core::FunctionParam],
-    input_idx: usize,
-) -> rumoca_core::Expression {
-    if let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = arg_expr
-        && subscripts.is_empty()
-        && name.as_str().ends_with(&format!(".{field}"))
-    {
-        return arg_expr.clone();
-    }
-    if let rumoca_core::Expression::FieldAccess {
-        field: actual_field,
-        ..
-    } = arg_expr
-        && actual_field == field
-    {
-        return arg_expr.clone();
-    }
-    for (candidate_idx, candidate) in inputs.iter().enumerate() {
-        if candidate_idx == input_idx {
-            continue;
-        }
-        let Some((candidate_prefix, candidate_field)) =
-            split_flattened_record_input_name(&candidate.name)
-        else {
-            continue;
-        };
-        if candidate_prefix != prefix || candidate_field == field {
-            continue;
-        }
-        if let Some(base) = flattened_record_field_actual_base(arg_expr, candidate_field) {
-            return record_field_access_expr(base, field);
-        }
-    }
-    rumoca_core::Expression::FieldAccess {
-        base: Box::new(arg_expr.clone()),
-        field: field.to_string(),
-        span: arg_expr.span().unwrap_or(rumoca_core::Span::DUMMY),
-    }
 }
 
 impl<'a> LowerBuilder<'a> {
@@ -296,7 +182,7 @@ impl<'a> LowerBuilder<'a> {
                 .map(|arg| self.lower_expr(arg, scope, call_depth))
                 .transpose();
         }
-        if let Some(reg) = self.lower_runtime_string_special_intrinsic(call_name, args)? {
+        if let Some(reg) = self.lower_runtime_string_special_intrinsic(call_name, args, span)? {
             return Ok(Some(reg));
         }
         if let Some(reg) =
@@ -304,7 +190,9 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(Some(reg));
         }
-        if let Some(reg) = self.lower_impure_random_intrinsic(call_name, args, scope, call_depth)? {
+        if let Some(reg) =
+            self.lower_impure_random_intrinsic(call_name, args, span, scope, call_depth)?
+        {
             return Ok(Some(reg));
         }
         if let Some(reg) = self.lower_random_intrinsic(call_name, args, scope, call_depth)? {
@@ -468,11 +356,10 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
     ) -> Result<Option<Reg>, LowerError> {
-        // The compiled evaluator is numeric-only. Keep it aligned with the
-        // runtime numeric evaluator for string/file helper calls instead of
-        // treating those helpers as unsupported externals on the strict path.
-        Ok(lower_runtime_string_special_value(call_name, args).map(|value| self.emit_const(value)))
+        lower_runtime_string_special_value(call_name, args, span)
+            .map(|value| value.map(|value| self.emit_const(value)))
     }
 
     fn lower_external_table_intrinsic(
@@ -674,7 +561,7 @@ impl<'a> LowerBuilder<'a> {
             let iter_reg = self.emit_const(value);
             ctx.scope.push_frame();
             ctx.scope
-                .insert_scoped(ComponentPath::from_flat_path(&iter.name), iter_reg);
+                .insert_scoped(generated_scope_key(&iter.name), iter_reg);
             ctx.const_scope.insert(iter.name.clone(), value);
             let result =
                 self.lower_complex_projection_comprehension_values(expr, depth + 1, ctx, out);
@@ -805,27 +692,6 @@ impl<'a> LowerBuilder<'a> {
                 )?;
                 continue;
             }
-            if let Some(synthesized) = synthesize_missing_flattened_record_field_arg(
-                input,
-                inputs,
-                input_idx,
-                &positional_args,
-                positional_idx,
-            ) {
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    &synthesized,
-                    caller_scope,
-                    call_depth + 1,
-                )?;
-                continue;
-            }
 
             return missing_required_function_input(function_name, &input.name);
         }
@@ -847,23 +713,15 @@ impl<'a> LowerBuilder<'a> {
         let Some(arg_expr) = request.positional_args.get(*request.positional_idx) else {
             return Ok(false);
         };
-        let projected = flattened_record_positional_projected_arg(
-            arg_expr,
-            prefix,
-            field,
-            request.inputs,
-            request.input_idx,
-        );
-        let is_record_like =
-            self.is_record_like_function_actual(arg_expr, field, request.caller_scope);
-        let grouped = has_flattened_record_input_group(request.inputs, request.input_idx, prefix);
-        let can_project = is_record_like
-            || grouped
-                && self
-                    .projected_flattened_record_field_available(&projected, request.caller_scope);
-        if !can_project {
+        if !self.is_record_like_function_actual(arg_expr, field, request.caller_scope) {
             return Ok(false);
         }
+
+        let projected = rumoca_core::Expression::FieldAccess {
+            base: Box::new((*arg_expr).clone()),
+            field: field.to_string(),
+            span: arg_expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        };
         self.bind_function_input_arg_or_closure(
             state,
             request.function_name,
@@ -872,7 +730,6 @@ impl<'a> LowerBuilder<'a> {
             request.caller_scope,
             request.call_depth,
         )?;
-        self.bind_flattened_record_input_alias_shape(&request.input.name, prefix, field);
         if !request
             .inputs
             .iter()
@@ -884,42 +741,6 @@ impl<'a> LowerBuilder<'a> {
         Ok(true)
     }
 
-    fn projected_flattened_record_field_available(
-        &self,
-        projected: &rumoca_core::Expression,
-        caller_scope: &Scope,
-    ) -> bool {
-        if !self.infer_expr_dims(projected, caller_scope).is_empty() {
-            return true;
-        }
-        let Ok(key) = self.compile_time_binding_base_key(projected) else {
-            return false;
-        };
-        caller_scope.contains_key(&ComponentPath::from_flat_path(&key))
-            || self.layout.binding(&key).is_some()
-            || !indexed_entries_for_key(&self.indexed_bindings, &key).is_empty()
-            || self.layout.bindings().keys().any(|candidate| {
-                parse_indexed_binding_key(candidate).is_some_and(|(base, _)| base == key)
-            })
-            || self.local_indexed_bindings.contains_key(&key)
-            || self.local_binding_dims.contains_key(&key)
-    }
-
-    fn bind_flattened_record_input_alias_shape(
-        &mut self,
-        flattened_name: &str,
-        prefix: &str,
-        field: &str,
-    ) {
-        let Some(dims) = self.local_binding_dims.get(flattened_name).cloned() else {
-            return;
-        };
-        let alias = format!("{prefix}.{field}");
-        let value_count = positive_dim_product(&dims);
-        self.local_binding_dims.insert(alias.clone(), dims.clone());
-        self.bind_local_array_shape(&alias, &dims, value_count);
-    }
-
     fn bind_function_input_arg_or_closure(
         &mut self,
         state: FunctionInputBindState<'_>,
@@ -929,10 +750,17 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<(), LowerError> {
-        if self.bind_function_input_closure(function_name, input, arg_expr, caller_scope) {
+        if self.bind_function_input_closure(function_name, input, arg_expr, caller_scope)? {
             return Ok(());
         }
-        self.bind_function_input_value(state, input, arg_expr, caller_scope, call_depth)?;
+        self.bind_function_input_value(
+            state,
+            function_name,
+            input,
+            arg_expr,
+            caller_scope,
+            call_depth,
+        )?;
         Ok(())
     }
 
@@ -950,26 +778,11 @@ impl<'a> LowerBuilder<'a> {
                     return false;
                 }
                 let field_key = format!("{}.{field}", name.as_str());
-                caller_scope.contains_key(&ComponentPath::from_flat_path(&field_key))
+                caller_scope.contains_key(&generated_scope_key(&field_key))
                     || self.layout.binding(&field_key).is_some()
-                    || !indexed_entries_for_key(&self.indexed_bindings, &field_key).is_empty()
                     || self.local_indexed_bindings.contains_key(&field_key)
                     || self.local_binding_dims.contains_key(&field_key)
             }
-            rumoca_core::Expression::FieldAccess {
-                base,
-                field: actual_field,
-                ..
-            } => field_access_binding_key(base, actual_field)
-                .ok()
-                .is_some_and(|base_key| {
-                    let field_key = format!("{base_key}.{field}");
-                    caller_scope.contains_key(&ComponentPath::from_flat_path(&field_key))
-                        || self.layout.binding(&field_key).is_some()
-                        || !indexed_entries_for_key(&self.indexed_bindings, &field_key).is_empty()
-                        || self.local_indexed_bindings.contains_key(&field_key)
-                        || self.local_binding_dims.contains_key(&field_key)
-                }),
             rumoca_core::Expression::FunctionCall {
                 name,
                 is_constructor,
@@ -994,44 +807,48 @@ impl<'a> LowerBuilder<'a> {
         input: &rumoca_core::FunctionParam,
         arg_expr: &rumoca_core::Expression,
         caller_scope: &Scope,
-    ) -> bool {
+    ) -> Result<bool, LowerError> {
         if input.type_class != Some(rumoca_core::ClassType::Function)
             && !input.type_name.to_ascii_lowercase().contains("function")
         {
-            return false;
+            return Ok(false);
         }
-        let Some(closure) = self.function_closure_from_arg(arg_expr, caller_scope) else {
-            return false;
+        let Some(closure) = self.function_closure_from_arg(arg_expr, caller_scope)? else {
+            return Ok(false);
         };
         self.function_closures
-            .insert(ComponentPath::from_flat_path(&input.name), closure.clone());
+            .insert(generated_scope_key(&input.name), closure.clone());
         self.function_closures.insert(
-            ComponentPath::from_flat_path(&format!("{current_function_name}.{}", input.name)),
+            generated_scope_key(format!("{current_function_name}.{}", input.name)),
             closure,
         );
-        true
+        Ok(true)
     }
 
     fn function_closure_from_arg(
         &self,
         arg_expr: &rumoca_core::Expression,
         caller_scope: &Scope,
-    ) -> Option<FunctionClosure> {
+    ) -> Result<Option<FunctionClosure>, LowerError> {
         match arg_expr {
             rumoca_core::Expression::FunctionCall {
                 name,
                 args,
                 is_constructor: false,
                 ..
-            } if self.lookup_function(name).is_some() => Some(FunctionClosure {
+            } if self.lookup_function(name).is_some() => Ok(Some(FunctionClosure {
                 target_name: name.clone(),
                 bound_args: args.clone(),
                 captured_scope: caller_scope.clone(),
-            }),
+            })),
             rumoca_core::Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => self.lookup_function_closure(name).cloned(),
-            _ => None,
+                name,
+                subscripts,
+                span,
+            } if subscripts.is_empty() => self
+                .lookup_function_closure(name, *span)
+                .map(|closure| closure.cloned()),
+            _ => Ok(None),
         }
     }
 
@@ -1069,6 +886,7 @@ impl<'a> LowerBuilder<'a> {
                         const_scope: &mut const_scope,
                         const_bindings: &mut const_bindings,
                     },
+                    function_name.as_str(),
                     input,
                     default,
                     &local_scope,
@@ -1076,12 +894,10 @@ impl<'a> LowerBuilder<'a> {
                 )?;
                 continue;
             } else {
-                return Err(LowerError::InvalidFunction {
-                    name: function_name.as_str().to_string(),
-                    reason: format!(
-                        "required input `{}` has no actual argument or default binding",
-                        input.name
-                    ),
+                return Err(LowerError::MissingActualArgument {
+                    function: function_name.as_str().to_string(),
+                    what: "required input",
+                    input: input.name.clone(),
                 });
             };
 
@@ -1091,6 +907,7 @@ impl<'a> LowerBuilder<'a> {
                     const_scope: &mut const_scope,
                     const_bindings: &mut const_bindings,
                 },
+                function_name.as_str(),
                 input,
                 arg_expr,
                 arg_scope,
@@ -1183,7 +1000,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(());
         }
 
-        let inferred_dims = self.infer_expr_dims(expr, expr_scope);
+        let inferred_dims = self.infer_expr_dims(expr, expr_scope)?;
         if !inferred_dims.is_empty() {
             let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
             if bind_singleton_array_actual_to_scalar_formal(
@@ -1203,23 +1020,12 @@ impl<'a> LowerBuilder<'a> {
             return Ok(());
         }
 
-        if let Some(reg) =
-            self.lower_target_projected_scalar_actual(expr, expr_scope, call_depth)?
-        {
-            state
-                .scope
-                .insert(ComponentPath::from_flat_path(local_name), reg);
-            return Ok(());
-        }
-
         let reg = self.lower_expr(expr, expr_scope, call_depth)?;
         if let Ok(value) = self.eval_compile_time_expr(expr, state.const_scope) {
             state.const_scope.insert(local_name.to_string(), value);
             state.const_bindings.insert(local_name.to_string(), value);
         }
-        state
-            .scope
-            .insert(ComponentPath::from_flat_path(local_name), reg);
+        state.scope.insert(generated_scope_key(local_name), reg);
         Ok(())
     }
 
@@ -1247,9 +1053,15 @@ impl<'a> LowerBuilder<'a> {
             return Ok(false);
         }
 
-        let fields = self
-            .record_constructor_fields(name.as_str())
-            .unwrap_or_default();
+        // SPEC_0008: a call recognized as a record constructor must have a
+        // registered field list; fabricating scalar Real params for missing
+        // registrations silently mis-binds record fields.
+        let Some(fields) = self.record_constructor_fields(name.as_str()) else {
+            return Err(LowerError::InvalidFunction {
+                name: name.as_str().to_string(),
+                reason: "record constructor has no registered field list".to_string(),
+            });
+        };
         let (named_args, positional_args) =
             split_named_and_positional_call_args(name.as_str(), args)?;
         let mut bound_any = false;
@@ -1258,11 +1070,9 @@ impl<'a> LowerBuilder<'a> {
             .filter(|(_, arg_expr)| !non_numeric_record_metadata(arg_expr))
         {
             let local_name = format!("{}.{}", input.name, field_name);
-            // If the constructor is registered (fields non-empty), a missing field
-            // is an ICE — earlier phases must guarantee field names match.
-            // If the constructor is not registered (fields empty), fall back to
-            // a scalar Real param (best-effort binding for unregistered records).
-            let field = record_constructor_field_or_real(name, &fields, &field_name);
+            // Earlier phases must guarantee field names match the registered
+            // constructor, so a missing field is an internal error.
+            let field = record_constructor_field(&fields, &field_name);
             self.bind_flattened_record_field_value(
                 FunctionInputBindState {
                     scope: &mut *state.scope,
@@ -1307,6 +1117,7 @@ impl<'a> LowerBuilder<'a> {
     fn bind_function_input_value(
         &mut self,
         mut state: FunctionInputBindState<'_>,
+        function_name: &str,
         input: &rumoca_core::FunctionParam,
         expr: &rumoca_core::Expression,
         expr_scope: &Scope,
@@ -1325,45 +1136,41 @@ impl<'a> LowerBuilder<'a> {
             return Ok(());
         }
         if !input.dims.is_empty() {
-            let mut values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            let inferred_dims = self.infer_expr_dims(expr, expr_scope);
+            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
             let binding_dims =
-                if input.dims.iter().any(|dim| *dim <= 0) && !inferred_dims.is_empty() {
-                    inferred_dims
-                        .iter()
-                        .map(|dim| *dim as i64)
-                        .collect::<Vec<_>>()
-                } else {
-                    input.dims.clone()
-                };
-            let value_count = positive_dim_product(&binding_dims);
-            if values.len() > value_count {
-                values.truncate(value_count);
+                self.resolve_function_input_binding_dims(function_name, input, expr, expr_scope)?;
+            let expected = dims_scalar_count(
+                &binding_dims,
+                format!(
+                    "function `{function_name}` input `{}` declared shape",
+                    input.name
+                ),
+                expr.span().unwrap_or(input.span),
+            )?;
+            if values.len() != expected {
+                return Err(LowerError::ContractViolation {
+                    reason: format!(
+                        "function `{function_name}` input `{}` expected {expected} scalar value(s) for shape {:?}, got {}",
+                        input.name,
+                        binding_dims,
+                        values.len(),
+                    ),
+                    span: expr.span().unwrap_or(input.span),
+                });
             }
             self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &binding_dims);
             self.bind_local_array_shape(&input.name, &binding_dims, values.len());
             return Ok(());
         }
-        if let Some(reg) =
-            self.lower_target_projected_scalar_actual(expr, expr_scope, call_depth)?
-        {
-            self.clear_local_array_metadata(&input.name);
-            state
-                .scope
-                .insert(ComponentPath::from_flat_path(&input.name), reg);
-            return Ok(());
-        }
-        let inferred_dims = self.infer_expr_dims(expr, expr_scope);
+        let inferred_dims = self.infer_expr_dims(expr, expr_scope)?;
         if !inferred_dims.is_empty() {
             let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            if split_flattened_record_input_name(&input.name).is_none()
-                && bind_singleton_array_actual_to_scalar_formal(
-                    state.scope,
-                    &input.name,
-                    &inferred_dims,
-                    &values,
-                )
-            {
+            if bind_singleton_array_actual_to_scalar_formal(
+                state.scope,
+                &input.name,
+                &inferred_dims,
+                &values,
+            ) {
                 return Ok(());
             }
             let dims = inferred_dims
@@ -1376,29 +1183,93 @@ impl<'a> LowerBuilder<'a> {
         }
         let reg = match self.lower_expr(expr, expr_scope, call_depth) {
             Ok(reg) => reg,
-            Err(err) => {
-                if err.is_missing_binding()
-                    && self.bind_record_input_components(
-                        state.scope,
-                        &input.name,
-                        expr,
-                        expr_scope,
-                    )?
-                {
-                    return Ok(());
-                }
-                return Err(err);
+            Err(LowerError::MissingBinding { .. })
+                if self.bind_record_input_components(
+                    state.scope,
+                    &input.name,
+                    expr,
+                    expr_scope,
+                )? =>
+            {
+                return Ok(());
             }
+            Err(err) => return Err(err),
         };
         if let Ok(value) = self.eval_compile_time_expr(expr, state.const_scope) {
             state.const_scope.insert(input.name.clone(), value);
             state.const_bindings.insert(input.name.clone(), value);
         }
         self.clear_local_array_metadata(&input.name);
-        state
-            .scope
-            .insert(ComponentPath::from_flat_path(&input.name), reg);
+        state.scope.insert(generated_scope_key(&input.name), reg);
         Ok(())
+    }
+
+    fn resolve_function_input_binding_dims(
+        &self,
+        function_name: &str,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+    ) -> Result<Vec<i64>, LowerError> {
+        if input.dims.iter().all(|dim| *dim > 0) {
+            return Ok(input.dims.clone());
+        }
+        let span = expr.span().unwrap_or(input.span);
+        if input.dims.iter().any(|dim| *dim < 0) {
+            return Err(LowerError::ContractViolation {
+                reason: format!(
+                    "function `{function_name}` input `{}` has negative dimension in declared shape {:?}",
+                    input.name, input.dims
+                ),
+                span,
+            });
+        }
+        let actual_dims = self.infer_expr_dims(expr, expr_scope)?;
+        if actual_dims.len() != input.dims.len() {
+            return Err(LowerError::ContractViolation {
+                reason: format!(
+                    "function `{function_name}` input `{}` expected rank {} for declared shape {:?}, got rank {}",
+                    input.name,
+                    input.dims.len(),
+                    input.dims,
+                    actual_dims.len()
+                ),
+                span,
+            });
+        }
+        input
+            .dims
+            .iter()
+            .zip(actual_dims)
+            .map(|(declared, actual)| {
+                if *declared == 0 {
+                    return i64::try_from(actual).map_err(|_| LowerError::ContractViolation {
+                        reason: format!(
+                            "function `{function_name}` input `{}` actual dimension {actual} exceeds supported range",
+                            input.name
+                        ),
+                        span,
+                    });
+                }
+                let actual = i64::try_from(actual).map_err(|_| LowerError::ContractViolation {
+                    reason: format!(
+                        "function `{function_name}` input `{}` actual dimension {actual} exceeds supported range",
+                        input.name
+                    ),
+                    span,
+                })?;
+                if *declared != actual {
+                    return Err(LowerError::ContractViolation {
+                        reason: format!(
+                            "function `{function_name}` input `{}` expected dimension {declared} in declared shape {:?}, got {actual}",
+                            input.name, input.dims
+                        ),
+                        span,
+                    });
+                }
+                Ok(actual)
+            })
+            .collect()
     }
 
     fn bind_record_input_components(
@@ -1411,17 +1282,14 @@ impl<'a> LowerBuilder<'a> {
         let Ok(base_key) = binding_base_key(expr) else {
             return Ok(false);
         };
-        let base_path = ComponentPath::from_flat_path(&base_key);
-        let input_path = ComponentPath::from_flat_path(input_name);
+        let source_prefix = format!("{base_key}.");
         let mut bound_any = false;
         for (key, reg) in expr_scope.iter() {
-            if let Some(suffix) = key.strip_prefix(&base_path) {
-                let local_path = input_path.join(&suffix);
-                let local_key = local_path.to_flat_string();
-                scope.insert(local_path, reg);
-                self.copy_record_input_component_dims(key.as_str(), &local_key);
-                bound_any = true;
-            }
+            let Some(suffix) = generated_scope_key_suffix(&key, &source_prefix) else {
+                continue;
+            };
+            self.bind_record_input_component(scope, input_name, &key, reg, suffix);
+            bound_any = true;
         }
 
         let prefix = format!("{base_key}.");
@@ -1436,7 +1304,7 @@ impl<'a> LowerBuilder<'a> {
             .collect::<Vec<_>>();
         for (key, suffix, slot) in slots {
             let local_key = format!("{input_name}.{suffix}");
-            let local_path = ComponentPath::from_flat_path(&local_key);
+            let local_path = generated_scope_key(&local_key);
             if scope.contains_key(&local_path) {
                 continue;
             }
@@ -1448,6 +1316,21 @@ impl<'a> LowerBuilder<'a> {
         }
 
         Ok(bound_any)
+    }
+
+    fn bind_record_input_component(
+        &mut self,
+        scope: &mut Scope,
+        input_name: &str,
+        key: &ComponentReferenceKey,
+        reg: Reg,
+        suffix: &str,
+    ) {
+        let local_key = format!("{input_name}.{suffix}");
+        scope.insert(generated_scope_key(&local_key), reg);
+        if let Some(source_key) = generated_scope_key_name(key) {
+            self.copy_record_input_component_dims(source_key, &local_key);
+        }
     }
 
     fn bind_record_function_call_input(
@@ -1501,7 +1384,7 @@ impl<'a> LowerBuilder<'a> {
             let local_key = format!("{}.{}", input.name, component.suffix);
             state
                 .scope
-                .insert(ComponentPath::from_flat_path(&local_key), component.reg);
+                .insert(generated_scope_key(&local_key), component.reg);
             if let Some(dims) = component.dims {
                 self.local_binding_dims.insert(local_key.clone(), dims);
                 self.update_known_empty_local_array(&local_key, component.known_empty);
@@ -1572,7 +1455,7 @@ impl<'a> LowerBuilder<'a> {
             .iter()
             .into_iter()
             .filter_map(|(key, reg)| {
-                let key_text = key.as_str();
+                let key_text = generated_scope_key_name(&key)?;
                 key_text.strip_prefix(source_prefix.as_str()).map(|suffix| {
                     MaterializedRecordComponent {
                         suffix: suffix.to_string(),
@@ -1600,15 +1483,6 @@ impl<'a> LowerBuilder<'a> {
     fn copy_record_input_component_dims(&mut self, source_key: &str, local_key: &str) {
         if let Some(dims) = self.local_binding_dims.get(source_key).cloned() {
             self.local_binding_dims.insert(local_key.to_string(), dims);
-            let value_count = positive_dim_product(
-                self.local_binding_dims
-                    .get(local_key)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-            );
-            if let Some(dims) = self.local_binding_dims.get(local_key).cloned() {
-                self.bind_local_array_shape(local_key, &dims, value_count);
-            }
             if self.known_empty_local_arrays.contains(source_key) {
                 self.known_empty_local_arrays.insert(local_key.to_string());
             } else {
@@ -1617,50 +1491,12 @@ impl<'a> LowerBuilder<'a> {
             return;
         }
         if let Some(shape) = self.layout.shape(source_key) {
-            let dims = shape.iter().map(|dim| *dim as i64).collect::<Vec<_>>();
-            let value_count = shape.iter().copied().product::<usize>().max(1);
-            self.local_binding_dims
-                .insert(local_key.to_string(), dims.clone());
-            self.bind_local_array_shape(local_key, &dims, value_count);
+            self.local_binding_dims.insert(
+                local_key.to_string(),
+                shape.iter().map(|dim| *dim as i64).collect(),
+            );
             self.known_empty_local_arrays.shift_remove(local_key);
         }
-        self.copy_record_indexed_component_base_dims(source_key, local_key);
-    }
-
-    fn copy_record_indexed_component_base_dims(&mut self, source_key: &str, local_key: &str) {
-        let Some((source_base, _)) = parse_indexed_binding_key(source_key) else {
-            return;
-        };
-        let Some((local_base, _)) = parse_indexed_binding_key(local_key) else {
-            return;
-        };
-        if self.local_binding_dims.contains_key(&local_base) {
-            return;
-        }
-        let entries = indexed_entries_for_key(&self.indexed_bindings, &source_base);
-        if entries.is_empty() {
-            return;
-        }
-        let rank = entries
-            .iter()
-            .map(|entry| entry.indices.len())
-            .max()
-            .unwrap_or(0);
-        if rank == 0 {
-            return;
-        }
-        let mut dims = vec![0_i64; rank];
-        for entry in entries {
-            for (idx, value) in entry.indices.iter().copied().enumerate() {
-                if let Ok(value) = i64::try_from(value) {
-                    dims[idx] = dims[idx].max(value);
-                }
-            }
-        }
-        let value_count = positive_dim_product(&dims);
-        self.local_binding_dims
-            .insert(local_base.clone(), dims.clone());
-        self.bind_local_array_shape(&local_base, &dims, value_count);
     }
 
     pub(super) fn with_local_lower_frame<T>(
@@ -1707,21 +1543,24 @@ impl<'a> LowerBuilder<'a> {
             // into reads of this function's array output.
             if !param.dims.is_empty() {
                 super::function_projection::clear_indexed_scope_bindings(scope, &param.name);
-                scope.shift_remove(&ComponentPath::from_flat_path(&param.name));
+                scope.shift_remove(&generated_scope_key(&param.name));
                 self.local_indexed_bindings
                     .shift_remove(param.name.as_str());
             }
-            self.initialize_declared_function_param(param);
+            self.initialize_declared_function_param(param)?;
         }
         Ok(())
     }
 
-    fn initialize_declared_function_param(&mut self, param: &rumoca_core::FunctionParam) {
+    fn initialize_declared_function_param(
+        &mut self,
+        param: &rumoca_core::FunctionParam,
+    ) -> Result<(), LowerError> {
         if param.dims.is_empty() {
             self.clear_local_array_metadata(&param.name);
-            return;
+            return Ok(());
         }
-        self.bind_declared_function_param_shape(param);
+        self.bind_declared_function_param_shape(param)
     }
 
     pub(super) fn ensure_pure_inline_function(
@@ -1761,7 +1600,7 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 0.0
             };
-            self.structural_bindings
+            std::sync::Arc::make_mut(&mut self.structural_bindings)
                 .insert(super::size_binding_key(name, idx + 1), dim);
         }
     }
@@ -1778,7 +1617,7 @@ impl<'a> LowerBuilder<'a> {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.structural_bindings.shift_remove(key.as_str());
+            std::sync::Arc::make_mut(&mut self.structural_bindings).shift_remove(key.as_str());
         }
     }
 
@@ -1788,7 +1627,7 @@ impl<'a> LowerBuilder<'a> {
         dims: Vec<i64>,
         value_count: usize,
     ) {
-        let is_empty = dims.contains(&0);
+        let is_empty = !dims.is_empty() && dims.iter().all(|dim| *dim >= 0) && dims.contains(&0);
         self.local_binding_dims
             .insert(name.to_string(), dims.clone());
         self.bind_local_array_shape(name, &dims, value_count);
@@ -1802,36 +1641,42 @@ impl<'a> LowerBuilder<'a> {
     pub(super) fn bind_declared_function_param_shape(
         &mut self,
         param: &rumoca_core::FunctionParam,
-    ) {
+    ) -> Result<(), LowerError> {
         if param.dims.is_empty() {
-            return;
+            return Ok(());
         }
         if let Some(dims) = self.resolve_function_param_shape(param) {
             self.set_known_local_array_dims(
                 &param.name,
                 dims.clone(),
-                exact_dim_value_count(&dims),
+                exact_dim_value_count(
+                    &dims,
+                    format!("function parameter `{}`", param.name),
+                    param.span,
+                )?,
             );
-            return;
+            return Ok(());
         }
         if param.dims.contains(&0) && param.shape_expr.is_empty() {
             self.set_known_local_array_dims(&param.name, param.dims.clone(), 0);
-            return;
+            return Ok(());
         }
-        if param.dims.iter().any(|dim| *dim <= 0) {
+        if param.dims.iter().any(|dim| *dim < 0) {
             self.known_empty_local_arrays
                 .shift_remove(param.name.as_str());
-            return;
+            return Ok(());
         }
 
-        let value_count = dims_scalar_count(&param.dims);
+        let value_count = dims_scalar_count(
+            &param.dims,
+            format!("function parameter `{}`", param.name),
+            param.span,
+        )?;
         self.set_known_local_array_dims(&param.name, param.dims.clone(), value_count);
+        Ok(())
     }
 
-    pub(in crate::lower) fn resolve_function_param_shape(
-        &self,
-        param: &rumoca_core::FunctionParam,
-    ) -> Option<Vec<i64>> {
+    fn resolve_function_param_shape(&self, param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
         if param.shape_expr.len() != param.dims.len() {
             return None;
         }
@@ -1906,15 +1751,9 @@ impl<'a> LowerBuilder<'a> {
         // and `im`; scalar function inputs must bind those field components
         // whether the caller passed a record expression or an already-projected
         // component reference.
-        scope.insert(ComponentPath::from_flat_path(base_name), re);
-        scope.insert(
-            ComponentPath::from_flat_path(&format!("{base_name}.re")),
-            re,
-        );
-        scope.insert(
-            ComponentPath::from_flat_path(&format!("{base_name}.im")),
-            im,
-        );
+        scope.insert(generated_scope_key(base_name), re);
+        scope.insert(generated_scope_key(format!("{base_name}.re")), re);
+        scope.insert(generated_scope_key(format!("{base_name}.im")), im);
     }
 
     fn bind_complex_component_values(
@@ -1930,18 +1769,12 @@ impl<'a> LowerBuilder<'a> {
             .first()
             .copied()
             .unwrap_or_else(|| self.emit_const(0.0));
-        scope.insert(ComponentPath::from_flat_path(base_name), first);
+        scope.insert(generated_scope_key(base_name), first);
         if let Some(re) = re_values.first().copied() {
-            scope.insert(
-                ComponentPath::from_flat_path(&format!("{base_name}.re")),
-                re,
-            );
+            scope.insert(generated_scope_key(format!("{base_name}.re")), re);
         }
         if let Some(im) = im_values.first().copied() {
-            scope.insert(
-                ComponentPath::from_flat_path(&format!("{base_name}.im")),
-                im,
-            );
+            scope.insert(generated_scope_key(format!("{base_name}.im")), im);
         }
         self.bind_assignment_values(scope, &format!("{base_name}[:].re"), re_values);
         self.bind_assignment_values(scope, &format!("{base_name}[:].im"), im_values);
@@ -1951,35 +1784,23 @@ impl<'a> LowerBuilder<'a> {
         self.bind_assignment_values(scope, &format!("{base_name}[:].im.im"), im_values);
         for (idx, reg) in re_values.iter().copied().enumerate() {
             scope.insert(
-                ComponentPath::from_flat_path(&format!("{base_name}[{}].re", idx + 1)),
+                generated_scope_key(format!("{base_name}[{}].re", idx + 1)),
                 reg,
             );
         }
         for (idx, reg) in im_values.iter().copied().enumerate() {
             scope.insert(
-                ComponentPath::from_flat_path(&format!("{base_name}[{}].im", idx + 1)),
+                generated_scope_key(format!("{base_name}[{}].im", idx + 1)),
                 reg,
             );
         }
     }
 }
 
-fn positive_dim_product(dims: &[i64]) -> usize {
-    dims.iter()
-        .filter_map(|dim| usize::try_from(*dim).ok())
-        .filter(|dim| *dim > 0)
-        .product::<usize>()
-        .max(1)
-}
-
-fn record_constructor_field_or_real(
-    _name: &rumoca_core::Reference,
+fn record_constructor_field(
     fields: &[rumoca_core::FunctionParam],
     field_name: &str,
 ) -> rumoca_core::FunctionParam {
-    if fields.is_empty() {
-        return rumoca_core::FunctionParam::new(field_name, "Real");
-    }
     fields
         .iter()
         .find(|field| field.name == field_name)

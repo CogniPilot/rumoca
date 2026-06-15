@@ -125,12 +125,12 @@ fn test_forwarded_water_base_properties_keeps_final_binding_equation() {
             .iter()
             .any(|eq| eq.origin.contains("binding equation for dynBal.medium.MM")),
         "final medium field binding should define dynBal.medium.MM; balance={}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -482,9 +482,9 @@ fn test_nested_medium_nxi_for_range_compiles() {
         .expect("nested Medium forwarding must resolve Medium.nXi in dynBal for-equations");
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "nested dynBal for-range should expand with MediumAir.nXi=2: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 

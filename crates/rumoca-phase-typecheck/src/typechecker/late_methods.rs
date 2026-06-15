@@ -20,7 +20,7 @@ enum ModifierPathAdvance {
     Invalid,
 }
 
-struct MissingComponentMember {
+pub(in crate::typechecker) struct MissingComponentMember {
     owner_type: TypeId,
     member_name: String,
     reference: String,
@@ -42,6 +42,8 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
 
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable) {
         self.check_equation_type_compatibility(lhs, rhs, type_table);
+        self.check_power_operators(lhs, type_table);
+        self.check_power_operators(rhs, type_table);
     }
 
     fn on_expression_function_call(
@@ -51,6 +53,49 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
         type_table: &TypeTable,
     ) {
         self.check_builtin_function_call(comp, args, type_table);
+    }
+
+    /// MLS §8.3.5: the condition of a when-equation must be a Boolean
+    /// expression (ALG-011/EQN side).
+    fn on_when_condition(&mut self, condition: &Expression, type_table: &TypeTable) {
+        let Some(found) = self.infer_expression_type(condition, type_table) else {
+            return;
+        };
+        if found.is_unknown() {
+            return;
+        }
+        let root = self.resolve_type_root(type_table, found);
+        if matches!(
+            type_table.get(root),
+            Some(Type::Builtin(rumoca_ir_ast::BuiltinType::Boolean))
+        ) {
+            return;
+        }
+        // Arrays of Boolean are also allowed (vector when-conditions); only
+        // flag clearly non-Boolean roots.
+        if !matches!(
+            type_table.get(root),
+            Some(Type::Builtin(
+                rumoca_ir_ast::BuiltinType::Real
+                    | rumoca_ir_ast::BuiltinType::Integer
+                    | rumoca_ir_ast::BuiltinType::String
+            ))
+        ) {
+            return;
+        }
+        let Some(loc) = condition.get_location() else {
+            return;
+        };
+        let span =
+            self.source_map
+                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
+        let found_name = Self::format_type_name(type_table, found);
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET002",
+            format!("when-equation condition must be Boolean, found `{found_name}` (MLS §8.3.5)"),
+            "when condition here",
+            span,
+        ));
     }
 }
 
@@ -70,7 +115,7 @@ impl TypeChecker {
         qualified_name.to_component_path()
     }
 
-    fn parent_scope_name(path: &ComponentPath) -> String {
+    fn enclosing_scope_name(path: &ComponentPath) -> String {
         path.parent()
             .unwrap_or_else(ComponentPath::root)
             .to_flat_string()
@@ -104,7 +149,7 @@ impl TypeChecker {
         }
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn alias_field_key_range<'a>(
         sorted_keys: &'a [String],
         target_prefix: &str,
@@ -243,8 +288,8 @@ impl TypeChecker {
             let component_name = Self::instance_component_path(&instance_data.qualified_name);
             let mut scopes = Vec::with_capacity(2 + instance_data.class_overrides.len());
             scopes.push(instance_data.type_name.clone());
-            if let Some(parent_scope) = Self::parent_type_scope(&instance_data.type_name) {
-                scopes.push(parent_scope.to_string());
+            if let Some(enclosing) = Self::parent_type_scope(&instance_data.type_name) {
+                scopes.push(enclosing.to_string());
             }
             Self::push_enclosing_class_override_scopes(
                 &component_name,
@@ -288,9 +333,7 @@ impl TypeChecker {
     }
 
     fn parent_type_scope(type_name: &str) -> Option<&str> {
-        let pos = find_last_top_level_dot(type_name)?;
-        let parent_scope = &type_name[..pos];
-        (!parent_scope.is_empty()).then_some(parent_scope)
+        crate::path_utils::enclosing_scope_str(type_name).filter(|scope| !scope.is_empty())
     }
 
     /// Fallback dimension evaluation using enclosing component type scopes.
@@ -313,8 +356,8 @@ impl TypeChecker {
             {
                 return Some(value);
             }
-            if let Some(parent_scope) = current.parent() {
-                current = parent_scope;
+            if let Some(enclosing) = current.parent() {
+                current = enclosing;
             } else {
                 break;
             }
@@ -341,7 +384,7 @@ impl TypeChecker {
         for (_def_id, instance_data) in &overlay.components {
             let name_path = Self::instance_component_path(&instance_data.qualified_name);
             let name = name_path.to_flat_string();
-            let scope = Self::parent_scope_name(&name_path);
+            let scope = Self::enclosing_scope_name(&name_path);
 
             // Recompute from the most specific declaration source each pass.
             // MLS §10.1 dependency chains can reveal better values in later passes;
@@ -383,7 +426,7 @@ impl TypeChecker {
         for (_def_id, instance_data) in &overlay.components {
             let name_path = Self::instance_component_path(&instance_data.qualified_name);
             let name = name_path.to_flat_string();
-            let scope = Self::parent_scope_name(&name_path);
+            let scope = Self::enclosing_scope_name(&name_path);
 
             if !self.eval_ctx.booleans.contains_key(&name) {
                 progress |= self.try_eval_boolean(instance_data, &name, &scope);
@@ -508,7 +551,7 @@ impl TypeChecker {
     ) -> bool {
         let name_path = Self::instance_component_path(&instance_data.qualified_name);
         let name = name_path.to_flat_string();
-        let scope = Self::parent_scope_name(&name_path);
+        let scope = Self::enclosing_scope_name(&name_path);
 
         // Try to infer from binding first
         if let Some(ref binding) = instance_data.binding
@@ -537,6 +580,23 @@ impl TypeChecker {
         }
 
         false
+    }
+
+    /// The first dimension expression that evaluates to a negative value,
+    /// if any. Distinguishes "evaluated but invalid" from "unevaluable" for
+    /// the MLS §10.1 dimension diagnostic.
+    fn negative_dimension_value(&self, instance_data: &rumoca_ir_ast::InstanceData) -> Option<i64> {
+        let scope = Self::instance_component_path(&instance_data.qualified_name)
+            .parent()
+            .unwrap_or_else(ComponentPath::root)
+            .to_flat_string();
+        instance_data.dims_expr.iter().find_map(|sub| {
+            let rumoca_ir_ast::Subscript::Expression(expr) = sub else {
+                return None;
+            };
+            rumoca_eval_ast::eval::eval_integer_with_scope(expr, &self.eval_ctx, &scope)
+                .filter(|value| *value < 0)
+        })
     }
 
     /// Validate that all array dimensions have been evaluated (MLS §10.1).
@@ -594,11 +654,23 @@ impl TypeChecker {
                 (true, false) => {
                     "colon dimension could not be inferred from binding".to_string()
                 }
-                (false, _) => format!(
-                    "dimension expression could not be evaluated: {:?}",
-                    instance_data.dims_expr
-                ),
+                // A dimension that evaluates to a negative value must be
+                // diagnosed as invalid, not as "could not be evaluated" —
+                // the wrong diagnosis sends the user hunting an evaluation
+                // problem that doesn't exist.
+                (false, _) => match self.negative_dimension_value(instance_data) {
+                    Some(value) => format!(
+                        "dimension expression evaluates to {value}, but array \
+                         dimensions must be non-negative (MLS §10.1)"
+                    ),
+                    None => format!(
+                        "dimension expression could not be evaluated: {:?}",
+                        instance_data.dims_expr
+                    ),
+                },
             };
+            let invalid_value =
+                !has_colon_dim && self.negative_dimension_value(instance_data).is_some();
             let reason = base_reason;
 
             // Emit as error per MLS §10.1.
@@ -607,12 +679,14 @@ impl TypeChecker {
                 instance_data.source_location.start as usize,
                 instance_data.source_location.end as usize,
             );
+            let headline = if invalid_value {
+                "invalid array dimensions"
+            } else {
+                "unevaluable array dimensions"
+            };
             self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                 "ET004",
-                format!(
-                    "unevaluable array dimensions for '{}': {}",
-                    var_name, reason
-                ),
+                format!("{headline} for '{var_name}': {reason}"),
                 "array dimension declaration",
                 span,
             ));
@@ -660,6 +734,18 @@ impl TypeChecker {
             );
         }
         self.current_component_types = scope_types;
+        let mut scope_shapes = HashMap::new();
+        for (name, comp) in &class.components {
+            let shape = if !comp.shape.is_empty() {
+                Some(comp.shape.clone())
+            } else if comp.shape_expr.is_empty() {
+                Some(Vec::new())
+            } else {
+                None
+            };
+            scope_shapes.insert(name.clone(), shape);
+        }
+        self.current_component_shapes = scope_shapes;
 
         // Validate known builtin modifier value types now that local component
         // types are available in scope (e.g., `Real x(start = y)`).
@@ -766,13 +852,13 @@ impl TypeChecker {
             if modifier_root.is_empty() {
                 continue;
             }
-            if !allowed_roots.contains(modifier_root) {
+            if !allowed_roots.contains(modifier_root.as_str()) {
                 self.emit_unknown_component_modifier(
                     comp_name,
                     comp,
                     modifier_name,
                     modifier_expr,
-                    modifier_root,
+                    modifier_root.as_str(),
                 );
                 continue;
             }
@@ -996,6 +1082,9 @@ impl TypeChecker {
         }
 
         for (modifier_name, modifier_expr) in &comp.modifications {
+            if matches!(modifier_name.as_str(), "unit" | "displayUnit") {
+                self.validate_unit_modifier_syntax(comp_name, modifier_name, modifier_expr);
+            }
             if !Self::is_allowed_builtin_modifier(modifier_name) {
                 continue;
             }
@@ -1055,6 +1144,38 @@ impl TypeChecker {
             "modifier value here",
             span,
         ));
+    }
+
+    /// MLS Chapter 19: a non-empty `unit`/`displayUnit` string literal must
+    /// match the unit-expression grammar.
+    fn validate_unit_modifier_syntax(
+        &mut self,
+        comp_name: &str,
+        modifier_name: &str,
+        modifier_expr: &Expression,
+    ) {
+        let Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::String,
+            token,
+            ..
+        } = modifier_expr
+        else {
+            return;
+        };
+        let unit = token.text.trim_matches('"');
+        if let Err(error) = crate::unit_syntax::validate_unit_expression(unit) {
+            let span = self.source_map.location_to_span(
+                &token.location.file_name,
+                token.location.start as usize,
+                token.location.end as usize,
+            );
+            self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+                "ET010",
+                format!("invalid {modifier_name} for `{comp_name}`: {error}"),
+                "unit string here",
+                span,
+            ));
+        }
     }
 
     pub(crate) fn builtin_modifier_expected_type(
@@ -1144,53 +1265,28 @@ impl TypeChecker {
             || matches!(name, "uncertain" | "distribution")
     }
 
-    fn modifier_root_name(modifier_name: &str) -> &str {
-        let mut bracket_depth = 0usize;
-        let mut segment_end = modifier_name.len();
-        for (idx, ch) in modifier_name.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '.' if bracket_depth == 0 => {
-                    segment_end = idx;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let segment = &modifier_name[..segment_end];
-        segment
-            .split_once('[')
-            .map_or(segment, |(root, _rest)| root)
+    fn modifier_root_name(modifier_name: &str) -> String {
+        let path = rumoca_core::ComponentPath::from_flat_path(modifier_name);
+        let segment = path.parts().first().map_or(modifier_name, String::as_str);
+        rumoca_core::split_trailing_subscript_suffix(segment)
+            .map_or(segment, |(root, _subscript)| root)
+            .to_string()
     }
 
     fn modifier_segments(modifier_name: &str) -> Vec<String> {
-        let mut segments = Vec::new();
-        let mut bracket_depth = 0usize;
-        let mut start = 0usize;
-        for (idx, ch) in modifier_name.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '.' if bracket_depth == 0 => {
-                    segments.push(Self::normalize_modifier_segment(&modifier_name[start..idx]));
-                    start = idx + 1;
-                }
-                _ => {}
-            }
-        }
-        segments.push(Self::normalize_modifier_segment(&modifier_name[start..]));
-        segments
-            .into_iter()
+        rumoca_core::ComponentPath::from_flat_path(modifier_name)
+            .parts()
+            .iter()
+            .map(String::as_str)
+            .map(Self::normalize_modifier_segment)
             .filter(|segment| !segment.is_empty())
             .collect()
     }
 
     fn normalize_modifier_segment(segment: &str) -> String {
         let trimmed = segment.trim();
-        let root = trimmed
-            .split_once('[')
-            .map_or(trimmed, |(prefix, _rest)| prefix);
+        let root = rumoca_core::split_trailing_subscript_suffix(trimmed)
+            .map_or(trimmed, |(prefix, _subscript)| prefix);
         root.trim().to_string()
     }
 
@@ -1488,58 +1584,6 @@ impl TypeChecker {
         }
     }
 
-    /// Check assignment compatibility for a simple equation.
-    ///
-    /// This currently targets scalar/component identity checks needed for
-    /// user-defined type mismatch diagnostics in equations.
-    pub(crate) fn check_equation_type_compatibility(
-        &mut self,
-        lhs: &Expression,
-        rhs: &Expression,
-        type_table: &TypeTable,
-    ) {
-        let lhs_ty = self.infer_expression_type(lhs, type_table);
-        let rhs_ty = self.infer_expression_type(rhs, type_table);
-
-        let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
-            return;
-        };
-        if lhs_ty.is_unknown() || rhs_ty.is_unknown() {
-            return;
-        }
-        let lhs_root = self.resolve_type_root(type_table, lhs_ty);
-        let rhs_root = self.resolve_type_root(type_table, rhs_ty);
-        if lhs_root == rhs_root {
-            self.check_equation_shape_compatibility(lhs, rhs, type_table);
-            return;
-        }
-        if Self::is_unresolved_alias_root(type_table, lhs_root)
-            || Self::is_unresolved_alias_root(type_table, rhs_root)
-        {
-            return;
-        }
-        if !Self::is_user_defined_compatibility_type(type_table, lhs_root)
-            || !Self::is_user_defined_compatibility_type(type_table, rhs_root)
-        {
-            return;
-        }
-
-        let Some(loc) = lhs.get_location().or_else(|| rhs.get_location()) else {
-            return;
-        };
-        let span =
-            self.source_map
-                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
-        let expected = Self::format_type_name(type_table, lhs_ty);
-        let found = Self::format_type_name(type_table, rhs_ty);
-        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
-            "ET002",
-            format!("type mismatch: expected `{expected}`, found `{found}`"),
-            "equation assignment here",
-            span,
-        ));
-    }
-
     pub(crate) fn infer_expression_type(
         &self,
         expr: &Expression,
@@ -1563,6 +1607,12 @@ impl TypeChecker {
             Expression::Parenthesized { inner, .. } => {
                 self.infer_expression_type(inner, type_table)
             }
+            // An array's value type is its element type (uniformity of the
+            // elements is the shape check's concern).
+            Expression::Array { elements, .. } => elements
+                .first()
+                .and_then(|element| self.infer_expression_type(element, type_table)),
+            Expression::Range { start, .. } => self.infer_expression_type(start, type_table),
             _ => None,
         }
     }
@@ -1627,17 +1677,6 @@ impl TypeChecker {
             .and_then(|ty| Self::filter_non_value_component_type(type_table, ty))
     }
 
-    fn validate_component_reference(
-        &mut self,
-        comp: &rumoca_ir_ast::ComponentReference,
-        type_table: &TypeTable,
-    ) {
-        let Err(missing) = self.resolve_component_reference_type(comp, type_table) else {
-            return;
-        };
-        self.emit_unknown_component_member(missing, type_table);
-    }
-
     fn validate_field_access(&mut self, base: &Expression, field: &str, type_table: &TypeTable) {
         let Some(base_type) = self.infer_expression_type(base, type_table) else {
             return;
@@ -1670,7 +1709,7 @@ impl TypeChecker {
         );
     }
 
-    fn resolve_component_reference_type(
+    pub(in crate::typechecker) fn resolve_component_reference_type(
         &self,
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
@@ -1777,33 +1816,23 @@ impl TypeChecker {
     }
 
     fn is_strict_component_member_owner(type_table: &TypeTable, owner_type: TypeId) -> bool {
-        let root = Self::resolve_alias_root(type_table, owner_type);
-        let Some(Type::Class(class_type)) = type_table.get(root) else {
-            return false;
-        };
-        if class_type.kind == ClassKind::Connector
-            && Self::is_bus_like_connector_type_name(&class_type.name)
-        {
-            return false;
-        }
         matches!(
-            class_type.kind,
-            ClassKind::Class
-                | ClassKind::Model
-                | ClassKind::Block
-                | ClassKind::Record
-                | ClassKind::Connector
-                | ClassKind::Type
-                | ClassKind::Operator
+            type_table.get(Self::resolve_alias_root(type_table, owner_type)),
+            Some(Type::Class(class_type))
+                if matches!(
+                    class_type.kind,
+                    ClassKind::Class
+                        | ClassKind::Model
+                        | ClassKind::Block
+                        | ClassKind::Record
+                        | ClassKind::Connector
+                        | ClassKind::Type
+                        | ClassKind::Operator
+                )
         )
     }
 
-    fn is_bus_like_connector_type_name(type_name: &str) -> bool {
-        let leaf = rumoca_core::top_level_last_segment(type_name);
-        leaf == "SignalBus" || leaf.ends_with("Bus") || leaf.ends_with("BusArrays")
-    }
-
-    fn emit_unknown_component_member(
+    pub(in crate::typechecker) fn emit_unknown_component_member(
         &mut self,
         missing: MissingComponentMember,
         type_table: &TypeTable,
@@ -1909,7 +1938,7 @@ impl TypeChecker {
 
         // Last resort: unique short-name lookup.
         // Keep this as a compatibility fallback for mixed qualification styles.
-        let short_name = top_level_last_segment(name);
+        let short_name = crate::path_utils::class_name_leaf(name);
         if let Some(type_id) = self.type_suffix_index.get(short_name).copied().flatten() {
             return type_id;
         }
@@ -1923,7 +1952,7 @@ impl TypeChecker {
         name: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        if has_top_level_dot(name)
+        if crate::path_utils::is_qualified_class_name(name)
             && let Some(type_id) = self.resolve_dotted_type_from_anchor(def_id, name, type_table)
         {
             return Some(type_id);
@@ -1940,7 +1969,7 @@ impl TypeChecker {
         dotted_name: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        let (_, tail) = rumoca_core::split_first_top_level(dotted_name)?;
+        let (_, tail) = crate::path_utils::class_root_split(dotted_name)?;
         let anchor_qname = self.def_qualified_names.get(&anchor_def_id)?;
         let candidate = format!("{anchor_qname}.{tail}");
         type_table.lookup(&candidate).or_else(|| {

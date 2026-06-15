@@ -18,32 +18,40 @@ pub use runtime_specials::{
 pub(super) use state_accessors::*;
 
 #[derive(Clone)]
-struct OutputSelection {
+pub(in crate::eval) struct OutputSelection {
     output_name: String,
     indices: Vec<i64>,
 }
 
-fn parse_selection_suffix(suffix: &str) -> Option<OutputSelection> {
-    if suffix.is_empty() {
-        return None;
-    }
-    let (output_name, indices) = match rumoca_core::parse_scalar_name(suffix) {
-        Some(scalar) => {
-            if rumoca_core::split_path_with_indices(scalar.base).len() != 1 {
-                return None;
-            }
-            (scalar.base.to_string(), scalar.indices)
+impl OutputSelection {
+    fn new(output_name: impl Into<String>, indices: &[i64]) -> Self {
+        Self {
+            output_name: output_name.into(),
+            indices: indices.to_vec(),
         }
-        None if suffix.contains('[') || suffix.contains(']') => return None,
-        None => (suffix.to_string(), Vec::new()),
-    };
-    Some(OutputSelection {
-        output_name,
-        indices,
-    })
+    }
+
+    pub(in crate::eval) fn output_name(&self) -> &str {
+        &self.output_name
+    }
 }
 
-fn resolve_user_function_target<T: SimFloat>(
+fn declared_output_selection(
+    function: &rumoca_core::Function,
+    suffix: &str,
+) -> Option<OutputSelection> {
+    if !function.outputs.iter().any(|output| {
+        suffix == output.name
+            || suffix
+                .strip_prefix(&output.name)
+                .is_some_and(|rest| rest.starts_with('.'))
+    }) {
+        return None;
+    }
+    Some(OutputSelection::new(suffix, &[]))
+}
+
+pub(in crate::eval) fn resolve_user_function_target<T: SimFloat>(
     requested_name: &str,
     env: &VarEnv<T>,
 ) -> Option<(VarName, Option<OutputSelection>)> {
@@ -52,12 +60,9 @@ fn resolve_user_function_target<T: SimFloat>(
     }
 
     rumoca_core::find_map_top_level_splits_rev(requested_name, |base_name, suffix| {
-        let selection = parse_selection_suffix(suffix)?;
-        if resolve_user_function(base_name, env).is_some() {
-            Some((VarName::new(base_name), Some(selection)))
-        } else {
-            None
-        }
+        let function = resolve_user_function(base_name, env)?;
+        let selection = declared_output_selection(function, suffix)?;
+        Some((VarName::new(base_name), Some(selection)))
     })
 }
 
@@ -100,22 +105,6 @@ pub fn resolve_function_call_outputs_pub_dae<T: SimFloat>(
     let flat_name = VarName::new(name.as_str());
     let (resolved, outputs) = resolve_function_call_outputs_pub(&flat_name, env)?;
     Some((rumoca_core::VarName::new(resolved.as_str()), outputs))
-}
-
-fn selected_function_output_name(
-    resolved_name: &VarName,
-    output_name: &str,
-    suffix: &str,
-) -> VarName {
-    if suffix.is_empty() {
-        return VarName::new(format!("{}.{}", resolved_name.as_str(), output_name));
-    }
-    VarName::new(format!(
-        "{}.{}{}",
-        resolved_name.as_str(),
-        output_name,
-        suffix
-    ))
 }
 
 struct RuntimeRecursionDepthGuard {
@@ -175,7 +164,10 @@ fn seed_static_function_scope_dims<T: SimFloat>(
 ) {
     let dims = std::sync::Arc::make_mut(&mut local_env.dims);
     for param in inputs.iter().chain(outputs.iter()).chain(locals.iter()) {
-        if param.dims.is_empty() || param.dims.iter().any(|dim| *dim <= 0) {
+        if param.dims.is_empty()
+            || (!param.shape_expr.is_empty() && param.dims.iter().any(|dim| *dim <= 0))
+            || param.dims.iter().any(|dim| *dim < 0)
+        {
             continue;
         }
         dims.insert(param.name.clone(), param.dims.clone());
@@ -202,8 +194,15 @@ fn resolved_function_param_dims<T: SimFloat>(
     if !param.shape_expr.is_empty() {
         return eval_function_shape_expr(&param.shape_expr, env).map(Some);
     }
-    if param.dims.is_empty() || param.dims.iter().any(|dim| *dim <= 0) {
+    if param.dims.is_empty() {
         return Ok(None);
+    }
+    if param.dims.iter().any(|dim| *dim < 0) {
+        return Err(EvalError::InvalidShape {
+            context: "function parameter dimensions",
+            reason: format!("dimension must be non-negative: {:?}", param.dims),
+        }
+        .with_span_if_missing(param.span));
     }
     Ok(Some(param.dims.clone()))
 }
@@ -223,9 +222,9 @@ fn eval_function_shape_expr<T: SimFloat>(
                 });
             }
         };
-        if dim <= 0 {
+        if dim < 0 {
             return Err(EvalError::UnsupportedExpression {
-                kind: "non-positive function shape dimension",
+                kind: "negative function shape dimension",
             });
         }
         dims.push(dim);
@@ -235,7 +234,7 @@ fn eval_function_shape_expr<T: SimFloat>(
 
 fn eval_shape_expr_dim<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Result<i64, EvalError> {
     let value = eval_expr::<T>(expr, env)?.real().round();
-    if !value.is_finite() || value < 1.0 || value > i64::MAX as f64 {
+    if !value.is_finite() || value < 0.0 || value > i64::MAX as f64 {
         return Err(EvalError::UnsupportedExpression {
             kind: "invalid function shape dimension",
         });
@@ -262,14 +261,16 @@ fn bind_user_function_inputs<T: SimFloat>(
         });
 
         if let Some(arg_expr) = arg_expr {
-            if let Ok(value) = eval_expr::<T>(arg_expr, caller_env) {
-                local_env.set(&param.name, value);
+            if bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env)? {
+                continue;
             }
-            maybe_bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env);
-            if let Some(arg_path) = eval_field_access_path(arg_expr, caller_env) {
+            if let Ok(value) = eval_expr::<T>(arg_expr, caller_env) {
+                bind_function_scalar_input(local_env, function_name, &param.name, value);
+            }
+            if let Some(arg_path) = try_eval_field_access_path(arg_expr, caller_env)? {
                 copy_selected_input_fields(local_env, &param.name, &arg_path, caller_env)?;
             }
-            copy_record_function_output_fields(local_env, param, arg_expr, caller_env)?;
+            let _ = copy_record_function_output_fields(local_env, param, arg_expr, caller_env)?;
             copy_array_input_entries(local_env, param, arg_expr, caller_env)?;
             continue;
         }
@@ -279,9 +280,11 @@ fn bind_user_function_inputs<T: SimFloat>(
                 name: param.name.clone(),
             });
         };
+        if bind_function_input_alias(local_env, function_name, param, default_expr, caller_env)? {
+            continue;
+        }
         let val = eval_expr::<T>(default_expr, local_env)?;
-        local_env.set(&param.name, val);
-        maybe_bind_function_input_alias(local_env, function_name, param, default_expr, caller_env);
+        bind_function_scalar_input(local_env, function_name, &param.name, val);
     }
     Ok(())
 }
@@ -295,7 +298,8 @@ fn copy_array_literal_vector_entries<T: SimFloat>(
     if elements.is_empty() {
         return Ok(false);
     }
-    if let Some(expected) = concrete_param_size(&param.dims)
+    if param.shape_expr.is_empty()
+        && let Some(expected) = concrete_param_size(&param.dims)
         && expected != elements.len()
     {
         return Err(EvalError::ShapeMismatch {
@@ -305,31 +309,25 @@ fn copy_array_literal_vector_entries<T: SimFloat>(
         });
     }
 
-    let param_name = param.name.as_str();
-    let mut first = None;
     let selection_field = selected_component_field_in_current_call(caller_env);
-    for (idx, element) in elements.iter().enumerate() {
-        let value = eval_expr::<T>(element, caller_env)?;
-        if first.is_none() {
-            first = Some(value);
-        }
-        local_env.set(&format!("{param_name}[{}]", idx + 1), value);
-        if let Some(field) = selection_field {
-            local_env.set(&format!("{param_name}.{field}[{}]", idx + 1), value);
-            local_env.set(&format!("{param_name}[{}].{field}", idx + 1), value);
-        }
-    }
-    if let Some(value) = first {
-        local_env.set(param_name, value);
-        if let Some(field) = selection_field {
-            local_env.set(&format!("{param_name}.{field}"), value);
-        }
+    let values = elements
+        .iter()
+        .map(|element| eval_expr::<T>(element, caller_env))
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    let shape = vec![elements.len() as i64];
+    set_array_entries(local_env, &param.name, &shape, &values);
+    if let Some(field) = selection_field {
+        set_array_entries(
+            local_env,
+            &format!("{}.{field}", param.name),
+            &shape,
+            &values,
+        );
     }
     let dims = std::sync::Arc::make_mut(&mut local_env.dims);
-    let shape = vec![elements.len() as i64];
-    dims.insert(param_name.to_string(), shape.clone());
+    dims.insert(param.name.clone(), shape.clone());
     if let Some(field) = selection_field {
-        dims.insert(format!("{param_name}.{field}"), shape);
+        dims.insert(format!("{}.{field}", param.name), shape);
     }
     Ok(true)
 }
@@ -344,37 +342,20 @@ fn copy_array_literal_matrix_entries<T: SimFloat>(
         return Ok(false);
     }
 
-    let param_name = param.name.as_str();
-    let mut first = None;
     let mut max_cols = 0usize;
     let mut actual = 0usize;
+    let mut values = Vec::new();
     let selection_field = selected_component_field_in_current_call(caller_env);
-    for (row_idx, row_expr) in rows.iter().enumerate() {
+    for row_expr in rows {
         let row_values: Vec<&Expression> = match row_expr {
             Expression::Array { elements, .. } => elements.iter().collect(),
             _ => vec![row_expr],
         };
         max_cols = max_cols.max(row_values.len());
         actual += row_values.len();
-        for (col_idx, value_expr) in row_values.iter().enumerate() {
+        for value_expr in row_values {
             let value = eval_expr::<T>(value_expr, caller_env)?;
-            if first.is_none() {
-                first = Some(value);
-            }
-            local_env.set(
-                &format!("{param_name}[{},{}]", row_idx + 1, col_idx + 1),
-                value,
-            );
-            if let Some(field) = selection_field {
-                local_env.set(
-                    &format!("{param_name}.{field}[{},{}]", row_idx + 1, col_idx + 1),
-                    value,
-                );
-                local_env.set(
-                    &format!("{param_name}[{},{}].{field}", row_idx + 1, col_idx + 1),
-                    value,
-                );
-            }
+            values.push(value);
         }
     }
 
@@ -390,17 +371,20 @@ fn copy_array_literal_matrix_entries<T: SimFloat>(
             actual,
         });
     }
-    if let Some(value) = first {
-        local_env.set(param_name, value);
-        if let Some(field) = selection_field {
-            local_env.set(&format!("{param_name}.{field}"), value);
-        }
+    let shape = vec![rows.len() as i64, max_cols as i64];
+    set_array_entries(local_env, &param.name, &shape, &values);
+    if let Some(field) = selection_field {
+        set_array_entries(
+            local_env,
+            &format!("{}.{field}", param.name),
+            &shape,
+            &values,
+        );
     }
     let dims = std::sync::Arc::make_mut(&mut local_env.dims);
-    let shape = vec![rows.len() as i64, max_cols as i64];
-    dims.insert(param_name.to_string(), shape.clone());
+    dims.insert(param.name.clone(), shape.clone());
     if let Some(field) = selection_field {
-        dims.insert(format!("{param_name}.{field}"), shape);
+        dims.insert(format!("{}.{field}", param.name), shape);
     }
     Ok(true)
 }
@@ -433,14 +417,14 @@ fn copy_array_literal_input_entries<T: SimFloat>(
 }
 
 fn is_pre_like_call_name(name: &rumoca_core::Reference) -> bool {
-    let short = rumoca_core::top_level_last_segment(name.as_str());
+    let short = name.last_segment();
     short.eq_ignore_ascii_case("pre") || short.eq_ignore_ascii_case("previous")
 }
 
 fn pre_like_array_source_name<T: SimFloat>(
     arg_expr: &Expression,
     caller_env: &VarEnv<T>,
-) -> Option<String> {
+) -> Result<Option<String>, EvalError> {
     let pre_arg = match arg_expr {
         Expression::BuiltinCall {
             function: BuiltinFunction::Pre,
@@ -454,30 +438,61 @@ fn pre_like_array_source_name<T: SimFloat>(
             ..
         } if is_pre_like_call_name(name) => args.first(),
         _ => None,
-    }?;
+    };
+    let Some(pre_arg) = pre_arg else {
+        return Ok(None);
+    };
     match pre_arg {
         Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => Some(name.as_str().to_string()),
-        _ => eval_field_access_path(pre_arg, caller_env),
+        } if subscripts.is_empty() => Ok(Some(name.as_str().to_string())),
+        _ => try_eval_field_access_path(pre_arg, caller_env),
     }
 }
 
-fn lookup_pre_with_normalization<T: SimFloat>(name: &str, env: &VarEnv<T>) -> Option<T> {
+fn lookup_pre_binding<T: SimFloat>(name: &str) -> Option<T> {
     if let Some(value) = lookup_pre_value(name) {
         return Some(T::from_f64(value));
     }
-    if let Some(normalized) = normalize_var_name::<T>(name, env)
-        && let Some(value) = lookup_pre_value(normalized.as_str())
-    {
-        return Some(T::from_f64(value));
-    }
-    if let Some(base_name) = unity_subscript_base_name(name)
-        && let Some(value) = lookup_pre_value(base_name.as_str())
-    {
-        return Some(T::from_f64(value));
-    }
     None
+}
+
+fn collect_pre_array_values<T: SimFloat>(
+    source_name: &str,
+    dims: &[i64],
+) -> Result<Vec<T>, EvalError> {
+    let expected = concrete_param_size(dims).ok_or(EvalError::UnsupportedExpression {
+        kind: "pre array input shape",
+    })?;
+    let mut values = Vec::with_capacity(expected);
+    for flat_index in 0..expected {
+        let key = dae::scalar_name_text_for_flat_index(source_name, dims, flat_index);
+        let value = lookup_pre_binding::<T>(&key)
+            .or_else(|| {
+                (flat_index == 0)
+                    .then(|| lookup_pre_binding::<T>(source_name))
+                    .flatten()
+            })
+            .ok_or_else(|| EvalError::MissingBinding { name: key.clone() })?;
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn source_array_dims<T: SimFloat>(
+    param: &FunctionParam,
+    source_name: &str,
+    caller_env: &VarEnv<T>,
+) -> Result<Vec<i64>, EvalError> {
+    if let Some(dims) = caller_env.dims.get(source_name).cloned() {
+        return Ok(dims);
+    }
+    if concrete_param_size(&param.dims).is_some() {
+        return Ok(param.dims.clone());
+    }
+    Err(EvalError::UnsupportedExpression {
+        kind: "function array input argument shape",
+    })
 }
 
 fn copy_array_input_entries<T: SimFloat>(
@@ -495,77 +510,45 @@ fn copy_array_input_entries<T: SimFloat>(
     }
 
     let trace_array_bind = crate::trace::sim_or_introspect_enabled();
-    let pre_source_name = pre_like_array_source_name(arg_expr, caller_env);
+    let pre_source_name = pre_like_array_source_name(arg_expr, caller_env)?;
     let use_pre_values = pre_source_name.is_some();
-    let source_name = pre_source_name.or_else(|| match arg_expr {
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => Some(name.as_str().to_string()),
-        _ => eval_field_access_path(arg_expr, caller_env),
-    });
+    let source_name = match pre_source_name {
+        Some(source_name) => Some(source_name),
+        None => match arg_expr {
+            Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => Some(name.as_str().to_string()),
+            _ => try_eval_field_access_path(arg_expr, caller_env)?,
+        },
+    };
     let Some(source_name) = source_name else {
         return bind_evaluated_array_input(local_env, param, arg_expr, caller_env);
     };
 
-    if let Some(value) = if use_pre_values {
-        lookup_pre_with_normalization::<T>(&source_name, caller_env)
+    let dims = source_array_dims(param, &source_name, caller_env)?;
+    let values = if use_pre_values {
+        collect_pre_array_values(&source_name, &dims)?
     } else {
-        caller_env.vars.get(&source_name).copied()
-    } {
-        local_env.set(param_name, value);
-    }
-
-    let source_index_prefix = format!("{source_name}[");
-    let mut copied_entries = 0usize;
-    for (key, value) in &caller_env.vars {
-        if let Some(index_suffix) = key.strip_prefix(&source_name)
-            && index_suffix.starts_with('[')
-        {
-            let source_index_key = format!("{source_name}{index_suffix}");
-            let copied_value = if use_pre_values {
-                lookup_pre_with_normalization::<T>(&source_index_key, caller_env).unwrap_or(*value)
-            } else {
-                *value
-            };
-            local_env.set(&format!("{param_name}{index_suffix}"), copied_value);
-            copied_entries += 1;
-            continue;
-        }
-        if let Some(index_suffix) = key.strip_prefix(&source_index_prefix) {
-            let source_index_key = format!("{source_index_prefix}{index_suffix}");
-            let copied_value = if use_pre_values {
-                lookup_pre_with_normalization::<T>(&source_index_key, caller_env).unwrap_or(*value)
-            } else {
-                *value
-            };
-            local_env.set(&format!("{param_name}[{index_suffix}"), copied_value);
-            copied_entries += 1;
-        }
-    }
-
-    if let Some(dims) = caller_env.dims.get(&source_name) {
-        std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims.clone());
-    }
+        array_values_from_env_name_generic(source_name.as_str(), caller_env)?.ok_or_else(|| {
+            EvalError::MissingBinding {
+                name: source_name.clone(),
+            }
+        })?
+    };
+    validate_array_input_dims(&dims, values.len())?;
+    set_array_entries(local_env, param_name, &dims, &values);
+    std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims.clone());
 
     if trace_array_bind && source_name.contains("timeTable.table") {
-        let t11 = caller_env
-            .vars
-            .get(&format!("{}[1,1]", source_name))
-            .copied();
-        let t21 = caller_env
-            .vars
-            .get(&format!("{}[2,1]", source_name))
-            .copied();
-        let t22 = caller_env
-            .vars
-            .get(&format!("{}[2,2]", source_name))
-            .copied();
+        let t11 = env_array_sample(caller_env, &source_name, &[1, 1]);
+        let t21 = env_array_sample(caller_env, &source_name, &[2, 1]);
+        let t22 = env_array_sample(caller_env, &source_name, &[2, 2]);
         tracing::debug!(
             target: "rumoca_eval_dae::sim",
             "function array-arg bind source='{}' param='{}' copied_entries={} dims={:?} base_present={} sample_entries=[1,1]={:?} [2,1]={:?} [2,2]={:?}",
             source_name,
             param_name,
-            copied_entries,
+            values.len(),
             caller_env.dims.get(&source_name),
             caller_env.vars.contains_key(&source_name),
             t11,
@@ -576,13 +559,19 @@ fn copy_array_input_entries<T: SimFloat>(
     Ok(())
 }
 
+fn env_array_sample<T: SimFloat>(env: &VarEnv<T>, name: &str, subscripts: &[usize]) -> Option<T> {
+    env.vars
+        .get(&dae::format_subscript_key(name, subscripts))
+        .copied()
+}
+
 fn bind_evaluated_array_input<T: SimFloat>(
     local_env: &mut VarEnv<T>,
     param: &FunctionParam,
     arg_expr: &Expression,
     caller_env: &VarEnv<T>,
 ) -> Result<(), EvalError> {
-    let values = try_eval_array_like_values::<T>(arg_expr, caller_env)?;
+    let values = eval_array_like_values::<T>(arg_expr, caller_env)?;
     let Some(dims) =
         resolved_array_input_dims(param, arg_expr, caller_env, local_env, values.len())?
     else {
@@ -623,7 +612,7 @@ fn resolved_array_input_dims<T: SimFloat>(
     if concrete_param_size(&param.dims).is_some() {
         return Ok(Some(param.dims.clone()));
     }
-    if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim <= 0) {
+    if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim < 0) {
         return infer_dynamic_array_input_dims_from_declared(&param.dims, value_count).map(Some);
     }
     Ok(None)
@@ -762,7 +751,11 @@ fn infer_array_arg_dims<T: SimFloat>(
         } => {
             let cols = elements
                 .iter()
-                .map(|element| eval_array_values::<T>(element, caller_env).len())
+                .map(|element| {
+                    eval_array_values::<T>(element, caller_env).map(|values| values.len())
+                })
+                .collect::<Result<Vec<_>, EvalError>>()?
+                .into_iter()
                 .max()
                 .ok_or(EvalError::UnsupportedExpression {
                     kind: "matrix literal shape",
@@ -788,7 +781,7 @@ fn infer_array_arg_dims<T: SimFloat>(
 }
 
 fn validate_array_input_dims(dims: &[i64], value_count: usize) -> Result<(), EvalError> {
-    if dims.is_empty() || dims.iter().any(|dim| *dim <= 0) {
+    if dims.is_empty() || dims.iter().any(|dim| *dim < 0) {
         return Err(EvalError::UnsupportedExpression {
             kind: "function array input shape",
         });
@@ -813,7 +806,6 @@ fn concrete_param_size(dims: &[i64]) -> Option<usize> {
     dims.iter().try_fold(1usize, |acc, dim| {
         usize::try_from(*dim)
             .ok()
-            .filter(|dim| *dim > 0)
             .and_then(|dim| acc.checked_mul(dim))
     })
 }
@@ -830,44 +822,47 @@ fn initialize_user_function_scope_values<T: SimFloat>(
             .cloned()
             .unwrap_or_else(|| param.dims.clone());
         let Some(size) = concrete_param_size(&dims) else {
-            let val = param
-                .default
-                .as_ref()
-                .map(|default| eval_expr::<T>(default, local_env))
-                .transpose()?
-                .unwrap_or(T::zero());
-            local_env.set(&param.name, val);
+            if let Some(default) = param.default.as_ref() {
+                let val = eval_expr::<T>(default, local_env)?;
+                local_env.set(&param.name, val);
+            }
             continue;
         };
-        let values = match &param.default {
-            Some(default) => eval_shaped_array_values::<T>(default, local_env, size)?,
-            None => vec![T::zero(); size],
-        };
-        set_array_entries(local_env, &param.name, &dims, &values);
+        if let Some(default) = param.default.as_ref() {
+            let values = eval_shaped_array_values::<T>(default, local_env, size)?;
+            set_array_entries(local_env, &param.name, &dims, &values);
+        }
     }
     Ok(())
 }
 
-fn selected_output_name(selection: &OutputSelection) -> String {
+fn selected_output_name(selection: &OutputSelection) -> Result<String, EvalError> {
     if selection.indices.is_empty() {
-        return selection.output_name.clone();
+        return Ok(selection.output_name.clone());
     }
-    let joined = selection
+    let indices = selection
         .indices
         .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{}[{joined}]", selection.output_name)
+        .map(|index| {
+            usize::try_from(*index)
+                .ok()
+                .filter(|index| *index > 0)
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "invalid function output subscript",
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(dae::format_subscript_key(&selection.output_name, &indices))
 }
 
 fn requested_function_output_name(
     selection: Option<&OutputSelection>,
     outputs: &[FunctionParam],
-) -> Option<String> {
-    selection
-        .map(selected_output_name)
-        .or_else(|| outputs.first().map(|output| output.name.clone()))
+) -> Result<Option<String>, EvalError> {
+    match selection {
+        Some(selection) => selected_output_name(selection).map(Some),
+        None => Ok(outputs.first().map(|output| output.name.clone())),
+    }
 }
 
 fn function_output_cache_key(
@@ -966,12 +961,14 @@ fn trace_function_call_inputs<T: SimFloat>(
     for input in inputs {
         let name = input.name.as_str();
         let dim = local_env.dims.get(name).cloned();
-        let first = local_env.vars.get(&format!("{name}[1]")).copied();
-        let second = local_env.vars.get(&format!("{name}[2]")).copied();
-        let first_re = local_env.vars.get(&format!("{name}[1].re")).copied();
-        let second_re = local_env.vars.get(&format!("{name}[2].re")).copied();
-        let first_im = local_env.vars.get(&format!("{name}[1].im")).copied();
-        let second_im = local_env.vars.get(&format!("{name}[2].im")).copied();
+        let first = env_array_sample(local_env, name, &[1]);
+        let second = env_array_sample(local_env, name, &[2]);
+        let first_base = dae::format_subscript_key(name, &[1]);
+        let second_base = dae::format_subscript_key(name, &[2]);
+        let first_re = local_env.vars.get(&format!("{first_base}.re")).copied();
+        let second_re = local_env.vars.get(&format!("{second_base}.re")).copied();
+        let first_im = local_env.vars.get(&format!("{first_base}.im")).copied();
+        let second_im = local_env.vars.get(&format!("{second_base}.im")).copied();
         tracing::debug!(
             target: "rumoca_eval_dae::function_inputs",
             "function-call input {} dims={:?} {}[1]={:?} {}[2]={:?} {}[1].re={:?} {}[2].re={:?} {}[1].im={:?} {}[2].im={:?}",
@@ -1007,13 +1004,19 @@ fn trace_function_call_outputs<T: SimFloat>(
             target: "rumoca_eval_dae::function_match",
             "function-call output {} = {} | {}.re = {} | {}.im = {}",
             base,
-            local_env.get(base).real(),
+            trace_env_value(local_env, base),
             base,
-            local_env.get(&format!("{base}.re")).real(),
+            trace_env_value(local_env, &format!("{base}.re")),
             base,
-            local_env.get(&format!("{base}.im")).real()
+            trace_env_value(local_env, &format!("{base}.im"))
         );
     }
+}
+
+fn trace_env_value<T: SimFloat>(env: &VarEnv<T>, name: &str) -> String {
+    env.get_optional(name)
+        .map(|value| value.real().to_string())
+        .unwrap_or_else(|| "<missing>".to_string())
 }
 
 fn maybe_trace_interpolation_coefficients_state<T: SimFloat>(
@@ -1035,48 +1038,61 @@ fn maybe_trace_interpolation_coefficients_state<T: SimFloat>(
     tracing::debug!(
         target: "rumoca_eval_dae::sim",
         "getInterpolationCoefficients state: startTimeScaled={} shiftTimeScaled={} timeScaled={} last_in={} next={} nrow={} tp={} dt={} a={} b={} nextEventScaled={}",
-        local_env.get("startTimeScaled").real(),
-        local_env.get("shiftTimeScaled").real(),
-        local_env.get("timeScaled").real(),
-        local_env.get("last").real(),
-        local_env.get("next").real(),
-        local_env.get("nrow").real(),
-        local_env.get("tp").real(),
-        local_env.get("dt").real(),
-        local_env.get("a").real(),
-        local_env.get("b").real(),
-        local_env.get("nextEventScaled").real()
+        trace_env_value(local_env, "startTimeScaled"),
+        trace_env_value(local_env, "shiftTimeScaled"),
+        trace_env_value(local_env, "timeScaled"),
+        trace_env_value(local_env, "last"),
+        trace_env_value(local_env, "next"),
+        trace_env_value(local_env, "nrow"),
+        trace_env_value(local_env, "tp"),
+        trace_env_value(local_env, "dt"),
+        trace_env_value(local_env, "a"),
+        trace_env_value(local_env, "b"),
+        trace_env_value(local_env, "nextEventScaled")
     );
 }
 
-fn resolve_selection_value<T: SimFloat>(local_env: &VarEnv<T>, selection: &OutputSelection) -> T {
-    let selected_name = selected_output_name(selection);
+fn resolve_selection_value<T: SimFloat>(
+    local_env: &VarEnv<T>,
+    selection: &OutputSelection,
+) -> Result<T, EvalError> {
+    let selected_name = selected_output_name(selection)?;
     if let Some(value) = local_env.vars.get(&selected_name).copied() {
-        return value;
+        return Ok(value);
     }
-    if let Some((base_output, _)) = rumoca_core::split_first_top_level(&selection.output_name)
-        && let Some(value) = local_env.vars.get(base_output).copied()
+    if let Some(base_output) = rumoca_core::ComponentPath::from_flat_path(&selection.output_name)
+        .parts()
+        .first()
+        && let Some(value) = local_env.vars.get(base_output.as_str()).copied()
     {
         // Scalar evaluator executes user functions in selection context
         // (`*.re` / `*.im` caller names). If field materialization is absent
         // in the local env, use the base output bound in that context.
-        return value;
+        return Ok(value);
     }
-    T::zero()
+    Err(EvalError::MissingBinding {
+        name: selection.output_name.clone(),
+    })
 }
 
 fn eval_user_function_call<T: SimFloat>(
     name: &VarName,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
-    let (resolved_name, selection) = resolve_user_function_target(name.as_str(), env)?;
-    let func = resolve_user_function(resolved_name.as_str(), env)?;
+) -> Result<Option<T>, EvalError> {
+    let Some((resolved_name, selection)) = resolve_user_function_target(name.as_str(), env) else {
+        return Ok(None);
+    };
+    let func = resolve_user_function(resolved_name.as_str(), env).ok_or_else(|| {
+        EvalError::MissingFunction {
+            name: resolved_name.to_string(),
+        }
+    })?;
 
     // External/empty stubs cannot be evaluated here; allow special handlers
     // (e.g. BooleanVectors/Clock wrappers) to resolve after this path.
     if func.external.is_some() || func.body.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     // Clone function data to release borrow on env.functions
@@ -1084,15 +1100,17 @@ fn eval_user_function_call<T: SimFloat>(
     let outputs = func.outputs.clone();
     let locals = func.locals.clone();
     let body = func.body.clone();
-    if let Some(output_name) = requested_function_output_name(selection.as_ref(), &outputs) {
+    if let Some(output_name) = requested_function_output_name(selection.as_ref(), &outputs)? {
         let key = function_output_cache_key(&resolved_name, args, output_name, env);
         if let Some(value) = env.get_function_output_cache(&key) {
-            return Some(value);
+            return Ok(Some(value));
         }
     }
 
     let Some(_recursion_depth_guard) = try_enter_function_recursion_for(&env.runtime) else {
-        return Some(T::nan());
+        return Err(EvalError::UnsupportedExpression {
+            kind: "function recursion limit",
+        });
     };
 
     let trace_call = function_trace_match_enabled(name.as_str(), resolved_name.as_str());
@@ -1119,28 +1137,19 @@ fn eval_user_function_call<T: SimFloat>(
         initialize_user_function_scope_values(&mut local_env, &outputs, &locals)?;
         crate::statement::eval_statements(&body, &mut local_env)
     });
-    if let Err(err) = eval_result {
-        warn_once!(
-            env.runtime.warned_user_functions,
-            "User function '{}' failed during scalar DAE evaluation: {}",
-            resolved_name.as_str(),
-            err
-        );
-        return Some(T::nan());
-    }
+    eval_result?;
     trace_function_call_outputs(trace_call, &local_env, &outputs);
     maybe_trace_interpolation_coefficients_state(&resolved_name, &local_env, &body);
     cache_user_function_outputs(env, &resolved_name, args, &outputs, &local_env);
 
     if let Some(ref selection) = selection {
-        return Some(resolve_selection_value(&local_env, selection));
+        return Ok(Some(resolve_selection_value(&local_env, selection)?));
     }
 
-    Some(
-        outputs
-            .first()
-            .map_or_else(T::zero, |out| local_env.get(&out.name)),
-    )
+    let output = outputs.first().ok_or(EvalError::UnsupportedExpression {
+        kind: "function output",
+    })?;
+    Ok(Some(local_env.require(&output.name)?))
 }
 
 pub fn eval_user_function_output_path_pub<T: SimFloat>(
@@ -1220,11 +1229,6 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
                 name: name.to_string(),
             }
         })?;
-    if selection.is_some() {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "selected function array output",
-        });
-    }
     let func = resolve_user_function(resolved_name.as_str(), env).ok_or_else(|| {
         EvalError::MissingFunction {
             name: resolved_name.to_string(),
@@ -1240,12 +1244,7 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
     let outputs = func.outputs.clone();
     let locals = func.locals.clone();
     let body = func.body.clone();
-    let output = outputs
-        .first()
-        .ok_or(EvalError::UnsupportedExpression {
-            kind: "function array output",
-        })?
-        .clone();
+    let output = selected_array_output_param(selection.as_ref(), &outputs)?;
     let Some(_recursion_depth_guard) = try_enter_function_recursion_for(&env.runtime) else {
         return Err(EvalError::UnsupportedExpression {
             kind: "function recursion limit",
@@ -1265,13 +1264,34 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
     collect_function_array_output(&output, &local_env)
 }
 
+fn selected_array_output_param(
+    selection: Option<&OutputSelection>,
+    outputs: &[FunctionParam],
+) -> Result<FunctionParam, EvalError> {
+    match selection {
+        Some(selection) => outputs
+            .iter()
+            .find(|output| output.name == selection.output_name)
+            .cloned()
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "selected function array output",
+            }),
+        None => outputs
+            .first()
+            .cloned()
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "function array output",
+            }),
+    }
+}
+
 fn collect_function_array_output<T: SimFloat>(
     output: &FunctionParam,
     local_env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
     let declared_dims = local_env.dims.get(output.name.as_str()).cloned();
     let Some(dims) = declared_dims.filter(|dims| !dims.is_empty()) else {
-        if let Some(values) = array_values_from_env_name_generic(output.name.as_str(), local_env)
+        if let Some(values) = array_values_from_env_name_generic(output.name.as_str(), local_env)?
             && values.len() > 1
         {
             return Ok(values);
@@ -1290,7 +1310,7 @@ fn collect_function_array_output<T: SimFloat>(
         kind: "function array output shape",
     })?;
     let values =
-        array_values_from_env_name_generic(output.name.as_str(), local_env).ok_or_else(|| {
+        array_values_from_env_name_generic(output.name.as_str(), local_env)?.ok_or_else(|| {
             EvalError::MissingBinding {
                 name: output.name.clone(),
             }
@@ -1364,26 +1384,26 @@ fn copy_selected_input_start_fields<T: SimFloat>(
     Ok(())
 }
 
-fn copy_record_function_output_fields<T: SimFloat>(
+pub(in crate::eval) fn copy_record_function_output_fields<T: SimFloat>(
     local_env: &mut VarEnv<T>,
     param: &FunctionParam,
     arg_expr: &Expression,
     env: &VarEnv<T>,
-) -> Result<(), EvalError> {
+) -> Result<bool, EvalError> {
     if param.type_class != Some(rumoca_core::ClassType::Record) {
-        return Ok(());
+        return Ok(false);
     }
     let Expression::FunctionCall { name, args, .. } = arg_expr else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(function) = resolve_user_function(name.as_str(), env) else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(output) = function.outputs.first() else {
-        return Ok(());
+        return Ok(false);
     };
     if output.type_class != Some(rumoca_core::ClassType::Record) {
-        return Ok(());
+        return Ok(false);
     }
     if copy_materialized_record_function_output_fields(
         local_env,
@@ -1392,7 +1412,7 @@ fn copy_record_function_output_fields<T: SimFloat>(
         args,
         env,
     )? {
-        return Ok(());
+        return Ok(true);
     }
 
     if let Some(fields) =
@@ -1409,7 +1429,7 @@ fn copy_record_function_output_fields<T: SimFloat>(
                 env,
             )?;
         }
-        return Ok(());
+        return Ok(true);
     }
     Err(EvalError::UnsupportedExpression {
         kind: "record function output fields",
@@ -1478,26 +1498,28 @@ fn copy_materialized_record_function_output_fields<T: SimFloat>(
     Ok(copied)
 }
 
-fn maybe_bind_function_input_alias<T: SimFloat>(
+fn bind_function_input_alias<T: SimFloat>(
     local_env: &mut VarEnv<T>,
     current_function_name: &str,
     param: &FunctionParam,
     arg_expr: &Expression,
     env: &VarEnv<T>,
-) {
+) -> Result<bool, EvalError> {
     // Only function-typed inputs can be invoked as callable values.
     if !param.type_name.to_ascii_lowercase().contains("function") {
-        return;
+        return Ok(false);
     }
-    let Some(closure) = function_closure_from_arg(arg_expr, env) else {
-        return;
-    };
+    let closure =
+        function_closure_from_arg(arg_expr, env).ok_or_else(|| EvalError::MissingBinding {
+            name: param.name.clone(),
+        })?;
     local_env
         .function_closures
         .insert(param.name.clone(), closure.clone());
     local_env
         .function_closures
         .insert(format!("{current_function_name}.{}", param.name), closure);
+    Ok(true)
 }
 
 pub(super) fn function_closure_from_arg<T: SimFloat>(
@@ -1527,46 +1549,58 @@ fn eval_function_closure_call<T: SimFloat>(
     name: &VarName,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
-    let closure = resolve_function_closure(name.as_str(), env)?;
-    let target = resolve_user_function(closure.target_name.as_str(), env)?;
+) -> Result<Option<T>, EvalError> {
+    let Some(closure) = resolve_function_closure(name.as_str(), env) else {
+        return Ok(None);
+    };
+    let target = resolve_user_function(closure.target_name.as_str(), env).ok_or_else(|| {
+        EvalError::MissingFunction {
+            name: closure.target_name.to_string(),
+        }
+    })?;
     let mut merged_args = Vec::with_capacity(args.len().saturating_add(closure.bound_args.len()));
     // Modelica partial function application leaves at least one open argument
     // (e.g., `f(u)`), so runtime invocation supplies those first.
     merged_args.extend(args.iter().cloned());
     merged_args.extend(closure.bound_args.iter().cloned());
     if merged_args.len() > target.inputs.len() {
-        return None;
+        return Ok(None);
     }
     eval_user_function_call(&closure.target_name, &merged_args, env)
 }
 
-fn eval_constructor_call<T: SimFloat>(name: &VarName, args: &[Expression], env: &VarEnv<T>) -> T {
+fn eval_constructor_call<T: SimFloat>(
+    name: &VarName,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Result<T, EvalError> {
     if args.is_empty() {
-        return T::zero();
+        return Err(EvalError::UnsupportedExpression {
+            kind: "constructor arity",
+        });
     }
     if args.len() == 1 {
         if let Some(caller) = current_function_call_name(&env.runtime)
             && complex_field_selection_from_path(&caller) == Some("im")
         {
             // Constructors like Complex(1) imply zero imaginary part.
-            return T::zero();
+            return Ok(T::zero());
         }
-        return eval_expr_or_default::<T>(&args[0], env);
+        return eval_expr::<T>(&args[0], env);
     }
 
     // When constructor calls survive into scalar evaluation, prefer component
     // selection by caller suffix if available (e.g., generated `*.im` helpers).
     if let Some(caller) = current_function_call_name(&env.runtime) {
         match complex_field_selection_from_path(&caller) {
-            Some("im") => return eval_expr_or_default::<T>(&args[1], env),
-            Some("re") => return eval_expr_or_default::<T>(&args[0], env),
+            Some("im") => return eval_expr::<T>(&args[1], env),
+            Some("re") => return eval_expr::<T>(&args[0], env),
             _ => {}
         }
     }
 
     let _ = name;
-    eval_expr_or_default::<T>(&args[0], env)
+    eval_expr::<T>(&args[0], env)
 }
 
 pub(super) fn eval_function_call<T: SimFloat>(
@@ -1574,10 +1608,10 @@ pub(super) fn eval_function_call<T: SimFloat>(
     args: &[Expression],
     is_constructor: bool,
     env: &VarEnv<T>,
-) -> T {
-    let short_name = rumoca_core::top_level_last_segment(name.as_str());
-    if let Some(result) = eval_external_table_function(short_name, args, env) {
-        return result;
+) -> Result<T, EvalError> {
+    let short_name = name.last_segment();
+    if let Some(result) = eval_external_table_function(short_name, args, env)? {
+        return Ok(result);
     }
     if is_constructor {
         return eval_constructor_call(name, args, env);
@@ -1588,57 +1622,54 @@ pub(super) fn eval_function_call<T: SimFloat>(
         // so preserve constructor semantics even when `is_constructor` is lost.
         return eval_constructor_call(name, args, env);
     }
+    if let Some(result) = eval_function_closure_call(name, args, env)? {
+        return Ok(result);
+    }
+
+    if is_runtime_special_function_name(name)
+        && let Some(result) = eval_special_function_call(name, args, env)?
+    {
+        return Ok(result);
+    }
+
+    // Runtime special functions must bypass structured user-function bodies so
+    // standard library helpers like BooleanVectors.firstTrueIndex keep their
+    // declared runtime semantics on the simulation path.
+    if let Some(result) = eval_user_function_call(name, args, env)? {
+        return Ok(result);
+    }
     // Try qualified builtin resolution:
-    // "Modelica.Math.sin" → "sin" → BuiltinFunction::Sin
+    // "Modelica.Math.sin" → "sin" → BuiltinFunction::Sin. This must run
+    // after exact user-function lookup so `Pkg.vector` is not captured by the
+    // builtin `vector` operator.
     if let Some(builtin) = BuiltinFunction::from_name(short_name) {
         return eval_builtin(builtin, args, env);
     }
     if let Some(builtin) = BuiltinFunction::from_name(&short_name.to_ascii_lowercase()) {
         return eval_builtin(builtin, args, env);
     }
-
-    if let Some(result) = eval_function_closure_call(name, args, env) {
-        return result;
+    if let Some(result) = eval_special_function_call(name, args, env)? {
+        return Ok(result);
     }
+    trace_unresolved_user_function(name, env);
 
-    if is_runtime_special_function_name(name.as_str())
-        && let Some(result) = eval_special_function_call(name.as_str(), args, env)
-    {
-        return result;
-    }
-
-    // Runtime special functions must bypass structured user-function bodies so
-    // standard library helpers like BooleanVectors.firstTrueIndex keep their
-    // declared runtime semantics on the simulation path.
-    if let Some(result) = eval_user_function_call(name, args, env) {
-        return result;
-    }
-    if let Some(result) = eval_special_function_call(name.as_str(), args, env) {
-        return result;
-    }
-    trace_unresolved_user_function(name.as_str(), env);
-
-    warn_once!(
-        env.runtime.warned_user_functions,
-        "User-defined function '{}' not supported in simulation evaluator, \
-         returning NaN. Results may be incorrect.",
-        name.as_str()
-    );
-    T::nan()
+    Err(EvalError::MissingFunction {
+        name: name.to_string(),
+    })
 }
 
-fn trace_unresolved_user_function<T: SimFloat>(name: &str, env: &VarEnv<T>) {
+fn trace_unresolved_user_function<T: SimFloat>(name: &VarName, env: &VarEnv<T>) {
     if !crate::trace::sim_or_introspect_enabled() {
         return;
     }
-    let short = rumoca_core::top_level_last_segment(name);
-    let direct_hit = env.functions.contains_key(name);
+    let short = name.last_segment();
+    let direct_hit = env.functions.contains_key(name.as_str());
     let short_hits: Vec<String> = env
         .functions
-        .keys()
-        .filter(|candidate| rumoca_core::top_level_last_segment(candidate) == short)
+        .values()
+        .filter(|candidate| candidate.name.last_segment() == short)
+        .map(|candidate| candidate.name.as_str().to_string())
         .take(16)
-        .cloned()
         .collect();
     tracing::debug!(
         target: "rumoca_eval_dae::sim",
@@ -1656,7 +1687,7 @@ pub fn eval_builtin_pub<T: SimFloat>(
     function: BuiltinFunction,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> T {
+) -> Result<T, EvalError> {
     eval_builtin(function, args, env)
 }
 
@@ -1665,7 +1696,7 @@ pub fn eval_function_call_pub<T: SimFloat>(
     name: &VarName,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> T {
+) -> Result<T, EvalError> {
     eval_function_call(name, args, false, env)
 }
 
@@ -1674,7 +1705,7 @@ pub fn eval_function_call_pub_dae<T: SimFloat>(
     name: &rumoca_core::VarName,
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> T {
+) -> Result<T, EvalError> {
     let flat_name = VarName::new(name.as_str());
     let flat_args: Vec<Expression> = args.to_vec();
     eval_function_call(&flat_name, &flat_args, false, env)
@@ -1684,58 +1715,51 @@ pub fn eval_function_call_pub_dae<T: SimFloat>(
 pub fn eval_selected_function_output_pub<T: SimFloat>(
     resolved_name: &VarName,
     output_name: &str,
-    suffix: &str,
+    indices: &[i64],
     args: &[Expression],
     env: &VarEnv<T>,
-) -> T {
-    let selected = selected_function_output_name(resolved_name, output_name, suffix);
-    eval_function_call(&selected, args, false, env)
+) -> Result<T, EvalError> {
+    let selection = OutputSelection::new(output_name, indices);
+    if let Some(value) =
+        eval_selected_runtime_special_function(resolved_name.as_str(), &selection, args, env)?
+    {
+        return Ok(value);
+    }
+    let (_, _, local_env) = eval_user_function_local_env(resolved_name, args, env)?;
+    resolve_selection_value(&local_env, &selection)
 }
 
 /// DAE-IR wrapper for `eval_selected_function_output_pub`.
 pub fn eval_selected_function_output_pub_dae<T: SimFloat>(
     resolved_name: &rumoca_core::VarName,
     output_name: &str,
-    suffix: &str,
+    indices: &[i64],
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> T {
+) -> Result<T, EvalError> {
     let flat_name = VarName::new(resolved_name.as_str());
     let flat_args: Vec<Expression> = args.to_vec();
-    eval_selected_function_output_pub(&flat_name, output_name, suffix, &flat_args, env)
-}
-
-pub(super) fn eval_if<T: SimFloat>(
-    branches: &[(Expression, Expression)],
-    else_branch: &Expression,
-    env: &VarEnv<T>,
-) -> T {
-    for (cond, then_expr) in branches {
-        if crate::eval::eval_condition_truth(cond, env) {
-            return eval_expr_or_default::<T>(then_expr, env);
-        }
-    }
-    eval_expr_or_default::<T>(else_branch, env)
+    eval_selected_function_output_pub(&flat_name, output_name, indices, &flat_args, env)
 }
 
 /// Evaluate a condition expression as a smooth zero-crossing function for root finding (f64-only).
-pub fn eval_condition_as_root(expr: &Expression, env: &VarEnv<f64>) -> f64 {
+pub fn eval_condition_as_root(expr: &Expression, env: &VarEnv<f64>) -> Result<f64, EvalError> {
     match expr {
         Expression::Binary { op, lhs, rhs, .. } => {
-            let l = eval_expr_or_default::<f64>(lhs, env);
-            let r = eval_expr_or_default::<f64>(rhs, env);
+            let l = eval_expr::<f64>(lhs, env)?;
+            let r = eval_expr::<f64>(rhs, env)?;
             match op {
-                OpBinary::Lt | OpBinary::Le => l - r,
-                OpBinary::Gt | OpBinary::Ge => r - l,
+                OpBinary::Lt | OpBinary::Le => Ok(l - r),
+                OpBinary::Gt | OpBinary::Ge => Ok(r - l),
                 _ => {
-                    let val = eval_expr_or_default::<f64>(expr, env);
-                    if val.to_bool() { -1.0 } else { 1.0 }
+                    let val = eval_expr::<f64>(expr, env)?;
+                    Ok(if val.to_bool() { -1.0 } else { 1.0 })
                 }
             }
         }
         _ => {
-            let val = eval_expr_or_default::<f64>(expr, env);
-            if val.to_bool() { -1.0 } else { 1.0 }
+            let val = eval_expr::<f64>(expr, env)?;
+            Ok(if val.to_bool() { -1.0 } else { 1.0 })
         }
     }
 }

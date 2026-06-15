@@ -1,8 +1,11 @@
 use indexmap::IndexMap;
-use rumoca_core::{ComponentPath, Span};
+use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 
-use rumoca_ir_solve::{IndexedScalarSlot, ScalarSlot, VarLayout, scalar_slot_p, scalar_slot_y};
+use crate::lower::LowerError;
+use rumoca_ir_solve::{
+    ComponentReferenceKey, IndexedScalarSlot, ScalarSlot, VarLayout, scalar_slot_p, scalar_slot_y,
+};
 
 pub(crate) const INITIAL_EVENT_PARAMETER_NAME: &str = "__rumoca.initial_event";
 
@@ -12,14 +15,18 @@ enum SlotStorage {
     P,
 }
 
-pub fn build_var_layout(dae_model: &dae::Dae) -> VarLayout {
+pub fn build_var_layout(dae_model: &dae::Dae) -> Result<VarLayout, LowerError> {
     build_var_layout_with_solver_len(dae_model, usize::MAX)
 }
 
-pub fn build_var_layout_with_solver_len(dae_model: &dae::Dae, solver_len: usize) -> VarLayout {
+pub fn build_var_layout_with_solver_len(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+) -> Result<VarLayout, LowerError> {
     let mut bindings = IndexMap::new();
     let mut shapes = IndexMap::new();
     let mut shape_spans = IndexMap::new();
+    let mut shape_indexed_keys = IndexMap::new();
     let mut indexed_bindings = IndexMap::new();
     bindings.insert("time".to_string(), ScalarSlot::Time);
 
@@ -28,18 +35,20 @@ pub fn build_var_layout_with_solver_len(dae_model: &dae::Dae, solver_len: usize)
         &mut bindings,
         &mut shapes,
         &mut shape_spans,
+        &mut shape_indexed_keys,
         &mut indexed_bindings,
         solver_len,
-    );
+    )?;
     let mut p_scalars = map_p_bindings(
         dae_model,
         LayoutBindingMaps {
             bindings: &mut bindings,
             shapes: &mut shapes,
             shape_spans: &mut shape_spans,
+            shape_indexed_keys: &mut shape_indexed_keys,
             indexed_bindings: &mut indexed_bindings,
         },
-    );
+    )?;
     bindings.insert(
         INITIAL_EVENT_PARAMETER_NAME.to_string(),
         scalar_slot_p(p_scalars),
@@ -48,21 +57,28 @@ pub fn build_var_layout_with_solver_len(dae_model: &dae::Dae, solver_len: usize)
     map_enum_literal_bindings(dae_model, &mut bindings);
     map_constant_bindings(
         dae_model,
-        &mut bindings,
-        &mut shapes,
-        &mut shape_spans,
-        &mut indexed_bindings,
-    );
-    insert_nested_scalar_index_aliases(&bindings, &mut indexed_bindings);
+        LayoutBindingMaps {
+            bindings: &mut bindings,
+            shapes: &mut shapes,
+            shape_spans: &mut shape_spans,
+            shape_indexed_keys: &mut shape_indexed_keys,
+            indexed_bindings: &mut indexed_bindings,
+        },
+    )?;
 
-    VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
+    VarLayout::try_from_parts_with_shapes_spans_keys_and_indexed_bindings(
         bindings,
         shapes,
         shape_spans,
+        shape_indexed_keys,
         indexed_bindings,
         y_scalars,
         p_scalars,
     )
+    .map_err(|err| LowerError::ContractViolation {
+        reason: format!("invalid solve variable layout contract: {err:?}"),
+        span: err.span(),
+    })
 }
 
 fn map_y_bindings(
@@ -70,9 +86,10 @@ fn map_y_bindings(
     bindings: &mut IndexMap<String, ScalarSlot>,
     shapes: &mut IndexMap<String, Vec<usize>>,
     shape_spans: &mut IndexMap<String, Span>,
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
+    shape_indexed_keys: &mut IndexMap<String, ComponentReferenceKey>,
+    indexed_bindings: &mut IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
     solver_len: usize,
-) -> usize {
+) -> Result<usize, LowerError> {
     let mut offset = 0usize;
     for (name, var) in dae_model
         .variables
@@ -87,12 +104,14 @@ fn map_y_bindings(
         if offset >= solver_len {
             break;
         }
-        let visible_size = var.size().min(solver_len - offset);
+        let size = variable_size(name.as_str(), var)?;
+        let visible_size = size.min(solver_len - offset);
         offset += insert_var_bindings_limited(
             LayoutBindingMaps {
                 bindings: &mut *bindings,
                 shapes: &mut *shapes,
                 shape_spans: &mut *shape_spans,
+                shape_indexed_keys: &mut *shape_indexed_keys,
                 indexed_bindings: &mut *indexed_bindings,
             },
             name.as_str(),
@@ -100,12 +119,12 @@ fn map_y_bindings(
             SlotStorage::Y,
             offset,
             visible_size,
-        );
-        if visible_size < var.size() {
+        )?;
+        if visible_size < size {
             break;
         }
     }
-    offset
+    Ok(offset)
 }
 
 pub(crate) fn is_runtime_parameter_tail_variable(
@@ -118,7 +137,10 @@ pub(crate) fn is_runtime_parameter_tail_variable(
         || dae_model.variables.discrete_valued.contains_key(name)
 }
 
-fn map_p_bindings(dae_model: &dae::Dae, mut maps: LayoutBindingMaps<'_>) -> usize {
+fn map_p_bindings(
+    dae_model: &dae::Dae,
+    mut maps: LayoutBindingMaps<'_>,
+) -> Result<usize, LowerError> {
     let mut offset = 0usize;
     for (name, var) in dae_model
         .variables
@@ -128,16 +150,26 @@ fn map_p_bindings(dae_model: &dae::Dae, mut maps: LayoutBindingMaps<'_>) -> usiz
         .chain(dae_model.variables.discrete_reals.iter())
         .chain(dae_model.variables.discrete_valued.iter())
     {
-        offset += insert_var_bindings(maps.reborrow(), name.as_str(), var, SlotStorage::P, offset);
+        offset += insert_var_bindings(maps.reborrow(), name.as_str(), var, SlotStorage::P, offset)?;
     }
-    offset
+    Ok(offset)
 }
 
 struct LayoutBindingMaps<'a> {
     bindings: &'a mut IndexMap<String, ScalarSlot>,
     shapes: &'a mut IndexMap<String, Vec<usize>>,
     shape_spans: &'a mut IndexMap<String, Span>,
-    indexed_bindings: &'a mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
+    shape_indexed_keys: &'a mut IndexMap<String, ComponentReferenceKey>,
+    indexed_bindings: &'a mut IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
+}
+
+struct ArraySlotBinding<'a> {
+    name: &'a str,
+    component_key: ComponentReferenceKey,
+    dims: &'a [i64],
+    size: usize,
+    storage: SlotStorage,
+    start_index: usize,
 }
 
 impl<'a> LayoutBindingMaps<'a> {
@@ -146,6 +178,7 @@ impl<'a> LayoutBindingMaps<'a> {
             bindings: self.bindings,
             shapes: self.shapes,
             shape_spans: self.shape_spans,
+            shape_indexed_keys: self.shape_indexed_keys,
             indexed_bindings: self.indexed_bindings,
         }
     }
@@ -153,22 +186,17 @@ impl<'a> LayoutBindingMaps<'a> {
 
 fn map_constant_bindings(
     dae_model: &dae::Dae,
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    shapes: &mut IndexMap<String, Vec<usize>>,
-    shape_spans: &mut IndexMap<String, Span>,
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
-) {
+    mut maps: LayoutBindingMaps<'_>,
+) -> Result<(), LowerError> {
     for (name, var) in &dae_model.variables.constants {
         insert_constant_bindings(
-            bindings,
-            shapes,
-            shape_spans,
-            indexed_bindings,
+            maps.reborrow(),
             name.as_str(),
             var,
             &dae_model.symbols.enum_literal_ordinals,
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn map_enum_literal_bindings(dae_model: &dae::Dae, bindings: &mut IndexMap<String, ScalarSlot>) {
@@ -183,29 +211,32 @@ fn insert_var_bindings(
     var: &dae::Variable,
     storage: SlotStorage,
     start_index: usize,
-) -> usize {
-    let size = var.size();
+) -> Result<usize, LowerError> {
+    let size = variable_size(name, var)?;
+    insert_var_shape(maps.shapes, maps.shape_spans, name, var)?;
     if size == 0 {
-        return 0;
+        return Ok(0);
     }
-    insert_var_shape(maps.shapes, maps.shape_spans, name, var);
 
     if size <= 1 && var.dims.is_empty() {
         let slot = scalar_slot(storage, start_index);
         maps.bindings.insert(name.to_string(), slot);
-        return 1;
+        return Ok(1);
     }
 
+    let component_key = variable_component_key(name, var)?;
     insert_array_slot_bindings(
-        maps.bindings,
-        maps.indexed_bindings,
-        name,
-        &var.dims,
-        size,
-        storage,
-        start_index,
+        maps,
+        ArraySlotBinding {
+            name,
+            component_key,
+            dims: &var.dims,
+            size,
+            storage,
+            start_index,
+        },
     );
-    size
+    Ok(size)
 }
 
 fn insert_var_bindings_limited(
@@ -215,106 +246,105 @@ fn insert_var_bindings_limited(
     storage: SlotStorage,
     start_index: usize,
     visible_size: usize,
-) -> usize {
-    let size = var.size();
-    if size == 0 || visible_size == 0 {
-        return 0;
-    }
+) -> Result<usize, LowerError> {
+    let size = variable_size(name, var)?;
     if visible_size == size {
-        insert_var_shape(maps.shapes, maps.shape_spans, name, var);
+        insert_var_shape(maps.shapes, maps.shape_spans, name, var)?;
+    }
+    if size == 0 || visible_size == 0 {
+        return Ok(0);
     }
 
     if size <= 1 && var.dims.is_empty() {
         let slot = scalar_slot(storage, start_index);
         maps.bindings.insert(name.to_string(), slot);
-        return 1;
+        return Ok(1);
     }
 
+    let component_key = variable_component_key(name, var)?;
     insert_array_slot_bindings(
-        maps.bindings,
-        maps.indexed_bindings,
-        name,
-        &var.dims,
-        visible_size,
-        storage,
-        start_index,
+        maps,
+        ArraySlotBinding {
+            name,
+            component_key,
+            dims: &var.dims,
+            size: visible_size,
+            storage,
+            start_index,
+        },
     );
-    visible_size
+    Ok(visible_size)
 }
 
 fn insert_constant_bindings(
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    shapes: &mut IndexMap<String, Vec<usize>>,
-    shape_spans: &mut IndexMap<String, Span>,
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
+    maps: LayoutBindingMaps<'_>,
     name: &str,
     var: &dae::Variable,
     enum_literal_ordinals: &IndexMap<String, i64>,
-) {
+) -> Result<(), LowerError> {
     let Some(start) = var.start.as_ref() else {
-        return;
+        return Ok(());
     };
     let Some(raw_values) = eval_const_values(start, enum_literal_ordinals) else {
-        return;
+        return Ok(());
     };
 
-    let size = var.size();
+    let size = variable_size(name, var)?;
+    insert_var_shape(maps.shapes, maps.shape_spans, name, var)?;
     if size == 0 {
-        return;
+        return Ok(());
     }
-    insert_var_shape(shapes, shape_spans, name, var);
     let values = expand_values_to_size(raw_values, size);
 
     if size <= 1 && var.dims.is_empty() {
         let slot = ScalarSlot::Constant(values[0]);
-        bindings.insert(name.to_string(), slot);
-        return;
+        maps.bindings.insert(name.to_string(), slot);
+        return Ok(());
     }
 
-    insert_array_constant_bindings(bindings, indexed_bindings, name, &var.dims, &values);
+    let component_key = variable_component_key(name, var)?;
+    maps.shape_indexed_keys
+        .insert(name.to_string(), component_key.clone());
+    insert_array_constant_bindings(
+        maps.bindings,
+        maps.indexed_bindings,
+        name,
+        component_key,
+        &var.dims,
+        &values,
+    );
+    Ok(())
 }
 
-fn insert_array_slot_bindings(
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
-    name: &str,
-    dims: &[i64],
-    size: usize,
-    storage: SlotStorage,
-    start_index: usize,
-) {
-    bindings.insert(name.to_string(), scalar_slot(storage, start_index));
-    let mut indexed = Vec::with_capacity(size);
-    for flat_index in 0..size {
-        let scalar_index = start_index + flat_index;
-        if let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) {
+fn insert_array_slot_bindings(maps: LayoutBindingMaps<'_>, binding: ArraySlotBinding<'_>) {
+    maps.bindings.insert(
+        binding.name.to_string(),
+        scalar_slot(binding.storage, binding.start_index),
+    );
+    let mut indexed = Vec::with_capacity(binding.size);
+    for flat_index in 0..binding.size {
+        let scalar_index = binding.start_index + flat_index;
+        if let Some(indices) = dae::flat_index_to_subscripts(binding.dims, flat_index) {
             indexed.push(IndexedScalarSlot {
                 indices: indices.clone(),
-                slot: scalar_slot(storage, scalar_index),
+                slot: scalar_slot(binding.storage, scalar_index),
             });
         }
-        bindings.insert(
-            format!("{name}[{}]", flat_index + 1),
-            scalar_slot(storage, scalar_index),
+        maps.bindings.insert(
+            dae::scalar_name_text_for_flat_index(binding.name, binding.dims, flat_index),
+            scalar_slot(binding.storage, scalar_index),
         );
-        if let Some(subs) = dae::flat_index_to_subscripts(dims, flat_index)
-            && subs.len() > 1
-        {
-            bindings.insert(
-                dae::format_subscript_key(name, &subs),
-                scalar_slot(storage, scalar_index),
-            );
-        }
     }
     if !indexed.is_empty() {
-        indexed_bindings.insert(ComponentPath::from_flat_path(name), indexed);
+        maps.indexed_bindings.insert(binding.component_key, indexed);
     }
 }
 
 fn insert_array_constant_bindings(
     bindings: &mut IndexMap<String, ScalarSlot>,
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
+    indexed_bindings: &mut IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
     name: &str,
+    component_key: ComponentReferenceKey,
     dims: &[i64],
     values: &[f64],
 ) {
@@ -331,74 +361,53 @@ fn insert_array_constant_bindings(
             });
         }
         bindings.insert(
-            format!("{name}[{}]", flat_index + 1),
+            dae::scalar_name_text_for_flat_index(name, dims, flat_index),
             ScalarSlot::Constant(value),
         );
-        if let Some(subs) = dae::flat_index_to_subscripts(dims, flat_index)
-            && subs.len() > 1
-        {
-            bindings.insert(
-                dae::format_subscript_key(name, &subs),
-                ScalarSlot::Constant(value),
-            );
-        }
     }
     if !indexed.is_empty() {
-        indexed_bindings.insert(ComponentPath::from_flat_path(name), indexed);
+        indexed_bindings.insert(component_key, indexed);
     }
 }
 
-fn insert_nested_scalar_index_aliases(
-    bindings: &IndexMap<String, ScalarSlot>,
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<IndexedScalarSlot>>,
-) {
-    for (name, slot) in bindings {
-        for (alias_key, indices) in nested_scalar_index_aliases(name) {
-            let entries = indexed_bindings
-                .entry(ComponentPath::from_flat_path(&alias_key))
-                .or_default();
-            if entries
-                .iter()
-                .any(|entry| entry.indices == indices && entry.slot == *slot)
-            {
-                continue;
-            }
-            entries.push(IndexedScalarSlot {
-                indices,
-                slot: *slot,
-            });
+fn variable_component_key(
+    name: &str,
+    var: &dae::Variable,
+) -> Result<ComponentReferenceKey, LowerError> {
+    // Generated DAE variables (event conditions, `__pre__` parameters) carry
+    // explicit compiler identity; their structured reference exists for
+    // provenance, not for source-layout keying.
+    if source_free_layout_name(name, var) {
+        return Ok(ComponentReferenceKey::generated(name));
+    }
+    if let Some(component_ref) = var.component_ref.as_ref() {
+        #[cfg(test)]
+        if let Some(key) = crate::test_support::fixture_key_for_component_ref(component_ref, name) {
+            return Ok(key);
         }
-    }
-}
-
-fn nested_scalar_index_aliases(name: &str) -> Vec<(String, Vec<usize>)> {
-    let mut aliases = Vec::new();
-    let mut search_start = 0usize;
-    while let Some(open_rel) = name[search_start..].find('[') {
-        let open = search_start + open_rel;
-        let Some(close_rel) = name[open..].find(']') else {
-            break;
-        };
-        let close = open + close_rel;
-        if let Some(indices) = parse_positive_indices(&name[open + 1..close]) {
-            let mut alias = String::with_capacity(name.len() - (close - open + 1));
-            alias.push_str(&name[..open]);
-            alias.push_str(&name[close + 1..]);
-            if alias != name && !alias.is_empty() {
-                aliases.push((alias, indices));
+        return ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
+            LowerError::ContractViolation {
+                reason: format!(
+                    "array variable `{name}` has non-static structured component reference"
+                ),
+                span: err.span,
             }
-        }
-        search_start = close + 1;
+        });
     }
-    aliases
+    #[cfg(test)]
+    if let Some(key) = crate::test_support::fixture_key_for_variable(name, var) {
+        return Ok(key);
+    }
+    Err(LowerError::ContractViolation {
+        reason: format!("array variable `{name}` is missing structured component reference"),
+        span: var.source_span,
+    })
 }
 
-fn parse_positive_indices(raw: &str) -> Option<Vec<usize>> {
-    let indices = raw
-        .split(',')
-        .map(|part| part.trim().parse::<usize>().ok().filter(|value| *value > 0))
-        .collect::<Option<Vec<_>>>()?;
-    (!indices.is_empty()).then_some(indices)
+fn source_free_layout_name(_name: &str, var: &dae::Variable) -> bool {
+    // `ComponentReference` is required for source Modelica variables.
+    // Generated DAE variables have explicit compiler identity instead.
+    var.origin == dae::VariableOrigin::Generated
 }
 
 fn insert_var_shape(
@@ -406,20 +415,32 @@ fn insert_var_shape(
     shape_spans: &mut IndexMap<String, Span>,
     name: &str,
     var: &dae::Variable,
-) {
+) -> Result<(), LowerError> {
     if var.dims.is_empty() {
-        return;
+        return Ok(());
     }
     let dims = var
         .dims
         .iter()
         .map(|dim| usize::try_from(*dim).ok())
         .collect::<Option<Vec<_>>>();
-    if let Some(dims) = dims
-        && dims.iter().all(|dim| *dim > 0)
-    {
-        shapes.insert(name.to_string(), dims);
-        shape_spans.insert(name.to_string(), var.source_span);
+    let Some(dims) = dims else {
+        return Err(invalid_variable_shape(name, var));
+    };
+    shapes.insert(name.to_string(), dims);
+    shape_spans.insert(name.to_string(), var.source_span);
+    Ok(())
+}
+
+fn variable_size(name: &str, var: &dae::Variable) -> Result<usize, LowerError> {
+    var.try_size()
+        .map_err(|_| invalid_variable_shape(name, var))
+}
+
+fn invalid_variable_shape(name: &str, var: &dae::Variable) -> LowerError {
+    LowerError::ContractViolation {
+        reason: format!("invalid DAE dimensions {:?} for `{}`", var.dims, name),
+        span: var.source_span,
     }
 }
 
@@ -618,7 +639,7 @@ fn lookup_enum_literal_ordinal(raw: &str, ordinals: &IndexMap<String, i64>) -> O
 }
 
 fn alternate_enum_literal_key(raw: &str) -> Option<String> {
-    let (prefix, literal) = rumoca_core::split_last_top_level(raw)?;
+    let (prefix, literal) = crate::path_utils::scope_split(raw)?;
     if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
         return Some(format!("{prefix}.{}", &literal[1..literal.len() - 1]));
     }
@@ -684,34 +705,94 @@ mod tests {
     }
 
     #[test]
-    fn nested_scalar_index_aliases_expose_connector_array_field_base() {
-        let aliases = nested_scalar_index_aliases("iOn[1].inPort[2].set");
-        assert!(aliases.contains(&("iOn.inPort[2].set".to_string(), vec![1])));
-        assert!(aliases.contains(&("iOn[1].inPort.set".to_string(), vec![2])));
+    fn build_var_layout_indexes_arrays_by_component_reference() {
+        let component_ref = rumoca_core::ComponentReference {
+            local: false,
+            span: Span::DUMMY,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "plant".to_string(),
+                    span: Span::DUMMY,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "motor".to_string(),
+                    span: Span::DUMMY,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "tau".to_string(),
+                    span: Span::DUMMY,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(rumoca_core::DefId::new(42)),
+        };
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("flat_display_is_not_authoritative"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("flat_display_is_not_authoritative"),
+                component_ref: Some(component_ref.clone()),
+                dims: vec![2],
+                ..Default::default()
+            },
+        );
+
+        let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+        let component_key =
+            ComponentReferenceKey::from_component_reference(&component_ref).unwrap();
+        let display_key = ComponentReferenceKey::generated("flat_display_is_not_authoritative");
+
+        assert_eq!(layout.indexed_bindings()[&component_key].len(), 2);
+        assert!(!layout.indexed_bindings().contains_key(&display_key));
     }
 
     #[test]
-    fn insert_nested_scalar_index_aliases_maps_existing_slots() {
-        let mut bindings = IndexMap::new();
-        bindings.insert("iOn[1].inPort[1].set".to_string(), scalar_slot_p(10));
-        bindings.insert("iOn[1].inPort[2].set".to_string(), scalar_slot_p(11));
-        let mut indexed_bindings = IndexMap::new();
-
-        insert_nested_scalar_index_aliases(&bindings, &mut indexed_bindings);
-
-        let entries = indexed_bindings
-            .get(&ComponentPath::from_flat_path("iOn[1].inPort.set"))
-            .expect("connector array field alias should exist");
-        assert_eq!(entries.len(), 2);
-        assert!(
-            entries
-                .iter()
-                .any(|entry| { entry.indices == vec![1] && entry.slot == scalar_slot_p(10) })
+    fn build_var_layout_rejects_source_array_without_component_reference() {
+        let span = Span::from_offsets(rumoca_core::SourceId(17), 3, 8);
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("a"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("a"),
+                source_span: span,
+                dims: vec![2],
+                ..Default::default()
+            },
         );
+
+        let err = build_var_layout(&dae_model)
+            .expect_err("source arrays must carry structured component references");
+
+        assert_eq!(err.source_span(), Some(span));
         assert!(
-            entries
-                .iter()
-                .any(|entry| { entry.indices == vec![2] && entry.slot == scalar_slot_p(11) })
+            err.reason()
+                .contains("array variable `a` is missing structured component reference"),
+            "{err:?}"
         );
+    }
+
+    #[test]
+    fn build_var_layout_preserves_zero_size_array_shape_without_scalar_slot() {
+        let span = Span::from_offsets(rumoca_core::SourceId(18), 5, 11);
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("empty"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("empty"),
+                source_span: span,
+                dims: vec![0],
+                ..Default::default()
+            },
+        );
+
+        let layout = build_var_layout(&dae_model).expect("zero-size array layout should build");
+
+        assert_eq!(layout.shape("empty"), Some([0].as_slice()));
+        assert_eq!(layout.shape_span("empty"), Some(span));
+        assert_eq!(layout.binding("empty"), None);
+        assert!(layout.indexed_bindings().is_empty());
+        assert_eq!(layout.y_scalars(), 0);
     }
 }

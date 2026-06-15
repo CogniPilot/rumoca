@@ -4,7 +4,7 @@
 //! ensuring inheritance edges are complete before nested class resolution.
 
 use crate::Resolver;
-use rumoca_core::{ComponentPath, DefId, ScopeId, parent_scope};
+use rumoca_core::{ComponentPath, DefId, ScopeId};
 use rumoca_core::{Diagnostic, PrimaryLabel};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -224,7 +224,7 @@ impl Resolver {
 
                 // Normal lookup failed - try inherited member lookup for simple names
                 if let Some(inherited_def_id) =
-                    self.try_inherited_member_lookup(base_name, class_name)
+                    self.try_inherited_member_lookup(base_name, current_class_def_id)
                 {
                     self.record_extends_result(
                         extend,
@@ -263,7 +263,7 @@ impl Resolver {
     fn try_inherited_member_lookup(
         &self,
         base_name: &rumoca_ir_ast::Name,
-        class_name: &str,
+        current_class_def_id: DefId,
     ) -> Option<DefId> {
         // Only applies to simple (single-part) names
         if base_name.name.len() != 1 {
@@ -272,8 +272,11 @@ impl Resolver {
 
         let member_name = &base_name.name[0].text;
 
-        // Get the containing class's qualified name (parent of current class)
-        let container_name = parent_scope(class_name)?;
+        // The containing class, found through the scope tree rather than by
+        // re-parsing the qualified name.
+        let class_scope = *self.class_def_scopes.get(&current_class_def_id)?;
+        let enclosing_scope = self.scope_tree.parent(class_scope)?;
+        let container_name = self.enclosing_class_names_from(enclosing_scope).next()?;
 
         self.lookup_inherited_member(container_name, member_name)
     }

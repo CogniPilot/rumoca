@@ -253,6 +253,22 @@ fn eval_param_ref(
         );
     }
 
+    // MLS §5.3.2: qualified references to class-level constants
+    // (`P.pT_explicit`) resolve through the class tree.
+    if let Some(binding) = resolve_class_constant_binding(comp_ref, tree) {
+        if let Some(val) = expr_to_bool(&binding) {
+            return Some(val);
+        }
+        return evaluate_component_condition_with_depth(
+            &binding,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            depth + 1,
+        );
+    }
+
     None
 }
 
@@ -574,7 +590,8 @@ fn get_enum_value_with_depth(
 }
 
 fn parent_dotted_scope(path: &str) -> Option<String> {
-    rumoca_core::parent_scope(path).map(str::to_string)
+    let enclosing = rumoca_core::ComponentPath::from_flat_path(path).parent()?;
+    (!enclosing.is_root()).then(|| enclosing.to_flat_string())
 }
 
 fn eval_if_enum_value(
@@ -640,6 +657,37 @@ fn resolve_component_ref_expr(
             )?;
             Some((scoped_expr, Some(prefix.to_string())))
         })
+        .or_else(|| resolve_class_constant_binding(comp_ref, tree).map(|expr| (expr, None)))
+}
+
+/// Resolve a qualified reference like `P.pT_explicit` to the binding of a
+/// class-level constant. Enclosing-scope constants are qualified to their
+/// declaring class by the package-constant alias pass (MLS §5.3.2), so this
+/// is the evaluation counterpart of that lexical lookup.
+fn resolve_class_constant_binding(
+    comp_ref: &ast::ComponentReference,
+    tree: &ast::ClassTree,
+) -> Option<ast::Expression> {
+    if comp_ref.parts.len() < 2
+        || comp_ref
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return None;
+    }
+    let member = comp_ref.parts.last()?.ident.text.as_ref();
+    let class_path = comp_ref.parts[..comp_ref.parts.len() - 1]
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    let class = tree.get_class_by_qualified_name(&class_path)?;
+    let component = class.components.get(member)?;
+    if !matches!(component.variability, rumoca_core::Variability::Constant(_)) {
+        return None;
+    }
+    component.binding.clone()
 }
 
 fn candidate_paths_for_ref(
@@ -842,12 +890,11 @@ fn resolve_component_ref_from_record_defaults(
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
 ) -> Option<ast::Expression> {
-    let dotted = component_ref_to_dotted_no_subscripts(comp_ref)?;
-    if !rumoca_core::has_top_level_dot(&dotted) {
+    if comp_ref.parts.len() < 2 || comp_ref.parts.iter().any(|part| part.subs.is_some()) {
         return None;
     }
-    let mut parts = rumoca_core::split_path_with_indices(&dotted).into_iter();
-    let first = parts.next()?;
+    let mut parts = comp_ref.parts.iter().map(|part| part.ident.text.as_ref());
+    let first: &str = parts.next()?;
     let mut current = effective_components.get(first)?;
     let mut expr = None;
 
@@ -1689,8 +1736,9 @@ pub(super) use component_params::{
     enclosing_scope_candidates,
 };
 pub use component_params::{
-    expr_to_string, extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,
-    parse_state_select, propagate_record_alias_integer_params, try_eval_string_expr,
+    eval_state_select_expr, expr_to_string, extract_binding, extract_bool_params_with_mods,
+    extract_int_params_with_mods, parse_state_select, propagate_record_alias_integer_params,
+    try_eval_string_expr,
 };
 pub use function_eval::{
     evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,

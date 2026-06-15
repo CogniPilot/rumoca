@@ -22,62 +22,6 @@ pub struct FunctionValidationError {
     pub reason: String,
 }
 
-fn external_function_unsupported_reason(func: &rumoca_core::Function) -> String {
-    let Some(external) = func.external.as_ref() else {
-        return "function is not external".to_string();
-    };
-    let symbol = external
-        .function_name
-        .as_deref()
-        .unwrap_or_else(|| func.name.as_str());
-    let output = external
-        .output_name
-        .as_deref()
-        .map(|name| format!(" output={name}"))
-        .unwrap_or_default();
-    let args = if external.arg_names.is_empty() {
-        "args=[]".to_string()
-    } else {
-        format!("args=[{}]", external.arg_names.join(", "))
-    };
-    let libraries = if external.libraries.is_empty() {
-        "libraries=[]".to_string()
-    } else {
-        format!("libraries=[{}]", external.libraries.join(", "))
-    };
-    let include_directories = if external.include_directories.is_empty() {
-        "include_directories=[]".to_string()
-    } else {
-        format!(
-            "include_directories=[{}]",
-            external.include_directories.join(", ")
-        )
-    };
-    let library_directories = if external.library_directories.is_empty() {
-        "library_directories=[]".to_string()
-    } else {
-        format!(
-            "library_directories=[{}]",
-            external.library_directories.join(", ")
-        )
-    };
-    format!(
-        "external function is not supported by this simulator: language={} symbol={}{} {} {} {} {}; runtime linker and native library packaging are required",
-        external.language,
-        symbol,
-        output,
-        args,
-        libraries,
-        include_directories,
-        library_directories
-    )
-}
-
-fn external_function_codegen_opt_in_enabled(func: &rumoca_core::Function) -> bool {
-    let _ = func;
-    false
-}
-
 fn resolve_dae_function_by_key<'a>(
     dae: &'a Dae,
     requested: &str,
@@ -118,24 +62,19 @@ fn resolve_dae_function_by_key<'a>(
             return true;
         }
 
-        if output.dims.iter().any(|dim| *dim <= 0) {
+        if output.dims.iter().any(|dim| *dim < 0)
+            || (!output.shape_expr.is_empty() && output.dims.iter().any(|dim| *dim <= 0))
+        {
             return true;
         }
 
-        let total = output
-            .dims
-            .iter()
-            .try_fold(1usize, |acc, dim| {
-                if *dim <= 0 {
-                    None
-                } else {
-                    acc.checked_mul(*dim as usize)
-                }
-            })
-            .unwrap_or(0);
-        if total == 0 {
+        let Some(total) = output.dims.iter().try_fold(1usize, |acc, dim| {
+            usize::try_from(*dim)
+                .ok()
+                .and_then(|dim| acc.checked_mul(dim))
+        }) else {
             return false;
-        }
+        };
 
         if indices.len() == 1 {
             let idx = indices[0];
@@ -149,7 +88,7 @@ fn resolve_dae_function_by_key<'a>(
         indices
             .iter()
             .zip(output.dims.iter())
-            .all(|(idx, dim)| *dim > 0 && *idx >= 1 && *idx <= *dim as usize)
+            .all(|(idx, dim)| *dim >= 0 && *idx >= 1 && *idx <= *dim as usize)
     }
 
     rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
@@ -178,34 +117,13 @@ fn resolve_dae_component_function<'a>(
     resolve_dae_function_by_key(dae, name.as_str())
 }
 
-fn short_function_name(name: &str) -> &str {
-    rumoca_core::top_level_last_segment(name)
-}
-
-fn component_function_short_name(comp: &ComponentReference) -> &str {
-    comp.last_ident().unwrap_or_default()
-}
-
 fn is_runtime_intrinsic_short_name(short: &str) -> bool {
-    if short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
-        return true;
-    }
-    matches!(
-        short,
-        "assert"
-            | "terminate"
-            | "cardinality"
-            | "String"
-            | "array"
-            | "getInstanceName"
-            | "fullPathName"
-            | "loadResource"
-            | "isValidTable"
-    )
+    short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+        || eval::is_runtime_special_function_short_name(short)
 }
 
-fn is_builtin_or_runtime_special_key(name: &str) -> bool {
-    let short = short_function_name(name);
+fn is_builtin_or_runtime_special_key(name: &VarName) -> bool {
+    let short = name.last_segment();
     BuiltinFunction::from_name(short).is_some()
         || BuiltinFunction::from_name(&short.to_ascii_lowercase()).is_some()
         || is_runtime_intrinsic_short_name(short)
@@ -215,7 +133,7 @@ fn is_builtin_or_runtime_special_key(name: &str) -> bool {
 }
 
 fn is_builtin_or_runtime_special(name: &rumoca_core::Reference) -> bool {
-    is_builtin_or_runtime_special_key(name.as_str())
+    is_builtin_or_runtime_special_key(name.var_name())
 }
 
 pub(super) fn collect_function_parameter_call_aliases(dae: &Dae) -> HashSet<VarName> {
@@ -253,19 +171,16 @@ pub(super) fn validate_sim_function_call_name(
         });
     };
 
-    if func.external.is_some()
-        && !eval::is_runtime_special_function_name(func.name.as_str())
-        && !external_function_codegen_opt_in_enabled(func)
-    {
+    if func.external.is_some() && !eval::is_runtime_special_function_name(&func.name) {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
-            reason: external_function_unsupported_reason(func),
+            reason: "external function is not supported by this simulator".to_string(),
         });
     }
 
     if func.external.is_none()
         && func.body.is_empty()
-        && !eval::is_runtime_special_function_name(func.name.as_str())
+        && !eval::is_runtime_special_function_name(&func.name)
     {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
@@ -313,76 +228,6 @@ mod dynamic_projection_tests {
         validate_sim_function_call_name(&dae, &VarName::new("Pkg.f.y[1]").into(), &aliases)
             .expect("indexed dynamic output projection should validate");
     }
-
-    #[test]
-    fn external_function_diagnostic_reports_runtime_symbol_and_args() {
-        let mut dae = Dae::default();
-        let mut function = rumoca_core::Function::new(
-            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
-            Default::default(),
-        );
-        function.external = Some(rumoca_core::ExternalFunction {
-            language: "C".to_string(),
-            function_name: Some("initialize_Modelica_EnergyPlus_9_6_0".to_string()),
-            output_name: None,
-            arg_names: vec![
-                "adapter".to_string(),
-                "isSynchronized".to_string(),
-                "nObj".to_string(),
-            ],
-            libraries: vec![
-                "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
-                "fmilib_shared".to_string(),
-            ],
-            include_directories: vec!["modelica://Buildings/Resources/C-Sources".to_string()],
-            ..Default::default()
-        });
-        dae.symbols
-            .functions
-            .insert(function.name.clone(), function);
-
-        let err = validate_sim_function_call_name(
-            &dae,
-            &VarName::new("Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize").into(),
-            &HashSet::new(),
-        )
-        .expect_err("external EnergyPlus C function must fail closed");
-
-        assert_eq!(
-            err.name,
-            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"
-        );
-        assert!(err.reason.contains("language=C"), "{}", err.reason);
-        assert!(
-            err.reason
-                .contains("symbol=initialize_Modelica_EnergyPlus_9_6_0"),
-            "{}",
-            err.reason
-        );
-        assert!(
-            err.reason.contains("args=[adapter, isSynchronized, nObj]"),
-            "{}",
-            err.reason
-        );
-        assert!(
-            err.reason
-                .contains("libraries=[ModelicaBuildingsEnergyPlus_9_6_0, fmilib_shared]"),
-            "{}",
-            err.reason
-        );
-        assert!(
-            err.reason
-                .contains("include_directories=[modelica://Buildings/Resources/C-Sources]"),
-            "{}",
-            err.reason
-        );
-        assert!(
-            err.reason
-                .contains("runtime linker and native library packaging are required"),
-            "{}",
-            err.reason
-        );
-    }
 }
 
 pub(super) fn validate_sim_component_function_call_name(
@@ -391,7 +236,7 @@ pub(super) fn validate_sim_component_function_call_name(
     function_param_aliases: &HashSet<VarName>,
 ) -> Result<(), FunctionValidationError> {
     let name = comp.to_var_name();
-    if is_builtin_or_runtime_special_key(name.as_str()) {
+    if is_builtin_or_runtime_special_key(&name) {
         return Ok(());
     }
     if function_param_aliases.contains(&name) {
@@ -405,19 +250,16 @@ pub(super) fn validate_sim_component_function_call_name(
         });
     };
 
-    if func.external.is_some()
-        && !eval::is_runtime_special_function_name(func.name.as_str())
-        && !external_function_codegen_opt_in_enabled(func)
-    {
+    if func.external.is_some() && !eval::is_runtime_special_function_name(&func.name) {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
-            reason: external_function_unsupported_reason(func),
+            reason: "external function is not supported by this simulator".to_string(),
         });
     }
 
     if func.external.is_none()
         && func.body.is_empty()
-        && !eval::is_runtime_special_function_name(func.name.as_str())
+        && !eval::is_runtime_special_function_name(&func.name)
     {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
@@ -564,14 +406,16 @@ pub(super) fn validate_flat_expr_function_calls(
                 function_param_aliases,
             )?;
         }
-        // Handled by validate_access_like_expression above, which returns Some(result)
-        // for these variants, causing an early return before this match is reached.
         Expression::Range { .. }
         | Expression::Index { .. }
         | Expression::FieldAccess { .. }
-        | Expression::ArrayComprehension { .. } => unreachable!(
-            "access-like expression variants are dispatched by validate_access_like_expression"
-        ),
+        | Expression::ArrayComprehension { .. } => {
+            return Err(FunctionValidationError {
+                name: "<expression>".to_string(),
+                reason: "access-like expression reached function-call validation dispatcher"
+                    .to_string(),
+            });
+        }
         Expression::VarRef { .. }
         | Expression::Literal { value: _, .. }
         | Expression::Empty { .. } => {}
@@ -942,7 +786,10 @@ pub(super) fn validate_statement_function_call(
     function_param_aliases: &HashSet<VarName>,
 ) -> Result<(), FunctionValidationError> {
     let name = comp.to_var_name();
-    let short_name = component_function_short_name(comp);
+    let short_name = comp.last_ident().ok_or_else(|| FunctionValidationError {
+        name: name.to_string(),
+        reason: "function call has no callee identifier".to_string(),
+    })?;
 
     if matches!(short_name, "assert" | "terminate") {
         // Assertion-style calls frequently contain string helper calls in
@@ -970,8 +817,7 @@ pub(super) fn validate_statement_function_call(
     }
 
     validate_sim_component_function_call_name(dae, comp, function_param_aliases)?;
-    if !is_builtin_or_runtime_special_key(name.as_str()) && !function_param_aliases.contains(&name)
-    {
+    if !is_builtin_or_runtime_special_key(&name) && !function_param_aliases.contains(&name) {
         validate_called_function_body(
             dae,
             &name,
@@ -1246,7 +1092,7 @@ pub fn validate_simulation_function_support(dae: &Dae) -> Result<(), FunctionVal
 }
 
 fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
-    rumoca_core::top_level_last_segment(&output.type_name) == "Complex"
+    rumoca_core::qualified_type_name_matches(&output.type_name, "Complex")
 }
 
 #[cfg(test)]
@@ -1294,17 +1140,24 @@ mod tests {
             VarName::new("x"),
             dae::Variable {
                 name: rumoca_core::VarName::new("x"),
-                start: Some(Expression::FunctionCall {
-                    name: rumoca_core::VarName::new(
-                        "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut[1]",
-                    )
-                    .into(),
-                    args: vec![Expression::VarRef {
-                        name: rumoca_core::VarName::new("state").into(),
-                        subscripts: vec![],
+                start: Some(Expression::Index {
+                    base: Box::new(Expression::FunctionCall {
+                        name: rumoca_core::VarName::new(
+                            "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut",
+                        )
+                        .into(),
+                        args: vec![Expression::VarRef {
+                            name: rumoca_core::VarName::new("state").into(),
+                            subscripts: vec![],
+                            span: rumoca_core::Span::DUMMY,
+                        }],
+                        is_constructor: false,
                         span: rumoca_core::Span::DUMMY,
-                    }],
-                    is_constructor: false,
+                    }),
+                    subscripts: vec![rumoca_core::Subscript::generated_index(
+                        1,
+                        rumoca_core::Span::DUMMY,
+                    )],
                     span: rumoca_core::Span::DUMMY,
                 }),
                 ..Default::default()

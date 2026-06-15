@@ -91,11 +91,51 @@ fn build_condition_equation(
     condition_name: &str,
 ) -> dae::Equation {
     dae::Equation::explicit(
-        rumoca_core::VarName::new(format!("{condition_name}[{condition_index}]")),
+        generated_condition_reference(condition_name, condition_index, candidate.span),
         candidate.expr.clone(),
         candidate.span,
         format!("condition equation from {}", candidate.source),
     )
+}
+
+fn generated_single_part_ref(ident: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: ident.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: Vec::new(),
+        }],
+        def_id: None,
+    }
+}
+
+/// Structured reference for a generated `__pre__.<source>` variable: the
+/// `__pre__` namespace part followed by the source variable's own parts.
+pub(crate) fn generated_pre_component_ref(
+    source: Option<&rumoca_core::ComponentReference>,
+    source_name: &str,
+) -> rumoca_core::ComponentReference {
+    let mut parts = vec![rumoca_core::ComponentRefPart {
+        ident: "__pre__".to_string(),
+        span: rumoca_core::Span::DUMMY,
+        subs: Vec::new(),
+    }];
+    match source {
+        Some(reference) => parts.extend(reference.parts.iter().cloned()),
+        None => parts.push(rumoca_core::ComponentRefPart {
+            ident: source_name.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: Vec::new(),
+        }),
+    }
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts,
+        def_id: None,
+    }
 }
 
 fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
@@ -105,6 +145,7 @@ fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
         rumoca_core::VarName::new(condition_name),
         dae::Variable {
             name: rumoca_core::VarName::new(condition_name),
+            component_ref: Some(generated_single_part_ref(condition_name)),
             dims: vec![dae_model.conditions.relations.len() as i64],
             start: Some(rumoca_core::Expression::Array {
                 elements: vec![
@@ -117,6 +158,7 @@ fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
                 is_matrix: false,
                 span: rumoca_core::Span::DUMMY,
             }),
+            origin: dae::VariableOrigin::Generated,
             ..Default::default()
         },
     );
@@ -128,13 +170,14 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
         return;
     };
     let pre_name = rumoca_core::VarName::new(format!("__pre__.{condition_name}"));
+    let pre_ref = generated_pre_component_ref(condition_var.component_ref.as_ref(), condition_name);
     dae_model
         .variables
         .parameters
         .entry(pre_name.clone())
         .or_insert_with(|| dae::Variable {
             name: pre_name,
-            component_ref: None,
+            component_ref: Some(pre_ref),
             source_span: condition_var.source_span,
             dims: condition_var.dims.clone(),
             start: condition_var.start.clone(),
@@ -151,6 +194,7 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
             description: Some(format!("pre() of {condition_name}")),
             causality: dae::VariableCausality::CalculatedParameter,
             is_tunable: false,
+            origin: dae::VariableOrigin::Generated,
         });
 }
 
@@ -181,11 +225,27 @@ fn generated_condition_variable_name(dae_model: &dae::Dae) -> Option<String> {
 
 fn rename_condition_equations(dae_model: &mut dae::Dae, condition_name: &str) {
     for (idx, eq) in dae_model.conditions.equations.iter_mut().enumerate() {
-        eq.lhs = Some(rumoca_core::VarName::new(format!(
-            "{condition_name}[{}]",
-            idx.saturating_add(1)
-        )));
+        eq.lhs = Some(generated_condition_reference(
+            condition_name,
+            idx.saturating_add(1),
+            eq.span,
+        ));
     }
+}
+
+fn generated_condition_reference(
+    condition_name: &str,
+    condition_index: usize,
+    span: Span,
+) -> rumoca_core::Reference {
+    rumoca_core::Reference::generated_component(
+        condition_name,
+        vec![rumoca_core::Subscript::generated_index(
+            condition_index as i64,
+            span,
+        )],
+        span,
+    )
 }
 
 fn dae_variable_name_exists(dae_model: &dae::Dae, name: &str) -> bool {
@@ -269,7 +329,9 @@ fn expr_can_vary_during_simulation(expr: &rumoca_core::Expression, dae_model: &d
             function: &rumoca_core::BuiltinFunction,
             args: &[rumoca_core::Expression],
         ) {
-            if matches!(function, rumoca_core::BuiltinFunction::Sample) {
+            if matches!(function, rumoca_core::BuiltinFunction::Sample)
+                && !rumoca_core::sample_call_is_inferred_clock_value_form(args)
+            {
                 self.varies = true;
                 return;
             }
@@ -282,9 +344,10 @@ fn expr_can_vary_during_simulation(expr: &rumoca_core::Expression, dae_model: &d
             args: &[rumoca_core::Expression],
             is_constructor: bool,
         ) {
-            if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+            if (name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
                 || rumoca_core::source_temporal_function_short_name(name.as_str())
-                    .is_some_and(|short| short == "sample")
+                    .is_some_and(|short| short == "sample"))
+                && !rumoca_core::sample_call_is_inferred_clock_value_form(args)
             {
                 self.varies = true;
                 return;
@@ -398,12 +461,14 @@ fn is_sample_tick_condition(expr: &rumoca_core::Expression) -> bool {
     match expr {
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
+            args,
             ..
-        } => true,
-        rumoca_core::Expression::FunctionCall { name, .. } => {
-            name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+        } => !rumoca_core::sample_call_is_inferred_clock_value_form(args),
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            (name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
                 || rumoca_core::source_temporal_function_short_name(name.as_str())
-                    .is_some_and(|short| short == "sample")
+                    .is_some_and(|short| short == "sample"))
+                && !rumoca_core::sample_call_is_inferred_clock_value_form(args)
         }
         _ => false,
     }
@@ -411,7 +476,7 @@ fn is_sample_tick_condition(expr: &rumoca_core::Expression) -> bool {
 
 fn c_var_ref(condition_name: &str, condition_index: usize, span: Span) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(condition_name),
+        name: rumoca_core::Reference::generated_component(condition_name, Vec::new(), span),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             condition_index as i64,
             span,

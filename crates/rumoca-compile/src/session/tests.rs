@@ -27,7 +27,7 @@ mod workspace_symbol_snapshot_tests;
 mod semantic_cache_tests;
 static SESSION_STATS_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-pub(super) fn session_stats_test_guard() -> MutexGuard<'static, ()> {
+pub(crate) fn session_stats_test_guard() -> MutexGuard<'static, ()> {
     SESSION_STATS_TEST_MUTEX
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

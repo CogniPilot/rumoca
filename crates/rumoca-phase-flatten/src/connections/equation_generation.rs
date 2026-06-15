@@ -23,20 +23,15 @@ fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &rumoca_core::VarName)
     if subscripted_base_var(var, flat).is_some() {
         return Some(1);
     }
-    strip_embedded_array_indices(var.as_str()).and_then(|base| {
-        if var.as_str().contains('[') {
-            Some(1)
-        } else {
-            flat.variables
-                .get(&rumoca_core::VarName::new(base))
-                .map(compute_var_scalar_count)
-        }
-    })
+    strip_embedded_array_indices(var.as_str()).map(|_| 1)
 }
 
 pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
-    let parts = split_path_with_indices(path);
-    if !parts.iter().any(|p| p.contains('[')) {
+    let parts = crate::path_utils::segments(path);
+    if !parts
+        .iter()
+        .any(|part| rumoca_core::split_trailing_subscript_suffix(part).is_some())
+    {
         return None;
     }
     Some(
@@ -46,83 +41,6 @@ pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join("."),
     )
-}
-
-fn weather_bus_field_name(path: &str) -> Option<rumoca_core::VarName> {
-    let parts = split_path_with_indices(path);
-    let field = parts.last()?;
-    if parts.len() < 2 || !parts[..parts.len() - 1].contains(&"weaBus") {
-        return None;
-    }
-    let known = matches!(
-        *field,
-        "TDryBul"
-            | "TWetBul"
-            | "TDewPoi"
-            | "TBlaSky"
-            | "relHum"
-            | "winSpe"
-            | "winDir"
-            | "HGloHor"
-            | "HDifHor"
-            | "HDirNor"
-            | "HHorIR"
-            | "nTot"
-            | "nOpa"
-            | "pAtm"
-            | "ceiHei"
-            | "cloTim"
-            | "lat"
-            | "lon"
-            | "solAlt"
-            | "solDec"
-            | "solHouAng"
-            | "solTim"
-            | "solZen"
-    );
-    known.then(|| rumoca_core::VarName::new(path))
-}
-
-fn materialize_weather_bus_field(flat: &mut flat::Model, name: rumoca_core::VarName) {
-    if flat.variables.contains_key(&name) {
-        return;
-    }
-    flat.add_variable(
-        name.clone(),
-        flat::Variable {
-            name,
-            is_primitive: true,
-            from_expandable_connector: true,
-            ..Default::default()
-        },
-    );
-}
-
-fn materialize_weather_bus_fields_from_refs(
-    flat: &mut flat::Model,
-    refs: impl IntoIterator<Item = rumoca_core::VarName>,
-) {
-    for reference in refs {
-        if let Some(name) = weather_bus_field_name(reference.as_str()) {
-            materialize_weather_bus_field(flat, name);
-        }
-    }
-}
-
-fn materialize_weather_bus_fields(flat: &mut flat::Model, connections: &[ast::InstanceConnection]) {
-    let mut refs = std::collections::HashSet::new();
-    for equation in &flat.equations {
-        equation.residual.collect_var_refs(&mut refs);
-    }
-    materialize_weather_bus_fields_from_refs(flat, refs);
-
-    let connection_refs = connections.iter().flat_map(|connection| {
-        [
-            rumoca_core::VarName::new(connection.a.to_flat_string()),
-            rumoca_core::VarName::new(connection.b.to_flat_string()),
-        ]
-    });
-    materialize_weather_bus_fields_from_refs(flat, connection_refs);
 }
 
 fn mark_connected(flat: &mut flat::Model, var: &rumoca_core::VarName) {
@@ -367,6 +285,9 @@ pub(crate) fn process_connections(
     overlay: &ast::InstanceOverlay,
     strict_validation: bool,
 ) -> Result<(), FlattenError> {
+    // Build prefix-to-children index once for O(1) sub-variable lookups
+    let prefix_children = build_prefix_children(flat);
+
     // Collect all connections from class instances, excluding disabled components.
     // MLS §5.4: Redirect outer-prefixed connection paths to their inner equivalents.
     let mut owned_connections: Vec<ast::InstanceConnection> = Vec::new();
@@ -381,11 +302,6 @@ pub(crate) fn process_connections(
             owned_connections.push(redirected);
         }
     }
-
-    materialize_weather_bus_fields(flat, &owned_connections);
-
-    // Build prefix-to-children index once for O(1) sub-variable lookups
-    let prefix_children = build_prefix_children(flat);
 
     let all_connections: Vec<&ast::InstanceConnection> = owned_connections.iter().collect();
     let var_index = ConnectionVarIndex::new(flat);
@@ -421,7 +337,7 @@ pub(crate) fn process_connections(
         collect_interface_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
 
     // Build connection sets (variables connected together)
-    let (connection_sets, stream_interface_equation_count) =
+    let (connection_sets, raw_stream_groups, stream_interface_equation_count) =
         build_connection_sets(&all_connections, flat, &prefix_children, &var_index);
     flat.stream_interface_equation_count = stream_interface_equation_count;
 
@@ -444,6 +360,13 @@ pub(crate) fn process_connections(
             }
         }
     }
+
+    // MLS §15.2: rewrite inStream() over connected stream variables. For a
+    // two-connector set, inStream of one side is exactly the other side's
+    // stream value; singleton sets keep the identity. Larger mixing sets need
+    // the positive-flow weighted formula and are left to the runtime
+    // passthrough until that lowering exists.
+    rewrite_instream_for_pairs(flat, &raw_stream_groups);
 
     // MLS §9.2: Generate equations for unconnected flow variables.
     // Flow variables not in any connection set get `flow_var = 0` equations.
@@ -599,6 +522,63 @@ fn collect_interface_flow_vars_by_scope(
     }
 
     result
+}
+
+/// MLS §15.2 inStream() rewrite for two-connector stream connection sets.
+fn rewrite_instream_for_pairs(flat: &mut flat::Model, stream_sets: &[Vec<rumoca_core::VarName>]) {
+    use rumoca_core::ExpressionRewriter;
+
+    let mut peer_of: std::collections::HashMap<String, rumoca_core::VarName> =
+        std::collections::HashMap::new();
+    for set in stream_sets {
+        if let [a, b] = set.as_slice() {
+            peer_of.insert(a.as_str().to_string(), b.clone());
+            peer_of.insert(b.as_str().to_string(), a.clone());
+        }
+    }
+    if peer_of.is_empty() {
+        return;
+    }
+
+    let mut rewriter = InStreamPairRewriter { peer_of: &peer_of };
+    for eq in flat
+        .equations
+        .iter_mut()
+        .chain(flat.initial_equations.iter_mut())
+    {
+        eq.residual = rewriter.rewrite_expression(&eq.residual);
+    }
+    for var in flat.variables.values_mut() {
+        if let Some(binding) = var.binding.take() {
+            var.binding = Some(rewriter.rewrite_expression(&binding));
+        }
+    }
+}
+
+struct InStreamPairRewriter<'a> {
+    peer_of: &'a std::collections::HashMap<String, rumoca_core::VarName>,
+}
+
+impl rumoca_core::ExpressionRewriter for InStreamPairRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::FunctionCall { name, args, .. } = expr
+            && name.as_str() == "inStream"
+            && let Some(rumoca_core::Expression::VarRef {
+                name: arg_name,
+                subscripts,
+                span,
+            }) = args.first()
+            && subscripts.is_empty()
+            && let Some(peer) = self.peer_of.get(arg_name.as_str())
+        {
+            return rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(peer.as_str()),
+                subscripts: Vec::new(),
+                span: *span,
+            };
+        }
+        self.walk_expression(expr)
+    }
 }
 
 #[cfg(test)]

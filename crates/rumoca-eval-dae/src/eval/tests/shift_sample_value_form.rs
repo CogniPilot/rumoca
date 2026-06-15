@@ -10,31 +10,31 @@ fn test_eval_shift_sample_value_form_respects_startup_ticks_and_tick_boundaries(
     env.set("u", 10.0);
     env.set("time", 0.0);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 0.0);
 
     env.set("time", 0.01);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 0.0);
     env.set("u", 99.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 0.0);
 
     env.set("time", 0.02);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
     env.set("u", 20.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 20.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 20.0);
 
     // Same event instant must not count as a second tick.
     env.set("u", 30.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 20.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 20.0);
 
     env.set("time", 0.03);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 0.0);
     env.set("u", 40.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 20.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 20.0);
 
     env.set("time", 0.04);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
     env.set("u", 40.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 40.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 40.0);
 }
 
 #[test]
@@ -47,12 +47,12 @@ fn test_eval_shift_sample_value_form_state_resets_with_clear_pre_values() {
     env.set("u", 7.0);
     env.set("time", 0.0);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 0.0);
 
     env.set("u", 11.0);
     env.set("time", 0.02);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &env), 11.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &env), 11.0);
 
     clear_pre_values();
 
@@ -60,7 +60,22 @@ fn test_eval_shift_sample_value_form_state_resets_with_clear_pre_values() {
     reset_env.set("u", 9.0);
     reset_env.set("time", 0.0);
     reset_env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&shift_expr, &reset_env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&shift_expr, &reset_env), 0.0);
+}
+
+#[test]
+fn test_eval_shift_sample_requires_source_path() {
+    clear_pre_values();
+
+    let env = VarEnv::<f64>::new();
+    let shift_expr = fn_call("shiftSample", vec![lit(1.0)]);
+
+    assert_eq!(
+        eval_expr::<f64>(&shift_expr, &env),
+        Err(EvalError::UnsupportedExpression {
+            kind: "shift/back sample source path"
+        })
+    );
 }
 
 #[test]
@@ -73,28 +88,28 @@ fn test_eval_back_sample_value_form_respects_startup_ticks_and_tick_boundaries()
     env.set("u", 10.0);
     env.set("time", 0.0);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&back_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&back_expr, &env), 0.0);
 
     env.set("time", 0.01);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 0.0);
     env.set("u", 99.0);
-    assert_eq!(eval_expr_or_default::<f64>(&back_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&back_expr, &env), 0.0);
 
     env.set("time", 0.02);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
     env.set("u", 20.0);
-    assert_eq!(eval_expr_or_default::<f64>(&back_expr, &env), 20.0);
+    assert_eq!(eval_expr_value::<f64>(&back_expr, &env), 20.0);
 
     env.set("u", 30.0);
-    assert_eq!(eval_expr_or_default::<f64>(&back_expr, &env), 20.0);
+    assert_eq!(eval_expr_value::<f64>(&back_expr, &env), 20.0);
 
     env.set("time", 0.03);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 0.0);
     env.set("u", 40.0);
-    assert_eq!(eval_expr_or_default::<f64>(&back_expr, &env), 20.0);
+    assert_eq!(eval_expr_value::<f64>(&back_expr, &env), 20.0);
 
     env.set("time", 0.04);
     env.set(IMPLICIT_CLOCK_ACTIVE_ENV_KEY, 1.0);
     env.set("u", 40.0);
-    assert_eq!(eval_expr_or_default::<f64>(&back_expr, &env), 40.0);
+    assert_eq!(eval_expr_value::<f64>(&back_expr, &env), 40.0);
 }

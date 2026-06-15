@@ -5,8 +5,8 @@ ACCEPTED
 
 ## Summary
 
-Rumoca transforms Modelica source through AST → Flat → DAE → Solve IRs. Each
-stage has a contract: contents, ownership, and boundary leaks.
+Rumoca transforms Modelica through AST → Flat → DAE → Solve IRs. Each
+stage owns contract.
 
 ## The Four IR Stages
 
@@ -39,16 +39,16 @@ Modelica source (.mo)
 
 | Backend | IR level | Why |
 |---|---|---|
-| Formatter, doc generator | AST | Needs original syntax + spans |
-| Flat Modelica export | Flat | Original expression structure pre-equations |
-| FMI export, DAE-readable C/Fortran, CasADi, SymPy, JAX-style symbolic/array targets | DAE | MLS B.1 form, readable, traceable to source |
-| Numeric sim, numeric C/Rust kernels, JIT, MLIR, CUDA/GPU | Solve | Register-machine plus tensor-program bytecode consumed by execution adapters |
+| Formatter, doc generator | AST | Needs syntax + spans |
+| Flat Modelica export | Flat | Original expression structure |
+| FMI export, DAE-readable C/Fortran, CasADi, SymPy, JAX-style symbolic/array targets | DAE | MLS B.1 form, source traceability |
+| Numeric sim, C/Rust kernels, JIT, MLIR, CUDA/GPU | Solve | Register-machine plus tensor bytecode |
 
 **Template/codegen ownership:** `rumoca-phase-codegen` renders text. Execution
-adapters wrap toolchains, packaging, runtime calls, or JIT APIs; no semantics,
-DAE lowering, rewrites, or template policy.
+adapters wrap toolchains, packaging, runtime calls, or JIT APIs, not semantics,
+DAE lowering, structural rewrites, or template policy.
 
-**Neutral codegen:** render IR only; no product shims.
+**Neutral codegen:** IR; no shims.
 
 ---
 
@@ -93,12 +93,12 @@ operators, generating simulation code.
 
 | Rule | Why |
 |---|---|
-| Instantiation and flattening are separate logical phases | Instantiation applies modifications + builds `InstanceOverlay`/`InstancedTree`; the production compiled-model path then runs `typecheck_instanced` before flattening traverses the overlay, expands connections, and produces `flat::Model`. No cross-phase shortcuts. |
+| Instantiation and flattening are separate logical phases | Instantiation applies modifications + builds `InstanceOverlay`/`InstancedTree`; production then runs `typecheck_instanced` before flattening traverses the overlay, expands connections, and produces `flat::Model`. |
 | Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
 | Function algorithms remain structured in `Flat.functions`/`Dae.functions` | Function bodies are not lowered into solver equation buckets |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
-| Post-resolution compiler identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry the `DefId` through the IR instead. Semantic keys may be `DefId` or small structured keys whose identity fields are all `DefId` values. |
-| Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Splitting `a.b.c` text inside compiler/evaluator/lowering logic means structure was lost too early. Textual path parsing is allowed only at source/protocol/config/display boundaries and tracked compatibility debt while it is replaced by structured IR. |
+| Post-resolution compiler identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId`; semantic keys may be `DefId` or structured keys whose identity fields are all `DefId` values. |
+| Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Splitting `a.b.c` text inside compiler/evaluator/lowering logic means structure was lost too early. Textual path parsing is allowed only at source/protocol/config/display boundaries while structured IR replaces it. |
 
 ---
 
@@ -122,20 +122,18 @@ The result is a set of pure functions over the variable vector
 not a solver work cache. Variables stay partitioned by kind under
 `DaeVariables`; event behavior lives in `discrete`, `conditions`, `events`, and
 `clocks`. Serialized DAE exposes MLS/root template keys through serde
-flattening, but the Rust API is partitioned. The root `schema_version` is
-mandatory and unsupported versions are rejected.
+flattening; Rust stays partitioned. The root `schema_version` is mandatory and
+unsupported versions are rejected.
 
-DAE fields must represent Modelica semantics, source identity, or stable MLS
-Appendix B partitions. Backend convenience products such as mass
-matrices, Jacobians, BLT orderings, tearing choices, state-selection reports,
-and scalarized variants belong in structural analysis results or Solve
-artifacts.
+DAE fields represent Modelica semantics, source identity, or stable MLS Appendix
+B partitions. Backend products such as mass matrices, Jacobians, BLT orderings,
+tearing choices, state-selection reports, and scalarized variants belong in
+structural analysis results or Solve artifacts.
 
-`conditions.relations` is the single owner for MLS Appendix B relation
-surfaces. Runtime metadata passes must not rediscover relation roots by walking
-continuous equation trees and then deduplicate them afterward. Non-Appendix-B
-runtime surfaces, such as synthetic numeric roots derived from `abs(...)` or
-`sign(...)`, belong in `events.synthetic_root_conditions`.
+`conditions.relations` owns MLS Appendix B relation surfaces. Runtime metadata
+passes must not rediscover roots from continuous equations. Non-Appendix-B
+runtime surfaces, such as numeric roots from `abs(...)` or `sign(...)`, belong
+in `events.synthetic_root_conditions`.
 
 Optional same-version DAE fields may use `#[serde(default)]` only when absence
 has the same meaning as the default. Incompatible schema changes bump
@@ -145,7 +143,7 @@ has the same meaning as the default. Incompatible schema changes bump
 
 | Rule | Where | Why |
 |---|---|---|
-| No source temporal operators (`pre`, `edge`, `change`, `sample`, `previous`) survive in f_x, f_z, f_m, f_c, relations, or initialization equations | DAE lowering rewrites them into Appendix B constructs: explicit `__pre__.*` inputs, relation/c variables, scheduled events, clock metadata, and ordinary equations over `v` | MLS Appendix B states the DAE as functions over `v` and `relation(v)`; source-language temporal operators are not computable DAE/Solve graph nodes |
+| No source temporal operators (`pre`, `edge`, `change`, `sample`, `previous`) survive in f_x, f_z, f_m, f_c, relations, or initialization equations | DAE lowering rewrites them into Appendix B constructs: explicit `__pre__.*` inputs, relation/c variables, scheduled events, clock metadata, and ordinary equations over `v` | MLS Appendix B states the DAE as functions over `v` and `relation(v)`; source temporal operators are not computable DAE/Solve graph nodes |
 | No `der()` on RHS | derivatives flow via `dae.states` + equation structure | Inline `der()` would hide state identity |
 | No `initial()` in f_x/f_z/f_m/f_c | initial phase is handled separately | Avoids mixing initialization into runtime equations |
 | `pre(z)` / `pre(m)` are `__pre__.*` entries in `dae.parameters` | runtime writes slots at event entry per Stage 4 (`SolveLayout::pre_param_bindings`) | The Modelica `pre()` operator exists only in AST and Flat |
@@ -176,10 +174,10 @@ operators in solver equation partitions.
 MLS B.1 functions lower into `ComputeBlock` graphs of scalar programs and
 tensor program nodes.
 Solve-IR does not add new mathematical content; it changes format. Tensor
-structure (matrix multiply, linear solve, and future reductions/maps/broadcasts)
-is preserved as `ComputeNode` variants above the scalar layer so that backends
-can choose between scalar expansion and native tensor ops (BLAS/faer,
-Cranelift/LLVM kernels, CUDA, MLIR `linalg`).
+structure (matrix multiply, linear solve, affine stencils, future
+reductions/maps/broadcasts) is preserved as `ComputeNode` variants above the
+scalar layer so backends can choose scalar expansion or native tensor ops
+(BLAS/faer, Cranelift/LLVM kernels, CUDA, MLIR `linalg`).
 
 Canonical terminology:
 
@@ -187,12 +185,17 @@ Canonical terminology:
 |---|---|---|
 | `ScalarProgram` | `Vec<LinearOp>` | A flat register program that produces one scalar output |
 | `ScalarProgramBlock` | `ScalarProgramBlock` | A group of scalar programs with one output per program |
-| `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
+| `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
 
 `ScalarProgramBlock` and `ComputeNode::ScalarPrograms` are the public source-code
 names. New Solve-IR APIs must use `ScalarProgram` / `ScalarProgramBlock`
 terminology and must not reintroduce `RowBlock` / `ScalarRows` naming.
+
+`ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
+`for_equations` domains plus affine operand proofs. It carries the source
+iteration domain and strides; Solve lowering must not recover stencils by
+scanning unstructured scalar rows after loop metadata is discarded.
 
 The root `schema_version` field is mandatory on serialized Solve payloads.
 Deserializers reject unsupported versions and the Solve wire format does not
@@ -220,6 +223,10 @@ Jacobian products.
 | Jacobian products live in `SolveArtifacts`, not base `SolveProblem` | Avoids unconditional AD materialization for codegen/IDE paths that do not consume them |
 | Mass-matrix form lives in `ContinuousSolveArtifacts`, not DAE | It is solver-facing derived metadata, not canonical Modelica DAE semantics |
 | BLT orderings from DAE-IR MAY drive `ComputeBlock` layout | Reuses upstream structural analysis |
+
+Steady-state objectives, adjoints, parameter sensitivities, and
+optimizer-facing projections are runtime or generated-target products layered
+over Solve artifacts, not canonical `SolveProblem` payload fields.
 
 **Do here:** lower DAE-IR expression trees + for-loops to `LinearOp` sequences
 and preserve tensor nodes/sparsity metadata for downstream consumers.
@@ -288,7 +295,7 @@ transformations are listed here to keep scope and ownership clear.
 | State demotion | `rumoca-phase-structural` | Demote over-classified states whose derivative is structurally unreachable. |
 | BLT ordering | `rumoca-phase-structural` | Block-lower-triangular ordering of equations for sequential solve. |
 | Algebraic-loop tearing (Greedy Cellier) | `rumoca-phase-structural::tearing` | Identifies tear variables for cyclic algebraic blocks. |
-| State selection | `rumoca-phase-structural` | When multiple state choices exist, pick a consistent state set. |
+| State selection | `rumoca-phase-structural` | Pick a consistent state set. |
 
 **Out of scope (require an explicit spec update before adding):**
 

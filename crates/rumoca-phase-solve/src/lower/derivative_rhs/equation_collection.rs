@@ -4,13 +4,13 @@ pub(in crate::lower) fn collect_derivative_equations(
     dae_model: &dae::Dae,
     state_names: &[String],
     structural_bindings: &IndexMap<String, f64>,
-) -> (Vec<DerivativeEquation>, Vec<bool>) {
+) -> Result<(Vec<DerivativeEquation>, Vec<bool>), LowerError> {
     let mut equations = Vec::new();
     let mut flags = Vec::with_capacity(dae_model.continuous.equations.len());
-    for equation in &dae_model.continuous.equations {
+    for (equation_index, equation) in dae_model.continuous.equations.iter().enumerate() {
         let before = equations.len();
         if let Some(projected) =
-            function_projected_residuals(&equation.rhs, dae_model, structural_bindings)
+            function_projected_residuals(&equation.rhs, dae_model, structural_bindings)?
         {
             for residual in projected {
                 append_derivative_rows_for_residual(
@@ -20,6 +20,7 @@ pub(in crate::lower) fn collect_derivative_equations(
                     dae_model,
                     structural_bindings,
                     Some(1),
+                    equation_index,
                 );
             }
             flags.push(equations.len() > before);
@@ -32,10 +33,11 @@ pub(in crate::lower) fn collect_derivative_equations(
             dae_model,
             structural_bindings,
             Some(equation.scalar_count),
+            equation_index,
         );
         flags.push(equations.len() > before);
     }
-    (equations, flags)
+    Ok((equations, flags))
 }
 
 pub(in crate::lower) fn append_derivative_rows_for_residual(
@@ -45,6 +47,7 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     scalar_count: Option<usize>,
+    source_equation_index: usize,
 ) {
     if let Some(mut rows) = derivative_equations_from_residual(
         residual,
@@ -53,6 +56,9 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
         structural_bindings,
         scalar_count,
     ) {
+        for row in &mut rows {
+            row.source_equation_index = Some(source_equation_index);
+        }
         equations.append(&mut rows);
     }
 }
@@ -85,19 +91,19 @@ pub(in crate::lower) fn collect_missing_indexed_record_field_assignments(
     state_names: &[String],
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
-) -> IndexMap<String, DirectAssignmentValue> {
+) -> Result<IndexMap<String, DirectAssignmentValue>, LowerError> {
     let (_, equation_flags) =
-        collect_derivative_equations(dae_model, state_names, structural_bindings);
-    collect_direct_assignments(dae_model, &equation_flags)
+        collect_derivative_equations(dae_model, state_names, structural_bindings)?;
+    Ok(collect_direct_assignments(dae_model, &equation_flags)
         .into_iter()
         .filter(|(key, _assignment)| {
             layout.binding(key).is_none() && has_indexed_record_field_segment(key)
         })
-        .collect()
+        .collect())
 }
 
 pub(in crate::lower) fn has_indexed_record_field_segment(key: &str) -> bool {
-    rumoca_core::split_path_with_indices(key)
+    crate::path_utils::segments(key)
         .iter()
         .any(|segment| rumoca_core::split_trailing_subscript_suffix(segment).is_some())
 }
@@ -108,7 +114,7 @@ pub(in crate::lower) fn direct_assignment_target_rhs(
     if let Some(lhs) = equation.lhs.as_ref()
         && !equation.rhs.contains_der()
     {
-        return Some((lhs.clone(), equation.rhs.clone()));
+        return Some((lhs.var_name().clone(), equation.rhs.clone()));
     }
 
     let (lhs, rhs) = split_subtraction(&equation.rhs)?;
@@ -181,6 +187,7 @@ pub(in crate::lower) fn insert_direct_assignment(
     }
 
     let repeat_period = direct_assignment_repeat_period(dae_model, &dims, &rhs);
+    assignments.insert(base.clone(), DirectAssignmentValue::full(rhs.clone()));
     for flat_index in 0..size {
         let key = dae::scalar_name_text_for_flat_index(&base, &dims, flat_index);
         assignments.insert(
@@ -299,6 +306,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
                 coefficients,
                 rhs: rhs_without_remainder(rhs.clone(), remainder),
                 span: residual.span().unwrap_or(rumoca_core::Span::DUMMY),
+                source_equation_index: None,
             });
         }
         if let Some((coefficients, remainder)) = derivative_linear_parts(rhs, ctx)
@@ -308,6 +316,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
                 coefficients,
                 rhs: rhs_without_remainder(lhs.clone(), remainder),
                 span: residual.span().unwrap_or(rumoca_core::Span::DUMMY),
+                source_equation_index: None,
             });
         }
     }
@@ -316,6 +325,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
             coefficients,
             rhs: rhs_without_remainder(zero_expr(), remainder),
             span: residual.span().unwrap_or(rumoca_core::Span::DUMMY),
+            source_equation_index: None,
         });
     }
     None
@@ -643,6 +653,7 @@ pub(in crate::lower) fn build_affine_vector_derivative_equations(
                     coefficients: IndexMap::from([(key, coefficient_values[idx].clone())]),
                     rhs,
                     span,
+                    source_equation_index: None,
                 }
             })
             .collect(),
@@ -720,8 +731,9 @@ pub(in crate::lower) fn matrix_times_derivative_coefficients(
     if n == 0 || !target_keys.iter().all(|key| state_names.contains(key)) {
         return None;
     }
-    let matrix_keys = expression_binding_keys(matrix, dae_model, structural_bindings).ok()??;
-    if matrix_keys.len() != n * n {
+    let matrix_coefficients =
+        expression_binding_expressions(matrix, dae_model, structural_bindings).ok()??;
+    if matrix_coefficients.len() != n * n {
         return None;
     }
 
@@ -733,7 +745,7 @@ pub(in crate::lower) fn matrix_times_derivative_coefficients(
                 .map(|(col, target_key)| {
                     (
                         target_key.clone(),
-                        scalar_key_expr(matrix_keys[row * n + col].clone()),
+                        matrix_coefficients[row * n + col].clone(),
                     )
                 })
                 .collect()
@@ -757,8 +769,9 @@ pub(in crate::lower) fn derivative_times_matrix_coefficients(
     if n == 0 || !target_keys.iter().all(|key| state_names.contains(key)) {
         return None;
     }
-    let matrix_keys = expression_binding_keys(matrix, dae_model, structural_bindings).ok()??;
-    if matrix_keys.len() != n * n {
+    let matrix_coefficients =
+        expression_binding_expressions(matrix, dae_model, structural_bindings).ok()??;
+    if matrix_coefficients.len() != n * n {
         return None;
     }
 
@@ -770,7 +783,7 @@ pub(in crate::lower) fn derivative_times_matrix_coefficients(
                 .map(|(row, target_key)| {
                     (
                         target_key.clone(),
-                        scalar_key_expr(matrix_keys[row * n + col].clone()),
+                        matrix_coefficients[row * n + col].clone(),
                     )
                 })
                 .collect()
@@ -808,6 +821,7 @@ pub(in crate::lower) fn build_matrix_derivative_equations(
                 coefficients,
                 rhs,
                 span,
+                source_equation_index: None,
             })
             .collect(),
     )

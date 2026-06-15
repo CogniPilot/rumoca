@@ -31,7 +31,8 @@ const STRICT_NON_PARSE_CONTRACT_IDS: &[&str] = &[
 /// Parse-enforced non-LEX contracts where grammar-level rejection is the intended guard.
 const PARSE_ENFORCED_NON_LEX_CONTRACT_IDS: &[&str] = &[
     "ALG-001", "ANN-001", "DECL-001", "DECL-006", "DECL-012", "DECL-015", "DECL-024", "EQN-024",
-    "EXPR-014", "FUNC-006", "FUNC-017", "INST-003", "INST-012", "PKG-012",
+    "EXPR-014", "FUNC-006", "FUNC-016", "FUNC-017", "INST-003", "INST-012", "INST-017", "INST-023",
+    "PKG-012",
 ];
 
 /// Public helper API in `rumoca_contracts::test_support` that must stay in use.
@@ -198,7 +199,7 @@ fn strict_non_parse_contracts_keep_semantic_coverage() {
             assert!(
                 matches!(
                     case.kind,
-                    ContractCaseKind::Compile | ContractCaseKind::Balance
+                    ContractCaseKind::Compile | ContractCaseKind::Balance | ContractCaseKind::Sim
                 ),
                 "Strict non-parse contract {id} must use semantic coverage, found parse case {}",
                 case.case_id

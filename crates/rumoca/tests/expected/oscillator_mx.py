@@ -176,12 +176,19 @@ def create_model():
 
     # Enumeration literal ordinals (MLS §4.9.5)
     StateSelect_never = 1
+    StateSelect__never_ = 1
     StateSelect_avoid = 2
+    StateSelect__avoid_ = 2
     StateSelect_default = 3
+    StateSelect__default_ = 3
     StateSelect_prefer = 4
+    StateSelect__prefer_ = 4
     StateSelect_always = 5
+    StateSelect__always_ = 5
     AssertionLevel_warning = 1
+    AssertionLevel__warning_ = 1
     AssertionLevel_error = 2
+    AssertionLevel__error_ = 2
 
     # =========================================================================
     # User-Defined Functions (0)

@@ -148,6 +148,11 @@ fn normalized_source_name_bytes(name: &str) -> impl Iterator<Item = u8> + '_ {
 )]
 pub struct BytePos(pub usize);
 
+/// Marker prefix used to encode a named function argument
+/// (`f(x = expr)`) as a `FunctionCall { name: "__rumoca_named_arg__.x" }`
+/// node in the flat IR.
+pub const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+
 /// A span in source code (source, start, end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Span {
@@ -352,126 +357,8 @@ impl ClassType {
     }
 }
 
-/// Process-local interned identity for a [`VarName`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct VarNameId(pub u32);
-
-impl VarNameId {
-    /// Get the compact interned index.
-    pub fn index(self) -> u32 {
-        self.0
-    }
-}
-
-/// A globally unique, fully-qualified variable name (e.g., `"body.position.x"`).
-///
-/// Shared by the flat and DAE IRs.
-///
-/// `VarName` is serialized and displayed as text, but equality and hashing use
-/// an interned process-local ID so hot lookup paths do not repeatedly compare
-/// or hash long flattened component paths.
-#[derive(Clone)]
-pub struct VarName {
-    id: VarNameId,
-    text: Arc<str>,
-}
-
-impl VarName {
-    /// Create a new variable name.
-    pub fn new(name: impl Into<String>) -> Self {
-        intern_var_name(&name.into())
-    }
-
-    /// Get the variable name as a string slice.
-    pub fn as_str(&self) -> &str {
-        &self.text
-    }
-
-    pub fn last_segment(&self) -> &str {
-        crate::find_last_top_level_dot(self.as_str())
-            .map(|index| &self.as_str()[index + 1..])
-            .unwrap_or_else(|| self.as_str())
-    }
-
-    /// Get the compact process-local interned identity.
-    pub fn id(&self) -> VarNameId {
-        self.id
-    }
-}
-
-impl Default for VarName {
-    fn default() -> Self {
-        Self::new("")
-    }
-}
-
-impl std::fmt::Debug for VarName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("VarName").field(&self.as_str()).finish()
-    }
-}
-
-impl PartialEq for VarName {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for VarName {}
-
-impl PartialOrd for VarName {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for VarName {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.as_str().cmp(other.as_str())
-    }
-}
-
-impl Hash for VarName {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-impl Serialize for VarName {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for VarName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer).map(Self::new)
-    }
-}
-
-impl std::fmt::Display for VarName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl From<&str> for VarName {
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<String> for VarName {
-    fn from(s: String) -> Self {
-        Self::new(s)
-    }
-}
+mod var_name;
+pub use var_name::{VarName, VarNameId};
 
 /// Structured semantic reference used by Flat/DAE expressions.
 ///
@@ -483,6 +370,7 @@ impl From<String> for VarName {
 pub struct Reference {
     name: VarName,
     component_ref: Option<ComponentReference>,
+    generated: bool,
 }
 
 impl Reference {
@@ -490,6 +378,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: None,
+            generated: false,
         }
     }
 
@@ -497,6 +386,41 @@ impl Reference {
         Self {
             name,
             component_ref: None,
+            generated: false,
+        }
+    }
+
+    pub fn generated(name: impl Into<String>) -> Self {
+        Self {
+            name: VarName::new(name),
+            component_ref: None,
+            generated: true,
+        }
+    }
+
+    pub fn generated_component(
+        ident: impl Into<String>,
+        subscripts: Vec<Subscript>,
+        span: Span,
+    ) -> Self {
+        Self::generated_component_reference(ComponentReference {
+            local: false,
+            span,
+            parts: vec![ComponentRefPart {
+                ident: ident.into(),
+                span,
+                subs: subscripts,
+            }],
+            def_id: None,
+        })
+    }
+
+    pub fn generated_component_reference(component_ref: ComponentReference) -> Self {
+        let name = ComponentPath::from_component_reference(&component_ref).to_flat_string();
+        Self {
+            name: VarName::new(name),
+            component_ref: Some(component_ref),
+            generated: true,
         }
     }
 
@@ -504,6 +428,7 @@ impl Reference {
         Self {
             name,
             component_ref: self.component_ref.clone(),
+            generated: self.generated,
         }
     }
 
@@ -514,6 +439,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            generated: false,
         }
     }
 
@@ -522,11 +448,27 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            generated: false,
         }
     }
 
     pub fn as_str(&self) -> &str {
         self.name.as_str()
+    }
+
+    /// Split into `(enclosing scope, last segment)` when the name is nested.
+    pub fn scope_split(&self) -> Option<(&str, &str)> {
+        self.name.scope_split()
+    }
+
+    /// True when the referenced name is nested inside a component scope.
+    pub fn is_nested(&self) -> bool {
+        self.name.is_nested()
+    }
+
+    /// Top-level segments of the referenced name (see [`VarName::segments`]).
+    pub fn segments(&self) -> Vec<&str> {
+        self.name.segments()
     }
 
     pub fn var_name(&self) -> &VarName {
@@ -539,6 +481,45 @@ impl Reference {
 
     pub fn component_ref(&self) -> Option<&ComponentReference> {
         self.component_ref.as_ref()
+    }
+
+    /// Element reference: this reference with a literal index appended to its
+    /// last part, keeping rendered text and structure in lockstep.
+    pub fn with_appended_index(&self, index: i64) -> Self {
+        let rendered = format!("{}[{index}]", self.as_str());
+        match self.component_ref.clone() {
+            Some(mut reference) if !reference.parts.is_empty() => {
+                if let Some(part) = reference.parts.last_mut() {
+                    part.subs
+                        .push(Subscript::generated_index(index, reference.span));
+                }
+                Self::with_component_reference(rendered, reference)
+            }
+            _ if self.generated => Self::generated(rendered),
+            _ => Self::new(rendered),
+        }
+    }
+
+    /// Member reference: this reference with a field part appended, keeping
+    /// rendered text and structure in lockstep.
+    pub fn with_appended_field(&self, field: &str) -> Self {
+        let rendered = format!("{}.{field}", self.as_str());
+        match self.component_ref.clone() {
+            Some(mut reference) if !reference.parts.is_empty() => {
+                reference.parts.push(ComponentRefPart {
+                    ident: field.to_string(),
+                    span: reference.span,
+                    subs: Vec::new(),
+                });
+                Self::with_component_reference(rendered, reference)
+            }
+            _ if self.generated => Self::generated(rendered),
+            _ => Self::new(rendered),
+        }
+    }
+
+    pub fn is_generated(&self) -> bool {
+        self.generated
     }
 
     pub fn component_scope(&self) -> Option<ComponentReferenceScope<'_>> {
@@ -574,7 +555,9 @@ impl Reference {
 
 impl PartialEq for Reference {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.component_ref == other.component_ref
+        self.name == other.name
+            && self.component_ref == other.component_ref
+            && self.generated == other.generated
     }
 }
 
@@ -583,6 +566,12 @@ struct ReferenceWire {
     name: VarName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     component_ref: Option<ComponentReference>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    generated: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Serialize for Reference {
@@ -590,17 +579,18 @@ impl Serialize for Reference {
     where
         S: Serializer,
     {
-        if serializer.is_human_readable() && self.component_ref.is_none() {
+        if serializer.is_human_readable() && self.component_ref.is_none() && !self.generated {
             return self.name.serialize(serializer);
         }
 
         if !serializer.is_human_readable() {
-            return (&self.name, &self.component_ref).serialize(serializer);
+            return (&self.name, &self.component_ref, &self.generated).serialize(serializer);
         }
 
         ReferenceWire {
             name: self.name.clone(),
             component_ref: self.component_ref.clone(),
+            generated: self.generated,
         }
         .serialize(serializer)
     }
@@ -612,11 +602,12 @@ impl<'de> Deserialize<'de> for Reference {
         D: Deserializer<'de>,
     {
         if !deserializer.is_human_readable() {
-            let (name, component_ref) =
-                <(VarName, Option<ComponentReference>)>::deserialize(deserializer)?;
+            let (name, component_ref, generated) =
+                <(VarName, Option<ComponentReference>, bool)>::deserialize(deserializer)?;
             return Ok(Self {
                 name,
                 component_ref,
+                generated,
             });
         }
 
@@ -631,10 +622,12 @@ impl<'de> Deserialize<'de> for Reference {
             HumanReference::Name(name) => Ok(Self {
                 name,
                 component_ref: None,
+                generated: false,
             }),
             HumanReference::Wire(wire) => Ok(Self {
                 name: wire.name,
                 component_ref: wire.component_ref,
+                generated: wire.generated,
             }),
         }
     }
@@ -662,58 +655,6 @@ impl From<String> for Reference {
     fn from(name: String) -> Self {
         Self::new(name)
     }
-}
-
-#[derive(Default)]
-struct VarNameInterner {
-    ids: IndexMap<String, VarNameId>,
-    texts: Vec<Arc<str>>,
-}
-
-impl VarNameInterner {
-    fn intern(&mut self, text: &str) -> VarName {
-        if let Some(var_name) = self.get(text) {
-            return var_name;
-        }
-
-        let id = VarNameId(
-            u32::try_from(self.texts.len())
-                .expect("process-local VarName interner exceeded u32::MAX entries"),
-        );
-        let text: Arc<str> = Arc::from(text);
-        self.texts.push(text.clone());
-        self.ids.insert(text.to_string(), id);
-        self.var_name(id, text)
-    }
-
-    fn get(&self, text: &str) -> Option<VarName> {
-        let id = *self.ids.get(text)?;
-        let text = self.texts.get(id.index() as usize)?.clone();
-        Some(self.var_name(id, text))
-    }
-
-    fn var_name(&self, id: VarNameId, text: Arc<str>) -> VarName {
-        VarName { id, text }
-    }
-}
-
-static VAR_NAME_INTERNER: OnceLock<RwLock<VarNameInterner>> = OnceLock::new();
-
-fn intern_var_name(text: &str) -> VarName {
-    let interner = VAR_NAME_INTERNER.get_or_init(|| RwLock::new(VarNameInterner::default()));
-    {
-        let guard = interner
-            .read()
-            .expect("VarName interner read lock should not be poisoned");
-        if let Some(var_name) = guard.get(text) {
-            return var_name;
-        }
-    }
-
-    let mut guard = interner
-        .write()
-        .expect("VarName interner write lock should not be poisoned");
-    guard.intern(text)
 }
 
 /// Structured view of a flattened scalar name such as `x[1,2]`.
@@ -877,7 +818,8 @@ pub enum BuiltinFunction {
     Change,
     /// Reinitialize state: reinit(x, expr)
     Reinit,
-    /// Sample clock: sample(start, interval)
+    /// Overloaded sample operator: sample(start, interval) event tick or
+    /// sample(u[, clock]) clocked value sample.
     Sample,
     /// Initial condition: initial() - true during initialization
     Initial,
@@ -1635,7 +1577,13 @@ fn var_refs_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
     else {
         return false;
     };
-    lhs_name == rhs_name && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
+    // Flat names are globally unique — `flat::Model::variables` is keyed by
+    // VarName and flatten's name simplification fails loudly on rename
+    // collisions — so two references denote the same variable iff their
+    // rendered names match; attached resolution metadata (spans, def-ids,
+    // component structure) does not change the meaning.
+    lhs_name.var_name() == rhs_name.var_name()
+        && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
 }
 
 fn builtin_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {

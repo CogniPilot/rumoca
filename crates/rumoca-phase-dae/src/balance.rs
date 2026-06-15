@@ -1,8 +1,5 @@
 //! DAE balance arithmetic.
 //!
-//! SPEC_0021 file-size exception: split plan is to move focused balance
-//! diagnostics into owned submodules after BOPTEST parity stabilization.
-//!
 //! This is the single canonical implementation of balance checking for the
 //! Rumoca DAE IR. All other crates must call these functions rather than
 //! reimplementing the formula (AGENTS.md: "Balance arithmetic lives in
@@ -11,8 +8,28 @@
 use std::collections::HashSet;
 
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::Subscript;
+use rumoca_core::DefId;
 use rumoca_ir_dae as dae;
+
+pub type BalanceResult<T> = Result<T, BalanceError>;
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum BalanceError {
+    #[error("invalid DAE balance contract: missing discrete variable metadata for `{name}`")]
+    MissingDiscreteVariableMetadata {
+        name: rumoca_core::VarName,
+        span: rumoca_core::Span,
+    },
+}
+
+impl BalanceError {
+    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+        match self {
+            Self::MissingDiscreteVariableMetadata { span, .. } if !span.is_dummy() => Some(*span),
+            Self::MissingDiscreteVariableMetadata { .. } => None,
+        }
+    }
+}
 
 /// Detailed breakdown of balance calculation components.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,9 +46,22 @@ pub struct BalanceDetail {
     pub algorithm_outputs: usize,
     pub when_eq_scalar: usize,
     pub interface_flow_count: usize,
-    pub stream_interface_equation_count: usize,
     pub overconstrained_interface_count: i64,
     pub oc_break_edge_scalar_count: usize,
+}
+
+impl BalanceDetail {
+    pub fn balance(&self) -> i64 {
+        balance_from_detail(self)
+    }
+
+    pub fn is_balanced(&self) -> bool {
+        self.balance() == 0
+    }
+
+    pub fn equations_unknowns(&self) -> (usize, usize) {
+        equations_unknowns_from_detail(self)
+    }
 }
 
 impl std::fmt::Display for BalanceDetail {
@@ -56,14 +86,13 @@ impl std::fmt::Display for BalanceDetail {
         )?;
         write!(
             f,
-            "  Equations (raw): f_x({}) + f_z({}) + f_m({}) + f_c({}) + algo({}) + when({}) + stream({}) + iflow({}) + oc({}) - brk({})",
+            "  Equations (raw): f_x({}) + f_z({}) + f_m({}) + f_c({}) + algo({}) + when({}) + iflow({}) + oc({}) - brk({})",
             self.f_x_scalar,
             self.f_z_scalar,
             self.f_m_scalar,
             self.f_c_scalar,
             self.algorithm_outputs,
             self.when_eq_scalar,
-            self.stream_interface_equation_count,
             self.interface_flow_count,
             self.overconstrained_interface_count,
             self.oc_break_edge_scalar_count,
@@ -71,86 +100,21 @@ impl std::fmt::Display for BalanceDetail {
     }
 }
 
-/// Check if the system is balanced (equations match unknowns).
-pub fn is_balanced(dae_model: &dae::Dae) -> bool {
-    balance(dae_model) == 0
-}
-
 /// Get the balance: equations - unknowns.
 ///
 /// Positive means over-determined, negative means under-determined.
-pub fn balance(dae_model: &dae::Dae) -> i64 {
-    let state_unknowns: usize = dae_model.variables.states.values().map(|v| v.size()).sum();
-    let alg_unknowns: usize = dae_model
-        .variables
-        .algebraics
-        .values()
-        .map(|v| v.size())
-        .sum();
-    let output_unknowns: usize = dae_model.variables.outputs.values().map(|v| v.size()).sum();
-    let discrete_real_unknowns = count_referenced_discrete_real_unknown_scalars(dae_model);
-    let discrete_valued_unknowns = count_referenced_discrete_valued_unknown_scalars(dae_model);
-    let unknowns = (state_unknowns
-        + alg_unknowns
-        + output_unknowns
-        + discrete_real_unknowns
-        + discrete_valued_unknowns) as i64;
+pub fn balance(dae_model: &dae::Dae) -> BalanceResult<i64> {
+    let detail = balance_detail(dae_model)?;
+    Ok(balance_from_detail(&detail))
+}
 
-    // f_x: unified continuous equations (MLS B.1a).
-    // Only equations that constrain at least one continuous unknown belong
-    // to local continuous balance accounting.
-    let f_x_scalar = count_f_x_scalars_with_continuous_unknowns(dae_model);
-    // MLS Appendix B: model algorithms and when-equations have already been
-    // lowered into the B.1 equation buckets before DAE balance is checked.
-    // Algorithm and when-equation details are explicit at zero because those
-    // rows have already been lowered into the MLS B.1 equation buckets.
-    let algorithm_outputs = 0usize;
-    let when_eq_scalar = 0usize;
-
-    // Per MLS §15.1: outside stream connectors contribute stream equations.
-    // Per MLS §4.7: interface flow variables count as equations
-    // Per MLS §4.8/§9.4: overconstrained correction
-    //
-    // OC interface correction is applied only to close an existing deficit
-    // (oc_needed), so it cannot over-correct. Break-edge correction is then
-    // applied at the end only when the system is over-determined.
-    let brk = dae_model.metadata.oc_break_edge_scalar_count as i64;
-    let available_oc_interface = available_overconstrained_interface_correction(
-        dae_model.metadata.overconstrained_interface_count,
-        dae_model.metadata.oc_break_edge_scalar_count,
-    );
-    let f_z_scalar = count_discrete_real_update_scalars(dae_model);
-    let f_m_scalar = count_discrete_valued_update_scalars(dae_model);
-    let f_c_scalar = count_condition_memory_equation_scalars(dae_model);
-    let base_without_stream =
-        (f_x_scalar + f_z_scalar + f_m_scalar + f_c_scalar + algorithm_outputs + when_eq_scalar)
-            as i64;
-    let stream_needed = (unknowns - base_without_stream).max(0);
-    let effective_stream =
-        (dae_model.metadata.stream_interface_equation_count as i64).min(stream_needed);
-    let base_without_iflow = base_without_stream + effective_stream;
-    // Interface-flow equations should only compensate a remaining local deficit.
-    // This prevents double-counting when explicit unconnected-flow equations
-    // already close top-level connector flows in standalone models.
-    let iflow_needed = (unknowns - base_without_iflow).max(0);
-    let effective_iflow = (dae_model.metadata.interface_flow_count as i64).min(iflow_needed);
-    let base_equations = base_without_iflow + effective_iflow;
-    // OC interface correction must never over-correct a model that is already
-    // balanced (or over-determined) before OC terms are applied.
-    let oc_needed = (unknowns - base_equations).max(0);
-    let effective_oc_interface = available_oc_interface.min(oc_needed);
-
-    let raw_equations = base_equations + effective_oc_interface;
-    let raw_balance = raw_equations - unknowns;
-
-    // Per MLS §9.4: subtract break edge excess (cycles in OC graph).
-    // Cap the correction so it only reduces positive balance toward zero.
-    let effective_brk = brk.min(raw_balance.max(0));
-    raw_balance - effective_brk
+/// Check if the system is balanced (equations match unknowns).
+pub fn is_balanced(dae_model: &dae::Dae) -> BalanceResult<bool> {
+    Ok(balance(dae_model)? == 0)
 }
 
 /// Return detailed breakdown of the balance calculation components.
-pub fn balance_detail(dae_model: &dae::Dae) -> BalanceDetail {
+pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
     let state_unknowns: usize = dae_model.variables.states.values().map(|v| v.size()).sum();
     let alg_unknowns: usize = dae_model
         .variables
@@ -160,16 +124,16 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceDetail {
         .sum();
     let output_unknowns: usize = dae_model.variables.outputs.values().map(|v| v.size()).sum();
     let discrete_real_unknowns = count_referenced_discrete_real_unknown_scalars(dae_model);
-    let discrete_valued_unknowns = count_referenced_discrete_valued_unknown_scalars(dae_model);
+    let discrete_valued_unknowns = count_referenced_discrete_valued_unknown_scalars(dae_model)?;
     // See balance(): algorithms/when-equations are represented through
     // lowered B.1 rows by this phase, not counted as separate terms here.
     let algorithm_outputs = 0usize;
     let when_eq_scalar = 0usize;
     let f_x_scalar = count_f_x_scalars_with_continuous_unknowns(dae_model);
     let f_z_scalar = count_discrete_real_update_scalars(dae_model);
-    let f_m_scalar = count_discrete_valued_update_scalars(dae_model);
+    let f_m_scalar = count_discrete_valued_update_scalars(dae_model)?;
     let f_c_scalar = count_condition_memory_equation_scalars(dae_model);
-    BalanceDetail {
+    Ok(BalanceDetail {
         state_unknowns,
         alg_unknowns,
         output_unknowns,
@@ -182,37 +146,39 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceDetail {
         algorithm_outputs,
         when_eq_scalar,
         interface_flow_count: dae_model.metadata.interface_flow_count,
-        stream_interface_equation_count: dae_model.metadata.stream_interface_equation_count,
         overconstrained_interface_count: dae_model.metadata.overconstrained_interface_count,
         oc_break_edge_scalar_count: dae_model.metadata.oc_break_edge_scalar_count,
-    }
+    })
 }
 
 /// Return `(effective_equations, unknowns)` for unbalanced error diagnostics.
 ///
 /// Uses the same clamping logic as `balance()` so the gate and the error
 /// payload always agree.
-pub fn equations_unknowns(dae_model: &dae::Dae) -> (usize, usize) {
-    let detail = balance_detail(dae_model);
+pub fn equations_unknowns(dae_model: &dae::Dae) -> BalanceResult<(usize, usize)> {
+    let detail = balance_detail(dae_model)?;
+    Ok(detail.equations_unknowns())
+}
+
+fn balance_from_detail(detail: &BalanceDetail) -> i64 {
+    let (equations, unknowns) = equations_unknowns_from_detail(detail);
+    equations as i64 - unknowns as i64
+}
+
+fn equations_unknowns_from_detail(detail: &BalanceDetail) -> (usize, usize) {
     let unknowns = detail.state_unknowns
         + detail.alg_unknowns
         + detail.output_unknowns
         + detail.discrete_real_unknowns
         + detail.discrete_valued_unknowns;
     let brk = detail.oc_break_edge_scalar_count as i64;
-    let available_oc_interface = available_overconstrained_interface_correction(
-        detail.overconstrained_interface_count,
-        detail.oc_break_edge_scalar_count,
-    );
-    let base_without_stream = (detail.f_x_scalar
+    let available_oc_interface = detail.overconstrained_interface_count.max(0);
+    let base_without_iflow = (detail.f_x_scalar
         + detail.f_z_scalar
         + detail.f_m_scalar
         + detail.f_c_scalar
         + detail.algorithm_outputs
         + detail.when_eq_scalar) as i64;
-    let stream_needed = (unknowns as i64 - base_without_stream).max(0);
-    let effective_stream = (detail.stream_interface_equation_count as i64).min(stream_needed);
-    let base_without_iflow = base_without_stream + effective_stream;
     let iflow_needed = (unknowns as i64 - base_without_iflow).max(0);
     let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
     let base_equations = base_without_iflow + effective_iflow;
@@ -222,699 +188,122 @@ pub fn equations_unknowns(dae_model: &dae::Dae) -> (usize, usize) {
     let raw_balance = raw_equations - unknowns as i64;
     let effective_brk = brk.min(raw_balance.max(0));
     let equations = (raw_equations - effective_brk) as usize;
-    if balance_debug_enabled() {
-        log_balance_debug_line(format!(
-            "DEBUG BALANCE DETAIL: equations={} unknowns={} balance={} state={} alg={} out={} z_unknown={} m_unknown={} f_x={} f_z={} f_m={} f_c={} stream={} effective_stream={} iflow={} effective_iflow={} oc={} effective_oc={} brk={} effective_brk={}",
-            equations,
-            unknowns,
-            equations as i64 - unknowns as i64,
-            detail.state_unknowns,
-            detail.alg_unknowns,
-            detail.output_unknowns,
-            detail.discrete_real_unknowns,
-            detail.discrete_valued_unknowns,
-            detail.f_x_scalar,
-            detail.f_z_scalar,
-            detail.f_m_scalar,
-            detail.f_c_scalar,
-            detail.stream_interface_equation_count,
-            effective_stream,
-            detail.interface_flow_count,
-            effective_iflow,
-            detail.overconstrained_interface_count,
-            effective_oc_interface,
-            detail.oc_break_edge_scalar_count,
-            effective_brk
-        ));
-    }
     (equations, unknowns)
 }
 
-fn available_overconstrained_interface_correction(
-    overconstrained_interface_count: i64,
-    oc_break_edge_scalar_count: usize,
-) -> i64 {
-    let explicit = overconstrained_interface_count.max(0);
-    if explicit > 0 || oc_break_edge_scalar_count == 0 {
-        return explicit;
+struct BalanceSymbolSet<'a> {
+    names: &'a HashSet<rumoca_core::VarName>,
+    /// Aggregate prefixes of `names` (`a.b` for `a.b.c`), so record- or
+    /// component-level references count as referencing their scalarized
+    /// members.
+    prefixes: HashSet<rumoca_core::VarName>,
+    def_ids: IndexSet<DefId>,
+    ancestry: &'a IndexMap<DefId, Vec<DefId>>,
+}
+
+impl<'a> BalanceSymbolSet<'a> {
+    fn new(dae_model: &'a dae::Dae, names: &'a HashSet<rumoca_core::VarName>) -> Self {
+        let def_ids = names
+            .iter()
+            .filter_map(|name| variable_def_id(dae_model, name))
+            .collect();
+        let mut prefixes = HashSet::new();
+        for name in names {
+            prefixes.extend(name.structural_ancestors());
+        }
+        Self {
+            names,
+            prefixes,
+            def_ids,
+            ancestry: &dae_model.metadata.symbol_ancestry,
+        }
     }
-    // Some flattened MSL overconstrained models retain break-edge metadata even
-    // when the explicit overconstrained interface count was lost. The caller
-    // clamps this value to the current underdetermined deficit, so this fallback
-    // can only close that deficit and cannot make overdetermined systems pass.
-    i64::MAX / 4
+
+    fn matches_reference(&self, reference: &rumoca_core::Reference) -> bool {
+        self.names.contains(reference.var_name())
+            || self.prefixes.contains(reference.var_name())
+            || reference
+                .target_def_id()
+                .is_some_and(|def_id| self.matches_def_id(def_id))
+    }
+
+    fn matches_variable(&self, name: &rumoca_core::VarName, variable: &dae::Variable) -> bool {
+        self.names.contains(name)
+            || variable_def_id_from_variable(variable)
+                .is_some_and(|def_id| self.matches_def_id(def_id))
+    }
+
+    fn matches_def_id(&self, def_id: DefId) -> bool {
+        self.def_ids.contains(&def_id)
+            || self
+                .ancestry
+                .get(&def_id)
+                .is_some_and(|chain| chain.iter().any(|ancestor| self.def_ids.contains(ancestor)))
+            || self.def_ids.iter().any(|candidate| {
+                self.ancestry
+                    .get(candidate)
+                    .is_some_and(|chain| chain.contains(&def_id))
+            })
+    }
+}
+
+fn variable_def_id(
+    dae_model: &dae::Dae,
+    name: &rumoca_core::VarName,
+) -> Option<rumoca_core::DefId> {
+    find_variable(dae_model, name)
+        .and_then(|variable| variable.component_ref.as_ref())
+        .and_then(|component_ref| component_ref.def_id)
+}
+
+fn find_variable<'a>(
+    dae_model: &'a dae::Dae,
+    name: &rumoca_core::VarName,
+) -> Option<&'a dae::Variable> {
+    dae_model
+        .variables
+        .states
+        .get(name)
+        .or_else(|| dae_model.variables.algebraics.get(name))
+        .or_else(|| dae_model.variables.outputs.get(name))
+        .or_else(|| dae_model.variables.inputs.get(name))
+        .or_else(|| dae_model.variables.discrete_reals.get(name))
+        .or_else(|| dae_model.variables.discrete_valued.get(name))
+        .or_else(|| dae_model.variables.parameters.get(name))
+        .or_else(|| dae_model.variables.constants.get(name))
 }
 
 pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -> usize {
     let continuous_unknowns = collect_continuous_unknown_names(dae_model);
     let input_names = collect_input_names(dae_model);
+    let continuous_unknown_symbols = BalanceSymbolSet::new(dae_model, &continuous_unknowns);
+    let input_symbols = BalanceSymbolSet::new(dae_model, &input_names);
     let component_defined_targets =
-        collect_component_defined_targets_for_balance(dae_model, &continuous_unknowns);
-    let mut connection_rank = ConnectionUpdateRank::new(IndexSet::new());
-    let debug_connection_rank = balance_debug_enabled();
-    let debug_connection_rank_summary = balance_debug_enabled();
-    let debug_class_summary = balance_debug_enabled();
-    let debug_prefix_filter = None;
-    let mut connection_raw = 0usize;
-    let mut connection_counted = 0usize;
-    let mut connection_drops = std::collections::BTreeMap::<String, (usize, usize)>::new();
-    let mut continuous_unknown_by_prefix = std::collections::BTreeMap::<String, usize>::new();
-    let mut input_only_by_prefix = std::collections::BTreeMap::<String, usize>::new();
-    let mut counted_connection_by_prefix = std::collections::BTreeMap::<String, usize>::new();
-    let count = dae_model
+        collect_component_defined_targets_for_balance(dae_model, &continuous_unknown_symbols);
+    let component_defined_symbols = BalanceSymbolSet::new(dae_model, &component_defined_targets);
+    dae_model
         .continuous
         .equations
         .iter()
-        .map(|eq| {
-            if !equation_counts_for_balance(
+        .filter(|eq| {
+            equation_counts_for_balance(
                 dae_model,
                 eq,
-                &continuous_unknowns,
-                &input_names,
-                &component_defined_targets,
-            ) {
-                debug_f_x_prefix_filter(
-                    &debug_prefix_filter,
-                    "excluded",
-                    0,
-                    eq,
-                    &continuous_unknowns,
-                    &input_names,
-                );
-                return 0;
-            }
-            let has_continuous_unknown =
-                equation_references_continuous_unknown(eq, &continuous_unknowns);
-            let has_input = equation_references_input(eq, &input_names);
-            if is_connection_origin(eq.origin.as_str()) {
-                if let Some(count) =
-                    count_continuous_connection_rank(eq, dae_model, &mut connection_rank)
-                {
-                    if debug_class_summary && count != 0 {
-                        let key = equation_debug_prefix(eq, &continuous_unknowns, &input_names);
-                        *counted_connection_by_prefix.entry(key).or_default() += count;
-                    }
-                    connection_raw += eq.scalar_count;
-                    connection_counted += count;
-                    if count != eq.scalar_count {
-                        let key = equation_debug_prefix(eq, &continuous_unknowns, &input_names);
-                        let entry = connection_drops.entry(key).or_default();
-                        entry.0 += eq.scalar_count;
-                        entry.1 += count;
-                    }
-                    if debug_connection_rank && count != eq.scalar_count {
-                        log_balance_debug_line(format!(
-                            "DEBUG CONTINUOUS CONNECTION RANK DROP: {} -> {} | {}",
-                            eq.scalar_count, count, eq.origin
-                        ));
-                    }
-                    debug_f_x_prefix_filter(
-                        &debug_prefix_filter,
-                        "included_connection",
-                        count,
-                        eq,
-                        &continuous_unknowns,
-                        &input_names,
-                    );
-                    return count;
-                }
-            }
-            if debug_class_summary {
-                let key = equation_debug_prefix(eq, &continuous_unknowns, &input_names);
-                if has_continuous_unknown {
-                    *continuous_unknown_by_prefix.entry(key).or_default() +=
-                        continuous_equation_balance_scalar_count(eq, &continuous_unknowns);
-                } else if has_input {
-                    *input_only_by_prefix.entry(key).or_default() +=
-                        continuous_equation_balance_scalar_count(eq, &continuous_unknowns);
-                }
-            }
-            let count = continuous_equation_balance_scalar_count(eq, &continuous_unknowns);
-            debug_f_x_prefix_filter(
-                &debug_prefix_filter,
-                "included",
-                count,
-                eq,
-                &continuous_unknowns,
-                &input_names,
-            );
-            count
-        })
-        .sum();
-    if debug_class_summary {
-        push_balance_debug_map_to_stderr(
-            "f_x_continuous_unknown",
-            continuous_unknown_by_prefix,
-            120,
-        );
-        push_balance_debug_map_to_stderr("f_x_input_only", input_only_by_prefix, 120);
-        push_balance_debug_map_to_stderr(
-            "f_x_connection_counted",
-            counted_connection_by_prefix,
-            120,
-        );
-    }
-    if debug_connection_rank_summary {
-        let mut drops = connection_drops.into_iter().collect::<Vec<_>>();
-        drops.sort_by_key(|(_, (raw, counted))| std::cmp::Reverse(raw.saturating_sub(*counted)));
-        log_balance_debug_line(format!(
-            "DEBUG CONTINUOUS CONNECTION RANK SUMMARY: raw={} counted={} dropped={}",
-            connection_raw,
-            connection_counted,
-            connection_raw.saturating_sub(connection_counted)
-        ));
-        for (key, (raw, counted)) in drops.into_iter().take(80) {
-            log_balance_debug_line(format!(
-                "  drop={:>6} raw={:>6} counted={:>6} {}",
-                raw.saturating_sub(counted),
-                raw,
-                counted,
-                key
-            ));
-        }
-    }
-    count
-}
-
-fn debug_f_x_prefix_filter(
-    filter: &Option<String>,
-    status: &str,
-    count: usize,
-    eq: &dae::Equation,
-    continuous_unknowns: &HashSet<rumoca_core::VarName>,
-    input_names: &HashSet<rumoca_core::VarName>,
-) {
-    let Some(filter) = filter else {
-        return;
-    };
-    let key = equation_debug_prefix(eq, continuous_unknowns, input_names);
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
-    let text = format!("{} {} {:?} {}", key, eq.origin, eq.lhs, refs.len());
-    if !text.contains(filter) {
-        return;
-    }
-    log_balance_debug_line(format!(
-        "DEBUG F_X FILTER {status}: count={count} scalar_count={} key={} lhs={:?} origin={} refs={:?}",
-        eq.scalar_count, key, eq.lhs, eq.origin, refs
-    ));
-}
-
-fn push_balance_debug_map_to_stderr(
-    label: &str,
-    counts: std::collections::BTreeMap<String, usize>,
-    limit: usize,
-) {
-    let total: usize = counts.values().sum();
-    let mut counts = counts.into_iter().collect::<Vec<_>>();
-    counts.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    log_balance_debug_line(format!("DEBUG DAE BALANCE {label}: total={total}"));
-    for (key, count) in counts.into_iter().take(limit) {
-        log_balance_debug_line(format!("  {count:>8} {key}"));
-    }
-}
-
-fn balance_debug_enabled() -> bool {
-    #[cfg(feature = "tracing")]
-    {
-        tracing::enabled!(target: "rumoca_phase_dae::debug", tracing::Level::DEBUG)
-    }
-    #[cfg(not(feature = "tracing"))]
-    {
-        false
-    }
-}
-
-fn log_balance_debug_line(message: String) {
-    #[cfg(feature = "tracing")]
-    tracing::debug!(target: "rumoca_phase_dae::debug", message = %message);
-
-    #[cfg(not(feature = "tracing"))]
-    let _ = message;
-}
-
-#[derive(Debug, Clone)]
-pub struct BalanceOriginReason {
-    pub origin: String,
-    pub continuous_unknown_scalars: usize,
-    pub input_only_scalars: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct BalanceUnclassifiedRef {
-    pub name: String,
-    pub scalar_count: usize,
-}
-
-pub fn balance_unclassified_refs(dae_model: &dae::Dae) -> Vec<BalanceUnclassifiedRef> {
-    let known_names = dae_model
-        .variables
-        .states
-        .keys()
-        .chain(dae_model.variables.algebraics.keys())
-        .chain(dae_model.variables.outputs.keys())
-        .chain(dae_model.variables.inputs.keys())
-        .chain(dae_model.variables.parameters.keys())
-        .chain(dae_model.variables.constants.keys())
-        .chain(dae_model.variables.discrete_reals.keys())
-        .chain(dae_model.variables.discrete_valued.keys())
-        .cloned()
-        .collect::<HashSet<_>>();
-    let mut counts = IndexMap::<String, usize>::new();
-    for eq in &dae_model.continuous.equations {
-        for name in eq_binary_var_refs(&eq.rhs) {
-            if name_matches_set(name, &known_names) {
-                continue;
-            }
-            *counts.entry(name.as_str().to_string()).or_default() += eq.scalar_count;
-        }
-    }
-    let mut out = counts
-        .into_iter()
-        .map(|(name, scalar_count)| BalanceUnclassifiedRef { name, scalar_count })
-        .collect::<Vec<_>>();
-    out.sort_by_key(|entry| std::cmp::Reverse(entry.scalar_count));
-    out
-}
-
-pub fn balance_counted_prefix_debug_lines(dae_model: &dae::Dae) -> Vec<String> {
-    let continuous_unknowns = collect_continuous_unknown_names(dae_model);
-    let input_names = collect_input_names(dae_model);
-    let component_defined_targets =
-        collect_component_defined_targets_for_balance(dae_model, &continuous_unknowns);
-    let mut connection_rank = ConnectionUpdateRank::new(IndexSet::new());
-    let mut continuous = std::collections::BTreeMap::<String, usize>::new();
-    for eq in &dae_model.continuous.equations {
-        if !equation_counts_for_balance(
-            dae_model,
-            eq,
-            &continuous_unknowns,
-            &input_names,
-            &component_defined_targets,
-        ) {
-            continue;
-        }
-        let count = if is_connection_origin(eq.origin.as_str()) {
-            count_continuous_connection_rank(eq, dae_model, &mut connection_rank)
-                .unwrap_or(eq.scalar_count)
-        } else {
-            eq.scalar_count
-        };
-        if count == 0 {
-            continue;
-        }
-        let key = equation_debug_prefix(eq, &continuous_unknowns, &input_names);
-        *continuous.entry(key).or_default() += count;
-    }
-
-    let mut unknowns = std::collections::BTreeMap::<String, usize>::new();
-    for (name, variable) in dae_model
-        .variables
-        .states
-        .iter()
-        .chain(dae_model.variables.algebraics.iter())
-        .chain(dae_model.variables.outputs.iter())
-    {
-        *unknowns
-            .entry(debug_name_prefix(name.as_str()))
-            .or_default() += variable.size();
-    }
-
-    let mut discrete_updates = std::collections::BTreeMap::<String, usize>::new();
-    let discrete_input_names = metadata_discrete_input_names(dae_model);
-    let connection_anchors =
-        collect_discrete_connection_balance_anchors(dae_model, &discrete_input_names);
-    let mut discrete_rank = ConnectionUpdateRank::new(connection_anchors);
-    for eq in &dae_model.discrete.valued_updates {
-        if is_discrete_input_update(eq, &discrete_input_names) {
-            continue;
-        }
-        let count = if is_discrete_connection_update_origin(eq.origin.as_str()) {
-            count_connection_update_rank(
-                eq,
-                &dae_model.variables.discrete_valued,
-                &mut discrete_rank,
+                &continuous_unknown_symbols,
+                &input_symbols,
+                &component_defined_symbols,
             )
-            .unwrap_or(eq.scalar_count)
-        } else {
-            eq.scalar_count
-        };
-        if count == 0 {
-            continue;
-        }
-        let key = equation_debug_prefix(
-            eq,
-            &dae_model
-                .variables
-                .discrete_valued
-                .keys()
-                .cloned()
-                .collect(),
-            &HashSet::new(),
-        );
-        *discrete_updates.entry(key).or_default() += count;
-    }
-
-    let mut lines = Vec::new();
-    push_top_debug_lines("continuous_counted", continuous, &mut lines);
-    push_top_debug_lines("continuous_unknowns", unknowns, &mut lines);
-    push_top_debug_lines("discrete_valued_updates", discrete_updates, &mut lines);
-    lines
-}
-
-pub fn balance_prefix_delta_debug_lines(dae_model: &dae::Dae) -> Vec<String> {
-    let continuous_unknowns = collect_continuous_unknown_names(dae_model);
-    let input_names = collect_input_names(dae_model);
-    let component_defined_targets =
-        collect_component_defined_targets_for_balance(dae_model, &continuous_unknowns);
-    let mut connection_rank = ConnectionUpdateRank::new(IndexSet::new());
-    let mut counted = std::collections::BTreeMap::<String, i64>::new();
-    for eq in &dae_model.continuous.equations {
-        if !equation_counts_for_balance(
-            dae_model,
-            eq,
-            &continuous_unknowns,
-            &input_names,
-            &component_defined_targets,
-        ) {
-            continue;
-        }
-        let count = if is_connection_origin(eq.origin.as_str()) {
-            count_continuous_connection_rank(eq, dae_model, &mut connection_rank)
-                .unwrap_or(eq.scalar_count)
-        } else {
-            eq.scalar_count
-        };
-        if count == 0 {
-            continue;
-        }
-        let key = equation_debug_prefix(eq, &continuous_unknowns, &input_names);
-        *counted.entry(key).or_default() += count as i64;
-    }
-
-    let mut unknowns = std::collections::BTreeMap::<String, i64>::new();
-    for (name, variable) in dae_model
-        .variables
-        .states
-        .iter()
-        .chain(dae_model.variables.algebraics.iter())
-        .chain(dae_model.variables.outputs.iter())
-    {
-        *unknowns
-            .entry(debug_name_prefix(name.as_str()))
-            .or_default() += variable.size() as i64;
-    }
-
-    let keys = counted
-        .keys()
-        .chain(unknowns.keys())
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut deltas = keys
-        .into_iter()
-        .filter_map(|key| {
-            let counted = counted.get(&key).copied().unwrap_or(0);
-            let unknowns = unknowns.get(&key).copied().unwrap_or(0);
-            let delta = counted - unknowns;
-            (delta != 0).then_some((key, counted, unknowns, delta))
         })
-        .collect::<Vec<_>>();
-    deltas.sort_by_key(|(_, _, _, delta)| std::cmp::Reverse(delta.abs()));
-
-    let mut lines = Vec::new();
-    lines.push("DEBUG DAE BALANCE CONTINUOUS PREFIX DELTAS:".to_string());
-    for (key, counted, unknowns, delta) in deltas.into_iter().take(240) {
-        lines.push(format!(
-            "  delta={delta:>8} counted={counted:>8} unknowns={unknowns:>8} {key}"
-        ));
-    }
-    lines
-}
-
-pub fn discrete_valued_prefix_delta_debug_lines(dae_model: &dae::Dae) -> Vec<String> {
-    let discrete_input_names = metadata_discrete_input_names(dae_model);
-    let mut equations = std::collections::BTreeMap::<String, i64>::new();
-    let connection_anchors =
-        collect_discrete_connection_balance_anchors(dae_model, &discrete_input_names);
-    let mut discrete_rank = ConnectionUpdateRank::new(connection_anchors);
-    for eq in &dae_model.discrete.valued_updates {
-        if is_discrete_input_update(eq, &discrete_input_names) {
-            continue;
-        }
-        let count = if is_discrete_connection_update_origin(eq.origin.as_str()) {
-            count_connection_update_rank(
-                eq,
-                &dae_model.variables.discrete_valued,
-                &mut discrete_rank,
-            )
-            .unwrap_or(eq.scalar_count)
-        } else {
-            eq.scalar_count
-        };
-        if count == 0 {
-            continue;
-        }
-        let key = eq
-            .lhs
-            .as_ref()
-            .map(|lhs| debug_name_prefix(lhs.as_str()))
-            .unwrap_or_else(|| debug_origin_key(eq.origin.as_str()));
-        *equations.entry(key).or_default() += count as i64;
-    }
-    let discrete_valued_names = dae_model
-        .variables
-        .discrete_valued
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    for eq in &dae_model.conditions.equations {
-        if !equation_lhs_matches_name(eq, &discrete_valued_names) {
-            continue;
-        }
-        let key = eq
-            .lhs
-            .as_ref()
-            .map(|lhs| debug_name_prefix(lhs.as_str()))
-            .unwrap_or_else(|| debug_origin_key(eq.origin.as_str()));
-        *equations.entry(key).or_default() += eq.scalar_count as i64;
-    }
-
-    let mut referenced = IndexMap::new();
-    let mut residual_unknowns = std::collections::BTreeMap::<String, i64>::new();
-    let target_scalar_counts = collect_update_target_scalar_counts(
-        &dae_model.variables.discrete_valued,
-        dae_model
-            .discrete
-            .valued_updates
-            .iter()
-            .chain(dae_model.conditions.equations.iter()),
-    );
-    for eq in &dae_model.discrete.valued_updates {
-        if eq.lhs.is_some() {
-            add_update_target_scalar_counts(
-                eq,
-                &dae_model.variables.discrete_valued,
-                &mut referenced,
-            );
-            if is_discrete_connection_update_origin(eq.origin.as_str()) {
-                insert_complete_connection_variable_names_from_expression(
-                    eq,
-                    &eq.rhs,
-                    &dae_model.variables.discrete_valued,
-                    &target_scalar_counts,
-                    &mut referenced,
-                );
-            }
-        } else if expression_references_included_variable(
-            &eq.rhs,
-            &dae_model.variables.discrete_valued,
-            &dae_model.variables.inputs,
-            &discrete_input_names,
-        ) {
-            let key = equation_debug_prefix(eq, &discrete_valued_names, &HashSet::new());
-            *residual_unknowns.entry(key).or_default() += eq.scalar_count as i64;
-        }
-    }
-    for eq in &dae_model.conditions.equations {
-        if eq.lhs.is_some() {
-            add_update_target_scalar_counts(
-                eq,
-                &dae_model.variables.discrete_valued,
-                &mut referenced,
-            );
-        }
-    }
-    let mut unknowns = residual_unknowns;
-    for (name, count) in referenced {
-        if variable_overlaps_any(&name, &dae_model.variables.inputs)
-            || name_matches_set(&name, &discrete_input_names)
-        {
-            continue;
-        }
-        if let Some(variable) = dae_model.variables.discrete_valued.get(&name) {
-            *unknowns
-                .entry(debug_name_prefix(name.as_str()))
-                .or_default() += count.min(variable.size()) as i64;
-        }
-    }
-
-    let keys = equations
-        .keys()
-        .chain(unknowns.keys())
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut deltas = keys
-        .into_iter()
-        .filter_map(|key| {
-            let counted = equations.get(&key).copied().unwrap_or(0);
-            let unknowns = unknowns.get(&key).copied().unwrap_or(0);
-            let delta = counted - unknowns;
-            (delta != 0).then_some((key, counted, unknowns, delta))
-        })
-        .collect::<Vec<_>>();
-    deltas.sort_by_key(|(_, _, _, delta)| std::cmp::Reverse(delta.abs()));
-
-    let mut lines = Vec::new();
-    lines.push("DEBUG DAE BALANCE DISCRETE VALUED PREFIX DELTAS:".to_string());
-    for (key, counted, unknowns, delta) in deltas.into_iter().take(240) {
-        lines.push(format!(
-            "  delta={delta:>8} counted={counted:>8} unknowns={unknowns:>8} {key}"
-        ));
-    }
-    lines
-}
-
-fn push_top_debug_lines(
-    label: &str,
-    counts: std::collections::BTreeMap<String, usize>,
-    lines: &mut Vec<String>,
-) {
-    let mut counts = counts.into_iter().collect::<Vec<_>>();
-    counts.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    lines.push(format!("DEBUG DAE BALANCE PREFIX {label}:"));
-    for (key, count) in counts.into_iter().take(120) {
-        lines.push(format!("  {count:>8} {key}"));
-    }
-}
-
-fn equation_debug_prefix(
-    eq: &dae::Equation,
-    primary_names: &HashSet<rumoca_core::VarName>,
-    secondary_names: &HashSet<rumoca_core::VarName>,
-) -> String {
-    if let Some(lhs) = &eq.lhs {
-        if name_matches_set(lhs, primary_names) || name_matches_set(lhs, secondary_names) {
-            return debug_name_prefix(lhs.as_str());
-        }
-    }
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
-    for name in &refs {
-        if name_matches_set(name, primary_names) {
-            return debug_name_prefix(name.as_str());
-        }
-    }
-    for name in &refs {
-        if name_matches_set(name, secondary_names) {
-            return debug_name_prefix(name.as_str());
-        }
-    }
-    debug_origin_key(eq.origin.as_str())
-}
-
-fn debug_name_prefix(name: &str) -> String {
-    let parts = first_two_debug_path_segments(name);
-    let Some(first) = parts.first() else {
-        return name.to_string();
-    };
-    let Some(second) = parts.get(1) else {
-        return (*first).to_string();
-    };
-    format!("{first}.{second}")
-}
-
-fn first_two_debug_path_segments(name: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    for (idx, byte) in name.bytes().enumerate() {
-        if byte != b'.' {
-            continue;
-        }
-        out.push(&name[start..idx]);
-        if out.len() == 2 {
-            return out;
-        }
-        start = idx + 1;
-    }
-    out.push(&name[start..]);
-    out
-}
-
-pub fn balance_origin_reasons(dae_model: &dae::Dae) -> Vec<BalanceOriginReason> {
-    let continuous_unknowns = collect_continuous_unknown_names(dae_model);
-    let input_names = collect_input_names(dae_model);
-    let component_defined_targets =
-        collect_component_defined_targets_for_balance(dae_model, &continuous_unknowns);
-    let mut origins = IndexMap::<String, (usize, usize)>::new();
-    for eq in &dae_model.continuous.equations {
-        if is_connection_origin(eq.origin.as_str())
-            && is_redundant_connection_alias(
-                dae_model,
-                eq,
-                &continuous_unknowns,
-                &component_defined_targets,
-            )
-        {
-            continue;
-        }
-        let key = debug_origin_key(eq.origin.as_str());
-        if equation_references_continuous_unknown(eq, &continuous_unknowns) {
-            origins.entry(key).or_default().0 += eq.scalar_count;
-            continue;
-        }
-        if is_connection_origin(eq.origin.as_str()) || eq.origin.starts_with("binding equation for")
-        {
-            continue;
-        }
-        if equation_references_input(eq, &input_names) {
-            origins.entry(key).or_default().1 += eq.scalar_count;
-        }
-    }
-    let mut out = origins
-        .into_iter()
-        .map(
-            |(origin, (continuous_unknown_scalars, input_only_scalars))| BalanceOriginReason {
-                origin,
-                continuous_unknown_scalars,
-                input_only_scalars,
-            },
-        )
-        .collect::<Vec<_>>();
-    out.sort_by_key(|entry| {
-        std::cmp::Reverse(entry.continuous_unknown_scalars + entry.input_only_scalars)
-    });
-    out
-}
-
-fn debug_origin_key(origin: &str) -> String {
-    if let Some((prefix, _)) = origin.split_once(" for ") {
-        return prefix.to_string();
-    }
-    if let Some((prefix, _)) = origin.split_once(" in ") {
-        return prefix.to_string();
-    }
-    if let Some((prefix, _)) = origin.split_once(':') {
-        return prefix.to_string();
-    }
-    origin.to_string()
+        .map(|eq| eq.scalar_count)
+        .sum()
 }
 
 fn equation_counts_for_balance(
     dae_model: &dae::Dae,
     eq: &dae::Equation,
-    continuous_unknowns: &HashSet<rumoca_core::VarName>,
-    input_names: &HashSet<rumoca_core::VarName>,
-    component_defined_targets: &HashSet<rumoca_core::VarName>,
+    continuous_unknowns: &BalanceSymbolSet,
+    input_names: &BalanceSymbolSet,
+    component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     if is_connection_origin(eq.origin.as_str())
         && is_redundant_connection_alias(
@@ -943,69 +332,23 @@ fn equation_counts_for_balance(
     equation_references_input(eq, input_names)
 }
 
-fn continuous_equation_balance_scalar_count(
-    eq: &dae::Equation,
-    continuous_unknowns: &HashSet<rumoca_core::VarName>,
-) -> usize {
-    if expression_base_refs_match_names(&eq.rhs, continuous_unknowns) {
-        return eq.scalar_count;
-    }
-    inferred_expression_reference_width(&eq.rhs, continuous_unknowns)
-        .map(|width| width.min(eq.scalar_count))
-        .unwrap_or(eq.scalar_count)
-}
-
-fn expression_base_refs_match_names(
-    expr: &rumoca_core::Expression,
-    names: &HashSet<rumoca_core::VarName>,
-) -> bool {
-    let mut refs = IndexSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.into_iter().any(|name| name_matches_set(&name, names))
-}
-
-fn inferred_expression_reference_width(
-    expr: &rumoca_core::Expression,
-    names: &HashSet<rumoca_core::VarName>,
-) -> Option<usize> {
-    expression_var_ref_names(expr)
-        .into_iter()
-        .filter_map(|name| reference_path_width(&name, names))
-        .max()
-}
-
-fn reference_path_width(
-    name: &rumoca_core::VarName,
-    names: &HashSet<rumoca_core::VarName>,
-) -> Option<usize> {
-    if names.contains(name) {
-        return Some(1);
-    }
-    let prefix = format!("{}.", name.as_str());
-    let count = names
-        .iter()
-        .filter(|candidate| candidate.as_str().starts_with(&prefix))
-        .count();
-    (count > 0).then_some(count)
-}
-
 fn is_redundant_connection_alias(
     _dae_model: &dae::Dae,
     eq: &dae::Equation,
-    continuous_unknowns: &HashSet<rumoca_core::VarName>,
-    component_defined_targets: &HashSet<rumoca_core::VarName>,
+    continuous_unknowns: &BalanceSymbolSet,
+    component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
-    let names = eq_binary_var_refs(&eq.rhs);
-    if names.len() != 2 {
+    let refs = eq_binary_var_refs(&eq.rhs);
+    if refs.len() != 2 {
         return false;
     }
-    let lhs = names[0];
-    let rhs = names[1];
+    let lhs = refs[0];
+    let rhs = refs[1];
 
-    let lhs_component_defined = name_matches_set(lhs, component_defined_targets);
-    let rhs_component_defined = name_matches_set(rhs, component_defined_targets);
-    let lhs_is_continuous_unknown = name_matches_set(lhs, continuous_unknowns);
-    let rhs_is_continuous_unknown = name_matches_set(rhs, continuous_unknowns);
+    let lhs_component_defined = component_defined_targets.matches_reference(lhs);
+    let rhs_component_defined = component_defined_targets.matches_reference(rhs);
+    let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
+    let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
 
     (lhs_component_defined && !rhs_is_continuous_unknown)
         || (rhs_component_defined && !lhs_is_continuous_unknown)
@@ -1013,7 +356,7 @@ fn is_redundant_connection_alias(
 
 fn collect_component_defined_targets_for_balance(
     dae_model: &dae::Dae,
-    continuous_unknowns: &HashSet<rumoca_core::VarName>,
+    continuous_unknowns: &BalanceSymbolSet,
 ) -> HashSet<rumoca_core::VarName> {
     let mut targets = HashSet::new();
     for eq in &dae_model.continuous.equations {
@@ -1022,10 +365,10 @@ fn collect_component_defined_targets_for_balance(
         }
         let unknown_refs = eq_binary_var_refs(&eq.rhs)
             .into_iter()
-            .filter(|name| name_matches_set(name, continuous_unknowns))
+            .filter(|name| continuous_unknowns.matches_reference(name))
             .collect::<Vec<_>>();
         if let [target] = unknown_refs.as_slice() {
-            targets.insert((*target).clone());
+            targets.insert(target.var_name().clone());
         }
     }
     targets
@@ -1048,29 +391,25 @@ fn collect_input_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::VarName> {
 
 fn count_discrete_real_update_scalars(dae_model: &dae::Dae) -> usize {
     let discrete_real_names = dae_model.variables.discrete_reals.keys().cloned().collect();
+    let discrete_real_symbols = BalanceSymbolSet::new(dae_model, &discrete_real_names);
     dae_model
         .discrete
         .real_updates
         .iter()
-        .filter(|eq| update_equation_targets_name(eq, &discrete_real_names))
+        .filter(|eq| update_equation_targets_symbol(eq, &discrete_real_symbols))
         .map(|eq| eq.scalar_count)
         .sum()
 }
 
-fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> usize {
+fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> BalanceResult<usize> {
     let discrete_input_names = metadata_discrete_input_names(dae_model);
+    let discrete_input_symbols = BalanceSymbolSet::new(dae_model, &discrete_input_names);
     let mut scalar_count = 0usize;
     let connection_anchors =
-        collect_discrete_connection_balance_anchors(dae_model, &discrete_input_names);
+        collect_discrete_connection_balance_anchors(dae_model, &discrete_input_names)?;
     let mut connection_rank = ConnectionUpdateRank::new(connection_anchors);
-    let debug_connection_rank = balance_debug_enabled();
-    let debug_connection_rank_summary = balance_debug_enabled();
-    let debug_connection_rank_filter: Option<String> = None;
-    let mut connection_raw = 0usize;
-    let mut connection_counted = 0usize;
-    let mut connection_drops = std::collections::BTreeMap::<String, (usize, usize)>::new();
     for eq in &dae_model.discrete.valued_updates {
-        if is_discrete_input_update(eq, &discrete_input_names) {
+        if is_discrete_input_update(eq, &discrete_input_symbols) {
             continue;
         }
         if is_discrete_connection_update_origin(eq.origin.as_str())
@@ -1080,87 +419,34 @@ fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> usize {
                 &mut connection_rank,
             )
         {
-            connection_raw += eq.scalar_count;
-            connection_counted += count;
-            if count != eq.scalar_count {
-                let key = discrete_connection_rank_debug_key(eq);
-                let entry = connection_drops.entry(key).or_default();
-                entry.0 += eq.scalar_count;
-                entry.1 += count;
-            }
-            if debug_connection_rank
-                && count != eq.scalar_count
-                && debug_connection_rank_filter
-                    .as_deref()
-                    .is_none_or(|filter| discrete_connection_rank_debug_text(eq).contains(filter))
-            {
-                log_balance_debug_line(format!(
-                    "DEBUG DISCRETE CONNECTION RANK DROP: {} -> {} | lhs={:?} | {}",
-                    eq.scalar_count, count, eq.lhs, eq.origin
-                ));
-            }
             scalar_count += count;
             continue;
         }
         scalar_count += eq.scalar_count;
     }
-    if debug_connection_rank_summary {
-        let mut drops = connection_drops.into_iter().collect::<Vec<_>>();
-        drops.sort_by_key(|(_, (raw, counted))| std::cmp::Reverse(raw.saturating_sub(*counted)));
-        log_balance_debug_line(format!(
-            "DEBUG DISCRETE CONNECTION RANK SUMMARY: raw={} counted={} dropped={}",
-            connection_raw,
-            connection_counted,
-            connection_raw.saturating_sub(connection_counted)
-        ));
-        for (key, (raw, counted)) in drops.into_iter().take(80) {
-            log_balance_debug_line(format!(
-                "  drop={:>6} raw={:>6} counted={:>6} {}",
-                raw.saturating_sub(counted),
-                raw,
-                counted,
-                key
-            ));
-        }
-    }
-    scalar_count
-}
-
-fn discrete_connection_rank_debug_text(eq: &dae::Equation) -> String {
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
-    format!("{} {:?} {:?}", eq.origin, eq.lhs, refs)
-}
-
-fn discrete_connection_rank_debug_key(eq: &dae::Equation) -> String {
-    if let Some(lhs) = &eq.lhs {
-        return debug_name_prefix(lhs.as_str());
-    }
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
-    if let Some(name) = refs.first() {
-        return debug_name_prefix(name.as_str());
-    }
-    debug_origin_key(eq.origin.as_str())
+    Ok(scalar_count)
 }
 
 fn collect_discrete_connection_balance_anchors(
     dae_model: &dae::Dae,
     discrete_input_names: &HashSet<rumoca_core::VarName>,
-) -> IndexSet<rumoca_core::VarName> {
+) -> BalanceResult<IndexSet<rumoca_core::VarName>> {
     let mut anchors = IndexSet::new();
     for name in discrete_input_names {
+        let variable = dae_model
+            .variables
+            .discrete_valued
+            .get(name)
+            .ok_or_else(|| BalanceError::MissingDiscreteVariableMetadata {
+                name: name.clone(),
+                span: rumoca_core::Span::DUMMY,
+            })?;
         insert_connection_rank_nodes(
             name,
-            dae_model
-                .variables
-                .discrete_valued
-                .get(name)
-                .map(dae::Variable::size)
-                .unwrap_or(1),
+            variable.size(),
             &dae_model.variables.discrete_valued,
             &mut anchors,
-        );
+        )?;
     }
     for eq in dae_model
         .discrete
@@ -1173,14 +459,14 @@ fn collect_discrete_connection_balance_anchors(
         }
         if let Some(lhs) = &eq.lhs {
             insert_connection_rank_nodes(
-                lhs,
+                lhs.var_name(),
                 eq.scalar_count,
                 &dae_model.variables.discrete_valued,
                 &mut anchors,
-            );
+            )?;
         }
     }
-    anchors
+    Ok(anchors)
 }
 
 fn insert_connection_rank_nodes(
@@ -1188,28 +474,31 @@ fn insert_connection_rank_nodes(
     scalar_count: usize,
     variables: &IndexMap<rumoca_core::VarName, dae::Variable>,
     nodes: &mut IndexSet<rumoca_core::VarName>,
-) {
+) -> BalanceResult<()> {
     if let Some(expanded) = expand_connection_rank_nodes(name, scalar_count, variables) {
         nodes.extend(expanded);
     } else {
+        if scalar_count > 1 && !variables.contains_key(name) {
+            return Err(BalanceError::MissingDiscreteVariableMetadata {
+                name: name.clone(),
+                span: rumoca_core::Span::DUMMY,
+            });
+        }
         nodes.insert(name.clone());
     }
+    Ok(())
 }
 
-fn is_discrete_input_update(
-    eq: &dae::Equation,
-    discrete_input_names: &HashSet<rumoca_core::VarName>,
-) -> bool {
+fn is_discrete_input_update(eq: &dae::Equation, discrete_input_names: &BalanceSymbolSet) -> bool {
     let Some(lhs) = &eq.lhs else {
         return false;
     };
-    if !name_matches_set(lhs, discrete_input_names) {
+    if !discrete_input_names.matches_reference(lhs) {
         return false;
     }
-    let mut refs = IndexSet::new();
-    eq.rhs.collect_var_refs(&mut refs);
+    let refs = expression_var_refs(&eq.rhs);
     refs.into_iter()
-        .all(|name| name_matches_set(&name, discrete_input_names))
+        .all(|reference| discrete_input_names.matches_reference(reference))
 }
 
 struct ConnectionUpdateRank {
@@ -1304,33 +593,10 @@ fn count_connection_update_rank(
     )
 }
 
-fn count_continuous_connection_rank(
-    eq: &dae::Equation,
-    dae_model: &dae::Dae,
-    connection_rank: &mut ConnectionUpdateRank,
-) -> Option<usize> {
-    let names = eq_binary_var_ref_names(&eq.rhs);
-    if names.len() != 2 {
-        return None;
-    }
-    let lhs_nodes = expand_continuous_connection_rank_nodes(&names[0], eq.scalar_count, dae_model)?;
-    let rhs_nodes = expand_continuous_connection_rank_nodes(&names[1], eq.scalar_count, dae_model)?;
-    if lhs_nodes.len() != rhs_nodes.len() {
-        return None;
-    }
-    Some(
-        lhs_nodes
-            .into_iter()
-            .zip(rhs_nodes)
-            .filter(|(lhs, rhs)| connection_rank.add_edge(lhs.clone(), rhs.clone()))
-            .count(),
-    )
-}
-
 fn connection_update_var_refs(
     eq: &dae::Equation,
 ) -> Option<(rumoca_core::VarName, rumoca_core::VarName)> {
-    let lhs = eq.lhs.as_ref()?.clone();
+    let lhs = eq.lhs.as_ref()?.var_name().clone();
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = &eq.rhs
@@ -1381,31 +647,6 @@ fn expand_connection_rank_nodes(
     )
 }
 
-fn expand_continuous_connection_rank_nodes(
-    name: &rumoca_core::VarName,
-    scalar_count: usize,
-    dae_model: &dae::Dae,
-) -> Option<Vec<rumoca_core::VarName>> {
-    if scalar_count <= 1 {
-        return Some(vec![name.clone()]);
-    }
-    let variable = dae_model
-        .variables
-        .states
-        .get(name)
-        .or_else(|| dae_model.variables.algebraics.get(name))
-        .or_else(|| dae_model.variables.outputs.get(name))
-        .or_else(|| dae_model.variables.inputs.get(name))?;
-    if variable.size() < scalar_count {
-        return None;
-    }
-    Some(
-        (1..=scalar_count)
-            .map(|idx| rumoca_core::VarName::new(format!("{}[{idx}]", name.as_str())))
-            .collect(),
-    )
-}
-
 fn count_condition_memory_equation_scalars(dae_model: &dae::Dae) -> usize {
     let discrete_valued_names = dae_model
         .variables
@@ -1413,28 +654,31 @@ fn count_condition_memory_equation_scalars(dae_model: &dae::Dae) -> usize {
         .keys()
         .cloned()
         .collect();
+    let discrete_valued_symbols = BalanceSymbolSet::new(dae_model, &discrete_valued_names);
     dae_model
         .conditions
         .equations
         .iter()
-        .filter(|eq| equation_lhs_matches_name(eq, &discrete_valued_names))
+        .filter(|eq| equation_lhs_matches_symbol(eq, &discrete_valued_symbols))
         .map(|eq| eq.scalar_count)
         .sum()
 }
 
 fn count_referenced_discrete_real_unknown_scalars(dae_model: &dae::Dae) -> usize {
     count_referenced_update_unknown_scalars(
+        dae_model,
         &dae_model.variables.discrete_reals,
         &dae_model.variables.inputs,
         dae_model.discrete.real_updates.iter(),
     )
 }
 
-fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> usize {
+fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> BalanceResult<usize> {
     let mut referenced = IndexMap::new();
     let mut residual_scalars = 0usize;
     let discrete_input_names = metadata_discrete_input_names(dae_model);
     let target_scalar_counts = collect_update_target_scalar_counts(
+        dae_model,
         &dae_model.variables.discrete_valued,
         dae_model
             .discrete
@@ -1445,12 +689,14 @@ fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> usi
     for eq in &dae_model.discrete.valued_updates {
         if eq.lhs.is_some() {
             add_update_target_scalar_counts(
+                dae_model,
                 eq,
                 &dae_model.variables.discrete_valued,
                 &mut referenced,
             );
             if is_discrete_connection_update_origin(eq.origin.as_str()) {
                 insert_complete_connection_variable_names_from_expression(
+                    dae_model,
                     eq,
                     &eq.rhs,
                     &dae_model.variables.discrete_valued,
@@ -1459,6 +705,7 @@ fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> usi
                 );
             }
         } else if expression_references_included_variable(
+            dae_model,
             &eq.rhs,
             &dae_model.variables.discrete_valued,
             &dae_model.variables.inputs,
@@ -1470,40 +717,21 @@ fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> usi
     for eq in &dae_model.conditions.equations {
         if eq.lhs.is_some() {
             add_update_target_scalar_counts(
+                dae_model,
                 eq,
                 &dae_model.variables.discrete_valued,
                 &mut referenced,
             );
         }
     }
-    if balance_debug_enabled() {
-        for (name, variable) in &dae_model.variables.discrete_valued {
-            let excluded = variable_overlaps_any(name, &dae_model.variables.inputs)
-                || name_matches_set(name, &discrete_input_names);
-            let count = referenced
-                .get(name)
-                .copied()
-                .unwrap_or(0)
-                .min(variable.size());
-            if excluded || count < variable.size() {
-                log_balance_debug_line(format!(
-                    "DEBUG DISCRETE UNKNOWN COUNT: name={} size={} count={} excluded={} causality={:?}",
-                    name,
-                    variable.size(),
-                    count,
-                    excluded,
-                    variable.causality
-                ));
-            }
-        }
-    }
-    residual_scalars
+    Ok(residual_scalars
         + count_referenced_scalar_counts(
+            dae_model,
             &dae_model.variables.discrete_valued,
             &dae_model.variables.inputs,
             &discrete_input_names,
             &referenced,
-        )
+        ))
 }
 
 fn metadata_discrete_input_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::VarName> {
@@ -1516,20 +744,22 @@ fn metadata_discrete_input_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::V
 }
 
 fn count_referenced_update_unknown_scalars<'a>(
+    dae_model: &dae::Dae,
     variables: &'a indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     excluded: &'a indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     equations: impl Iterator<Item = &'a dae::Equation>,
 ) -> usize {
     let equations = equations.collect::<Vec<_>>();
     let target_scalar_counts =
-        collect_update_target_scalar_counts(variables, equations.iter().copied());
+        collect_update_target_scalar_counts(dae_model, variables, equations.iter().copied());
     let mut referenced = IndexMap::new();
     let mut residual_scalars = 0usize;
     for eq in equations {
         if eq.lhs.is_some() {
-            add_update_target_scalar_counts(eq, variables, &mut referenced);
+            add_update_target_scalar_counts(dae_model, eq, variables, &mut referenced);
             if is_discrete_connection_update_origin(eq.origin.as_str()) {
                 insert_complete_connection_variable_names_from_expression(
+                    dae_model,
                     eq,
                     &eq.rhs,
                     variables,
@@ -1538,6 +768,7 @@ fn count_referenced_update_unknown_scalars<'a>(
                 );
             }
         } else if expression_references_included_variable(
+            dae_model,
             &eq.rhs,
             variables,
             excluded,
@@ -1547,10 +778,17 @@ fn count_referenced_update_unknown_scalars<'a>(
         }
     }
     residual_scalars
-        + count_referenced_scalar_counts(variables, excluded, &HashSet::new(), &referenced)
+        + count_referenced_scalar_counts(
+            dae_model,
+            variables,
+            excluded,
+            &HashSet::new(),
+            &referenced,
+        )
 }
 
 fn collect_update_target_scalar_counts<'a>(
+    dae_model: &dae::Dae,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     equations: impl Iterator<Item = &'a dae::Equation>,
 ) -> IndexMap<rumoca_core::VarName, usize> {
@@ -1559,8 +797,8 @@ fn collect_update_target_scalar_counts<'a>(
         let Some(lhs) = &eq.lhs else {
             continue;
         };
-        for candidate in variables.keys() {
-            if variable_names_overlap(lhs, candidate) {
+        for (candidate, variable) in variables {
+            if reference_overlaps_variable(dae_model, lhs, candidate, variable) {
                 *counts.entry(candidate.clone()).or_insert(0) += eq.scalar_count;
             }
         }
@@ -1569,67 +807,76 @@ fn collect_update_target_scalar_counts<'a>(
 }
 
 fn expression_references_included_variable(
+    dae_model: &dae::Dae,
     expr: &rumoca_core::Expression,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     excluded: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     extra_excluded: &HashSet<rumoca_core::VarName>,
 ) -> bool {
-    let included_names = variables
-        .keys()
-        .filter(|name| !variable_overlaps_any(name, excluded))
-        .filter(|name| !name_matches_set(name, extra_excluded))
-        .cloned()
-        .collect();
-    expression_references_names(expr, &included_names)
+    let extra_excluded = BalanceSymbolSet::new(dae_model, extra_excluded);
+    expression_var_refs(expr).into_iter().any(|reference| {
+        variables.iter().any(|(name, variable)| {
+            reference_overlaps_variable(dae_model, reference, name, variable)
+                && !variable_overlaps_any(dae_model, name, variable, excluded)
+                && !variable_matches_symbol_set(dae_model, name, variable, &extra_excluded)
+        })
+    })
 }
 
 fn count_referenced_scalar_counts(
+    dae_model: &dae::Dae,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     excluded: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     extra_excluded: &HashSet<rumoca_core::VarName>,
     referenced: &IndexMap<rumoca_core::VarName, usize>,
 ) -> usize {
+    let extra_excluded = BalanceSymbolSet::new(dae_model, extra_excluded);
     referenced
         .iter()
-        .filter(|(name, _)| !variable_overlaps_any(name, excluded))
-        .filter(|(name, _)| !name_matches_set(name, extra_excluded))
-        .filter_map(|(name, count)| variables.get(name).map(|variable| (*count, variable)))
-        .map(|(count, variable)| count.min(variable.size()))
+        .filter_map(|(name, count)| variables.get(name).map(|variable| (name, *count, variable)))
+        .filter(|(name, _, variable)| !variable_overlaps_any(dae_model, name, variable, excluded))
+        .filter(|(name, _, variable)| {
+            !variable_matches_symbol_set(dae_model, name, variable, &extra_excluded)
+        })
+        .map(|(_, count, variable)| count.min(variable.size()))
         .sum()
 }
 
 fn variable_overlaps_any(
+    dae_model: &dae::Dae,
     name: &rumoca_core::VarName,
+    variable: &dae::Variable,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
 ) -> bool {
-    variables
-        .keys()
-        .any(|candidate| variable_names_overlap(name, candidate))
+    variables.iter().any(|(candidate_name, candidate)| {
+        variables_overlap_by_identity(dae_model, name, variable, candidate_name, candidate)
+    })
 }
 
 fn add_update_target_scalar_counts(
+    dae_model: &dae::Dae,
     eq: &dae::Equation,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     referenced: &mut IndexMap<rumoca_core::VarName, usize>,
 ) {
     if let Some(lhs) = &eq.lhs {
-        add_matching_variable_scalar_counts(lhs, eq.scalar_count, variables, referenced);
+        add_matching_variable_scalar_counts(dae_model, lhs, eq.scalar_count, variables, referenced);
     }
 }
 
 fn insert_complete_connection_variable_names_from_expression(
+    dae_model: &dae::Dae,
     eq: &dae::Equation,
     expr: &rumoca_core::Expression,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     target_scalar_counts: &IndexMap<rumoca_core::VarName, usize>,
     referenced: &mut IndexMap<rumoca_core::VarName, usize>,
 ) {
-    let mut refs = IndexSet::new();
-    expr.collect_var_refs(&mut refs);
-    for name in refs {
+    for name in expression_var_refs(expr) {
         insert_complete_connection_variable_names(
             eq,
-            &name,
+            dae_model,
+            name,
             variables,
             target_scalar_counts,
             referenced,
@@ -1639,15 +886,18 @@ fn insert_complete_connection_variable_names_from_expression(
 
 fn insert_complete_connection_variable_names(
     eq: &dae::Equation,
-    name: &rumoca_core::VarName,
+    dae_model: &dae::Dae,
+    reference: &rumoca_core::Reference,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     target_scalar_counts: &IndexMap<rumoca_core::VarName, usize>,
     referenced: &mut IndexMap<rumoca_core::VarName, usize>,
 ) {
     for (candidate, variable) in variables {
-        if variable_names_overlap(name, candidate)
+        if reference_overlaps_variable(dae_model, reference, candidate, variable)
             && (eq.scalar_count >= variable.size()
-                || target_scalar_counts.get(candidate).copied().unwrap_or(0) >= variable.size())
+                || target_scalar_counts
+                    .get(candidate)
+                    .is_some_and(|count| *count >= variable.size()))
         {
             add_referenced_scalar_count(candidate, variable.size(), referenced);
         }
@@ -1655,13 +905,14 @@ fn insert_complete_connection_variable_names(
 }
 
 fn add_matching_variable_scalar_counts(
-    name: &rumoca_core::VarName,
+    dae_model: &dae::Dae,
+    reference: &rumoca_core::Reference,
     scalar_count: usize,
     variables: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
     referenced: &mut IndexMap<rumoca_core::VarName, usize>,
 ) {
-    for candidate in variables.keys() {
-        if variable_names_overlap(name, candidate) {
+    for (candidate, variable) in variables {
+        if reference_overlaps_variable(dae_model, reference, candidate, variable) {
             add_referenced_scalar_count(candidate, scalar_count, referenced);
         }
     }
@@ -1675,229 +926,111 @@ fn add_referenced_scalar_count(
     *referenced.entry(name.clone()).or_insert(0) += scalar_count;
 }
 
-fn variable_names_overlap(lhs: &rumoca_core::VarName, rhs: &rumoca_core::VarName) -> bool {
-    if lhs == rhs {
-        return true;
-    }
-    if var_name_base_overlaps(lhs, rhs) || var_name_base_overlaps(rhs, lhs) {
-        return true;
-    }
-    let lhs_prefix = format!("{}.", lhs.as_str());
-    let rhs_prefix = format!("{}.", rhs.as_str());
-    lhs.as_str().starts_with(&rhs_prefix) || rhs.as_str().starts_with(&lhs_prefix)
+fn reference_overlaps_variable(
+    dae_model: &dae::Dae,
+    reference: &rumoca_core::Reference,
+    variable_name: &rumoca_core::VarName,
+    variable: &dae::Variable,
+) -> bool {
+    reference.var_name() == variable_name
+        || reference.target_def_id().is_some_and(|reference_def_id| {
+            variable_def_id_from_variable(variable).is_some_and(|variable_def_id| {
+                def_ids_overlap(dae_model, reference_def_id, variable_def_id)
+            })
+        })
 }
 
-fn var_name_base_overlaps(name: &rumoca_core::VarName, candidate: &rumoca_core::VarName) -> bool {
-    let Some(base_name) = dae::component_base_name(name.as_str()) else {
-        return false;
-    };
-    if base_name == name.as_str() {
-        return false;
-    }
-    if base_name == candidate.as_str() {
-        return true;
-    }
-    let base_prefix = format!("{base_name}.");
-    candidate.as_str().starts_with(&base_prefix)
+fn variable_matches_symbol_set(
+    _dae_model: &dae::Dae,
+    name: &rumoca_core::VarName,
+    variable: &dae::Variable,
+    symbols: &BalanceSymbolSet,
+) -> bool {
+    symbols.matches_variable(name, variable)
 }
 
-fn update_equation_targets_name(eq: &dae::Equation, names: &HashSet<rumoca_core::VarName>) -> bool {
-    if equation_lhs_matches_name(eq, names) {
+fn variables_overlap_by_identity(
+    dae_model: &dae::Dae,
+    lhs_name: &rumoca_core::VarName,
+    lhs_variable: &dae::Variable,
+    rhs_name: &rumoca_core::VarName,
+    rhs_variable: &dae::Variable,
+) -> bool {
+    lhs_name == rhs_name
+        || variable_def_id_from_variable(lhs_variable).is_some_and(|lhs_def_id| {
+            variable_def_id_from_variable(rhs_variable)
+                .is_some_and(|rhs_def_id| def_ids_overlap(dae_model, lhs_def_id, rhs_def_id))
+        })
+}
+
+fn variable_def_id_from_variable(variable: &dae::Variable) -> Option<DefId> {
+    variable
+        .component_ref
+        .as_ref()
+        .and_then(|component_ref| component_ref.def_id)
+}
+
+fn def_ids_overlap(dae_model: &dae::Dae, lhs: DefId, rhs: DefId) -> bool {
+    lhs == rhs
+        || dae_model
+            .metadata
+            .symbol_ancestry
+            .get(&lhs)
+            .is_some_and(|chain| chain.contains(&rhs))
+        || dae_model
+            .metadata
+            .symbol_ancestry
+            .get(&rhs)
+            .is_some_and(|chain| chain.contains(&lhs))
+}
+
+fn update_equation_targets_symbol(eq: &dae::Equation, names: &BalanceSymbolSet) -> bool {
+    if equation_lhs_matches_symbol(eq, names) {
         return true;
     }
     if eq.lhs.is_some() {
         return false;
     }
-    expression_references_names(&eq.rhs, names)
+    expression_var_refs(&eq.rhs)
+        .into_iter()
+        .any(|reference| names.matches_reference(reference))
 }
 
-fn equation_lhs_matches_name(eq: &dae::Equation, names: &HashSet<rumoca_core::VarName>) -> bool {
+fn equation_lhs_matches_symbol(eq: &dae::Equation, names: &BalanceSymbolSet) -> bool {
     eq.lhs
         .as_ref()
-        .is_some_and(|name| name_matches_set(name, names))
-}
-
-fn expression_references_names(
-    expr: &rumoca_core::Expression,
-    names: &HashSet<rumoca_core::VarName>,
-) -> bool {
-    let refs = expression_var_ref_names(expr);
-    refs.into_iter().any(|name| name_matches_set(&name, names))
+        .is_some_and(|reference| names.matches_reference(reference))
 }
 
 fn equation_references_continuous_unknown(
     eq: &dae::Equation,
-    continuous_unknowns: &HashSet<rumoca_core::VarName>,
+    continuous_unknowns: &BalanceSymbolSet,
 ) -> bool {
     if eq
         .lhs
         .as_ref()
-        .is_some_and(|name| name_matches_set(name, continuous_unknowns))
+        .is_some_and(|name| continuous_unknowns.matches_reference(name))
     {
         return true;
     }
 
-    let refs = expression_var_ref_names(&eq.rhs);
+    let refs = expression_var_refs(&eq.rhs);
     refs.into_iter()
-        .any(|name| name_matches_set(&name, continuous_unknowns))
+        .any(|reference| continuous_unknowns.matches_reference(reference))
 }
 
-fn equation_references_input(
-    eq: &dae::Equation,
-    input_names: &HashSet<rumoca_core::VarName>,
-) -> bool {
+fn equation_references_input(eq: &dae::Equation, input_names: &BalanceSymbolSet) -> bool {
     if eq
         .lhs
         .as_ref()
-        .is_some_and(|name| name_matches_set(name, input_names))
+        .is_some_and(|name| input_names.matches_reference(name))
     {
         return true;
     }
 
-    let refs = expression_var_ref_names(&eq.rhs);
+    let refs = expression_var_refs(&eq.rhs);
     refs.into_iter()
-        .any(|name| name_matches_set(&name, input_names))
-}
-
-fn expression_var_ref_names(expr: &rumoca_core::Expression) -> IndexSet<rumoca_core::VarName> {
-    let mut refs = IndexSet::new();
-    collect_expression_var_ref_names(expr, &mut refs);
-    refs
-}
-
-fn collect_expression_var_ref_names(
-    expr: &rumoca_core::Expression,
-    refs: &mut IndexSet<rumoca_core::VarName>,
-) {
-    match expr {
-        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
-            collect_expression_var_ref_names(lhs, refs);
-            collect_expression_var_ref_names(rhs, refs);
-        }
-        rumoca_core::Expression::Unary { rhs, .. } => collect_expression_var_ref_names(rhs, refs),
-        rumoca_core::Expression::VarRef { subscripts, .. } => {
-            if let Some(path) = expression_reference_path(expr) {
-                refs.insert(rumoca_core::VarName::new(path));
-            }
-            collect_subscript_expr_var_ref_names(subscripts, refs);
-        }
-        rumoca_core::Expression::BuiltinCall { args, .. }
-        | rumoca_core::Expression::FunctionCall { args, .. }
-        | rumoca_core::Expression::Array { elements: args, .. }
-        | rumoca_core::Expression::Tuple { elements: args, .. } => {
-            for arg in args {
-                collect_expression_var_ref_names(arg, refs);
-            }
-        }
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (condition, body) in branches {
-                collect_expression_var_ref_names(condition, refs);
-                collect_expression_var_ref_names(body, refs);
-            }
-            collect_expression_var_ref_names(else_branch, refs);
-        }
-        rumoca_core::Expression::Range {
-            start, step, end, ..
-        } => {
-            collect_expression_var_ref_names(start, refs);
-            if let Some(step) = step {
-                collect_expression_var_ref_names(step, refs);
-            }
-            collect_expression_var_ref_names(end, refs);
-        }
-        rumoca_core::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => {
-            collect_expression_var_ref_names(expr, refs);
-            for index in indices {
-                collect_expression_var_ref_names(&index.range, refs);
-            }
-            if let Some(filter) = filter {
-                collect_expression_var_ref_names(filter, refs);
-            }
-        }
-        rumoca_core::Expression::Index { subscripts, .. } => {
-            if let Some(path) = expression_reference_path(expr) {
-                refs.insert(rumoca_core::VarName::new(path));
-            }
-            collect_subscript_expr_var_ref_names(subscripts, refs);
-        }
-        rumoca_core::Expression::FieldAccess { .. } => {
-            if let Some(path) = expression_reference_path(expr) {
-                refs.insert(rumoca_core::VarName::new(path));
-            }
-        }
-        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
-    }
-}
-
-fn collect_subscript_expr_var_ref_names(
-    subscripts: &[Subscript],
-    refs: &mut IndexSet<rumoca_core::VarName>,
-) {
-    for subscript in subscripts {
-        if let Subscript::Expr { expr, .. } = subscript {
-            collect_expression_var_ref_names(expr, refs);
-        }
-    }
-}
-
-fn expression_reference_path(expr: &rumoca_core::Expression) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => Some(
-            append_connection_rank_subscripts(name.var_name().as_str(), subscripts)
-                .as_str()
-                .to_string(),
-        ),
-        rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } => {
-            let base = expression_reference_path(base)?;
-            Some(
-                append_connection_rank_subscripts(&base, subscripts)
-                    .as_str()
-                    .to_string(),
-            )
-        }
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let base = expression_reference_path(base)?;
-            Some(format!("{base}.{field}"))
-        }
-        _ => None,
-    }
-}
-fn name_matches_set(name: &rumoca_core::VarName, names: &HashSet<rumoca_core::VarName>) -> bool {
-    if names.contains(name) {
-        return true;
-    }
-    if let Some(base_name) = dae::component_base_name(name.as_str())
-        && base_name != name.as_str()
-    {
-        let base = rumoca_core::VarName::new(base_name.clone());
-        if names.contains(&base) {
-            return true;
-        }
-        let base_prefix = format!("{base_name}.");
-        if names
-            .iter()
-            .any(|candidate| candidate.as_str().starts_with(&base_prefix))
-        {
-            return true;
-        }
-    }
-    let prefix = format!("{}.", name.as_str());
-    names
-        .iter()
-        .any(|candidate| candidate.as_str().starts_with(&prefix))
+        .any(|reference| input_names.matches_reference(reference))
 }
 
 pub(crate) fn is_connection_origin(origin: &str) -> bool {
@@ -1908,8 +1041,8 @@ fn is_discrete_connection_update_origin(origin: &str) -> bool {
     is_connection_origin(origin) || origin.starts_with("explicit connection equation:")
 }
 
-/// Extract VarName references from a `lhs - rhs` binary expression.
-fn eq_binary_var_refs(expr: &rumoca_core::Expression) -> Vec<&rumoca_core::VarName> {
+/// Extract references from a `lhs - rhs` binary expression.
+fn eq_binary_var_refs(expr: &rumoca_core::Expression) -> Vec<&rumoca_core::Reference> {
     let rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs,
@@ -1922,45 +1055,102 @@ fn eq_binary_var_refs(expr: &rumoca_core::Expression) -> Vec<&rumoca_core::VarNa
 
     let mut names = Vec::with_capacity(2);
     if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
-        names.push(name.var_name());
+        names.push(name);
     }
     if let rumoca_core::Expression::VarRef { name, .. } = rhs.as_ref() {
-        names.push(name.var_name());
+        names.push(name);
     }
     names
 }
 
-fn eq_binary_var_ref_names(expr: &rumoca_core::Expression) -> Vec<rumoca_core::VarName> {
-    let rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs,
-        rhs,
-        span: _,
-    } = expr
-    else {
-        return Vec::new();
-    };
+fn expression_var_refs(expr: &rumoca_core::Expression) -> Vec<&rumoca_core::Reference> {
+    let mut refs = Vec::new();
+    append_expression_var_refs(expr, &mut refs);
+    refs
+}
 
-    let mut names = Vec::with_capacity(2);
-    if let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = lhs.as_ref()
-    {
-        names.push(append_connection_rank_subscripts(
-            name.var_name().as_str(),
-            subscripts,
-        ));
+fn append_expression_var_refs<'a>(
+    expr: &'a rumoca_core::Expression,
+    refs: &mut Vec<&'a rumoca_core::Reference>,
+) {
+    match expr {
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            append_expression_var_refs(lhs, refs);
+            append_expression_var_refs(rhs, refs);
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => append_expression_var_refs(rhs, refs),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            refs.push(name);
+            append_subscript_var_refs(subscripts, refs);
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                append_expression_var_refs(arg, refs);
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                append_expression_var_refs(condition, refs);
+                append_expression_var_refs(value, refs);
+            }
+            append_expression_var_refs(else_branch, refs);
+        }
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            for element in elements {
+                append_expression_var_refs(element, refs);
+            }
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            append_expression_var_refs(start, refs);
+            if let Some(step) = step {
+                append_expression_var_refs(step, refs);
+            }
+            append_expression_var_refs(end, refs);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            append_expression_var_refs(expr, refs);
+            for index in indices {
+                append_expression_var_refs(&index.range, refs);
+            }
+            if let Some(filter) = filter {
+                append_expression_var_refs(filter, refs);
+            }
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            append_expression_var_refs(base, refs);
+            append_subscript_var_refs(subscripts, refs);
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => append_expression_var_refs(base, refs),
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
     }
-    if let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = rhs.as_ref()
-    {
-        names.push(append_connection_rank_subscripts(
-            name.var_name().as_str(),
-            subscripts,
-        ));
+}
+
+fn append_subscript_var_refs<'a>(
+    subscripts: &'a [rumoca_core::Subscript],
+    refs: &mut Vec<&'a rumoca_core::Reference>,
+) {
+    for subscript in subscripts {
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            append_expression_var_refs(expr, refs);
+        }
     }
-    names
 }
 
 #[cfg(test)]
@@ -1974,7 +1164,7 @@ mod tests {
 
     fn scalar_eq_with_lhs(lhs_name: &str, count: usize) -> dae::Equation {
         dae::Equation {
-            lhs: Some(rumoca_core::VarName::new(lhs_name)),
+            lhs: Some(rumoca_core::VarName::new(lhs_name).into()),
             rhs: rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(rumoca_core::Expression::VarRef {
@@ -1996,7 +1186,7 @@ mod tests {
 
     fn scalar_assignment_with_rhs_ref(lhs_name: &str, rhs_name: &str) -> dae::Equation {
         dae::Equation {
-            lhs: Some(rumoca_core::VarName::new(lhs_name)),
+            lhs: Some(rumoca_core::VarName::new(lhs_name).into()),
             rhs: rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new(rhs_name).into(),
                 subscripts: vec![],
@@ -2032,7 +1222,7 @@ mod tests {
         rhs_index: i64,
     ) -> dae::Equation {
         dae::Equation {
-            lhs: Some(rumoca_core::VarName::new(lhs_name)),
+            lhs: Some(rumoca_core::VarName::new(lhs_name).into()),
             rhs: rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new(rhs_name).into(),
                 subscripts: vec![rumoca_core::Subscript::generated_index(
@@ -2062,67 +1252,12 @@ mod tests {
         }
     }
 
-    fn binary_eq_indexed(
-        lhs_name: &str,
-        lhs_index: i64,
-        rhs_name: &str,
-        rhs_index: i64,
-        origin: &str,
-    ) -> dae::Equation {
-        dae::Equation {
-            lhs: None,
-            rhs: rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Sub,
-                lhs: Box::new(var_ref_indexed(lhs_name, lhs_index)),
-                rhs: Box::new(var_ref_indexed(rhs_name, rhs_index)),
-                span: rumoca_core::Span::DUMMY,
-            },
-            span: Span::DUMMY,
-            origin: origin.to_string(),
-            scalar_count: 1,
-        }
-    }
-
     fn var_ref(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(name).into(),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }
-    }
-
-    fn var_ref_indexed(name: &str, index: i64) -> rumoca_core::Expression {
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new(name).into(),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                index,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn indexed_component_field(
-        component: &str,
-        index: i64,
-        fields: &[&str],
-    ) -> rumoca_core::Expression {
-        let mut expr = rumoca_core::Expression::Index {
-            base: Box::new(var_ref(component)),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                index,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
-        };
-        for field in fields {
-            expr = rumoca_core::Expression::FieldAccess {
-                base: Box::new(expr),
-                field: (*field).to_string(),
-                span: rumoca_core::Span::DUMMY,
-            };
-        }
-        expr
     }
 
     fn dae_with_unknown_scalars(unknown_scalars: i64) -> dae::Dae {
@@ -2136,14 +1271,6 @@ mod tests {
             },
         );
         dae
-    }
-
-    fn algebraic_vector(name: &str, size: i64) -> dae::Variable {
-        dae::Variable {
-            name: rumoca_core::VarName::new(name),
-            dims: vec![size],
-            ..Default::default()
-        }
     }
 
     fn scalar_input(name: &str) -> dae::Variable {
@@ -2173,7 +1300,7 @@ mod tests {
         let mut dae = dae_with_unknown_scalars(4);
         dae.continuous.equations.push(scalar_eq(4));
         dae.metadata.overconstrained_interface_count = 9;
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2181,7 +1308,7 @@ mod tests {
         let mut dae = dae_with_unknown_scalars(4);
         dae.continuous.equations.push(scalar_eq(3));
         dae.metadata.overconstrained_interface_count = 9;
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2190,20 +1317,7 @@ mod tests {
         dae.continuous.equations.push(scalar_eq(1));
         dae.metadata.overconstrained_interface_count = 9;
         dae.metadata.oc_break_edge_scalar_count = 12;
-        assert_eq!(balance(&dae), 0);
-    }
-
-    #[test]
-    fn test_balance_uses_break_edge_oc_fallback_only_for_deficit() {
-        let mut dae = dae_with_unknown_scalars(5);
-        dae.continuous.equations.push(scalar_eq(3));
-        dae.metadata.oc_break_edge_scalar_count = 1;
-        assert_eq!(balance(&dae), 0);
-
-        let mut overdetermined = dae_with_unknown_scalars(3);
-        overdetermined.continuous.equations.push(scalar_eq(5));
-        overdetermined.metadata.oc_break_edge_scalar_count = 1;
-        assert_eq!(balance(&overdetermined), 1);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2211,23 +1325,7 @@ mod tests {
         let mut dae = dae_with_unknown_scalars(4);
         dae.continuous.equations.push(scalar_eq(4));
         dae.metadata.interface_flow_count = 3;
-        assert_eq!(balance(&dae), 0);
-    }
-
-    #[test]
-    fn test_balance_clamps_stream_interface_to_remaining_deficit() {
-        let mut dae = dae_with_unknown_scalars(4);
-        dae.continuous.equations.push(scalar_eq(4));
-        dae.metadata.stream_interface_equation_count = 3;
-        assert_eq!(balance(&dae), 0);
-    }
-
-    #[test]
-    fn test_balance_uses_stream_interface_to_close_deficit_only() {
-        let mut dae = dae_with_unknown_scalars(5);
-        dae.continuous.equations.push(scalar_eq(3));
-        dae.metadata.stream_interface_equation_count = 9;
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2235,7 +1333,7 @@ mod tests {
         let mut dae = dae_with_unknown_scalars(5);
         dae.continuous.equations.push(scalar_eq(3));
         dae.metadata.interface_flow_count = 9;
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2244,7 +1342,7 @@ mod tests {
         dae.variables
             .discrete_reals
             .insert(rumoca_core::VarName::new("z"), discrete_var("z"));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2254,7 +1352,7 @@ mod tests {
             .discrete_valued
             .insert(rumoca_core::VarName::new("m"), discrete_var("m"));
         dae.discrete.valued_updates.push(scalar_eq_with_lhs("m", 1));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2269,7 +1367,7 @@ mod tests {
         dae.discrete
             .valued_updates
             .push(scalar_assignment_with_rhs_ref("m", "guard"));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2284,7 +1382,23 @@ mod tests {
         dae.discrete
             .valued_updates
             .push(connection_assignment_with_rhs_ref("a", "b"));
-        assert_eq!(balance(&dae), -1);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -1);
+    }
+
+    #[test]
+    fn balance_rejects_missing_discrete_input_metadata_variable() {
+        let mut dae = dae::Dae::default();
+        dae.metadata
+            .discrete_input_names
+            .push("missing_input".to_string());
+
+        let err = balance(&dae).expect_err("missing discrete metadata should fail");
+
+        assert!(matches!(
+            err,
+            BalanceError::MissingDiscreteVariableMetadata { ref name, .. }
+                if name.as_str() == "missing_input"
+        ));
     }
 
     #[test]
@@ -2299,7 +1413,7 @@ mod tests {
         dae.discrete
             .valued_updates
             .push(connection_assignment_with_rhs_ref("a", "b"));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2322,7 +1436,7 @@ mod tests {
         dae.discrete
             .valued_updates
             .push(connection_assignment_with_rhs_ref("c", "a"));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2339,7 +1453,7 @@ mod tests {
         dae.discrete
             .valued_updates
             .push(connection_assignment_with_rhs_ref("a", "b"));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2355,14 +1469,14 @@ mod tests {
             .valued_updates
             .push(scalar_assignment_with_rhs_ref("a", "source"));
         dae.discrete.valued_updates.push(dae::Equation {
-            lhs: Some(rumoca_core::VarName::new("b")),
+            lhs: Some(rumoca_core::VarName::new("b").into()),
             scalar_count: 2,
             ..scalar_assignment_with_rhs_ref("b", "source")
         });
         dae.discrete
             .valued_updates
             .push(connection_assignment_with_rhs_index("a", "b", 1));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2387,160 +1501,7 @@ mod tests {
         dae.discrete
             .valued_updates
             .push(connection_assignment_with_count("c", "a", 2));
-        assert_eq!(balance(&dae), 0);
-    }
-
-    #[test]
-    fn test_balance_counts_continuous_connection_cycles_by_scalar_rank() {
-        let mut dae = dae::Dae::default();
-        for name in ["a", "b", "c"] {
-            dae.variables
-                .algebraics
-                .insert(rumoca_core::VarName::new(name), algebraic_vector(name, 3));
-        }
-        let mut ab = binary_eq("a", "b", "connection equation: a = b");
-        ab.scalar_count = 3;
-        let mut bc = binary_eq("b", "c", "connection equation: b = c");
-        bc.scalar_count = 3;
-        let mut ca = binary_eq("c", "a", "connection equation: c = a");
-        ca.scalar_count = 3;
-        dae.continuous.equations.extend([ab, bc, ca]);
-
-        let detail = balance_detail(&dae);
-        assert_eq!(detail.alg_unknowns, 9);
-        assert_eq!(
-            detail.f_x_scalar, 6,
-            "three vector aliases over the same connection set have rank two per scalar"
-        );
-    }
-
-    #[test]
-    fn test_balance_counts_mixed_indexed_continuous_connection_rank() {
-        let mut dae = dae::Dae::default();
-        for name in ["a", "b", "c"] {
-            dae.variables
-                .algebraics
-                .insert(rumoca_core::VarName::new(name), algebraic_vector(name, 3));
-        }
-        let mut ab = binary_eq("a", "b", "connection equation: a = b");
-        ab.scalar_count = 3;
-        let mut ca = binary_eq("c", "a", "connection equation: c = a");
-        ca.scalar_count = 3;
-        dae.continuous.equations.push(ab);
-        for idx in 1..=3 {
-            dae.continuous.equations.push(binary_eq_indexed(
-                "b",
-                idx,
-                "c",
-                idx,
-                "connection equation: b[i] = c[i]",
-            ));
-        }
-        dae.continuous.equations.push(ca);
-
-        let detail = balance_detail(&dae);
-        assert_eq!(detail.alg_unknowns, 9);
-        assert_eq!(
-            detail.f_x_scalar, 6,
-            "indexed scalar aliases must join the same rank nodes as vector aliases"
-        );
-    }
-
-    #[test]
-    fn test_balance_counts_indexed_component_field_width_without_component_overcount() {
-        let mut dae = dae::Dae::default();
-        for name in [
-            "converter[1].port_p.Phi.re",
-            "converter[1].port_p.Phi.im",
-            "converter[1].Phi.re",
-            "converter[1].Phi.im",
-        ] {
-            dae.variables
-                .algebraics
-                .insert(rumoca_core::VarName::new(name), algebraic_vector(name, 1));
-        }
-        let mut eq = dae::Equation {
-            lhs: None,
-            rhs: rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Sub,
-                lhs: Box::new(indexed_component_field("converter", 1, &["port_p", "Phi"])),
-                rhs: Box::new(indexed_component_field("converter", 1, &["Phi"])),
-                span: rumoca_core::Span::DUMMY,
-            },
-            span: Span::DUMMY,
-            origin: "equation from converter[1]".to_string(),
-            scalar_count: 78,
-        };
-        dae.continuous.equations.push(eq.clone());
-
-        let detail = balance_detail(&dae);
-        assert_eq!(
-            detail.f_x_scalar, 2,
-            "indexed component field equations should count field width, not component width"
-        );
-
-        eq.scalar_count = 2;
-        dae.continuous.equations.clear();
-        dae.continuous.equations.push(eq);
-        assert_eq!(balance_detail(&dae).f_x_scalar, 2);
-    }
-
-    #[test]
-    fn test_balance_expands_vector_connection_under_arrayed_component_name() {
-        let mut dae = dae::Dae::default();
-        for name in ["zon[1].heaGai.qGai_flow", "zon[1].qGai_flow"] {
-            dae.variables
-                .algebraics
-                .insert(rumoca_core::VarName::new(name), algebraic_vector(name, 3));
-        }
-        let mut connection = binary_eq(
-            "zon[1].heaGai.qGai_flow",
-            "zon[1].qGai_flow",
-            "connection equation: zon[1].heaGai.qGai_flow = zon[1].qGai_flow",
-        );
-        connection.scalar_count = 3;
-        dae.continuous.equations.push(connection);
-        dae.continuous
-            .equations
-            .push(scalar_eq_with_lhs("zon[1].qGai_flow", 3));
-
-        let detail = balance_detail(&dae);
-        assert_eq!(detail.alg_unknowns, 6);
-        assert_eq!(detail.f_x_scalar, 6);
-        assert_eq!(balance(&dae), 0);
-    }
-
-    #[test]
-    fn test_balance_counts_continuous_connection_rank_through_inputs() {
-        let mut dae = dae::Dae::default();
-        for name in ["a", "b"] {
-            dae.variables
-                .algebraics
-                .insert(rumoca_core::VarName::new(name), algebraic_vector(name, 3));
-        }
-        dae.variables.inputs.insert(
-            rumoca_core::VarName::new("u"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("u"),
-                dims: vec![3],
-                ..Default::default()
-            },
-        );
-
-        let mut au = binary_eq("a", "u", "connection equation: a = u");
-        au.scalar_count = 3;
-        let mut ub = binary_eq("u", "b", "connection equation: u = b");
-        ub.scalar_count = 3;
-        let mut ba = binary_eq("b", "a", "connection equation: b = a");
-        ba.scalar_count = 3;
-        dae.continuous.equations.extend([au, ub, ba]);
-
-        let detail = balance_detail(&dae);
-        assert_eq!(detail.alg_unknowns, 6);
-        assert_eq!(
-            detail.f_x_scalar, 6,
-            "input connector nodes must join the same continuous connection rank graph"
-        );
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2550,7 +1511,7 @@ mod tests {
             .discrete_reals
             .insert(rumoca_core::VarName::new("z"), discrete_var("z"));
         dae.discrete.real_updates.push(scalar_eq_with_lhs("z", 1));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2562,7 +1523,7 @@ mod tests {
         let mut eq = scalar_eq_with_lhs("z", 1);
         eq.lhs = None;
         dae.discrete.real_updates.push(eq);
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2573,7 +1534,7 @@ mod tests {
             .insert(rumoca_core::VarName::new("x"), discrete_var("x"));
         dae.continuous.equations.push(scalar_eq(1));
         dae.discrete.real_updates.push(scalar_eq(1));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2583,7 +1544,7 @@ mod tests {
             .discrete_valued
             .insert(rumoca_core::VarName::new("c"), discrete_var("c"));
         dae.conditions.equations.push(scalar_eq_with_lhs("c", 1));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2598,7 +1559,7 @@ mod tests {
         dae.conditions
             .equations
             .push(scalar_assignment_with_rhs_ref("c", "guard"));
-        assert_eq!(balance(&dae), 0);
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
@@ -2623,7 +1584,7 @@ mod tests {
             .push(binary_eq("y", "external", "connect(y, external)"));
 
         assert_eq!(
-            balance(&dae),
+            balance(&dae).expect("valid DAE balance fixture"),
             0,
             "the connection alias should be redundant because y is already constrained"
         );
@@ -2650,7 +1611,7 @@ mod tests {
             .push(binary_eq("b", "external", "connect(b, external)"));
 
         assert_eq!(
-            balance(&dae),
+            balance(&dae).expect("valid DAE balance fixture"),
             0,
             "the connection still supplies the second equation for coupled unknowns"
         );

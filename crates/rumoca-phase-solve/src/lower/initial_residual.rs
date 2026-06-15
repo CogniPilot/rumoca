@@ -9,7 +9,7 @@ pub fn lower_initial_residual(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let initial_equations = initial_residual_equations(dae_model, layout);
+    let initial_equations = initial_residual_equations(dae_model, layout)?;
     expression_rows::lower_residual_rows_from_equations_with_mode(
         dae_model,
         layout,
@@ -22,20 +22,19 @@ pub fn lower_initial_residual(
 pub fn initial_residual_equations<'a>(
     dae_model: &'a dae::Dae,
     layout: &VarLayout,
-) -> Vec<(usize, &'a dae::Equation)> {
-    let state_derivative_rows = state_derivative_equation_flags(dae_model);
-    dae_model
+) -> Result<Vec<(usize, &'a dae::Equation)>, LowerError> {
+    let state_derivative_rows = state_derivative_equation_flags(dae_model)?;
+    Ok(dae_model
         .continuous
         .equations
         .iter()
         .enumerate()
         .filter(|(row_idx, equation)| {
-            !crate::energyplus_spawn_external_object_binding(equation)
-                && (!state_derivative_rows
-                    .get(*row_idx)
-                    .copied()
-                    .unwrap_or(false)
-                    || derivative_row_constrains_initial_unknown(layout, equation))
+            !state_derivative_rows
+                .get(*row_idx)
+                .copied()
+                .unwrap_or(false)
+                || derivative_row_constrains_initial_unknown(layout, equation)
         })
         .map(|(_, eq)| eq)
         .chain(
@@ -46,7 +45,7 @@ pub fn initial_residual_equations<'a>(
                 .filter(|eq| initial_equation_constrains_solver_unknown(layout, eq)),
         )
         .enumerate()
-        .collect()
+        .collect())
 }
 
 fn derivative_row_constrains_initial_unknown(layout: &VarLayout, equation: &dae::Equation) -> bool {

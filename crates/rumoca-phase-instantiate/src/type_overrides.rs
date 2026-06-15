@@ -4,7 +4,7 @@ use super::traversal_adapter::{
 };
 use super::type_lookup::find_member_type_in_class;
 use crate::{InstantiateError, InstantiateResult, location_to_span};
-use rumoca_core::{DefId, parent_scope};
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
@@ -160,7 +160,7 @@ fn collect_enclosing_type_overrides(
     let Some(qualified_name) = tree.def_map.get(&class_def_id) else {
         return;
     };
-    let Some(parent_name) = parent_scope(qualified_name) else {
+    let Some(parent_name) = tree.enclosing_class_names_of(qualified_name).next() else {
         return;
     };
     let Some(parent_class) = tree.get_class_by_qualified_name(parent_name) else {
@@ -448,7 +448,7 @@ pub(super) fn apply_type_override<'a>(
     comp: &'a ast::Component,
     type_overrides: &TypeOverrideMap,
     mod_env: Option<&ast::ModificationEnvironment>,
-) -> std::borrow::Cow<'a, ast::Component> {
+) -> InstantiateResult<std::borrow::Cow<'a, ast::Component>> {
     // MLS §7.3: Apply type redeclarations by exact type name first.
     // For dotted type names (e.g., `Medium.ThermodynamicState`), also honor
     // package-level redeclarations keyed by the dotted prefix (`Medium`) when
@@ -479,11 +479,15 @@ pub(super) fn apply_type_override<'a>(
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {
+        // Note: the MLS §7.3.2 constraining-type check happens in the
+        // extends-redeclare path (`validate_redeclaration`); this override
+        // map also carries package-member type remaps (Medium.X), which are
+        // constrained at the package level and must not be re-checked here.
         let mut overridden = comp.clone();
         overridden.type_def_id = Some(override_def_id);
-        return std::borrow::Cow::Owned(overridden);
+        return Ok(std::borrow::Cow::Owned(overridden));
     }
-    std::borrow::Cow::Borrowed(comp)
+    Ok(std::borrow::Cow::Borrowed(comp))
 }
 
 fn resolve_dotted_type_from_mod_env(
@@ -703,6 +707,7 @@ fn find_redeclare_target_class_in_hierarchy<'a>(
         .and_then(|comp_type| find_nested_class_in_hierarchy(tree, comp_type, target_name))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_class_override_from_component_redeclare(
     tree: &ast::ClassTree,
     target_class: &ast::ClassDef,
@@ -789,13 +794,7 @@ mod tests {
     }
 
     fn make_name(text: &str) -> ast::Name {
-        ast::Name {
-            name: rumoca_core::split_path_with_indices(text)
-                .into_iter()
-                .map(make_token)
-                .collect(),
-            def_id: None,
-        }
+        ast::Name::from_string(text)
     }
 
     #[test]
@@ -855,6 +854,22 @@ mod tests {
             .insert("BaseProperties".to_string(), base_properties);
 
         let mut tree = ast::ClassTree::default();
+        // Scope structure mirrors what resolve registration produces: the
+        // enclosing-class walk traverses the scope tree, not rendered names.
+        let derived_scope = tree
+            .scope_tree
+            .create_scope(rumoca_core::ScopeId::GLOBAL, ast::ScopeKind::Class);
+        let base_properties_scope = tree
+            .scope_tree
+            .create_scope(derived_scope, ast::ScopeKind::Class);
+        tree.scope_to_class
+            .insert(derived_scope, derived_package_id);
+        tree.scope_to_class
+            .insert(base_properties_scope, base_properties_id);
+        if let Some(base_properties) = derived_package.classes.get_mut("BaseProperties") {
+            base_properties.scope_id = Some(base_properties_scope);
+        }
+        derived_package.scope_id = Some(derived_scope);
         tree.definitions
             .classes
             .insert("BaseMedium".to_string(), base_package);
@@ -883,7 +898,8 @@ mod tests {
             ..Default::default()
         };
 
-        let overridden = apply_type_override(&tree, &comp, &overrides, None);
+        let overridden =
+            apply_type_override(&tree, &comp, &overrides, None).expect("override should validate");
 
         assert_eq!(
             overridden.type_def_id,
@@ -1045,7 +1061,8 @@ mod tests {
             )),
         );
 
-        let overridden = apply_type_override(&tree, &comp, &TypeOverrideMap::new(), Some(&mod_env));
+        let overridden = apply_type_override(&tree, &comp, &TypeOverrideMap::new(), Some(&mod_env))
+            .expect("override should validate");
 
         assert_eq!(
             overridden.type_def_id,
@@ -1108,7 +1125,8 @@ mod tests {
             concrete_medium_id,
         );
 
-        let overridden = apply_type_override(&tree, &comp, &type_overrides, None);
+        let overridden = apply_type_override(&tree, &comp, &type_overrides, None)
+            .expect("override should validate");
 
         assert_eq!(
             overridden.type_def_id,

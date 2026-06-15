@@ -430,6 +430,49 @@ fn validate_compute_node(
             }
             Ok(())
         }
+        solve::ComputeNode::AffineStencil {
+            base_ops,
+            load_strides,
+            const_strides,
+            metadata,
+            ..
+        } => {
+            validate_tensor_metadata(context, metadata)?;
+            validate_row_ops(&format!("{context}.base_ops"), base_ops, true, seed_use)?;
+            for stride in load_strides {
+                match base_ops.get(stride.op_position) {
+                    Some(solve::LinearOp::LoadY { .. } | solve::LinearOp::LoadP { .. }) => {}
+                    Some(other) => {
+                        return Err(solve_validation_error(format!(
+                            "{context}: AffineStencil stride targets non-load op {other:?}"
+                        )));
+                    }
+                    None => {
+                        return Err(solve_validation_error(format!(
+                            "{context}: AffineStencil stride op_position {} is out of bounds",
+                            stride.op_position
+                        )));
+                    }
+                }
+            }
+            for stride in const_strides {
+                match base_ops.get(stride.op_position) {
+                    Some(solve::LinearOp::Const { .. }) => {}
+                    Some(other) => {
+                        return Err(solve_validation_error(format!(
+                            "{context}: AffineStencil const stride targets non-const op {other:?}"
+                        )));
+                    }
+                    None => {
+                        return Err(solve_validation_error(format!(
+                            "{context}: AffineStencil const stride op_position {} is out of bounds",
+                            stride.op_position
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -528,11 +571,12 @@ fn validate_op_inputs(
         }
         solve::LinearOp::ExternalCall {
             args, arg_count, ..
-        } => args
-            .iter()
-            .copied()
-            .take(*arg_count)
-            .try_for_each(|arg| validate_defined_reg(context, op_idx, arg, defined)),
+        } => {
+            for arg in args.iter().take(*arg_count) {
+                validate_defined_reg(context, op_idx, *arg, defined)?;
+            }
+            Ok(())
+        }
     }
 }
 

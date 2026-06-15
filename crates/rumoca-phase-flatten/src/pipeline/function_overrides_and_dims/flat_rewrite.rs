@@ -8,10 +8,15 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
         flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
             rewrite_function_overrides_in_expression_with_ctx(value, ctx);
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             rewrite_function_overrides_in_expression_with_ctx(condition, ctx);
+            rewrite_function_overrides_in_expression_with_ctx(message, ctx);
         }
-        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Terminate { message, .. } => {
+            rewrite_function_overrides_in_expression_with_ctx(message, ctx);
+        }
         flat::WhenEquation::Conditional {
             branches,
             else_branch,
@@ -63,24 +68,6 @@ pub(crate) fn rewrite_function_overrides_in_expression(
         override_packages,
         override_functions,
     );
-    rewrite_function_overrides_in_expression_with_ctx(expr, &ctx);
-}
-
-pub(super) fn rewrite_function_overrides_in_expression_for_scope(
-    expr: &mut Expression,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    override_packages: &[OverrideTarget],
-    override_functions: &OverrideFunctionMap,
-    active_scope: ComponentPath,
-) {
-    let ctx = FunctionOverrideRewriteContext::new(
-        tree,
-        class_index,
-        override_packages,
-        override_functions,
-    )
-    .with_active_scope(active_scope);
     rewrite_function_overrides_in_expression_with_ctx(expr, &ctx);
 }
 
@@ -193,56 +180,32 @@ pub(crate) fn rewrite_function_overrides_in_flat_variable(
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
     active_scope: &ComponentPath,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) {
-    if let Some(binding) = &mut variable.binding {
-        rewrite_function_overrides_in_expression_for_scope(
-            binding,
+    let expression_ctx = || {
+        FunctionOverrideRewriteContext::new(
             tree,
             class_index,
             override_packages,
             override_functions,
-            active_scope.clone(),
-        );
+        )
+        .with_active_scope(active_scope.clone())
+        .with_component_member_scope(component_members)
+    };
+    if let Some(binding) = &mut variable.binding {
+        rewrite_function_overrides_in_expression_with_ctx(binding, &expression_ctx());
     }
     if let Some(start) = &mut variable.start {
-        rewrite_function_overrides_in_expression_for_scope(
-            start,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-            active_scope.clone(),
-        );
+        rewrite_function_overrides_in_expression_with_ctx(start, &expression_ctx());
     }
     if let Some(min) = &mut variable.min {
-        rewrite_function_overrides_in_expression_for_scope(
-            min,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-            active_scope.clone(),
-        );
+        rewrite_function_overrides_in_expression_with_ctx(min, &expression_ctx());
     }
     if let Some(max) = &mut variable.max {
-        rewrite_function_overrides_in_expression_for_scope(
-            max,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-            active_scope.clone(),
-        );
+        rewrite_function_overrides_in_expression_with_ctx(max, &expression_ctx());
     }
     if let Some(nominal) = &mut variable.nominal {
-        rewrite_function_overrides_in_expression_for_scope(
-            nominal,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-            active_scope.clone(),
-        );
+        rewrite_function_overrides_in_expression_with_ctx(nominal, &expression_ctx());
     }
 }
 
@@ -259,64 +222,60 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
-) {
-    rewrite_function_overrides_in_flat_variables(flat, tree, class_index, component_override_map);
-    rewrite_function_overrides_in_equations(flat, tree, class_index, component_override_map);
+    component_members: &component_member_scope::ComponentMemberScopes,
+) -> Result<(), FlattenError> {
+    rewrite_function_overrides_in_flat_variables(
+        flat,
+        tree,
+        class_index,
+        component_override_map,
+        component_members,
+    );
+    rewrite_function_overrides_in_equations(
+        flat,
+        tree,
+        class_index,
+        component_override_map,
+        component_members,
+    );
     let (override_packages, override_functions) =
         override_context_for_scope("", component_override_map);
+    let root_ctx = FunctionOverrideRewriteContext::new(
+        tree,
+        class_index,
+        &override_packages,
+        &override_functions,
+    )
+    .with_component_member_scope(component_members);
     for equation in &mut flat.initial_equations {
-        rewrite_function_overrides_in_expression(
-            &mut equation.residual,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        );
+        rewrite_function_overrides_in_expression_with_ctx(&mut equation.residual, &root_ctx);
     }
     for assert_eq in &mut flat.assert_equations {
-        rewrite_function_overrides_in_assert_equation(
-            assert_eq,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        );
+        rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.condition, &root_ctx);
+        rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.message, &root_ctx);
+        if let Some(level) = &mut assert_eq.level {
+            rewrite_function_overrides_in_expression_with_ctx(level, &root_ctx);
+        }
     }
     for assert_eq in &mut flat.initial_assert_equations {
-        rewrite_function_overrides_in_assert_equation(
-            assert_eq,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        );
+        rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.condition, &root_ctx);
+        rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.message, &root_ctx);
+        if let Some(level) = &mut assert_eq.level {
+            rewrite_function_overrides_in_expression_with_ctx(level, &root_ctx);
+        }
     }
     for algorithm in &mut flat.algorithms {
-        rewrite_function_overrides_in_algorithm(
-            algorithm,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        );
+        for stmt in &mut algorithm.statements {
+            rewrite_function_overrides_in_statement_with_ctx(stmt, &root_ctx);
+        }
     }
     for algorithm in &mut flat.initial_algorithms {
-        rewrite_function_overrides_in_algorithm(
-            algorithm,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        );
+        for stmt in &mut algorithm.statements {
+            rewrite_function_overrides_in_statement_with_ctx(stmt, &root_ctx);
+        }
     }
     for clause in &mut flat.when_clauses {
-        rewrite_function_overrides_in_when_clause(
-            clause,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        );
+        rewrite_function_overrides_in_when_clause_with_ctx(clause, &root_ctx);
     }
     rewrite_function_overrides_in_flat_functions(
         flat,
@@ -324,7 +283,8 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
         class_index,
         &override_packages,
         &override_functions,
-    );
+    )?;
+    Ok(())
 }
 
 fn rewrite_function_overrides_in_flat_variables(
@@ -332,6 +292,7 @@ fn rewrite_function_overrides_in_flat_variables(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) {
     let mut contexts = rustc_hash::FxHashMap::<ComponentPath, OverrideContext>::default();
     for (name, variable) in &mut flat.variables {
@@ -353,6 +314,7 @@ fn rewrite_function_overrides_in_flat_variables(
             override_packages,
             override_functions,
             &active_scope,
+            component_members,
         );
     }
 }
@@ -362,6 +324,7 @@ fn rewrite_function_overrides_in_equations(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) {
     let mut contexts = rustc_hash::FxHashMap::<ComponentPath, OverrideContext>::default();
     for equation in &mut flat.equations {
@@ -377,46 +340,15 @@ fn rewrite_function_overrides_in_equations(
             .or_insert_with_key(|scope| {
                 override_context_for_component_path(scope, component_override_map)
             });
-        rewrite_function_overrides_in_expression_for_scope(
-            &mut equation.residual,
+        let ctx = FunctionOverrideRewriteContext::new(
             tree,
             class_index,
             override_packages,
             override_functions,
-            cache_key,
-        );
-    }
-}
-
-pub(super) fn rewrite_function_overrides_in_assert_equation(
-    assert_eq: &mut rumoca_ir_flat::AssertEquation,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    override_packages: &[OverrideTarget],
-    override_functions: &OverrideFunctionMap,
-) {
-    rewrite_function_overrides_in_expression(
-        &mut assert_eq.condition,
-        tree,
-        class_index,
-        override_packages,
-        override_functions,
-    );
-    rewrite_function_overrides_in_expression(
-        &mut assert_eq.message,
-        tree,
-        class_index,
-        override_packages,
-        override_functions,
-    );
-    if let Some(level) = &mut assert_eq.level {
-        rewrite_function_overrides_in_expression(
-            level,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-        );
+        )
+        .with_active_scope(cache_key)
+        .with_component_member_scope(component_members);
+        rewrite_function_overrides_in_expression_with_ctx(&mut equation.residual, &ctx);
     }
 }
 
@@ -424,10 +356,11 @@ pub(crate) fn rewrite_function_extends_aliases_in_flat_functions(
     flat: &mut Model,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) {
+) -> Result<(), FlattenError> {
     for function in flat.functions.values_mut() {
-        rewrite_function_extends_aliases_in_function(function, tree, class_index);
+        rewrite_function_extends_aliases_in_function(function, tree, class_index)?;
     }
+    Ok(())
 }
 
 pub(super) fn rewrite_function_overrides_in_flat_functions(
@@ -436,39 +369,40 @@ pub(super) fn rewrite_function_overrides_in_flat_functions(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     active_override_packages: &[OverrideTarget],
     active_override_functions: &OverrideFunctionMap,
-) {
+) -> Result<(), FlattenError> {
     for function in flat.functions.values_mut() {
         let mut override_packages = active_override_packages.to_vec();
         override_packages.extend(function_package_override_chain(
             function.name.as_str(),
             tree,
             class_index,
-        ));
+        )?);
         rewrite_function_overrides_in_function(
             function,
             tree,
             class_index,
             &override_packages,
             active_override_functions,
-        );
+        )?;
     }
+    Ok(())
 }
 
 pub(crate) fn rewrite_function_extends_aliases_in_function(
     function: &mut rumoca_core::Function,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) {
+) -> Result<(), FlattenError> {
     let override_functions = OverrideFunctionMap::default();
     let override_packages =
-        function_package_override_chain(function.name.as_str(), tree, class_index);
+        function_package_override_chain(function.name.as_str(), tree, class_index)?;
     rewrite_function_overrides_in_function(
         function,
         tree,
         class_index,
         &override_packages,
         &override_functions,
-    );
+    )
 }
 
 pub(super) fn rewrite_function_overrides_in_function(
@@ -477,9 +411,9 @@ pub(super) fn rewrite_function_overrides_in_function(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
-) {
+) -> Result<(), FlattenError> {
     let lexical_package_def_id =
-        function_lexical_package_def_id(function.name.as_str(), class_index);
+        function_lexical_package_def_id(function.name.as_str(), tree, class_index)?;
     let ctx = FunctionOverrideRewriteContext::new(
         tree,
         class_index,
@@ -501,19 +435,20 @@ pub(super) fn rewrite_function_overrides_in_function(
     for stmt in &mut function.body {
         rewrite_function_overrides_in_statement_with_ctx(stmt, &ctx);
     }
-    rewrite_function_self_package_calls(function, tree, class_index);
+    rewrite_function_self_package_calls(function, tree, class_index)?;
+    Ok(())
 }
 
 pub(super) fn rewrite_function_self_package_calls(
     function: &mut rumoca_core::Function,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) {
-    let Some(package) = function_package_override_chain(function.name.as_str(), tree, class_index)
+) -> Result<(), FlattenError> {
+    let Some(package) = function_package_override_chain(function.name.as_str(), tree, class_index)?
         .into_iter()
         .next()
     else {
-        return;
+        return Ok(());
     };
     let ctx = FunctionSelfPackageRewriteContext {
         tree,
@@ -534,6 +469,7 @@ pub(super) fn rewrite_function_self_package_calls(
     for stmt in &mut function.body {
         *stmt = FunctionSelfPackageRewriter { ctx: &ctx }.rewrite_statement(stmt);
     }
+    Ok(())
 }
 
 pub(super) struct FunctionSelfPackageRewriteContext<'a> {
@@ -621,38 +557,67 @@ impl StatementRewriter for FunctionSelfPackageRewriter<'_> {}
 
 pub(super) fn function_lexical_package_def_id(
     function_name: &str,
+    tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> Option<rumoca_core::DefId> {
-    let package_name = parent_scope(function_name)?;
-    class_index
-        .get_by_qualified_name(package_name)
-        .and_then(|class_def| class_def.def_id)
+) -> Result<Option<rumoca_core::DefId>, FlattenError> {
+    let Some(package_name) = enclosing_scope(function_name) else {
+        return Ok(None);
+    };
+    let Some(class_def) = class_index.get_by_qualified_name(package_name) else {
+        return Ok(None);
+    };
+    class_def.def_id.map(Some).ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            package_name.to_string(),
+            "function lexical package lookup",
+            class_def_span(tree, class_def),
+        )
+    })
 }
 
 pub(super) fn function_package_override_chain(
     function_name: &str,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> Vec<OverrideTarget> {
-    let Some(package_name) = parent_scope(function_name) else {
-        return Vec::new();
+) -> Result<Vec<OverrideTarget>, FlattenError> {
+    let Some(package_name) = enclosing_scope(function_name) else {
+        return Ok(Vec::new());
     };
     let Some(class_def) = class_index.get_by_qualified_name(package_name) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let Some(def_id) = class_def.def_id else {
-        return Vec::new();
-    };
-    vec![OverrideTarget {
-        alias: top_level_last_segment(package_name).to_string(),
-        name: tree
-            .def_map
-            .get(&def_id)
-            .cloned()
-            .unwrap_or_else(|| package_name.to_string()),
+    let def_id = class_def.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            package_name.to_string(),
+            "function package override lookup",
+            class_def_span(tree, class_def),
+        )
+    })?;
+    let name = class_index.qualified_name(def_id).ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            package_name.to_string(),
+            "function package override lookup",
+            class_def_span(tree, class_def),
+        )
+    })?;
+    Ok(vec![OverrideTarget {
+        alias: leaf_segment(package_name).to_string(),
+        name: name.to_string(),
         def_id,
         class_type: class_def.class_type.clone(),
         active: false,
         modifier_args: Vec::new(),
-    }]
+    }])
+}
+
+fn class_def_span(tree: &ClassTree, class_def: &rumoca_ir_ast::ClassDef) -> rumoca_core::Span {
+    if class_def.location.file_name.is_empty() || class_def.location.start >= class_def.location.end
+    {
+        return rumoca_core::Span::DUMMY;
+    }
+    tree.source_map.location_to_span(
+        &class_def.location.file_name,
+        class_def.location.start as usize,
+        class_def.location.end as usize,
+    )
 }

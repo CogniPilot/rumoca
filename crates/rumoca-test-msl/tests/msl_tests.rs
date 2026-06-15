@@ -293,12 +293,19 @@ fn collect_active_refs_from_flat_when_equation(
             value.collect_var_refs(&mut refs);
             active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
-        rumoca_ir_flat::WhenEquation::Assert { condition, .. } => {
+        rumoca_ir_flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             let mut refs = HashSet::new();
             condition.collect_var_refs(&mut refs);
+            message.collect_var_refs(&mut refs);
             active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
-        rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
+        rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
+            let mut refs = HashSet::new();
+            message.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
         rumoca_ir_flat::WhenEquation::Conditional {
             branches,
             else_branch,

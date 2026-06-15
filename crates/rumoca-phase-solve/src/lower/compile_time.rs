@@ -108,12 +108,7 @@ fn insert_scalarized_bindings(
     };
     bindings.insert(name.to_string(), first);
     for (idx, value) in values.iter().copied().enumerate() {
-        bindings.insert(format!("{name}[{}]", idx + 1), value);
-        if let Some(subs) = dae::flat_index_to_subscripts(dims, idx)
-            && subs.len() > 1
-        {
-            bindings.insert(dae::format_subscript_key(name, &subs), value);
-        }
+        bindings.insert(dae::scalar_name_text_for_flat_index(name, dims, idx), value);
     }
 }
 
@@ -210,7 +205,7 @@ fn eval_range(
     let end = eval_scalar(end, bindings, shapes)?;
     let step = step
         .map(|expr| eval_scalar(expr, bindings, shapes))
-        .unwrap_or(Some(1.0))?;
+        .unwrap_or_else(|| Some(if end >= start { 1.0 } else { -1.0 }))?;
     if step.abs() <= f64::EPSILON {
         return None;
     }
@@ -332,7 +327,7 @@ fn literal_to_f64(literal: &rumoca_core::Literal) -> Option<f64> {
 }
 
 fn alternate_enum_literal_key(raw: &str) -> Option<String> {
-    let (prefix, literal) = rumoca_core::split_last_top_level(raw)?;
+    let (prefix, literal) = crate::path_utils::scope_split(raw)?;
     if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
         return Some(format!("{prefix}.{}", &literal[1..literal.len() - 1]));
     }

@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 /// Use the shortest readable suffix that stays unique, adding parent hierarchy
 /// only when needed. Connector/overconstrained paths remain qualified because
 /// later balance logic still needs their public interface grouping.
-pub(crate) fn simplify_flat_names(flat: &mut flat::Model) {
+pub(crate) fn simplify_flat_names(
+    flat: &mut flat::Model,
+) -> Result<(), crate::errors::FlattenError> {
     let protected_prefixes = protected_semantic_prefixes(flat);
     let rename_map = build_rename_map(flat, &protected_prefixes);
     let ctx = RenameContext {
@@ -19,10 +21,10 @@ pub(crate) fn simplify_flat_names(flat: &mut flat::Model) {
         .all(|(old_name, new_name)| old_name == new_name)
         && ctx.projection_map.is_empty()
     {
-        return;
+        return Ok(());
     }
 
-    remap_variables(flat, &ctx);
+    remap_variables(flat, &ctx)?;
     remap_equations(&mut flat.equations, &ctx);
     remap_equations(&mut flat.initial_equations, &ctx);
     remap_assert_equations(&mut flat.assert_equations, &ctx);
@@ -30,6 +32,7 @@ pub(crate) fn simplify_flat_names(flat: &mut flat::Model) {
     remap_algorithms(&mut flat.algorithms, &ctx);
     remap_algorithms(&mut flat.initial_algorithms, &ctx);
     remap_when_clauses(&mut flat.when_clauses, &ctx);
+    Ok(())
 }
 
 struct RenameContext<'a> {
@@ -289,8 +292,12 @@ fn readable_identifier_segment(segment: &str) -> String {
     out
 }
 
-fn remap_variables(flat: &mut flat::Model, ctx: &RenameContext<'_>) {
+fn remap_variables(
+    flat: &mut flat::Model,
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     let variables = std::mem::take(&mut flat.variables);
+    let variable_count = variables.len();
     flat.variables = variables
         .into_iter()
         .map(|(old_name, mut var)| {
@@ -300,6 +307,17 @@ fn remap_variables(flat: &mut flat::Model, ctx: &RenameContext<'_>) {
             (new_name, var)
         })
         .collect();
+    // Downstream phases treat flat names as globally unique (semantic VarRef
+    // equality compares names only), so a rename collision that collapses two
+    // variables into one map entry must fail here, not corrupt the model.
+    if flat.variables.len() != variable_count {
+        return Err(crate::errors::FlattenError::Internal(format!(
+            "name simplification collapsed {} variables into {}: rename map produced \
+             duplicate flat names",
+            variable_count,
+            flat.variables.len()
+        )));
+    }
     flat.variable_type_names = remap_index_map_keys(
         std::mem::take(&mut flat.variable_type_names),
         ctx.rename_map,
@@ -308,6 +326,7 @@ fn remap_variables(flat: &mut flat::Model, ctx: &RenameContext<'_>) {
         std::mem::take(&mut flat.variable_final_flags),
         ctx.rename_map,
     );
+    Ok(())
 }
 
 fn remap_index_map_keys<T, S>(
@@ -375,10 +394,15 @@ fn remap_when_equations(equations: &mut [flat::WhenEquation], ctx: &RenameContex
                 *state = remap_var_name(state, ctx.rename_map);
                 remap_expression(value, ctx);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 remap_expression(condition, ctx);
+                remap_expression(message, ctx);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                remap_expression(message, ctx);
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,
@@ -765,7 +789,7 @@ mod tests {
             },
         ));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         assert!(flat.variables.contains_key(&rumoca_core::VarName::new("x")));
         assert!(
@@ -785,7 +809,7 @@ mod tests {
         flat.add_variable(rumoca_core::VarName::new("body.x"), var("body.x"));
         flat.add_variable(rumoca_core::VarName::new("other.x"), var("other.x"));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         assert!(
             flat.variables
@@ -804,7 +828,7 @@ mod tests {
         flat.add_variable(rumoca_core::VarName::new("frame_a.R.T"), var("frame_a.R.T"));
         flat.add_variable(rumoca_core::VarName::new("body.x"), var("body.x"));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         assert!(
             flat.variables
@@ -826,7 +850,7 @@ mod tests {
         );
         flat.add_variable(rumoca_core::VarName::new("body.x"), var("body.x"));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         assert!(
             flat.variables
@@ -852,7 +876,7 @@ mod tests {
         );
         flat.add_variable(rumoca_core::VarName::new("other.a"), var("other.a"));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         assert!(
             flat.variables
@@ -873,7 +897,7 @@ mod tests {
             var("motor[2].omega"),
         );
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         assert!(
             flat.variables
@@ -898,7 +922,7 @@ mod tests {
             },
         ));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         let rumoca_core::Expression::VarRef { name, .. } = &flat.equations[0].residual else {
             panic!("expected var ref");
@@ -929,7 +953,7 @@ mod tests {
             },
         ));
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         let rumoca_core::Expression::Array { elements, .. } = &flat.equations[0].residual else {
             panic!("expected array projection");
@@ -969,7 +993,7 @@ mod tests {
             origin: "test".to_string(),
         });
 
-        simplify_flat_names(&mut flat);
+        simplify_flat_names(&mut flat).expect("name simplification should succeed");
 
         let rumoca_core::Expression::VarRef { name, .. } = &flat.equations[0].residual else {
             panic!("expected var ref");

@@ -401,8 +401,9 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
         // Explicit subscripts in the subscripts field
         if !subscripts.is_empty()
             && let Some(var) = flat.variables.get(name.var_name())
+            && let Some(size) = compute_subscripted_size_with_context(&var.dims, subscripts, flat)
         {
-            return Some(compute_subscripted_size(&var.dims, subscripts));
+            return Some(size);
         }
         // Embedded subscripts in the name: "RotationMatrix[1]" → "RotationMatrix"
         if let Some(size) =
@@ -423,7 +424,7 @@ fn indexed_lhs_scalar_size(
 ) -> Option<usize> {
     let base_name = extract_var_from_lhs(base)?;
     if let Some(var) = flat.variables.get(&base_name) {
-        return Some(compute_subscripted_size(&var.dims, subscripts));
+        return compute_subscripted_size_with_context(&var.dims, subscripts, flat);
     }
 
     let total = *prefix_counts.get(base_name.as_str())?;
@@ -614,19 +615,21 @@ struct StartRefRewriter<'a> {
 }
 
 impl ExpressionRewriter for StartRefRewriter<'_> {
-    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-        let Expression::VarRef {
-            name,
-            subscripts,
-            span,
-        } = expr
-        else {
-            return self.walk_expression(expr);
+    fn rewrite_var_ref_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Expression {
+        let resolved_name = if name.has_structure() {
+            name.clone()
+        } else {
+            resolve_missing_start_ref(name.var_name(), self.known_var_names).into()
         };
         Expression::VarRef {
-            name: resolve_missing_start_ref(name.var_name(), self.known_var_names).into(),
+            name: resolved_name,
             subscripts: self.rewrite_subscripts(subscripts),
-            span: *span,
+            span,
         }
     }
 }
@@ -677,6 +680,7 @@ pub(crate) fn create_dae_variable(
         description: None,
         causality: variable_causality(var, is_tunable),
         is_tunable,
+        origin: rumoca_ir_dae::VariableOrigin::Source,
     }
 }
 
@@ -726,6 +730,13 @@ fn select_scalar_start_record_alias(
             subscripts,
             span,
         } if subscripts.is_empty() => {
+            // A binding that already names a known scalar variable is a
+            // complete value; record-field selection would graft the LHS
+            // field onto an unrelated variable (e.g. `resistor.m =
+            // multiStarResistance.mBasic` must not become `m`).
+            if known_var_names.contains(rhs_name.as_str()) {
+                return expr.clone();
+            }
             let selected = format!("{}{}", rhs_name.as_str(), field_suffix);
             if let Some(selected) =
                 crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
@@ -760,6 +771,9 @@ fn select_scalar_start_record_alias(
                 return expr.clone();
             };
             if !subscripts.is_empty() {
+                return expr.clone();
+            }
+            if known_var_names.contains(&format!("{}.{}", rhs_name.as_str(), field)) {
                 return expr.clone();
             }
             let selected = format!("{}.{}{}", rhs_name.as_str(), field, field_suffix);
@@ -802,6 +816,9 @@ fn select_leaf_start_record_alias(
             subscripts,
             span,
         } if subscripts.is_empty() => {
+            if known_var_names.contains(rhs_name.as_str()) {
+                return None;
+            }
             let selected = format!("{}.{}", rhs_name.as_str(), field);
             crate::path_utils::resolve_known_path_suffix(&selected, known_var_names).map(
                 |selected| Expression::VarRef {
@@ -872,6 +889,100 @@ mod tests {
         );
     }
 
+    #[test]
+    fn create_dae_variable_preserves_structured_binding_references() {
+        let record_def_id = rumoca_core::DefId::new(42);
+        let name = VarName::new("x");
+        let record_ref = rumoca_core::ComponentReference {
+            local: false,
+            span: rumoca_core::Span::DUMMY,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "mp".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: vec![],
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "modelcard".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: vec![],
+                },
+            ],
+            def_id: Some(record_def_id),
+        };
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            variability: Variability::Parameter(Default::default()),
+            binding: Some(Expression::FunctionCall {
+                name: rumoca_core::Reference::new("f"),
+                args: vec![Expression::VarRef {
+                    name: rumoca_core::Reference::with_component_reference(
+                        "mp.modelcard",
+                        record_ref.clone(),
+                    ),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                is_constructor: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+
+        let Some(Expression::FunctionCall { args, .. }) = dae_var.start else {
+            panic!("expected function-call start");
+        };
+        let Some(Expression::VarRef {
+            name: start_name, ..
+        }) = args.first()
+        else {
+            panic!("expected structured record VarRef argument");
+        };
+        assert_eq!(start_name.component_ref(), Some(&record_ref));
+    }
+
+    #[test]
+    fn rewrite_start_expr_preserves_top_level_structured_reference_when_not_aliasing() {
+        let record_def_id = rumoca_core::DefId::new(43);
+        let record_ref = rumoca_core::ComponentReference {
+            local: false,
+            span: rumoca_core::Span::DUMMY,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "mp".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: vec![],
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "modelcard".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: vec![],
+                },
+            ],
+            def_id: Some(record_def_id),
+        };
+        let expr = Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "mp.modelcard",
+                record_ref.clone(),
+            ),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        };
+        let known_var_names = HashSet::new();
+
+        let Expression::VarRef {
+            name: rewritten, ..
+        } = rewrite_start_expr_missing_refs(&expr, &known_var_names)
+        else {
+            panic!("expected structured VarRef");
+        };
+        assert_eq!(rewritten.component_ref(), Some(&record_ref));
+    }
     #[test]
     fn create_dae_variable_surfaces_source_causality() {
         let name = VarName::new("u");

@@ -479,7 +479,9 @@ fn run_single_model(
     // `x: Real[n]` must be expanded. Idempotent w.r.t. the simulator which
     // scalarizes internally.
     let mut dae = result.dae.clone();
-    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    if let Err(error) = rumoca_phase_structural::scalarize::scalarize_equations(&mut dae) {
+        return ModelOutcome::CompileFail(format!("structural scalarization failed: {error}"));
+    }
     let dae = &dae;
 
     if dae.variables.states.is_empty() {

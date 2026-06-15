@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_core::ExpressionRewriter;
 
-const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+use rumoca_core::NAMED_FUNCTION_ARG_PREFIX;
 
 fn is_der_of_state(expr: &Expression, state_name: &VarName) -> bool {
     matches!(

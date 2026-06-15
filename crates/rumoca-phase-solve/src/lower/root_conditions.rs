@@ -1,6 +1,5 @@
 use super::*;
 use std::collections::HashSet;
-use std::sync::Arc;
 
 struct RootRuntime<'a> {
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -8,22 +7,18 @@ struct RootRuntime<'a> {
     clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
     triggered_clock_conditions: &'a [rumoca_core::Expression],
     variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
-    scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
 }
 
 pub(super) fn lower_root_conditions(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     let runtime = RootRuntime {
         functions: &dae_model.symbols.functions,
         clock_intervals: &dae_model.clocks.intervals,
         clock_timings: &dae_model.clocks.timings,
         triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
         variable_starts: &dae_model.metadata.variable_starts,
-        scalarized_component_child_slots,
     };
     let mut rows = Vec::with_capacity(
         dae_model.conditions.relations.len()
@@ -32,14 +27,20 @@ pub(super) fn lower_root_conditions(
     );
     for condition in &dae_model.conditions.relations {
         if root_condition_is_inactive(dae_model, condition) {
-            rows.push(lower_inactive_root_row(layout, &runtime));
+            rows.push(lower_inactive_root_row(
+                layout,
+                &dae_model.symbols.functions,
+            ));
         } else {
             rows.push(lower_root_condition_row(condition, layout, &runtime)?);
         }
     }
     for condition in &dae_model.events.synthetic_root_conditions {
         if root_condition_is_inactive(dae_model, condition) {
-            rows.push(lower_inactive_root_row(layout, &runtime));
+            rows.push(lower_inactive_root_row(
+                layout,
+                &dae_model.symbols.functions,
+            ));
         } else {
             rows.push(lower_synthetic_root_condition_row(
                 condition, layout, &runtime,
@@ -57,7 +58,7 @@ pub(super) fn lower_root_conditions(
 pub(super) fn lower_root_relation_memory_targets(
     dae_model: &dae::Dae,
     layout: &VarLayout,
-) -> Vec<Option<rumoca_ir_solve::ScalarSlot>> {
+) -> Result<Vec<Option<rumoca_ir_solve::ScalarSlot>>, LowerError> {
     let mut targets = Vec::with_capacity(
         dae_model.conditions.relations.len()
             + dae_model.events.synthetic_root_conditions.len()
@@ -68,14 +69,14 @@ pub(super) fn lower_root_relation_memory_targets(
             dae_model,
             layout,
             relation_idx,
-        ));
+        )?);
     }
     targets.extend(vec![
         None;
         dae_model.events.synthetic_root_conditions.len()
             + dae_model.clocks.triggered_conditions.len()
     ]);
-    targets
+    Ok(targets)
 }
 
 fn lower_root_condition_row(
@@ -83,7 +84,15 @@ fn lower_root_condition_row(
     layout: &VarLayout,
     runtime: &RootRuntime<'_>,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = root_builder(layout, runtime);
+    let mut builder = LowerBuilder::new_with_runtime_metadata(
+        layout,
+        runtime.functions,
+        runtime.clock_intervals,
+        runtime.clock_timings,
+        runtime.triggered_clock_conditions,
+        runtime.variable_starts,
+        false,
+    );
     let scope = Scope::new();
     let root_value = match condition {
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => match op {
@@ -108,57 +117,76 @@ fn lower_root_condition_row(
 fn condition_memory_expr_for_relation(
     dae_model: &dae::Dae,
     relation_idx: usize,
-) -> Option<rumoca_core::Expression> {
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
     let mut offset = 0usize;
     for eq in &dae_model.conditions.equations {
         let scalar_count = eq.scalar_count.max(1);
         if relation_idx < offset + scalar_count {
-            let lhs = eq.lhs.as_ref()?;
+            let Some(lhs) = eq.lhs.as_ref() else {
+                return Ok(None);
+            };
             let flat_index = relation_idx - offset;
-            return Some(condition_memory_scalar_expr(
+            return Ok(Some(condition_memory_scalar_expr(
                 dae_model,
-                lhs,
+                lhs.var_name(),
                 flat_index,
                 scalar_count,
-            ));
+                eq.span,
+            )?));
         }
         offset += scalar_count;
     }
-    None
+    Ok(None)
 }
 
 fn condition_memory_slot_for_relation(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     relation_idx: usize,
-) -> Option<rumoca_ir_solve::ScalarSlot> {
-    let condition_memory = condition_memory_expr_for_relation(dae_model, relation_idx)?;
+) -> Result<Option<rumoca_ir_solve::ScalarSlot>, LowerError> {
+    let Some(condition_memory) = condition_memory_expr_for_relation(dae_model, relation_idx)?
+    else {
+        return Ok(None);
+    };
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = condition_memory
     else {
-        return None;
+        return Ok(None);
     };
     let key = if subscripts.is_empty() {
         name.to_string()
     } else {
+        let indices = generated_index_subscripts(&subscripts)?;
         format!(
             "{}[{}]",
             name,
-            subscripts
-                .iter()
-                .filter_map(|subscript| match subscript {
-                    rumoca_core::Subscript::Index { value, .. } => Some(*value),
-                    rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Expr { .. } => {
-                        None
-                    }
-                })
+            indices
+                .into_iter()
                 .map(|value| value.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
         )
     };
-    layout.binding(&key)
+    Ok(layout.binding(&key))
+}
+
+fn generated_index_subscripts(
+    subscripts: &[rumoca_core::Subscript],
+) -> Result<Vec<i64>, LowerError> {
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Ok(*value),
+            rumoca_core::Subscript::Colon { span } | rumoca_core::Subscript::Expr { span, .. } => {
+                Err(LowerError::ContractViolation {
+                    reason: "relation memory target contains a non-index generated subscript"
+                        .to_string(),
+                    span: *span,
+                })
+            }
+        })
+        .collect()
 }
 
 fn condition_memory_scalar_expr(
@@ -166,33 +194,46 @@ fn condition_memory_scalar_expr(
     lhs: &rumoca_core::VarName,
     flat_index: usize,
     scalar_count: usize,
-) -> rumoca_core::Expression {
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Expression, LowerError> {
     if scalar_count <= 1 {
-        return rumoca_core::Expression::VarRef {
+        return Ok(rumoca_core::Expression::VarRef {
             name: lhs.clone().into(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        };
+            span,
+        });
     }
-    let dims = dae_model
+    let Some(dims) = dae_model
         .variables
         .discrete_valued
         .get(lhs)
         .or_else(|| dae_model.variables.discrete_reals.get(lhs))
         .map(|var| var.dims.as_slice())
-        .unwrap_or(&[]);
-    let subscripts = dae::flat_index_to_subscripts(dims, flat_index)
-        .unwrap_or_else(|| vec![flat_index.saturating_add(1)])
+    else {
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "relation memory target `{lhs}` has scalar_count={scalar_count} but no DAE variable metadata"
+            ),
+            span,
+        });
+    };
+    let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) else {
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "relation memory target `{lhs}` cannot map flat index {flat_index} of {scalar_count} through dims {dims:?}"
+            ),
+            span,
+        });
+    };
+    let subscripts = indices
         .into_iter()
-        .map(|index| {
-            rumoca_core::Subscript::generated_index(index as i64, rumoca_core::Span::DUMMY)
-        })
+        .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
         .collect();
-    rumoca_core::Expression::VarRef {
+    Ok(rumoca_core::Expression::VarRef {
         name: lhs.clone().into(),
         subscripts,
-        span: rumoca_core::Span::DUMMY,
-    }
+        span,
+    })
 }
 
 fn lower_synthetic_root_condition_row(
@@ -207,7 +248,15 @@ fn lower_synthetic_root_condition_row(
     // MLS Appendix B: root functions are real-valued zero-crossing functions.
     // Synthetic roots are precomputed signed residuals, not Boolean relation
     // expressions, so render the numeric residual directly.
-    let mut builder = root_builder(layout, runtime);
+    let mut builder = LowerBuilder::new_with_runtime_metadata(
+        layout,
+        runtime.functions,
+        runtime.clock_intervals,
+        runtime.clock_timings,
+        runtime.triggered_clock_conditions,
+        runtime.variable_starts,
+        false,
+    );
     let root_value = builder.lower_expr(condition, &Scope::new(), 0)?;
     builder.ops.push(LinearOp::StoreOutput { src: root_value });
     Ok(builder.ops)
@@ -218,7 +267,15 @@ fn lower_triggered_clock_condition_row(
     layout: &VarLayout,
     runtime: &RootRuntime<'_>,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = root_builder(layout, runtime);
+    let mut builder = LowerBuilder::new_with_runtime_metadata(
+        layout,
+        runtime.functions,
+        runtime.clock_intervals,
+        runtime.clock_timings,
+        runtime.triggered_clock_conditions,
+        runtime.variable_starts,
+        false,
+    );
     let root_value = lower_bool_condition_as_root(condition, &mut builder, &Scope::new())?;
     builder.ops.push(LinearOp::StoreOutput { src: root_value });
     Ok(builder.ops)
@@ -242,28 +299,14 @@ fn lower_bool_condition_as_root(
     Ok(builder.emit_select(cond, neg_one, pos_one))
 }
 
-fn lower_inactive_root_row(layout: &VarLayout, runtime: &RootRuntime<'_>) -> Vec<LinearOp> {
-    let mut builder = root_builder(layout, runtime);
+fn lower_inactive_root_row(
+    layout: &VarLayout,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> Vec<LinearOp> {
+    let mut builder = LowerBuilder::new(layout, functions);
     let positive = builder.emit_const(1.0);
     builder.ops.push(LinearOp::StoreOutput { src: positive });
     builder.ops
-}
-
-fn root_builder<'a>(layout: &'a VarLayout, runtime: &'a RootRuntime<'a>) -> LowerBuilder<'a> {
-    LowerBuilder::new_with_metadata(
-        layout,
-        runtime.functions,
-        LowerBuilderMetadata {
-            clock_intervals: Some(runtime.clock_intervals),
-            clock_timings: Some(runtime.clock_timings),
-            triggered_clock_conditions: Some(runtime.triggered_clock_conditions),
-            discrete_valued_names: None,
-            variable_starts: Some(runtime.variable_starts),
-            indexed_bindings: None,
-            scalarized_component_child_slots: Some(&runtime.scalarized_component_child_slots),
-            is_initial_mode: false,
-        },
-    )
 }
 
 fn root_condition_is_inactive(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {

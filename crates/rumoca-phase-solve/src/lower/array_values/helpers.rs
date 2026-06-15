@@ -218,13 +218,6 @@ fn collect_index_choice_tuples(
     }
 }
 
-pub(super) fn dims_i64_to_usize(dims: &[i64]) -> Vec<usize> {
-    dims.iter()
-        .filter_map(|dim| usize::try_from(*dim).ok())
-        .filter(|dim| *dim > 0)
-        .collect()
-}
-
 pub(super) fn inferred_subscripted_dims(
     base_dims: &[usize],
     subscripts: &[rumoca_core::Subscript],
@@ -268,14 +261,38 @@ pub(super) fn infer_array_literal_dims_with(
         .iter()
         .map(&mut infer_child_dims)
         .collect::<Vec<_>>();
-    if let [dims] = child_dims.as_slice()
+    infer_array_literal_dims_from_children(elements, is_matrix, &child_dims)
+}
+
+pub(super) fn infer_array_literal_dims_with_result<E>(
+    elements: &[rumoca_core::Expression],
+    is_matrix: bool,
+    mut infer_child_dims: impl FnMut(&rumoca_core::Expression) -> Result<Vec<usize>, E>,
+) -> Result<Vec<usize>, E> {
+    let child_dims = elements
+        .iter()
+        .map(&mut infer_child_dims)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(infer_array_literal_dims_from_children(
+        elements,
+        is_matrix,
+        &child_dims,
+    ))
+}
+
+fn infer_array_literal_dims_from_children(
+    elements: &[rumoca_core::Expression],
+    is_matrix: bool,
+    child_dims: &[Vec<usize>],
+) -> Vec<usize> {
+    if let [dims] = child_dims
         && is_matrix
         && dims.len() > 1
     {
         return dims.clone();
     }
     if !is_matrix {
-        return infer_array_sequence_dims_from_children(elements.len(), &child_dims);
+        return infer_array_sequence_dims_from_children(elements.len(), child_dims);
     }
     if elements.iter().all(|element| {
         matches!(
@@ -283,9 +300,9 @@ pub(super) fn infer_array_literal_dims_with(
             rumoca_core::Expression::Array { .. } | rumoca_core::Expression::Tuple { .. }
         )
     }) {
-        return infer_matrix_row_literal_dims(elements.len(), &child_dims);
+        return infer_matrix_row_literal_dims(elements.len(), child_dims);
     }
-    if let Some(dims) = infer_matrix_column_concat_dims(elements.len(), &child_dims) {
+    if let Some(dims) = infer_matrix_column_concat_dims(elements.len(), child_dims) {
         return dims;
     }
     if child_dims.iter().all(Vec::is_empty) {
@@ -555,8 +572,10 @@ pub(super) fn lower_static_range_values(
             return Ok(None);
         };
         value
-    } else {
+    } else if end_v >= start_v {
         1.0
+    } else {
+        -1.0
     };
 
     if !start_v.is_finite()
@@ -594,7 +613,7 @@ pub(super) fn lower_static_range_values(
 
 pub(super) fn scoped_indexed_binding_values(
     scope: &Scope,
-    path: &ComponentPath,
+    path: &ComponentReferenceKey,
 ) -> Option<Vec<Reg>> {
     scope.indexed_values(path)
 }
@@ -603,13 +622,12 @@ pub(super) fn function_output_values(
     output: &rumoca_core::FunctionParam,
     scope: &Scope,
 ) -> Result<Vec<Reg>, LowerError> {
-    let width = dims_scalar_count(&output.dims);
-    let output_path = ComponentPath::from_flat_path(&output.name);
-    if let Some(values) = scoped_indexed_binding_values(scope, &output_path)
-        && (width <= 1 || values.len() == width)
-    {
-        return Ok(values);
-    }
+    let width = dims_scalar_count(
+        &output.dims,
+        format!("function output `{}`", output.name),
+        output.span,
+    )?;
+    let output_path = generated_scope_key(&output.name);
     if width <= 1 {
         return scope
             .get(&output_path)
@@ -620,11 +638,16 @@ pub(super) fn function_output_values(
                 reason: "function output was not assigned".to_string(),
             });
     }
+    if let Some(values) = scoped_indexed_binding_values(scope, &output_path)
+        && values.len() == width
+    {
+        return Ok(values);
+    }
 
     let mut values = Vec::with_capacity(width);
     for flat_index in 0..width {
         let key = dae::scalar_name_text_for_flat_index(&output.name, &output.dims, flat_index);
-        let key_path = ComponentPath::from_flat_path(&key);
+        let key_path = generated_scope_key(&key);
         let Some(reg) = scope.get(&key_path).copied() else {
             return Err(LowerError::InvalidFunction {
                 name: output.name.clone(),
@@ -641,7 +664,9 @@ pub(super) fn record_output_component_values(output_name: &str, scope: &Scope) -
     let entries = scope
         .iter()
         .into_iter()
-        .filter(|(key, _)| key.as_str().starts_with(output_prefix.as_str()))
+        .filter(|(key, _)| {
+            generated_scope_key_name(key).is_some_and(|name| name.starts_with(&output_prefix))
+        })
         .collect::<Vec<_>>();
     if entries.is_empty() {
         return None;
@@ -649,12 +674,14 @@ pub(super) fn record_output_component_values(output_name: &str, scope: &Scope) -
 
     let keys = entries
         .iter()
-        .map(|(key, _)| key.as_str().to_string())
+        .filter_map(|(key, _)| generated_scope_key_name(key).map(ToString::to_string))
         .collect::<Vec<_>>();
     let values = entries
         .into_iter()
         .filter(|(key, _)| {
-            let key = key.as_str();
+            let Some(key) = generated_scope_key_name(key) else {
+                return false;
+            };
             !keys.iter().any(|candidate| {
                 candidate.len() > key.len()
                     && (candidate.starts_with(&format!("{key}["))

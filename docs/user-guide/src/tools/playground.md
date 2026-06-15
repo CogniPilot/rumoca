@@ -1,38 +1,37 @@
 # Web Playground
 
-The browser playground runs the Rumoca compiler in WebAssembly. It is useful
-for small models, quick experiments, and demos.
-
-Public deployment:
+The browser playground runs the full Rumoca compiler in WebAssembly: a
+project file tree, Monaco editors with LSP support, simulation with plots,
+code generation, and package archive loading — no install required.
 
 ```text
 https://cognipilot.github.io/rumoca/
 ```
 
-## Book Examples
+It is useful for small models, quick experiments, sharing reproductions in
+bug reports, and demos.
 
-The books should use focused WASM components rather than embedding the full
-playground workbench. A good example page can host a single Monaco editor,
-load a small in-page file set, call the Rumoca WASM compiler/simulator on those
-files, and render only the controls, plots, or 3D view needed for that example.
+## Live Examples in This Book
 
-That keeps the example native to the book page while reusing the same WASM
-package as the playground. The missing piece is a small book-facing component
-API for source files, model name, `rum.toml` scenario, and view selection.
+The runnable code blocks throughout this book (look for the **▶ Simulate**
+button) use the same WASM package as the playground, embedded as focused
+mini editors:
 
-The user and developer books are deployed beside it:
+- the same compiler, solvers, and diagnostics as the native CLI,
+- Monaco-based editing with Rumoca's completion, hover, and error checking,
+- inline plots, DAE views, and per-example visualizations.
 
-```text
-https://cognipilot.github.io/rumoca/user-guide/
-https://cognipilot.github.io/rumoca/dev-guide/
-```
+The first run on a page downloads the WASM compiler; afterwards it is
+cached by the browser. Models honor their `experiment` annotation
+(`StopTime`, `Interval`, `Tolerance`, `Solver`).
 
-Limitations:
+## Limitations
 
-- Large package trees are slower than native builds.
-- Browser storage and worker memory limits matter for full MSL-sized projects.
+- Large package trees compile more slowly than native builds.
+- Browser storage and worker memory limits matter for full MSL-sized
+  projects.
 - Native interactive examples may have more solver/backend options than the
   browser build.
 
-For larger models or external package development, prefer the native CLI or VS
-Code extension.
+For larger models or external package development, prefer the native CLI or
+the VS Code extension.

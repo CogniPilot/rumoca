@@ -2,9 +2,10 @@
 //!
 //! Tests for the 17 algorithm contracts defined in SPEC_0022.
 
+use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
-    expect_compile_failure, expect_parse_err_with_code, expect_resolve_failure_with_code,
-    expect_success,
+    expect_compile_failure, expect_failure_in_phase_with_code, expect_parse_err_with_code,
+    expect_resolve_failure_with_code, expect_success,
 };
 
 // =============================================================================
@@ -389,5 +390,195 @@ fn alg_for_loop_algorithm() {
         end Test;
     "#,
         "Test",
+    );
+}
+
+// =============================================================================
+// ALG-014: terminate not in function
+// "terminate-statement shall not be used in functions" (MLS §8.3.8)
+// =============================================================================
+
+#[test]
+fn alg_014_terminate_in_function_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            input Real x;
+            output Real y;
+        algorithm
+            y := x;
+            terminate("not allowed here");
+        end F;
+        model Test
+            Real x(start = 0);
+        equation
+            der(x) = F(1);
+        end Test;
+    "#,
+        "Test",
+        "ER056",
+    );
+}
+
+// =============================================================================
+// ALG-011: When discrete Boolean
+// "Expression of when-statement shall be discrete-time Boolean" (MLS §8.3.5)
+// =============================================================================
+
+#[test]
+fn alg_011_non_boolean_when_condition_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real x(start = 0);
+            discrete Real d;
+        equation
+            der(x) = 1;
+            when x then
+                d = 1;
+            end when;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
+    );
+}
+
+// =============================================================================
+// ALG-002: Only type, record, operator record, connector may appear as
+// left-hand-side
+// =============================================================================
+
+#[test]
+fn alg_002_assign_to_model_instance_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            model Sub
+                Real x = 1;
+            end Sub;
+            Sub a;
+            Sub b;
+        algorithm
+            a := b;
+        end M;
+    "#,
+        "M",
+        "ER111",
+    );
+}
+
+// =============================================================================
+// ALG-003: If for-statement contains event-generating expressions, index shall
+// be evaluable
+// =============================================================================
+
+#[test]
+fn alg_003_event_generating_for_with_noneval_range_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            Real x = time;
+            Integer n(start = 1);
+            Real acc;
+        algorithm
+            acc := 0;
+            for i in 1:integer(x) loop
+                acc := acc + (if x > 0.5 then 1 else 0);
+            end for;
+        end M;
+    "#,
+        "M",
+        "ER115",
+    );
+}
+
+// =============================================================================
+// ALG-006: Event-generating expressions not allowed in while condition or body
+// =============================================================================
+
+#[test]
+fn alg_006_event_generating_while_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            Real x = time;
+            Real acc;
+        algorithm
+            acc := 0;
+            while acc < x loop
+                acc := acc + 1;
+            end while;
+        end M;
+    "#,
+        "M",
+        "ER114",
+    );
+}
+
+// =============================================================================
+// ALG-004: No assignments to entire arrays subscripted with loop variable
+// inside for
+// =============================================================================
+
+#[test]
+fn alg_004_whole_array_assignment_in_for_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            function F
+                input Real u;
+                output Real y;
+            protected
+                Real a[3];
+            algorithm
+                for i in 1:3 loop
+                    a := fill(u, 3);
+                    a[i] := u;
+                end for;
+                y := a[1];
+            end F;
+            Real z = F(1.0);
+        end M;
+    "#,
+        "M",
+        "ER121",
+    );
+}
+
+// =============================================================================
+// ALG-017: Variables on the left-hand side of := must be initialized when
+// algorithm is invoked
+// =============================================================================
+
+#[test]
+fn alg_017_function_locals_initialized_per_invocation() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            function F
+                input Real u;
+                output Real y;
+            protected
+                Real acc = 10;
+            algorithm
+                acc := acc + u;
+                y := acc;
+            end F;
+            Real t(start = 0, fixed = true);
+            Real z;
+        equation
+            der(t) = 1;
+            z = F(3.0);
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    let z = trace.channel("z");
+    assert!(
+        z.iter().all(|&v| v == 13.0),
+        "function locals must start from their defaults on every invocation, got {z:?}"
     );
 }

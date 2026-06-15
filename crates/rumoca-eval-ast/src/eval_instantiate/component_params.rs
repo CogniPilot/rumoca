@@ -1,5 +1,6 @@
 use super::{
-    InstantiateEvalCtx, ast, get_enum_value_with_depth, try_eval_bool_literal,
+    ConditionEvalEnv, InstantiateEvalCtx, ast, eval_scoped_string_condition_with_depth,
+    get_enum_value_with_depth, resolve_component_ref_expr, try_eval_bool_literal,
     try_eval_integer_expr_with_depth,
 };
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -62,22 +63,103 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
     Some(value)
 }
 
-/// Parse a rumoca_core::StateSelect value from an expression.
-pub fn parse_state_select(expr: &ast::Expression) -> rumoca_core::StateSelect {
-    // rumoca_core::StateSelect is typically a qualified name like rumoca_core::StateSelect.prefer
-    if let ast::Expression::ComponentReference(comp_ref) = expr
-        && let Some(last) = comp_ref.parts.last()
-    {
-        match &*last.ident.text {
-            "never" => return rumoca_core::StateSelect::Never,
-            "avoid" => return rumoca_core::StateSelect::Avoid,
-            "default" => return rumoca_core::StateSelect::Default,
-            "prefer" => return rumoca_core::StateSelect::Prefer,
-            "always" => return rumoca_core::StateSelect::Always,
-            _ => {}
+/// Evaluate an MLS predefined `StateSelect` attribute expression.
+pub fn eval_state_select_expr(
+    ctx: &InstantiateEvalCtx,
+    expr: &ast::Expression,
+) -> Option<rumoca_core::StateSelect> {
+    let env = ConditionEvalEnv {
+        mod_env: ctx.mod_env,
+        effective_components: ctx.effective_components,
+        tree: ctx.tree,
+        resolve_class_components: ctx.resolve_class_components,
+    };
+    eval_state_select_expr_with_depth(expr, env, None, 0)
+}
+
+fn eval_state_select_expr_with_depth(
+    expr: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    scope_prefix: Option<&str>,
+    depth: usize,
+) -> Option<rumoca_core::StateSelect> {
+    if depth > super::MAX_CONDITION_DEPTH {
+        return None;
+    }
+    if let Some(value) = parse_state_select(expr) {
+        return Some(value);
+    }
+
+    match expr {
+        ast::Expression::ComponentReference(comp_ref) => {
+            let (resolved_expr, next_scope) = resolve_component_ref_expr(
+                comp_ref,
+                env.mod_env,
+                env.effective_components,
+                env.tree,
+                scope_prefix,
+            )?;
+            eval_state_select_expr_with_depth(&resolved_expr, env, next_scope.as_deref(), depth + 1)
+        }
+        ast::Expression::Parenthesized { inner, .. } => {
+            eval_state_select_expr_with_depth(inner, env, scope_prefix, depth + 1)
+        }
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => eval_if_state_select(branches, else_branch, env, scope_prefix, depth + 1),
+        ast::Expression::Array { elements, .. } => {
+            let first = elements.first()?;
+            if !elements.iter().all(|element| element == first) {
+                return None;
+            }
+            eval_state_select_expr_with_depth(first, env, scope_prefix, depth + 1)
+        }
+        _ => None,
+    }
+}
+
+fn eval_if_state_select(
+    branches: &[(ast::Expression, ast::Expression)],
+    else_branch: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    scope_prefix: Option<&str>,
+    depth: usize,
+) -> Option<rumoca_core::StateSelect> {
+    for (cond, branch_expr) in branches {
+        match eval_scoped_string_condition_with_depth(cond, env, scope_prefix, depth) {
+            Some(true) => {
+                return eval_state_select_expr_with_depth(branch_expr, env, scope_prefix, depth);
+            }
+            Some(false) => continue,
+            None => return None,
         }
     }
-    rumoca_core::StateSelect::Default
+    eval_state_select_expr_with_depth(else_branch, env, scope_prefix, depth)
+}
+
+/// Parse a rumoca_core::StateSelect value from an expression.
+pub fn parse_state_select(expr: &ast::Expression) -> Option<rumoca_core::StateSelect> {
+    if let ast::Expression::ComponentReference(comp_ref) = expr
+        && comp_ref.parts.len() == 2
+        && comp_ref.parts.first()?.ident.text.as_ref() == "StateSelect"
+    {
+        return state_select_from_modelica_literal(&comp_ref.parts.last()?.ident.text);
+    }
+    None
+}
+
+/// Parse an MLS predefined `StateSelect` enumeration literal name.
+fn state_select_from_modelica_literal(value: &str) -> Option<rumoca_core::StateSelect> {
+    match value {
+        "never" => Some(rumoca_core::StateSelect::Never),
+        "avoid" => Some(rumoca_core::StateSelect::Avoid),
+        "default" => Some(rumoca_core::StateSelect::Default),
+        "prefer" => Some(rumoca_core::StateSelect::Prefer),
+        "always" => Some(rumoca_core::StateSelect::Always),
+        _ => None,
+    }
 }
 
 /// Extract binding from declaration or modification.
@@ -265,7 +347,7 @@ pub(crate) fn component_expr_for_structural_eval(
 /// Example: `pipe2.flowModel.nFM` -> [`pipe2.nFM`, `nFM`]
 /// This models lexical scope climbing for nested component members.
 pub(crate) fn enclosing_scope_candidates(dotted: &str) -> Vec<String> {
-    let mut parts: Vec<&str> = rumoca_core::split_path_with_indices(dotted);
+    let mut parts = rumoca_core::ComponentPath::from_flat_path(dotted).into_parts();
     let mut candidates = Vec::new();
     while parts.len() > 1 {
         let remove_idx = parts.len() - 2;

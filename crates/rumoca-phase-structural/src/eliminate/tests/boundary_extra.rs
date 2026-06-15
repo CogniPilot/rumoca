@@ -58,7 +58,7 @@ fn test_boundary_keeps_state_only_algebraic_constraint() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert!(
         dae.continuous
             .equations
@@ -79,21 +79,27 @@ fn test_boundary_keeps_state_only_algebraic_constraint() {
 fn test_boundary_preserves_indexed_array_connection_constraints() {
     let mut dae = Dae::new();
 
-    let mut add_u = dae::Variable::new(VarName::new("add.u"));
+    let mut add_u = component_var("add.u");
     add_u.dims = vec![2];
     dae.variables
         .algebraics
         .insert(VarName::new("add.u"), add_u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("add.u[2]"), component_var("add.u[2]"));
 
-    let mut product_u = dae::Variable::new(VarName::new("product.u"));
+    let mut product_u = component_var("product.u");
     product_u.dims = vec![2];
     dae.variables
         .algebraics
         .insert(VarName::new("product.u"), product_u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("product.u[1]"), component_var("product.u[1]"));
 
     dae.variables.outputs.insert(
         VarName::new("integerStep.y"),
-        dae::Variable::new(VarName::new("integerStep.y")),
+        component_var("integerStep.y"),
     );
 
     // Source-like assignment for integerStep.y.
@@ -148,7 +154,7 @@ fn test_boundary_preserves_indexed_array_connection_constraints() {
         scalar_count: 1,
     });
 
-    let _ = eliminate_trivial(&mut dae);
+    eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     let mut refs = std::collections::HashSet::new();
     for eq in &dae.continuous.equations {
@@ -252,7 +258,7 @@ fn test_boundary_keeps_internal_discrete_connection_chain_for_runtime_alias_path
         scalar_count: 1,
     });
 
-    let _ = eliminate_trivial(&mut dae);
+    eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(
         dae.continuous

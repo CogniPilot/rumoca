@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::{ComponentRefPart, ComponentReference, Reference, split_path_with_indices};
+use rumoca_core::{ComponentRefPart, ComponentReference, Reference};
 
 /// Build a flattened component reference from AST for test conversion.
 pub(super) fn component_reference_from_ast_with_def_map(
@@ -10,19 +10,9 @@ pub(super) fn component_reference_from_ast_with_def_map(
         && let Some(def_id) = comp.def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
     {
-        return ComponentReference {
-            local: comp.local,
-            span: comp.span,
-            parts: split_path_with_indices(path)
-                .into_iter()
-                .map(|segment| ComponentRefPart {
-                    ident: segment.to_string(),
-                    span: comp.span,
-                    subs: Vec::new(),
-                })
-                .collect(),
-            def_id: Some(def_id),
-        };
+        let mut reference = ComponentReference::from_flat_segments(path, comp.span, Some(def_id));
+        reference.local = comp.local;
+        return reference;
     }
 
     ComponentReference {

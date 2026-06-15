@@ -39,7 +39,7 @@ fn lower_derivative_rhs_inlines_direct_matrix_vector_assignment() {
         )));
     }
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("v_w")),
+        lhs: Some(rumoca_core::VarName::new("v_w").into()),
         // MLS §10.6.5: matrix * vector is a vector expression. ODE RHS
         // extraction must preserve that direct algebraic relation instead of
         // reading a stale scalarized solver slot.
@@ -49,7 +49,7 @@ fn lower_derivative_rhs_inlines_direct_matrix_vector_assignment() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = rumoca_eval_solve::to_scalar_program_block(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("direct matrix-vector assignment should lower into derivative RHS"),
@@ -94,7 +94,7 @@ fn lower_derivative_rhs_indexes_builtin_array_rhs() {
         .equations
         .push(residual(sub(der(var("x")), rhs)));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = rumoca_eval_solve::to_scalar_program_block(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("indexed builtin array RHS should lower in derivative rows"),
@@ -177,28 +177,28 @@ fn lower_derivative_rhs_projects_scalarized_vector_function_output_with_vector_a
             .push(residual(sub(der(indexed_var("omega", idx)), real_lit(0.0))));
     }
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("alias_omega[1]")),
+        lhs: Some(rumoca_core::VarName::new("alias_omega[1]").into()),
         rhs: indexed_var("omega", 1),
         span: rumoca_core::Span::DUMMY,
         origin: "scalarized vector alias".to_string(),
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("alias_omega[2]")),
+        lhs: Some(rumoca_core::VarName::new("alias_omega[2]").into()),
         rhs: indexed_var("omega", 2),
         span: rumoca_core::Span::DUMMY,
         origin: "scalarized vector alias".to_string(),
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("alias_omega[3]")),
+        lhs: Some(rumoca_core::VarName::new("alias_omega[3]").into()),
         rhs: indexed_var("omega", 3),
         span: rumoca_core::Span::DUMMY,
         origin: "scalarized vector alias".to_string(),
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = rumoca_eval_solve::to_scalar_program_block(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("projected vector function output should bind vector alias argument"),
@@ -243,7 +243,7 @@ fn lower_derivative_rhs_lowers_compact_matrix_times_state_derivative() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     lower_residual(&dae_model, &layout)
         .expect("array der() should preserve vector shape in residual lowering");
     let rows = rumoca_eval_solve::to_scalar_program_block(
@@ -273,7 +273,7 @@ fn lower_derivative_rhs_lowers_compact_matrix_times_state_derivative() {
 fn lower_derivative_rhs_projects_implicit_record_constructor_coupled_rows() {
     let dae_model = implicit_record_constructor_coupled_rows_dae();
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("implicit record constructor projection should expose coupled rows");
     assert!(matches!(
@@ -546,7 +546,7 @@ fn projection_call(
 fn lower_derivative_rhs_projects_matrix_function_output_inside_record_constructor() {
     let dae_model = matrix_function_output_record_constructor_dae();
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("matrix-valued function output should keep rank through derivative projection");
     assert!(matches!(
@@ -737,7 +737,7 @@ fn projection_matrix(rows: Vec<Vec<f64>>) -> rumoca_core::Expression {
 fn lower_derivative_rhs_projects_record_field_with_derivative_when_sibling_field_is_unprojected() {
     let dae_model = planar_rotation_record_dae(PlanarRotationEquation::WholeRecord);
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("derivative-bearing record field should project independently");
     let rows = rumoca_eval_solve::to_scalar_program_block(&block);
@@ -757,7 +757,7 @@ fn lower_derivative_rhs_projects_record_field_with_derivative_when_sibling_field
 fn lower_derivative_rhs_projects_record_function_field_access() {
     let dae_model = planar_rotation_record_dae(PlanarRotationEquation::FieldAccess);
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("derivative-bearing record function field should project");
     let rows = rumoca_eval_solve::to_scalar_program_block(&block);
@@ -972,7 +972,7 @@ fn lower_derivative_rhs_extracts_dot_product_with_vector_function_derivative() {
         });
     }
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("dot product function derivative rows should lower");
     assert!(matches!(
@@ -1081,7 +1081,7 @@ fn lower_derivative_rhs_projects_transposed_matrix_function_derivative() {
         });
     }
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("transposed matrix function derivative rows should lower");
     assert!(matches!(
@@ -1168,7 +1168,7 @@ fn lower_derivative_rhs_projects_vector_function_derivative_divided_by_scalar() 
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("vector function derivative divided by scalar should lower");
     assert_vector_derivative_divided_outputs(&layout, &block);
@@ -1241,7 +1241,7 @@ fn lower_derivative_rhs_projects_vector_if_derivative_with_zeros_else() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("vector if derivative with zeros else should lower");
     let rows = rumoca_eval_solve::to_scalar_program_block(&block);
@@ -1252,7 +1252,7 @@ fn lower_derivative_rhs_projects_vector_if_derivative_with_zeros_else() {
 fn lower_derivative_rhs_projects_structural_if_vector_function_in_vector_if() {
     let dae_model = structural_if_vector_function_dae();
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("structural vector function branch should project scalar derivative rows");
     let rows = rumoca_eval_solve::to_scalar_program_block(&block);
@@ -1452,7 +1452,7 @@ fn lower_derivative_rhs_lowers_scalar_times_vector_state_derivative() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = rumoca_eval_solve::to_scalar_program_block(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("scalar-vector derivative equation should lower"),

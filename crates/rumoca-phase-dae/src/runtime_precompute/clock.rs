@@ -4,7 +4,6 @@ use super::{eval_scalar_const_expr, extract_time_event_instant};
 use indexmap::{IndexMap, IndexSet};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 
 use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
@@ -698,28 +697,24 @@ pub(super) fn canonical_var_name_key(
         return Some(name.as_str().to_string());
     }
 
-    let mut key = name.as_str().to_string();
+    let mut indices = Vec::with_capacity(subscripts.len());
     for subscript in subscripts {
         match subscript {
             rumoca_core::Subscript::Index { value: index, .. } => {
-                key.push('[');
-                let _ = write!(&mut key, "{index}");
-                key.push(']');
+                indices.push(usize::try_from(*index).ok().filter(|index| *index > 0)?);
             }
             rumoca_core::Subscript::Expr { expr, .. } => {
                 let raw = eval_scalar_const_expr(expr, constants)?;
                 let rounded = raw.round();
-                if !rounded.is_finite() {
+                if !rounded.is_finite() || (raw - rounded).abs() > 1.0e-12 || rounded < 1.0 {
                     return None;
                 }
-                key.push('[');
-                let _ = write!(&mut key, "{}", rounded as i64);
-                key.push(']');
+                indices.push(rounded as usize);
             }
             rumoca_core::Subscript::Colon { .. } => return None,
         }
     }
-    Some(key)
+    Some(dae::format_subscript_key(name.as_str(), &indices))
 }
 
 fn collect_assignments_from_residual<'a>(
@@ -785,7 +780,7 @@ fn collect_assignment_sources<'a>(
     out: &mut Vec<(String, &'a rumoca_core::Expression)>,
 ) {
     if let Some(lhs) = eq.lhs.as_ref()
-        && let Some(key) = canonical_var_name_key(lhs, &[], constants)
+        && let Some(key) = canonical_var_name_key(lhs.var_name(), &[], constants)
     {
         out.push((key, &eq.rhs));
         return;
@@ -936,7 +931,7 @@ fn add_shared_no_argument_clock_guard_edges(
         let Some(lhs) = eq.lhs.as_ref() else {
             continue;
         };
-        let Some(target) = canonical_var_name_key(lhs, &[], constants) else {
+        let Some(target) = canonical_var_name_key(lhs.var_name(), &[], constants) else {
             continue;
         };
         if !candidates.contains(&target) {

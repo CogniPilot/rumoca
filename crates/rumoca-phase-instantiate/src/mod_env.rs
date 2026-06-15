@@ -558,18 +558,18 @@ pub(super) fn propagate_record_binding_to_fields(
     binding_source_scope: Option<ast::QualifiedName>,
     nested_class: &ast::ClassDef,
     targeted_keys: &IndexMap<ast::QualifiedName, ()>,
-) {
+) -> InstantiateResult<()> {
     // MLS §7.2 record binding projection applies only to record components.
     // For non-record classes (model/block/connector), class modifications must
     // remain component modifiers and must not synthesize per-field bindings.
     if nested_class.class_type != rumoca_core::ClassType::Record {
-        return;
+        return Ok(());
     }
 
     // Get effective components including inherited ones (MLS §7.2).
     // For type aliases like `ComplexVoltage = Complex(...)`, direct components may
     // be empty while fields come from a base class.
-    let effective = get_effective_components(tree, nested_class).unwrap_or_default();
+    let effective = get_effective_components(tree, nested_class)?;
     let components: &IndexMap<String, ast::Component> = if effective.is_empty() {
         &nested_class.components
     } else {
@@ -622,6 +622,7 @@ pub(super) fn propagate_record_binding_to_fields(
             ),
         );
     }
+    Ok(())
 }
 
 fn should_preserve_same_type_alias_field_default(
@@ -1696,7 +1697,8 @@ mod tests {
             None,
             &nested_record,
             &targeted_keys,
-        );
+        )
+        .expect("record field projection should succeed");
 
         let phase_mod = ctx
             .mod_env()
@@ -1746,7 +1748,8 @@ mod tests {
             None,
             &nested_record,
             &targeted_keys,
-        );
+        )
+        .expect("record field projection should succeed");
 
         let phase_mod = ctx
             .mod_env()
@@ -1787,7 +1790,8 @@ mod tests {
             None,
             &nested_record,
             &targeted_keys,
-        );
+        )
+        .expect("record field projection should succeed");
 
         let field_mod = ctx
             .mod_env()
@@ -1863,7 +1867,8 @@ mod tests {
             None,
             &nested_record,
             &IndexMap::default(),
-        );
+        )
+        .expect("record field projection should succeed");
 
         assert!(
             ctx.mod_env().active.is_empty(),
@@ -1909,7 +1914,8 @@ mod tests {
             None,
             &nested_record,
             &IndexMap::default(),
-        );
+        )
+        .expect("record field projection should succeed");
 
         let field_mod = ctx
             .mod_env()
@@ -1947,7 +1953,8 @@ mod tests {
             None,
             &nested_block,
             &targeted_keys,
-        );
+        )
+        .expect("non-record projection should succeed without mutation");
 
         assert!(
             ctx.mod_env().active.is_empty(),

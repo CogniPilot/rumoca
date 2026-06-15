@@ -5,29 +5,29 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("x"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("a"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("a"),
             dims: vec![4],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("b"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("b"),
             dims: vec![4],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {

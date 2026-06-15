@@ -58,7 +58,7 @@ fn real_expr(value: &str) -> ast::Expression {
 fn comp_ref(path: &str) -> ComponentReference {
     ComponentReference {
         local: false,
-        parts: crate::path_utils::split_path_with_indices(path)
+        parts: crate::path_utils::segments(path)
             .into_iter()
             .map(|part| ComponentRefPart {
                 ident: token(part),

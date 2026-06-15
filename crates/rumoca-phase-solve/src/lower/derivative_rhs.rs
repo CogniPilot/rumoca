@@ -3,8 +3,7 @@ mod linear_parts;
 mod projection;
 use super::{
     DirectAssignmentValue, IndexedBindingMap, LowerBuilder, LowerBuilderMetadata, LowerError,
-    ScalarizedComponentChildSlotMap, Scope, build_scalarized_component_child_slot_map,
-    compile_time, helpers::build_indexed_binding_map,
+    Scope, compile_time, helpers::build_indexed_binding_map,
 };
 pub(super) use equation_collection::*;
 use indexmap::IndexMap;
@@ -12,9 +11,7 @@ pub(super) use linear_parts::*;
 pub(super) use projection::*;
 use rumoca_core::{Literal, OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve::{
-    BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, ScalarProgramBlock, VarLayout,
-};
+use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, VarLayout};
 use std::sync::Arc;
 
 #[path = "derivative_rhs/function_projection.rs"]
@@ -34,6 +31,7 @@ pub(in crate::lower) struct DerivativeEquation {
     coefficients: IndexMap<String, rumoca_core::Expression>,
     rhs: rumoca_core::Expression,
     span: rumoca_core::Span,
+    source_equation_index: Option<usize>,
 }
 
 pub(in crate::lower) struct DerivativeLinearCtx<'a> {
@@ -46,10 +44,10 @@ pub(crate) struct DerivativeRhsAnalysis {
     states: Vec<StateScalar>,
     equations: Vec<DerivativeEquation>,
     direct_equations: IndexMap<String, usize>,
-    direct_assignments: IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
     component_roots: Vec<usize>,
     components: IndexMap<usize, Vec<usize>>,
-    structural_bindings: IndexMap<String, f64>,
+    structural_bindings: Arc<IndexMap<String, f64>>,
     equation_flags: Vec<bool>,
 }
 
@@ -59,7 +57,9 @@ impl DerivativeRhsAnalysis {
     }
 }
 
-pub(crate) fn analyze_derivative_rhs(dae_model: &dae::Dae) -> DerivativeRhsAnalysis {
+pub(crate) fn analyze_derivative_rhs(
+    dae_model: &dae::Dae,
+) -> Result<DerivativeRhsAnalysis, LowerError> {
     let states = collect_state_scalars(dae_model);
     let state_names = states
         .iter()
@@ -67,27 +67,27 @@ pub(crate) fn analyze_derivative_rhs(dae_model: &dae::Dae) -> DerivativeRhsAnaly
         .collect::<Vec<_>>();
     let structural_bindings = compile_time::structural_bindings(dae_model);
     let (equations, equation_flags) =
-        collect_derivative_equations(dae_model, &state_names, &structural_bindings);
+        collect_derivative_equations(dae_model, &state_names, &structural_bindings)?;
     let direct_equations = collect_direct_derivative_equations(&equations);
     let direct_assignments = collect_direct_assignments(dae_model, &equation_flags);
     let (component_roots, components) = derivative_state_components(&states, &equations);
-    DerivativeRhsAnalysis {
+    Ok(DerivativeRhsAnalysis {
         states,
         equations,
         direct_equations,
-        direct_assignments,
+        direct_assignments: Arc::new(direct_assignments),
         component_roots,
         components,
-        structural_bindings,
+        structural_bindings: Arc::new(structural_bindings),
         equation_flags,
-    }
+    })
 }
 
 pub(super) fn lower_derivative_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<ComputeBlock, LowerError> {
-    let analysis = analyze_derivative_rhs(dae_model);
+    let analysis = analyze_derivative_rhs(dae_model)?;
     lower_derivative_rhs_with_analysis(dae_model, layout, &analysis)
 }
 
@@ -97,8 +97,6 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     analysis: &DerivativeRhsAnalysis,
 ) -> Result<ComputeBlock, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
         equations: &analysis.equations,
         direct_assignments: &analysis.direct_assignments,
@@ -106,10 +104,9 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         layout,
         structural_bindings: &analysis.structural_bindings,
         indexed_bindings: &indexed_bindings,
-        scalarized_component_child_slots: &scalarized_component_child_slots,
     };
     let mut block = ComputeBlock::default();
-    let mut pending_scalar_programs: Vec<Vec<LinearOp>> = Vec::new();
+    let mut pending_scalar_programs: Vec<crate::stencil::SourceScalarProgram> = Vec::new();
     let mut processed = vec![false; analysis.states.len()];
     let mut i = 0;
 
@@ -128,11 +125,11 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         if component.len() > 1 {
             // Flush preceding scalar rows into a ScalarPrograms node.
             if !pending_scalar_programs.is_empty() {
-                block
-                    .nodes
-                    .push(ComputeNode::ScalarPrograms(ScalarProgramBlock::new(
-                        std::mem::take(&mut pending_scalar_programs),
-                    )));
+                crate::stencil::push_source_structured_rows(
+                    &mut block.nodes,
+                    &mut pending_scalar_programs,
+                    &dae_model.continuous.for_equations,
+                );
             }
 
             let group = component
@@ -147,7 +144,6 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                 layout,
                 &analysis.structural_bindings,
                 &indexed_bindings,
-                &scalarized_component_child_slots,
             )?;
             block.nodes.push(node);
             for idx in component {
@@ -158,18 +154,25 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         }
 
         // Scalar / direct-equation state — build one row.
+        let source_equation_index = analysis
+            .direct_equations
+            .get(&state.name)
+            .and_then(|equation| analysis.equations[*equation].source_equation_index);
         let row = lower_state_derivative_row(state, &analysis.direct_equations, &lowering_ctx)?;
-        pending_scalar_programs.push(row);
+        pending_scalar_programs.push(crate::stencil::SourceScalarProgram {
+            ops: row,
+            source_equation_index,
+        });
         processed[i] = true;
         i += 1;
     }
 
     if !pending_scalar_programs.is_empty() {
-        block
-            .nodes
-            .push(ComputeNode::ScalarPrograms(ScalarProgramBlock::new(
-                pending_scalar_programs,
-            )));
+        crate::stencil::push_source_structured_rows(
+            &mut block.nodes,
+            &mut pending_scalar_programs,
+            &dae_model.continuous.for_equations,
+        );
     }
 
     Ok(block)
@@ -179,10 +182,8 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let analysis = analyze_derivative_rhs(dae_model);
+    let analysis = analyze_derivative_rhs(dae_model)?;
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
         equations: &analysis.equations,
         direct_assignments: &analysis.direct_assignments,
@@ -190,7 +191,6 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
         layout,
         structural_bindings: &analysis.structural_bindings,
         indexed_bindings: &indexed_bindings,
-        scalarized_component_child_slots: &scalarized_component_child_slots,
     };
 
     let mut rows = Vec::with_capacity(analysis.states.len());
@@ -223,16 +223,17 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
 
 struct DerivativeRhsLoweringContext<'a> {
     equations: &'a [DerivativeEquation],
-    direct_assignments: &'a IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &'a Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &'a dae::Dae,
     layout: &'a VarLayout,
-    structural_bindings: &'a IndexMap<String, f64>,
+    structural_bindings: &'a Arc<IndexMap<String, f64>>,
     indexed_bindings: &'a IndexedBindingMap,
-    scalarized_component_child_slots: &'a ScalarizedComponentChildSlotMap,
 }
 
-pub(super) fn state_derivative_equation_flags(dae_model: &dae::Dae) -> Vec<bool> {
-    analyze_derivative_rhs(dae_model).equation_flags
+pub(super) fn state_derivative_equation_flags(
+    dae_model: &dae::Dae,
+) -> Result<Vec<bool>, LowerError> {
+    Ok(analyze_derivative_rhs(dae_model)?.equation_flags)
 }
 
 fn lower_state_derivative_row(
@@ -252,7 +253,6 @@ fn lower_state_derivative_row(
             ctx.layout,
             ctx.structural_bindings,
             ctx.indexed_bindings,
-            ctx.scalarized_component_child_slots,
         );
     }
     lower_coupled_row(
@@ -263,7 +263,6 @@ fn lower_state_derivative_row(
         ctx.layout,
         ctx.structural_bindings,
         ctx.indexed_bindings,
-        ctx.scalarized_component_child_slots,
     )
 }
 
@@ -332,12 +331,11 @@ fn find_component_root(parent: &mut [usize], idx: usize) -> usize {
 fn lower_direct_row(
     equation: &DerivativeEquation,
     state: &StateScalar,
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
-    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
         dae_model,
@@ -345,7 +343,6 @@ fn lower_direct_row(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
-        scalarized_component_child_slots,
     );
     let scope = Scope::new();
     let rhs = lower_state_component_expr(&mut builder, &equation.rhs, state, &scope)?;
@@ -404,12 +401,11 @@ fn lower_row_rhs_expr(
 fn lower_coupled_row(
     state: &StateScalar,
     equations: &[DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
-    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let base_rows = coupled_rows_for_base(equations, state);
     if base_rows.len() < state.base_size {
@@ -425,7 +421,6 @@ fn lower_coupled_row(
         layout,
         structural_bindings,
         indexed_bindings,
-        scalarized_component_child_slots,
     )
 }
 
@@ -439,12 +434,11 @@ fn lower_coupled_row(
 fn lower_linsolve_group(
     states: &[StateScalar],
     equations: &[DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
-    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<ComputeNode, LowerError> {
     let setup = build_dense_group_solve_setup(
         states,
@@ -454,7 +448,6 @@ fn lower_linsolve_group(
         layout,
         structural_bindings,
         indexed_bindings,
-        scalarized_component_child_slots,
     )?;
 
     Ok(ComputeNode::LinSolve {
@@ -481,7 +474,6 @@ fn lower_linsolve_group_component(
         ctx.layout,
         ctx.structural_bindings,
         ctx.indexed_bindings,
-        ctx.scalarized_component_child_slots,
     )?;
     let component = states
         .iter()
@@ -517,12 +509,11 @@ struct DenseGroupSolveSetup {
 fn build_dense_group_solve_setup(
     states: &[StateScalar],
     equations: &[DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
-    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<DenseGroupSolveSetup, LowerError> {
     let n = states.len();
     let state_names = states
@@ -552,7 +543,6 @@ fn build_dense_group_solve_setup(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
-        scalarized_component_child_slots,
     );
     let scope = Scope::new();
     let mut matrix_regs = Vec::new();
@@ -615,12 +605,11 @@ fn derivative_row_key_summary(rows: &[&DerivativeEquation]) -> String {
 fn lower_dense_solve_component(
     state: &StateScalar,
     rows: &[&DerivativeEquation],
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
     dae_model: &dae::Dae,
     layout: &VarLayout,
-    structural_bindings: &IndexMap<String, f64>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
-    scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
         dae_model,
@@ -628,7 +617,6 @@ fn lower_dense_solve_component(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
-        scalarized_component_child_slots,
     );
     let scope = Scope::new();
     let mut matrix_regs = Vec::new();
@@ -688,10 +676,9 @@ fn pack_registers(builder: &mut LowerBuilder<'_>, regs: &[Reg]) -> Reg {
 fn row_builder<'a>(
     dae_model: &'a dae::Dae,
     layout: &'a VarLayout,
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
-    structural_bindings: &IndexMap<String, f64>,
+    direct_assignments: &Arc<IndexMap<String, DirectAssignmentValue>>,
+    structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &'a IndexedBindingMap,
-    scalarized_component_child_slots: &'a ScalarizedComponentChildSlotMap,
 ) -> LowerBuilder<'a> {
     LowerBuilder::new_with_metadata(
         layout,
@@ -702,8 +689,8 @@ fn row_builder<'a>(
             triggered_clock_conditions: Some(&dae_model.clocks.triggered_conditions),
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
+            dae_variables: Some(&dae_model.variables),
             indexed_bindings: Some(indexed_bindings),
-            scalarized_component_child_slots: Some(scalarized_component_child_slots),
             is_initial_mode: false,
         },
     )
@@ -774,6 +761,7 @@ fn expanded_direct_derivative_equations(
                 coefficients: IndexMap::from([(key, one_expr())]),
                 rhs,
                 span,
+                source_equation_index: None,
             })
             .collect(),
     )
@@ -795,6 +783,7 @@ fn derivative_equation_from_if_residual(
         coefficients,
         rhs: rhs_without_remainder(zero_expr(), remainder),
         span,
+        source_equation_index: None,
     })
 }
 #[cfg(test)]

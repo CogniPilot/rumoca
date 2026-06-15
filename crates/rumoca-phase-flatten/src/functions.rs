@@ -207,7 +207,8 @@ fn class_by_name_or_def_id<'a>(
 fn function_param_type_alias_dims(
     class_index: &ast::ClassDefIndex<'_>,
     component: &ast::Component,
-) -> Vec<i64> {
+    source_map: &rumoca_core::SourceMap,
+) -> Result<Vec<i64>, FlattenError> {
     const MAX_DEPTH: usize = 16;
     let type_name = component.type_name.to_string();
     let mut current = class_by_name_or_def_id(class_index, &type_name, component.type_name.def_id);
@@ -227,7 +228,11 @@ fn function_param_type_alias_dims(
             break;
         }
 
-        dims.extend(subscripts_to_param_dims(&class_def.array_subscripts));
+        dims.extend(subscripts_to_param_dims(
+            &class_def.array_subscripts,
+            class_def.name.text.as_ref(),
+            source_map,
+        )?);
 
         let Some(base) = class_def.extends.first() else {
             break;
@@ -239,7 +244,7 @@ fn function_param_type_alias_dims(
         current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
     }
 
-    dims
+    Ok(dims)
 }
 
 /// Collect all user function calls from a flat::Model.
@@ -334,10 +339,15 @@ fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut Fun
         flat::WhenEquation::Reinit { value, .. } => {
             collect_from_expression(value, calls);
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             collect_from_expression(condition, calls);
+            collect_from_expression(message, calls);
         }
-        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Terminate { message, .. } => {
+            collect_from_expression(message, calls);
+        }
         flat::WhenEquation::Conditional {
             branches,
             else_branch,
@@ -704,10 +714,15 @@ fn canonicalize_when_equations(
             flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
                 *value = rewriter.rewrite_expression(value);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 *condition = rewriter.rewrite_expression(condition);
+                *message = rewriter.rewrite_expression(message);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                *message = rewriter.rewrite_expression(message);
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,
@@ -1047,7 +1062,7 @@ fn lookup_function_in_known_packages<'tree>(
     known_functions: &[String],
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
-    let Some((_first, remainder)) = path_utils::split_first_top_level(func_name) else {
+    let Some((_first, remainder)) = path_utils::root_split(func_name) else {
         return Ok(None);
     };
     if remainder.is_empty() {
@@ -1056,7 +1071,7 @@ fn lookup_function_in_known_packages<'tree>(
 
     let mut matched: Option<String> = None;
     for known in known_functions {
-        let Some(pkg_prefix) = path_utils::parent_scope(known) else {
+        let Some(pkg_prefix) = path_utils::enclosing_scope(known) else {
             continue;
         };
         if resolve_function_in_package_chain_class(tree, class_index, pkg_prefix, remainder)
@@ -1077,8 +1092,8 @@ fn lookup_function_in_known_packages<'tree>(
     let Some(qualified_name) = matched else {
         return Ok(None);
     };
-    let Some((class_def, _source_name)) = path_utils::split_last_top_level(&qualified_name)
-        .and_then(|(package, leaf)| {
+    let Some((class_def, _source_name)) =
+        path_utils::scope_split(&qualified_name).and_then(|(package, leaf)| {
             resolve_function_in_package_chain_class(tree, class_index, package, leaf)
         })
     else {
@@ -1114,7 +1129,7 @@ fn resolve_function_class_with_scope<'a>(
         if class_def.partial
             && let Some(caller_scope) = caller_scope
         {
-            let short_name = path_utils::top_level_last_segment(func_name);
+            let short_name = path_utils::leaf_segment(func_name);
             if let Some(scoped_match) =
                 resolve_function_in_caller_packages(tree, class_index, caller_scope, short_name)
                 && scoped_match != func_name
@@ -1133,7 +1148,7 @@ fn resolve_function_class_with_scope<'a>(
         });
     }
 
-    if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(func_name)
+    if let Some((package_name, function_leaf)) = path_utils::scope_split(func_name)
         && let Some((class_def, _source_name)) =
             resolve_function_in_package_chain_class(tree, class_index, package_name, function_leaf)
     {
@@ -1155,7 +1170,7 @@ fn resolve_function_class_with_scope<'a>(
         );
     }
 
-    let short_name = path_utils::top_level_last_segment(func_name);
+    let short_name = path_utils::leaf_segment(func_name);
     if short_name != func_name
         && let Some(caller_scope) = caller_scope
         && let Some(scoped_match) =
@@ -1217,14 +1232,13 @@ fn resolve_function_path_in_caller_packages_inner(
         }
     }
 
-    if !path_utils::has_top_level_dot(func_path) {
+    if !path_utils::is_nested_name(func_path) {
         return resolve_function_in_caller_packages(tree, class_index, caller_scope, func_path);
     }
 
-    let mut prefix = path_utils::parent_scope(caller_scope)?;
-    loop {
+    for prefix in path_utils::enclosing_scopes(caller_scope) {
         let candidate = format!("{prefix}.{func_path}");
-        if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(&candidate)
+        if let Some((package_name, function_leaf)) = path_utils::scope_split(&candidate)
             && resolve_function_in_package_chain_class(
                 tree,
                 class_index,
@@ -1235,10 +1249,6 @@ fn resolve_function_path_in_caller_packages_inner(
         {
             return Some(candidate);
         }
-        let Some(parent) = path_utils::parent_scope(prefix) else {
-            break;
-        };
-        prefix = parent;
     }
     None
 }
@@ -1345,10 +1355,10 @@ fn resolve_function_in_caller_packages(
     caller_scope: &str,
     short_name: &str,
 ) -> Option<String> {
-    let mut prefix = path_utils::parent_scope(caller_scope)?;
+    let mut prefix = path_utils::enclosing_scope(caller_scope)?;
     loop {
         let candidate = format!("{prefix}.{short_name}");
-        if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(&candidate)
+        if let Some((package_name, function_leaf)) = path_utils::scope_split(&candidate)
             && resolve_function_in_package_chain_class(
                 tree,
                 class_index,
@@ -1359,7 +1369,7 @@ fn resolve_function_in_caller_packages(
         {
             return Some(candidate);
         }
-        let Some(parent) = path_utils::parent_scope(prefix) else {
+        let Some(parent) = path_utils::enclosing_scope(prefix) else {
             break;
         };
         prefix = parent;
@@ -1484,7 +1494,7 @@ fn resolve_import_pairs(
         match import {
             ast::Import::Qualified { path, .. } => {
                 let fqn = path.to_string();
-                map.insert(path_utils::top_level_last_segment(&fqn).to_string(), fqn);
+                map.insert(path_utils::leaf_segment(&fqn).to_string(), fqn);
             }
             ast::Import::Renamed { alias, path, .. } => {
                 map.insert(alias.text.to_string(), path.to_string());
@@ -1638,6 +1648,7 @@ fn convert_function<'tree>(
                 def_map: Some(&filtered_def_map),
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
+                instance_name: None,
             },
             algorithms::AlgorithmSectionMetadata::new(span, qualified_name.to_string()),
         )?;
@@ -1665,7 +1676,7 @@ fn convert_function<'tree>(
     // Extract derivative annotations (MLS §12.7.1)
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
-    rewrite_function_extends_aliases_in_function(&mut func, tree, class_index);
+    rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }
@@ -1874,11 +1885,18 @@ fn collect_effective_package_constant_aliases(
         if !tree.def_map.contains_key(&source_def_id) {
             continue;
         }
+        // MLS §5.3.2: enclosing-scope lookup reaches class constants (and,
+        // for package enclosers, package members). A non-package class's
+        // parameters are instance members and must never become
+        // class-qualified alias targets.
+        let is_package = matches!(class_def.class_type, rumoca_core::ClassType::Package);
         for (name, component) in &class_def.components {
-            if !matches!(
-                component.variability,
-                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-            ) {
+            let alias_visible = match component.variability {
+                rumoca_core::Variability::Constant(_) => true,
+                rumoca_core::Variability::Parameter(_) => is_package,
+                _ => false,
+            };
+            if !alias_visible {
                 continue;
             }
             let target = format!("{active_scope}.{name}");
@@ -1944,6 +1962,9 @@ fn active_constant_def_overrides(
         })
         .collect()
 }
+
+mod call_args;
+pub(crate) use call_args::validate_flat_function_call_args;
 
 mod constructor_signature;
 use constructor_signature::{convert_constructor_signature, normalize_function_local_references};

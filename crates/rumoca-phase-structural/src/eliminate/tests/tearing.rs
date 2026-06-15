@@ -49,7 +49,7 @@ fn test_eliminate_trivial_tears_symbolic_algebraic_loop() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert_eq!(result.n_eliminated, 2);
     assert_eq!(result.substitutions.len(), 2);

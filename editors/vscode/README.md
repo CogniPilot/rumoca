@@ -2,6 +2,8 @@
 
 A VS Code extension providing language support for [Modelica](https://modelica.org/) using the [rumoca](https://github.com/climamind/rumoca) compiler.
 
+📖 **Documentation:** [Rumoca Handbook (user guide)](https://cognipilot.github.io/rumoca/user-guide/) · [Rumoca Internals (contributor guide)](https://cognipilot.github.io/rumoca/dev-guide/) · [Web Playground](https://cognipilot.github.io/rumoca/) — also available from the command palette: **Rumoca: Open Rumoca User Guide**.
+
 ## Features
 
 - **Syntax highlighting** for Modelica files (`.mo`)

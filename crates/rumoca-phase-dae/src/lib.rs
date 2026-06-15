@@ -1,9 +1,3 @@
-#![allow(
-    clippy::collapsible_if,
-    clippy::excessive_nesting,
-    clippy::too_many_lines
-)]
-
 //! ToDae phase for the Rumoca compiler.
 //!
 //! This crate implements the conversion from Model to DAE (Differential-Algebraic Equation)
@@ -58,9 +52,11 @@ use algorithm_lowering::{
 };
 use analysis::{classification, definition_analysis, discrete_partition, variable_analysis};
 use condition_lowering::{finalize_canonical_condition_variables, populate_canonical_conditions};
+pub use convert::attach_dae_reference_metadata;
 pub(crate) use convert::{
-    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_function_map,
-    flat_to_dae_var_name, remap_flat_for_equations,
+    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
+    flat_to_dae_expression_with_refs, flat_to_dae_function_map, flat_to_dae_var_name,
+    remap_flat_for_equations,
 };
 use dae_lowering::sort_parameters_by_start_dependency;
 use indexmap::{IndexMap, IndexSet};
@@ -89,7 +85,7 @@ use variable_analysis::{
 };
 use when_conversion::convert_when_clause;
 
-pub use balance::{balance, balance_detail, is_balanced};
+pub use balance::{BalanceError, balance, balance_detail, equations_unknowns, is_balanced};
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
     prepare_dae_for_codegen, scalarize_phantom_vector_equations,
@@ -246,6 +242,7 @@ pub fn to_dae_with_options(
     dae.metadata.is_partial = flat.is_partial;
     dae.metadata.class_type = flat.class_type.clone();
     dae.metadata.model_description = flat.model_description.clone();
+    dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
 
     let classification_indexes = build_variable_classification_indexes(flat);
     let prefix_children = &classification_indexes.prefix_children;
@@ -318,15 +315,19 @@ pub fn to_dae_with_options(
         || canonicalize_discrete_assignment_equations(&mut dae),
     )?;
     dae.symbols.enum_literal_ordinals = flat.enum_literal_ordinals.clone();
+    run_todae_phase(todae_subphase_timing, "enum_literal_ordinals", || {
+        dae_lowering::lower_enum_literal_refs_to_ordinals(&mut dae);
+    });
     run_todae_phase(
         todae_subphase_timing,
         "fixed_start_initial_equations",
-        || {
-            initial::add_fixed_start_initial_equations(&mut dae);
-        },
-    );
+        || initial::add_fixed_start_initial_equations(&mut dae),
+    )?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
         populate_canonical_conditions(&mut dae);
+    });
+    run_todae_phase(todae_subphase_timing, "condition_variable_finalize", || {
+        finalize_canonical_condition_variables(&mut dae);
     });
     // MLS §3.7.5: Lower pre() operator calls to dedicated parameter symbols.
     // This must run after equation construction but before parameter sorting,
@@ -382,25 +383,14 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
         populate_runtime_precompute(dae)
     })?;
-    run_todae_phase(todae_subphase_timing, "condition_variable_finalize", || {
-        finalize_canonical_condition_variables(dae);
-    });
     run_todae_phase(todae_subphase_timing, "temporal_lowering_finalize", || {
         pre_lowering::lower_pre_operator(dae)?;
         sort_parameters_by_start_dependency(dae);
         Ok::<(), ToDaeError>(())
     })?;
-    run_todae_phase(todae_subphase_timing, "dedupe_discrete_assignments", || {
-        dedupe_equivalent_explicit_assignments(&mut dae.discrete.real_updates);
-        dedupe_equivalent_explicit_assignments(&mut dae.discrete.valued_updates);
-    });
-    run_todae_phase(
-        todae_subphase_timing,
-        "unwrap_block_constructor_value_wrappers",
-        || {
-            dae_lowering::unwrap_block_constructor_value_wrappers_dae(dae);
-        },
-    );
+    run_todae_phase(todae_subphase_timing, "reference_metadata", || {
+        attach_dae_reference_metadata(dae)
+    })?;
     run_todae_phase(todae_subphase_timing, "appendix_b_validation", || {
         appendix_b_validation::validate_appendix_b_invariants(dae)
     })?;
@@ -408,8 +398,8 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "metadata_counts", || {
         // MLS §4.7 / §4.8 / §9.4: propagate interface counts from flatten.
         dae.metadata.interface_flow_count = count_interface_flows(flat);
-        dae.metadata.stream_interface_equation_count = flat.stream_interface_equation_count;
         dae.metadata.oc_break_edge_scalar_count = flat.oc_break_edge_scalar_count;
+        overconstrained_interface::validate_connection_graph(flat)?;
         let oc_correction = count_overconstrained_interface(flat, state_vars)?;
         if oc_correction >= 0 {
             dae.metadata.overconstrained_interface_count = oc_correction;
@@ -420,13 +410,6 @@ fn finalize_lowered_dae(
         Ok::<(), ToDaeError>(())
     })?;
 
-    run_todae_phase(
-        todae_subphase_timing,
-        "record_function_param_lowering",
-        || {
-            dae_lowering::lower_record_function_params_dae(dae);
-        },
-    );
     run_todae_phase(
         todae_subphase_timing,
         "constructor_selection_validation",
@@ -449,112 +432,12 @@ fn finalize_lowered_dae(
         })?;
     }
 
-    if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae) != 0 {
-        log_balance_debug(dae);
-        let (equations, unknowns) = balance::equations_unknowns(dae);
+    if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae)? != 0 {
+        let (equations, unknowns) = balance::equations_unknowns(dae)?;
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }
 
     Ok(())
-}
-
-fn log_balance_debug(dae: &dae::Dae) {
-    if !todae_debug_enabled() {
-        return;
-    }
-    let detail = balance::balance_detail(dae);
-    log_todae_debug(format!("DEBUG DAE BALANCE DETAIL:\n{detail}"));
-    for line in balance::balance_counted_prefix_debug_lines(dae) {
-        log_todae_debug(line);
-    }
-    for line in balance::balance_prefix_delta_debug_lines(dae) {
-        log_todae_debug(line);
-    }
-    for line in balance::discrete_valued_prefix_delta_debug_lines(dae) {
-        log_todae_debug(line);
-    }
-    let mut origins = std::collections::BTreeMap::<String, usize>::new();
-    for equation in &dae.continuous.equations {
-        let origin = balance_debug_origin_key(equation.origin.as_str());
-        *origins.entry(origin).or_default() += equation.scalar_count;
-    }
-    let mut origins = origins.into_iter().collect::<Vec<_>>();
-    origins.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    log_todae_debug("DEBUG DAE CONTINUOUS EQUATION ORIGIN SCALARS TOP:".to_string());
-    for (origin, count) in origins.into_iter().take(80) {
-        log_todae_debug(format!("  {count:>8} {origin}"));
-    }
-    log_todae_debug("DEBUG DAE BALANCE COUNTED ORIGIN REASONS TOP:".to_string());
-    for entry in balance::balance_origin_reasons(dae).into_iter().take(80) {
-        log_todae_debug(format!(
-            "  {:>8} cont={:>8} input_only={:>8} {}",
-            entry.continuous_unknown_scalars + entry.input_only_scalars,
-            entry.continuous_unknown_scalars,
-            entry.input_only_scalars,
-            entry.origin
-        ));
-    }
-    log_todae_debug("DEBUG DAE UNCLASSIFIED CONTINUOUS REFS TOP:".to_string());
-    for entry in balance::balance_unclassified_refs(dae).into_iter().take(80) {
-        log_todae_debug(format!("  {:>8} {}", entry.scalar_count, entry.name));
-    }
-    let mut unknowns = std::collections::BTreeMap::<String, usize>::new();
-    for (name, variable) in dae
-        .variables
-        .states
-        .iter()
-        .chain(dae.variables.algebraics.iter())
-        .chain(dae.variables.outputs.iter())
-    {
-        let key = balance_debug_var_prefix(name.as_str());
-        *unknowns.entry(key).or_default() += variable.size();
-    }
-    let mut unknowns = unknowns.into_iter().collect::<Vec<_>>();
-    unknowns.sort_by(|(_, lhs), (_, rhs)| rhs.cmp(lhs));
-    log_todae_debug("DEBUG DAE CONTINUOUS UNKNOWN PREFIX SCALARS TOP:".to_string());
-    for (prefix, count) in unknowns.into_iter().take(80) {
-        log_todae_debug(format!("  {count:>8} {prefix}"));
-    }
-}
-
-fn balance_debug_origin_key(origin: &str) -> String {
-    if let Some((prefix, _)) = origin.split_once(" for ") {
-        return prefix.to_string();
-    }
-    if let Some((prefix, _)) = origin.split_once(" in ") {
-        return prefix.to_string();
-    }
-    if let Some((prefix, _)) = origin.split_once(':') {
-        return prefix.to_string();
-    }
-    origin.to_string()
-}
-
-fn balance_debug_var_prefix(name: &str) -> String {
-    let mut parts = debug_path_segments(name)
-        .into_iter()
-        .take(4)
-        .collect::<Vec<_>>();
-    if parts.is_empty() {
-        return name.to_string();
-    }
-    while parts.len() > 1 && parts.last().is_some_and(|part| part.contains('[')) {
-        parts.pop();
-    }
-    parts.join(".")
-}
-
-fn debug_path_segments(name: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    for (idx, byte) in name.bytes().enumerate() {
-        if byte == b'.' {
-            out.push(&name[start..idx]);
-            start = idx + 1;
-        }
-    }
-    out.push(&name[start..]);
-    out
 }
 
 fn ir_boundary_validation_enabled() -> bool {
@@ -563,65 +446,6 @@ fn ir_boundary_validation_enabled() -> bool {
         test,
         feature = "strict-ir-validation"
     ))
-}
-
-fn dedupe_equivalent_explicit_assignments(equations: &mut Vec<dae::Equation>) {
-    let mut retained = Vec::with_capacity(equations.len());
-    for equation in std::mem::take(equations) {
-        if let Some(existing) = retained.iter_mut().find(|existing: &&mut dae::Equation| {
-            existing.lhs == equation.lhs
-                && existing.origin == equation.origin
-                && existing.scalar_count == equation.scalar_count
-                && existing
-                    .origin
-                    .starts_with("guarded when equation assignment to ")
-        }) && let Some(merged) =
-            merge_guarded_if_assignment_rhs(existing.rhs.clone(), equation.rhs.clone())
-        {
-            existing.rhs = merged;
-            continue;
-        }
-        let duplicate = equation.lhs.as_ref().is_some_and(|lhs| {
-            retained.iter().any(|existing: &dae::Equation| {
-                existing.lhs.as_ref() == Some(lhs)
-                    && existing.rhs == equation.rhs
-                    && existing.origin == equation.origin
-                    && existing.scalar_count == equation.scalar_count
-            })
-        });
-        if !duplicate {
-            retained.push(equation);
-        }
-    }
-    *equations = retained;
-}
-
-fn merge_guarded_if_assignment_rhs(
-    existing: Expression,
-    incoming: Expression,
-) -> Option<Expression> {
-    let Expression::If {
-        branches: mut existing_branches,
-        else_branch: _,
-        ..
-    } = existing
-    else {
-        return None;
-    };
-    let Expression::If {
-        branches: incoming_branches,
-        else_branch: incoming_else,
-        span,
-    } = incoming
-    else {
-        return None;
-    };
-    existing_branches.extend(incoming_branches);
-    Some(Expression::If {
-        branches: existing_branches,
-        else_branch: incoming_else,
-        span,
-    })
 }
 
 /// Determine if an algebraic variable should be stored as discrete or regular algebraic.
@@ -937,11 +761,19 @@ fn select_scalarized_start_expr(
             name,
             subscripts,
             span,
-        } if subscripts.is_empty() => rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(format!("{}{}", name.as_str(), suffix)),
-            subscripts: vec![],
-            span: *span,
-        },
+        } if subscripts.is_empty() => {
+            // `suffix` is a `.member[.member...]` path; append each part so
+            // the rendered name and the structured reference stay in lockstep.
+            let mut reference = name.clone();
+            rumoca_core::visit_top_level_path_segments(suffix.trim_start_matches('.'), |field| {
+                reference = reference.with_appended_field(field);
+            });
+            rumoca_core::Expression::VarRef {
+                name: reference,
+                subscripts: vec![],
+                span: *span,
+            }
+        }
         _ => base_start.clone(),
     }
 }
@@ -1109,5 +941,7 @@ fn classify_equations(
     equation_conversion::classify_equations(dae, flat, prefix_counts)
 }
 
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;

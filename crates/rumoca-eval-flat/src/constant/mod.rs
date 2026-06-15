@@ -75,11 +75,11 @@ impl EvalContext {
         self.functions.insert(full_name.clone(), func.clone());
         // Also add with short name (last component) for function body lookups
         // This enables recursive calls inside function bodies that use unqualified names
-        let short_name = rumoca_core::top_level_last_segment(&full_name);
-        if short_name != full_name && !self.functions.contains_key(short_name) {
+        let short_name = func.name.last_segment().to_string();
+        if short_name != full_name && !self.functions.contains_key(&short_name) {
             let mut short_func = func;
-            short_func.name = VarName::new(short_name);
-            self.functions.insert(short_name.to_string(), short_func);
+            short_func.name = VarName::new(&short_name);
+            self.functions.insert(short_name, short_func);
         }
     }
 

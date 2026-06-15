@@ -19,6 +19,8 @@ mod expr;
 mod functions;
 mod lookup;
 mod operators;
+mod restrictions;
+mod state_machines;
 mod streams;
 mod type_roots;
 use annotations::*;
@@ -28,6 +30,8 @@ use expr::*;
 use functions::*;
 use lookup::*;
 use operators::*;
+use restrictions::*;
+use state_machines::*;
 use streams::*;
 use type_roots::*;
 
@@ -207,25 +211,6 @@ fn semantic_error(
     Diagnostic::error(code, message, primary_label)
 }
 
-fn semantic_error_or_external_compat_warning(
-    code: &str,
-    message: impl Into<String>,
-    primary_label: PrimaryLabel,
-) -> Diagnostic {
-    let message = message.into();
-    if is_external_library_span(primary_label.span()) {
-        Diagnostic::warning(code, message, primary_label)
-    } else {
-        Diagnostic::error(code, message, primary_label)
-    }
-}
-
-fn is_external_library_span(span: Span) -> bool {
-    lookup::source_name_for(span.source).is_some_and(|name| {
-        name.contains("modelica-buildings") || name.contains("ModelicaStandardLibrary")
-    })
-}
-
 /// Run all semantic checks on a StoredDefinition and collect diagnostics.
 pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
     let _context = activate_semantic_context(def, source_map);
@@ -241,6 +226,8 @@ pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Ve
     diags.extend(run_der_in_function_checks(def));
     diags.extend(run_builtin_call_semantic_checks(def));
     diags.extend(run_stream_builtin_semantic_checks(def));
+    diags.extend(run_state_machine_semantic_checks(def));
+    diags.extend(run_restriction_semantic_checks(def));
     diags
 }
 
@@ -869,7 +856,7 @@ fn check_cross_class_restrictions(
 
         check_record_component_type_restriction(class, name, comp, &type_name, type_class, diags);
         check_partial_class_instantiation_restriction(
-            def, class, name, comp, &type_name, type_class, diags,
+            class, def, name, comp, &type_name, type_class, diags,
         );
         check_connector_variability_restriction(name, comp, type_class, diags);
     }
@@ -922,8 +909,8 @@ fn check_record_component_type_restriction(
 }
 
 fn check_partial_class_instantiation_restriction(
-    def: &StoredDefinition,
     class: &ClassDef,
+    def: &StoredDefinition,
     component_name: &str,
     comp: &ast::Component,
     type_name: &str,
@@ -945,7 +932,7 @@ fn check_partial_class_instantiation_restriction(
     if matches!(tc.class_type, ClassType::Package | ClassType::Function) {
         return;
     }
-    if !tc.partial || type_name_has_replaceable_root(def, class, comp) {
+    if !effective_partial(tc, def) || type_name_has_replaceable_root(class, def, comp) {
         return;
     }
 
@@ -965,63 +952,86 @@ fn check_partial_class_instantiation_restriction(
     ));
 }
 
+/// MLS §4.6.1 / DECL-023: a short class definition (alias) of a partial class
+/// is itself partial; follow the alias chain when deciding partiality.
+fn effective_partial(class: &ClassDef, def: &StoredDefinition) -> bool {
+    let mut current = class;
+    let mut seen: HashSet<DefId> = HashSet::new();
+    loop {
+        if current.partial {
+            return true;
+        }
+        // A replaceable alias is a placeholder that a redeclare will replace
+        // with a concrete class (e.g. `replaceable model H = PartialH;`);
+        // instantiating it is legal.
+        if current.is_replaceable {
+            return false;
+        }
+        let is_alias = current.end_name_token.is_none()
+            && current.components.is_empty()
+            && current.equations.is_empty()
+            && current.initial_equations.is_empty()
+            && current.algorithms.is_empty()
+            && current.initial_algorithms.is_empty()
+            && current.enum_literals.is_empty()
+            && current.extends.len() == 1;
+        if !is_alias {
+            return false;
+        }
+        let Some(def_id) = current.extends[0].base_def_id else {
+            return false;
+        };
+        if !seen.insert(def_id) {
+            return false;
+        }
+        let Some(base) = find_class_by_def_id(def, def_id) else {
+            return false;
+        };
+        current = base;
+    }
+}
+
 fn type_name_has_replaceable_root(
-    def: &StoredDefinition,
     class: &ClassDef,
+    def: &StoredDefinition,
     comp: &ast::Component,
 ) -> bool {
     let Some(root) = comp.type_name.name.first().map(|token| token.text.as_ref()) else {
         return false;
     };
-    if comp.type_name.name.len() <= 1 {
-        return false;
-    }
-
-    find_replaceable_nested_class_in_hierarchy(def, class, root).is_some()
+    comp.type_name.name.len() > 1 && class_has_replaceable_nested_root(class, def, root)
 }
 
-fn find_replaceable_nested_class_in_hierarchy<'a>(
-    def: &'a StoredDefinition,
-    root: &'a ClassDef,
-    nested_name: &str,
-) -> Option<&'a ClassDef> {
-    const MAX_DEPTH: usize = 32;
+fn class_has_replaceable_nested_root(class: &ClassDef, def: &StoredDefinition, root: &str) -> bool {
+    const MAX_EXTENDS_DEPTH: usize = 32;
 
-    let mut to_visit = vec![root];
-    let mut visited_def_ids = HashSet::<DefId>::new();
-    let mut visited_names = HashSet::<String>::new();
-
-    for _ in 0..MAX_DEPTH {
-        if to_visit.is_empty() {
-            break;
+    let mut stack = vec![class];
+    let mut seen = HashSet::new();
+    for _ in 0..MAX_EXTENDS_DEPTH {
+        let Some(current) = stack.pop() else {
+            return false;
+        };
+        if let Some(def_id) = current.def_id
+            && !seen.insert(def_id)
+        {
+            continue;
         }
-
-        let mut next = Vec::new();
-        for class in to_visit.drain(..) {
-            let already_seen = match class.def_id {
-                Some(def_id) => !visited_def_ids.insert(def_id),
-                None => !visited_names.insert(class.name.text.to_string()),
-            };
-            if already_seen {
-                continue;
-            }
-
-            if let Some(nested) = class.classes.get(nested_name)
-                && nested.is_replaceable
-            {
-                return Some(nested);
-            }
-
-            next.extend(class.extends.iter().filter_map(|ext| {
-                ext.base_def_id
-                    .and_then(|def_id| find_class_by_def_id(def, def_id))
-                    .or_else(|| find_class_by_name(def, &ext.base_name.to_string()))
-            }));
+        if current
+            .classes
+            .get(root)
+            .is_some_and(|root_class| root_class.is_replaceable)
+        {
+            return true;
         }
-        to_visit = next;
+        stack.extend(
+            current
+                .extends
+                .iter()
+                .filter_map(|ext| ext.base_def_id)
+                .filter_map(|def_id| find_class_by_def_id(def, def_id)),
+        );
     }
-
-    None
+    false
 }
 
 fn check_connector_variability_restriction(
@@ -1096,7 +1106,7 @@ fn check_block_connector_causality_restrictions(
                 // prefixes on the block member itself.
                 && !connector_members_define_causality(tc)
         {
-            diags.push(semantic_error_or_external_compat_warning(
+            diags.push(semantic_error(
                 ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX,
                 format!(
                     "public connector component '{}' in block '{}' must \
@@ -1122,7 +1132,7 @@ fn is_bus_like_connector(connector: &ClassDef, type_name: &str) -> bool {
 }
 
 fn is_bus_like_connector_name(name: &str) -> bool {
-    let leaf = rumoca_core::top_level_last_segment(name);
+    let leaf = crate::path_utils::class_name_leaf(name);
     leaf.ends_with("Bus") || leaf.ends_with("BusArrays")
 }
 
@@ -1265,14 +1275,8 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
         }
         let mut refs = HashSet::new();
         if let Some(binding) = &comp.binding {
-            // Bare self defaults (e.g. `parameter Real p = p`) are common in
-            // Modelica classes that require/expect an enclosing modifier
-            // `child(p = p)`. A class-level check cannot know whether the
-            // instantiated component will provide that modifier, so leave that
-            // case to instantiation/flattening while still rejecting real
-            // multi-parameter cycles such as `a = b; b = a`.
-            if !is_bare_reference_to(binding, name) {
-                // Skip if-branches to avoid false cycles from conditional mutual deps
+            // Skip if-branches to avoid false cycles from conditional mutual deps
+            if !is_bare_self_default_binding(binding, name) {
                 collect_component_refs(binding, &param_names, &mut refs, true);
             }
         }
@@ -1315,6 +1319,13 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
     }
 }
 
+fn is_bare_self_default_binding(expr: &Expression, name: &str) -> bool {
+    let Expression::ComponentReference(cref) = expr else {
+        return false;
+    };
+    cref.parts.len() == 1 && cref.parts[0].ident.text.as_ref() == name
+}
+
 fn has_cycle(
     node: &str,
     deps: &std::collections::HashMap<String, HashSet<String>>,
@@ -1338,17 +1349,6 @@ fn has_cycle(
         on_stack.remove(node);
     }
     found_cycle
-}
-
-fn is_bare_reference_to(expr: &Expression, expected_name: &str) -> bool {
-    let Expression::ComponentReference(cref) = expr else {
-        return false;
-    };
-    let [part] = cref.parts.as_slice() else {
-        return false;
-    };
-    part.ident.text.as_ref() == expected_name
-        && part.subs.as_ref().is_none_or(|subs| subs.is_empty())
 }
 
 /// Collect component references from an expression that refer to known parameter names.

@@ -38,25 +38,13 @@ pub enum CompilerError {
     #[diagnostic(code(rumoca::compiler::E005))]
     ResolveError(String),
 
-    /// Type checking error.
-    #[error("type error: {0}")]
-    #[diagnostic(code(rumoca::compiler::E006))]
-    TypeCheckError(String),
-
-    /// Instantiation error.
-    #[error("instantiation error: {0}")]
-    #[diagnostic(code(rumoca::compiler::E007))]
-    InstantiateError(String),
-
-    /// Flattening error.
+    // Note: E006 (TypeCheckError), E007 (InstantiateError), and E009
+    // (ToDaeError) string wrappers were removed; phase failures now flow
+    // through `CompileDiagnosticsError` so spans survive to the CLI.
+    /// Flattening error (summary-only session path).
     #[error("flatten error: {0}")]
     #[diagnostic(code(rumoca::compiler::E008))]
     FlattenError(String),
-
-    /// DAE conversion error.
-    #[error("DAE conversion error: {0}")]
-    #[diagnostic(code(rumoca::compiler::E009))]
-    ToDaeError(String),
 
     /// Template rendering error.
     #[error(transparent)]

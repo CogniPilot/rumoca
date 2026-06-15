@@ -761,6 +761,7 @@ pub(crate) fn process_component_instances_for_flatten(
     component_override_map: &ComponentOverrideMap,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
@@ -776,6 +777,7 @@ pub(crate) fn process_component_instances_for_flatten(
             class_index,
             import_cache: &mut import_cache,
             scope_index: &scope_index,
+            component_members,
         })?;
         track_top_level_component_markers(flat, instance_data);
     }
@@ -834,7 +836,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     ctx.seed_flat_parameter_constant_keys(flat);
     inject_model_nested_class_constants(tree, class_index, model_name, ctx);
     inject_model_extends_redeclare_constants(tree, class_index, model_name, ctx);
-    inject_enclosing_class_constants(tree, model_name, ctx);
+    inject_enclosing_class_constants(tree, class_index, model_name, ctx)?;
     inject_component_instance_nested_class_constants(tree, class_index, overlay, ctx);
     // Re-apply parameter lookup from materialized flat variables after
     // class/package constant injection so record rebindings override injected
@@ -927,7 +929,7 @@ pub(crate) fn finalize_flat_model(
 
     seed_flat_functions_from_context(ctx, flat);
     functions::collect_functions(flat, tree, class_index)?;
-    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index);
+    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
     functions::collect_functions(flat, tree, class_index)?;
     mark_record_constructor_calls(flat, tree);
     functions::lower_record_function_params(flat);
@@ -959,6 +961,7 @@ pub(crate) fn finalize_flat_model(
         tree,
         class_index,
         component_override_map,
+        &ctx.component_members,
     )?;
     if collected_new_functions {
         mark_record_constructor_calls(flat, tree);
@@ -973,19 +976,56 @@ pub(crate) fn finalize_flat_model(
         substitute_known_constants_in_flat(flat, ctx);
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
-        canonicalize_varrefs_via_instantiated_def_ids(flat);
     }
+    canonicalize_varrefs_via_instantiated_def_ids(flat);
     functions::canonicalize_collected_function_calls(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
+    functions::validate_flat_function_call_args(flat)?;
+    validate_overconstrained_roots(flat)?;
 
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
     if options.simplify_variable_names {
-        name_simplify::simplify_flat_names(flat);
+        name_simplify::simplify_flat_names(flat)?;
     }
+    // Final boundary pass: every rendered variable reference leaves flatten
+    // with its structured component reference attached, so downstream phases
+    // never re-derive structure from names.
+    crate::structured_refs::attach_structured_references(flat);
 
+    Ok(())
+}
+
+/// MLS §9.4 / CONN-013: every subgraph of the virtual connection graph needs
+/// at least one definite or potential root. Tier-1 check: a model that uses
+/// Connections.branch() but declares no root anywhere cannot satisfy this.
+fn validate_overconstrained_roots(flat: &flat::Model) -> Result<(), FlattenError> {
+    if !flat.branches.is_empty()
+        && flat.definite_roots.is_empty()
+        && flat.potential_roots.is_empty()
+    {
+        let (from, to) = &flat.branches[0];
+        // Point the user at the branch endpoint: branch names are connector
+        // paths, so the variable declared under that prefix carries the span.
+        let span = flat
+            .variables
+            .values()
+            .find(|var| {
+                var.name.as_str().starts_with(from.as_str())
+                    || var.name.as_str().starts_with(to.as_str())
+            })
+            .map(|var| var.source_span)
+            .unwrap_or(rumoca_core::Span::DUMMY);
+        return Err(FlattenError::UnsupportedEquation {
+            description: format!(
+                "Connections.branch({from}, {to}) is used but no Connections.root() or \
+                 Connections.potentialRoot() is declared; every subgraph needs a root (MLS §9.4)"
+            ),
+            span: rumoca_core::span_to_source_span(span),
+        });
+    }
     Ok(())
 }
 
@@ -994,13 +1034,20 @@ fn collect_rewritten_functions_to_fixed_point(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) -> Result<bool, FlattenError> {
     const FUNCTION_REWRITE_FIXED_POINT_LIMIT: usize = 8;
 
     let initial_function_count = flat.functions.len();
     for _ in 0..FUNCTION_REWRITE_FIXED_POINT_LIMIT {
         let function_count_before = flat.functions.len();
-        rewrite_function_overrides_in_flat_model(flat, tree, class_index, component_override_map);
+        rewrite_function_overrides_in_flat_model(
+            flat,
+            tree,
+            class_index,
+            component_override_map,
+            component_members,
+        )?;
         functions::collect_functions(flat, tree, class_index)?;
         if flat.functions.len() == function_count_before {
             return Ok(flat.functions.len() != initial_function_count);

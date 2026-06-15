@@ -224,6 +224,20 @@ mode = "external_web"
 show_armed = true
 status_title = "Aircraft"
 
+# Body frame in model FLU coordinates, driven by viewer signals. The HUD
+# attitude reads from this frame; the scene keeps its own mesh placement.
+[[viewer.frame]]
+name = "body"
+position = ["px", "py", "pz"]
+quaternion = ["q0", "q1", "q2", "q3"]
+
+[viewer.hud]
+mode = "flight"
+frame = "body"
+altitude = "pz"
+speed = ["airspeed"]
+sticks = { roll = "stick_roll", pitch = "stick_pitch", yaw = "stick_yaw", throttle = "stick_throttle" }
+
 [[viewer.controls.keyboard]]
 keys = "Up / Down"
 action = "Pitch (elevator)"

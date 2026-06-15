@@ -39,7 +39,7 @@ fn runtime_defined_impl(dae_model: &dae::Dae, include_discrete: bool) -> IndexSe
         .chain(dae_model.discrete.valued_updates.iter())
     {
         if let Some(lhs) = eq.lhs.as_ref() {
-            extend_target(dae_model, &mut defined, lhs, include_discrete);
+            extend_target(dae_model, &mut defined, lhs.var_name(), include_discrete);
         }
         for target in binary_var_refs(&eq.rhs) {
             extend_target(dae_model, &mut defined, target, include_discrete);
@@ -207,8 +207,10 @@ struct ClockedOrEventChecker {
     found: bool,
 }
 
-pub(crate) fn clocked_or_event_function_short_name(name: &str) -> Option<&'static str> {
-    match rumoca_core::top_level_last_segment(name) {
+pub(crate) fn clocked_or_event_function_short_name(
+    name: &rumoca_core::Reference,
+) -> Option<&'static str> {
+    match name.last_segment() {
         "previous" => Some("previous"),
         "Clock" => Some("Clock"),
         "hold" => Some("hold"),
@@ -240,7 +242,7 @@ impl ExpressionVisitor for ClockedOrEventChecker {
                 self.found = true;
             }
             rumoca_core::Expression::FunctionCall { name, .. }
-                if clocked_or_event_function_short_name(name.as_str()).is_some() =>
+                if clocked_or_event_function_short_name(name).is_some() =>
             {
                 self.found = true;
             }

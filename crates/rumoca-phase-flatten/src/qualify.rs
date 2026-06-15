@@ -13,8 +13,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::path_utils::split_path_with_indices;
-
 /// Resolved import map: short name → fully-qualified name.
 ///
 /// Built from `ClassDef.imports` during instantiation. For example,
@@ -331,11 +329,19 @@ pub(crate) fn collect_lexical_constant_aliases_for_def_id_with_packages_and_memb
             .expect("class index ancestor must have a canonical qualified name");
         let target_scope =
             lexical_constant_target_scope(tree, class_index, ancestor_name, active_packages);
+        // MLS §5.3.2: enclosing-scope lookup reaches class constants (and,
+        // for package enclosers, package members). A non-package ancestor's
+        // parameters are instance members and must never become
+        // class-qualified alias targets.
+        let ancestor_is_package =
+            matches!(ancestor_class.class_type, rumoca_core::ClassType::Package);
         for (name, component) in &ancestor_class.components {
-            if !matches!(
-                component.variability,
-                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-            ) {
+            let alias_visible = match component.variability {
+                rumoca_core::Variability::Constant(_) => true,
+                rumoca_core::Variability::Parameter(_) => ancestor_is_package,
+                _ => false,
+            };
+            if !alias_visible {
                 continue;
             }
             if source_member_def_ids.contains_key(name.as_str()) {
@@ -684,7 +690,7 @@ fn is_builtin_enum_literal_ref(cr: &ComponentReference) -> bool {
 fn make_fqn_component_ref(fqn: &str) -> ComponentReference {
     ComponentReference {
         local: false,
-        parts: split_path_with_indices(fqn)
+        parts: crate::path_utils::segments(fqn)
             .into_iter()
             .map(|seg| ComponentRefPart {
                 ident: Token {

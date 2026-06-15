@@ -40,13 +40,13 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, dae_to_template_json, render_ast_template_with_name,
-    render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_flat_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
+    render_ast_template_with_name, render_dae_template_with_json,
+    render_dae_template_with_json_and_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FailedPhase, FlatModel, PhaseResult,
-    ResolvedTree, Session, SessionConfig, SourceRootKind,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
+    Session, SessionConfig, SourceRootKind,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -64,10 +64,17 @@ use crate::error::CompilerError;
 pub struct CompilationResult {
     /// The DAE representation.
     pub dae: Dae,
+    /// Detailed continuous balance inputs validated during DAE construction.
+    pub balance_detail: dae_analysis::BalanceDetail,
     /// The flat model (intermediate).
     pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
     pub resolved: ResolvedTree,
+    /// Cached solve-template renderer (scalarized DAE + lowered solve
+    /// problem, as typed template values). Building it dominates target
+    /// generation on large models and a multi-file target renders several
+    /// strings against the same input.
+    solve_template_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -81,58 +88,32 @@ pub enum TemplateIr {
     Ast,
 }
 
-/// Return a scalarized clone of `dae` — vector equations like
-/// `der(x) = -x` for `x: Real[3]` are expanded to one equation per element.
-///
-/// For scalar-only models this is a no-op on the resulting DAE, so it is
-/// safe to apply unconditionally before template rendering.
-fn scalarized_dae(dae: &Dae) -> Dae {
-    let mut dae = dae.clone();
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae);
-    dae
-}
-
-fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
-    let mut value = dae_to_template_json(dae_model)?;
-    let solve =
-        lower_solve_problem(dae_model).map_err(|err| CodegenError::template(err.to_string()))?;
-    let artifacts =
-        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    let mut solve_value =
-        serde_json::to_value(solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    solve_value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("Solve template JSON root must be an object"))?
-        .insert(
-            "artifacts".to_string(),
-            serde_json::to_value(artifacts)
-                .map_err(|err| CodegenError::template(err.to_string()))?,
-        );
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?;
-    object.insert("solve".to_string(), solve_value);
-    Ok(value)
-}
-
-fn render_solve_template_with_name(
-    dae_model: &Dae,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    let dae = scalarized_dae(dae_model);
-    let mut dae_json = dae_to_template_json_with_solve(&dae)?;
-    dae_json
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?
-        .insert(
-            "__ir_kind".to_string(),
-            serde_json::Value::String("solve".to_string()),
-        );
-    render_dae_template_with_json_and_name(&dae_json, template, model_name)
+fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
+    let problem = lower_solve_problem(dae_model)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let artifacts = lower_solve_artifacts(&problem)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let template_dae = dae_for_solve_template_context(dae_model)?;
+    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
+        .map_err(CompilerError::TemplateError)
 }
 
 impl CompilationResult {
+    pub fn new(
+        dae: Dae,
+        balance_detail: dae_analysis::BalanceDetail,
+        flat: FlatModel,
+        resolved: ResolvedTree,
+    ) -> Self {
+        Self {
+            dae,
+            balance_detail,
+            flat,
+            resolved,
+            solve_template_renderer: std::sync::OnceLock::new(),
+        }
+    }
+
     fn template_json_dae_only(&self) -> Result<Value, CompilerError> {
         dae_to_template_json(&self.dae).map_err(CompilerError::TemplateError)
     }
@@ -343,8 +324,23 @@ impl CompilationResult {
     ) -> Result<String, CompilerError> {
         match ir {
             TemplateIr::Dae => self.render_template_str_with_name(template, model_name),
-            TemplateIr::Solve => render_solve_template_with_name(&self.dae, template, model_name)
-                .map_err(CompilerError::TemplateError),
+            TemplateIr::Solve => {
+                // Build the template context once per compilation, straight
+                // from typed data: the previous path serialized the
+                // scalarized DAE plus the lowered solve problem to JSON and
+                // deserialized the problem back, per compilation - several
+                // seconds of round-trip on large models with the actual
+                // template rendering measured in milliseconds.
+                if self.solve_template_renderer.get().is_none() {
+                    let renderer = build_solve_template_renderer(&self.dae)?;
+                    let _ = self.solve_template_renderer.set(renderer);
+                }
+                self.solve_template_renderer
+                    .get()
+                    .expect("solve template renderer just initialized")
+                    .render_with_name(template, model_name)
+                    .map_err(CompilerError::TemplateError)
+            }
             TemplateIr::Flat => render_flat_template_with_name(&self.flat, template, model_name)
                 .map_err(CompilerError::TemplateError),
             TemplateIr::Ast => {
@@ -371,17 +367,17 @@ impl CompilationResult {
     }
 
     pub fn scalarized_template_dae(&self) -> Dae {
-        scalarized_dae(&self.dae)
+        self.dae.clone()
     }
 
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
-        dae_analysis::balance(&self.dae)
+        self.balance_detail.balance()
     }
 
     /// Whether equation/unknown balance is exact.
     pub fn is_balanced(&self) -> bool {
-        dae_analysis::is_balanced(&self.dae)
+        self.balance_detail.is_balanced()
     }
 
     /// Convert the DAE to JSON.
@@ -405,11 +401,21 @@ impl CompilationResult {
         Self::push_nonempty(&mut canonical, "z", &self.dae.variables.discrete_reals)?;
         Self::push_nonempty(&mut canonical, "m", &self.dae.variables.discrete_valued)?;
         Self::push_nonempty(&mut canonical, "f_x", &f_x)?;
+        Self::push_nonempty(
+            &mut canonical,
+            "for_equations",
+            &self.dae.continuous.for_equations,
+        )?;
         Self::push_nonempty(&mut canonical, "f_z", &f_z)?;
         Self::push_nonempty(&mut canonical, "f_m", &f_m)?;
         Self::push_nonempty(&mut canonical, "f_c", &f_c)?;
         Self::push_nonempty(&mut canonical, "relation", &self.dae.conditions.relations)?;
         Self::push_nonempty(&mut canonical, "initial", &initial)?;
+        Self::push_nonempty(
+            &mut canonical,
+            "initial_for_equations",
+            &self.dae.initialization.for_equations,
+        )?;
         Self::push_nonempty(&mut canonical, "functions", &self.dae.symbols.functions)?;
 
         serde_json::to_string_pretty(&Value::Object(canonical))
@@ -573,13 +579,31 @@ impl Compiler {
 
         let files = collect_compile_unit_source_files(path)
             .map_err(|e| CompilerError::ParseError(format!("{}", e)))?;
+        // The directory scan can yield the requested file under a different
+        // spelling (`./Solo.mo` vs `Solo.mo`), so compare canonical paths —
+        // a raw `Path` comparison registers the file twice and reports it as
+        // a duplicate class of itself.
+        let requested_canonical = path.canonicalize().ok();
         for sibling in files {
-            if sibling == path {
+            if sibling == path
+                || (requested_canonical.is_some()
+                    && sibling.canonicalize().ok() == requested_canonical)
+            {
                 continue;
             }
             let sibling_path = sibling.to_string_lossy().to_string();
-            let sibling_source = fs::read_to_string(&sibling)
-                .map_err(|e| CompilerError::io_error(&sibling_path, e.to_string()))?;
+            // A sibling the user never referenced must not poison the
+            // compile: skip unreadable files with a warning. If the model
+            // actually needs the file, resolution reports the missing names.
+            let sibling_source = match fs::read_to_string(&sibling) {
+                Ok(sibling_source) => sibling_source,
+                Err(error) => {
+                    eprintln!(
+                        "[rumoca] warning: skipping unreadable sibling source `{sibling_path}`: {error}"
+                    );
+                    continue;
+                }
+            };
             let _ = session.update_document(&sibling_path, &sibling_source);
         }
 
@@ -690,19 +714,10 @@ impl Compiler {
                 }
                 *result
             }
-            Some(PhaseResult::NeedsInner { .. }) => {
-                return Err(CompilerError::InstantiateError(failure_summary));
-            }
-            Some(PhaseResult::Failed { phase, .. }) => {
-                let err = match phase {
-                    FailedPhase::Instantiate => CompilerError::InstantiateError(failure_summary),
-                    FailedPhase::Typecheck => CompilerError::TypeCheckError(failure_summary),
-                    FailedPhase::Flatten => CompilerError::FlattenError(failure_summary),
-                    FailedPhase::ToDae => CompilerError::ToDaeError(failure_summary),
-                };
-                return Err(err);
-            }
-            None => {
+            // Phase failures carry spanned diagnostics through
+            // `report.failures`; render them like any other compile
+            // diagnostics instead of flattening to a string.
+            Some(PhaseResult::NeedsInner { .. }) | Some(PhaseResult::Failed { .. }) | None => {
                 return Err(CompilerError::CompileDiagnosticsError {
                     summary: failure_summary,
                     failures: report.failures,
@@ -733,14 +748,15 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.continuous.equations.len()
             );
-            eprintln!("[rumoca]   Balance: {}", dae_analysis::balance(&result.dae));
+            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
-        Ok(CompilationResult {
-            dae: result.dae,
-            flat: result.flat,
+        Ok(CompilationResult::new(
+            result.dae,
+            result.balance_detail,
+            result.flat,
             resolved,
-        })
+        ))
     }
 
     /// Compile Modelica source code through the resolved AST stage only.
@@ -849,10 +865,7 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.continuous.equations.len()
             );
-            eprintln!(
-                "[rumoca]   Balance: {}",
-                dae_analysis::balance(result.dae.as_ref())
-            );
+            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
         Ok(*result)
@@ -890,7 +903,11 @@ impl Compiler {
         session
             .compile_model_dae_allow_unbalanced_for_diagnostics(model_name)
             .map(|result| *result)
-            .map_err(CompilerError::ToDaeError)
+            .map_err(|summary| CompilerError::CompileDiagnosticsError {
+                summary,
+                failures: Vec::new(),
+                source_map: None,
+            })
     }
 }
 
@@ -962,6 +979,144 @@ mod tests {
             }
             other => panic!("expected structured compile diagnostics, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_typecheck_failure_carries_spanned_diagnostics_to_the_cli() {
+        // Phase failures must reach the CLI as structured diagnostics with
+        // the error's real source label, not a stringified summary anchored
+        // at the class header ("phase failed").
+        let source = r#"
+            model BadDim
+                constant Integer n = -1;
+                Real x[n];
+            equation
+                der(x[1]) = 1;
+            end BadDim;
+        "#;
+
+        let err = Compiler::new()
+            .model("BadDim")
+            .compile_str(source, "BadDim.mo")
+            .expect_err("unevaluable dimensions must fail typecheck");
+
+        match err {
+            CompilerError::CompileDiagnosticsError {
+                failures,
+                source_map,
+                ..
+            } => {
+                assert!(source_map.is_some(), "source map required for rendering");
+                let failure = failures
+                    .iter()
+                    .find(|failure| failure.error_code.as_deref() == Some("ET004"))
+                    .unwrap_or_else(|| panic!("expected an ET004 failure: {failures:?}"));
+                let label = failure
+                    .primary_label
+                    .as_ref()
+                    .expect("typecheck failure must carry its own source label");
+                assert_ne!(
+                    label.message.as_deref(),
+                    Some("phase failed"),
+                    "label must be the diagnostic's own span, not the class-header fallback"
+                );
+            }
+            other => panic!("expected structured compile diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_failure_does_not_cascade_into_later_phases() {
+        // One user error must produce one diagnostic: an unresolved reference
+        // is reported by resolve (ER002) and must not be re-reported by
+        // flatten/ToDae (ED008 etc.) after the pipeline runs on anyway.
+        let source = r#"
+            model Cascade
+                Real x;
+            equation
+                x = y + 1;
+            end Cascade;
+        "#;
+
+        let err = Compiler::new()
+            .model("Cascade")
+            .compile_str(source, "Cascade.mo")
+            .expect_err("unresolved reference must fail compile");
+
+        match err {
+            CompilerError::CompileDiagnosticsError { failures, .. } => {
+                assert!(
+                    failures
+                        .iter()
+                        .any(|failure| failure.error_code.as_deref() == Some("ER002")),
+                    "resolve failure must be reported: {failures:?}"
+                );
+                assert!(
+                    failures.iter().all(|failure| failure.phase.is_none()),
+                    "no later phase may run (and re-report) after a resolve \
+                     failure in the target's files: {failures:?}"
+                );
+            }
+            other => panic!("expected structured compile diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_file_tolerates_path_spelling_variants() {
+        // The directory scan yields the requested file under its own
+        // spelling; a different but equivalent argument spelling (`./`
+        // segment, bare relative name) must not register the file twice and
+        // report EM001 "duplicate class" against itself.
+        let temp = tempdir().expect("tempdir");
+        let solo = temp.path().join("Solo.mo");
+        fs::write(
+            &solo,
+            r#"
+            model Solo
+                Real x(start=0, fixed=true);
+            equation
+                der(x) = 1;
+            end Solo;
+            "#,
+        )
+        .expect("write solo");
+
+        let dotted = format!("{}/./Solo.mo", temp.path().display());
+        let result = Compiler::new().model("Solo").compile_file(&dotted);
+        assert!(
+            result.is_ok(),
+            "equivalent path spelling must not self-duplicate: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_compile_file_skips_unreadable_sibling_sources() {
+        // A non-UTF-8 sibling the user never referenced must not poison the
+        // compile of an unrelated file in the same directory.
+        let temp = tempdir().expect("tempdir");
+        let solo = temp.path().join("Solo.mo");
+        fs::write(
+            &solo,
+            r#"
+            model Solo
+                Real x(start=0, fixed=true);
+            equation
+                der(x) = 1;
+            end Solo;
+            "#,
+        )
+        .expect("write solo");
+        fs::write(temp.path().join("junk.mo"), [0xff, 0xfe, 0xff]).expect("write junk");
+
+        let result = Compiler::new()
+            .model("Solo")
+            .compile_file(&solo.to_string_lossy());
+        assert!(
+            result.is_ok(),
+            "unreadable sibling must be skipped, not fatal: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1374,6 +1529,36 @@ mod tests {
             .expect("DAE template should render from native DAE context");
 
         assert_eq!(rendered.trim(), "1 2");
+    }
+
+    #[test]
+    fn test_solve_template_dae_context_scalarizes_array_equations() {
+        let source = r#"
+            model SolveTemplateDaeContext
+              parameter Integer N = 2;
+              Real x[N](start = {1, 2});
+            equation
+              der(x) = {-x[1], -x[N]};
+            end SolveTemplateDaeContext;
+        "#;
+
+        let result = Compiler::new()
+            .model("SolveTemplateDaeContext")
+            .compile_str(source, "SolveTemplateDaeContext.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                "{% for eq in dae.f_x %}{{ eq.scalar_count }} {% endfor %}",
+                "SolveTemplateDaeContext",
+                TemplateIr::Solve,
+            )
+            .expect("Solve template should expose scalarized DAE equations");
+
+        assert_eq!(
+            rendered.trim(),
+            "1 1",
+            "Solve templates should receive scalar DAE rows, while Solve IR still lowers from native DAE"
+        );
     }
 
     #[test]

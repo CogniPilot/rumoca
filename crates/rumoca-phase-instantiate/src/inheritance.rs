@@ -23,9 +23,9 @@
 //! - [x] MLS §5.4 - Outer reference resolution (nearest inner)
 //! - [x] MLS §5.4 - Type compatibility checking (inheritance-aware)
 
+use crate::path_utils;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{SourceMap, is_builtin_type};
-use rumoca_core::{parent_scope, split_path_with_indices, top_level_last_segment};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
@@ -143,10 +143,11 @@ fn extend_relative_component_target(
         .map(|part| part.ident.text.as_ref())
         .collect::<Vec<_>>();
     let first = target_parts.first()?.to_string();
-    let base_name = extend.base_name.to_string();
-    let base_parts = split_path_with_indices(&base_name)
-        .into_iter()
-        .map(str::to_string)
+    let base_parts = extend
+        .base_name
+        .name
+        .iter()
+        .map(|token| token.text.to_string())
         .collect::<Vec<_>>();
     let base_part_refs = base_parts.iter().map(String::as_str).collect::<Vec<_>>();
 
@@ -389,11 +390,7 @@ fn validate_redeclaration(
             .unwrap_or_else(|| component.type_name.to_string());
 
         // Try to resolve constraint type using def_id or tree lookup
-        let constraint_type = if let Some(def_id) = component
-            .constrainedby
-            .as_ref()
-            .and_then(|name| name.def_id)
-            .or(component.type_def_id)
+        let constraint_type = if let Some(def_id) = component.type_def_id
             && let Some(qualified) = tree.def_map.get(&def_id)
         {
             qualified.clone()
@@ -536,10 +533,8 @@ fn resolve_type_in_context(tree: &ast::ClassTree, type_name: &str, context_type:
 
     // Try to resolve by prepending context package prefixes
     // For context "A.B.C.TypeX", try: "A.B.C.{type_name}", "A.B.{type_name}", "A.{type_name}"
-    let mut package = context_type.to_string();
-    while let Some(parent) = parent_scope(&package) {
-        package.truncate(parent.len());
-        let qualified = format!("{}.{}", package, type_name);
+    for package in tree.enclosing_class_names_of(context_type) {
+        let qualified = format!("{package}.{type_name}");
         if tree.name_map.contains_key(&qualified) {
             return qualified;
         }
@@ -635,23 +630,30 @@ pub fn is_type_subtype_cached(
 
     // For class types, check if subtype's class extends supertype's class
     let result = if let Some(subtype_class) = find_class_in_tree(tree, subtype) {
-        if class_extends_cached(tree, subtype_class, supertype, cache) {
+        let accepted = if class_extends_cached(tree, subtype_class, supertype, cache) {
             true
+        } else if let Some(supertype_class) = find_class_in_tree(tree, supertype) {
+            // Check for sibling types: both extend the same base class.
+            // This supports replaceable component redeclarations where both
+            // types share a common base (e.g., CellRCStack and CellStack both
+            // extend BaseCellStack). Siblinghood alone does not make the
+            // interfaces compatible, so the plug-compatibility comparator
+            // (MLS §6.5) must also pass.
+            types_share_common_base(tree, subtype_class, supertype_class, cache)
+                && crate::plug_compat::members_plug_compatible(tree, subtype_class, supertype_class)
+        } else if is_builtin_type(supertype) {
+            // Supertype is a built-in type (Real, Integer, Boolean, String) not
+            // in the class tree. Check if subtype transitively extends this built-in.
+            // This handles e.g. Resistance -> Real, Voltage -> Real chains.
+            class_extends_builtin(tree, subtype_class, supertype)
         } else {
-            // Check for sibling types: both extend the same base class
-            // This supports replaceable component redeclarations where both types
-            // share a common base (e.g., CellRCStack and CellStack both extend BaseCellStack)
-            if let Some(supertype_class) = find_class_in_tree(tree, supertype) {
-                types_share_common_base(tree, subtype_class, supertype_class, cache)
-            } else if is_builtin_type(supertype) {
-                // Supertype is a built-in type (Real, Integer, Boolean, String) not
-                // in the class tree. Check if subtype transitively extends this built-in.
-                // This handles e.g. Resistance -> Real, Voltage -> Real chains.
-                class_extends_builtin(tree, subtype_class, supertype)
-            } else {
-                false
-            }
-        }
+            false
+        };
+        accepted
+            && crate::plug_compat::class_flags_compatible(
+                subtype_class,
+                find_class_in_tree(tree, supertype),
+            )
     } else {
         false
     };
@@ -875,7 +877,7 @@ pub(crate) fn is_discrete_by_type(
 ) -> bool {
     // Helper to check if a name is Integer or Boolean
     fn is_discrete_builtin(name: &str) -> bool {
-        let simple_name = top_level_last_segment(name);
+        let simple_name = path_utils::class_name_leaf(name);
         simple_name == "Integer" || simple_name == "Boolean"
     }
 
@@ -1116,6 +1118,8 @@ fn apply_extends_modifications(
     extend: &ast::Extend,
 ) -> InstantiateResult<()> {
     let extend_span = Span::DUMMY;
+    apply_transitive_extends_redeclarations(tree, target, base_class, extend)?;
+
     let mut final_override: Option<String> = None;
     walk_extend_modifications(extend, |modification| {
         let Some((name, value, is_final)) =
@@ -1146,7 +1150,6 @@ fn apply_extends_modifications(
         )));
     }
 
-    apply_transitive_extends_redeclarations(tree, target, base_class, extend, extend_span)?;
     merge_nested_extends_modifications(target, extend);
     Ok(())
 }
@@ -1156,20 +1159,22 @@ fn apply_transitive_extends_redeclarations(
     target: &mut InheritedContent,
     base_class: &ast::ClassDef,
     extend: &ast::Extend,
-    extend_span: Span,
 ) -> InstantiateResult<()> {
+    let extend_span = location_to_span(&extend.location, &tree.source_map);
     let mut validation_error: Option<Box<InstantiateError>> = None;
+    let mut redeclare_types = IndexMap::default();
+
     walk_extend_modifications(extend, |modification| {
-        let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
-            return;
-        };
         if validation_error.is_some() {
             return;
         }
-        let target_name_owned = target_name.to_string();
-        if base_class.components.contains_key(&target_name_owned) {
+        let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
+            return;
+        };
+        if base_class.components.contains_key(target_name) {
             return;
         }
+        let target_name_owned = target_name.to_string();
         let Some(component) = target.components.get(&target_name_owned) else {
             return;
         };
@@ -1182,6 +1187,7 @@ fn apply_transitive_extends_redeclarations(
                 return;
             }
         };
+
         if let Err(err) = validate_redeclaration(
             tree,
             component,
@@ -1192,17 +1198,19 @@ fn apply_transitive_extends_redeclarations(
             validation_error = Some(err);
             return;
         }
-        let Some(new_type_name) = new_type else {
-            return;
-        };
-        let Some(component) = target.components.get_mut(&target_name_owned) else {
-            return;
-        };
-        apply_redeclared_component_type(tree, component, &new_type_name);
+        if let Some(new_type_name) = new_type {
+            redeclare_types.insert(target_name_owned, new_type_name);
+        }
     });
 
     if let Some(err) = validation_error {
         return Err(err);
+    }
+
+    for (comp_name, new_type_name) in &redeclare_types {
+        if let Some(comp) = target.components.get_mut(comp_name) {
+            apply_redeclared_component_type(tree, comp, new_type_name);
+        }
     }
 
     Ok(())
@@ -1213,20 +1221,12 @@ fn apply_redeclared_component_type(
     comp: &mut ast::Component,
     new_type_name: &str,
 ) {
-    comp.type_name = rumoca_ir_ast::Name {
-        name: split_path_with_indices(new_type_name)
-            .into_iter()
-            .map(|part| rumoca_core::Token {
-                text: std::sync::Arc::from(part),
-                location: rumoca_core::Location::default(),
-                token_number: 0,
-                token_type: 0,
-            })
-            .collect(),
-        def_id: None,
-    };
+    // Update the type_name to the new type
+    comp.type_name = rumoca_ir_ast::Name::from_string(new_type_name);
+    // Update type_def_id by looking up the new type in the tree
     comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
-        let short_name = top_level_last_segment(new_type_name);
+        // Try with shorter name (last segment) for unqualified lookups
+        let short_name = path_utils::class_name_leaf(new_type_name);
         tree.name_map.get(short_name).copied()
     });
 
@@ -1436,13 +1436,16 @@ fn merge_inherited(
         }
     }
 
-    // Merge equations (no conflict checking - all equations are accumulated)
-    target.equations.extend(base.equations);
-    target.initial_equations.extend(base.initial_equations);
+    // Merge equations. MLS §7.1 / INST-025: equations syntactically
+    // equivalent to already-inherited ones are discarded (diamond
+    // inheritance of a common base must not duplicate its equations; the
+    // duplicates are clones of the same source AST and compare equal).
+    extend_without_duplicates(&mut target.equations, base.equations);
+    extend_without_duplicates(&mut target.initial_equations, base.initial_equations);
 
-    // Merge algorithms
-    target.algorithms.extend(base.algorithms);
-    target.initial_algorithms.extend(base.initial_algorithms);
+    // Merge algorithms with the same syntactic-equivalence rule.
+    extend_without_duplicates(&mut target.algorithms, base.algorithms);
+    extend_without_duplicates(&mut target.initial_algorithms, base.initial_algorithms);
 
     // Merge nested classes
     for (name, class) in base.classes {
@@ -1457,6 +1460,17 @@ fn merge_inherited(
 enum NestedClassMerge {
     Inserted,
     Skipped,
+}
+
+/// Append `source` items to `target`, discarding items already present.
+/// Inherited duplicates from diamond inheritance are clones of the same
+/// source AST, so syntactic equivalence is plain equality here.
+fn extend_without_duplicates<T: PartialEq>(target: &mut Vec<T>, source: Vec<T>) {
+    for item in source {
+        if !target.contains(&item) {
+            target.push(item);
+        }
+    }
 }
 
 fn merge_inherited_nested_class(
@@ -1910,8 +1924,12 @@ fn collect_local_type_def_ids(
     // during inherited-content synthesis.
     for comp in components.values() {
         if let Some(def_id) = comp.type_def_id {
-            let type_name = comp.type_name.to_string();
-            let short = top_level_last_segment(&type_name);
+            let short = comp
+                .type_name
+                .name
+                .last()
+                .map(|token| token.text.as_ref())
+                .unwrap_or_default();
             if !short.is_empty() {
                 local.entry(short.to_string()).or_insert(def_id);
             }
@@ -1934,7 +1952,7 @@ fn populate_local_component_type_def_ids(
         if type_name.is_empty() {
             continue;
         }
-        let is_dotted = rumoca_core::has_top_level_dot(&type_name);
+        let is_dotted = comp.type_name.name.len() > 1;
 
         // `type_name.def_id` may be a partial first-segment anchor (e.g. `Medium`
         // for `Medium.AbsolutePressure`). Promote it only for short names.

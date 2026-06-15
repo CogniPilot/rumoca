@@ -117,6 +117,231 @@ fn compile_model_for_simulation_ignores_unrelated_local_parse_errors() {
 }
 
 #[test]
+fn compile_model_for_simulation_ignores_unreferenced_library_typecheck_errors() {
+    run_async_test(async {
+        // Editor setup from .vscode/settings.json: a configured library source
+        // root that does not fully typecheck on its own (the MSL `Modelica`
+        // package without its `ModelicaServices` sibling references
+        // `ModelicaServices.Types.SolverMethod`). A focus model that never
+        // references the library must still compile, exactly like the CLI's
+        // tolerant load + strict-reachable recovery path.
+        let temp = new_temp_dir("compile-unreferenced-library-typecheck");
+        let focus = temp.join("Ball.mo");
+        std::fs::write(
+            &focus,
+            "model Ball\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Ball;\n",
+        )
+        .expect("write focus");
+        let lib_dir = temp.join("lib").join("Lib");
+        std::fs::create_dir_all(&lib_dir).expect("mkdir lib");
+        std::fs::write(
+            lib_dir.join("package.mo"),
+            "package Lib\n  model Broken\n    MissingServices.Types.SolverMethod method;\n  end Broken;\nend Lib;\n",
+        )
+        .expect("write lib package");
+
+        let service = new_test_service();
+        let server = service.inner();
+        let lib_root = lib_dir.to_string_lossy().to_string();
+        let source_set_key = source_root_source_set_key(&lib_root);
+        let source_root_key = canonical_path_key(&lib_root);
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
+        server
+            .load_source_root_if_current(
+                &lib_root,
+                &source_root_key,
+                &source_set_key,
+                None,
+                source_root_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+            .expect("source-root load should succeed")
+            .expect("source root should load");
+
+        let compiled = server
+            .compile_model_for_simulation("Ball", &focus.to_string_lossy())
+            .await
+            .expect("focus model must compile despite unreferenced library typecheck errors");
+        assert_eq!(compiled.dae.variables.states.len(), 1);
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_ignores_sibling_pulled_library_typecheck_errors() {
+    run_async_test(async {
+        // The user-reported editor failure: Ball.mo sits in examples/models/
+        // next to siblings (PIDMSL.mo) that DO reference the configured
+        // library, and the library does not fully typecheck on its own (MSL
+        // `Modelica` without `ModelicaServices`). Compiling Ball must not
+        // fail on the library's unresolved references.
+        let temp = new_temp_dir("compile-sibling-pulled-library");
+        let focus = temp.join("Ball.mo");
+        std::fs::write(
+            &focus,
+            "model Ball\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Ball;\n",
+        )
+        .expect("write focus");
+        std::fs::write(
+            temp.join("UsesLib.mo"),
+            "model UsesLib\n  Lib.Good g;\nend UsesLib;\n",
+        )
+        .expect("write sibling");
+        let lib_dir = temp.join("lib").join("Lib");
+        std::fs::create_dir_all(&lib_dir).expect("mkdir lib");
+        std::fs::write(
+            lib_dir.join("package.mo"),
+            "package Lib\n  model Good\n    Real x(start=0);\n  equation\n    der(x) = 1;\n  end Good;\n  model Broken\n    MissingServices.Types.SolverMethod method;\n  end Broken;\nend Lib;\n",
+        )
+        .expect("write lib package");
+
+        let service = new_test_service();
+        let server = service.inner();
+        let lib_root = lib_dir.to_string_lossy().to_string();
+        let source_set_key = source_root_source_set_key(&lib_root);
+        let source_root_key = canonical_path_key(&lib_root);
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
+        server
+            .load_source_root_if_current(
+                &lib_root,
+                &source_root_key,
+                &source_set_key,
+                None,
+                source_root_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+            .expect("source-root load should succeed")
+            .expect("source root should load");
+
+        let compiled = server
+            .compile_model_for_simulation("Ball", &focus.to_string_lossy())
+            .await
+            .expect("focus model must compile despite sibling-pulled library typecheck errors");
+        assert_eq!(compiled.dae.variables.states.len(), 1);
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_handles_real_examples_ball_with_msl_root() {
+    run_async_test(async {
+        // Exact user-reported editor setup: focus examples/models/Ball.mo
+        // (siblings PIDMSL.mo etc. reference Modelica) with the repo
+        // .vscode/settings.json source root `.../Modelica 4.1.0` (no
+        // ModelicaServices sibling). Reported failure: "Ball failed in
+        // Typecheck: undefined type: `ModelicaServices.Types.SolverMethod`".
+        let Some(msl_root) = cached_msl_source_root() else {
+            eprintln!("SKIP: MSL cache not present");
+            return;
+        };
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let focus = workspace.join("examples/models/Ball.mo");
+        assert!(focus.is_file(), "repo Ball.mo expected");
+
+        let service = new_test_service();
+        let server = service.inner();
+        let lib_root = msl_root.to_string_lossy().to_string();
+        let source_set_key = source_root_source_set_key(&lib_root);
+        let source_root_key = canonical_path_key(&lib_root);
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
+        server
+            .load_source_root_if_current(
+                &lib_root,
+                &source_root_key,
+                &source_set_key,
+                None,
+                source_root_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+            .expect("source-root load should succeed")
+            .expect("source root should load");
+
+        let compiled = server
+            .compile_model_for_simulation("Ball", &focus.to_string_lossy())
+            .await
+            .expect("Ball must compile with the editor-configured MSL source root");
+        assert_eq!(compiled.dae.variables.states.len(), 2, "Ball has x and v");
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_still_fails_models_that_use_broken_library_alias() {
+    run_async_test(async {
+        // Counterpart to the Ball test above: deferring unresolvable alias
+        // targets must not weaken checking for models that actually USE the
+        // alias — they keep failing in Typecheck with the missing target.
+        let Some(msl_root) = cached_msl_source_root() else {
+            eprintln!("SKIP: MSL cache not present");
+            return;
+        };
+        let temp = new_temp_dir("compile-uses-broken-alias");
+        let focus = temp.join("UsesClocked.mo");
+        std::fs::write(
+            &focus,
+            "model UsesClocked\n  parameter Modelica.Clocked.Types.SolverMethod m = \"x\";\n  Real x(start = 1);\nequation\n  der(x) = -x;\nend UsesClocked;\n",
+        )
+        .expect("write focus");
+
+        let service = new_test_service();
+        let server = service.inner();
+        let lib_root = msl_root.to_string_lossy().to_string();
+        let source_set_key = source_root_source_set_key(&lib_root);
+        let source_root_key = canonical_path_key(&lib_root);
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
+        server
+            .load_source_root_if_current(
+                &lib_root,
+                &source_root_key,
+                &source_set_key,
+                None,
+                source_root_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+            .expect("source-root load should succeed")
+            .expect("source root should load");
+
+        let error = server
+            .compile_model_for_simulation("UsesClocked", &focus.to_string_lossy())
+            .await
+            .expect_err("a model using the broken alias must keep failing");
+        assert!(
+            error.contains("ModelicaServices.Types.SolverMethod") || error.contains("SolverMethod"),
+            "failure should name the unresolved alias target, got: {error}"
+        );
+    });
+}
+
+#[test]
 fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_errors() {
     run_async_test(async {
         let temp = new_temp_dir("compile-repeated-sibling-parse-error");

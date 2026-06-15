@@ -12,7 +12,7 @@ use indexmap::IndexSet;
 use rumoca_core::{
     ComponentPath, ComponentRefPart as CoreComponentRefPart,
     ComponentReference as CoreComponentReference, DefId, ScopeId, Span, Subscript as CoreSubscript,
-    TypeId, split_path_with_indices,
+    TypeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -90,10 +90,10 @@ impl QualifiedName {
     /// Note: This does not handle array subscripts in the string format.
     /// For paths with subscripts, use the structured API instead.
     pub fn from_dotted(s: &str) -> Self {
-        let parts: Vec<(String, Vec<i64>)> = split_path_with_indices(s)
+        let parts: Vec<(String, Vec<i64>)> = rumoca_core::ComponentPath::from_flat_path(s)
+            .into_parts()
             .into_iter()
-            .filter(|p| !p.is_empty())
-            .map(|p| (p.to_string(), Vec::new()))
+            .map(|p| (p, Vec::new()))
             .collect();
         Self { parts }
     }

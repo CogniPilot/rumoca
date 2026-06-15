@@ -60,6 +60,37 @@ pub enum FlattenError {
     #[error("internal flatten error: {0}")]
     #[diagnostic(code(rumoca::flatten::EF005))]
     Internal(String),
+
+    /// A function call binds its argument slots incorrectly (MLS §12.4.1).
+    #[error("invalid call of function `{function}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF016),
+        help(
+            "MLS §12.4.1: each input slot is filled by exactly one positional or named argument; slots without defaults must be filled"
+        )
+    )]
+    InvalidFunctionCallArgs {
+        function: String,
+        reason: String,
+        #[label("function call here")]
+        span: SourceSpan,
+    },
+
+    /// A record constructor was requested for a record with conditional
+    /// components (MLS §12.6.1 / FUNC-029).
+    #[error(
+        "record `{record}` has conditional component `{component}` and cannot have a constructor"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF018),
+        help("MLS §12.6.1: records with conditional components have no record constructor")
+    )]
+    ConditionalComponentConstructor {
+        record: String,
+        component: String,
+        #[label("record constructed here")]
+        span: SourceSpan,
+    },
     // Note: EF006 was EventTriggerOutsideWhen, removed per MLS Appendix B which
     // allows edge()/change() in discrete equations. Code reserved for future use.
     // Note: EF007 (UnevaluableDimensions) removed - typecheck phase (ET004) now handles this
@@ -143,6 +174,34 @@ pub enum FlattenError {
         #[label("function output may be unassigned here")]
         span: SourceSpan,
     },
+
+    /// A variable reached flattening without a resolvable type name.
+    #[error("unresolved variable type for `{name}`")]
+    #[diagnostic(
+        code(rumoca::flatten::EF014),
+        help(
+            "instantiate/typecheck must preserve a structured type id or type name before flattening variables"
+        )
+    )]
+    UnresolvedVariableType {
+        name: String,
+        #[label("variable declared here")]
+        span: SourceSpan,
+    },
+
+    /// A resolved class reached flattening without the DefId metadata required
+    /// for scope-based lookup.
+    #[error("missing resolved class metadata for `{name}`")]
+    #[diagnostic(
+        code(rumoca::flatten::EF015),
+        help("name resolution must assign and preserve DefId metadata before flattening")
+    )]
+    MissingResolvedClassMetadata {
+        name: String,
+        context: String,
+        #[label("class used here")]
+        span: SourceSpan,
+    },
 }
 
 impl FlattenError {
@@ -187,6 +246,19 @@ impl FlattenError {
         Self::MissingSourceScope {
             name: name.into(),
             context: context.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create an InvalidFunctionCallArgs error.
+    pub fn invalid_function_call_args(
+        function: impl Into<String>,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::InvalidFunctionCallArgs {
+            function: function.into(),
+            reason: reason.into(),
             span: rumoca_core::span_to_source_span(span),
         }
     }
@@ -237,6 +309,27 @@ impl FlattenError {
         Self::FunctionOutputUnassigned {
             function: function.into(),
             output: output.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create an UnresolvedVariableType error.
+    pub fn unresolved_variable_type(name: impl Into<String>, span: rumoca_core::Span) -> Self {
+        Self::UnresolvedVariableType {
+            name: name.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create a MissingResolvedClassMetadata error.
+    pub fn missing_resolved_class_metadata(
+        name: impl Into<String>,
+        context: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::MissingResolvedClassMetadata {
+            name: name.into(),
+            context: context.into(),
             span: rumoca_core::span_to_source_span(span),
         }
     }

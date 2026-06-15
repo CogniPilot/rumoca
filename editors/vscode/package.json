@@ -2,7 +2,7 @@
   "name": "rumoca-modelica",
   "displayName": "Rumoca Modelica",
   "description": "Modelica language support powered by rumoca-lsp",
-  "version": "0.8.12",
+  "version": "0.9.4",
   "publisher": "JamesGoppert",
   "repository": {
     "type": "git",
@@ -213,6 +213,24 @@
       {
         "command": "rumoca.collapseAllAnnotations",
         "title": "Collapse All Annotations",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.openUserGuide",
+        "title": "Open Rumoca User Guide",
+        "shortTitle": "User Guide",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.openDevGuide",
+        "title": "Open Rumoca Internals Guide",
+        "shortTitle": "Internals Guide",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.openPlayground",
+        "title": "Open Rumoca Web Playground",
+        "shortTitle": "Playground",
         "category": "Rumoca"
       }
     ],

@@ -59,9 +59,11 @@ mod postprocess;
 pub mod qualify;
 pub(crate) mod record_constant_arrays;
 mod static_subscripts;
+mod structured_refs;
 mod variables;
 mod vcg;
 mod when_equations;
+mod zero_sized_arrays;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -329,6 +331,9 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    if !model_name.is_empty() {
+        ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
+    }
     let class_index = ast::ClassDefIndex::from_tree(tree);
     ctx.class_def_ids = std::sync::Arc::new(class_index.def_ids().collect());
     ctx.target_def_names = tree
@@ -336,7 +341,9 @@ pub fn flatten_ref_with_options(
         .iter()
         .map(|(id, name)| (*id, name.clone()))
         .collect();
+    ctx.seed_component_member_scopes(overlay);
     let mut flat = flat::Model::new();
+    populate_flat_symbol_ancestry(&mut flat, &class_index);
     let component_override_map =
         build_component_override_map(overlay, tree, &class_index, model_name)?;
 
@@ -347,6 +354,7 @@ pub fn flatten_ref_with_options(
         &component_override_map,
         tree,
         &class_index,
+        &ctx.component_members,
     )?;
     let flatten_graph = prepare_context_for_equation_flattening(
         &mut ctx,
@@ -380,6 +388,15 @@ pub fn flatten_ref_with_options(
     Ok(flat)
 }
 
+fn populate_flat_symbol_ancestry(flat: &mut flat::Model, class_index: &ast::ClassDefIndex<'_>) {
+    let mut def_ids = class_index.symbol_def_ids().collect::<Vec<_>>();
+    def_ids.sort_by_key(|def_id| def_id.index());
+    flat.symbol_ancestry = def_ids
+        .into_iter()
+        .map(|def_id| (def_id, class_index.def_ancestry(def_id)))
+        .collect();
+}
+
 fn seed_flat_functions_from_context(ctx: &Context, flat: &mut flat::Model) {
     for func in ctx.functions.values() {
         flat.functions
@@ -398,7 +415,13 @@ fn collect_enum_literal_ordinals(tree: &ast::ClassTree) -> IndexMap<String, i64>
         ("AssertionLevel", &["warning", "error"][..]),
     ] {
         for (idx, literal) in literals.iter().enumerate() {
-            ordinals.insert(format!("{enum_name}.{literal}"), (idx + 1) as i64);
+            insert_enum_literal_ordinal_aliases(
+                &mut ordinals,
+                enum_name,
+                enum_name,
+                literal,
+                (idx + 1) as i64,
+            );
         }
     }
     for (def_id, qualified_name) in &tree.def_map {
@@ -408,17 +431,44 @@ fn collect_enum_literal_ordinals(tree: &ast::ClassTree) -> IndexMap<String, i64>
         if class_def.enum_literals.is_empty() {
             continue;
         }
-        let short_name = crate::path_utils::top_level_last_segment(qualified_name);
+        let short_name = crate::path_utils::leaf_segment(qualified_name);
         for (idx, literal) in class_def.enum_literals.iter().enumerate() {
             let ordinal = (idx + 1) as i64;
             let ident = literal.ident.text.clone();
-            ordinals.insert(format!("{qualified_name}.{ident}"), ordinal);
-            ordinals
-                .entry(format!("{short_name}.{ident}"))
-                .or_insert(ordinal);
+            insert_enum_literal_ordinal_aliases(
+                &mut ordinals,
+                qualified_name,
+                short_name,
+                &ident,
+                ordinal,
+            );
         }
     }
     ordinals
+}
+
+fn insert_enum_literal_ordinal_aliases(
+    ordinals: &mut IndexMap<String, i64>,
+    qualified_enum_name: &str,
+    short_enum_name: &str,
+    literal: &str,
+    ordinal: i64,
+) {
+    for literal_alias in enum_literal_name_aliases(literal) {
+        ordinals.insert(format!("{qualified_enum_name}.{literal_alias}"), ordinal);
+        ordinals
+            .entry(format!("{short_enum_name}.{literal_alias}"))
+            .or_insert(ordinal);
+    }
+}
+
+fn enum_literal_name_aliases(literal: &str) -> Vec<String> {
+    if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
+        let unquoted = &literal[1..literal.len() - 1];
+        vec![literal.to_string(), unquoted.to_string()]
+    } else {
+        vec![literal.to_string(), format!("'{literal}'")]
+    }
 }
 
 /// Extract record aliases from the instance overlay (MLS §7.2.3).
@@ -645,7 +695,7 @@ fn insert_with_prefix<V: Clone>(
 
 fn exposes_unprefixed_prefix(prefix: &str) -> bool {
     !prefix.is_empty()
-        && !crate::path_utils::has_top_level_dot(prefix)
+        && !crate::path_utils::is_nested_name(prefix)
         && prefix.chars().next().is_some_and(char::is_uppercase)
 }
 
@@ -1028,17 +1078,35 @@ mod nested_class_constant_scope_tests {
     }
 }
 
-fn inject_enclosing_class_constants(tree: &ast::ClassTree, model_name: &str, ctx: &mut Context) {
-    let Some(enclosing_name) = crate::path_utils::parent_scope(model_name) else {
-        return;
+fn inject_enclosing_class_constants(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    model_name: &str,
+    ctx: &mut Context,
+) -> Result<(), FlattenError> {
+    let Some(model_def_id) = class_index.def_id_by_qualified_name(model_name) else {
+        return Err(FlattenError::missing_resolved_class_metadata(
+            model_name,
+            "enclosing class constant injection".to_string(),
+            rumoca_core::Span::DUMMY,
+        ));
     };
-    let class_index = ast::ClassDefIndex::from_tree(tree);
-    let ancestors = collect_ancestor_classes_with_index(tree, &class_index, enclosing_name);
+    let Some(parent_def_id) = class_index.parent_def_id(model_def_id) else {
+        return Ok(());
+    };
+    let Some(enclosing_name) = class_index.qualified_name(parent_def_id) else {
+        return Err(FlattenError::missing_resolved_class_metadata(
+            model_name,
+            "enclosing class constant injection parent scope".to_string(),
+            rumoca_core::Span::DUMMY,
+        ));
+    };
+    let ancestors = collect_ancestor_classes_with_index(tree, class_index, enclosing_name);
     if ancestors.is_empty() {
-        return;
+        return Ok(());
     }
     for ancestor in &ancestors {
-        extract_nested_class_constants(tree, &class_index, ancestor, enclosing_name, ctx);
+        extract_nested_class_constants(tree, class_index, ancestor, enclosing_name, ctx);
     }
-    extract_ancestor_constants_multi_pass(tree, &class_index, enclosing_name, &ancestors, ctx);
+    extract_ancestor_constants_multi_pass(tree, class_index, enclosing_name, &ancestors, ctx)
 }

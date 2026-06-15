@@ -26,12 +26,10 @@ use convert_from_ast::{
     expression_from_ast_with_def_map, expression_from_component_ref,
 };
 use indexmap::{IndexMap, IndexSet};
-#[cfg(test)]
-use rumoca_core::DefId;
 use rumoca_core::{
-    BuiltinFunction, Causality, ClassType, ComponentReference, Expression, ForIndex, Function,
-    FunctionShapeContractError, Reference, Span, StateSelect, Statement, StatementBlock, Subscript,
-    TypeId, VarName, Variability,
+    BuiltinFunction, Causality, ClassType, ComponentReference, DefId, Expression, ForIndex,
+    Function, FunctionShapeContractError, Reference, Span, StateSelect, Statement, StatementBlock,
+    Subscript, TypeId, VarName, Variability,
 };
 #[cfg(test)]
 use rumoca_core::{ComprehensionIndex, Literal};
@@ -170,6 +168,11 @@ pub struct Model {
     /// integer ordinals used by runtime numeric evaluation.
     #[serde(default)]
     pub enum_literal_ordinals: IndexMap<String, i64>,
+    /// DefId ancestry for resolved source symbols, ordered from outermost owner
+    /// to the symbol itself. Used by downstream phases for child/descendant
+    /// checks without rendered-name prefix matching.
+    #[serde(default)]
+    pub symbol_ancestry: IndexMap<DefId, Vec<DefId>>,
 }
 
 impl Model {

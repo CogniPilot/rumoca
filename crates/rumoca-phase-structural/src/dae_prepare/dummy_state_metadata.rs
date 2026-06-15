@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_dae::expr_contains_var;
@@ -14,6 +14,11 @@ const LINEAR_EPSILON: f64 = 1.0e-12;
 #[derive(Debug, Clone, Default)]
 struct LinearRow {
     terms: IndexMap<String, f64>,
+    /// Parameters whose compile-time values were baked into the coefficients.
+    /// When a demotion derived from this row is applied, these must be pinned
+    /// as structural (no longer runtime-tunable) or a tuned value would
+    /// silently disagree with the baked coefficient.
+    structural_params: BTreeSet<String>,
 }
 
 impl LinearRow {
@@ -37,6 +42,8 @@ impl LinearRow {
         for (name, coeff) in &other.terms {
             self.add_term(name.clone(), coeff * factor);
         }
+        self.structural_params
+            .extend(other.structural_params.iter().cloned());
     }
 
     fn remove_near_zero_terms(&mut self) {
@@ -230,25 +237,33 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
                 Some(row)
             }
             OpBinary::Mul | OpBinary::MulElem => {
-                if let Some(scale) = numeric_constant(lhs) {
+                let mut used = BTreeSet::new();
+                if let Some(scale) = structural_numeric_constant(dae, lhs, &mut used, 0) {
                     let mut row = linear_terms(dae, rhs)?;
                     row.scale(scale);
+                    row.structural_params.extend(used);
                     Some(row)
-                } else if let Some(scale) = numeric_constant(rhs) {
+                } else if let Some(scale) = {
+                    used.clear();
+                    structural_numeric_constant(dae, rhs, &mut used, 0)
+                } {
                     let mut row = linear_terms(dae, lhs)?;
                     row.scale(scale);
+                    row.structural_params.extend(used);
                     Some(row)
                 } else {
                     None
                 }
             }
             OpBinary::Div | OpBinary::DivElem => {
-                let scale = numeric_constant(rhs)?;
+                let mut used = BTreeSet::new();
+                let scale = structural_numeric_constant(dae, rhs, &mut used, 0)?;
                 if scale.abs() <= LINEAR_EPSILON {
                     return None;
                 }
                 let mut row = linear_terms(dae, lhs)?;
                 row.scale(1.0 / scale);
+                row.structural_params.extend(used);
                 Some(row)
             }
             _ => None,
@@ -266,13 +281,69 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
     }
 }
 
+/// Resolve a numeric coefficient that may go through fixed parameter or
+/// constant values: literals and literal arithmetic resolve as in
+/// [`numeric_constant`]; an unsubscripted reference to a parameter/constant
+/// resolves through its (transitively numeric) start value. Parameters
+/// consumed this way are recorded in `used_params` so callers can pin them as
+/// structural once their value is baked into a reduction.
+fn structural_numeric_constant(
+    dae: &Dae,
+    expr: &Expression,
+    used_params: &mut BTreeSet<String>,
+    depth: usize,
+) -> Option<f64> {
+    if depth > 8 {
+        return None;
+    }
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            let var_name = name.var_name();
+            let is_parameter = dae.variables.parameters.contains_key(var_name);
+            let var = dae
+                .variables
+                .parameters
+                .get(var_name)
+                .or_else(|| dae.variables.constants.get(var_name))?;
+            let start = var.start.as_ref()?;
+            let value = structural_numeric_constant(dae, start, used_params, depth + 1)?;
+            if is_parameter {
+                used_params.insert(var_name.as_str().to_string());
+            }
+            Some(value)
+        }
+        Expression::Unary { op, rhs, .. } => {
+            let value = structural_numeric_constant(dae, rhs, used_params, depth + 1)?;
+            match op {
+                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(value),
+                OpUnary::Minus | OpUnary::DotMinus => Some(-value),
+                OpUnary::Not => None,
+            }
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = structural_numeric_constant(dae, lhs, used_params, depth + 1)?;
+            let rhs = structural_numeric_constant(dae, rhs, used_params, depth + 1)?;
+            match op {
+                OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
+                OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
+                OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
+                OpBinary::Div | OpBinary::DivElem => Some(lhs / rhs),
+                _ => None,
+            }
+        }
+        _ => numeric_constant(expr),
+    }
+}
+
 fn equation_linear_row(dae: &Dae, eq: &Equation) -> Option<LinearRow> {
     if expression_contains_any_der_call(&eq.rhs) {
         return None;
     }
     if let Some(lhs) = &eq.lhs {
         let lhs_expr = Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(lhs.clone()),
+            name: lhs.clone(),
             subscripts: Vec::new(),
             span: rumoca_core::Span::DUMMY,
         };
@@ -400,6 +471,7 @@ fn canonicalize_singleton_state_terms(dae: &Dae, row: &LinearRow) -> LinearRow {
         let term_name = canonical_singleton_state_term(dae, name).unwrap_or_else(|| name.clone());
         canonical.add_term(term_name, *coeff);
     }
+    canonical.structural_params = row.structural_params.clone();
     canonical
 }
 
@@ -408,7 +480,7 @@ fn linear_constraint_dummy_state_definitions(
     state_names: &[VarName],
     state_name_set: &HashSet<String>,
     when_assigned_states: &HashSet<String>,
-) -> Vec<(VarName, Expression)> {
+) -> Vec<(VarName, ConstrainedDummyDefinition)> {
     let non_state_unknown_names = continuous_non_state_unknown_names(dae);
     let mut rows = dae
         .continuous
@@ -450,7 +522,13 @@ fn linear_constraint_dummy_state_definitions(
                 when_assigned_states,
             )?;
             let expr = solve_linear_row_for_state(row, &candidate)?;
-            Some((candidate, expr))
+            Some((
+                candidate,
+                ConstrainedDummyDefinition {
+                    defining_expr: expr,
+                    structural_params: row.structural_params.iter().cloned().collect(),
+                },
+            ))
         })
         .collect()
 }
@@ -496,7 +574,18 @@ pub fn constrained_dummy_state_names(dae: &Dae) -> IndexSet<String> {
         .collect()
 }
 
-pub fn constrained_dummy_state_defining_exprs(dae: &Dae) -> IndexMap<String, Expression> {
+/// One constrained dummy-state definition: the expression that defines the
+/// candidate state, plus the parameters whose compile-time values were baked
+/// into it by the linear constraint reduction.
+#[derive(Debug, Clone)]
+pub struct ConstrainedDummyDefinition {
+    pub defining_expr: Expression,
+    pub structural_params: Vec<String>,
+}
+
+pub fn constrained_dummy_state_defining_exprs(
+    dae: &Dae,
+) -> IndexMap<String, ConstrainedDummyDefinition> {
     let Some((state_names, state_name_set, when_assigned_states)) =
         direct_demotion_round_context(dae)
     else {
@@ -517,7 +606,13 @@ pub fn constrained_dummy_state_defining_exprs(dae: &Dae) -> IndexMap<String, Exp
             )?;
             let (state_name, defining_expr) =
                 extract_state_direct_assignment_equation(eq, &state_names, &state_name_set)?;
-            (state_name == candidate).then_some((candidate, defining_expr))
+            (state_name == candidate).then_some((
+                candidate,
+                ConstrainedDummyDefinition {
+                    defining_expr,
+                    structural_params: Vec::new(),
+                },
+            ))
         })
         .collect::<Vec<_>>();
     definitions.extend(linear_constraint_dummy_state_definitions(

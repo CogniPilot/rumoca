@@ -56,6 +56,13 @@ pub use subscript::Subscript;
 /// has been lowered out of the DAE expression language.
 pub const INTERNAL_SAMPLE_FUNCTION_NAME: &str = "__rumoca_sample";
 
+/// MLS §16.5.1: `sample(u)` is the clocked value-sampling operator with an
+/// inferred clock. It is not the event-generating `sample(start, interval)`
+/// form from MLS §3.7.3 / §16.
+pub fn sample_call_is_inferred_clock_value_form(args: &[Expression]) -> bool {
+    args.len() == 1
+}
+
 /// Return the canonical name for source temporal function-call operators that
 /// must be lowered before DAE/Solve exits.
 pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
@@ -322,11 +329,11 @@ pub fn top_level_path_contains_segment(path: &str, segment: &str) -> bool {
 /// - `resistor[1]` -> `resistor`
 /// - `p` -> `p`
 pub fn strip_array_index(segment: &str) -> &str {
-    if let Some(bracket_pos) = segment.find('[') {
-        &segment[..bracket_pos]
-    } else {
-        segment
+    let mut base = segment;
+    while let Some((next_base, _subscript)) = split_trailing_subscript_suffix(base) {
+        base = next_base;
     }
+    base
 }
 
 /// Return the first top-level path segment with array indices removed.

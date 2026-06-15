@@ -217,7 +217,26 @@ port = 8081
 [viewer]
 mode = "external_web"
 show_armed = true
-status_title = "Vehicle"
+status_title = "Quadrotor"
+
+# Body frame in model FLU coordinates, driven by viewer signals.
+[[viewer.frame]]
+name = "body"
+position = ["px", "py", "pz"]
+quaternion = ["q0", "q1", "q2", "q3"]
+
+# Forward-looking body camera: C cycles scene chase → onboard.
+[[viewer.camera]]
+name = "onboard"
+frame = "body"
+mount = [0.3, 0.0, 0.1]
+
+[viewer.hud]
+mode = "flight"
+frame = "body"
+altitude = "pz"
+speed = ["vx", "vy", "vz"]
+sticks = { roll = "stick_roll", pitch = "stick_pitch", yaw = "stick_yaw", throttle = "stick_throttle" }
 
 [[viewer.controls.keyboard]]
 keys = "Up / Down"

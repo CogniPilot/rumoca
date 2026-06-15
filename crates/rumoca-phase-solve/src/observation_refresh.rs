@@ -66,12 +66,12 @@ fn discrete_observation_refresh_rows(
     layout: &solve::VarLayout,
 ) -> Result<Vec<DiscreteObservationRefreshRow>, LowerError> {
     let mut rows = Vec::new();
-    for eq in normalized_discrete_update_equations(dae_model) {
+    for eq in normalized_discrete_update_equations(dae_model)? {
         let Some(lhs) = eq.lhs.as_ref() else {
             continue;
         };
         let scalar_count = eq.scalar_count.max(1);
-        let safe = expression_safe_for_observation_refresh(dae_model, lhs, &eq.rhs);
+        let safe = expression_safe_for_observation_refresh(dae_model, lhs.var_name(), &eq.rhs);
         let contains_pre = expression_contains_pre_operator(&eq.rhs);
         let seed = !contains_pre
             && (expression_has_observation_pulse(dae_model, &eq.rhs)
@@ -79,7 +79,13 @@ fn discrete_observation_refresh_rows(
         let mut reads = Vec::new();
         collect_expression_read_slots(dae_model, layout, &eq.rhs, &mut reads);
         for flat_index in 0..scalar_count {
-            let name = discrete_update_scalar_name(dae_model, lhs, flat_index, scalar_count);
+            let name = discrete_update_scalar_name(
+                dae_model,
+                lhs.var_name(),
+                flat_index,
+                scalar_count,
+                eq.span,
+            )?;
             let Some(target) = layout.binding(name.as_str()) else {
                 return Err(LowerError::MissingBinding { name });
             };
@@ -424,5 +430,5 @@ fn function_call_is_clock_expr(
 }
 
 fn function_short_name(name: &str) -> &str {
-    rumoca_core::top_level_last_segment(name)
+    crate::path_utils::leaf_segment(name)
 }

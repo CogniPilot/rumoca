@@ -9,6 +9,14 @@ pub fn dae_to_template_json(dae_model: &dae::Dae) -> Result<Value, CodegenError>
     rumoca_phase_codegen::dae_template_json(dae_model)
 }
 
+pub fn dae_for_solve_template_context(dae_model: &dae::Dae) -> Result<dae::Dae, CodegenError> {
+    let mut prepared = dae_model.clone();
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut prepared).map_err(|err| {
+        CodegenError::template(format!("solve-template DAE scalarization: {err}"))
+    })?;
+    Ok(rumoca_phase_dae::prepare_dae_for_codegen(&prepared).into_dae())
+}
+
 pub fn render_dae_template(dae_model: &dae::Dae, template: &str) -> Result<String, CodegenError> {
     rumoca_phase_codegen::render_template(dae_model, template)
 }
@@ -52,7 +60,7 @@ pub fn render_ast_template_with_name(
     rumoca_phase_codegen::render_ast_template_with_name(ast_tree, template, model_name)
 }
 
-pub use rumoca_phase_codegen::render_solve_template_with_name;
+pub use rumoca_phase_codegen::{SolveTemplateRenderer, render_solve_template_with_name};
 
 /// Built-in target metadata, re-exported from the codegen crate.
 pub mod templates {

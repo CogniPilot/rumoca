@@ -54,7 +54,7 @@ use rumoca_compile::{
     compile::{Dae, FlatModel, ResolvedTree, Session, SessionConfig},
     project::{write_last_simulation_result_for_model, write_simulation_run},
 };
-use rumoca_sim::{SimOptions, SimSolverMode};
+use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
@@ -412,7 +412,8 @@ struct SimCommandArgs {
     #[command(flatten)]
     model_options: ModelOptions,
 
-    /// Solver: auto (recommended), bdf (stiff/implicit, diffsol), or rk-like
+    /// Solver: auto (recommended), bdf (stiff/implicit, diffsol), esdirk34 or
+    /// trbdf2 (implicit SDIRK tableaus for stiff DAEs, diffsol), or rk-like
     /// (explicit Runge-Kutta-style, non-stiff)
     #[arg(long, value_enum)]
     solver: Option<SimulateSolverMode>,
@@ -510,6 +511,11 @@ impl SimCommandArgs {
 enum SimulateSolverMode {
     Auto,
     Bdf,
+    /// ESDIRK34 — implicit SDIRK tableau on the diffsol path (stiff).
+    Esdirk34,
+    /// TR-BDF2 — implicit SDIRK tableau on the diffsol path (stiff).
+    #[value(name = "trbdf2")]
+    TrBdf2,
     #[value(name = "rk-like")]
     RkLike,
 }
@@ -518,7 +524,12 @@ impl From<SimulateSolverMode> for SimSolverMode {
     fn from(value: SimulateSolverMode) -> Self {
         match value {
             SimulateSolverMode::Auto => SimSolverMode::Auto,
-            SimulateSolverMode::Bdf => SimSolverMode::Bdf,
+            // ESDIRK34 / TR-BDF2 are implicit tableaus served by the diffsol
+            // (BDF-family) path; the specific tableau is carried by the solver
+            // label into `SimOptions::diffsol_method`.
+            SimulateSolverMode::Bdf | SimulateSolverMode::Esdirk34 | SimulateSolverMode::TrBdf2 => {
+                SimSolverMode::Bdf
+            }
             SimulateSolverMode::RkLike => SimSolverMode::RkLike,
         }
     }
@@ -529,6 +540,8 @@ impl SimulateSolverMode {
         match self {
             SimulateSolverMode::Auto => "auto",
             SimulateSolverMode::Bdf => "bdf",
+            SimulateSolverMode::Esdirk34 => "esdirk34",
+            SimulateSolverMode::TrBdf2 => "trbdf2",
             SimulateSolverMode::RkLike => "rk-like",
         }
     }
@@ -1828,6 +1841,9 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         t_end: run.t_end,
         dt: run.dt,
         solver_mode: run.solver_mode,
+        // `--solver esdirk34` / `trbdf2` selects an implicit SDIRK tableau on
+        // the diffsol path; other names leave the BDF default.
+        diffsol_method: DiffsolMethod::from_external_name(run.solver_label).unwrap_or_default(),
         ..SimOptions::default()
     };
 
@@ -1847,6 +1863,26 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         Some(p) => PathBuf::from(p),
         None => PathBuf::from(format!("{}_results.html", run.model)),
     };
+    // `-o` must honor the requested format: writing HTML into a `.csv` file
+    // silently hands the user a broken artifact.
+    let extension = out_path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("html") | None => {}
+        Some("csv") => {
+            rumoca_sim::report::write_csv_results(&sim, &out_path)?;
+            println!("{}", out_path.display());
+            return Ok(());
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "unsupported simulation output extension `.{other}` for `{}`: \
+                 use `.html` for the report or `.csv` for raw results",
+                out_path.display()
+            );
+        }
+    }
     let request_summary = SimulationRequestSummary {
         solver: run.solver_label.to_string(),
         t_start: opts.t_start,

@@ -1,11 +1,25 @@
 pub(crate) use rumoca_core::{
-    get_top_level_prefix, has_top_level_dot, has_top_level_subscript, is_top_level_member,
+    get_top_level_prefix, has_top_level_subscript, is_top_level_member,
     last_top_level_subscript_span, normalize_top_level_segment, normalized_top_level_names,
-    path_is_in_top_level_set, rendered_top_level_segment, strip_all_subscripts,
-    subscript_fallback_chain,
+    path_is_in_top_level_set, strip_all_subscripts, subscript_fallback_chain,
 };
 
 use std::collections::HashSet;
+
+/// True when the rendered name is nested below a component (has a top-level dot).
+pub(crate) fn is_nested_name(name: &str) -> bool {
+    rumoca_core::has_top_level_dot(name)
+}
+
+/// Final top-level segment of a rendered name.
+pub(crate) fn leaf_segment(name: &str) -> &str {
+    rumoca_core::top_level_last_segment(name)
+}
+
+/// First top-level segment of a rendered name, keeping any subscript text.
+pub(crate) fn first_rendered_segment(name: &str) -> Option<&str> {
+    rumoca_core::rendered_top_level_segment(name)
+}
 
 pub(crate) fn resolve_known_path_suffix(
     name: &str,
@@ -44,7 +58,7 @@ mod tests {
     #[test]
     fn test_top_level_segment_preserves_bracket_expression() {
         assert_eq!(
-            rendered_top_level_segment("bus[data.medium].pin"),
+            first_rendered_segment("bus[data.medium].pin"),
             Some("bus[data.medium]")
         );
     }

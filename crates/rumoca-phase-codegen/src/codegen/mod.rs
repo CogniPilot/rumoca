@@ -8,8 +8,9 @@
 //! which handles the recursive tree walking with configurable operator syntax.
 
 use crate::errors::{CodegenError, render_err};
+use indexmap::{IndexMap, IndexSet};
 use minijinja::{Environment, UndefinedBehavior, Value};
-use rumoca_core::{Expression, Reference, Span};
+use rumoca_core::{Expression, ExpressionVisitor, Span, Subscript};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
@@ -26,7 +27,7 @@ use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
     render_optional_solve_slot_assign_c_function, render_solve_pre_param_binding_c_function,
-    render_solve_row_c_function, render_solve_row_rust_function,
+    render_solve_row_c_function, render_solve_row_rust_function, render_solve_row_wgsl_function,
     render_solve_slot_assign_c_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
@@ -57,6 +58,7 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         })?;
     let enum_type_names = enum_type_names_from_ordinals(dae);
     let symbol_refs = source_refs_from_dae(dae, &enum_type_names);
+    let symbol_aliases = symbol_aliases_from_dae(dae)?;
     let condition_aliases =
         condition_aliases_from_dae(dae).map_err(|e| CodegenError::SerializationFailed {
             message: format!("condition_aliases: {e}"),
@@ -82,56 +84,16 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         })?,
     );
     object.insert(
+        "symbol_aliases".to_string(),
+        serde_json::to_value(symbol_aliases).map_err(|e| CodegenError::SerializationFailed {
+            message: format!("symbol_aliases: {e}"),
+        })?,
+    );
+    object.insert(
         "condition_aliases".to_string(),
         serde_json::Value::Array(condition_aliases),
     );
     Ok(value)
-}
-
-/// Reusable Minijinja context for rendering multiple templates from one DAE.
-pub struct DaeTemplateContext {
-    dae_value: Value,
-}
-
-impl DaeTemplateContext {
-    pub fn from_dae_json(dae_json: &serde_json::Value) -> Self {
-        Self {
-            dae_value: Value::from_serialize(dae_json),
-        }
-    }
-
-    pub fn from_dae(dae: &dae::Dae) -> Result<Self, CodegenError> {
-        Ok(Self::from_dae_json(&dae_template_json(dae)?))
-    }
-
-    pub fn render(&self, template: &str) -> Result<String, CodegenError> {
-        let mut env = create_environment();
-        env.add_template("inline", template)?;
-        let tmpl = env.get_template("inline")?;
-        let rendered = tmpl.render(minijinja::context! {
-            dae => self.dae_value.clone(),
-            ir => self.dae_value.clone(),
-            ir_kind => "dae",
-        })?;
-        Ok(rendered)
-    }
-
-    pub fn render_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-    ) -> Result<String, CodegenError> {
-        let mut env = create_environment();
-        env.add_template("inline", template)?;
-        let tmpl = env.get_template("inline")?;
-        let rendered = tmpl.render(minijinja::context! {
-            dae => self.dae_value.clone(),
-            ir => self.dae_value.clone(),
-            ir_kind => "dae",
-            model_name => model_name,
-        })?;
-        Ok(rendered)
-    }
 }
 
 fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, serde_json::Error> {
@@ -142,7 +104,7 @@ fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, 
         .map(|(lhs, relation)| {
             Ok(serde_json::json!({
                 "condition": Expression::VarRef {
-                    name: Reference::from_var_name(lhs.clone()),
+                    name: lhs.clone(),
                     subscripts: Vec::new(),
                     span: Span::DUMMY,
                 },
@@ -156,7 +118,7 @@ fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, 
 /// E.g., from `Modelica.Blocks.Types.Smoothness.LinearSegments` to
 /// `Modelica.Blocks.Types.Smoothness`.
 fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen = IndexSet::new();
     let mut result = Vec::new();
     for name in dae.symbols.enum_literal_ordinals.keys() {
         if let Some((type_name, _literal_name)) = rumoca_core::split_last_top_level(name)
@@ -169,7 +131,7 @@ fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
 }
 
 fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<String> {
-    let mut refs = HashSet::new();
+    let mut refs = IndexSet::new();
 
     for vars in [
         &dae.variables.states,
@@ -219,7 +181,7 @@ fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<Strin
 fn add_function_output_projection_refs(
     func_name: &str,
     func: &rumoca_core::Function,
-    refs: &mut HashSet<String>,
+    refs: &mut IndexSet<String>,
 ) {
     for output in &func.outputs {
         let dims: Vec<usize> = output
@@ -243,7 +205,7 @@ fn add_function_output_projection_refs(
     }
 }
 
-fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut HashSet<String>) {
+fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut IndexSet<String>) {
     refs.insert(name.to_string());
 
     let dims: Vec<usize> = dims
@@ -262,6 +224,152 @@ fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut HashSet<String>)
             source_subscript_suffix(&dims, flat_index)
         ));
     }
+}
+
+fn symbol_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, CodegenError> {
+    let mut declared_refs = IndexSet::new();
+    for vars in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, var) in vars {
+            add_source_refs_for_var(name.as_str(), &var.dims, &mut declared_refs);
+        }
+    }
+
+    let mut aliases = IndexMap::<String, String>::new();
+    for vars in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, var) in vars {
+            add_symbol_aliases_for_variable_exprs(
+                name.as_str(),
+                var,
+                &declared_refs,
+                &mut aliases,
+            )?;
+        }
+    }
+
+    Ok(aliases
+        .into_iter()
+        .map(|(alias, target)| {
+            serde_json::json!({
+                "alias": alias,
+                "target": target,
+            })
+        })
+        .collect())
+}
+
+fn add_symbol_aliases_for_variable_exprs(
+    owner_name: &str,
+    var: &dae::Variable,
+    declared_refs: &IndexSet<String>,
+    aliases: &mut IndexMap<String, String>,
+) -> Result<(), CodegenError> {
+    for expr in [
+        var.start.as_ref(),
+        var.min.as_ref(),
+        var.max.as_ref(),
+        var.nominal.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        add_symbol_aliases_for_expr(owner_name, expr, declared_refs, aliases)?;
+    }
+    Ok(())
+}
+
+fn add_symbol_aliases_for_expr(
+    owner_name: &str,
+    expr: &Expression,
+    declared_refs: &IndexSet<String>,
+    aliases: &mut IndexMap<String, String>,
+) -> Result<(), CodegenError> {
+    let mut collector = dae::VarRefWithSubscriptsCollector::new();
+    collector.visit_expression(expr);
+    for (name, subscripts) in collector.into_refs() {
+        let Some(target_base) =
+            resolve_attribute_expr_alias_target(owner_name, name.as_str(), declared_refs)
+        else {
+            continue;
+        };
+        insert_symbol_alias(aliases, name.as_str().to_string(), target_base.clone())?;
+        let Some(indices) = literal_positive_indices(&subscripts) else {
+            continue;
+        };
+        let alias = dae::format_subscript_key(name.as_str(), &indices);
+        let target = dae::format_subscript_key(&target_base, &indices);
+        if declared_refs.contains(&target) {
+            insert_symbol_alias(aliases, alias, target)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_attribute_expr_alias_target(
+    owner_name: &str,
+    reference: &str,
+    declared_refs: &IndexSet<String>,
+) -> Option<String> {
+    if declared_refs.contains(reference) || rumoca_core::split_last_top_level(reference).is_some() {
+        return None;
+    }
+    let (owner_scope, _) = rumoca_core::split_last_top_level(owner_name)?;
+    let candidate = format!("{owner_scope}.{reference}");
+    declared_refs.contains(&candidate).then_some(candidate)
+}
+
+fn insert_symbol_alias(
+    aliases: &mut IndexMap<String, String>,
+    alias: String,
+    target: String,
+) -> Result<(), CodegenError> {
+    if alias == target {
+        return Ok(());
+    }
+    if let Some(existing) = aliases.get(&alias) {
+        if existing == &target {
+            return Ok(());
+        }
+        return Err(CodegenError::SerializationFailed {
+            message: format!(
+                "conflicting emitted symbol aliases for `{alias}`: `{existing}` and `{target}`"
+            ),
+        });
+    }
+    aliases.insert(alias, target);
+    Ok(())
+}
+
+fn literal_positive_indices(subscripts: &[Subscript]) -> Option<Vec<usize>> {
+    if subscripts.is_empty() {
+        return None;
+    }
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => {
+                usize::try_from(*value).ok().filter(|value| *value > 0)
+            }
+            Subscript::Expr { .. } | Subscript::Colon { .. } => None,
+        })
+        .collect()
 }
 
 fn symbol_ref_priority(reference: &str) -> (usize, usize) {
@@ -323,28 +431,31 @@ impl SymbolAllocator {
         &mut self,
         candidates: &[String],
         candidate_counts: &HashMap<String, usize>,
-    ) -> String {
+    ) -> RenderResult {
         for candidate in candidates {
-            if candidate_counts.get(candidate).copied().unwrap_or(0) <= 1 && self.try_use(candidate)
-            {
-                return candidate.clone();
+            let count = candidate_counts.get(candidate).copied().ok_or_else(|| {
+                render_err(format!(
+                    "symbol candidate `{candidate}` missing from allocation count table"
+                ))
+            })?;
+            if count <= 1 && self.try_use(candidate) {
+                return Ok(candidate.clone());
             }
         }
 
         for candidate in candidates {
             if self.try_use(candidate) {
-                return candidate.clone();
+                return Ok(candidate.clone());
             }
         }
 
         let base = candidates
             .last()
-            .cloned()
-            .unwrap_or_else(|| "value".to_string());
+            .ok_or_else(|| render_err("symbol allocation requires at least one candidate"))?;
         for idx in 2.. {
             let candidate = format!("{base}_{idx}");
             if self.try_use(&candidate) {
-                return candidate;
+                return Ok(candidate);
             }
         }
         unreachable!("exhausted usize suffix range while allocating a unique codegen name")
@@ -374,23 +485,27 @@ impl SymbolAllocator {
     }
 }
 
-fn allocate_symbols_function(symbol_refs: Value, policy: Value) -> Value {
+fn allocate_symbols_function(symbol_refs: Value, policy: Value) -> Result<Value, minijinja::Error> {
     let policy = SymbolPolicy::from_value(&policy);
     let references = value_list_strings(&symbol_refs);
-    let symbols = allocate_symbols_for_refs(references, policy);
-    Value::from_serialize(symbols)
+    let symbols = allocate_symbols_for_refs(references, policy)?;
+    Ok(Value::from_serialize(symbols))
 }
 
-fn target_symbols_function(symbol_refs: Value, policy: Value) -> Value {
+fn target_symbols_function(
+    symbol_refs: Value,
+    policy: Value,
+    symbol_aliases: Value,
+) -> Result<Value, minijinja::Error> {
     let policy = SymbolPolicy::from_value(&policy);
     let references = value_list_strings(&symbol_refs);
     let mut requests = references
         .into_iter()
         .map(|reference| {
-            let candidates = symbol_candidates(&reference, &policy);
-            (reference, candidates)
+            let candidates = symbol_candidates(&reference, &policy)?;
+            Ok((reference, candidates))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, minijinja::Error>>()?;
 
     requests.sort_by(|(a_ref, a_candidates), (b_ref, b_candidates)| {
         symbol_ref_priority(a_ref)
@@ -416,18 +531,26 @@ fn target_symbols_function(symbol_refs: Value, policy: Value) -> Value {
     }
 
     let mut allocator = SymbolAllocator::new(policy);
-    let mut out = HashMap::new();
+    let mut out = IndexMap::new();
     for (reference, candidates) in requests {
-        let symbol = allocator.allocate(&candidates, &candidate_counts);
+        let symbol = allocator.allocate(&candidates, &candidate_counts)?;
         out.insert(reference, symbol);
     }
-    Value::from_serialize(out)
+    for (alias, target) in value_symbol_aliases(&symbol_aliases)? {
+        let symbol = out.get(&target).cloned().ok_or_else(|| {
+            render_err(format!(
+                "symbol alias `{alias}` targets unknown source reference `{target}`"
+            ))
+        })?;
+        out.insert(alias, symbol);
+    }
+    Ok(Value::from_serialize(out))
 }
 
 fn allocate_symbols_for_refs(
     mut references: Vec<String>,
     policy: SymbolPolicy,
-) -> HashMap<String, String> {
+) -> Result<IndexMap<String, String>, minijinja::Error> {
     references.sort_by(|a, b| {
         symbol_ref_priority(a)
             .cmp(&symbol_ref_priority(b))
@@ -438,10 +561,10 @@ fn allocate_symbols_for_refs(
     let requests = references
         .into_iter()
         .map(|reference| {
-            let candidates = symbol_candidates(&reference, &policy);
-            (reference, candidates)
+            let candidates = symbol_candidates(&reference, &policy)?;
+            Ok((reference, candidates))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, minijinja::Error>>()?;
 
     let mut candidate_counts = HashMap::<String, usize>::new();
     for (_, candidates) in &requests {
@@ -454,15 +577,18 @@ fn allocate_symbols_for_refs(
     }
 
     let mut allocator = SymbolAllocator::new(policy);
-    let mut out = HashMap::new();
+    let mut out = IndexMap::new();
     for (reference, candidates) in requests {
-        let symbol = allocator.allocate(&candidates, &candidate_counts);
+        let symbol = allocator.allocate(&candidates, &candidate_counts)?;
         out.insert(reference, symbol);
     }
-    out
+    Ok(out)
 }
 
-fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
+fn symbol_candidates(
+    modelica_ref: &str,
+    policy: &SymbolPolicy,
+) -> Result<Vec<String>, minijinja::Error> {
     let (base_ref, subscript) = split_modelica_subscript(modelica_ref);
     let suffix = subscript.map(|s| scalarized_subscript_suffix(s, &policy.separator));
     let segments = split_modelica_path(base_ref);
@@ -470,8 +596,7 @@ fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
     for start in (0..segments.len()).rev() {
         let base = segments[start..]
             .iter()
-            .map(|segment| readable_identifier_segment(segment))
-            .filter(|segment| !segment.is_empty())
+            .filter_map(|segment| readable_identifier_segment(segment))
             .collect::<Vec<_>>()
             .join(&policy.separator);
         if base.is_empty() {
@@ -485,14 +610,12 @@ fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
     }
 
     if candidates.is_empty() {
-        candidates.push(with_optional_suffix(
-            "value",
-            suffix.as_deref(),
-            &policy.separator,
-        ));
+        return Err(render_err(format!(
+            "source reference `{modelica_ref}` does not contain any valid identifier segment"
+        )));
     }
     candidates.dedup();
-    candidates
+    Ok(candidates)
 }
 
 fn split_modelica_subscript(reference: &str) -> (&str, Option<&str>) {
@@ -521,7 +644,7 @@ fn split_modelica_path(name: &str) -> Vec<&str> {
     segments
 }
 
-fn readable_identifier_segment(segment: &str) -> String {
+fn readable_identifier_segment(segment: &str) -> Option<String> {
     let mut out = String::with_capacity(segment.len());
     let mut last_was_underscore = false;
     for ch in segment.chars() {
@@ -540,11 +663,7 @@ fn readable_identifier_segment(segment: &str) -> String {
     while out.ends_with('_') {
         out.pop();
     }
-    if out.is_empty() {
-        "value".to_string()
-    } else {
-        out
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn scalarized_subscript_suffix(subscript: &str, separator: &str) -> String {
@@ -563,13 +682,12 @@ fn with_optional_suffix(base: &str, suffix: Option<&str>, separator: &str) -> St
     }
 }
 
-fn symbol_function(symbols: Value, name: Value) -> String {
+fn symbol_function(symbols: Value, name: Value) -> RenderResult {
     let name = value_to_string(&name);
-    lookup_symbol_value(Some(&symbols), &name).unwrap_or_else(|| {
-        symbol_candidates(&name, &SymbolPolicy::language_neutral())
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "value".to_string())
+    lookup_symbol_value(Some(&symbols), &name).ok_or_else(|| {
+        render_err(format!(
+            "missing emitted symbol for source reference `{name}`"
+        ))
     })
 }
 
@@ -583,14 +701,19 @@ pub(crate) fn lookup_symbol_value(symbols: Option<&Value>, name: &str) -> Option
         .filter(|value| !value.is_empty())
 }
 
-pub(crate) fn emitted_symbol_or_fallback(reference: &str, cfg: &ExprConfig) -> String {
-    lookup_symbol_value(cfg.symbols.as_ref(), reference).unwrap_or_else(|| {
-        if cfg.sanitize_dots || cfg.subscript_underscore {
-            sanitize_name(reference)
-        } else {
-            escape_reserved_keyword(reference)
-        }
-    })
+pub(crate) fn emitted_symbol(reference: &str, cfg: &ExprConfig) -> RenderResult {
+    if let Some(symbols) = cfg.symbols.as_ref() {
+        return lookup_symbol_value(Some(symbols), reference).ok_or_else(|| {
+            render_err(format!(
+                "missing emitted symbol for source reference `{reference}`"
+            ))
+        });
+    }
+    if cfg.sanitize_dots || cfg.subscript_underscore {
+        Ok(sanitize_name(reference))
+    } else {
+        Ok(escape_reserved_keyword(reference))
+    }
 }
 
 fn dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
@@ -602,9 +725,6 @@ fn reject_external_functions_for_simulation_template(
     template: &str,
 ) -> Result<(), CodegenError> {
     if !template_emits_simulation_function_bodies(template) {
-        return Ok(());
-    }
-    if external_function_codegen_opt_in_enabled() {
         return Ok(());
     }
     if let Some((name, _)) = dae_model
@@ -625,9 +745,6 @@ fn reject_external_functions_in_json_for_simulation_template(
     if !template_emits_simulation_function_bodies(template) {
         return Ok(());
     }
-    if external_function_codegen_opt_in_enabled() {
-        return Ok(());
-    }
     let Some(functions) = dae_json
         .get("functions")
         .and_then(serde_json::Value::as_object)
@@ -642,10 +759,6 @@ fn reject_external_functions_in_json_for_simulation_template(
         return Err(CodegenError::external_function_not_callable(name.as_str()));
     }
     Ok(())
-}
-
-fn external_function_codegen_opt_in_enabled() -> bool {
-    false
 }
 
 fn template_emits_simulation_function_bodies(template: &str) -> bool {
@@ -701,78 +814,90 @@ fn render_solve_context(
     artifacts: &solve::SolveArtifacts,
     model_name: Option<&str>,
 ) -> Result<String, CodegenError> {
-    let solve_value = Value::from_serialize(solve_problem);
-    let artifacts_value = Value::from_serialize(artifacts);
-    let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
-    let derivative_nodes = Value::from_serialize(&solve_problem.continuous.derivative_rhs.nodes);
-    let implicit_rows =
-        rumoca_eval_solve::to_scalar_program_block(&solve_problem.continuous.implicit_rhs);
-    let jacobian_rows =
-        rumoca_eval_solve::to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v);
-    let implicit_rows = Value::from_serialize(&implicit_rows);
-    let jacobian_rows = Value::from_serialize(&jacobian_rows);
-    match model_name {
-        Some(name) => Ok(tmpl.render(minijinja::context! {
-            solve => solve_value.clone(),
-            solve_artifacts => artifacts_value,
-            ir => solve_value,
-            ir_kind => "solve",
-            model_name => name,
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => derivative_nodes,
-            solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
-        })?),
-        None => Ok(tmpl.render(minijinja::context! {
-            solve => solve_value.clone(),
-            solve_artifacts => artifacts_value,
-            ir => solve_value,
-            ir_kind => "solve",
-            solve_blocks => solve_blocks,
-            solve_derivative_nodes => derivative_nodes,
-            solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
-        })?),
-    }
+    Ok(tmpl.render(solve_render_context_value(
+        solve_problem,
+        artifacts,
+        model_name,
+    )?)?)
 }
 
 fn solve_template_blocks_value(
     solve_problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
 ) -> Result<Value, CodegenError> {
-    let value = serde_json::json!({
-        "continuous": {
-            "implicit_rhs": solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
-            "derivative_rhs": solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
+    Ok(minijinja::context! {
+        continuous => minijinja::context! {
+            implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
+            derivative_rhs => solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
         },
-        "artifacts": {
-            "continuous": {
-                "implicit_jacobian_v": solve_template_compute_block_json(&artifacts.continuous.implicit_jacobian_v)?,
-            }
-        }
-    });
-    Ok(Value::from_serialize(value))
+        artifacts => minijinja::context! {
+            continuous => minijinja::context! {
+                implicit_jacobian_v => solve_template_compute_block_json(&artifacts.continuous.implicit_jacobian_v)?,
+            },
+        },
+    })
 }
 
-fn solve_template_compute_block_json(
-    block: &solve::ComputeBlock,
-) -> Result<serde_json::Value, CodegenError> {
+fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Value, CodegenError> {
     let scalar_programs = rumoca_eval_solve::to_scalar_program_block(block);
-    Ok(serde_json::json!({
-        "nodes": serde_json::to_value(&block.nodes).map_err(|e| {
-            CodegenError::SerializationFailed {
-                message: format!("Solve ComputeBlock nodes: {e}"),
+    let uses_linear_solve = scalar_program_block_uses_linear_solve_component(&scalar_programs);
+    let nodes = Value::from_serialize(&block.nodes);
+    let program_spans = Value::from_serialize(&scalar_programs.program_spans);
+    let (stencils, residual_rows) = stencil_template_partition(block);
+    let stencil_residual_rows = Value::from_serialize(&residual_rows);
+    let stencils = Value::from_object(render_solve::SolveStencilsValue::new(stencils));
+    // Rows go to templates as typed objects: per-row serde bridging made
+    // rendering the dominant compile cost on large models.
+    let programs = Value::from_object(render_solve::SolveRowsValue::new(scalar_programs.programs));
+    Ok(minijinja::context! {
+        nodes => nodes,
+        scalar_programs => minijinja::context! {
+            programs => programs,
+            program_spans => program_spans,
+        },
+        stencils => stencils,
+        stencil_residual_rows => stencil_residual_rows,
+        output_count => block.len(),
+        tensor_node_count => block.tensor_node_count(),
+        scalar_programs_use_linear_solve_component => uses_linear_solve,
+    })
+}
+
+fn stencil_template_partition(
+    block: &solve::ComputeBlock,
+) -> (Vec<render_solve::RenderAffineStencil>, Vec<usize>) {
+    let mut stencils = Vec::new();
+    let mut residual_rows = Vec::new();
+    let mut start_row = 0;
+    for node in &block.nodes {
+        match node {
+            solve::ComputeNode::AffineStencil {
+                count,
+                base_ops,
+                load_strides,
+                const_strides,
+                ..
+            } => {
+                stencils.push(render_solve::RenderAffineStencil {
+                    start_row,
+                    count: *count,
+                    base_ops: base_ops.clone(),
+                    load_strides: load_strides.clone(),
+                    const_strides: const_strides.clone(),
+                });
+                start_row += count;
             }
-        })?,
-        "scalar_programs": serde_json::to_value(&scalar_programs).map_err(|e| {
-            CodegenError::SerializationFailed {
-                message: format!("Solve ComputeBlock scalar fallback rows: {e}"),
+            other => {
+                let len = solve::ComputeBlock {
+                    nodes: vec![other.clone()],
+                }
+                .len();
+                residual_rows.extend(start_row..start_row + len);
+                start_row += len;
             }
-        })?,
-        "output_count": block.len(),
-        "tensor_node_count": block.tensor_node_count(),
-        "scalar_programs_use_linear_solve_component": scalar_program_block_uses_linear_solve_component(&scalar_programs),
-    }))
+        }
+    }
+    (stencils, residual_rows)
 }
 
 fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
@@ -902,7 +1027,7 @@ pub fn render_template_with_dae_json(
         dae_value.clone()
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json);
+    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
     let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
@@ -935,7 +1060,7 @@ pub fn render_template_with_dae_json_and_name(
         dae_value.clone()
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json);
+    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
     let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
     let tmpl = env.get_template("inline")?;
     let result = tmpl.render(minijinja::context! {
@@ -1002,12 +1127,20 @@ fn solve_artifacts_for_template_blocks(
     Ok(artifacts)
 }
 
-fn solve_derivative_nodes_from_dae_json(dae_json: &serde_json::Value) -> Value {
-    Value::from_serialize(
-        dae_json
-            .pointer("/solve/continuous/derivative_rhs/nodes")
-            .unwrap_or(&serde_json::Value::Array(Vec::new())),
-    )
+fn solve_derivative_nodes_from_dae_json(
+    dae_json: &serde_json::Value,
+) -> Result<Value, CodegenError> {
+    let Some(nodes) = dae_json.pointer("/solve/continuous/derivative_rhs/nodes") else {
+        return Ok(Value::from_serialize(Vec::<serde_json::Value>::new()));
+    };
+    let block_json = serde_json::json!({ "nodes": nodes });
+    let block: solve::ComputeBlock =
+        serde_json::from_value(block_json).map_err(|err| CodegenError::SerializationFailed {
+            message: format!("Solve derivative nodes template context: {err}"),
+        })?;
+    Ok(Value::from_serialize(
+        solve_renderer::c_renderable_derivative_nodes(&block),
+    ))
 }
 
 fn solve_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
@@ -1085,6 +1218,12 @@ pub fn render_flat_template_with_name(
     render_template_with_name_for_input(CodegenInput::Flat(flat), template, model_name)
 }
 
+/// Reusable solve-template renderer.
+///
+/// Building the template context serializes the full `SolveProblem`; doing
+/// that once and rendering many templates against it is dramatically
+/// cheaper than calling `render_solve_template_with_name` per template on
+/// large models.
 /// Render a solver IR problem using a template string and model name.
 pub fn render_solve_template_with_name(
     solve: &solve::SolveProblem,
@@ -1130,7 +1269,6 @@ fn create_environment() -> Environment<'static> {
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
-    env.add_filter("json", json_filter);
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.
@@ -1144,6 +1282,11 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
+    env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
+    env.add_function(
+        "render_solve_stencil_wgsl",
+        render_solve::render_solve_stencil_wgsl_function,
+    );
     env.add_function(
         "render_solve_slot_assign_c",
         render_solve_slot_assign_c_function,
@@ -1164,28 +1307,12 @@ fn create_environment() -> Environment<'static> {
     // Custom functions for statement rendering (MLS §12: function bodies)
     env.add_function("render_statement", render_statement_function);
     env.add_function("render_statements", render_statements_function);
-    env.add_function(
-        "render_function_statements",
-        render_function_statements_function,
-    );
 
     // Custom function for flat equation rendering (Model residual equations)
     env.add_function("render_flat_equation", render_flat_equation_function);
 
-    // Render the symbolic scalar name for an array element. DAE residuals keep
-    // Modelica multi-dimensional subscripts while codegen iterates linear slots.
-    env.add_function("array_scalar_name", array_scalar_name_function);
-
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
-    env.add_function(
-        "unsupported_c_function_body",
-        unsupported_c_function_body_function,
-    );
-    env.add_function(
-        "unsupported_c_function_name",
-        unsupported_c_function_name_function,
-    );
     env.add_function("fail", fail_function);
 
     // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
@@ -1196,10 +1323,6 @@ fn create_environment() -> Environment<'static> {
     // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
     env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
     env.add_function(
-        "alg_rhs_for_var_with_dae",
-        render_c::alg_rhs_for_var_with_dae_function,
-    );
-    env.add_function(
         "alg_rhs_for_var_or_self",
         render_c::alg_rhs_for_var_or_self_function,
     );
@@ -1207,32 +1330,15 @@ fn create_environment() -> Environment<'static> {
         "discrete_rhs_for_var",
         render_c::discrete_rhs_for_var_function,
     );
-    env.add_function(
-        "event_indicator_expr",
-        render_c::event_indicator_expr_function,
-    );
 
     // Index into an array expression to render element i (1-based)
     env.add_function(
         "render_expr_at_index",
         render_c::render_expr_at_index_function,
     );
-    env.add_function(
-        "parameter_binding_rhs",
-        render_c::parameter_binding_rhs_function,
-    );
 
     // Check if an expression is a string literal for scalar templates.
     env.add_function("is_string_literal", render_c::is_string_literal_function);
-    env.add_function("expr_has_var_ref", render_c::expr_has_var_ref_function);
-    env.add_function(
-        "expr_has_dynamic_multidim_index",
-        render_c::expr_has_dynamic_multidim_index_function,
-    );
-    env.add_function(
-        "initial_rhs_for_var",
-        render_c::initial_rhs_for_var_function,
-    );
 
     // Check if a function has record-typed parameters
     env.add_function("has_complex_params", render_c::has_complex_params_function);
@@ -1308,144 +1414,6 @@ fn product_filter(value: Value) -> Value {
     Value::from(result)
 }
 
-/// Filter to render a template value as JSON.
-fn json_filter(value: Value) -> Result<String, minijinja::Error> {
-    serde_json::to_string(&value).map_err(|err| render_err(format!("JSON render failed: {err}")))
-}
-
-fn array_scalar_name_function(base_name: Value, dims: Value, linear_index: Value) -> RenderResult {
-    let name = base_name
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| base_name.to_string().trim_matches('"').to_string());
-    let dims = array_dims_from_value(dims)?;
-    let Some(linear_index) = linear_index.as_usize() else {
-        return Err(render_err(format!(
-            "array scalar index for {name} must be a positive integer"
-        )));
-    };
-    render_array_scalar_name(&name, &dims, linear_index)
-}
-
-fn array_dims_from_value(dims: Value) -> Result<Vec<usize>, minijinja::Error> {
-    let Some(len) = dims.len() else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let item = dims.get_item(&Value::from(i))?;
-        let Some(dim) = item.as_usize() else {
-            return Err(render_err(format!(
-                "array dimension at index {i} is not an integer"
-            )));
-        };
-        if dim == 0 {
-            return Err(render_err(format!("array dimension at index {i} is zero")));
-        }
-        out.push(dim);
-    }
-    Ok(out)
-}
-
-fn render_array_scalar_name(name: &str, dims: &[usize], linear_index: usize) -> RenderResult {
-    if dims.is_empty() {
-        return Ok(name.to_string());
-    }
-    if linear_index == 0 {
-        return Err(render_err(format!(
-            "array scalar index for {name} is one-based and cannot be zero"
-        )));
-    }
-    let total = dims
-        .iter()
-        .try_fold(1usize, |acc, dim| acc.checked_mul(*dim));
-    let Some(total) = total else {
-        return Err(render_err(format!(
-            "array dimensions for {name} overflow usize"
-        )));
-    };
-    if linear_index > total {
-        return Err(render_err(format!(
-            "array scalar index {linear_index} for {name} exceeds scalar size {total}"
-        )));
-    }
-
-    let mut remainder = linear_index - 1;
-    let mut subscripts = vec![0usize; dims.len()];
-    for (slot, dim) in subscripts.iter_mut().rev().zip(dims.iter().rev()) {
-        *slot = (remainder % *dim) + 1;
-        remainder /= *dim;
-    }
-    let rendered = subscripts
-        .iter()
-        .map(usize::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    Ok(format!("{name}[{rendered}]"))
-}
-
-fn unsupported_c_function_body_function(func: Value) -> Result<bool, minijinja::Error> {
-    use render_expr::get_field;
-
-    if let Ok(external) = get_field(&func, "external")
-        && !external.is_undefined()
-    {
-        return Ok(true);
-    }
-
-    if let Ok(inputs) = get_field(&func, "inputs")
-        && let Some(len) = inputs.len()
-    {
-        for i in 0..len {
-            let Ok(input) = inputs.get_item(&Value::from(i)) else {
-                continue;
-            };
-            if let Ok(dims) = get_field(&input, "dims")
-                && dims.len().unwrap_or(0) > 0
-            {
-                return Ok(true);
-            }
-        }
-    }
-
-    if let Ok(locals) = get_field(&func, "locals")
-        && let Some(len) = locals.len()
-    {
-        for i in 0..len {
-            let Ok(local) = locals.get_item(&Value::from(i)) else {
-                continue;
-            };
-            if let Ok(dims) = get_field(&local, "dims")
-                && dims.len().unwrap_or(0) > 0
-            {
-                return Ok(true);
-            }
-        }
-    }
-
-    let Ok(body) = get_field(&func, "body") else {
-        return Ok(false);
-    };
-    let body_debug = body.to_string();
-    Ok(body_debug.contains("NamedArgument")
-        || body_debug.contains("FieldAccess")
-        || body_debug.contains("Assert")
-        || body_debug.contains("outputs")
-        || body_debug.contains("String(")
-        || body_debug.contains("Modelica.Utilities.Strings")
-        || body_debug.contains("Modelica_Utilities_Strings"))
-}
-
-fn unsupported_c_function_name_function(func_name: Value) -> Result<bool, minijinja::Error> {
-    let name = func_name.to_string().replace('"', "");
-    Ok(
-        name.contains("Modelica.Media.Interfaces.PartialSimpleMedium")
-            || name.contains("Modelica_Media_Interfaces_PartialSimpleMedium")
-            || name.contains("Modelica.Media.Interfaces.PartialMedium")
-            || name.contains("Modelica_Media_Interfaces_PartialMedium"),
-    )
-}
-
 fn value_to_string(value: &Value) -> String {
     value
         .as_str()
@@ -1480,6 +1448,31 @@ fn value_list_strings(value: &Value) -> Vec<String> {
         }
     }
     out
+}
+
+fn value_symbol_aliases(value: &Value) -> Result<Vec<(String, String)>, minijinja::Error> {
+    let Some(len) = value.len() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = value
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("symbol alias entry {i} is not readable: {err}")))?;
+        let alias = get_field(&item, "alias")
+            .map(|value| value_to_string(&value))
+            .map_err(|err| render_err(format!("symbol alias entry {i} missing alias: {err}")))?;
+        let target = get_field(&item, "target")
+            .map(|value| value_to_string(&value))
+            .map_err(|err| render_err(format!("symbol alias entry {i} missing target: {err}")))?;
+        if alias.is_empty() || target.is_empty() {
+            return Err(render_err(format!(
+                "symbol alias entry {i} must have non-empty alias and target"
+            )));
+        }
+        out.push((alias, target));
+    }
+    Ok(out)
 }
 
 fn subscripts_for_flat_index(dims: &[usize], flat_index: usize) -> Vec<usize> {
@@ -1521,7 +1514,10 @@ fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> String {
     if dims.is_empty() {
         return name;
     }
-    let index = flat_index.as_usize().unwrap_or(1).max(1);
+    let index = flat_index
+        .as_usize()
+        .expect("source_ref flat index must be numeric")
+        .max(1);
     format!("{}[{}]", name, source_subscript_suffix(&dims, index))
 }
 
@@ -1706,19 +1702,6 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     render_statements(&stmts, &cfg, indent_str)
 }
 
-fn render_function_statements_function(
-    stmts: Value,
-    config: Value,
-    indent: Value,
-    return_value: Value,
-) -> RenderResult {
-    let mut cfg = ExprConfig::from_value(&config);
-    cfg.subscript_underscore = false;
-    cfg.return_value = return_value.as_str().map(|value| value.to_string());
-    let indent_str = indent.as_str().unwrap_or("    ");
-    render_statements(&stmts, &cfg, indent_str)
-}
-
 // ── ExprConfig and helpers ───────────────────────────────────────────
 
 /// Configuration for expression rendering.
@@ -1763,10 +1746,11 @@ pub(crate) struct ExprConfig {
     pub(crate) float_literals: bool,
     /// Optional source-reference to emitted-symbol map provided by a template.
     pub(crate) symbols: Option<Value>,
+    /// Optional aliases from Appendix-B condition memory (`c[i]`) to live
+    /// relation expressions for backends that do not run event iteration.
+    pub(crate) condition_aliases: Option<Value>,
     /// Render-time substitutions for expression-level unrolling.
     pub(crate) substitutions: Vec<(String, String)>,
-    /// Optional C/Python expression returned for bare Modelica `return` statements.
-    pub(crate) return_value: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1803,8 +1787,8 @@ impl Default for ExprConfig {
             sum_fn: "sum1".to_string(),
             float_literals: false,
             symbols: None,
+            condition_aliases: None,
             substitutions: Vec::new(),
-            return_value: None,
         }
     }
 }
@@ -1814,6 +1798,19 @@ pub(crate) fn get_str_attr(v: &Value, attr: &str) -> Option<String> {
     v.get_attr(attr)
         .ok()
         .and_then(|val| val.as_str().map(|s| s.to_string()))
+}
+
+fn get_present_attr(v: &Value, attr: &str) -> Option<Value> {
+    let val = v.get_attr(attr).ok()?;
+    (!val.is_undefined() && !val.is_none()).then_some(val)
+}
+
+fn get_bool_attr(v: &Value, attr: &str) -> Option<bool> {
+    Some(get_present_attr(v, attr)?.is_true())
+}
+
+fn get_non_empty_str_attr(v: &Value, attr: &str) -> Option<String> {
+    get_str_attr(v, attr).filter(|s| !s.is_empty())
 }
 
 impl ExprConfig {
@@ -1854,72 +1851,41 @@ impl ExprConfig {
                 _ => IfStyle::Function,
             };
         }
-        if let Ok(val) = v.get_attr("sanitize_dots")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
-            cfg.sanitize_dots = val.is_true();
+        if let Some(enabled) = get_bool_attr(v, "sanitize_dots") {
+            cfg.sanitize_dots = enabled;
         }
-        if let Ok(val) = v.get_attr("one_based_index")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
-            cfg.one_based_index = val.is_true();
+        if let Some(enabled) = get_bool_attr(v, "one_based_index") {
+            cfg.one_based_index = enabled;
         }
-        if let Ok(val) = v.get_attr("modelica_builtins")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
-            cfg.modelica_builtins = val.is_true();
+        if let Some(enabled) = get_bool_attr(v, "modelica_builtins") {
+            cfg.modelica_builtins = enabled;
         }
-        if let Some(s) = get_str_attr(v, "mul_elem_fn")
-            && !s.is_empty()
-        {
+        if let Some(s) = get_non_empty_str_attr(v, "mul_elem_fn") {
             cfg.mul_elem_fn = Some(s);
         }
-        if let Some(s) = get_str_attr(v, "power_fn")
-            && !s.is_empty()
-        {
+        if let Some(s) = get_non_empty_str_attr(v, "power_fn") {
             cfg.power_fn = Some(s);
         }
-        if let Ok(val) = v.get_attr("subscript_underscore")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
-            cfg.subscript_underscore = val.is_true();
+        if let Some(enabled) = get_bool_attr(v, "subscript_underscore") {
+            cfg.subscript_underscore = enabled;
         }
-        if let Some(s) = get_str_attr(v, "if_else_fn")
-            && !s.is_empty()
-        {
+        if let Some(s) = get_non_empty_str_attr(v, "if_else_fn") {
             cfg.if_else_fn = Some(s);
         }
-        if let Ok(val) = v.get_attr("python_range")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
-            cfg.python_range = val.is_true();
+        if let Some(enabled) = get_bool_attr(v, "python_range") {
+            cfg.python_range = enabled;
         }
-        if let Some(s) = get_str_attr(v, "sum_fn")
-            && !s.is_empty()
-        {
+        if let Some(s) = get_non_empty_str_attr(v, "sum_fn") {
             cfg.sum_fn = s;
         }
-        if let Ok(val) = v.get_attr("float_literals")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
-            cfg.float_literals = val.is_true();
+        if let Some(enabled) = get_bool_attr(v, "float_literals") {
+            cfg.float_literals = enabled;
         }
-        if let Ok(val) = v.get_attr("symbols")
-            && !val.is_undefined()
-            && !val.is_none()
-        {
+        if let Some(val) = get_present_attr(v, "symbols") {
             cfg.symbols = Some(val);
         }
-        if let Some(s) = get_str_attr(v, "return_value")
-            && !s.is_empty()
-        {
-            cfg.return_value = Some(s);
+        if let Some(val) = get_present_attr(v, "condition_aliases") {
+            cfg.condition_aliases = Some(val);
         }
 
         cfg
@@ -1951,9 +1917,17 @@ mod local_tests {
     }
 }
 
+mod solve_renderer;
+pub use solve_renderer::SolveTemplateRenderer;
+use solve_renderer::solve_render_context_value;
+
 #[cfg(test)]
 mod codegen_tests;
 #[cfg(test)]
 mod fmi_template_tests;
 #[cfg(test)]
+mod stencil_codegen_tests;
+#[cfg(test)]
 mod strict_render_tests;
+#[cfg(test)]
+mod wgsl_solve_tests;

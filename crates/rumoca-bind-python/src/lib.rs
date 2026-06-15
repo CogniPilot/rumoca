@@ -904,11 +904,12 @@ fn compile_requested_model(
     let resolved = session.resolved_cached().ok_or_else(|| {
         PyRuntimeStringError("strict compile produced no cached resolved tree".to_string())
     })?;
-    Ok(HighLevelCompilationResult {
-        dae: result.dae,
-        flat: result.flat,
+    Ok(HighLevelCompilationResult::new(
+        result.dae,
+        result.balance_detail,
+        result.flat,
         resolved,
-    })
+    ))
 }
 
 fn compile_source_in_session(

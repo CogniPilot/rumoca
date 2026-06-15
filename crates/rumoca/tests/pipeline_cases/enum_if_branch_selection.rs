@@ -54,9 +54,9 @@ fn test_mismatched_if_uses_scoped_enum_parameter_value() {
         .expect("scoped enum parameter should select the matching if branch");
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "selected branch should keep the model balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -72,9 +72,9 @@ fn test_array_record_field_dimension_uses_canonical_parameter_value() {
         .expect("array record field dimension should resolve for second element");
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "array record field dimension model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -90,8 +90,8 @@ fn test_mismatched_if_uses_canonical_array_enum_parameter_value() {
         .expect("array enum parameter should select the matching if branch");
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "selected array branches should keep the model balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }

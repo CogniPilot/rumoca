@@ -7,7 +7,7 @@ use std::{
 
 use diffsol::{
     BdfState, MatrixCommon, OdeEquations, OdeEquationsImplicit, OdeSolverMethod, OdeSolverProblem,
-    OdeSolverState, VectorHost,
+    OdeSolverState, RkState, VectorHost,
 };
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
@@ -166,6 +166,40 @@ where
     let dy = bdf_derivative_guess(model, ode_model, y, p, problem.t0)?;
     let mut state = BdfState::<Vector>::new_without_initialise(problem)
         .map_err(|err| SimError::SolverError(format!("BDF projected init: {err}")))?;
+    {
+        let state_ref = state.as_mut();
+        state_ref.y.as_mut_slice().copy_from_slice(y);
+        state_ref.dy.as_mut_slice().copy_from_slice(&dy);
+    }
+    state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    Ok(state)
+}
+
+/// Build the initial `RkState` for the SDIRK (ESDIRK34 / TR-BDF2) path.
+///
+/// Mirrors [`projected_initial_bdf_state`]: it seeds the solver with the
+/// already-settled, algebraically-consistent `y` and the mass-matrix
+/// derivative guess `dy` (the same `bdf_derivative_guess` used by BDF, which
+/// is solver-agnostic). This preserves the exact-AD projection-aware
+/// consistent initial condition for the implicit RK tableaus too — without it
+/// SDIRK would lose the very startup robustness the BDF path gained.
+///
+/// Callers pass a `y` that has been settled by the simulate path's
+/// equilibrium/initialisation pass, so it is already algebraically consistent
+/// at `problem.t0`.
+pub(crate) fn initial_rk_state<Eqn>(
+    model: &solve::SolveModel,
+    ode_model: &OdeModel,
+    problem: &OdeSolverProblem<Eqn>,
+    y: &[f64],
+    p: &[f64],
+) -> Result<RkState<Vector>, SimError>
+where
+    Eqn: OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>,
+{
+    let dy = bdf_derivative_guess(model, ode_model, y, p, problem.t0)?;
+    let mut state = RkState::<Vector>::new_without_initialise(problem)
+        .map_err(|err| SimError::SolverError(format!("SDIRK projected init: {err}")))?;
     {
         let state_ref = state.as_mut();
         state_ref.y.as_mut_slice().copy_from_slice(y);

@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
+use rumoca_core::{ExpressionRewriter, StatementRewriter};
 
 #[path = "postprocess_record_alias.rs"]
 mod record_alias;
@@ -155,8 +155,11 @@ impl ConstructorMarker<'_> {
             match equation {
                 rumoca_ir_flat::WhenEquation::Assign { value, .. }
                 | rumoca_ir_flat::WhenEquation::Reinit { value, .. } => self.mark_expr(value),
-                rumoca_ir_flat::WhenEquation::Assert { condition, .. } => {
+                rumoca_ir_flat::WhenEquation::Assert {
+                    condition, message, ..
+                } => {
                     self.mark_expr(condition);
+                    self.mark_expr(message);
                 }
                 rumoca_ir_flat::WhenEquation::Conditional {
                     branches,
@@ -166,7 +169,7 @@ impl ConstructorMarker<'_> {
                 rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                     self.mark_expr(function);
                 }
-                rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
+                rumoca_ir_flat::WhenEquation::Terminate { message, .. } => self.mark_expr(message),
             }
         }
     }
@@ -213,11 +216,7 @@ impl ExpressionRewriter for ConstructorMarker<'_> {
 impl StatementRewriter for ConstructorMarker<'_> {}
 
 pub(super) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
-    let known_flat_vars: HashSet<String> = flat
-        .variables
-        .keys()
-        .map(|name| name.as_str().to_string())
-        .collect();
+    let known_flat_vars = KnownFlatVars::build(flat);
 
     for eq in &mut flat.equations {
         collapse_index_expr(&mut eq.residual, &known_flat_vars);
@@ -482,7 +481,7 @@ fn should_replace_dims(current: &[i64], recovered: &[i64]) -> bool {
 
 fn collapse_index_when_equations(
     equations: &mut [rumoca_ir_flat::WhenEquation],
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) {
     for equation in equations {
         match equation {
@@ -490,8 +489,11 @@ fn collapse_index_when_equations(
             | rumoca_ir_flat::WhenEquation::Reinit { value, .. } => {
                 collapse_index_expr(value, known_flat_vars);
             }
-            rumoca_ir_flat::WhenEquation::Assert { condition, .. } => {
+            rumoca_ir_flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 collapse_index_expr(condition, known_flat_vars);
+                collapse_index_expr(message, known_flat_vars);
             }
             rumoca_ir_flat::WhenEquation::Conditional {
                 branches,
@@ -507,26 +509,77 @@ fn collapse_index_when_equations(
             rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 collapse_index_expr(function, known_flat_vars);
             }
-            rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
+            rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
+                collapse_index_expr(message, known_flat_vars)
+            }
         }
     }
 }
 
 fn collapse_index_statements(
     statements: &mut [rumoca_core::Statement],
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) {
     for statement in statements {
         *statement = CollapseIndexRewriter { known_flat_vars }.rewrite_statement(statement);
     }
 }
 
-fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &HashSet<String>) {
+fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &KnownFlatVars) {
     *expr = CollapseIndexRewriter { known_flat_vars }.rewrite_expression(expr);
 }
 
+/// Flat variable lookup for the collapse pass: exact names plus enough
+/// structure to recover a scalarized record base (`comp[1].port_p.Phi` whose
+/// only flat variables are the `.re`/`.im` leaves).
+struct KnownFlatVars {
+    names: std::collections::BTreeMap<String, Option<rumoca_core::ComponentReference>>,
+}
+
+impl KnownFlatVars {
+    fn build(flat: &flat::Model) -> Self {
+        let names = flat
+            .variables
+            .iter()
+            .map(|(name, var)| (name.as_str().to_string(), var.component_ref.clone()))
+            .collect();
+        Self { names }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.names.contains_key(name)
+    }
+
+    /// Structured reference for a scalarized record base: `path` names no flat
+    /// variable itself, but at least one leaf variable renders as
+    /// `path.<field>...`. The base reference is recovered by truncating that
+    /// leaf's component reference to the parts that render exactly `path`, so
+    /// part identity (spans, subscripts) is owned by the leaf metadata rather
+    /// than re-parsed from text.
+    fn record_base_reference(&self, path: &str) -> Option<rumoca_core::ComponentReference> {
+        let prefix = format!("{path}.");
+        let (leaf_name, leaf_ref) = self.names.range(prefix.clone()..).next()?;
+        if !leaf_name.starts_with(&prefix) {
+            return None;
+        }
+        let leaf_ref = leaf_ref.as_ref()?;
+        for depth in (1..leaf_ref.parts.len()).rev() {
+            let truncated = rumoca_core::ComponentReference {
+                local: leaf_ref.local,
+                span: leaf_ref.span,
+                parts: leaf_ref.parts[..depth].to_vec(),
+                def_id: None,
+            };
+            if truncated.to_var_name().as_str() == path {
+                return Some(truncated);
+            }
+        }
+        None
+    }
+}
+
 struct CollapseIndexRewriter<'a> {
-    known_flat_vars: &'a HashSet<String>,
+    known_flat_vars: &'a KnownFlatVars,
 }
 
 impl ExpressionRewriter for CollapseIndexRewriter<'_> {
@@ -584,7 +637,7 @@ fn collapse_indexed_var_ref_to_known_var(
     base_subscripts: &[rumoca_core::Subscript],
     subscripts: &[rumoca_core::Subscript],
     span: rumoca_core::Span,
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
     let mut merged = base_subscripts.to_vec();
     merged.extend_from_slice(subscripts);
@@ -593,6 +646,16 @@ fn collapse_indexed_var_ref_to_known_var(
         if known_flat_vars.contains(candidate.as_str()) {
             return Some(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new(candidate),
+                subscripts: vec![],
+                span,
+            });
+        }
+        // Element of a scalarized record array (`r[2]` whose flat variables
+        // are the field leaves `r[2].a`...): same record-base collapse as for
+        // field accesses.
+        if let Some(reference) = known_flat_vars.record_base_reference(&candidate) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(&candidate, reference),
                 subscripts: vec![],
                 span,
             });
@@ -612,16 +675,29 @@ fn collapse_field_access_to_known_var(
     base: &rumoca_core::Expression,
     field: &str,
     span: rumoca_core::Span,
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
-    if let Some(candidate) = field_access_flat_path(base, field)
-        && known_flat_vars.contains(candidate.as_str())
-    {
-        return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(candidate),
-            subscripts: vec![],
-            span,
-        });
+    if let Some(candidate) = field_access_flat_path(base, field) {
+        if known_flat_vars.contains(candidate.as_str()) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(candidate),
+                subscripts: vec![],
+                span,
+            });
+        }
+        // Scalarized record base (`comp[1].port_p.Phi` where only the
+        // `.re`/`.im` leaves exist as flat variables): collapse to a single
+        // structured VarRef so downstream record-equation expansion sees the
+        // record reference instead of an Index/FieldAccess tree it cannot
+        // match (and shape inference does not inflate the equation to the
+        // whole component array).
+        if let Some(reference) = known_flat_vars.record_base_reference(&candidate) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(&candidate, reference),
+                subscripts: vec![],
+                span,
+            });
+        }
     }
 
     match base {
@@ -679,7 +755,7 @@ fn collapse_var_field_access(
     subscripts: &[rumoca_core::Subscript],
     field: &str,
     span: rumoca_core::Span,
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
     let subscript_suffix = subscript_suffix(subscripts)?;
     for candidate in [
@@ -774,7 +850,7 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
     substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals);
     substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals);
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars);
-    materialize_referenced_zero_sized_array_variables(flat, ctx);
+    crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx);
 }
 
 fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
@@ -860,7 +936,8 @@ fn substitute_function_bodies(
             .chain(function.locals.iter())
             .map(|param| param.name.clone())
             .collect();
-        let function_scope = crate::path_utils::parent_scope(function.name.as_str()).unwrap_or("");
+        let function_scope =
+            crate::path_utils::enclosing_scope(function.name.as_str()).unwrap_or("");
 
         for param in function
             .inputs
@@ -1320,94 +1397,6 @@ fn constant_expr_preserves_array_shape(expr: &rumoca_core::Expression) -> bool {
     )
 }
 
-fn materialize_referenced_zero_sized_array_variables(flat: &mut flat::Model, ctx: &Context) {
-    let mut collector = MissingZeroSizedArrayRefCollector {
-        flat,
-        ctx,
-        refs: Vec::new(),
-    };
-    collector.collect();
-
-    for name in collector.refs {
-        let Some(dims) = zero_sized_array_dims_for_ref(&name, ctx) else {
-            continue;
-        };
-        let var_name = name.var_name().clone();
-        if flat.variables.contains_key(&var_name) {
-            continue;
-        }
-        let variable = flat::Variable {
-            name: var_name.clone(),
-            component_ref: name.component_ref().cloned(),
-            dims,
-            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-            is_primitive: true,
-            is_protected: true,
-            ..Default::default()
-        };
-        flat.variable_type_names
-            .entry(var_name.clone())
-            .or_insert_with(|| "Real".to_string());
-        flat.add_variable(var_name, variable);
-    }
-}
-
-struct MissingZeroSizedArrayRefCollector<'a> {
-    flat: &'a flat::Model,
-    ctx: &'a Context,
-    refs: Vec<rumoca_core::Reference>,
-}
-
-impl MissingZeroSizedArrayRefCollector<'_> {
-    fn collect(&mut self) {
-        for equation in &self.flat.equations {
-            self.visit_expression(&equation.residual);
-        }
-        for equation in &self.flat.initial_equations {
-            self.visit_expression(&equation.residual);
-        }
-        for assertion in &self.flat.assert_equations {
-            self.visit_expression(&assertion.condition);
-            self.visit_expression(&assertion.message);
-            if let Some(level) = &assertion.level {
-                self.visit_expression(level);
-            }
-        }
-        for assertion in &self.flat.initial_assert_equations {
-            self.visit_expression(&assertion.condition);
-            self.visit_expression(&assertion.message);
-            if let Some(level) = &assertion.level {
-                self.visit_expression(level);
-            }
-        }
-    }
-}
-
-impl rumoca_core::ExpressionVisitor for MissingZeroSizedArrayRefCollector<'_> {
-    fn visit_var_ref(
-        &mut self,
-        name: &rumoca_core::Reference,
-        subscripts: &[rumoca_core::Subscript],
-    ) {
-        if subscripts.is_empty()
-            && !self.flat.variables.contains_key(name.var_name())
-            && zero_sized_array_dims_for_ref(name, self.ctx).is_some()
-        {
-            self.refs.push(name.clone());
-        }
-        self.walk_var_ref(name, subscripts);
-    }
-}
-
-fn zero_sized_array_dims_for_ref(name: &rumoca_core::Reference, ctx: &Context) -> Option<Vec<i64>> {
-    let dims = ctx.array_dimensions.get(name.as_str()).or_else(|| {
-        name.target_def_id()
-            .and_then(|def_id| ctx.target_def_names.get(&def_id))
-            .and_then(|target_name| ctx.array_dimensions.get(target_name))
-    })?;
-    (!dims.is_empty() && dims.iter().any(|dim| *dim <= 0)).then(|| dims.clone())
-}
-
 fn scalar_parameter_literal(
     key: &str,
     span: rumoca_core::Span,
@@ -1829,9 +1818,15 @@ fn substitute_known_constants_when_equation(
         flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
             *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "");
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             *condition =
                 substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "");
+            *message = substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "");
+        }
+        flat::WhenEquation::Terminate { message, .. } => {
+            *message = substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "");
         }
         flat::WhenEquation::Conditional {
             branches,
@@ -1853,22 +1848,18 @@ fn substitute_known_constants_when_equation(
             *function =
                 substitute_known_constants_expr(function.clone(), ctx, live_vars, locals, "");
         }
-        flat::WhenEquation::Terminate { .. } => {}
     }
 }
 
 /// Drop FieldAccess bindings whose targets don't exist in the flat model.
-///
 /// During modifier propagation, record bindings like `x = someRecord.field` may reference
 /// internal component structure that was eliminated during flattening. These dangling
 /// FieldAccess bindings would cause incorrect equation generation in todae if kept.
 pub(super) fn drop_invalid_field_access_bindings(flat: &mut flat::Model) {
     use std::collections::HashSet;
 
-    // Collect the set of all variable names for lookup
     let all_names: HashSet<rumoca_core::VarName> = flat.variables.keys().cloned().collect();
 
-    // Find variables with FieldAccess bindings pointing to non-existent targets
     let to_clear: Vec<rumoca_core::VarName> = flat
         .variables
         .iter()

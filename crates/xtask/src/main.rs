@@ -278,7 +278,8 @@ struct ReleaseArgs {
     /// Create git tag vX.Y.Z
     #[arg(long)]
     tag: bool,
-    /// Push main and tag in one git push (implies --commit --tag)
+    /// Push main and tag in one git push (implies --commit --tag). Heavy build
+    /// jobs and deploy are gated to the tag ref, so the release builds once.
     #[arg(long)]
     push: bool,
 }
@@ -527,7 +528,7 @@ fn cmd_coverage(args: CoverageArgs) -> Result<()> {
 fn cmd_repo(args: RepoArgs) -> Result<()> {
     match args.command {
         RepoCommand::Cli(args) => match args.command {
-            RepoCliCommand::Install(args) => repo_cli_cmd::cmd_install_rum_cli(args),
+            RepoCliCommand::Install(args) => repo_cli_cmd::cmd_install_xtask_cli(args),
         },
         RepoCommand::Ubuntu(args) => match args.command {
             RepoUbuntuCommand::InstallVscodeSmokePrereqs(args) => {
@@ -1663,7 +1664,9 @@ pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
         "editors/wasm/src/modules/command_palette.js",
         "editors/wasm/src/modules/diagnostics_panel.js",
         "editors/wasm/src/modules/monaco_setup.js",
+        "editors/wasm/src/modules/modelica_language.js",
         "editors/wasm/rumoca_worker.js",
+        "docs/user-guide/live/rumoca-live.js",
     ];
     for file in js_checks {
         let mut cmd = Command::new("node");

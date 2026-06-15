@@ -45,7 +45,7 @@ fn test_builtin_ad_zero_edge_guards() {
     let mut env = VarEnv::<Dual>::new();
     env.set("x", Dual::new(0.0, 1.0));
 
-    let log_x = eval_expr_or_default::<Dual>(
+    let log_x = eval_expr_value::<Dual>(
         &rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Log,
             args: vec![var("x")],
@@ -57,7 +57,7 @@ fn test_builtin_ad_zero_edge_guards() {
     assert!(log_x.du.is_finite());
     assert!(log_x.du.abs() < 1e-12);
 
-    let sqrt_x = eval_expr_or_default::<Dual>(
+    let sqrt_x = eval_expr_value::<Dual>(
         &rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sqrt,
             args: vec![var("x")],
@@ -75,17 +75,17 @@ fn test_pow_and_division_ad_zero_edges() {
     env.set("x", Dual::new(0.0, 1.0));
 
     let x_pow_1 =
-        eval_expr_or_default::<Dual>(&binop(rumoca_core::OpBinary::Exp, var("x"), lit(1.0)), &env);
+        eval_expr_value::<Dual>(&binop(rumoca_core::OpBinary::Exp, var("x"), lit(1.0)), &env);
     assert!(x_pow_1.re.abs() < 1e-12);
     assert!((x_pow_1.du - 1.0).abs() < 1e-12);
 
     let x_pow_2 =
-        eval_expr_or_default::<Dual>(&binop(rumoca_core::OpBinary::Exp, var("x"), lit(2.0)), &env);
+        eval_expr_value::<Dual>(&binop(rumoca_core::OpBinary::Exp, var("x"), lit(2.0)), &env);
     assert!(x_pow_2.re.abs() < 1e-12);
     assert!(x_pow_2.du.abs() < 1e-12);
 
     let zero_over_zero =
-        eval_expr_or_default::<Dual>(&binop(rumoca_core::OpBinary::Div, var("x"), var("x")), &env);
+        eval_expr_value::<Dual>(&binop(rumoca_core::OpBinary::Div, var("x"), var("x")), &env);
     assert!(zero_over_zero.re.abs() < 1e-12);
     assert!(zero_over_zero.du.abs() < 1e-12);
 }

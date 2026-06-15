@@ -21,7 +21,7 @@ fn find_condition_definition_rhs(dae: &Dae, name: &rumoca_core::Reference) -> Op
         .chain(dae.continuous.equations.iter())
         .find_map(|equation| {
             let lhs = equation.lhs.as_ref()?;
-            let lhs = dae_to_flat_var_name(lhs);
+            let lhs = dae_to_flat_var_name(lhs.var_name());
             if lhs.as_str() != name.as_str() {
                 return None;
             }

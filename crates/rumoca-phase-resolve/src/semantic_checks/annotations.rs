@@ -49,7 +49,7 @@ fn check_non_component_evaluate_annotations(
             format!("Evaluate is not allowed on {} '{}'", owner_kind, owner_name),
         )
         .expect("annotation expression must carry a span");
-        diags.push(semantic_error_or_external_compat_warning(
+        diags.push(semantic_error(
             ER070_EVALUATE_SCOPE,
             "annotation Evaluate is only allowed on parameter or constant components (MLS §18.6)",
             label,
@@ -75,7 +75,7 @@ fn check_component_evaluate_annotations(comp: &ast::Component, diags: &mut Vec<D
             format!("Evaluate is not allowed on component '{}'", comp.name),
         )
         .expect("annotation expression must carry a span");
-        diags.push(semantic_error_or_external_compat_warning(
+        diags.push(semantic_error(
             ER070_EVALUATE_SCOPE,
             format!(
                 "annotation Evaluate is only allowed on parameter or constant components; '{}' is not parameter or constant (MLS §18.6)",

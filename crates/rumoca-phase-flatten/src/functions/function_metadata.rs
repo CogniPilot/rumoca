@@ -428,11 +428,44 @@ pub(super) fn extract_integer_from_subscript(sub: &rumoca_ir_ast::Subscript) -> 
     }
 }
 
-pub(super) fn subscripts_to_param_dims(subscripts: &[rumoca_ir_ast::Subscript]) -> Vec<i64> {
+pub(super) fn subscripts_to_param_dims(
+    subscripts: &[rumoca_ir_ast::Subscript],
+    context_name: &str,
+    source_map: &rumoca_core::SourceMap,
+) -> Result<Vec<i64>, FlattenError> {
     subscripts
         .iter()
-        .map(|subscript| extract_integer_from_subscript(subscript).unwrap_or(0))
+        .map(|subscript| required_param_dim(subscript, context_name, source_map))
         .collect()
+}
+
+fn required_param_dim(
+    subscript: &rumoca_ir_ast::Subscript,
+    context_name: &str,
+    source_map: &rumoca_core::SourceMap,
+) -> Result<i64, FlattenError> {
+    extract_integer_from_subscript(subscript).ok_or_else(|| {
+        FlattenError::unresolved_component_dimension(
+            context_name,
+            format!("{subscript:?}"),
+            ast_subscript_span(subscript, source_map),
+        )
+    })
+}
+
+fn ast_subscript_span(
+    subscript: &rumoca_ir_ast::Subscript,
+    source_map: &rumoca_core::SourceMap,
+) -> rumoca_core::Span {
+    match subscript {
+        rumoca_ir_ast::Subscript::Expression(expr) => expr.span(),
+        rumoca_ir_ast::Subscript::Range { token } => source_map.location_to_span(
+            &token.location.file_name,
+            token.location.start as usize,
+            token.location.end as usize,
+        ),
+        rumoca_ir_ast::Subscript::Empty => rumoca_core::Span::DUMMY,
+    }
 }
 
 /// Convert a component declaration to a function parameter.
@@ -471,7 +504,7 @@ pub(super) fn convert_component_to_param(
     // For variable-size arrays (e.g., `Real x[:]`), use [0] as a sentinel
     // so that code generators know the parameter is an array even when
     // the exact size is unknown at compile time.
-    let type_alias_dims = function_param_type_alias_dims(class_index, component);
+    let type_alias_dims = function_param_type_alias_dims(class_index, component, source_map)?;
     let mut param_dims = Vec::new();
     if !component.shape_expr.is_empty() {
         let shape_expr = component
@@ -479,15 +512,8 @@ pub(super) fn convert_component_to_param(
             .iter()
             .map(|sub| lower_function_shape_subscript(sub, class_index, imports, locals, def_map))
             .collect::<Result<Vec<_>, FlattenError>>()?;
+        param_dims = shape_expr.iter().map(function_shape_dim).collect();
         param = param.with_shape_expr(shape_expr);
-
-        param_dims = component
-            .shape_expr
-            .iter()
-            .map(|subscript| {
-                resolved_function_shape_subscript_dim(subscript, class_index).unwrap_or(0)
-            })
-            .collect();
     } else if !component.shape.is_empty() {
         param_dims = component.shape.iter().map(|&d| d as i64).collect();
     }
@@ -531,6 +557,13 @@ pub(super) fn convert_component_to_param(
     Ok(param)
 }
 
+fn function_shape_dim(subscript: &rumoca_core::Subscript) -> i64 {
+    match subscript {
+        rumoca_core::Subscript::Index { value, .. } => *value,
+        rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Expr { .. } => 0,
+    }
+}
+
 pub(super) fn lower_function_shape_subscript(
     subscript: &ast::Subscript,
     class_index: &ast::ClassDefIndex<'_>,
@@ -557,16 +590,6 @@ pub(super) fn lower_function_shape_subscript(
             rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
         ),
     }
-}
-
-pub(super) fn resolved_function_shape_subscript_dim(
-    subscript: &ast::Subscript,
-    class_index: &ast::ClassDefIndex<'_>,
-) -> Option<i64> {
-    let ast::Subscript::Expression(expr) = subscript else {
-        return None;
-    };
-    resolve_compile_time_integer_expr(expr, class_index)
 }
 
 pub(super) fn resolve_compile_time_integer_expr(

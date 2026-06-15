@@ -325,7 +325,7 @@ fn test_semantic_operator_enums_do_not_store_tokens() {
 
 #[test]
 fn test_var_name_uses_interned_identity_not_string_newtype() {
-    let path = workspace_root().join("crates/rumoca-core/src/ir_primitives.rs");
+    let path = workspace_root().join("crates/rumoca-core/src/ir_primitives/var_name.rs");
     let content = fs::read_to_string(&path)
         .expect("read core IR primitives")
         .replace("\r\n", "\n");
@@ -335,8 +335,14 @@ fn test_var_name_uses_interned_identity_not_string_newtype() {
         "VarName must expose the compact interned identity required by SPEC_0029"
     );
     assert!(
-        content.contains("pub struct VarName {\n    id: VarNameId,\n    text: Arc<str>,\n}"),
-        "VarName must store interned identity plus shared text, not owned path strings"
+        content
+            .contains("pub struct VarName {\n    id: VarNameId,\n    data: Arc<VarNameData>,\n}"),
+        "VarName must store interned identity plus one shared payload, not owned path strings"
+    );
+    assert!(
+        content.contains("top_level_dots: Box<[u32]>"),
+        "VarName segmentation must be precomputed at intern time (SPEC_0029): \
+semantic code reads boundaries, it does not parse rendered paths"
     );
     assert!(
         !content.contains("pub struct VarName(String)"),

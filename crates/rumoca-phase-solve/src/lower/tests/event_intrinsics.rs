@@ -8,7 +8,7 @@ fn lower_discrete_rhs_keeps_edge_initial_as_runtime_event_flag() {
         .discrete_valued
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Edge,
             args: vec![rumoca_core::Expression::BuiltinCall {
@@ -23,7 +23,7 @@ fn lower_discrete_rhs_keeps_edge_initial_as_runtime_event_flag() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("edge(initial()) should lower");
     let Some(ScalarSlot::P {
         index: initial_index,
@@ -68,7 +68,7 @@ fn lower_discrete_rhs_uses_pre_relation_memory_for_edge_previous_value() {
     );
     dae_model.conditions.relations.push(relation.clone());
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("hit")),
+        lhs: Some(rumoca_core::VarName::new("hit").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Edge,
             args: vec![relation.clone()],
@@ -79,14 +79,14 @@ fn lower_discrete_rhs_uses_pre_relation_memory_for_edge_previous_value() {
         scalar_count: 1,
     });
     dae_model.conditions.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("c")),
+        lhs: Some(rumoca_core::VarName::new("c").into()),
         rhs: relation,
         span: Default::default(),
         origin: "relation memory update".to_string(),
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let Some(ScalarSlot::P {
         index: pre_c_index, ..
     }) = layout.binding("__pre__.c")

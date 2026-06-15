@@ -1,9 +1,13 @@
-use rumoca_core::{DefId, TypeId, split_last_top_level, top_level_last_segment};
+use crate::path_utils;
+use rumoca_core::{DefId, TypeId};
 use rumoca_ir_ast as ast;
 
 use super::inheritance;
 use super::type_overrides::resolve_redeclare_value_def_id;
-use super::{find_class_in_tree, is_type_subtype, type_names_match};
+use super::{
+    InstantiateError, InstantiateResult, find_class_in_tree, is_type_subtype, location_to_span,
+    type_names_match,
+};
 
 /// Type information for a component, resolved from the class tree.
 pub(super) struct TypeInfo<'a> {
@@ -14,7 +18,7 @@ pub(super) struct TypeInfo<'a> {
 
 /// Map a builtin primitive name to its TypeId in the class tree.
 fn builtin_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
-    let simple = top_level_last_segment(name);
+    let simple = path_utils::class_name_leaf(name);
     match simple {
         "Real" => Some(tree.type_table.real()),
         "Integer" => Some(tree.type_table.integer()),
@@ -23,6 +27,20 @@ fn builtin_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
         "Clock" => tree.type_table.lookup("Clock"),
         _ => None,
     }
+}
+
+/// Resolve MLS predefined types registered in the class-tree type table.
+fn predefined_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
+    tree.type_table.lookup(name)
+}
+
+fn predefined_type_is_discrete(tree: &ast::ClassTree, type_id: TypeId) -> bool {
+    matches!(
+        tree.type_table.get(type_id),
+        Some(ast::Type::Builtin(
+            ast::BuiltinType::Integer | ast::BuiltinType::Boolean
+        )) | Some(ast::Type::Enumeration(_))
+    )
 }
 
 /// Resolve the primitive base TypeId for a component type when available.
@@ -175,7 +193,8 @@ pub(super) fn lookup_type_info<'a>(
     tree: &'a ast::ClassTree,
     comp: &ast::Component,
     type_name: &str,
-) -> TypeInfo<'a> {
+) -> InstantiateResult<TypeInfo<'a>> {
+    let predefined_type_id = predefined_type_id(tree, type_name);
     let mut class_def = comp
         .type_def_id
         .or(comp.type_name.def_id)
@@ -192,7 +211,7 @@ pub(super) fn lookup_type_info<'a>(
     // such as `Medium.BaseProperties medium`.
     if let Some(cd) = class_def
         && matches!(cd.class_type, rumoca_core::ClassType::Package)
-        && let Some((_, member_name)) = split_last_top_level(type_name)
+        && let Some((_, member_name)) = path_utils::class_scope_split(type_name)
         && let Some(member) = find_member_type_in_class(tree, cd, member_name)
     {
         class_def = Some(member);
@@ -202,18 +221,26 @@ pub(super) fn lookup_type_info<'a>(
     // - Type aliases to Real/Integer/Boolean/String (primitive)
     // - Records like Complex with components .re/.im (not primitive)
     // - Operator records like SI.ComplexVoltage extending Complex (not primitive)
-    let is_primitive = class_def.is_none()
-        || class_def
-            .map(|c| inheritance::is_effectively_primitive_transitive(tree, c))
-            .unwrap_or(false);
+    if class_def.is_none() && predefined_type_id.is_none() {
+        return Err(InstantiateError::type_not_found(
+            type_name,
+            location_to_span(&comp.location, &tree.source_map),
+        )
+        .into());
+    }
 
-    let is_discrete = inheritance::is_discrete_by_type(tree, type_name, class_def);
+    let is_primitive = builtin_type_id(tree, type_name).is_some()
+        || class_def.is_some_and(|c| inheritance::is_effectively_primitive_transitive(tree, c));
 
-    TypeInfo {
+    let is_discrete = predefined_type_id
+        .is_some_and(|type_id| predefined_type_is_discrete(tree, type_id))
+        || inheritance::is_discrete_by_type(tree, type_name, class_def);
+
+    Ok(TypeInfo {
         class_def,
         is_primitive,
         is_discrete,
-    }
+    })
 }
 
 /// Check if inner and outer types are compatible using resolved identity.

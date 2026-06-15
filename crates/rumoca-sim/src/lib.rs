@@ -13,15 +13,15 @@ pub use rumoca_eval_solve::nan_trace;
 use rumoca_ir_dae as dae;
 pub use rumoca_phase_solve::{lower_solve_artifacts, lower_solve_problem};
 pub use rumoca_solver::{
-    BackendState, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext,
-    SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
-    SimulationBackend, SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard,
-    StepUntilOutcome, TimeoutBudget, TimeoutExceeded, build_simulation_metrics_value,
-    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
-    run_timeout_result, run_timeout_step, run_timeout_step_result, run_with_runtime_schedule,
-    runtime_progress_snapshot, stop_time_reached_with_tol, time_advanced_with_tol,
-    time_match_with_tol, trace_runtime_done, trace_runtime_progress, trace_runtime_start,
-    trace_runtime_step_fail, trace_runtime_timeout,
+    BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,
+    RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
+    SimVariableMeta, SimulationBackend, SimulationRequestSummary, SimulationRunMetrics,
+    SolverDeadlineGuard, StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
+    build_simulation_metrics_value, build_simulation_payload, is_solver_timeout_panic,
+    panic_on_expired_solver_deadline, run_timeout_result, run_timeout_step,
+    run_timeout_step_result, run_with_runtime_schedule, runtime_progress_snapshot,
+    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
+    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 pub mod bulk;
@@ -33,6 +33,8 @@ pub mod sim_trace_compare;
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod prepared_vectors;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod solve_lowering;
 #[cfg(feature = "solver-diffsol")]
 pub use diffsol::{
@@ -42,6 +44,8 @@ pub use diffsol::{
     simulate_dae,
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use sim_stepper::{SimStepper, StepperState};
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
@@ -50,8 +54,9 @@ pub use sim_stepper::{SimStepper, StepperState};
 pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     SimulationDiagnosticError, SingularityDiagnosis, StructuralReport, TearingReport,
-    UnmatchedUnknownDiagnosis, diagnose_structural_singularity, eval_dae_at, jacobian_for_dae,
-    structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
+    UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis, diagnose_structural_singularity,
+    eval_dae_at, jacobian_for_dae, lower_dae_for_simulation, structural_report_for_dae,
+    structurally_lowered_dae_for_simulation_artifact,
 };
 
 #[cfg(feature = "solver-rk45")]
@@ -77,6 +82,80 @@ pub fn simulate_with_diagnostics(
 
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
+
+/// Simulate an already-lowered [`rumoca_ir_solve::SolveModel`], skipping the
+/// DAE→solve lowering, dispatching by `opts.solver_mode`. This is the
+/// runtime-only entry the lazy diffsol WASM addon uses: the main module emits a
+/// SolveModel, the addon deserializes and simulates it without carrying the
+/// compiler. The skipped (`#[serde(skip)]`) layout fields are lowering-only and
+/// not read here, so a serialized→deserialized SolveModel simulates identically
+/// (pinned by `solve_model_round_trip` in crates/rumoca/tests).
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub fn simulate_solve_model(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    match opts.solver_mode {
+        SimSolverMode::Auto => simulate_solve_model_auto(model, opts),
+        SimSolverMode::RkLike => simulate_solve_model_rk45(model, opts),
+        SimSolverMode::Bdf => simulate_solve_model_diffsol(model, opts),
+    }
+}
+
+#[cfg(feature = "solver-diffsol")]
+fn simulate_solve_model_auto(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    simulate_solve_model_diffsol(model, opts)
+}
+
+#[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
+fn simulate_solve_model_auto(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    simulate_solve_model_rk45(model, opts)
+}
+
+#[cfg(feature = "solver-rk45")]
+fn simulate_solve_model_rk45(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    rumoca_solver_rk45::simulate(model, opts)
+        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+}
+
+#[cfg(not(feature = "solver-rk45"))]
+fn simulate_solve_model_rk45(
+    _model: &rumoca_ir_solve::SolveModel,
+    _opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    Err(SimulationDiagnosticError::Solver(
+        "rk-like solver requested, but this build does not include the rk45 backend".to_string(),
+    ))
+}
+
+#[cfg(feature = "solver-diffsol")]
+fn simulate_solve_model_diffsol(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    rumoca_solver_diffsol::simulate(model, opts)
+        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+}
+
+#[cfg(not(feature = "solver-diffsol"))]
+fn simulate_solve_model_diffsol(
+    _model: &rumoca_ir_solve::SolveModel,
+    _opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    Err(SimulationDiagnosticError::Solver(
+        "bdf/diffsol solver requested, but this build does not include the diffsol backend"
+            .to_string(),
+    ))
+}
 
 /// Simulate, and if it fails with an error that suggests a non-finite
 /// (`NaN`/`inf`) value, automatically re-run once with NaN tracing enabled so
@@ -420,24 +499,27 @@ pub fn runtime_defined_continuous_unknown_names(dae_model: &dae::Dae) -> IndexSe
     rumoca_phase_structural::runtime_defined_continuous_unknown_names(dae_model)
 }
 
-pub fn compiled_layout_binding_debug(dae_model: &dae::Dae, name: &str) -> Option<String> {
-    let layout = rumoca_phase_solve::build_var_layout(dae_model);
-    layout.binding(name).map(|slot| format!("{slot:?}"))
+pub fn compiled_layout_binding_debug(
+    dae_model: &dae::Dae,
+    name: &str,
+) -> Result<Option<String>, rumoca_phase_solve::LowerError> {
+    let layout = rumoca_phase_solve::build_var_layout(dae_model)?;
+    Ok(layout.binding(name).map(|slot| format!("{slot:?}")))
 }
 
 pub fn compiled_layout_related_bindings_debug(
     dae_model: &dae::Dae,
     prefix: &str,
-) -> Vec<(String, String)> {
-    let layout = rumoca_phase_solve::build_var_layout(dae_model);
-    layout
+) -> Result<Vec<(String, String)>, rumoca_phase_solve::LowerError> {
+    let layout = rumoca_phase_solve::build_var_layout(dae_model)?;
+    Ok(layout
         .bindings()
         .iter()
         .filter(|(binding_name, _)| {
             binding_name.starts_with(prefix) && binding_name.as_str() != prefix
         })
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
-        .collect()
+        .collect())
 }
 
 pub use interactive_stepper::InteractiveStepper;

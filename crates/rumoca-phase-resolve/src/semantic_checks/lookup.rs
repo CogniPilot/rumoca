@@ -1,5 +1,4 @@
 use super::{ClassDef, DefId, SourceId, SourceMap, StoredDefinition};
-use rumoca_core::split_path_with_indices;
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 thread_local! {
@@ -92,6 +91,7 @@ fn with_active_lookup<T>(
     })
 }
 
+#[allow(dead_code)]
 pub(super) fn source_name_for(source: SourceId) -> Option<String> {
     ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
         let ids_ref = slot.borrow();
@@ -193,10 +193,11 @@ fn find_class_by_qualified_name<'a>(
     def: &'a StoredDefinition,
     type_name: &str,
 ) -> Option<&'a ClassDef> {
-    let mut parts = split_path_with_indices(type_name).into_iter();
-    let mut current = def.classes.get(parts.next()?)?;
+    let path = rumoca_core::ComponentPath::from_flat_path(type_name);
+    let mut parts = path.parts().iter();
+    let mut current = def.classes.get(parts.next()?.as_str())?;
     for part in parts {
-        current = current.classes.get(part)?;
+        current = current.classes.get(part.as_str())?;
     }
     Some(current)
 }

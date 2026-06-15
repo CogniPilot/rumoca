@@ -3,9 +3,12 @@ use super::*;
 #[test]
 fn test_boundary_keeps_array_slice_unknowns_before_scalarization() {
     let mut dae = Dae::new();
-    let mut matrix = dae::Variable::new(VarName::new("M"));
+    let mut matrix = component_var("M");
     matrix.dims = vec![3, 4];
     dae.variables.algebraics.insert(VarName::new("M"), matrix);
+    let mut rhs = component_var("rhs");
+    rhs.dims = vec![3];
+    dae.variables.algebraics.insert(VarName::new("rhs"), rhs);
     dae.continuous.equations.push(dae::Equation::residual_array(
         Expression::Binary {
             op: sub_op(),
@@ -25,7 +28,7 @@ fn test_boundary_keeps_array_slice_unknowns_before_scalarization() {
         3,
     ));
 
-    let _ = eliminate_trivial(&mut dae);
+    eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert_eq!(
         dae.continuous.equations.len(),

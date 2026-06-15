@@ -9,6 +9,8 @@ include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 
 mod class_browser_helpers;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+mod gpu_api;
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
 pub mod source_root_api;
 #[cfg(feature = "stepper-diffsol")]
@@ -55,7 +57,11 @@ use crate::class_browser_helpers::{
     join_path, token_list_to_text,
 };
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
+pub use crate::gpu_api::{prepare_gpu_simulation, update_gpu_parameters};
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+use crate::simulation_api::{
+    lower_model_to_solve_json_impl, simulate_model_impl, simulate_model_with_project_sources_impl,
+};
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots,
     compile_check_with_source_roots_with_options, compile_with_project_sources,
@@ -850,7 +856,8 @@ pub fn render_target(
 ) -> Result<JsValue, JsValue> {
     let mut dae = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {e}")))?;
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae);
+    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
+        .map_err(|e| JsValue::from_str(&format!("Structural scalarization failed: {e}")))?;
 
     let custom_templates: BTreeMap<String, String> = serde_json::from_str(templates_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid target template map: {e}")))?;
@@ -1453,6 +1460,20 @@ pub fn simulate_model(
     solver: &str,
 ) -> Result<String, JsValue> {
     simulate_model_impl(source, model_name, t_end, dt, solver)
+}
+
+/// Compile a model and return its lowered `SolveModel` as JSON, for the lazy
+/// diffsol addon (`@cognipilot/rumoca/diffsol`) to simulate. Lets the stiff
+/// solver run without putting relaxed-SIMD in this (universal) module.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn lower_model_to_solve_json(
+    source: &str,
+    model_name: &str,
+    t_end: f64,
+    dt: f64,
+) -> Result<String, JsValue> {
+    lower_model_to_solve_json_impl(source, model_name, t_end, dt)
 }
 
 /// Compile with additional project-local sources and simulate a Modelica model.

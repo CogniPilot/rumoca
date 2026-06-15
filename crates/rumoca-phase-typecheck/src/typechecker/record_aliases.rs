@@ -104,8 +104,8 @@ impl TypeChecker {
         known_paths.contains(candidate) || known_prefixes.contains(candidate)
     }
 
-    pub(crate) fn parent_scope(path: &str) -> &str {
-        rumoca_core::parent_scope(path).unwrap_or("")
+    pub(crate) fn enclosing_scope_or_root(path: &str) -> &str {
+        crate::path_utils::enclosing_scope_str(path).unwrap_or("")
     }
 
     fn parent_path(path: &ComponentPath) -> ComponentPath {
@@ -177,6 +177,7 @@ impl TypeChecker {
             | Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.dimensions)
     }
 
+    #[allow(clippy::excessive_nesting)]
     pub(crate) fn propagate_alias_map<T: Clone + PartialEq>(
         record_aliases: &[(String, String)],
         values: &mut rustc_hash::FxHashMap<String, T>,
@@ -185,7 +186,7 @@ impl TypeChecker {
             return false;
         }
 
-        let mut aliases_by_target_head: rustc_hash::FxHashMap<&str, Vec<usize>> =
+        let mut aliases_by_target_head: rustc_hash::FxHashMap<String, Vec<usize>> =
             rustc_hash::FxHashMap::default();
         let target_prefixes: Vec<String> = record_aliases
             .iter()
@@ -200,8 +201,8 @@ impl TypeChecker {
             .collect();
         let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
         for field_name in values.keys() {
-            let Some(alias_indices) = aliases_by_target_head.get(Self::alias_head(field_name))
-            else {
+            let field_head = Self::alias_head(field_name);
+            let Some(alias_indices) = aliases_by_target_head.get(&field_head) else {
                 continue;
             };
             for index in alias_indices {
@@ -211,15 +212,16 @@ impl TypeChecker {
                     continue;
                 }
                 let target_prefix = &target_prefixes[*index];
-                if field_name.starts_with(target_prefix) {
-                    Self::queue_alias_field_update(
-                        alias_source,
-                        target_prefix,
-                        field_name,
-                        values,
-                        &mut updates,
-                    );
+                if !field_name.starts_with(target_prefix) {
+                    continue;
                 }
+                Self::queue_alias_field_update(
+                    alias_source,
+                    target_prefix,
+                    field_name,
+                    values,
+                    &mut updates,
+                );
             }
         }
 
@@ -233,9 +235,11 @@ impl TypeChecker {
         progress
     }
 
-    fn alias_head(path: &str) -> &str {
-        split_first_top_level(path)
-            .map(|(head, _)| head)
-            .unwrap_or(path)
+    fn alias_head(path: &str) -> String {
+        ComponentPath::from_flat_path(path)
+            .parts()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| path.to_string())
     }
 }

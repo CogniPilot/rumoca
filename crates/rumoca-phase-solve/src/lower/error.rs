@@ -22,9 +22,45 @@ pub enum LowerError {
         reason: String,
         span: rumoca_core::Span,
     },
+    /// A function projection produced an expression larger than the inline
+    /// node budget. Recoverable only at the outermost projection boundary,
+    /// where the original runtime call is the semantically equivalent
+    /// lowering; everywhere else this propagates like any other error.
+    ProjectionBudgetExceeded {
+        function: String,
+        span: rumoca_core::Span,
+    },
+    /// A subscript whose value is only known at runtime, in a position that
+    /// requires a compile-time index. Observation lowering declines on this.
+    DynamicSubscript,
+    /// `size()` in a for-loop range over a dimension with no structural
+    /// binding. Observation lowering declines on this.
+    ForRangeUnknownDimension {
+        name: String,
+    },
+    /// A function/constructor input with neither an actual argument nor a
+    /// default binding. Observation lowering declines on this.
+    MissingActualArgument {
+        function: String,
+        /// What kind of input: "required input", "constructor input",
+        /// "record constructor field".
+        what: &'static str,
+        input: String,
+    },
+    /// A dynamic-binding path rooted in an expression form that has no
+    /// binding key. Observation lowering declines on this.
+    DynamicBindingBase {
+        tag: String,
+    },
     Spanned {
         source: Box<LowerError>,
         span: rumoca_core::Span,
+    },
+    /// Context frames accumulated around an error that must keep its typed
+    /// identity (e.g. `MissingBinding` inside a binding-row lowering).
+    WithContext {
+        source: Box<LowerError>,
+        contexts: Vec<String>,
     },
 }
 
@@ -42,7 +78,18 @@ impl std::fmt::Display for LowerError {
             Self::ContractViolation { reason, .. } => {
                 write!(f, "invalid IR contract: {reason}")
             }
+            Self::ProjectionBudgetExceeded { function, .. } => write!(
+                f,
+                "function `{function}` projection exceeded the inline node budget"
+            ),
+            Self::DynamicSubscript
+            | Self::ForRangeUnknownDimension { .. }
+            | Self::DynamicBindingBase { .. } => {
+                write!(f, "unsupported expression: {}", self.reason())
+            }
+            Self::MissingActualArgument { .. } => write!(f, "{}", self.reason()),
             Self::Spanned { source, .. } => source.fmt(f),
+            Self::WithContext { .. } => write!(f, "{}", self.reason()),
         }
     }
 }
@@ -62,7 +109,25 @@ impl LowerError {
                 format!("invalid function `{name}`: {reason}")
             }
             Self::ContractViolation { reason, .. } => format!("invalid IR contract: {reason}"),
+            Self::ProjectionBudgetExceeded { function, .. } => {
+                format!("function `{function}` projection exceeded the inline node budget")
+            }
+            Self::DynamicSubscript => "dynamic subscript expressions are unsupported".to_string(),
+            Self::ForRangeUnknownDimension { name } => {
+                format!("size() in for-loop range requires known dimension `{name}`")
+            }
+            Self::MissingActualArgument {
+                function,
+                what,
+                input,
+            } => format!(
+                "invalid function `{function}`: {what} `{input}` has no actual argument or default binding"
+            ),
+            Self::DynamicBindingBase { tag } => {
+                format!("unsupported base expression for dynamic binding path: {tag}")
+            }
             Self::Spanned { source, .. } => source.reason(),
+            Self::WithContext { source, contexts } => contextual_reason(contexts, &source.reason()),
         }
     }
 
@@ -75,7 +140,15 @@ impl LowerError {
                 format!("invalid function `{name}`: {reason}")
             }
             Self::ContractViolation { reason, .. } => format!("invalid IR contract: {reason}"),
+            Self::ProjectionBudgetExceeded { function, .. } => {
+                format!("function `{function}` projection exceeded the inline node budget")
+            }
+            Self::DynamicSubscript
+            | Self::ForRangeUnknownDimension { .. }
+            | Self::MissingActualArgument { .. }
+            | Self::DynamicBindingBase { .. } => self.reason(),
             Self::Spanned { source, .. } => source.label_reason(),
+            Self::WithContext { source, .. } => source.label_reason(),
         }
     }
 
@@ -83,19 +156,30 @@ impl LowerError {
         match self {
             Self::UnsupportedAt { span, .. } if !span.is_dummy() => Some(*span),
             Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
+            Self::ProjectionBudgetExceeded { span, .. } if !span.is_dummy() => Some(*span),
             Self::Spanned { source, span } => source
                 .source_span()
                 .or_else(|| (!span.is_dummy()).then_some(*span)),
+            Self::WithContext { source, .. } => source.source_span(),
             _ => None,
         }
     }
 
-    pub fn is_missing_binding(&self) -> bool {
+    /// The function name and span of a projection budget decline, looking
+    /// through span wrappers.
+    pub fn projection_budget_exceeded_parts(&self) -> Option<(&str, rumoca_core::Span)> {
         match self {
-            Self::MissingBinding { .. } => true,
-            Self::Spanned { source, .. } => source.is_missing_binding(),
-            _ => false,
+            Self::ProjectionBudgetExceeded { function, span } => Some((function, *span)),
+            Self::Spanned { source, .. } | Self::WithContext { source, .. } => {
+                source.projection_budget_exceeded_parts()
+            }
+            _ => None,
         }
+    }
+
+    /// True for a projection budget decline, looking through span wrappers.
+    pub fn is_projection_budget_exceeded(&self) -> bool {
+        self.projection_budget_exceeded_parts().is_some()
     }
 
     pub fn with_fallback_span(self, span: rumoca_core::Span) -> Self {
@@ -141,14 +225,20 @@ impl LowerError {
                 reason: format!("{context}: {reason}"),
                 span,
             },
-            Self::MissingBinding { name } => Self::Unsupported {
-                reason: format!("{context}: missing variable binding `{name}`"),
-            },
-            Self::MissingFunction { name } => Self::Unsupported {
-                reason: format!("{context}: missing function definition `{name}`"),
-            },
-            Self::InvalidFunction { name, reason } => Self::Unsupported {
-                reason: format!("{context}: invalid function `{name}`: {reason}"),
+            Self::WithContext {
+                source,
+                mut contexts,
+            } => {
+                contexts.push(context);
+                Self::WithContext { source, contexts }
+            }
+            // Everything else keeps its typed identity (so downstream
+            // classification such as observation skips and the projection
+            // boundary stays variant-based, never message-string-based) and
+            // accumulates the context as a wrapper frame.
+            other => Self::WithContext {
+                source: Box::new(other),
+                contexts: vec![context],
             },
         }
     }

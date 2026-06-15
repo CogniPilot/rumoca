@@ -19,7 +19,7 @@ use crate::constant::{EvalContext, Value};
 use rumoca_core::eval_integer_div_builtin;
 use rumoca_ir_flat as flat;
 
-use rumoca_core::{ComponentPath, scoped_component_path_candidates, split_path_with_indices};
+use rumoca_core::{ComponentPath, scoped_component_path_candidates};
 
 const NAMED_CALL_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
@@ -436,7 +436,7 @@ fn resolve_enum_value_with_context(
 /// For modification bindings like `G1(n=n)`, the RHS `n` references the outer scope
 /// where the modification was written. This function walks up the parent chain
 /// to find the value.
-fn resolve_in_parent_scope(
+fn resolve_in_enclosing_scope(
     name: &str,
     var_context: &str,
     known_ints: &FxHashMap<String, i64>,
@@ -562,7 +562,7 @@ fn lookup_unique_suffix_cloned<T: Clone>(name: &str, values: &FxHashMap<String, 
 fn resolve_varref_integer(name_str: &str, ctx: &ParamEvalContext) -> Option<i64> {
     if is_unqualified_component_name(name_str)
         && let Some(var_ctx) = ctx.var_context
-        && let Some(val) = resolve_in_parent_scope(name_str, var_ctx, ctx.known_ints)
+        && let Some(val) = resolve_in_enclosing_scope(name_str, var_ctx, ctx.known_ints)
     {
         return Some(val);
     }
@@ -580,7 +580,7 @@ fn resolve_varref_integer(name_str: &str, ctx: &ParamEvalContext) -> Option<i64>
     }
     // For modification bindings, try parent scope resolution (MLS §7.2)
     if let Some(var_ctx) = ctx.var_context
-        && let Some(val) = resolve_in_parent_scope(name_str, var_ctx, ctx.known_ints)
+        && let Some(val) = resolve_in_enclosing_scope(name_str, var_ctx, ctx.known_ints)
     {
         return Some(val);
     }
@@ -1587,11 +1587,11 @@ fn lookup_array_dims_in_scope(
 
     // 2. If we have var_context, try scoped lookups
     let context = var_context?;
-    let parent_scope = ComponentPath::from_flat_path(context).parent()?;
+    let enclosing = ComponentPath::from_flat_path(context).parent()?;
     let array_path = ComponentPath::from_flat_path(array_name);
 
-    // Try parent scope first
-    let qualified = parent_scope.join(&array_path).to_flat_string();
+    // Try the enclosing scope first
+    let qualified = enclosing.join(&array_path).to_flat_string();
     if let Some(dims) = array_dims.get(&qualified) {
         #[cfg(feature = "tracing")]
         debug!(array = %array_name, qualified = %qualified, dims = ?dims, "found in parent scope");
@@ -1599,7 +1599,7 @@ fn lookup_array_dims_in_scope(
     }
 
     // 3. Walk up ancestor scopes
-    lookup_dims_in_ancestors(array_name, &parent_scope.to_flat_string(), array_dims)
+    lookup_dims_in_ancestors(array_name, &enclosing.to_flat_string(), array_dims)
 }
 
 /// Evaluate user function calls that return integer.
@@ -1843,7 +1843,7 @@ pub fn try_eval_flat_expr_enum_with_canonicalizer(
 /// plain dotted parameter refs (e.g. `pipe1.system.energyDynamics`), require at
 /// least one non-final path segment to be type-like (uppercase-initial).
 pub fn looks_like_enum_literal_path(path: &str) -> bool {
-    let parts = split_path_with_indices(path);
+    let parts = ComponentPath::from_flat_path(path).into_parts();
     if parts.len() < 2 {
         return false;
     }
@@ -2051,7 +2051,7 @@ impl EnumCanonicalizer {
     pub fn new(known_enums: &FxHashMap<String, String>) -> Self {
         let mut matches = FxHashMap::default();
         for value in known_enums.values() {
-            let parts = split_path_with_indices(value);
+            let parts = ComponentPath::from_flat_path(value).into_parts();
             if parts.len() < 2 {
                 continue;
             }
@@ -2080,7 +2080,7 @@ impl EnumCanonicalizer {
     }
 
     pub fn canonicalize(&self, literal: &str) -> String {
-        let parts = split_path_with_indices(literal);
+        let parts = ComponentPath::from_flat_path(literal).into_parts();
         if parts.len() < 2 {
             return literal.to_string();
         }
@@ -2105,7 +2105,7 @@ impl EnumCanonicalizer {
 ///
 /// This preserves MLS §4.9.5 enum identity across equivalent qualification paths.
 pub fn canonicalize_enum_literal(literal: &str, known_enums: &FxHashMap<String, String>) -> String {
-    let parts = split_path_with_indices(literal);
+    let parts = ComponentPath::from_flat_path(literal).into_parts();
     if parts.len() < 2 {
         return literal.to_string();
     }
@@ -2124,7 +2124,7 @@ pub fn canonicalize_enum_literal(literal: &str, known_enums: &FxHashMap<String, 
                 continue;
             }
             let candidate = value.as_str();
-            let candidate_segments = split_path_with_indices(candidate).len();
+            let candidate_segments = ComponentPath::from_flat_path(candidate).len();
             if candidate_segments > best_segments {
                 best_match = Some(candidate);
                 best_segments = candidate_segments;

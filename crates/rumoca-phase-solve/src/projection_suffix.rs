@@ -24,7 +24,7 @@ pub(crate) fn parse_output_projection_suffix(suffix: &str) -> Option<OutputProje
         None => (suffix, Vec::new()),
     };
 
-    if let Some((output_name, field)) = rumoca_core::split_first_top_level(output_with_field) {
+    if let Some((output_name, field)) = crate::path_utils::root_split(output_with_field) {
         if output_name.is_empty() || field.is_empty() {
             return None;
         }

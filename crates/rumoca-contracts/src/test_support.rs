@@ -154,7 +154,8 @@ fn error_code_matches(actual: &str, expected: &str) -> bool {
 /// Panics if compilation fails or the system is not balanced.
 pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
     let result = expect_success(source, model);
-    let balance = dae_balance(&result.dae);
+    let balance =
+        dae_balance(&result.dae).expect("balanced test support requires valid DAE metadata");
     assert_eq!(
         balance, 0,
         "Expected balanced system for {model}, got balance={balance}"
@@ -224,4 +225,108 @@ fn parse_error_code(error: &ParseError) -> &'static str {
         ParseError::NoAstProduced => "EP002",
         ParseError::IoError { .. } => "EP003",
     }
+}
+
+/// Compile and simulate a model, returning the simulation trace for
+/// runtime-semantic contract assertions (Sim-kind cases).
+///
+/// # Panics
+/// Panics if compilation or simulation fails.
+pub fn simulate_model(source: &str, model: &str, t_end: f64) -> SimTrace {
+    let result = expect_success(source, model);
+    let opts = contract_sim_options(t_end);
+    let sim = rumoca_sim::simulate_with_diagnostics(&result.dae, &opts)
+        .unwrap_or_else(|e| panic!("Simulation failed for {model}: {e}"));
+    SimTrace {
+        times: sim.times,
+        names: sim.names,
+        data: sim.data,
+    }
+}
+
+/// Compile a model and expect the simulation itself to fail (e.g. a failing
+/// assert stops the run).
+///
+/// # Panics
+/// Panics if compilation fails or the simulation unexpectedly succeeds.
+pub fn expect_simulation_failure(source: &str, model: &str, t_end: f64) {
+    let result = expect_success(source, model);
+    let opts = contract_sim_options(t_end);
+    if rumoca_sim::simulate_with_diagnostics(&result.dae, &opts).is_ok() {
+        panic!("Expected simulation failure for {model}, but it succeeded");
+    }
+}
+
+/// Simulation trace with by-name channel access.
+pub struct SimTrace {
+    pub times: Vec<f64>,
+    pub names: Vec<String>,
+    pub data: Vec<Vec<f64>>,
+}
+
+impl SimTrace {
+    /// All samples of a channel, addressed by name (never by position).
+    ///
+    /// # Panics
+    /// Panics if the channel does not exist.
+    pub fn channel(&self, name: &str) -> Vec<f64> {
+        let index = self
+            .names
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("channel '{name}' not in trace: {:?}", self.names));
+        // `data` is column-major: one series per variable.
+        self.data[index].clone()
+    }
+
+    /// Final value of a channel.
+    ///
+    /// # Panics
+    /// Panics if the channel does not exist or the trace is empty.
+    pub fn final_value(&self, name: &str) -> f64 {
+        *self
+            .channel(name)
+            .last()
+            .unwrap_or_else(|| panic!("trace for '{name}' is empty"))
+    }
+}
+
+/// Contract simulations use the RK-like solver: the BDF state-only path has a
+/// known step-size defect on simple ODE models that is tracked separately.
+fn contract_sim_options(t_end: f64) -> rumoca_sim::SimOptions {
+    rumoca_sim::SimOptions {
+        t_end,
+        solver_mode: rumoca_sim::SimSolverMode::RkLike,
+        ..Default::default()
+    }
+}
+
+/// Compile a model expecting success AND a warning diagnostic with the given
+/// code (advisory contract rules).
+///
+/// # Panics
+/// Panics if parsing/compilation fails or the warning is absent.
+pub fn expect_compile_warning(source: &str, model: &str, expected_code: &str) {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .unwrap_or_else(|e| panic!("Parse failed for {model}: {e}"));
+    session
+        .compile_model(model)
+        .unwrap_or_else(|e| panic!("Compilation failed for {model}: {e}"));
+    let diagnostics = session.compile_model_diagnostics(model);
+    let matched = diagnostics.diagnostics.iter().any(|d| {
+        d.code
+            .as_deref()
+            .is_some_and(|code| error_code_matches(code, expected_code))
+    });
+    assert!(
+        matched,
+        "Expected warning {expected_code} for model {model}, got: {:?}",
+        diagnostics
+            .diagnostics
+            .iter()
+            .filter_map(|d| d.code.clone())
+            .collect::<Vec<_>>()
+    );
 }

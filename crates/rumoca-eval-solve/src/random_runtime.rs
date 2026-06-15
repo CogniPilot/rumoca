@@ -21,12 +21,16 @@ struct ImpureRandomStream {
     cached_by_event_call: HashMap<(u64, u64), f64>,
 }
 
-pub(super) fn impure_random_mutex<'a>(context: RowEvalContext<'a>) -> &'a Mutex<ImpureRandomState> {
-    context
+pub(super) fn impure_random_mutex<'a>(
+    context: RowEvalContext<'a>,
+) -> Result<&'a Mutex<ImpureRandomState>, EvalSolveError> {
+    Ok(context
         .runtime_state
-        .expect("row evaluation context must have runtime state")
+        .ok_or(EvalSolveError::MissingRuntimeState {
+            operation: "impure random",
+        })?
         .impure_random
-        .as_ref()
+        .as_ref())
 }
 
 pub(super) fn impure_random_stream_id(seed: i64) -> i64 {
@@ -72,11 +76,14 @@ pub(super) fn read_reg_range(
         .collect()
 }
 
-pub(super) fn projected_random_value(values: &[f64], index: usize) -> f64 {
+pub(super) fn projected_random_value(values: &[f64], index: usize) -> Result<f64, EvalSolveError> {
     values
         .get(index)
         .copied()
-        .unwrap_or_else(|| values.first().copied().unwrap_or(1.0))
+        .ok_or(EvalSolveError::RandomStateProjectionOutOfBounds {
+            index,
+            len: values.len(),
+        })
 }
 
 pub(super) fn initial_state_values(

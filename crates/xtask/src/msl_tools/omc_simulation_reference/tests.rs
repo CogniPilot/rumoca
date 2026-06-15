@@ -284,6 +284,106 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_error_result_with_cs
 }
 
 #[test]
+fn cached_error_and_timeout_results_are_not_reusable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir: temp.path().join("results"),
+        flat_dir: temp.path().join("omc_flat"),
+        work_dir: temp.path().join("omc_work"),
+        sim_work_dir: temp.path().join("omc_sim_work"),
+        omc_trace_dir: temp.path().join("sim_traces").join("omc"),
+        rumoca_trace_dir: temp.path().join("sim_traces").join("rumoca"),
+    };
+    let model_name = "Modelica.Blocks.Examples.PID_Controller";
+    for status in ["error", "timeout"] {
+        let cached = SimModelResult {
+            status: status.to_string(),
+            error: Some("omc session port file did not appear".to_string()),
+            ..empty_omc_result()
+        };
+        assert!(!cached_omc_result_is_reusable(&paths, model_name, &cached));
+    }
+}
+
+#[test]
+fn cached_success_without_materialized_trace_source_is_not_reusable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let results_dir = temp.path().join("results");
+    let omc_trace_dir = results_dir.join("sim_traces").join("omc");
+    let sim_work_dir = results_dir.join("omc_sim_work");
+    std::fs::create_dir_all(&omc_trace_dir).expect("trace dir");
+    std::fs::create_dir_all(&sim_work_dir).expect("sim work dir");
+
+    let model_name = "Modelica.Blocks.Examples.PID_Controller";
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir,
+        flat_dir: temp.path().join("omc_flat"),
+        work_dir: temp.path().join("omc_work"),
+        sim_work_dir: sim_work_dir.clone(),
+        omc_trace_dir: omc_trace_dir.clone(),
+        rumoca_trace_dir: temp.path().join("sim_traces").join("rumoca"),
+    };
+    let stale_success = SimModelResult {
+        status: "success".to_string(),
+        error: None,
+        sim_system_seconds: Some(0.25),
+        total_system_seconds: Some(0.5),
+        omc_wall_seconds: Some(0.75),
+        result_file: Some(format!("{model_name}_res.csv")),
+        trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
+        trace_error: None,
+        rumoca_status: Some("sim_ok".to_string()),
+        rumoca_ic_status: Some("ic_ok".to_string()),
+        rumoca_ic_error: None,
+        rumoca_ic_seconds: Some(0.01),
+        rumoca_sim_seconds: Some(0.4),
+        rumoca_sim_build_seconds: None,
+        rumoca_sim_run_seconds: None,
+        rumoca_sim_wall_seconds: Some(0.42),
+        rumoca_trace_file: Some(format!("sim_traces/rumoca/{model_name}.json")),
+        rumoca_trace_error: None,
+    };
+    assert!(!cached_omc_result_is_reusable(
+        &paths,
+        model_name,
+        &stale_success
+    ));
+
+    std::fs::write(
+        sim_work_dir.join(format!("{model_name}_res.csv")),
+        "time,y\n0.0,1.0\n",
+    )
+    .expect("write csv");
+    assert!(cached_omc_result_is_reusable(
+        &paths,
+        model_name,
+        &stale_success
+    ));
+
+    std::fs::remove_file(sim_work_dir.join(format!("{model_name}_res.csv"))).expect("remove csv");
+    write_pretty_json(
+        &omc_trace_dir.join(format!("{model_name}.json")),
+        &SimTrace {
+            model_name: Some(model_name.to_string()),
+            times: vec![0.0],
+            names: vec!["y".to_string()],
+            data: vec![vec![Some(1.0)]],
+            variable_meta: None,
+        },
+    )
+    .expect("write trace");
+    assert!(cached_omc_result_is_reusable(
+        &paths,
+        model_name,
+        &stale_success
+    ));
+}
+
+#[test]
 fn runtime_pair_rejects_invalid_values() {
     assert_eq!(runtime_pair(Some(1.0), Some(0.0)), None);
     assert_eq!(runtime_pair(Some(1.0), Some(-1.0)), None);

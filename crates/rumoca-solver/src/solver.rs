@@ -21,11 +21,12 @@ impl SimSolverMode {
         }
 
         let normalized = lower.replace(['-', '_', ' '], "");
+        // ESDIRK34 / TR-BDF2 are *implicit* tableaus served by the diffsol
+        // (BDF-family) path via `DiffsolMethod`, not the explicit rk45 backend
+        // — so they resolve to `Bdf` here, not `RkLike`.
         let rk_like = normalized.contains("rungekutta")
             || normalized.starts_with("rk")
             || normalized.contains("dopri")
-            || normalized.contains("esdirk")
-            || normalized.contains("trbdf2")
             || normalized.contains("euler")
             || normalized.contains("midpoint");
 
@@ -39,6 +40,47 @@ impl SimSolverMode {
                 (Self::from_external_name(trimmed), trimmed.to_string())
             }
             _ => (Self::Auto, "auto".to_string()),
+        }
+    }
+}
+
+/// Which diffsol integrator to construct on the implicit (BDF-family) path.
+///
+/// `SimSolverMode` selects the solver *family* (auto / implicit-BDF /
+/// explicit-RK). Within the implicit family, diffsol also ships A- and
+/// L-stable singly-diagonally-implicit Runge-Kutta tableaus (ESDIRK34,
+/// TR-BDF2) that suit stiff DAEs whose BDF startup struggles with sharp
+/// near-discontinuities (tanh / relop transitions, radiative T^4). This
+/// enum picks among them. `Bdf` is the default and leaves the existing
+/// construction path byte-for-byte unchanged.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffsolMethod {
+    /// Variable-order BDF (default). Best general-purpose stiff solver.
+    #[default]
+    Bdf,
+    /// ESDIRK 3(4) — singly-diagonally-implicit, A- and L-stable.
+    Esdirk34,
+    /// TR-BDF2 — implicit, A- and L-stable, two-stage. Strong on moderately
+    /// stiff problems with event-driven dynamics.
+    TrBdf2,
+}
+
+impl DiffsolMethod {
+    /// Map a user-facing solver name (case-insensitive, dashes / underscores
+    /// ignored) to a specific implicit tableau. Returns `None` for names that
+    /// are not implicit RK tableaus (callers keep the BDF default).
+    pub fn from_external_name(name: &str) -> Option<Self> {
+        let n = name
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_', ' '], "");
+        if n.starts_with("esdirk") {
+            Some(Self::Esdirk34)
+        } else if n.starts_with("trbdf2") {
+            Some(Self::TrBdf2)
+        } else {
+            None
         }
     }
 }
@@ -86,6 +128,9 @@ pub struct SimOptions {
     pub scalarize: bool,
     pub max_wall_seconds: Option<f64>,
     pub solver_mode: SimSolverMode,
+    /// Implicit tableau to use on the diffsol (BDF-family) path. Ignored when
+    /// `solver_mode` resolves to the explicit rk45 backend. Defaults to `Bdf`.
+    pub diffsol_method: DiffsolMethod,
     pub pacing_mode: SimPacingMode,
 }
 
@@ -100,6 +145,7 @@ impl Default for SimOptions {
             scalarize: true,
             max_wall_seconds: None,
             solver_mode: SimSolverMode::Auto,
+            diffsol_method: DiffsolMethod::Bdf,
             pacing_mode: SimPacingMode::AsFastAsPossible,
         }
     }
@@ -165,7 +211,35 @@ pub trait SimulationBackend: RuntimeEventBoundaryHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::{SimOptions, SimPacingMode, SimSolverMode};
+    use super::{DiffsolMethod, SimOptions, SimPacingMode, SimSolverMode};
+
+    #[test]
+    fn implicit_tableau_names_resolve_to_sdirk_method_not_explicit_rk() {
+        // ESDIRK34 / TR-BDF2 are implicit tableaus on the diffsol path: they
+        // must select a `DiffsolMethod`, and must NOT be misrouted to the
+        // explicit rk45 backend (`RkLike`).
+        for name in ["esdirk34", "ESDIRK-34", "es_dirk34"] {
+            assert_eq!(
+                DiffsolMethod::from_external_name(name),
+                Some(DiffsolMethod::Esdirk34)
+            );
+            assert_eq!(SimSolverMode::from_external_name(name), SimSolverMode::Bdf);
+        }
+        for name in ["trbdf2", "TR-BDF2", "tr_bdf2"] {
+            assert_eq!(
+                DiffsolMethod::from_external_name(name),
+                Some(DiffsolMethod::TrBdf2)
+            );
+            assert_eq!(SimSolverMode::from_external_name(name), SimSolverMode::Bdf);
+        }
+        // Explicit / unknown names keep the BDF default (None) and route as before.
+        assert_eq!(DiffsolMethod::from_external_name("dopri5"), None);
+        assert_eq!(
+            SimSolverMode::from_external_name("dopri5"),
+            SimSolverMode::RkLike
+        );
+        assert_eq!(DiffsolMethod::from_external_name("bdf"), None);
+    }
 
     #[test]
     fn solver_mode_request_parsing_defaults_blank_input_to_auto() {

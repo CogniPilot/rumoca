@@ -9,8 +9,7 @@ use rumoca_ir_solve::{
 
 use super::{
     DirectAssignmentValue, IndexedBindingMap, LowerBuilder, LowerBuilderMetadata, LowerError,
-    ScalarizedComponentChildSlotMap, Scope, build_scalarized_component_child_slot_map,
-    compile_time, derivative_rhs,
+    Scope, compile_time, derivative_rhs,
     helpers::{build_indexed_binding_map, parse_indexed_binding_key},
     unsupported_at,
 };
@@ -25,10 +24,10 @@ struct RowLoweringContext<'a> {
     triggered_clock_conditions: Option<&'a [rumoca_core::Expression]>,
     discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
-    structural_bindings: Option<&'a IndexMap<String, f64>>,
-    direct_assignments: Option<&'a IndexMap<String, DirectAssignmentValue>>,
+    dae_variables: Option<&'a dae::DaeVariables>,
+    structural_bindings: Option<Arc<IndexMap<String, f64>>>,
+    direct_assignments: Option<Arc<IndexMap<String, DirectAssignmentValue>>>,
     indexed_bindings: IndexedBindingMap,
-    scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
     is_initial_mode: bool,
     guard_target_start_before_first_clock_tick: bool,
 }
@@ -39,7 +38,8 @@ pub(super) struct RuntimeRowMetadata<'a> {
     pub(super) triggered_clock_conditions: &'a [rumoca_core::Expression],
     pub(super) discrete_valued_names: &'a IndexMap<rumoca_core::VarName, dae::Variable>,
     pub(super) variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
-    pub(super) structural_bindings: Option<&'a IndexMap<String, f64>>,
+    pub(super) dae_variables: Option<&'a dae::DaeVariables>,
+    pub(super) structural_bindings: Option<Arc<IndexMap<String, f64>>>,
     pub(super) guard_target_start_before_first_clock_tick: bool,
 }
 
@@ -49,8 +49,6 @@ pub fn lower_expression_rows_from_expressions(
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -61,10 +59,10 @@ pub fn lower_expression_rows_from_expressions(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: None,
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
-            scalarized_component_child_slots,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -77,8 +75,6 @@ pub fn lower_initial_expression_rows_from_expressions(
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -89,10 +85,10 @@ pub fn lower_initial_expression_rows_from_expressions(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: None,
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
-            scalarized_component_child_slots,
             is_initial_mode: true,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -108,8 +104,6 @@ pub fn lower_expression_rows_from_expressions_with_runtime_metadata(
     variable_starts: &IndexMap<String, rumoca_core::Expression>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -120,10 +114,10 @@ pub fn lower_expression_rows_from_expressions_with_runtime_metadata(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: Some(variable_starts),
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
-            scalarized_component_child_slots,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -139,8 +133,6 @@ pub fn lower_initial_expression_rows_from_expressions_with_runtime_metadata(
     variable_starts: &IndexMap<String, rumoca_core::Expression>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -151,10 +143,10 @@ pub fn lower_initial_expression_rows_from_expressions_with_runtime_metadata(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: Some(variable_starts),
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
-            scalarized_component_child_slots,
             is_initial_mode: true,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -165,30 +157,26 @@ pub(super) fn lower_expression_rows_from_expressions_with_structural_bindings(
     expressions: &[rumoca_core::Expression],
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-    clock_intervals: &IndexMap<String, f64>,
-    clock_timings: &IndexMap<String, dae::ClockSchedule>,
-    variable_starts: &IndexMap<String, rumoca_core::Expression>,
-    structural_bindings: &IndexMap<String, f64>,
+    metadata: RuntimeRowMetadata<'_>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
             layout,
             functions,
-            clock_intervals: Some(clock_intervals),
-            clock_timings: Some(clock_timings),
+            clock_intervals: Some(metadata.clock_intervals),
+            clock_timings: Some(metadata.clock_timings),
             triggered_clock_conditions: None,
             discrete_valued_names: None,
-            variable_starts: Some(variable_starts),
-            structural_bindings: Some(structural_bindings),
+            variable_starts: Some(metadata.variable_starts),
+            dae_variables: metadata.dae_variables,
+            structural_bindings: metadata.structural_bindings,
             direct_assignments: None,
             indexed_bindings,
-            scalarized_component_child_slots,
             is_initial_mode: false,
-            guard_target_start_before_first_clock_tick: false,
+            guard_target_start_before_first_clock_tick: metadata
+                .guard_target_start_before_first_clock_tick,
         },
     )
 }
@@ -197,30 +185,26 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
     expressions: &[rumoca_core::Expression],
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-    clock_intervals: &IndexMap<String, f64>,
-    clock_timings: &IndexMap<String, dae::ClockSchedule>,
-    variable_starts: &IndexMap<String, rumoca_core::Expression>,
-    structural_bindings: &IndexMap<String, f64>,
+    metadata: RuntimeRowMetadata<'_>,
+    indexed_bindings: IndexedBindingMap,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_observation_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
             layout,
             functions,
-            clock_intervals: Some(clock_intervals),
-            clock_timings: Some(clock_timings),
+            clock_intervals: Some(metadata.clock_intervals),
+            clock_timings: Some(metadata.clock_timings),
             triggered_clock_conditions: None,
             discrete_valued_names: None,
-            variable_starts: Some(variable_starts),
-            structural_bindings: Some(structural_bindings),
+            variable_starts: Some(metadata.variable_starts),
+            dae_variables: metadata.dae_variables,
+            structural_bindings: metadata.structural_bindings,
             direct_assignments: None,
             indexed_bindings,
-            scalarized_component_child_slots,
             is_initial_mode: false,
-            guard_target_start_before_first_clock_tick: false,
+            guard_target_start_before_first_clock_tick: metadata
+                .guard_target_start_before_first_clock_tick,
         },
     )
 }
@@ -235,7 +219,6 @@ fn lower_expression_rows_from_expressions_with_context(
             expression,
             row_idx as u64,
             None,
-            None,
             &ctx,
         )?);
     }
@@ -249,7 +232,7 @@ fn lower_observation_rows_from_expressions_with_context(
     let mut rows = Vec::with_capacity(expressions.len());
     for (row_idx, expression) in expressions.iter().enumerate() {
         let row_namespace = row_idx as u64;
-        match lower_expression_row(expression, row_namespace, None, None, &ctx) {
+        match lower_expression_row(expression, row_namespace, None, &ctx) {
             Ok(row) => rows.push(row),
             Err(scalar_err) => {
                 rows.extend(lower_array_observation_rows(
@@ -299,8 +282,6 @@ pub(super) fn lower_expression_rows_with_mode<'a>(
     let equations: Vec<&dae::Equation> = equations.into_iter().collect();
     let mut block = ComputeBlock::default();
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     let ctx = RowLoweringContext {
         layout,
         functions,
@@ -309,10 +290,10 @@ pub(super) fn lower_expression_rows_with_mode<'a>(
         triggered_clock_conditions: Some(runtime.triggered_clock_conditions),
         discrete_valued_names: Some(runtime.discrete_valued_names),
         variable_starts: Some(runtime.variable_starts),
+        dae_variables: runtime.dae_variables,
         structural_bindings: runtime.structural_bindings,
         direct_assignments: None,
         indexed_bindings,
-        scalarized_component_child_slots,
         is_initial_mode,
         guard_target_start_before_first_clock_tick: runtime
             .guard_target_start_before_first_clock_tick,
@@ -353,8 +334,8 @@ fn lower_equation_expression_rows(
         span,
     } = &equation.rhs
     {
-        let lhs_dims = builder.infer_expr_dims(lhs, &scope);
-        let rhs_dims = builder.infer_expr_dims(rhs, &scope);
+        let lhs_dims = builder.infer_expr_dims(lhs, &scope)?;
+        let rhs_dims = builder.infer_expr_dims(rhs, &scope)?;
         if let Some(shape) =
             super::array_values::matmul_shape_from_dims(&lhs_dims, &rhs_dims, scalar_count)
         {
@@ -371,7 +352,6 @@ fn lower_equation_expression_rows(
                 .lhs
                 .as_ref()
                 .and_then(|lhs| ctx.layout.binding(lhs.as_str())),
-            equation.lhs.as_ref().map(|lhs| lhs.as_str().to_string()),
             ctx,
         )?;
         return Ok(vec![ComputeNode::ScalarPrograms(
@@ -388,16 +368,7 @@ fn lower_equation_expression_rows(
         return Ok(vec![node]);
     }
 
-    let values = if matches!(equation.rhs, rumoca_core::Expression::If { .. }) {
-        builder.lower_array_like_values_projected_to_count(
-            &equation.rhs,
-            &scope,
-            0,
-            scalar_count,
-        )?
-    } else {
-        builder.lower_array_like_values(&equation.rhs, &scope, 0)?
-    };
+    let values = builder.lower_array_like_values(&equation.rhs, &scope, 0)?;
     let values = expand_row_values(values, scalar_count)?;
     let rows: Vec<Vec<LinearOp>> = values
         .into_iter()
@@ -429,7 +400,6 @@ fn lower_scalarized_record_equation_rows(
                 scalar_row_namespace(row_namespace, idx),
                 ctx.layout
                     .binding(format!("{}.{}", lhs.as_str(), field.suffix).as_str()),
-                None,
                 ctx,
             )?);
         }
@@ -473,7 +443,6 @@ fn lower_scalarized_record_equation_rows(
             scalar_row_namespace(row_namespace, idx),
             ctx.layout
                 .binding(format!("{}.{}", name.as_str(), field.suffix).as_str()),
-            None,
             ctx,
         )?);
     }
@@ -497,7 +466,7 @@ fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<Scalar
         let Some(suffix) = name.strip_prefix(prefix.as_str()) else {
             continue;
         };
-        if rumoca_core::has_top_level_dot(suffix) {
+        if crate::path_utils::is_nested_name(suffix) {
             continue;
         }
         if !fields
@@ -671,7 +640,7 @@ fn lower_array_sample_expression_rows(
 
     let probe = lower_builder_for_context(ctx, row_namespace);
     let scope = Scope::new();
-    let dims = probe.infer_expr_dims(&args[0], &scope);
+    let dims = probe.infer_expr_dims(&args[0], &scope)?;
     if dims.iter().product::<usize>() != scalar_count {
         return Err(unsupported_at(
             format!(
@@ -688,7 +657,6 @@ fn lower_array_sample_expression_rows(
             &expr,
             scalar_row_namespace(row_namespace, flat_index),
             Some(target),
-            None,
             ctx,
         )?);
     }
@@ -880,17 +848,13 @@ fn lower_residual_rows_from_equations_core<'a>(
         &state_names,
         layout,
         &structural_bindings,
-    );
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
+    )?;
+    let structural_bindings = Arc::new(structural_bindings);
+    let direct_assignments = Arc::new(direct_assignments);
     let equations: Vec<(usize, &dae::Equation)> = equations.into_iter().collect();
     let mut rows = Vec::with_capacity(equations.len());
     for (row_idx, eq) in equations {
         let start = rows.len();
-        if eq.scalar_count == 0 {
-            after_equation(eq, 0)?;
-            continue;
-        }
         let ctx = RowLoweringContext {
             layout,
             functions: &dae_model.symbols.functions,
@@ -899,10 +863,10 @@ fn lower_residual_rows_from_equations_core<'a>(
             triggered_clock_conditions: Some(&dae_model.clocks.triggered_conditions),
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
-            structural_bindings: Some(&structural_bindings),
-            direct_assignments: Some(&direct_assignments),
+            dae_variables: Some(&dae_model.variables),
+            structural_bindings: Some(Arc::clone(&structural_bindings)),
+            direct_assignments: Some(Arc::clone(&direct_assignments)),
             indexed_bindings: Arc::clone(&indexed_bindings),
-            scalarized_component_child_slots: Arc::clone(&scalarized_component_child_slots),
             is_initial_mode,
             guard_target_start_before_first_clock_tick: false,
         };
@@ -930,7 +894,7 @@ fn lower_residual_rows_from_equations_core<'a>(
 }
 
 fn validate_equation_row_count(eq: &dae::Equation, actual: usize) -> Result<(), LowerError> {
-    let expected = eq.scalar_count;
+    let expected = eq.scalar_count.max(1);
     if actual == expected {
         return Ok(());
     }
@@ -949,13 +913,7 @@ fn lower_equation_residual_rows(
     state_scalar_count: usize,
     ctx: &RowLoweringContext<'_>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let target_name = residual_equation_target_name(eq);
-    let target = target_name
-        .as_deref()
-        .and_then(|name| ctx.layout.binding(name));
-    let mut builder = lower_builder_for_context(ctx, row_idx as u64)
-        .with_current_update_target(target)
-        .with_current_update_target_name(target_name);
+    let mut builder = lower_builder_for_context(ctx, row_idx as u64);
     let scope = Scope::new();
     let residual_expr;
     let expr = if row_idx >= state_scalar_count
@@ -967,7 +925,7 @@ fn lower_equation_residual_rows(
         residual_expr = rumoca_core::Expression::Binary {
             op: OpBinary::Sub,
             lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: lhs.clone().into(),
+                name: lhs.clone(),
                 subscripts: Vec::new(),
                 span: eq.span,
             }),
@@ -987,12 +945,9 @@ fn lower_equation_residual_rows(
                 .map_err(|err| residual_row_context(err, row_idx, eq))?,
         ]
     } else {
-        let values = if matches!(expr, rumoca_core::Expression::If { .. }) {
-            builder.lower_array_like_values_projected_to_count(expr, &scope, 0, scalar_count)
-        } else {
-            builder.lower_array_like_values(expr, &scope, 0)
-        }
-        .map_err(|err| residual_row_context(err, row_idx, eq))?;
+        let values = builder
+            .lower_array_like_values(expr, &scope, 0)
+            .map_err(|err| residual_row_context(err, row_idx, eq))?;
         expand_row_values(values, scalar_count)
             .map_err(|err| residual_row_context(err, row_idx, eq))?
     };
@@ -1015,39 +970,6 @@ fn lower_equation_residual_rows(
     Ok(rows)
 }
 
-fn residual_equation_target_name(eq: &dae::Equation) -> Option<String> {
-    if let Some(lhs) = eq.lhs.as_ref() {
-        return Some(lhs.as_str().to_string());
-    }
-    let rumoca_core::Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        ..
-    } = &eq.rhs
-    else {
-        return binding_equation_origin_target_name(eq);
-    };
-    let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = lhs.as_ref()
-    else {
-        return binding_equation_origin_target_name(eq);
-    };
-    if subscripts.is_empty() {
-        Some(name.as_str().to_string())
-    } else {
-        binding_equation_origin_target_name(eq)
-    }
-}
-
-fn binding_equation_origin_target_name(eq: &dae::Equation) -> Option<String> {
-    eq.origin
-        .strip_prefix("binding equation for ")
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-}
-
 fn lower_scalarized_record_residual_rows(
     eq: &dae::Equation,
     row_idx: usize,
@@ -1063,7 +985,7 @@ fn lower_scalarized_record_residual_rows(
     {
         let residuals = fields.iter().map(|field| {
             let lhs_base = rumoca_core::Expression::VarRef {
-                name: lhs.clone().into(),
+                name: lhs.clone(),
                 subscripts: Vec::new(),
                 span: eq.span,
             };
@@ -1126,7 +1048,6 @@ fn lower_scalarized_residual_expressions(
             &residual,
             scalar_row_namespace(row_idx as u64, field_idx),
             None,
-            None,
             ctx,
         )
         .map_err(|err| residual_row_context(err, row_idx, eq))?;
@@ -1141,22 +1062,12 @@ fn residual_row_context(err: LowerError, row_idx: usize, eq: &dae::Equation) -> 
         eq.origin, eq.scalar_count
     );
     match err.with_fallback_span(eq.span) {
-        err @ (LowerError::Unsupported { .. } | LowerError::UnsupportedAt { .. }) => {
-            err.with_context(context)
-        }
-        err @ LowerError::Spanned { .. } => err.with_context(context),
-        err @ LowerError::ContractViolation { .. } => err.with_context(context),
-        LowerError::MissingBinding { name } => {
-            unsupported_at(format!("missing variable binding `{name}`"), eq.span)
-                .with_context(context)
-        }
-        LowerError::MissingFunction { name } => {
-            unsupported_at(format!("missing function `{name}`"), eq.span).with_context(context)
-        }
-        LowerError::InvalidFunction { name, reason } => {
-            unsupported_at(format!("invalid function `{name}`: {reason}"), eq.span)
-                .with_context(context)
-        }
+        // Keeps its identity so the outermost projection boundary can still
+        // recover it as a decline.
+        err @ LowerError::ProjectionBudgetExceeded { .. } => err,
+        // `with_context` preserves every variant's typed identity, so no
+        // error needs to be re-encoded as a reason string here.
+        err => err.with_context(context),
     }
 }
 
@@ -1164,12 +1075,10 @@ fn lower_expression_row(
     expression: &rumoca_core::Expression,
     row_namespace: u64,
     current_update_target: Option<rumoca_ir_solve::ScalarSlot>,
-    current_update_target_name: Option<String>,
     ctx: &RowLoweringContext<'_>,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = lower_builder_for_context(ctx, row_namespace)
-        .with_current_update_target(current_update_target)
-        .with_current_update_target_name(current_update_target_name);
+        .with_current_update_target(current_update_target);
     let scope = Scope::new();
     let value = builder.lower_expr(expression, &scope, 0)?;
     let value = if ctx.guard_target_start_before_first_clock_tick {
@@ -1196,13 +1105,13 @@ fn lower_builder_for_context<'a>(
             triggered_clock_conditions: ctx.triggered_clock_conditions,
             discrete_valued_names: ctx.discrete_valued_names,
             variable_starts: ctx.variable_starts,
+            dae_variables: ctx.dae_variables,
             indexed_bindings: Some(&ctx.indexed_bindings),
-            scalarized_component_child_slots: Some(&ctx.scalarized_component_child_slots),
             is_initial_mode: ctx.is_initial_mode,
         },
     )
-    .with_structural_bindings(ctx.structural_bindings.cloned().unwrap_or_default())
-    .with_direct_assignments(ctx.direct_assignments.cloned().unwrap_or_default())
+    .with_structural_bindings(ctx.structural_bindings.clone().unwrap_or_default())
+    .with_direct_assignments(ctx.direct_assignments.clone().unwrap_or_default())
     .with_call_site_namespace(row_namespace)
 }
 

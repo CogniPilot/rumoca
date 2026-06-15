@@ -50,10 +50,7 @@ fn test_production_rust_files_stay_under_action_required_size() {
         }
         let content = fs::read_to_string(&path).expect("read rust file");
         let lines = content.lines().count();
-        let has_exception = content.contains("SPEC_0021")
-            && content.contains("file-size")
-            && content.contains("split plan");
-        if lines > ACTION_REQUIRED_LINES && !has_exception {
+        if lines > ACTION_REQUIRED_LINES && !has_spec_0021_file_size_exception(&content) {
             offenders.push(format!(
                 "{}: {lines} lines exceeds SPEC_0021 action threshold of {ACTION_REQUIRED_LINES}",
                 path.strip_prefix(&root).unwrap_or(&path).display()
@@ -66,4 +63,8 @@ fn test_production_rust_files_stay_under_action_required_size() {
         "production Rust files exceed SPEC_0021 size budget:\n  {}",
         offenders.join("\n  "),
     );
+}
+
+fn has_spec_0021_file_size_exception(content: &str) -> bool {
+    content.contains("SPEC_0021") && content.contains("file-size") && content.contains("split plan")
 }

@@ -12,7 +12,6 @@
 
 use rumoca_ir_ast as ast;
 
-use rumoca_eval_ast::eval_instantiate::expr_to_string as extract_string_literal;
 use rumoca_ir_flat as flat;
 
 use crate::equations::{build_qualified_name, expand_range_indices, substitute_index_in_equation};
@@ -431,7 +430,7 @@ fn flatten_when_function_call(
     match &**func_name {
         "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports, def_map),
         "assert" => flatten_assert_call(ctx, args, prefix, span, imports, def_map),
-        "terminate" => flatten_terminate_call(args, span),
+        "terminate" => flatten_terminate_call(ctx, args, prefix, span, imports, def_map),
         // print() is a side-effect function that outputs debug messages
         // It doesn't contribute to the DAE system, so we skip it
         "print" => Ok(None),
@@ -556,7 +555,7 @@ fn flatten_assert_call(
     let condition =
         qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx)?;
     let message =
-        extract_string_literal(&args[1]).unwrap_or_else(|| "assertion failed".to_string());
+        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx)?;
     let origin = "assert in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::assert(
@@ -566,8 +565,12 @@ fn flatten_assert_call(
 
 /// Flatten a terminate() call: terminate(message)
 fn flatten_terminate_call(
+    ctx: &Context,
     args: &[ast::Expression],
+    prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    imports: &crate::qualify::ImportMap,
+    def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     if args.is_empty() {
         return Err(FlattenError::unsupported_equation(
@@ -577,7 +580,7 @@ fn flatten_terminate_call(
     }
 
     let message =
-        extract_string_literal(&args[0]).unwrap_or_else(|| "simulation terminated".to_string());
+        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx)?;
     let origin = "terminate in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::terminate(message, span, origin)))
@@ -647,10 +650,11 @@ mod tests {
     fn comp_ref(path: &str) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
-            parts: rumoca_core::split_path_with_indices(path)
+            parts: rumoca_core::ComponentPath::from_flat_path(path)
+                .into_parts()
                 .into_iter()
                 .map(|part| ast::ComponentRefPart {
-                    ident: token(part),
+                    ident: token(&part),
                     subs: None,
                 })
                 .collect(),

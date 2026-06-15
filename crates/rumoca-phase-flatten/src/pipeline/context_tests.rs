@@ -11,7 +11,7 @@ mod tests {
     use std::sync::Arc;
 
     fn component_ref_expr(path: &str) -> ast::Expression {
-        let parts = crate::path_utils::split_path_with_indices(path)
+        let parts = crate::path_utils::segments(path)
             .into_iter()
             .map(|segment| ast::ComponentRefPart {
                 ident: rumoca_core::Token {
@@ -37,17 +37,20 @@ mod tests {
         }
     }
 
-    fn string_lit(value: &str) -> Expression {
-        Expression::Literal {
-            value: rumoca_core::Literal::String(value.to_string()),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
     fn int_array(values: &[i64]) -> Expression {
         Expression::Array {
             elements: values.iter().copied().map(int_lit).collect(),
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn fill_expr(value: i64, dims: &[i64]) -> Expression {
+        let mut args = vec![int_lit(value)];
+        args.extend(dims.iter().copied().map(int_lit));
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -785,55 +788,17 @@ mod tests {
     }
 
     #[test]
-    fn colon_component_dimensions_use_external_table_columns() {
+    fn colon_component_dimensions_accept_zero_sized_binding_shape() {
         let mut ctx = Context::new();
         let tree = ClassTree::default();
         let mut flat = flat::Model::default();
-
-        for (name, binding) in [
-            (
-                "reader.tableOnFile",
-                Expression::Literal {
-                    value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ),
-            (
-                "reader.fileName",
-                Expression::Literal {
-                    value: rumoca_core::Literal::String("NoName".to_string()),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ),
-            (
-                "reader.tableName",
-                Expression::Literal {
-                    value: rumoca_core::Literal::String("tab1".to_string()),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ),
-            ("reader.columns", int_array(&[2, 30])),
-        ] {
-            let var_name = rumoca_core::VarName::new(name);
-            flat.add_variable(
-                var_name.clone(),
-                flat::Variable {
-                    name: var_name,
-                    variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                    binding: Some(binding),
-                    is_primitive: true,
-                    ..Default::default()
-                },
-            );
-        }
-
-        let table_name = rumoca_core::VarName::new("reader.table");
+        let table_name = rumoca_core::VarName::new("table");
         flat.add_variable(
             table_name.clone(),
             flat::Variable {
                 name: table_name.clone(),
-                dims: vec![1],
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                dims: vec![0, 2],
+                binding: Some(fill_expr(0, &[0, 2])),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -844,7 +809,7 @@ mod tests {
             InstanceId::new(1),
             InstanceData {
                 instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("reader.table"),
+                qualified_name: QualifiedName::from_dotted("table"),
                 dims_expr: vec![
                     ast::Subscript::Range {
                         token: rumoca_core::Token::default(),
@@ -862,228 +827,17 @@ mod tests {
 
         let changed = ctx
             .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
-            .expect("file-backed table dimensions should resolve from columns");
-
-        assert!(changed);
-        assert_eq!(
-            flat.variables
-                .get(&table_name)
-                .expect("reader.table variable")
-                .dims,
-            vec![1, 30]
-        );
-        assert_eq!(ctx.array_dimensions.get("reader.table"), Some(&vec![1, 30]));
-    }
-
-    #[test]
-    fn colon_component_dimensions_follow_binary_array_binding_shape() {
-        let mut ctx = Context::new();
-        let tree = ClassTree::default();
-        let mut flat = flat::Model::default();
-
-        let speed_nominal_name = rumoca_core::VarName::new("fan.per.speed_rpm_nominal");
-        flat.add_variable(
-            speed_nominal_name.clone(),
-            flat::Variable {
-                name: speed_nominal_name,
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                binding: Some(int_lit(1500)),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        let speeds_rpm_name = rumoca_core::VarName::new("fan.per.speeds_rpm");
-        flat.add_variable(
-            speeds_rpm_name.clone(),
-            flat::Variable {
-                name: speeds_rpm_name,
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                binding: Some(int_array(&[0, 1500])),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        let speeds_name = rumoca_core::VarName::new("fan.per.speeds");
-        flat.add_variable(
-            speeds_name.clone(),
-            flat::Variable {
-                name: speeds_name,
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                binding: Some(Expression::Binary {
-                    op: rumoca_core::OpBinary::Div,
-                    lhs: Box::new(Expression::VarRef {
-                        name: rumoca_core::Reference::new("speeds_rpm"),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    rhs: Box::new(Expression::VarRef {
-                        name: rumoca_core::Reference::new("speed_rpm_nominal"),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        let stage_inputs_name = rumoca_core::VarName::new("fan.stageInputs");
-        flat.add_variable(
-            stage_inputs_name.clone(),
-            flat::Variable {
-                name: stage_inputs_name.clone(),
-                dims: vec![1],
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                binding: Some(Expression::VarRef {
-                    name: rumoca_core::Reference::new("per.speeds"),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        let mut overlay = InstanceOverlay::default();
-        overlay.components.insert(
-            InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("fan.stageInputs"),
-                dims_expr: vec![ast::Subscript::Range {
-                    token: rumoca_core::Token::default(),
-                }],
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        ctx.build_parameter_lookup(&flat, &tree);
-
-        let changed = ctx
-            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
-            .expect("binary array binding should provide stage input dimensions");
-
-        assert!(changed);
-        assert_eq!(
-            flat.variables
-                .get(&stage_inputs_name)
-                .expect("fan.stageInputs variable")
-                .dims,
-            vec![2]
-        );
-    }
-
-    #[test]
-    fn colon_component_dimensions_use_default_mover_stage_input_shape() {
-        let mut ctx = Context::new();
-        let tree = ClassTree::default();
-        let mut flat = flat::Model::default();
-        let stage_inputs_name = rumoca_core::VarName::new("fan.stageInputs");
-        flat.add_variable(
-            stage_inputs_name.clone(),
-            flat::Variable {
-                name: stage_inputs_name.clone(),
-                dims: vec![1],
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        let mut overlay = InstanceOverlay::default();
-        overlay.components.insert(
-            InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("fan.stageInputs"),
-                dims_expr: vec![ast::Subscript::Range {
-                    token: rumoca_core::Token::default(),
-                }],
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        ctx.build_parameter_lookup(&flat, &tree);
-
-        let changed = ctx
-            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
-            .expect("Buildings mover default stageInputs shape should resolve");
+            .expect("zero-sized binding shape should satisfy colon dimensions");
 
         assert!(!changed);
         assert_eq!(
             flat.variables
-                .get(&stage_inputs_name)
-                .expect("fan.stageInputs variable")
+                .get(&table_name)
+                .expect("table variable")
                 .dims,
-            vec![1]
+            vec![0, 2]
         );
-    }
-
-    #[test]
-    fn colon_component_dimensions_follow_read_real_matrix_shape() {
-        let mut ctx = Context::new();
-        let tree = ClassTree::default();
-        let mut flat = flat::Model::default();
-
-        let matrix_name = rumoca_core::VarName::new("reader.A");
-        flat.add_variable(
-            matrix_name.clone(),
-            flat::Variable {
-                name: matrix_name.clone(),
-                dims: vec![1, 1],
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                binding: Some(Expression::FunctionCall {
-                    name: rumoca_core::Reference::new("Modelica.Utilities.Streams.readRealMatrix"),
-                    args: vec![
-                        string_lit("file.mat"),
-                        string_lit("Matrix_A"),
-                        int_lit(3),
-                        int_lit(2),
-                    ],
-                    is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        let mut overlay = InstanceOverlay::default();
-        overlay.components.insert(
-            InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("reader.A"),
-                dims_expr: vec![
-                    ast::Subscript::Range {
-                        token: rumoca_core::Token::default(),
-                    },
-                    ast::Subscript::Range {
-                        token: rumoca_core::Token::default(),
-                    },
-                ],
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-
-        ctx.build_parameter_lookup(&flat, &tree);
-
-        let changed = ctx
-            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
-            .expect("readRealMatrix dimensions should resolve from nrow/ncol");
-
-        assert!(changed);
-        assert_eq!(
-            flat.variables.get(&matrix_name).expect("A variable").dims,
-            vec![3, 2]
-        );
-        assert_eq!(ctx.array_dimensions.get("reader.A"), Some(&vec![3, 2]));
+        assert_eq!(ctx.array_dimensions.get("table"), Some(&vec![0, 2]));
     }
 
     #[test]

@@ -37,7 +37,8 @@
       "state_select": "Default",
       "description": "Periodic Boolean sample interval",
       "causality": "calculatedParameter",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     }
   },
   "constants": {},
@@ -74,7 +75,8 @@
       "state_select": "Default",
       "description": "Latched numeric visualization of logical state",
       "causality": "local",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     }
   },
   "m": {
@@ -110,7 +112,8 @@
       "state_select": "Default",
       "description": "Logical block output",
       "causality": "local",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     },
     "not1.y": {
       "name": "not1.y",
@@ -144,7 +147,8 @@
       "state_select": "Default",
       "description": "Logical inversion output",
       "causality": "local",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     }
   },
   "f_x": [],
@@ -153,7 +157,38 @@
   "initial_for_equations": [],
   "f_z": [
     {
-      "lhs": "hold.y",
+      "lhs": {
+        "name": "hold.y",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "hold",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            },
+            {
+              "ident": "y",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "If": {
           "branches": [
@@ -213,7 +248,38 @@
   ],
   "f_m": [
     {
-      "lhs": "and1.y",
+      "lhs": {
+        "name": "and1.y",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "and1",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            },
+            {
+              "ident": "y",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "Binary": {
           "op": "And",
@@ -255,7 +321,38 @@
       "scalar_count": 1
     },
     {
-      "lhs": "not1.y",
+      "lhs": {
+        "name": "not1.y",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "not1",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            },
+            {
+              "ident": "y",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": []
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "Unary": {
           "op": "Not",
@@ -288,7 +385,40 @@
   ],
   "f_c": [
     {
-      "lhs": "c[1]",
+      "lhs": {
+        "name": "c[1]",
+        "component_ref": {
+          "local": false,
+          "span": {
+            "source": 0,
+            "start": 0,
+            "end": 0
+          },
+          "parts": [
+            {
+              "ident": "c",
+              "span": {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              },
+              "subs": [
+                {
+                  "Index": {
+                    "value": 1,
+                    "span": {
+                      "source": 0,
+                      "start": 0,
+                      "end": 0
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "def_id": null
+        }
+      },
       "rhs": {
         "Binary": {
           "op": "Ge",
@@ -394,6 +524,7 @@
     "stream_interface_equation_count": 0,
     "overconstrained_interface_count": 0,
     "oc_break_edge_scalar_count": 0,
-    "model_description": "Schema golden derived from Modelica.Blocks.Examples.LogicalNetwork1 surface: Boolean network with timed trigger"
+    "model_description": "Schema golden derived from Modelica.Blocks.Examples.LogicalNetwork1 surface: Boolean network with timed trigger",
+    "symbol_ancestry": {}
   }
 }

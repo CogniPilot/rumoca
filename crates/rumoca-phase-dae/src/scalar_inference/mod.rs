@@ -21,13 +21,12 @@ pub(crate) fn compute_var_size(dims: &[i64]) -> usize {
     scalar_size::compute_var_size(dims)
 }
 
-/// Compute scalar count for a subscripted variable access.
-///
-/// Each `Index` or `Expr` subscript reduces one dimension (selects a single element),
-/// while `Colon` preserves the dimension. The result is the product of remaining dimensions.
-/// For example, `M[1]` where M is `[2,3]` gives `3` (one row of a 2×3 matrix).
-pub(crate) fn compute_subscripted_size(dims: &[i64], subscripts: &[Subscript]) -> usize {
-    scalar_size::compute_subscripted_size(dims, subscripts)
+pub(crate) fn compute_subscripted_size_with_context(
+    dims: &[i64],
+    subscripts: &[Subscript],
+    flat: &Model,
+) -> Option<usize> {
+    scalar_size::compute_subscripted_size_with_context(dims, subscripts, flat)
 }
 
 /// Check if a VarRef name contains evaluable integer arithmetic in subscripts.
@@ -136,6 +135,14 @@ pub(crate) fn apply_subscripts_to_dims(dims: &[i64], subscripts: &[Subscript]) -
     remaining_dims
 }
 
+pub(crate) fn apply_subscripts_to_dims_with_context(
+    dims: &[i64],
+    subscripts: &[Subscript],
+    flat: &Model,
+) -> Option<Vec<i64>> {
+    scalar_size::apply_subscripts_to_dims_with_context(dims, subscripts, flat)
+}
+
 pub(crate) fn infer_varref_form(
     name: &str,
     subscripts: &[Subscript],
@@ -147,7 +154,11 @@ pub(crate) fn infer_varref_form(
         if subscripts.is_empty() {
             return expression_form_from_dims(&var.dims);
         }
-        let remaining_dims = apply_subscripts_to_dims(&var.dims, subscripts);
+        let Some(remaining_dims) =
+            apply_subscripts_to_dims_with_context(&var.dims, subscripts, flat)
+        else {
+            return ExpressionForm::Other;
+        };
         return expression_form_from_dims(&remaining_dims);
     }
 

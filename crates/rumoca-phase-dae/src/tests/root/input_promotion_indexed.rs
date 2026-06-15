@@ -5,14 +5,14 @@ fn test_equation_defined_indexed_array_input_promotes_internal_input() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("plant.omega_cmd"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("plant.omega_cmd"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             dims: vec![4],
             ..Default::default()
-        },
+        }),
     );
 
     add_component_equation(
@@ -34,13 +34,13 @@ fn test_equation_defined_array_lhs_promotes_internal_input_elements() {
     for name in ["plant.motor[1].omega_cmd", "plant.motor[2].omega_cmd"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -79,13 +79,13 @@ fn test_rhs_input_alias_with_lhs_internal_input_promotes_rhs_input() {
     for name in ["plant.omega_cmd", "plant.motor[1].omega_cmd"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -112,14 +112,14 @@ fn test_rhs_array_alias_with_lhs_internal_input_promotes_rhs_inputs() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 dims,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -167,14 +167,14 @@ fn test_component_array_selection_lhs_promotes_indexed_internal_inputs() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 dims,
                 ..Default::default()
-            },
+            }),
         );
     }
 

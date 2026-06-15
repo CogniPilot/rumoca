@@ -66,7 +66,13 @@ fn trace_algebraic_refresh() -> bool {
 #[derive(Clone)]
 pub(crate) struct AlgebraicRefreshRow {
     pub(crate) row_idx: usize,
+    /// Solver-Y slot this plan entry updates.
     pub(crate) target_index: usize,
+    /// The row's own implicit assignment target, when the lowering placed it
+    /// as `target = expr`. When this differs from `target_index` the runtime
+    /// must linear-solve the row's residual for the paired variable instead
+    /// of evaluating the assignment value.
+    pub(crate) assignment_target: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -92,7 +98,7 @@ pub(crate) fn build_algebraic_refresh_plan(
         .into_iter()
         .map(|row| (row.target_index, row))
         .collect::<IndexMap<_, _>>();
-    for row in algebraic_refresh_rows_from_projection_plan(model, state_count) {
+    for row in algebraic_refresh_rows_from_projection_plan(model, block, state_count) {
         rows_by_target.insert(row.target_index, row);
     }
     let rows = rows_by_target.into_values().collect();
@@ -101,33 +107,120 @@ pub(crate) fn build_algebraic_refresh_plan(
 
 fn algebraic_refresh_rows_from_projection_plan(
     model: &solve::SolveModel,
+    block: &PreparedScalarProgramBlock,
     state_count: usize,
 ) -> Vec<AlgebraicRefreshRow> {
-    model
-        .problem
-        .continuous
-        .algebraic_projection_plan
-        .blocks
-        .iter()
-        .flat_map(|block| {
-            block
-                .rows
-                .iter()
-                .copied()
-                .zip(block.y_indices.iter().copied())
-                .chain(
-                    block
-                        .causal_steps
-                        .iter()
-                        .map(|step| (step.row, step.y_index)),
-                )
-        })
-        .filter_map(|(row_idx, target_index)| {
-            (target_index >= state_count).then_some(AlgebraicRefreshRow {
+    let implicit_targets = &model.problem.continuous.implicit_row_targets;
+    let assignment_target = |row_idx: usize| -> Option<usize> {
+        match implicit_targets.get(row_idx).copied().flatten() {
+            Some(solve::ScalarSlot::Y { index, .. }) => Some(index),
+            _ => None,
+        }
+    };
+    let mut rows = Vec::new();
+    for plan_block in &model.problem.continuous.algebraic_projection_plan.blocks {
+        // A coupled block's `rows` and `y_indices` are independent sets (the
+        // unknowns are even sorted), so each row must be paired with an
+        // unknown it actually determines — positional pairing produces a
+        // convergent but wrong system (a gear-torque row "assigned" to an
+        // unrelated flange torque). Pair by maximum bipartite matching over
+        // real incidence, preferring each row's own implicit target.
+        let eligible_ys: Vec<usize> = plan_block
+            .y_indices
+            .iter()
+            .copied()
+            .filter(|&y| y >= state_count)
+            .collect();
+        let pairs = match_block_rows_to_targets(
+            &plan_block.rows,
+            &eligible_ys,
+            &assignment_target,
+            |row_idx, y| block.row_reads_y(row_idx, y),
+        );
+        for (row_idx, target_index) in pairs {
+            rows.push(AlgebraicRefreshRow {
                 row_idx,
                 target_index,
-            })
+                assignment_target: assignment_target(row_idx),
+            });
+        }
+        for step in &plan_block.causal_steps {
+            if step.y_index >= state_count {
+                rows.push(AlgebraicRefreshRow {
+                    row_idx: step.row,
+                    target_index: step.y_index,
+                    assignment_target: assignment_target(step.row),
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// Pair each block row with a distinct block unknown it can determine:
+/// its own implicit assignment target when that is part of the block,
+/// otherwise an unknown the row's program reads. Kuhn's augmenting-path
+/// matching; unmatched rows/unknowns are left out (the runtime reports the
+/// unknowns as missing producers instead of silently mis-solving).
+fn match_block_rows_to_targets(
+    rows: &[usize],
+    ys: &[usize],
+    assignment_target: &dyn Fn(usize) -> Option<usize>,
+    reads: impl Fn(usize, usize) -> bool,
+) -> Vec<(usize, usize)> {
+    let y_pos: IndexMap<usize, usize> = ys
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(p, y)| (y, p))
+        .collect();
+    let adjacency: Vec<Vec<usize>> = rows
+        .iter()
+        .map(|&row_idx| {
+            let own = assignment_target(row_idx).and_then(|y| y_pos.get(&y).copied());
+            let mut candidates: Vec<usize> = own.into_iter().collect();
+            for (&y, &pos) in &y_pos {
+                if Some(pos) != own && reads(row_idx, y) {
+                    candidates.push(pos);
+                }
+            }
+            candidates
         })
+        .collect();
+    let mut matched_row_for_y: Vec<Option<usize>> = vec![None; ys.len()];
+    fn try_assign(
+        row_pos: usize,
+        adjacency: &[Vec<usize>],
+        matched_row_for_y: &mut [Option<usize>],
+        visited: &mut [bool],
+    ) -> bool {
+        for &y_pos in &adjacency[row_pos] {
+            if visited[y_pos] {
+                continue;
+            }
+            visited[y_pos] = true;
+            if matched_row_for_y[y_pos].is_none()
+                || try_assign(
+                    matched_row_for_y[y_pos].expect("checked above"),
+                    adjacency,
+                    matched_row_for_y,
+                    visited,
+                )
+            {
+                matched_row_for_y[y_pos] = Some(row_pos);
+                return true;
+            }
+        }
+        false
+    }
+    for row_pos in 0..rows.len() {
+        let mut visited = vec![false; ys.len()];
+        try_assign(row_pos, &adjacency, &mut matched_row_for_y, &mut visited);
+    }
+    matched_row_for_y
+        .iter()
+        .enumerate()
+        .filter_map(|(y_pos, row_pos)| row_pos.map(|rp| (rows[rp], ys[y_pos])))
         .collect()
 }
 
@@ -160,6 +253,7 @@ fn algebraic_refresh_rows_from_row_targets(
         rows.push(AlgebraicRefreshRow {
             row_idx,
             target_index,
+            assignment_target: Some(target_index),
         });
     }
     rows

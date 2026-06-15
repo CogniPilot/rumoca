@@ -225,6 +225,7 @@ struct RecoveredClassHeader {
     expandable: bool,
     operator_record: bool,
     pure: bool,
+    purity_declared: bool,
 }
 
 struct RecoveredClassBuilder {
@@ -243,6 +244,7 @@ impl RecoveredClassBuilder {
             expandable: self.header.expandable,
             operator_record: self.header.operator_record,
             pure: self.header.pure,
+            purity_declared: self.header.purity_declared,
             classes: self.classes,
             end_name_token,
             location: combine_locations(&self.header.start, &end),
@@ -418,6 +420,7 @@ fn parse_class_header(tokens: &[LexToken], start: usize) -> Option<(RecoveredCla
     let mut partial = false;
     let mut expandable = false;
     let mut pure = true;
+    let mut purity_declared = false;
     while let Some(token) = tokens.get(idx) {
         if !matches!(token.kind, LexTokenKind::Ident) {
             break;
@@ -426,8 +429,14 @@ fn parse_class_header(tokens: &[LexToken], start: usize) -> Option<(RecoveredCla
             "encapsulated" => encapsulated = true,
             "partial" => partial = true,
             "expandable" => expandable = true,
-            "pure" => pure = true,
-            "impure" => pure = false,
+            "pure" => {
+                pure = true;
+                purity_declared = true;
+            }
+            "impure" => {
+                pure = false;
+                purity_declared = true;
+            }
             _ => break,
         }
         idx += 1;
@@ -450,6 +459,7 @@ fn parse_class_header(tokens: &[LexToken], start: usize) -> Option<(RecoveredCla
         expandable,
         operator_record,
         pure,
+        purity_declared,
     };
     Some((header, idx_after_keyword + 1))
 }

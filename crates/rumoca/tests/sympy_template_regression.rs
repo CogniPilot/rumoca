@@ -182,7 +182,9 @@ fn sympy_template_dae_context_exposes_condition_aliases() {
         .expect("condition aliases should be present");
 
     assert_eq!(aliases.len(), 1);
-    assert_eq!(aliases[0]["condition"]["VarRef"]["name"], "c[1]");
+    let condition_name = &aliases[0]["condition"]["VarRef"]["name"];
+    assert_eq!(condition_name["name"], "c[1]");
+    assert!(condition_name["component_ref"].is_object());
     assert!(aliases[0]["relation"]["Binary"].is_object());
 }
 

@@ -27,7 +27,6 @@ use rumoca_compile::source_roots::{
     render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
     render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
 };
-use rumoca_phase_dae::{balance as dae_balance, balance_detail as dae_balance_detail};
 use rumoca_sim::{SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationDiagnosticError, simulate_dae_with_diagnostics};
 use rumoca_sim::{

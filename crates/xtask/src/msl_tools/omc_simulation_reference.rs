@@ -358,7 +358,7 @@ pub fn run(args: Args) -> Result<()> {
     if cache_valid {
         merge_cached_results_for_resume(&omc_ref_json, &omc_model_names, &mut state.all_results)?;
     }
-    run_session_pending(&args, workers, &paths.sim_work_dir, &mut state, cache_valid)?;
+    run_session_pending(&args, workers, &paths, &mut state, cache_valid)?;
     ensure_omc_trace_artifacts(&paths, &mut state.all_results);
     attach_rumoca_runtime(&rumoca_runtimes, &mut state.all_results);
     ensure_target_placeholders(&model_names, &rumoca_runtimes, &mut state.all_results);
@@ -692,7 +692,7 @@ struct SessionWorkerCtx<'a> {
 fn run_session_pending(
     args: &Args,
     workers: usize,
-    work_dir: &Path,
+    paths: &MslPaths,
     state: &mut SimRunState,
     reuse_cached: bool,
 ) -> Result<()> {
@@ -703,7 +703,7 @@ fn run_session_pending(
         state
             .all_results
             .iter()
-            .filter(|(_, result)| matches!(result.status.as_str(), "success" | "error" | "timeout"))
+            .filter(|(model_name, result)| cached_omc_result_is_reusable(paths, model_name, result))
             .map(|(name, _)| name.clone())
             .collect()
     } else {
@@ -723,8 +723,7 @@ fn run_session_pending(
         return Ok(());
     }
 
-    let paths = MslPaths::current();
-    let msl_exprs = msl_load_lines(&paths);
+    let msl_exprs = msl_load_lines(paths);
     // Mirror the rumoca warm-worker pool: one heavyweight OMC session per real
     // CPU core (not per SMT sibling), reserving headroom cores on large hosts so
     // the machine stays usable, and pin each worker to its core to keep caches
@@ -736,7 +735,7 @@ fn run_session_pending(
     let core_plan = rumoca_worker::cpu_core_plan(worker_count);
     let pinned = core_plan.iter().filter(|core| core.is_some()).count();
     let sim_timeout = Duration::from_secs(args.batch_timeout_seconds.max(1));
-    let startup_timeout = Duration::from_secs(60);
+    let startup_timeout = Duration::from_secs(270);
     let load_timeout = Duration::from_secs(120);
     let total = models.len();
     println!(
@@ -752,7 +751,7 @@ fn run_session_pending(
         let next = Arc::clone(&next);
         let tx = tx.clone();
         let msl_exprs = msl_exprs.clone();
-        let work_dir = work_dir.to_path_buf();
+        let work_dir = paths.sim_work_dir.clone();
         let stop_time = args.stop_time;
         let use_experiment = args.use_experiment_stop_time;
         let omc_threads = args.omc_threads;
@@ -1025,6 +1024,26 @@ fn ensure_omc_trace_artifacts(paths: &MslPaths, results: &mut BTreeMap<String, S
 
 fn omc_trace_artifact_exists(paths: &MslPaths, model_name: &str, result: &SimModelResult) -> bool {
     resolve_declared_omc_trace_path(paths, model_name, result).is_some_and(|path| path.is_file())
+}
+
+fn cached_omc_result_is_reusable(
+    paths: &MslPaths,
+    model_name: &str,
+    result: &SimModelResult,
+) -> bool {
+    match result.status.as_str() {
+        "success" => cached_omc_success_has_trace_source(paths, model_name, result),
+        _ => false,
+    }
+}
+
+fn cached_omc_success_has_trace_source(
+    paths: &MslPaths,
+    model_name: &str,
+    result: &SimModelResult,
+) -> bool {
+    omc_trace_artifact_exists(paths, model_name, result)
+        || resolve_result_file_path(paths, model_name, result.result_file.as_deref()).is_some()
 }
 
 fn omc_result_can_produce_trace(result: &SimModelResult) -> bool {
@@ -1466,7 +1485,10 @@ fn ensure_runtime_ratio_stats_present(
     both_success_models: usize,
 ) -> Result<()> {
     if both_success_models == 0 {
-        return Ok(());
+        bail!(
+            "missing runtime ratio stats because there are no OMC/Rumoca both-success models. \
+             Check OMC session startup and simulation failures before writing parity output."
+        );
     }
     let mut missing = Vec::new();
     if metrics.system_ratio_both_success.is_none() {

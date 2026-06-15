@@ -13,8 +13,9 @@ use rumoca_core::{ExternalTableData, Span};
 use serde::{Deserialize, Serialize};
 
 pub use layout::{
-    IndexedScalarSlot, ScalarSlot, VarLayout, VarLayoutShapeContractError, scalar_slot_p,
-    scalar_slot_y,
+    ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
+    ComponentReferenceKeyPart, ComponentReferenceSubscriptKey, IndexedScalarSlot, ScalarSlot,
+    VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{
     BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, RandomGenerator, Reg, UnaryOp,
@@ -24,7 +25,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 7;
+pub const SOLVE_SCHEMA_VERSION: u16 = 10;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ExternalTables {
@@ -165,6 +166,29 @@ pub struct TensorNodeMetadata {
     pub scalar_fallback: ScalarFallback,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AffineStencilLoadStride {
+    pub op_position: usize,
+    pub stride: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AffineStencilConstStride {
+    pub op_position: usize,
+    pub stride: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AffineStencilIteration {
+    pub index_values: Vec<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AffineStencilDomain {
+    pub index_names: Vec<String>,
+    pub iterations: Vec<AffineStencilIteration>,
+}
+
 /// A single tensor-level compute node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ComputeNode {
@@ -210,6 +234,20 @@ pub enum ComputeNode {
         metadata: TensorNodeMetadata,
         span: Span,
     },
+
+    /// Consecutive scalar rows whose load indices advance affinely with row offset.
+    ///
+    /// Expands to `count` scalar programs by cloning `base_ops` and adding
+    /// `row_offset * stride` to each load at `load_strides[*].op_position`.
+    AffineStencil {
+        count: usize,
+        domain: AffineStencilDomain,
+        base_ops: Vec<LinearOp>,
+        load_strides: Vec<AffineStencilLoadStride>,
+        const_strides: Vec<AffineStencilConstStride>,
+        metadata: TensorNodeMetadata,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -217,24 +255,26 @@ pub struct ComputeNodeCounts {
     pub scalar_programs: usize,
     pub matmul: usize,
     pub linsolve: usize,
+    pub affine_stencil: usize,
 }
 
 impl ComputeNodeCounts {
     pub fn tensor_nodes(self) -> usize {
-        self.matmul + self.linsolve
+        self.matmul + self.linsolve + self.affine_stencil
     }
 
     pub fn add_assign(&mut self, rhs: Self) {
         self.scalar_programs += rhs.scalar_programs;
         self.matmul += rhs.matmul;
         self.linsolve += rhs.linsolve;
+        self.affine_stencil += rhs.affine_stencil;
     }
 }
 
 /// A sequence of compute nodes in a `SolveProblem`.
 ///
 /// Serializes as `{"nodes": [...]}` where each node is a tagged enum variant
-/// (`ScalarPrograms`, `MatMul`, `LinSolve`). Tensor structure is preserved through
+/// (`ScalarPrograms`, `MatMul`, `LinSolve`, `AffineStencil`). Tensor structure is preserved through
 /// the serde round-trip so backends can choose scalar fallback or native tensor ops.
 #[derive(Clone, Debug, Default)]
 pub struct ComputeBlock {
@@ -261,6 +301,7 @@ impl ComputeBlock {
                 ComputeNode::ScalarPrograms(b) => b.len(),
                 ComputeNode::MatMul { m, n, .. } => m * n,
                 ComputeNode::LinSolve { n, .. } => *n,
+                ComputeNode::AffineStencil { count, .. } => *count,
             })
             .sum()
     }
@@ -276,6 +317,7 @@ impl ComputeBlock {
                 ComputeNode::ScalarPrograms(_) => counts.scalar_programs += 1,
                 ComputeNode::MatMul { .. } => counts.matmul += 1,
                 ComputeNode::LinSolve { .. } => counts.linsolve += 1,
+                ComputeNode::AffineStencil { .. } => counts.affine_stencil += 1,
             }
         }
         counts
@@ -338,6 +380,33 @@ impl ComputeNode {
                         context: context.to_string(),
                         node_index,
                         dimension: "LinSolve",
+                        span: *span,
+                    });
+                }
+            }
+            ComputeNode::AffineStencil {
+                count,
+                domain,
+                span,
+                ..
+            } => {
+                if *count == 0 {
+                    return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+                        context: context.to_string(),
+                        node_index,
+                        dimension: "AffineStencil",
+                        span: *span,
+                    });
+                }
+                if domain.iterations.len() != *count {
+                    return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+                        context: format!(
+                            "{context}: AffineStencil domain iteration count {} does not match count {}",
+                            domain.iterations.len(),
+                            count
+                        ),
+                        node_index,
+                        dimension: "AffineStencilDomain",
                         span: *span,
                     });
                 }
@@ -424,6 +493,17 @@ mod tests {
 
     const REPRESENTATIVE_SOLVE_PROBLEM_GOLDEN: &str =
         include_str!("../tests/golden/representative_solve_problem.solve.json");
+
+    fn test_stencil_domain(count: usize) -> AffineStencilDomain {
+        AffineStencilDomain {
+            index_names: vec!["i".to_string()],
+            iterations: (0..count)
+                .map(|idx| AffineStencilIteration {
+                    index_values: vec![idx as i64 + 1],
+                })
+                .collect(),
+        }
+    }
 
     fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)]) -> VarLayout {
         let mut bindings = IndexMap::new();
@@ -644,9 +724,7 @@ mod tests {
         let layout = make_layout(&[("body.frame.R.T", vec![3, 3])], &[]);
         let entries = layout
             .indexed_bindings()
-            .get(&rumoca_core::ComponentPath::from_flat_path(
-                "body.frame.R.T",
-            ))
+            .get(&ComponentReferenceKey::generated("body.frame.R.T"))
             .expect("array layout should expose structured scalar slots");
 
         assert_eq!(entries.len(), 9);
@@ -691,78 +769,111 @@ mod tests {
         assert!(layout.y_slice("unknown").is_none());
     }
 
-    #[test]
-    fn compute_block_tensor_nodes_survive_serde_roundtrip() {
-        let block = ComputeBlock {
+    fn serde_roundtrip_tensor_block_fixture() -> ComputeBlock {
+        ComputeBlock {
             nodes: vec![
-                ComputeNode::ScalarPrograms(ScalarProgramBlock::new(vec![vec![
-                    LinearOp::Const { dst: 0, value: 1.0 },
-                    LinearOp::StoreOutput { src: 0 },
-                ]])),
-                ComputeNode::MatMul {
-                    lhs_ops: vec![
-                        LinearOp::Const { dst: 0, value: 2.0 },
-                        LinearOp::Move { dst: 1, src: 0 },
-                    ],
-                    lhs_start: 1,
-                    rhs_ops: vec![
-                        LinearOp::LoadSeed { dst: 2, index: 0 },
-                        LinearOp::Move { dst: 3, src: 2 },
-                    ],
-                    rhs_start: 3,
-                    m: 1,
-                    k: 1,
-                    n: 1,
-                    lhs_sparsity: SparsityPattern::Diagonal,
-                    rhs_sparsity: SparsityPattern::Dense,
-                    metadata: TensorNodeMetadata::default(),
-                    span: Span::DUMMY,
-                },
-                ComputeNode::LinSolve {
-                    setup_ops: vec![
-                        LinearOp::LoadP { dst: 0, index: 0 },
-                        LinearOp::LoadP { dst: 1, index: 1 },
-                        LinearOp::LoadP { dst: 2, index: 2 },
-                        LinearOp::LoadY { dst: 3, index: 0 },
-                    ],
-                    matrix_start: 0,
-                    rhs_start: 3,
-                    n: 2,
-                    next_reg: 4,
-                    metadata: TensorNodeMetadata::default(),
-                    span: Span::DUMMY,
-                },
+                serde_roundtrip_scalar_node(),
+                serde_roundtrip_matmul_node(),
+                serde_roundtrip_linsolve_node(),
+                serde_roundtrip_affine_stencil_node(),
             ],
-        };
+        }
+    }
 
-        let json = serde_json::to_string(&block).expect("serialize ComputeBlock");
-        // Verify the JSON preserves tensor node tags, not a flat rows list
-        assert!(
-            json.contains("\"MatMul\""),
-            "MatMul node must appear in JSON: {json}"
-        );
-        assert!(
-            json.contains("\"LinSolve\""),
-            "LinSolve node must appear in JSON: {json}"
-        );
-        assert!(
-            json.contains("\"lhs_sparsity\""),
-            "sparsity annotation must survive: {json}"
-        );
-        assert!(
-            json.contains("\"metadata\""),
-            "tensor metadata must survive: {json}"
-        );
+    fn serde_roundtrip_scalar_node() -> ComputeNode {
+        ComputeNode::ScalarPrograms(ScalarProgramBlock::new(vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]))
+    }
 
-        let back: ComputeBlock = serde_json::from_str(&json).expect("deserialize ComputeBlock");
+    fn serde_roundtrip_matmul_node() -> ComputeNode {
+        ComputeNode::MatMul {
+            lhs_ops: vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::Move { dst: 1, src: 0 },
+            ],
+            lhs_start: 1,
+            rhs_ops: vec![
+                LinearOp::LoadSeed { dst: 2, index: 0 },
+                LinearOp::Move { dst: 3, src: 2 },
+            ],
+            rhs_start: 3,
+            m: 1,
+            k: 1,
+            n: 1,
+            lhs_sparsity: SparsityPattern::Diagonal,
+            rhs_sparsity: SparsityPattern::Dense,
+            metadata: TensorNodeMetadata::default(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn serde_roundtrip_linsolve_node() -> ComputeNode {
+        ComputeNode::LinSolve {
+            setup_ops: vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::LoadP { dst: 1, index: 1 },
+                LinearOp::LoadP { dst: 2, index: 2 },
+                LinearOp::LoadY { dst: 3, index: 0 },
+            ],
+            matrix_start: 0,
+            rhs_start: 3,
+            n: 2,
+            next_reg: 4,
+            metadata: TensorNodeMetadata::default(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn serde_roundtrip_affine_stencil_node() -> ComputeNode {
+        ComputeNode::AffineStencil {
+            count: 8,
+            domain: test_stencil_domain(8),
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![AffineStencilLoadStride {
+                op_position: 0,
+                stride: 1,
+            }],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn assert_tensor_node_tags_survive_json(json: &str) {
+        for tag in [
+            "MatMul",
+            "LinSolve",
+            "AffineStencil",
+            "lhs_sparsity",
+            "metadata",
+        ] {
+            assert!(json.contains(tag), "{tag} must appear in JSON: {json}");
+        }
+    }
+
+    fn assert_tensor_nodes_survive_roundtrip(back: &ComputeBlock) {
         assert_eq!(
             back.nodes.len(),
-            3,
-            "all three tensor nodes must survive round-trip"
+            4,
+            "all four compute nodes must survive round-trip"
         );
         assert!(matches!(&back.nodes[0], ComputeNode::ScalarPrograms(_)));
+        assert!(matches!(&back.nodes[2], ComputeNode::LinSolve { n: 2, .. }));
         assert!(matches!(
-            &back.nodes[1],
+            &back.nodes[3],
+            ComputeNode::AffineStencil { count: 8, .. }
+        ));
+        assert_roundtrip_matmul_shape(&back.nodes[1]);
+    }
+
+    fn assert_roundtrip_matmul_shape(node: &ComputeNode) {
+        assert!(matches!(
+            node,
             ComputeNode::MatMul {
                 m: 1,
                 k: 1,
@@ -776,7 +887,16 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(&back.nodes[2], ComputeNode::LinSolve { n: 2, .. }));
+    }
+
+    #[test]
+    fn compute_block_tensor_nodes_survive_serde_roundtrip() {
+        let block = serde_roundtrip_tensor_block_fixture();
+        let json = serde_json::to_string(&block).expect("serialize ComputeBlock");
+        assert_tensor_node_tags_survive_json(&json);
+
+        let back: ComputeBlock = serde_json::from_str(&json).expect("deserialize ComputeBlock");
+        assert_tensor_nodes_survive_roundtrip(&back);
     }
 
     #[test]
@@ -810,26 +930,43 @@ mod tests {
             metadata: TensorNodeMetadata::default(),
             span: Span::DUMMY,
         };
+        let stencil = ComputeNode::AffineStencil {
+            count: 8,
+            domain: test_stencil_domain(8),
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![AffineStencilLoadStride {
+                op_position: 0,
+                stride: 1,
+            }],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: Span::DUMMY,
+        };
         let block = ComputeBlock {
-            nodes: vec![scalar, matmul.clone(), linsolve.clone()],
+            nodes: vec![scalar, matmul.clone(), linsolve.clone(), stencil.clone()],
         };
 
         let counts = block.compute_node_counts();
         assert_eq!(counts.scalar_programs, 1);
         assert_eq!(counts.matmul, 1);
         assert_eq!(counts.linsolve, 1);
-        assert_eq!(block.tensor_node_count(), 2);
+        assert_eq!(counts.affine_stencil, 1);
+        assert_eq!(block.tensor_node_count(), 3);
 
         let mut problem = SolveProblem::default();
         problem.continuous.implicit_rhs = block;
         problem.continuous.derivative_rhs = ComputeBlock {
-            nodes: vec![matmul, linsolve],
+            nodes: vec![matmul, linsolve, stencil],
         };
         let problem_counts = problem.compute_node_counts();
         assert_eq!(problem_counts.scalar_programs, 1);
         assert_eq!(problem_counts.matmul, 2);
         assert_eq!(problem_counts.linsolve, 2);
-        assert_eq!(problem_counts.tensor_nodes(), 4);
+        assert_eq!(problem_counts.affine_stencil, 2);
+        assert_eq!(problem_counts.tensor_nodes(), 6);
     }
 
     #[test]
@@ -1286,9 +1423,20 @@ pub struct SolveEventPartition {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SolveEventAction {
     pub kind: SolveEventActionKind,
-    pub message: Option<String>,
+    pub message: SolveEventMessage,
     pub span: rumoca_core::Span,
     pub origin: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SolveEventMessage {
+    pub parts: Vec<SolveEventMessagePart>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SolveEventMessagePart {
+    Text(String),
+    Number(Vec<LinearOp>),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

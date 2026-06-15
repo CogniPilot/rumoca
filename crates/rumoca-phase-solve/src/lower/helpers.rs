@@ -1,12 +1,13 @@
 use super::{IndexedBinding, LowerBuilder, LowerError, Scope};
 use indexmap::IndexMap;
-use rumoca_core::ComponentPath;
+use rumoca_ir_dae as dae;
+use rumoca_ir_solve::ComponentReferenceKey;
 use rumoca_ir_solve::Reg;
 use rumoca_ir_solve::VarLayout;
 
 pub(super) fn build_indexed_binding_map(
     layout: &VarLayout,
-) -> IndexMap<ComponentPath, Vec<IndexedBinding>> {
+) -> IndexMap<ComponentReferenceKey, Vec<IndexedBinding>> {
     layout
         .indexed_bindings()
         .iter()
@@ -26,13 +27,98 @@ pub(super) fn build_indexed_binding_map(
 }
 
 pub(super) fn indexed_entries_for_key(
-    grouped: &IndexMap<ComponentPath, Vec<IndexedBinding>>,
+    grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
     key: &str,
 ) -> Vec<IndexedBinding> {
     grouped
-        .get(&ComponentPath::from_flat_path(key))
+        .get(&ComponentReferenceKey::generated(key))
         .cloned()
         .unwrap_or_default()
+}
+
+/// Cached per-key view of an indexed binding group: inferred dims plus an
+/// indices-to-position map over the rank-length entries. Deriving these per
+/// reference (clone + scan + sort of the whole group) was quadratic in
+/// model size for large arrays.
+pub(super) struct IndexedMeta {
+    pub(super) dims: Vec<usize>,
+    pub(super) by_indices: std::collections::HashMap<Vec<usize>, usize>,
+}
+
+impl IndexedMeta {
+    pub(super) fn build(entries: &[IndexedBinding]) -> Self {
+        let dims = infer_indexed_dims(entries);
+        let rank = entries
+            .iter()
+            .map(|entry| entry.indices.len())
+            .max()
+            .unwrap_or(0);
+        let mut by_indices = std::collections::HashMap::with_capacity(entries.len());
+        for (position, entry) in entries.iter().enumerate() {
+            if entry.indices.len() == rank {
+                by_indices.entry(entry.indices.clone()).or_insert(position);
+            }
+        }
+        Self { dims, by_indices }
+    }
+}
+
+pub(super) fn indexed_entries_for_reference(
+    grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
+    reference: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+) -> Result<Vec<IndexedBinding>, LowerError> {
+    Ok(indexed_key_for_reference(grouped, reference, span)?
+        .and_then(|key| grouped.get(&key).cloned())
+        .unwrap_or_default())
+}
+
+/// Resolve the indexed-binding group key for a reference without cloning
+/// the group. Returns `Ok(None)` when no group exists for the reference.
+pub(super) fn indexed_key_for_reference(
+    grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
+    reference: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+) -> Result<Option<ComponentReferenceKey>, LowerError> {
+    let contained = |key: ComponentReferenceKey| grouped.contains_key(&key).then_some(key);
+    if reference.is_generated() {
+        return Ok(contained(ComponentReferenceKey::generated(
+            reference.as_str(),
+        )));
+    }
+    let Some(component_ref) = reference.component_ref() else {
+        let generated_key = ComponentReferenceKey::generated(reference.as_str());
+        #[cfg(test)]
+        if grouped.contains_key(&generated_key) || span.is_dummy() {
+            return Ok(contained(generated_key));
+        }
+        if !grouped.contains_key(&generated_key) {
+            return Ok(None);
+        }
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "indexed solve-layout lookup for `{}` lost structured component-reference metadata",
+                reference.as_str()
+            ),
+            span,
+        });
+    };
+    #[cfg(test)]
+    if let Some(key) =
+        crate::test_support::fixture_key_for_component_ref(component_ref, reference.as_str())
+    {
+        return Ok(contained(key));
+    }
+    let key = ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
+        LowerError::ContractViolation {
+            reason: format!(
+                "indexed solve-layout lookup for `{}` has non-static component reference",
+                reference.as_str()
+            ),
+            span: err.span,
+        }
+    })?;
+    Ok(contained(key))
 }
 
 pub(super) fn parse_indexed_binding_key(key: &str) -> Option<(String, Vec<usize>)> {
@@ -56,7 +142,7 @@ pub(super) fn is_record_constructor_signature(
         return false;
     }
 
-    let function_leaf = rumoca_core::top_level_last_segment(name);
+    let function_leaf = crate::path_utils::leaf_segment(name);
     if function.inputs.is_empty() {
         return false;
     }
@@ -77,7 +163,7 @@ pub(super) fn is_record_constructor_signature(
         return false;
     }
 
-    let output_leaf = rumoca_core::top_level_last_segment(&output.type_name);
+    let output_leaf = crate::path_utils::leaf_segment(&output.type_name);
     !output_leaf.is_empty() && output_leaf == function_leaf && output.name == "res"
 }
 
@@ -120,14 +206,23 @@ pub(super) fn infer_indexed_dims(entries: &[IndexedBinding]) -> Vec<usize> {
     Vec::new()
 }
 
-pub(super) fn dims_scalar_count(dims: &[i64]) -> usize {
-    let count = dims.iter().try_fold(1usize, |acc, dim| {
-        usize::try_from(*dim)
-            .ok()
-            .filter(|dim| *dim > 0)?
-            .checked_mul(acc)
-    });
-    count.unwrap_or(1).max(1)
+pub(super) fn dims_scalar_count(
+    dims: &[i64],
+    context: impl Into<String>,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let context = context.into();
+    dims.iter().try_fold(1usize, |acc, dim| {
+        let dim = usize::try_from(*dim).map_err(|_| LowerError::ContractViolation {
+            reason: format!("{context} has negative dimension `{dim}`"),
+            span,
+        })?;
+        acc.checked_mul(dim)
+            .ok_or_else(|| LowerError::ContractViolation {
+                reason: format!("{context} dimension product overflows usize"),
+                span,
+            })
+    })
 }
 
 pub(super) fn resolve_array_dims_for_value_count(dims: &[i64], value_count: usize) -> Vec<i64> {
@@ -224,14 +319,8 @@ pub(super) fn dynamic_binding_base_key(
             let base_key = dynamic_binding_base_key(base)?;
             Ok(format!("{base_key}.{field}"))
         }
-        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {
-            Ok("__rumoca_literal__".to_string())
-        }
-        _ => Err(LowerError::Unsupported {
-            reason: format!(
-                "unsupported base expression for dynamic binding path: {}",
-                expr_tag(expr)
-            ),
+        _ => Err(LowerError::DynamicBindingBase {
+            tag: expr_tag(expr).to_string(),
         }),
     }
 }
@@ -306,16 +395,7 @@ pub(super) fn append_subscripts_to_key(
         indices.push(lower_subscript_index(sub)?);
     }
 
-    if indices.len() == 1 {
-        return Ok(format!("{base}[{}]", indices[0]));
-    }
-
-    let suffix = indices
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    Ok(format!("{base}[{suffix}]"))
+    Ok(dae::format_subscript_key(&base, &indices))
 }
 
 pub(super) fn constructor_positional_field_index(field: &str) -> Option<usize> {
@@ -329,9 +409,7 @@ pub(super) fn constructor_positional_field_index(field: &str) -> Option<usize> {
 pub(super) fn lower_index_expr(expr: &rumoca_core::Expression) -> Result<usize, LowerError> {
     match lower_static_index_expr(expr)? {
         Some(index) => Ok(index),
-        None => Err(LowerError::Unsupported {
-            reason: format!("dynamic subscript expressions are unsupported: {expr:?}"),
-        }),
+        None => Err(LowerError::DynamicSubscript),
     }
 }
 
@@ -480,13 +558,9 @@ pub(super) fn compile_time_var_key(
     let mut indices = Vec::with_capacity(subscripts.len());
     for sub in subscripts {
         let index = compile_time_subscript_index(sub, const_scope)?;
-        indices.push(index.to_string());
+        indices.push(index);
     }
-    if indices.len() == 1 {
-        Ok(format!("{}[{}]", name, indices[0]))
-    } else {
-        Ok(format!("{}[{}]", name, indices.join(",")))
-    }
+    Ok(dae::format_subscript_key(name, &indices))
 }
 
 pub(super) fn compile_time_subscript_index(
@@ -729,13 +803,22 @@ pub(super) fn statement_tag(statement: &rumoca_core::Statement) -> &'static str 
 }
 
 pub(super) fn resolve_intrinsic_builtin(name: &str) -> Option<rumoca_core::BuiltinFunction> {
-    rumoca_core::BuiltinFunction::from_name(name).or_else(|| {
-        rumoca_core::BuiltinFunction::from_name(rumoca_core::top_level_last_segment(name))
-    })
+    if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(name) {
+        return Some(builtin);
+    }
+    let builtin = rumoca_core::BuiltinFunction::from_name(crate::path_utils::leaf_segment(name))?;
+    is_qualified_standard_math_intrinsic(name, builtin).then_some(builtin)
+}
+
+fn is_qualified_standard_math_intrinsic(name: &str, builtin: rumoca_core::BuiltinFunction) -> bool {
+    let Some(short) = name.strip_prefix("Modelica.Math.") else {
+        return false;
+    };
+    !short.contains('.') && rumoca_core::BuiltinFunction::from_name(short) == Some(builtin)
 }
 
 pub(super) fn intrinsic_short_name(name: &str) -> &str {
-    rumoca_core::top_level_last_segment(name)
+    crate::path_utils::leaf_segment(name)
 }
 
 pub(super) fn is_stream_passthrough_intrinsic(name: &str) -> bool {
@@ -746,7 +829,7 @@ pub(super) fn collect_scope_names(
     entry: &Scope,
     branches: &[Scope],
     else_scope: &Scope,
-) -> Vec<ComponentPath> {
+) -> Vec<ComponentReferenceKey> {
     let mut names = entry.keys();
     for scoped in branches.iter().chain(std::iter::once(else_scope)) {
         names.extend(
@@ -763,7 +846,7 @@ pub(super) fn merge_branch_select(
     builder: &mut LowerBuilder<'_>,
     cond: Reg,
     branch_scope: &Scope,
-    name: &ComponentPath,
+    name: &ComponentReferenceKey,
     merged: Reg,
 ) -> Reg {
     match branch_scope.get(name).copied() {

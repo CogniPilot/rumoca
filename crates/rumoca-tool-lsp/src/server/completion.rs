@@ -9,8 +9,7 @@ use rumoca_compile::compile::{
 use tower_lsp::lsp_types::Position;
 
 use super::{
-    ModelicaLanguageServer, dae_balance, dae_balance_detail, maybe_log_completion_debug,
-    write_completion_progress_summary,
+    ModelicaLanguageServer, maybe_log_completion_debug, write_completion_progress_summary,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -429,9 +428,9 @@ fn strict_compile_failure_title(report: &StrictCompileReport) -> String {
 }
 
 fn balanced_code_lens_title(result: &rumoca_compile::compile::CompilationResult) -> String {
-    let detail = dae_balance_detail(&result.dae);
+    let detail = &result.balance_detail;
     let unknowns = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
-    let balance = dae_balance(&result.dae);
+    let balance = detail.balance();
     let equations = (unknowns as i64 + balance).max(0) as usize;
     if balance == 0 {
         format!("Balanced ({unknowns} unknowns, {equations} eqs)")

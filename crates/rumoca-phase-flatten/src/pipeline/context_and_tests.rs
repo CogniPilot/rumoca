@@ -1,6 +1,6 @@
-// SPEC_0021 file-size exception: split plan is to move focused pipeline
-// fixtures into owned test modules after BOPTEST parity stabilization.
+use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
+use rumoca_eval_flat::phase_constant::try_eval_flat_expr_enum;
 
 #[derive(Clone, Copy)]
 struct ParamBinding<'a> {
@@ -41,6 +41,7 @@ impl Context {
             non_structural_params: std::collections::HashSet::new(),
             functions: rustc_hash::FxHashMap::default(),
             record_aliases: rustc_hash::FxHashMap::default(),
+            component_members: super::component_member_scope::ComponentMemberScopes::default(),
             vcg_is_root: rustc_hash::FxHashMap::default(),
             vcg_rooted: rustc_hash::FxHashMap::default(),
             cardinality_counts: rustc_hash::FxHashMap::default(),
@@ -48,6 +49,17 @@ impl Context {
             current_imports: crate::qualify::ImportMap::default(),
             class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
             current_class_scope_path: None,
+            simulated_root_name: None,
+        }
+    }
+
+    pub(crate) fn instance_name_for_prefix(&self, prefix: &QualifiedName) -> Option<String> {
+        let root = self.simulated_root_name.as_ref()?;
+        let suffix = prefix.to_flat_string();
+        if suffix.is_empty() {
+            Some(root.clone())
+        } else {
+            Some(format!("{root}.{suffix}"))
         }
     }
 
@@ -74,7 +86,6 @@ impl Context {
 
         let var_bindings = Self::collect_var_bindings(flat);
         self.infer_dims_from_literals(flat);
-        self.collect_flat_constant_values(&params);
 
         // Multi-pass evaluation until fixpoint
         self.run_multipass_evaluation(&params, &var_bindings);
@@ -159,29 +170,13 @@ impl Context {
         if let Some(dim) = resolved_dims
             .as_ref()
             .and_then(|dims| dims.get(index).copied())
-            .filter(|dim| *dim > 0)
+            .filter(|dim| *dim >= 0)
         {
             return Ok(dim);
         }
 
         if (flat_var.dims.len() > 1 || flat_var.dims.iter().any(|dim| *dim > 1))
-            && let Some(dim) = flat_var.dims.get(index).copied().filter(|dim| *dim > 0)
-        {
-            return Ok(dim);
-        }
-
-        if let Some(dim) = self
-            .external_table_dimensions(var_name)
-            .and_then(|dims| dims.get(index).copied())
-            .filter(|dim| *dim > 0)
-        {
-            return Ok(dim);
-        }
-
-        if let Some(dim) = self
-            .mover_stage_input_dimensions(var_name)
-            .and_then(|dims| dims.get(index).copied())
-            .filter(|dim| *dim > 0)
+            && let Some(dim) = flat_var.dims.get(index).copied().filter(|dim| *dim >= 0)
         {
             return Ok(dim);
         }
@@ -193,7 +188,7 @@ impl Context {
                 span,
             ));
         };
-        if dim <= 0 {
+        if dim < 0 {
             return Err(FlattenError::unresolved_component_dimension(
                 var_name,
                 ":".to_string(),
@@ -209,62 +204,20 @@ impl Context {
         binding: &Expression,
         tree: &ClassTree,
     ) -> Option<Vec<i64>> {
-        self.read_real_matrix_binding_dimensions(var_name, binding)
-            .or_else(|| infer_enum_range_dimensions(binding, tree))
-            .or_else(|| {
-                infer_array_dimensions_full_with_functions(
-                    binding,
-                    &ParamEvalContext::new(
-                        &self.parameter_values,
-                        &self.real_parameter_values,
-                        &self.boolean_parameter_values,
-                        &self.enum_parameter_values,
-                        &self.array_dimensions,
-                        &self.functions,
-                        Some(var_name),
-                    ),
-                )
-            })
-    }
-
-    fn read_real_matrix_binding_dimensions(
-        &self,
-        var_name: &str,
-        binding: &Expression,
-    ) -> Option<Vec<i64>> {
-        let Expression::FunctionCall { name, args, .. } = binding else {
-            return None;
-        };
-        if !name.as_str().ends_with("readRealMatrix") || args.len() < 4 {
-            return None;
-        }
-
-        let eval_ctx = ParamEvalContext::new(
-            &self.parameter_values,
-            &self.real_parameter_values,
-            &self.boolean_parameter_values,
-            &self.enum_parameter_values,
-            &self.array_dimensions,
-            &self.functions,
-            Some(var_name),
-        );
-        if let (Some(rows), Some(cols)) = (
-            try_eval_integer_with_context(&args[2], &eval_ctx),
-            try_eval_integer_with_context(&args[3], &eval_ctx),
-        ) && rows > 0
-            && cols > 0
-        {
-            return Some(vec![rows, cols]);
-        }
-
-        let file_name = self
-            .const_expr_from_flat_binding(&args[0])
-            .and_then(|expr| string_value_from_expression(&expr))?;
-        let matrix_name = self
-            .const_expr_from_flat_binding(&args[1])
-            .and_then(|expr| string_value_from_expression(&expr))?;
-        let path = resolve_modelica_resource_path(&file_name)?;
-        mat_file_matrix_dimensions(&path, &matrix_name)
+        infer_enum_range_dimensions(binding, tree).or_else(|| {
+            infer_array_dimensions_full_with_functions(
+                binding,
+                &ParamEvalContext::new(
+                    &self.parameter_values,
+                    &self.real_parameter_values,
+                    &self.boolean_parameter_values,
+                    &self.enum_parameter_values,
+                    &self.array_dimensions,
+                    &self.functions,
+                    Some(var_name),
+                ),
+            )
+        })
     }
 
     fn eval_component_dim_subscript(
@@ -440,90 +393,6 @@ impl Context {
                 })
             })
             .collect()
-    }
-
-    fn collect_flat_constant_values(&mut self, params: &[ParamBinding<'_>]) {
-        for ParamBinding { name, binding, .. } in params {
-            if self.constant_values.contains_key(*name) {
-                continue;
-            }
-            if let Some(value) = self.const_expr_from_flat_binding(binding) {
-                self.constant_values.insert((*name).to_string(), value);
-            }
-        }
-    }
-
-    fn const_expr_from_flat_binding(&self, expr: &Expression) -> Option<Expression> {
-        match expr {
-            Expression::Literal { .. } | Expression::Array { .. } | Expression::Range { .. } => {
-                Some(expr.clone())
-            }
-            Expression::FunctionCall { name, args, .. }
-                if name.as_str().ends_with("loadResource") && args.len() == 1 =>
-            {
-                self.const_expr_from_flat_binding(&args[0])
-            }
-            Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => {
-                lookup_constant_expr_with_scope(name.as_str(), "", &self.constant_values)
-            }
-            _ => None,
-        }
-    }
-
-    fn external_table_dimensions(&self, var_name: &str) -> Option<Vec<i64>> {
-        let table_scope = var_name.strip_suffix(".table")?;
-        if self.boolean_constant(&format!("{table_scope}.tableOnFile")) != Some(true) {
-            return None;
-        }
-
-        let table_name = self
-            .string_constant(&format!("{table_scope}.tableName"))
-            .unwrap_or_else(|| "NoName".to_string());
-        let file_name = self.string_constant(&format!("{table_scope}.fileName"));
-        if let Some(path) = file_name.as_deref()
-            && let Some(dims) = modelica_text_table_dimensions(path, &table_name)
-        {
-            return Some(dims);
-        }
-
-        let columns = self
-            .constant_values
-            .get(&format!("{table_scope}.columns"))
-            .and_then(integer_values_from_expression)
-            .and_then(|values| values.into_iter().max())
-            .filter(|max_col| *max_col > 0)
-            .unwrap_or(2);
-        Some(vec![1, columns])
-    }
-
-    fn mover_stage_input_dimensions(&self, var_name: &str) -> Option<Vec<i64>> {
-        let mover_scope = var_name.strip_suffix(".stageInputs")?;
-        for field in ["per.speeds", "per.speeds_rpm"] {
-            let scoped_name = format!("{mover_scope}.{field}");
-            if let Some(dims) = self.array_dimensions.get(&scoped_name) {
-                return Some(dims.clone());
-            }
-        }
-        Some(vec![1])
-    }
-
-    fn string_constant(&self, name: &str) -> Option<String> {
-        let value = lookup_constant_expr_with_scope(name, "", &self.constant_values)?;
-        string_value_from_expression(&value)
-    }
-
-    fn boolean_constant(&self, name: &str) -> Option<bool> {
-        let value = lookup_constant_expr_with_scope(name, "", &self.constant_values)?;
-        let Expression::Literal {
-            value: Literal::Boolean(value),
-            ..
-        } = value
-        else {
-            return None;
-        };
-        Some(value)
     }
 
     /// Infer dimensions from array literal bindings (MLS §10.1).
@@ -851,7 +720,7 @@ impl Context {
                         known_enums: &self.enum_parameter_values,
                         array_dims: &self.array_dimensions,
                         functions: &self.functions,
-                        user_func_eval_ctx: Some(&eval_ctx),
+                        user_func_eval_ctx: None,
                         var_context: Some(name),
                     };
                     if let Some(val) = try_eval_integer_with_context(binding, &int_ctx) {
@@ -927,13 +796,6 @@ impl Context {
 
     /// Try to evaluate real parameters in one pass.
     fn eval_real_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
-        let eval_ctx = build_eval_context(
-            &self.parameter_values,
-            &self.real_parameter_values,
-            &self.boolean_parameter_values,
-            &self.array_dimensions,
-            &self.functions,
-        );
         let new_vals: Vec<(String, f64)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
@@ -946,7 +808,7 @@ impl Context {
                     return Some(((*name).to_string(), val));
                 }
                 // Try user-defined function evaluation for function call bindings
-                self.try_eval_real_func_call(name, binding, &eval_ctx)
+                self.try_eval_real_func_call(name, binding)
                     .map(|val| ((*name).to_string(), val))
             })
             .collect();
@@ -967,12 +829,7 @@ impl Context {
     }
 
     /// Try evaluating a function call binding as a real value.
-    fn try_eval_real_func_call(
-        &self,
-        name: &str,
-        binding: &Expression,
-        eval_ctx: &rumoca_eval_flat::constant::EvalContext,
-    ) -> Option<f64> {
+    fn try_eval_real_func_call(&self, name: &str, binding: &Expression) -> Option<f64> {
         let Expression::FunctionCall {
             name: func_name,
             args,
@@ -988,7 +845,7 @@ impl Context {
             known_enums: &self.enum_parameter_values,
             array_dims: &self.array_dimensions,
             functions: &self.functions,
-            user_func_eval_ctx: Some(eval_ctx),
+            user_func_eval_ctx: None,
             var_context: Some(name),
         };
         eval_user_func_real(func_name, args, &int_ctx)
@@ -1019,10 +876,7 @@ impl Context {
 
         let mut progress = false;
         loop {
-            let canonicalizer = rumoca_eval_flat::phase_constant::EnumCanonicalizer::new(
-                &self.enum_parameter_values,
-            );
-            let new_vals = self.collect_enum_values(params, &param_names, &canonicalizer);
+            let new_vals = self.collect_enum_values(params, &param_names);
             if new_vals.is_empty() {
                 break;
             }
@@ -1043,12 +897,11 @@ impl Context {
         &self,
         params: &[ParamBinding<'_>],
         param_names: &rustc_hash::FxHashSet<&str>,
-        canonicalizer: &rumoca_eval_flat::phase_constant::EnumCanonicalizer,
     ) -> Vec<(String, String)> {
         params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
-                self.resolve_enum_binding_value(binding, param_names, canonicalizer)
+                self.resolve_enum_binding_value(binding, param_names)
                     .map(|enum_val| ((*name).to_string(), enum_val))
             })
             .collect()
@@ -1073,26 +926,20 @@ impl Context {
         &self,
         binding: &Expression,
         param_names: &rustc_hash::FxHashSet<&str>,
-        canonicalizer: &rumoca_eval_flat::phase_constant::EnumCanonicalizer,
     ) -> Option<String> {
-        let enum_val = self.try_eval_enum_binding(binding, canonicalizer)?;
+        let enum_val = self.try_eval_enum_binding(binding)?;
         if !self.enum_reference_matches_parameter(&enum_val, param_names) {
             return Some(enum_val);
         }
         self.resolve_non_parameter_enum_varref(binding, param_names)
     }
 
-    fn try_eval_enum_binding(
-        &self,
-        binding: &Expression,
-        canonicalizer: &rumoca_eval_flat::phase_constant::EnumCanonicalizer,
-    ) -> Option<String> {
-        rumoca_eval_flat::phase_constant::try_eval_flat_expr_enum_with_canonicalizer(
+    fn try_eval_enum_binding(&self, binding: &Expression) -> Option<String> {
+        try_eval_flat_expr_enum(
             binding,
             &self.parameter_values,
             &self.boolean_parameter_values,
             &self.enum_parameter_values,
-            canonicalizer,
         )
         .or_else(|| self.resolve_varref_enum_reference(binding))
     }
@@ -1382,7 +1229,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             if let Some(value) = lookup_with_scope(name, scope, &self.parameter_values) {
                 return Some(value);
             }
@@ -1414,7 +1261,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             if let Some(value) = lookup_with_scope(name, scope, &self.real_parameter_values) {
                 return Some(value);
             }
@@ -1432,7 +1279,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             return lookup_with_scope(name, scope, &self.boolean_parameter_values);
         }
         None
@@ -1452,7 +1299,7 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::has_top_level_dot(name) {
+        if crate::path_utils::is_nested_name(name) {
             return lookup_with_scope(name, scope, &self.enum_parameter_values)
                 .map(std::borrow::Cow::Owned);
         }
@@ -1662,8 +1509,15 @@ fn process_class_instance_body(
             class_index,
             &override_functions,
         );
-        let mut flat_alg =
-            flatten_algorithm_section(&inst_algs, prefix, imports, def_map, &tree.source_map)?;
+        let instance_name = ctx.instance_name_for_prefix(prefix);
+        let mut flat_alg = flatten_algorithm_section(
+            &inst_algs,
+            prefix,
+            imports,
+            def_map,
+            &tree.source_map,
+            instance_name.as_deref(),
+        )?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
             tree,
@@ -1692,8 +1546,15 @@ fn process_class_instance_body(
             class_index,
             &override_functions,
         );
-        let mut flat_alg =
-            flatten_algorithm_section(&inst_algs, prefix, imports, def_map, &tree.source_map)?;
+        let instance_name = ctx.instance_name_for_prefix(prefix);
+        let mut flat_alg = flatten_algorithm_section(
+            &inst_algs,
+            prefix,
+            imports,
+            def_map,
+            &tree.source_map,
+            instance_name.as_deref(),
+        )?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
             tree,
@@ -1717,6 +1578,7 @@ pub(crate) fn flatten_algorithm_section(
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
     source_map: &rumoca_core::SourceMap,
+    instance_name: Option<&str>,
 ) -> Result<Algorithm, FlattenError> {
     // Get span from first statement if available
     let span = statements.first().map(|s| s.span).unwrap_or(Span::DUMMY);
@@ -1736,6 +1598,7 @@ pub(crate) fn flatten_algorithm_section(
             def_map,
             initial_locals: &no_locals,
             source_map: Some(source_map),
+            instance_name,
         },
         algorithms::AlgorithmSectionMetadata::new(span, origin),
     )
@@ -1755,6 +1618,7 @@ pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
     pub(crate) import_cache: &'a mut ImportCaches<'tree>,
     pub(crate) scope_index: &'a OverlayScopeIndex<'a>,
+    pub(crate) component_members: &'a component_member_scope::ComponentMemberScopes,
 }
 
 pub(crate) fn process_component_instance(
@@ -1786,6 +1650,12 @@ pub(crate) fn process_component_instance(
         request.class_index,
         &import_context,
     )?;
+    assign_instance_identity_to_flat_variable(
+        request.flat,
+        &mut flat_var,
+        request.tree,
+        request.instance_data,
+    );
     let instance_scope = request.instance_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
         override_context_for_component_path(&instance_scope, request.component_override_map);
@@ -1799,10 +1669,11 @@ pub(crate) fn process_component_instance(
         &override_packages,
         &override_functions,
         &receiver_scope,
+        request.component_members,
     );
     request.flat.variable_type_names.insert(
         var_name.clone(),
-        variables::flat_output_type_name(request.instance_data, request.tree),
+        variables::flat_output_type_name(request.instance_data, request.tree)?,
     );
     if request.instance_data.is_final {
         request
@@ -1882,8 +1753,7 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     } else {
         imports
     };
-    let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
-    crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
+    qualify_expression_with_effective_imports(expr, prefix, imports, def_map, opts, None)
 }
 
 /// Like `qualify_expression_imports_with_def_map`, but receives flatten context
@@ -1895,9 +1765,49 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
-    _ctx: &Context,
+    ctx: &Context,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
+    let opts = qualify::QualifyOptions {
+        preserve_def_id: true,
+        ..qualify::QualifyOptions::default()
+    };
+    let def_filtered_imports;
+    let imports = if let Some(def_map) = def_map {
+        def_filtered_imports = imports_without_shadowed_aliases(expr, imports, def_map);
+        &def_filtered_imports
+    } else {
+        imports
+    };
+    let scoped_imports = super::component_member_scope::imports_without_instance_member_aliases(
+        expr, prefix, imports, ctx,
+    );
+    let instance_name = ctx.instance_name_for_prefix(prefix);
+    qualify_expression_with_effective_imports(
+        expr,
+        prefix,
+        &scoped_imports,
+        def_map,
+        opts,
+        instance_name.as_deref(),
+    )
+}
+
+fn qualify_expression_with_effective_imports(
+    expr: &ast::Expression,
+    prefix: &QualifiedName,
+    imports: &qualify::ImportMap,
+    def_map: Option<&crate::ResolveDefMap>,
+    opts: qualify::QualifyOptions,
+    instance_name: Option<&str>,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
+    crate::ast_lower::expression_from_ast_with_context(
+        &qualified,
+        crate::ast_lower::LoweringContext {
+            def_map,
+            instance_name,
+        },
+    )
 }
 
 fn imports_without_shadowed_aliases(
@@ -2053,377 +1963,6 @@ fn collect_subscript_shadowed_import_aliases(
     if let ast::Subscript::Expression(expr) = subscript {
         collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
     }
-}
-
-fn enum_type_dimension(expr: &ast::Expression, tree: &ClassTree) -> Option<i64> {
-    let ast::Expression::ComponentReference(reference) = expr else {
-        return None;
-    };
-    enum_literal_count_for_reference(reference, tree).and_then(|count| i64::try_from(count).ok())
-}
-
-fn infer_enum_range_dimensions(expr: &Expression, tree: &ClassTree) -> Option<Vec<i64>> {
-    let Expression::Range {
-        start, step, end, ..
-    } = expr
-    else {
-        return None;
-    };
-    if step.is_some() {
-        return None;
-    }
-    let (start_type, start_ordinal) = enum_literal_ordinal(start, tree)?;
-    let (end_type, end_ordinal) = enum_literal_ordinal(end, tree)?;
-    if start_type != end_type {
-        return None;
-    }
-    let len = if end_ordinal >= start_ordinal {
-        end_ordinal - start_ordinal + 1
-    } else {
-        0
-    };
-    Some(vec![len])
-}
-
-fn enum_literal_ordinal(expr: &Expression, tree: &ClassTree) -> Option<(rumoca_core::DefId, i64)> {
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = expr
-    else {
-        return None;
-    };
-    if !subscripts.is_empty() {
-        return None;
-    }
-    let reference = name.component_ref()?;
-    let literal = reference.parts.last()?.ident.as_str();
-    let enum_class = enum_class_for_literal_reference(reference, tree)?;
-    let enum_def_id = enum_class.def_id?;
-    let ordinal = enum_class
-        .enum_literals
-        .iter()
-        .position(|candidate| candidate.ident.text.as_ref() == literal)? as i64
-        + 1;
-    Some((enum_def_id, ordinal))
-}
-
-fn enum_class_for_literal_reference<'a>(
-    reference: &rumoca_core::ComponentReference,
-    tree: &'a ClassTree,
-) -> Option<&'a ast::ClassDef> {
-    if reference.parts.len() < 2 {
-        return None;
-    }
-    let first_def_id = reference.def_id?;
-    let mut class = tree.get_class_by_def_id(first_def_id)?;
-    if !class.enum_literals.is_empty() {
-        return Some(class);
-    }
-    for part in &reference.parts[1..reference.parts.len() - 1] {
-        class = class.classes.get(part.ident.as_str())?;
-    }
-    (!class.enum_literals.is_empty()).then_some(class)
-}
-
-fn enum_literal_count_for_reference(
-    reference: &ast::ComponentReference,
-    tree: &ClassTree,
-) -> Option<usize> {
-    let def_id = reference.def_id?;
-    tree.get_class_by_def_id(def_id)
-        .map(|class| class.enum_literals.len())
-        .filter(|count| *count > 0)
-}
-
-fn string_value_from_expression(expr: &Expression) -> Option<String> {
-    let Expression::Literal {
-        value: Literal::String(value),
-        ..
-    } = expr
-    else {
-        return None;
-    };
-    Some(value.clone())
-}
-
-fn integer_values_from_expression(expr: &Expression) -> Option<Vec<i64>> {
-    match expr {
-        Expression::Literal {
-            value: Literal::Integer(value),
-            ..
-        } => Some(vec![*value]),
-        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
-            let mut values = Vec::new();
-            for element in elements {
-                values.extend(integer_values_from_expression(element)?);
-            }
-            Some(values)
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => {
-            let start = single_integer_value(start)?;
-            let step = match step {
-                Some(step) => single_integer_value(step)?,
-                None => 1,
-            };
-            let end = single_integer_value(end)?;
-            if step == 0 {
-                return None;
-            }
-            let mut values = Vec::new();
-            let mut value = start;
-            if step > 0 {
-                while value <= end {
-                    values.push(value);
-                    value += step;
-                }
-            } else {
-                while value >= end {
-                    values.push(value);
-                    value += step;
-                }
-            }
-            Some(values)
-        }
-        _ => None,
-    }
-}
-
-fn single_integer_value(expr: &Expression) -> Option<i64> {
-    let Expression::Literal {
-        value: Literal::Integer(value),
-        ..
-    } = expr
-    else {
-        return None;
-    };
-    Some(*value)
-}
-
-fn modelica_text_table_dimensions(file_name: &str, table_name: &str) -> Option<Vec<i64>> {
-    let path = std::path::Path::new(file_name);
-    if !path.is_file() {
-        return None;
-    }
-    let content = std::fs::read_to_string(path).ok()?;
-    let needle = format!("double {table_name}(");
-    for line in content.lines() {
-        let Some(rest) = line.trim_start().strip_prefix(&needle) else {
-            continue;
-        };
-        let Some((dims, _)) = rest.split_once(')') else {
-            continue;
-        };
-        let mut parts = dims.split(',').map(str::trim);
-        let rows = parts.next()?.parse::<i64>().ok()?;
-        let cols = parts.next()?.parse::<i64>().ok()?;
-        if rows > 0 && cols > 0 {
-            return Some(vec![rows, cols]);
-        }
-    }
-    None
-}
-
-fn resolve_modelica_resource_path(file_name: &str) -> Option<std::path::PathBuf> {
-    let path = std::path::Path::new(file_name);
-    if path.is_file() {
-        return Some(path.to_path_buf());
-    }
-
-    let rel = file_name.strip_prefix("modelica://Modelica/")?;
-    modelica_resource_search_roots()
-        .into_iter()
-        .flat_map(|root| {
-            [
-                root.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0")
-                    .join(rel),
-                root.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica")
-                    .join(rel),
-            ]
-        })
-        .find(|candidate| candidate.is_file())
-}
-
-fn modelica_resource_search_roots() -> Vec<std::path::PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.extend(cwd.ancestors().map(std::path::Path::to_path_buf));
-    }
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    roots.extend(manifest_dir.ancestors().map(std::path::Path::to_path_buf));
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
-fn mat_file_matrix_dimensions(path: &std::path::Path, matrix_name: &str) -> Option<Vec<i64>> {
-    let data = std::fs::read(path).ok()?;
-    mat_v4_matrix_dimensions(&data, matrix_name)
-        .or_else(|| mat_v5_matrix_dimensions(&data, matrix_name))
-}
-
-fn mat_v4_matrix_dimensions(data: &[u8], matrix_name: &str) -> Option<Vec<i64>> {
-    let mut offset = 0usize;
-    while offset.checked_add(20)? <= data.len() {
-        let rows = read_i32_le(data, offset + 4)? as i64;
-        let cols = read_i32_le(data, offset + 8)? as i64;
-        let imag = read_i32_le(data, offset + 12)?;
-        let name_len = read_i32_le(data, offset + 16)? as usize;
-        if rows <= 0 || cols <= 0 || name_len == 0 {
-            return None;
-        }
-        let name_start = offset + 20;
-        let name_end = name_start.checked_add(name_len)?;
-        if name_end > data.len() {
-            return None;
-        }
-        let raw_name = &data[name_start..name_end];
-        let name = std::str::from_utf8(raw_name.strip_suffix(&[0]).unwrap_or(raw_name)).ok()?;
-        if name == matrix_name {
-            return Some(vec![rows, cols]);
-        }
-        let value_count = (rows as usize).checked_mul(cols as usize)?;
-        let real_bytes = value_count.checked_mul(8)?;
-        let imag_bytes = if imag == 0 { 0 } else { real_bytes };
-        offset = name_end.checked_add(real_bytes)?.checked_add(imag_bytes)?;
-    }
-    None
-}
-
-fn mat_v5_matrix_dimensions(data: &[u8], matrix_name: &str) -> Option<Vec<i64>> {
-    if data.len() < 128 || !data.starts_with(b"MATLAB 5.0 MAT-file") {
-        return None;
-    }
-    let mut offset = 128usize;
-    while offset.checked_add(8)? <= data.len() {
-        let tag = read_mat_v5_tag(data, offset)?;
-        if tag.data_type == 14
-            && let Some(dims) =
-                mat_v5_matrix_element_dimensions(data, tag.data_offset, tag.size, matrix_name)
-        {
-            return Some(dims);
-        }
-        if tag.data_type == 15
-            && let Some(inflated) =
-                inflate_mat_v5_compressed_element(data, tag.data_offset, tag.size)
-            && let Some(dims) = mat_v5_compressed_dimensions(&inflated, matrix_name)
-        {
-            return Some(dims);
-        }
-        offset = tag.next_offset;
-    }
-    None
-}
-
-fn inflate_mat_v5_compressed_element(data: &[u8], offset: usize, size: usize) -> Option<Vec<u8>> {
-    let compressed = data.get(offset..offset.checked_add(size)?)?;
-    let mut decoder = flate2::read::ZlibDecoder::new(compressed);
-    let mut inflated = Vec::new();
-    std::io::Read::read_to_end(&mut decoder, &mut inflated).ok()?;
-    Some(inflated)
-}
-
-fn mat_v5_compressed_dimensions(data: &[u8], matrix_name: &str) -> Option<Vec<i64>> {
-    let mut offset = 0usize;
-    while offset.checked_add(8)? <= data.len() {
-        let tag = read_mat_v5_tag(data, offset)?;
-        if tag.data_type == 14
-            && let Some(dims) =
-                mat_v5_matrix_element_dimensions(data, tag.data_offset, tag.size, matrix_name)
-        {
-            return Some(dims);
-        }
-        offset = tag.next_offset;
-    }
-    None
-}
-
-#[derive(Clone, Copy)]
-struct MatV5Tag {
-    data_type: u32,
-    size: usize,
-    data_offset: usize,
-    next_offset: usize,
-}
-
-fn read_mat_v5_tag(data: &[u8], offset: usize) -> Option<MatV5Tag> {
-    let raw = read_u32_le(data, offset)?;
-    let data_type = raw & 0xffff;
-    let small_size = raw >> 16;
-    if small_size != 0 {
-        return Some(MatV5Tag {
-            data_type,
-            size: small_size as usize,
-            data_offset: offset + 4,
-            next_offset: offset + 8,
-        });
-    }
-    let size = read_u32_le(data, offset + 4)? as usize;
-    let data_offset = offset + 8;
-    Some(MatV5Tag {
-        data_type: raw,
-        size,
-        data_offset,
-        next_offset: data_offset.checked_add(align_to_8(size))?,
-    })
-}
-
-fn mat_v5_matrix_element_dimensions(
-    data: &[u8],
-    matrix_offset: usize,
-    matrix_size: usize,
-    matrix_name: &str,
-) -> Option<Vec<i64>> {
-    let end = matrix_offset.checked_add(matrix_size)?.min(data.len());
-    let mut offset = matrix_offset;
-    let mut dims: Option<Vec<i64>> = None;
-    let mut name: Option<String> = None;
-
-    while offset.checked_add(8)? <= end {
-        let tag = read_mat_v5_tag(data, offset)?;
-        if tag.data_offset.checked_add(tag.size)? > data.len() {
-            return None;
-        }
-        match tag.data_type {
-            5 => {
-                let mut values = Vec::new();
-                for chunk in data[tag.data_offset..tag.data_offset + tag.size].chunks_exact(4) {
-                    values.push(i32::from_le_bytes(chunk.try_into().ok()?) as i64);
-                }
-                if values.len() >= 2 && values[0] > 0 && values[1] > 0 {
-                    dims = Some(vec![values[0], values[1]]);
-                }
-            }
-            1 => {
-                name = std::str::from_utf8(&data[tag.data_offset..tag.data_offset + tag.size])
-                    .ok()
-                    .map(ToOwned::to_owned);
-            }
-            _ => {}
-        }
-        if name.as_deref() == Some(matrix_name) {
-            return dims;
-        }
-        offset = tag.next_offset;
-    }
-    None
-}
-
-fn align_to_8(value: usize) -> usize {
-    (value + 7) & !7
-}
-
-fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        data.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-fn read_i32_le(data: &[u8], offset: usize) -> Option<i32> {
-    Some(i32::from_le_bytes(
-        data.get(offset..offset + 4)?.try_into().ok()?,
-    ))
 }
 
 #[cfg(test)]

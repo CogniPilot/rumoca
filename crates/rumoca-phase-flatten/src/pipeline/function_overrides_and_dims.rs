@@ -1,5 +1,5 @@
 use super::*;
-use crate::path_utils::{parent_scope, top_level_last_segment};
+use crate::path_utils::{enclosing_scope, leaf_segment};
 use rumoca_core::{ComponentPath, ExpressionRewriter, StatementRewriter, Token};
 use rumoca_ir_ast::ExpressionTransformer;
 use rustc_hash::FxHashSet;
@@ -208,7 +208,7 @@ fn collect_nested_package_aliases_for_class(
             continue;
         };
         if target_ref.class_def.class_type == rumoca_core::ClassType::Package {
-            let active_alias = active_aliases && top_level_last_segment(&target_ref.name) != alias;
+            let active_alias = active_aliases && leaf_segment(&target_ref.name) != alias;
             overrides.insert(
                 alias.clone(),
                 OverrideTarget::from_resolved(alias.clone(), target_ref, active_alias),
@@ -277,7 +277,7 @@ fn collect_extends_redeclare_aliases_for_class(
                 continue;
             };
             if is_receiver_alias_type(&target_ref.class_def.class_type) {
-                let active_redeclare = top_level_last_segment(&target_ref.name) != alias;
+                let active_redeclare = leaf_segment(&target_ref.name) != alias;
                 overrides.insert(
                     alias.clone(),
                     OverrideTarget::from_resolved_with_modifier_args(
@@ -553,7 +553,7 @@ fn component_class_override_is_active(
         .map(|part| part.ident.text.as_ref());
     redeclare_value_leaf != Some(class_override.alias.as_str())
         || inherited_default.is_some_and(|default| default.def_id != target_ref.def_id)
-        || top_level_last_segment(&target_ref.name) != class_override.alias.as_str()
+        || leaf_segment(&target_ref.name) != class_override.alias.as_str()
 }
 
 pub(crate) fn class_instance_component_overrides(
@@ -1207,7 +1207,7 @@ pub(crate) fn resolve_override_function_name(
     }
 
     let package_alias = parent_alias?;
-    let package = ctx.override_package(package_alias)?;
+    let package = ctx.override_package(&package_alias)?;
     // Only resolve through the alias-matched package when the call's actual
     // source package is unknown (a genuinely relative reference) or is part of
     // that package's chain. A fully-qualified call into a *different* package
@@ -1224,11 +1224,13 @@ pub(crate) fn resolve_override_function_name(
         .filter(|resolved| resolved != reference.as_str())
 }
 
-fn reference_parent_alias(reference: &rumoca_core::Reference) -> Option<&str> {
+fn reference_parent_alias(reference: &rumoca_core::Reference) -> Option<String> {
     if let Some(scope) = reference.component_scope() {
-        return scope.parent_ident();
+        return scope.parent_ident().map(ToString::to_string);
     }
-    parent_scope(reference.as_str()).map(top_level_last_segment)
+    ComponentPath::from_flat_path(reference.as_str())
+        .parent()
+        .and_then(|path| path.parts().last().cloned())
 }
 
 fn reference_package_scope(reference: &rumoca_core::Reference) -> Option<String> {
@@ -1257,7 +1259,7 @@ fn reference_source_package_def_id_from_index(
     {
         return Some(source_package_def_id);
     }
-    let package_name = parent_scope(reference.as_str())?;
+    let package_name = enclosing_scope(reference.as_str())?;
     class_index
         .get_by_qualified_name(package_name)
         .and_then(|class_def| class_def.def_id)
@@ -1267,7 +1269,7 @@ fn resolve_override_member_name(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<String> {
-    if reference_component_ref_is_instance_path(reference, ctx.class_index) {
+    if reference_component_ref_is_instance_path(reference, ctx) {
         return None;
     }
     if let Some(resolved) = resolve_override_member_projection_name(reference, ctx) {
@@ -1332,21 +1334,28 @@ fn resolve_override_member_projection_name(
 
 fn reference_component_ref_is_instance_path(
     reference: &rumoca_core::Reference,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> bool {
-    canonical_instance_reference_name(reference, class_index).is_some()
+    canonical_instance_reference_name(reference, ctx).is_some()
 }
 
 fn canonical_instance_reference_name(
     reference: &rumoca_core::Reference,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<rumoca_core::Reference> {
     let component_ref = reference.component_ref()?;
-    let component_name = ComponentPath::from_component_reference(component_ref).to_flat_string();
-    (component_name != reference.as_str()
-        && class_index.get_by_qualified_name(&component_name).is_none()
-        && parent_scope(&component_name)
-            .is_none_or(|scope| class_index.get_by_qualified_name(scope).is_none()))
+    let component_path = ComponentPath::from_component_reference(component_ref);
+    let component_name = component_path.to_flat_string();
+    let is_known_instance_path = ctx
+        .component_members
+        .is_some_and(|scope| scope.contains_component_path(&component_path));
+    ((is_known_instance_path || component_name != reference.as_str())
+        && ctx
+            .class_index
+            .get_by_qualified_name(&component_name)
+            .is_none()
+        && enclosing_scope(&component_name)
+            .is_none_or(|scope| ctx.class_index.get_by_qualified_name(scope).is_none()))
     .then(|| {
         rumoca_core::Reference::with_component_reference(component_name, component_ref.clone())
     })
@@ -1405,6 +1414,7 @@ pub(crate) struct FunctionOverrideRewriteContext<'a> {
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
     override_packages: &'a [OverrideTarget],
     override_functions: &'a OverrideFunctionMap,
+    component_members: Option<&'a component_member_scope::ComponentMemberScopes>,
     active_scope: ComponentPath,
     local_def_ids: FxHashSet<rumoca_core::DefId>,
     lexical_package_def_id: Option<rumoca_core::DefId>,
@@ -1425,6 +1435,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             class_index,
             override_packages,
             override_functions,
+            component_members: None,
             active_scope: ComponentPath::root(),
             local_def_ids: FxHashSet::default(),
             lexical_package_def_id: None,
@@ -1434,6 +1445,14 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
 
     fn with_active_scope(mut self, active_scope: ComponentPath) -> Self {
         self.active_scope = active_scope;
+        self
+    }
+
+    fn with_component_member_scope(
+        mut self,
+        component_members: &'a component_member_scope::ComponentMemberScopes,
+    ) -> Self {
+        self.component_members = Some(component_members);
         self
     }
 
@@ -1490,7 +1509,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         let name = self.tree.def_map.get(&def_id)?.clone();
         let class_def = self.class_index.get(def_id)?;
         Some(OverrideTarget {
-            alias: top_level_last_segment(&name).to_string(),
+            alias: leaf_segment(&name).to_string(),
             name,
             def_id,
             class_type: class_def.class_type.clone(),
@@ -1505,7 +1524,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             .tree
             .def_map
             .get(&lexical_package_def_id)
-            .map(|name| top_level_last_segment(name))
+            .map(|name| leaf_segment(name))
         {
             let mut matches = self.override_packages.iter().filter(|package| {
                 package.alias == lexical_alias && package.def_id != lexical_package_def_id
@@ -1830,9 +1849,7 @@ impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
                     span: *span,
                 };
             }
-            if let Some(canonical_name) =
-                canonical_instance_reference_name(name, self.ctx.class_index)
-            {
+            if let Some(canonical_name) = canonical_instance_reference_name(name, self.ctx) {
                 return Expression::VarRef {
                     name: canonical_name,
                     subscripts: rewritten_subscripts,

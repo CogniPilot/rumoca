@@ -6,12 +6,12 @@ fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connecto
     flat.top_level_connectors.insert("pin".to_string());
     flat.add_variable(
         VarName::new("pin.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("pin.i"),
             flow: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {
@@ -51,13 +51,13 @@ fn test_count_interface_flows_requires_top_level_connector_membership() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("delta.pin.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("delta.pin.i"),
             variability: rumoca_core::Variability::Empty,
             flow: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     assert_eq!(
@@ -79,22 +79,22 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("arr.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("arr.i"),
             flow: true,
             dims: vec![2],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("s.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("s.i"),
             flow: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {
@@ -144,23 +144,23 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
     for name in ["arr1.i", "arr2.i"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 flow: true,
                 dims: vec![2],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
     flat.add_variable(
         VarName::new("s.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("s.i"),
             flow: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {
