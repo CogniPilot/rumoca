@@ -68,6 +68,20 @@ impl SolveVisitor for ScalarProgramCollector {
                     .extend(std::iter::repeat_n(*span, scalar_programs.len()));
                 self.rows.extend(scalar_programs);
             }
+            ComputeNode::AffineStencil {
+                count,
+                base_ops,
+                load_strides,
+                const_strides,
+                span,
+                ..
+            } => {
+                let scalar_programs =
+                    scalarize_affine_stencil(base_ops, load_strides, const_strides, *count);
+                self.program_spans
+                    .extend(std::iter::repeat_n(*span, scalar_programs.len()));
+                self.rows.extend(scalar_programs);
+            }
         }
         Ok(())
     }
@@ -82,6 +96,52 @@ impl SolveVisitor for ScalarProgramCollector {
         self.program_spans
             .push(span.unwrap_or(rumoca_core::Span::DUMMY));
         Ok(())
+    }
+}
+
+pub(crate) fn scalarize_affine_stencil(
+    base_ops: &[LinearOp],
+    load_strides: &[rumoca_ir_solve::AffineStencilLoadStride],
+    const_strides: &[rumoca_ir_solve::AffineStencilConstStride],
+    count: usize,
+) -> Vec<Vec<LinearOp>> {
+    (0..count)
+        .map(|row_offset| {
+            let mut ops = base_ops.to_vec();
+            for stride in load_strides {
+                apply_affine_load_stride(&mut ops, stride, row_offset);
+            }
+            for stride in const_strides {
+                apply_affine_const_stride(&mut ops, stride, row_offset);
+            }
+            ops
+        })
+        .collect()
+}
+
+fn apply_affine_load_stride(
+    ops: &mut [LinearOp],
+    stride: &rumoca_ir_solve::AffineStencilLoadStride,
+    row_offset: usize,
+) {
+    match &mut ops[stride.op_position] {
+        LinearOp::LoadY { index, .. } | LinearOp::LoadP { index, .. } => {
+            *index += row_offset * stride.stride;
+        }
+        _ => unreachable!("AffineStencil load_strides only point at load ops"),
+    }
+}
+
+fn apply_affine_const_stride(
+    ops: &mut [LinearOp],
+    stride: &rumoca_ir_solve::AffineStencilConstStride,
+    row_offset: usize,
+) {
+    match &mut ops[stride.op_position] {
+        LinearOp::Const { value, .. } => {
+            *value += row_offset as f64 * stride.stride;
+        }
+        _ => unreachable!("AffineStencil const_strides only point at const ops"),
     }
 }
 
@@ -199,5 +259,76 @@ fn max_reg_in_op(op: &LinearOp) -> Reg {
         | LinearOp::ImpureRandom { dst, .. }
         | LinearOp::ImpureRandomInteger { dst, .. } => dst,
         LinearOp::StoreOutput { src } => src,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_ir_solve::{
+        AffineStencilDomain, AffineStencilIteration, AffineStencilLoadStride, UnaryOp,
+    };
+
+    fn test_stencil_domain(count: usize) -> AffineStencilDomain {
+        AffineStencilDomain {
+            index_names: vec!["i".to_string()],
+            iterations: (0..count)
+                .map(|idx| AffineStencilIteration {
+                    index_values: vec![idx as i64 + 1],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn affine_stencil_expands_to_exact_scalar_rows() {
+        let block = ComputeBlock {
+            nodes: vec![ComputeNode::AffineStencil {
+                count: 3,
+                domain: test_stencil_domain(3),
+                base_ops: vec![
+                    LinearOp::LoadP { dst: 0, index: 2 },
+                    LinearOp::LoadY { dst: 1, index: 10 },
+                    LinearOp::Unary {
+                        dst: 2,
+                        op: UnaryOp::Neg,
+                        arg: 1,
+                    },
+                    LinearOp::StoreOutput { src: 2 },
+                ],
+                load_strides: vec![
+                    AffineStencilLoadStride {
+                        op_position: 0,
+                        stride: 0,
+                    },
+                    AffineStencilLoadStride {
+                        op_position: 1,
+                        stride: 2,
+                    },
+                ],
+                const_strides: Vec::new(),
+                metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+                span: rumoca_core::Span::DUMMY,
+            }],
+        };
+
+        let rows = to_scalar_program_block(&block);
+        assert_eq!(rows.programs.len(), 3);
+        assert!(matches!(
+            rows.programs[0][1],
+            LinearOp::LoadY { dst: 1, index: 10 }
+        ));
+        assert!(matches!(
+            rows.programs[1][1],
+            LinearOp::LoadY { dst: 1, index: 12 }
+        ));
+        assert!(matches!(
+            rows.programs[2][1],
+            LinearOp::LoadY { dst: 1, index: 14 }
+        ));
+        assert!(matches!(
+            rows.programs[2][0],
+            LinearOp::LoadP { dst: 0, index: 2 }
+        ));
     }
 }

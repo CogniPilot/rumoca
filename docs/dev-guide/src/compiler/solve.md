@@ -9,16 +9,26 @@ B.1 functions become `ComputeBlock` graphs mixing two kinds of nodes:
 | Node | Contents |
 |---|---|
 | `ScalarProgramBlock` | Flat register programs (`Vec<LinearOp>`), one scalar output per program |
-| Tensor program nodes (`ComputeNode::MatMul`, `LinSolve`, …) | Tensor kernels with explicit shape/layout metadata and a scalar fallback |
+| Tensor program nodes (`ComputeNode::MatMul`, `LinSolve`, `AffineStencil`, …) | Tensor kernels with explicit shape/layout metadata and a scalar fallback |
 
 Solve adds no mathematics; it changes format. Keeping tensor structure
 explicit above the scalar layer is what lets a backend choose between
 scalar expansion (embedded C) and native kernels (BLAS/faer, CUDA, MLIR
 `linalg`) without re-deriving structure.
 
+`ComputeNode::AffineStencil` represents a source-proven DAE `for`-equation
+subdomain. It carries the preserved source iteration domain plus affine
+`LoadY`, `LoadP`, and `Const` operand strides. This gives PDE-style
+method-of-lines systems a native GPU/codegen path while preserving exact scalar
+fallback behavior.
+
 `SolveProblem` is the base lowered problem. Expensive or non-canonical
 products (mass-matrix form, output projections) are separate artifacts
 requested by the backends that need them.
+
+Reverse-mode AD, steady-state objectives, lift/drag projections, and optimizer
+sensitivities are artifact/runtime layers over Solve. They are not fields in
+the base `SolveProblem`.
 
 ## Execution Adapters
 

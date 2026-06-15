@@ -118,10 +118,33 @@ fn max_scalar_row_ops(block: &ComputeBlock) -> usize {
         .iter()
         .filter_map(|node| match node {
             ComputeNode::ScalarPrograms(rows) => rows.programs.iter().map(Vec::len).max(),
-            ComputeNode::MatMul { .. } | ComputeNode::LinSolve { .. } => None,
+            ComputeNode::MatMul { .. }
+            | ComputeNode::LinSolve { .. }
+            | ComputeNode::AffineStencil { .. } => None,
         })
         .max()
         .unwrap_or(0)
+}
+
+fn affine_stencil_count(block: &ComputeBlock) -> usize {
+    block
+        .nodes
+        .iter()
+        .filter(|node| matches!(node, ComputeNode::AffineStencil { .. }))
+        .count()
+}
+
+fn extract_doc_model(source: &str, model_name: &str) -> String {
+    let start_marker = format!("model {model_name}");
+    let start = source
+        .find(&start_marker)
+        .unwrap_or_else(|| panic!("docs should contain `{start_marker}`"));
+    let end_marker = format!("end {model_name};");
+    let end = source[start..]
+        .find(&end_marker)
+        .map(|offset| start + offset + end_marker.len())
+        .unwrap_or_else(|| panic!("docs should contain `{end_marker}`"));
+    source[start..end].to_string()
 }
 
 fn collect_examples_scenario_files(out: &mut Vec<PathBuf>) {
@@ -544,6 +567,32 @@ fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
         "QuadrotorAcro Solve IR scalar fallback rows should stay below the \
          pre-tensor explosion threshold"
     );
+}
+
+#[test]
+fn pde_docs_examples_emit_source_stencil_opcodes() {
+    let docs = include_str!("../../../docs/user-guide/src/language/arrays-pde.md");
+    for (model_name, min_stencils) in [("Turkey", 1), ("Wave2D", 4), ("AirfoilFlow", 9)] {
+        let source = extract_doc_model(docs, model_name);
+        let result = Compiler::new()
+            .model(model_name)
+            .compile_str(&source, &format!("{model_name}.mo"))
+            .unwrap_or_else(|error| panic!("{model_name} docs model should compile: {error}"));
+        let dae_json = result
+            .to_json()
+            .unwrap_or_else(|error| panic!("{model_name} DAE JSON should render: {error}"));
+        assert!(
+            dae_json.contains("\"for_equations\""),
+            "{model_name} DAE JSON should expose source for-equation metadata"
+        );
+        let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
+            .unwrap_or_else(|error| panic!("{model_name} should lower to Solve IR: {error}"));
+        let count = affine_stencil_count(&problem.continuous.derivative_rhs);
+        assert!(
+            count >= min_stencils,
+            "{model_name} should emit at least {min_stencils} AffineStencil nodes, got {count}"
+        );
+    }
 }
 
 #[cfg(feature = "runner")]
