@@ -852,7 +852,7 @@ jobs:
 
   deploy-pages:
     name: Deploy Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RUMOCA_DEPLOY_PAGES == 'true'
     needs: [build-wasm]
     runs-on: ubuntu-24.04
     environment:
