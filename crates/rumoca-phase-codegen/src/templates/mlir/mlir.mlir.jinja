@@ -26,10 +26,15 @@
          if solve is defined and solve.continuous is defined
             and solve.continuous.derivative_rhs is defined
             and solve.continuous.derivative_rhs.programs is defined else []) %}
-{%- set impl_rows = solve_implicit_rows.programs
-      if solve_implicit_rows is defined and solve_implicit_rows.programs is defined else [] %}
-{%- set jac_rows = solve_jacobian_rows.programs
-      if solve_jacobian_rows is defined and solve_jacobian_rows.programs is defined else [] %}
+{%- set impl_rows = solve_implicit_rows
+      if solve_implicit_rows is defined else (
+         solve_blocks.continuous.implicit_rhs.scalar_programs.programs
+         if solve_blocks is defined and solve_blocks.continuous is defined
+            and solve_blocks.continuous.implicit_rhs is defined
+            and solve_blocks.continuous.implicit_rhs.scalar_programs is defined
+            and solve_blocks.continuous.implicit_rhs.scalar_programs.programs is defined else []) %}
+{%- set jac_rows = solve_jacobian_rows
+      if solve_jacobian_rows is defined else [] %}
 {%- set root_rows = solve.events.root_conditions.programs
       if solve is defined and solve.events is defined
          and solve.events.root_conditions is defined

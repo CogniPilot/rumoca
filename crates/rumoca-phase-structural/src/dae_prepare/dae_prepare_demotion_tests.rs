@@ -389,6 +389,42 @@ fn test_constrained_dummy_reduction_keeps_state_with_direct_output_alias() {
 }
 
 #[test]
+fn test_constrained_dummy_state_names_skip_self_integrating_output_transform() {
+    let mut dae = Dae::new();
+    for name in ["occB", "manHours"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+    }
+    dae.variables
+        .outputs
+        .insert(VarName::new("occA"), Variable::new(VarName::new("occA")));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(der("occB"), sub(real(0.5), var("occB")))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("occA"), sub(real(1.0), var("occB")))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("manHours"), var("occA"))));
+
+    let dummy_states = constrained_dummy_state_names(&dae);
+    assert!(
+        dummy_states.is_empty(),
+        "a self-integrating state transformed through an output must not be classified as dummy"
+    );
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae);
+    assert_eq!(
+        demoted, 0,
+        "a self-integrating output transform must not be demoted later"
+    );
+    assert!(dae.variables.states.contains_key(&VarName::new("occB")));
+}
+
+#[test]
 fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_closure() {
     let mut dae = Dae::new();
     dae.variables

@@ -1028,7 +1028,9 @@ pub fn render_template_with_dae_json(
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
     let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
+    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
+    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
+    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
         solve => solve_value,
@@ -1036,7 +1038,9 @@ pub fn render_template_with_dae_json(
         ir_kind => ir_kind,
         solve_blocks => solve_blocks,
         solve_derivative_nodes => solve_derivative_nodes,
+        solve_implicit_rows => Value::from_serialize(&solve_implicit_rows),
         solve_jacobian_rows => solve_jacobian_rows,
+        solve_full_jacobian_rows => solve_full_jacobian_rows,
     })?;
 
     Ok(result)
@@ -1061,7 +1065,9 @@ pub fn render_template_with_dae_json_and_name(
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
     let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
+    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
+    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
+    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
     let tmpl = env.get_template("inline")?;
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
@@ -1071,7 +1077,9 @@ pub fn render_template_with_dae_json_and_name(
         model_name => model_name,
         solve_blocks => solve_blocks,
         solve_derivative_nodes => solve_derivative_nodes,
+        solve_implicit_rows => Value::from_serialize(&solve_implicit_rows),
         solve_jacobian_rows => solve_jacobian_rows,
+        solve_full_jacobian_rows => solve_full_jacobian_rows,
     })?;
 
     Ok(result)
@@ -1143,9 +1151,22 @@ fn solve_derivative_nodes_from_dae_json(
     ))
 }
 
-fn solve_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
+fn solve_implicit_rows_from_dae_json(dae_json: &serde_json::Value) -> serde_json::Value {
+    dae_json
+        .pointer("/solve/continuous/implicit_rhs/nodes")
+        .map(scalar_programs_from_compute_nodes)
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
+}
+
+fn solve_jacobian_rows_from_dae_json(
+    dae_json: &serde_json::Value,
+    implicit_rows: &serde_json::Value,
+) -> Value {
+    if implicit_rows.as_array().is_none_or(Vec::is_empty) {
+        return Value::from_serialize(Vec::<serde_json::Value>::new());
+    }
     let rows = dae_json
-        .pointer("/solve/artifacts/continuous/full_jacobian_v/programs")
+        .pointer("/solve/artifacts/continuous/implicit_jacobian_v_scalar/programs")
         .cloned()
         .or_else(|| {
             dae_json
@@ -1154,6 +1175,14 @@ fn solve_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
         })
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
     Value::from_serialize(&rows)
+}
+
+fn solve_full_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
+    Value::from_serialize(
+        dae_json
+            .pointer("/solve/artifacts/continuous/full_jacobian_v/programs")
+            .unwrap_or(&serde_json::Value::Array(Vec::new())),
+    )
 }
 
 fn scalar_programs_from_compute_nodes(nodes: &serde_json::Value) -> serde_json::Value {
@@ -1925,6 +1954,8 @@ use solve_renderer::solve_render_context_value;
 mod codegen_tests;
 #[cfg(test)]
 mod fmi_template_tests;
+#[cfg(test)]
+mod solve_template_context_tests;
 #[cfg(test)]
 mod stencil_codegen_tests;
 #[cfg(test)]

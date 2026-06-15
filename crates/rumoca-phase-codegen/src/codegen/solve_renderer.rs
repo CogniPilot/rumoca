@@ -139,20 +139,30 @@ fn solve_render_context_value_with_dae(
     ));
     let implicit_rows =
         rumoca_eval_solve::to_scalar_program_block(&solve_problem.continuous.implicit_rhs);
-    // Jacobian rows prefer the full AD jacobian (state + parameter seed
-    // columns, needed e.g. for FMI directional derivatives w.r.t.
-    // parameters); the implicit state-only block is the fallback.
-    let jacobian_rows = if artifacts.continuous.full_jacobian_v.programs.is_empty() {
+    let has_implicit_rows = !implicit_rows.programs.is_empty();
+    let implicit_jacobian_rows = if !has_implicit_rows {
+        solve::ScalarProgramBlock::default()
+    } else if artifacts
+        .continuous
+        .implicit_jacobian_v_scalar
+        .programs
+        .is_empty()
+    {
         rumoca_eval_solve::to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)
     } else {
-        artifacts.continuous.full_jacobian_v.clone()
+        artifacts.continuous.implicit_jacobian_v_scalar.clone()
     };
+    let full_jacobian_rows = artifacts.continuous.full_jacobian_v.clone();
     // Row arrays (matching the historical `.programs` shape) as typed
     // objects so the row renderers take the typed fast path.
     let implicit_rows =
         Value::from_object(render_solve::SolveRowsValue::new(implicit_rows.programs));
-    let jacobian_rows =
-        Value::from_object(render_solve::SolveRowsValue::new(jacobian_rows.programs));
+    let implicit_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
+        implicit_jacobian_rows.programs,
+    ));
+    let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
+        full_jacobian_rows.programs,
+    ));
     Ok(match model_name {
         Some(name) => minijinja::context! {
             dae => dae_entry.clone(),
@@ -164,7 +174,8 @@ fn solve_render_context_value_with_dae(
             solve_blocks => solve_blocks,
             solve_derivative_nodes => derivative_nodes,
             solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
+            solve_jacobian_rows => implicit_jacobian_rows,
+            solve_full_jacobian_rows => full_jacobian_rows,
         },
         None => minijinja::context! {
             dae => dae_entry.clone(),
@@ -175,7 +186,8 @@ fn solve_render_context_value_with_dae(
             solve_blocks => solve_blocks,
             solve_derivative_nodes => derivative_nodes,
             solve_implicit_rows => implicit_rows,
-            solve_jacobian_rows => jacobian_rows,
+            solve_jacobian_rows => implicit_jacobian_rows,
+            solve_full_jacobian_rows => full_jacobian_rows,
         },
     })
 }
