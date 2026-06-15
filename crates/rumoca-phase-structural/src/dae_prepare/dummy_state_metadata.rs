@@ -6,7 +6,8 @@ use rumoca_ir_dae::expr_contains_var;
 use super::{
     Dae, Equation, Expression, Literal, OpBinary, OpUnary, Subscript, VarName, add_expr,
     direct_demotion_round_context, expression_contains_any_der_call,
-    extract_state_direct_assignment_equation, state_select_rank, sub_expr,
+    extract_state_direct_assignment_equation, state_has_standalone_der_equation, state_select_rank,
+    sub_expr,
 };
 
 const LINEAR_EPSILON: f64 = 1.0e-12;
@@ -140,6 +141,29 @@ fn expression_is_plain_var_ref(expr: &Expression, expected: &VarName) -> bool {
         Expression::VarRef { name, subscripts, .. }
             if subscripts.is_empty() && name.var_name() == expected
     )
+}
+
+/// True when the constrained-dummy defining expression for `state_name`
+/// references another state, i.e. the defining constraint genuinely couples
+/// differential states (a high-index DAE such as `w1 = ratio * w2`).
+fn defining_expr_couples_other_state(
+    defining_expr: &Expression,
+    state_name: &VarName,
+    state_names: &[VarName],
+) -> bool {
+    state_names
+        .iter()
+        .any(|other| other != state_name && expr_contains_var(defining_expr, other))
+}
+
+fn candidate_is_self_integrating_non_state_alias(
+    dae: &Dae,
+    state_name: &VarName,
+    definition: &ConstrainedDummyDefinition,
+    state_names: &[VarName],
+) -> bool {
+    state_has_standalone_der_equation(dae, state_name, state_names).unwrap_or(false)
+        && !defining_expr_couples_other_state(&definition.defining_expr, state_name, state_names)
 }
 
 fn numeric_constant(expr: &Expression) -> Option<f64> {
@@ -621,6 +645,13 @@ pub fn constrained_dummy_state_defining_exprs(
         &state_name_set,
         &when_assigned_states,
     ));
+    // A state with its own assignable `der(state) = ...` row genuinely
+    // integrates unless the defining constraint couples it to another state.
+    // Filter that case here, at constrained-dummy classification time, so
+    // metadata (`constrained_dummy_state_names`) and actual demotion agree.
+    definitions.retain(|(state_name, definition)| {
+        !candidate_is_self_integrating_non_state_alias(dae, state_name, definition, &state_names)
+    });
 
     definitions.sort_by(|(a, _), (b, _)| {
         let a_var = &dae.variables.states[a];

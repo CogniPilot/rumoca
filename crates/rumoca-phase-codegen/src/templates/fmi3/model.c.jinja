@@ -34,7 +34,7 @@
 {% set solve_pre_param_bindings = solve.solve_layout.pre_param_bindings if solve is defined and solve.solve_layout is defined and solve.solve_layout.pre_param_bindings is defined else [] %}
 {% set solve_derivative_rows = solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else [] %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
-{% set solve_jacobian_rows = solve_jacobian_rows if solve_jacobian_rows is defined else (solve.artifacts.continuous.implicit_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.implicit_jacobian_v is defined and solve.artifacts.continuous.implicit_jacobian_v.programs is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else [])) %}
+{% set solve_full_jacobian_rows = solve_full_jacobian_rows if solve_full_jacobian_rows is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else []) %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
 {% set solve_jacobian_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})", "seed": "seed[{}]"} %}
@@ -307,7 +307,7 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define N_SOLVE_Y        (N_STATES + N_ALGEBRAICS + N_OUTPUTS)
 #define N_SOLVE_P        (N_PARAMETERS + N_INPUTS + N_DISCRETE_REAL + N_DISCRETE_VAL)
 #define N_SOLVE_SEEDS    (N_SOLVE_Y + N_SOLVE_P)
-#define N_SOLVE_JACOBIAN_ROWS {{ solve_jacobian_rows | length }}
+#define N_SOLVE_JACOBIAN_ROWS {{ solve_full_jacobian_rows | length }}
 
 /* Per-variable counts (FMI 3.0 native arrays: one VR per variable) */
 #define NVAR_X  {{ dae.x | length }}
@@ -1264,9 +1264,9 @@ static int solve_seed_offset_for_vr_element(fmi3ValueReference vr, int elem) {
 }
 
 static void compute_solve_jacobian_v(ModelInstance* m, const fmi3Float64 seed[], fmi3Float64 out[]) {
-{% if solve_jacobian_rows | length > 0 %}
+{% if solve_full_jacobian_rows | length > 0 %}
     compute_derivatives(m);
-{% for row in solve_jacobian_rows %}
+{% for row in solve_full_jacobian_rows %}
     out[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_jacobian_c_cfg) }};
 {% endfor %}
 {% else %}
