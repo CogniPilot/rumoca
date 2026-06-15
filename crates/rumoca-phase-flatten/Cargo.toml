@@ -20,6 +20,7 @@ indexmap = "2.2"
 rustc-hash = { workspace = true }
 thiserror = "2.0"
 miette = "7.4"
+flate2 = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 [lints]

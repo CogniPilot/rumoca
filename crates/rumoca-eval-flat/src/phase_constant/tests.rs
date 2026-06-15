@@ -810,6 +810,26 @@ fn eval_integer_field_access_resolves_overqualified_suffix() {
 }
 
 #[test]
+fn eval_integer_nout_resolves_from_scoped_columns_dimension() {
+    let known_ints = FxHashMap::default();
+    let mut array_dims = FxHashMap::default();
+    array_dims.insert("stack.cell[1,2].cell.ocv_soc.columns".to_string(), vec![1]);
+
+    let ctx = ParamEvalContext {
+        known_ints: &known_ints,
+        known_reals: &FxHashMap::default(),
+        known_bools: &FxHashMap::default(),
+        known_enums: &FxHashMap::default(),
+        array_dims: &array_dims,
+        functions: &FxHashMap::default(),
+        user_func_eval_ctx: None,
+        var_context: Some("stack.cell[1,2].cell.ocv_soc.y"),
+    };
+
+    assert_eq!(try_eval_integer_with_context(&var("nout"), &ctx), Some(1));
+}
+
+#[test]
 fn eval_integer_if_returns_common_value_when_condition_unknown() {
     let mut known_ints = FxHashMap::default();
     known_ints.insert("left".to_string(), 2);

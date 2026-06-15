@@ -1815,6 +1815,30 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_parameter_in_scope_infers_filter_nr_from_unindexed_array_dims() {
+        let mut ctx = Context::new();
+        ctx.array_dimensions
+            .insert("filter.r".to_string(), vec![2_i64]);
+
+        let prefix = QualifiedName::from_dotted("filter[2]");
+        let cref = make_comp_ref("nr");
+        assert_eq!(lookup_parameter_in_scope(&ctx, &cref, &prefix), Some(2_i64));
+    }
+
+    #[test]
+    fn test_lookup_parameter_in_scope_infers_table_nout_from_columns_dimension() {
+        let mut ctx = Context::new();
+        ctx.array_dimensions.insert(
+            "stack.cell[1,2].cell.ocv_soc.columns".to_string(),
+            vec![1_i64],
+        );
+
+        let prefix = QualifiedName::from_dotted("stack.cell[1,2].cell.ocv_soc");
+        let cref = make_comp_ref("nout");
+        assert_eq!(lookup_parameter_in_scope(&ctx, &cref, &prefix), Some(1_i64));
+    }
+
+    #[test]
     fn test_size_call_uses_unindexed_array_element_scope() {
         let mut ctx = Context::new();
         ctx.array_dimensions

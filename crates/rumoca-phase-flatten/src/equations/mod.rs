@@ -456,13 +456,18 @@ fn try_uppercase_instance_ref(
     lookup_integer_param_with_unindexed_scope(ctx, &uppered_name)
 }
 
-/// Infer medium-style size constants from known array dimensions in scope.
+/// Infer structural size constants from known array dimensions in scope.
 ///
 /// Examples:
 /// - `nX`  from `X[:]`
 /// - `nXi` from `Xi[:]`
 /// - `nC`  from `C[:]`
 /// - `nS`  from `substanceNames[:]`
+/// - `nr`  from `r[:]`
+/// - `na`  from `a[:]`
+/// - `ncr` from `cr[:]`
+/// - `nc0` from `c0[:]`
+/// - `nout` from `columns[:]`
 fn infer_size_constant_from_dims(
     ctx: &Context,
     constant_name: &str,
@@ -473,6 +478,11 @@ fn infer_size_constant_from_dims(
         "nXi" => &["Xi"],
         "nC" => &["C"],
         "nS" => &["substanceNames"],
+        "nr" => &["r"],
+        "na" => &["a", "b", "ku"],
+        "ncr" => &["cr"],
+        "nc0" => &["c0", "c1"],
+        "nout" => &["columns"],
         _ => return None,
     };
 
@@ -485,7 +495,7 @@ fn infer_size_constant_from_dims(
             } else {
                 format!("{scope}.{candidate}")
             };
-            if let Some(dims) = ctx.get_array_dims(&qualified)
+            if let Some(dims) = lookup_array_dims_with_unindexed_scope(ctx, &qualified)
                 && let Some(&first) = dims.first()
             {
                 return Some(first);

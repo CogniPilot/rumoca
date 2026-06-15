@@ -37,6 +37,13 @@ mod tests {
         }
     }
 
+    fn string_lit(value: &str) -> Expression {
+        Expression::Literal {
+            value: rumoca_core::Literal::String(value.to_string()),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     fn int_array(values: &[i64]) -> Expression {
         Expression::Array {
             elements: values.iter().copied().map(int_lit).collect(),
@@ -1015,6 +1022,68 @@ mod tests {
                 .dims,
             vec![1]
         );
+    }
+
+    #[test]
+    fn colon_component_dimensions_follow_read_real_matrix_shape() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+
+        let matrix_name = rumoca_core::VarName::new("reader.A");
+        flat.add_variable(
+            matrix_name.clone(),
+            flat::Variable {
+                name: matrix_name.clone(),
+                dims: vec![1, 1],
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(Expression::FunctionCall {
+                    name: rumoca_core::Reference::new("Modelica.Utilities.Streams.readRealMatrix"),
+                    args: vec![
+                        string_lit("file.mat"),
+                        string_lit("Matrix_A"),
+                        int_lit(3),
+                        int_lit(2),
+                    ],
+                    is_constructor: false,
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("reader.A"),
+                dims_expr: vec![
+                    ast::Subscript::Range {
+                        token: rumoca_core::Token::default(),
+                    },
+                    ast::Subscript::Range {
+                        token: rumoca_core::Token::default(),
+                    },
+                ],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("readRealMatrix dimensions should resolve from nrow/ncol");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables.get(&matrix_name).expect("A variable").dims,
+            vec![3, 2]
+        );
+        assert_eq!(ctx.array_dimensions.get("reader.A"), Some(&vec![3, 2]));
     }
 
     #[test]

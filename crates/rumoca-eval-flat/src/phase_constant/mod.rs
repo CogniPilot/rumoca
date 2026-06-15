@@ -584,6 +584,13 @@ fn resolve_varref_integer(name_str: &str, ctx: &ParamEvalContext) -> Option<i64>
     {
         return Some(val);
     }
+    if name_str == "nout"
+        && let Some(var_ctx) = ctx.var_context
+        && let Some(dims) = lookup_array_dims_in_scope("columns", Some(var_ctx), ctx.array_dims)
+        && let Some(dim) = dims.first().copied()
+    {
+        return Some(dim);
+    }
     // Fallback: try stripping leading segments from qualified refs.
     // Modification nesting can produce over-qualified bindings like
     // "multiStar.data.m" when the actual parameter is "data.m".

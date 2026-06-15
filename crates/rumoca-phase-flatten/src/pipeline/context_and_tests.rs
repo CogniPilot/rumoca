@@ -209,20 +209,62 @@ impl Context {
         binding: &Expression,
         tree: &ClassTree,
     ) -> Option<Vec<i64>> {
-        infer_enum_range_dimensions(binding, tree).or_else(|| {
-            infer_array_dimensions_full_with_functions(
-                binding,
-                &ParamEvalContext::new(
-                    &self.parameter_values,
-                    &self.real_parameter_values,
-                    &self.boolean_parameter_values,
-                    &self.enum_parameter_values,
-                    &self.array_dimensions,
-                    &self.functions,
-                    Some(var_name),
-                ),
-            )
-        })
+        self.read_real_matrix_binding_dimensions(var_name, binding)
+            .or_else(|| infer_enum_range_dimensions(binding, tree))
+            .or_else(|| {
+                infer_array_dimensions_full_with_functions(
+                    binding,
+                    &ParamEvalContext::new(
+                        &self.parameter_values,
+                        &self.real_parameter_values,
+                        &self.boolean_parameter_values,
+                        &self.enum_parameter_values,
+                        &self.array_dimensions,
+                        &self.functions,
+                        Some(var_name),
+                    ),
+                )
+            })
+    }
+
+    fn read_real_matrix_binding_dimensions(
+        &self,
+        var_name: &str,
+        binding: &Expression,
+    ) -> Option<Vec<i64>> {
+        let Expression::FunctionCall { name, args, .. } = binding else {
+            return None;
+        };
+        if !name.as_str().ends_with("readRealMatrix") || args.len() < 4 {
+            return None;
+        }
+
+        let eval_ctx = ParamEvalContext::new(
+            &self.parameter_values,
+            &self.real_parameter_values,
+            &self.boolean_parameter_values,
+            &self.enum_parameter_values,
+            &self.array_dimensions,
+            &self.functions,
+            Some(var_name),
+        );
+        if let (Some(rows), Some(cols)) = (
+            try_eval_integer_with_context(&args[2], &eval_ctx),
+            try_eval_integer_with_context(&args[3], &eval_ctx),
+        ) && rows > 0
+            && cols > 0
+        {
+            return Some(vec![rows, cols]);
+        }
+
+        let file_name = self
+            .const_expr_from_flat_binding(&args[0])
+            .and_then(|expr| string_value_from_expression(&expr))?;
+        let matrix_name = self
+            .const_expr_from_flat_binding(&args[1])
+            .and_then(|expr| string_value_from_expression(&expr))?;
+        let path = resolve_modelica_resource_path(&file_name)?;
+        mat_file_matrix_dimensions(&path, &matrix_name)
     }
 
     fn eval_component_dim_subscript(
@@ -2181,6 +2223,192 @@ fn modelica_text_table_dimensions(file_name: &str, table_name: &str) -> Option<V
         }
     }
     None
+}
+
+fn resolve_modelica_resource_path(file_name: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(file_name);
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+
+    let rel = file_name.strip_prefix("modelica://Modelica/")?;
+    let cwd = std::env::current_dir().ok()?;
+    let candidates = [
+        cwd.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0")
+            .join(rel),
+        cwd.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica")
+            .join(rel),
+    ];
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn mat_file_matrix_dimensions(path: &std::path::Path, matrix_name: &str) -> Option<Vec<i64>> {
+    let data = std::fs::read(path).ok()?;
+    mat_v4_matrix_dimensions(&data, matrix_name)
+        .or_else(|| mat_v5_matrix_dimensions(&data, matrix_name))
+}
+
+fn mat_v4_matrix_dimensions(data: &[u8], matrix_name: &str) -> Option<Vec<i64>> {
+    let mut offset = 0usize;
+    while offset.checked_add(20)? <= data.len() {
+        let rows = read_i32_le(data, offset + 4)? as i64;
+        let cols = read_i32_le(data, offset + 8)? as i64;
+        let imag = read_i32_le(data, offset + 12)?;
+        let name_len = read_i32_le(data, offset + 16)? as usize;
+        if rows <= 0 || cols <= 0 || name_len == 0 {
+            return None;
+        }
+        let name_start = offset + 20;
+        let name_end = name_start.checked_add(name_len)?;
+        if name_end > data.len() {
+            return None;
+        }
+        let raw_name = &data[name_start..name_end];
+        let name = std::str::from_utf8(raw_name.strip_suffix(&[0]).unwrap_or(raw_name)).ok()?;
+        if name == matrix_name {
+            return Some(vec![rows, cols]);
+        }
+        let value_count = (rows as usize).checked_mul(cols as usize)?;
+        let real_bytes = value_count.checked_mul(8)?;
+        let imag_bytes = if imag == 0 { 0 } else { real_bytes };
+        offset = name_end.checked_add(real_bytes)?.checked_add(imag_bytes)?;
+    }
+    None
+}
+
+fn mat_v5_matrix_dimensions(data: &[u8], matrix_name: &str) -> Option<Vec<i64>> {
+    if data.len() < 128 || !data.starts_with(b"MATLAB 5.0 MAT-file") {
+        return None;
+    }
+    let mut offset = 128usize;
+    while offset.checked_add(8)? <= data.len() {
+        let tag = read_mat_v5_tag(data, offset)?;
+        if tag.data_type == 14
+            && let Some(dims) =
+                mat_v5_matrix_element_dimensions(data, tag.data_offset, tag.size, matrix_name)
+        {
+            return Some(dims);
+        }
+        if tag.data_type == 15
+            && let Some(inflated) =
+                inflate_mat_v5_compressed_element(data, tag.data_offset, tag.size)
+            && let Some(dims) = mat_v5_compressed_dimensions(&inflated, matrix_name)
+        {
+            return Some(dims);
+        }
+        offset = tag.next_offset;
+    }
+    None
+}
+
+fn inflate_mat_v5_compressed_element(data: &[u8], offset: usize, size: usize) -> Option<Vec<u8>> {
+    let compressed = data.get(offset..offset.checked_add(size)?)?;
+    let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+    let mut inflated = Vec::new();
+    std::io::Read::read_to_end(&mut decoder, &mut inflated).ok()?;
+    Some(inflated)
+}
+
+fn mat_v5_compressed_dimensions(data: &[u8], matrix_name: &str) -> Option<Vec<i64>> {
+    let mut offset = 0usize;
+    while offset.checked_add(8)? <= data.len() {
+        let tag = read_mat_v5_tag(data, offset)?;
+        if tag.data_type == 14
+            && let Some(dims) =
+                mat_v5_matrix_element_dimensions(data, tag.data_offset, tag.size, matrix_name)
+        {
+            return Some(dims);
+        }
+        offset = tag.next_offset;
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+struct MatV5Tag {
+    data_type: u32,
+    size: usize,
+    data_offset: usize,
+    next_offset: usize,
+}
+
+fn read_mat_v5_tag(data: &[u8], offset: usize) -> Option<MatV5Tag> {
+    let raw = read_u32_le(data, offset)?;
+    let data_type = raw & 0xffff;
+    let small_size = raw >> 16;
+    if small_size != 0 {
+        return Some(MatV5Tag {
+            data_type,
+            size: small_size as usize,
+            data_offset: offset + 4,
+            next_offset: offset + 8,
+        });
+    }
+    let size = read_u32_le(data, offset + 4)? as usize;
+    let data_offset = offset + 8;
+    Some(MatV5Tag {
+        data_type: raw,
+        size,
+        data_offset,
+        next_offset: data_offset.checked_add(align_to_8(size))?,
+    })
+}
+
+fn mat_v5_matrix_element_dimensions(
+    data: &[u8],
+    matrix_offset: usize,
+    matrix_size: usize,
+    matrix_name: &str,
+) -> Option<Vec<i64>> {
+    let end = matrix_offset.checked_add(matrix_size)?.min(data.len());
+    let mut offset = matrix_offset;
+    let mut dims: Option<Vec<i64>> = None;
+    let mut name: Option<String> = None;
+
+    while offset.checked_add(8)? <= end {
+        let tag = read_mat_v5_tag(data, offset)?;
+        if tag.data_offset.checked_add(tag.size)? > data.len() {
+            return None;
+        }
+        match tag.data_type {
+            5 => {
+                let mut values = Vec::new();
+                for chunk in data[tag.data_offset..tag.data_offset + tag.size].chunks_exact(4) {
+                    values.push(i32::from_le_bytes(chunk.try_into().ok()?) as i64);
+                }
+                if values.len() >= 2 && values[0] > 0 && values[1] > 0 {
+                    dims = Some(vec![values[0], values[1]]);
+                }
+            }
+            1 => {
+                name = std::str::from_utf8(&data[tag.data_offset..tag.data_offset + tag.size])
+                    .ok()
+                    .map(ToOwned::to_owned);
+            }
+            _ => {}
+        }
+        if name.as_deref() == Some(matrix_name) {
+            return dims;
+        }
+        offset = tag.next_offset;
+    }
+    None
+}
+
+fn align_to_8(value: usize) -> usize {
+    (value + 7) & !7
+}
+
+fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn read_i32_le(data: &[u8], offset: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 #[cfg(test)]

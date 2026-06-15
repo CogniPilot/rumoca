@@ -407,6 +407,253 @@ impl InstantiateContext {
         merged
     }
 
+    fn resolve_integer_modifier_aliases(
+        &self,
+        local: &mut rustc_hash::FxHashMap<String, i64>,
+        mod_env: &ast::ModificationEnvironment,
+    ) {
+        for (path, value) in &mod_env.active {
+            let key = path.to_flat_string();
+            if key.is_empty() {
+                continue;
+            }
+            let Some(value) =
+                self.eval_integer_modifier_alias(&value.value, value.source_scope.as_ref(), local)
+            else {
+                continue;
+            };
+            local.insert(key, value);
+        }
+    }
+
+    fn refresh_integer_component_bindings(
+        &self,
+        local: &mut rustc_hash::FxHashMap<String, i64>,
+        effective_components: &IndexMap<String, ast::Component>,
+    ) {
+        for _ in 0..8 {
+            let mut changed = false;
+            for (name, component) in effective_components {
+                changed |= self.refresh_integer_component_binding(name, component, local);
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn refresh_integer_component_binding(
+        &self,
+        name: &str,
+        component: &ast::Component,
+        local: &mut rustc_hash::FxHashMap<String, i64>,
+    ) -> bool {
+        let Some(value_expr) = integer_component_binding_expr(component) else {
+            return false;
+        };
+        let Some(value) = self.eval_integer_modifier_alias(value_expr, None, local) else {
+            return false;
+        };
+        local.insert(name.to_string(), value) != Some(value)
+    }
+
+    fn eval_integer_modifier_alias(
+        &self,
+        expr: &ast::Expression,
+        source_scope: Option<&ast::QualifiedName>,
+        local: &rustc_hash::FxHashMap<String, i64>,
+    ) -> Option<i64> {
+        match expr {
+            ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token,
+                ..
+            } => token.text.parse().ok(),
+            ast::Expression::ComponentReference(reference)
+                if !reference.parts.is_empty()
+                    && reference.parts.iter().all(|part| part.subs.is_none()) =>
+            {
+                self.lookup_integer_modifier_reference(reference, source_scope, local)
+            }
+            ast::Expression::Unary { op, rhs, .. } => {
+                let value = self.eval_integer_modifier_alias(rhs, source_scope, local)?;
+                match op {
+                    rumoca_core::OpUnary::Minus => Some(-value),
+                    rumoca_core::OpUnary::Plus => Some(value),
+                    _ => None,
+                }
+            }
+            ast::Expression::Binary { op, lhs, rhs, .. } => {
+                let lhs = self.eval_integer_modifier_alias(lhs, source_scope, local)?;
+                let rhs = self.eval_integer_modifier_alias(rhs, source_scope, local)?;
+                rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+            }
+            ast::Expression::Parenthesized { inner, .. } => {
+                self.eval_integer_modifier_alias(inner, source_scope, local)
+            }
+            ast::Expression::FunctionCall { comp, args, .. } => {
+                self.eval_integer_modifier_function(comp, args, source_scope, local)
+            }
+            ast::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => self.eval_integer_if_modifier_alias(branches, else_branch, source_scope, local),
+            _ => None,
+        }
+    }
+
+    fn eval_integer_if_modifier_alias(
+        &self,
+        branches: &[(ast::Expression, ast::Expression)],
+        else_branch: &ast::Expression,
+        source_scope: Option<&ast::QualifiedName>,
+        local: &rustc_hash::FxHashMap<String, i64>,
+    ) -> Option<i64> {
+        for (condition, value) in branches {
+            if self.eval_bool_modifier_alias(condition, source_scope, local)? {
+                return self.eval_integer_modifier_alias(value, source_scope, local);
+            }
+        }
+        self.eval_integer_modifier_alias(else_branch, source_scope, local)
+    }
+
+    fn eval_bool_modifier_alias(
+        &self,
+        expr: &ast::Expression,
+        source_scope: Option<&ast::QualifiedName>,
+        local: &rustc_hash::FxHashMap<String, i64>,
+    ) -> Option<bool> {
+        match expr {
+            ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::Bool,
+                token,
+                ..
+            } => match token.text.as_ref() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+            ast::Expression::Parenthesized { inner, .. } => {
+                self.eval_bool_modifier_alias(inner, source_scope, local)
+            }
+            ast::Expression::Unary {
+                op: rumoca_core::OpUnary::Not,
+                rhs,
+                ..
+            } => Some(!self.eval_bool_modifier_alias(rhs, source_scope, local)?),
+            ast::Expression::Binary { op, lhs, rhs, .. } => match op {
+                rumoca_core::OpBinary::And => Some(
+                    self.eval_bool_modifier_alias(lhs, source_scope, local)?
+                        && self.eval_bool_modifier_alias(rhs, source_scope, local)?,
+                ),
+                rumoca_core::OpBinary::Or => Some(
+                    self.eval_bool_modifier_alias(lhs, source_scope, local)?
+                        || self.eval_bool_modifier_alias(rhs, source_scope, local)?,
+                ),
+                rumoca_core::OpBinary::Eq
+                | rumoca_core::OpBinary::Neq
+                | rumoca_core::OpBinary::Lt
+                | rumoca_core::OpBinary::Le
+                | rumoca_core::OpBinary::Gt
+                | rumoca_core::OpBinary::Ge => {
+                    let lhs = self.eval_integer_modifier_alias(lhs, source_scope, local)?;
+                    let rhs = self.eval_integer_modifier_alias(rhs, source_scope, local)?;
+                    match op {
+                        rumoca_core::OpBinary::Eq => Some(lhs == rhs),
+                        rumoca_core::OpBinary::Neq => Some(lhs != rhs),
+                        rumoca_core::OpBinary::Lt => Some(lhs < rhs),
+                        rumoca_core::OpBinary::Le => Some(lhs <= rhs),
+                        rumoca_core::OpBinary::Gt => Some(lhs > rhs),
+                        rumoca_core::OpBinary::Ge => Some(lhs >= rhs),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            ast::Expression::FunctionCall { comp, args, .. } => {
+                self.eval_bool_modifier_function(comp, args, source_scope, local)
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_bool_modifier_function(
+        &self,
+        comp: &ast::ComponentReference,
+        args: &[ast::Expression],
+        source_scope: Option<&ast::QualifiedName>,
+        local: &rustc_hash::FxHashMap<String, i64>,
+    ) -> Option<bool> {
+        let name = comp.parts.last()?.ident.text.as_ref();
+        match name {
+            "isPowerOf2" if args.len() == 1 => {
+                let value = self.eval_integer_modifier_alias(&args[0], source_scope, local)?;
+                Some(value > 0 && (value & (value - 1)) == 0)
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_integer_modifier_function(
+        &self,
+        comp: &ast::ComponentReference,
+        args: &[ast::Expression],
+        source_scope: Option<&ast::QualifiedName>,
+        local: &rustc_hash::FxHashMap<String, i64>,
+    ) -> Option<i64> {
+        let name = comp.parts.last()?.ident.text.as_ref();
+        let eval = |expr| self.eval_integer_modifier_alias(expr, source_scope, local);
+        match name {
+            "integer" if args.len() == 1 => eval(&args[0]),
+            "div" if args.len() == 2 => {
+                let lhs = eval(&args[0])?;
+                let rhs = eval(&args[1])?;
+                rumoca_core::eval_integer_div_builtin(lhs, rhs)
+            }
+            "max" if args.len() == 2 => Some(eval(&args[0])?.max(eval(&args[1])?)),
+            "min" if args.len() == 2 => Some(eval(&args[0])?.min(eval(&args[1])?)),
+            "numberOfSymmetricBaseSystems" if args.len() == 1 => {
+                number_of_symmetric_base_systems(eval(&args[0])?)
+            }
+            _ => None,
+        }
+    }
+
+    fn lookup_integer_modifier_reference(
+        &self,
+        reference: &ast::ComponentReference,
+        source_scope: Option<&ast::QualifiedName>,
+        local: &rustc_hash::FxHashMap<String, i64>,
+    ) -> Option<i64> {
+        let name = rumoca_core::ComponentPath::from_parts(
+            reference.parts.iter().map(|part| part.ident.text.as_ref()),
+        );
+        if name.as_str().contains('.')
+            && let Some(value) = self.known_int_params.get(name.as_str())
+        {
+            return Some(*value);
+        }
+        if let Some(value) = local.get(name.as_str()) {
+            return Some(*value);
+        }
+        if let Some(value) = self.known_int_params.get(name.as_str()) {
+            return Some(*value);
+        }
+        let scope = source_scope
+            .map(ast::QualifiedName::to_component_path)
+            .unwrap_or_default();
+        for candidate in rumoca_core::scoped_component_path_candidates(&name, &scope) {
+            if let Some(value) = local.get(candidate.as_str()) {
+                return Some(*value);
+            }
+            if let Some(value) = self.known_int_params.get(candidate.as_str()) {
+                return Some(*value);
+            }
+        }
+        None
+    }
+
     /// Check if we're inside a flow record.
     fn inherited_flow(&self) -> bool {
         self.scope_frames.iter().rev().any(|frame| frame.flow)
@@ -1018,7 +1265,9 @@ fn instantiate_class(
             effective_components,
             resolve_class_components: &resolve_eval_components,
         };
-        let int_params = extract_int_params_with_mods(&eval_ctx);
+        let mut int_params = extract_int_params_with_mods(&eval_ctx);
+        ctx.resolve_integer_modifier_aliases(&mut int_params, ctx.mod_env());
+        ctx.refresh_integer_component_bindings(&mut int_params, effective_components);
         ctx.register_known_int_params(&qualified_name, &int_params);
 
         // Instantiate each effective component (MLS §4.8 conditional components)
@@ -1044,6 +1293,10 @@ fn instantiate_class(
             &component_imports,
             &resolve_eval_components,
         )?;
+
+        ctx.resolve_integer_modifier_aliases(&mut int_params, ctx.mod_env());
+        ctx.refresh_integer_component_bindings(&mut int_params, effective_components);
+        ctx.register_known_int_params(&qualified_name, &int_params);
 
         // Rebuild merged integer params after nested component instantiation so that
         // record-field integers (e.g., cellData.nRC) are available for top-level
@@ -1108,6 +1361,38 @@ fn instantiate_class(
     ctx.exit_instantiation_class(class);
 
     result
+}
+
+fn number_of_symmetric_base_systems(phases: i64) -> Option<i64> {
+    if phases < 1 {
+        return None;
+    }
+    let mut systems = 1_i64;
+    let mut n = phases;
+    while n % 2 == 0 && n > 2 {
+        systems *= 2;
+        n /= 2;
+    }
+    Some(systems)
+}
+
+fn integer_component_binding_expr(component: &ast::Component) -> Option<&ast::Expression> {
+    if !matches!(
+        component.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    ) {
+        return None;
+    }
+    if let Some(binding) = component.binding.as_ref() {
+        return Some(binding);
+    }
+    if component.has_explicit_binding
+        && !component.start_is_modification
+        && !matches!(component.start, ast::Expression::Empty { .. })
+    {
+        return Some(&component.start);
+    }
+    None
 }
 
 fn instantiate_effective_components(
