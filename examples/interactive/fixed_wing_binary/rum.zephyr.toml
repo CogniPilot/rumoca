@@ -1,0 +1,133 @@
+source_roots = ["../../../target/cmm/CMM-v0.0.2"]
+
+[rumoca]
+version = "1"
+task = "simulate"
+
+[external_interface]
+command = "examples/interactive/fixed_wing_binary/fixed_wing_zephyr_bridge.py"
+
+[schema]
+bfbs = ["../cub_control-dev/schemas/cub_control.bfbs"]
+
+[receive]
+root_type = "CubControl.ActuatorCommand"
+
+[receive.route]
+aileron = "stepper:stick_roll"
+elevator = "stepper:stick_pitch"
+throttle = "stepper:stick_throttle"
+rudder = "stepper:stick_yaw"
+
+[send]
+root_type = "CubControl.VehicleState"
+
+[send.route]
+timestamp_ns = { key = "wall_ms", scale = 0.000001 }
+x = { key = "x" }
+y = { key = "y" }
+z = { key = "z" }
+roll = { key = "roll" }
+pitch = { key = "pitch" }
+yaw = { key = "yaw" }
+
+[input]
+mode = "auto"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[locals.armed]
+default = true
+type = "bool"
+
+[model]
+file = "FixedWingSIL.mo"
+name = "FixedWing"
+
+[reset]
+on_signal = "reset"
+rebuild_stepper = true
+reset_locals = true
+restart_external_interface = true
+
+[signals.stepper_inputs.armed]
+from = "local:armed"
+when_false = 0.0
+when_true = 1.0
+
+[signals.send]
+wall_ms = "runtime:wall_ms"
+x = "stepper:position[1]"
+y = "stepper:position[2]"
+z = "stepper:position[3]"
+roll = "stepper:roll"
+pitch = "stepper:pitch"
+yaw = "stepper:yaw"
+
+[signals.viewer]
+px = "stepper:position[1]"
+py = "stepper:position[2]"
+pz = "stepper:position[3]"
+ail_rad = "stepper:ail_rad"
+elev_rad = "stepper:elev_rad"
+rud_rad = "stepper:rud_rad"
+throttle = "stepper:thr_out"
+airspeed = "stepper:airspeed"
+alpha = "stepper:alpha_deg"
+armed = "local:armed"
+t = "stepper:time"
+frame = "runtime:frame_num"
+input_mode = "runtime:input_mode"
+wall_ms = "runtime:wall_ms"
+
+[signals.viewer.q0]
+default = 1.0
+from = "stepper:quat[1]"
+
+[signals.viewer.q1]
+default = 0.0
+from = "stepper:quat[2]"
+
+[signals.viewer.q2]
+default = 0.0
+from = "stepper:quat[3]"
+
+[signals.viewer.q3]
+default = 0.0
+from = "stepper:quat[4]"
+
+[sim]
+dt = 0.01
+mode = "realtime"
+solver = "rk-like"
+
+[transport.udp]
+send = "127.0.0.1:4250"
+listen = "127.0.0.1:4251"
+
+[transport.http]
+port = 8082
+scene = "fixed_wing_scene.js"
+asset_dir = "../../assets"
+
+[transport.websocket]
+port = 8083
+
+[viewer]
+mode = "external_web"
+show_armed = true
+status_title = "Fixed-Wing Zephyr SIL"
+
+[[viewer.controls.keyboard]]
+keys = "R"
+action = "Reset plant and restart Zephyr bridge"
+
+[[viewer.controls.keyboard]]
+keys = "Q"
+action = "Quit"
