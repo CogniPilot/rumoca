@@ -2232,14 +2232,29 @@ fn resolve_modelica_resource_path(file_name: &str) -> Option<std::path::PathBuf>
     }
 
     let rel = file_name.strip_prefix("modelica://Modelica/")?;
-    let cwd = std::env::current_dir().ok()?;
-    let candidates = [
-        cwd.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0")
-            .join(rel),
-        cwd.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica")
-            .join(rel),
-    ];
-    candidates.into_iter().find(|candidate| candidate.is_file())
+    modelica_resource_search_roots()
+        .into_iter()
+        .flat_map(|root| {
+            [
+                root.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0")
+                    .join(rel),
+                root.join("target/msl/ModelicaStandardLibrary-4.1.0/Modelica")
+                    .join(rel),
+            ]
+        })
+        .find(|candidate| candidate.is_file())
+}
+
+fn modelica_resource_search_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.extend(cwd.ancestors().map(std::path::Path::to_path_buf));
+    }
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    roots.extend(manifest_dir.ancestors().map(std::path::Path::to_path_buf));
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 fn mat_file_matrix_dimensions(path: &std::path::Path, matrix_name: &str) -> Option<Vec<i64>> {
