@@ -3,6 +3,27 @@ use rumoca_solver::{
     LinearSolveKernel, matrix_is_diagonal, matrix_nonzeros, select_linear_solve_kernel,
 };
 
+/// Evaluate a [`LinearOp::LinearSolveComponent`] op directly, destructuring its
+/// fields. Keeps the interpreter's `eval_op` match arm to a single line.
+pub(super) fn solve_component_op(
+    regs: &[f64],
+    initialized: &[bool],
+    op: rumoca_ir_solve::LinearOp,
+) -> Result<f64, EvalSolveError> {
+    if let rumoca_ir_solve::LinearOp::LinearSolveComponent {
+        matrix_start,
+        rhs_start,
+        n,
+        component,
+        ..
+    } = op
+    {
+        solve_component(regs, initialized, matrix_start, rhs_start, n, component)
+    } else {
+        Ok(0.0)
+    }
+}
+
 pub(super) fn solve_component(
     regs: &[f64],
     initialized: &[bool],

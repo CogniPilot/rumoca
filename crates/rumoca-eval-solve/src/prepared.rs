@@ -5,11 +5,10 @@ use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    RowInputRequirements, SimulationRuntimeState, eval_program_single, eval_row_prepared_maybe_fast,
-    linear_solve::solve_all_unchecked, record_solve_block_eval, required_registers,
-    row_input_requirements,
-    row_register_flow_is_valid, to_scalar_program_block, validate_input_requirements,
-    validate_output_len,
+    RowInputRequirements, SimulationRuntimeState, eval_program_single,
+    eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked, record_solve_block_eval,
+    required_registers, row_input_requirements, row_register_flow_is_valid,
+    to_scalar_program_block, validate_input_requirements, validate_output_len,
 };
 
 /// Reusable evaluator for one Solve-IR row block.
@@ -627,7 +626,13 @@ fn reg_depends_on_y_index_memo(
     memo.insert(reg, false);
     let result = producer(row, reg).is_some_and(|op| match *op {
         LinearOp::LoadY { index, .. } => index == target_y_index,
-        LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. } => {
+        // Indexed loads structurally depend on y exactly when their index
+        // register does — preserving the sparsity the equivalent select chain
+        // (whose `cond` carried that dependency) would have produced.
+        LinearOp::Move { src, .. }
+        | LinearOp::Unary { arg: src, .. }
+        | LinearOp::LoadIndexedP { index: src, .. }
+        | LinearOp::LoadIndexedSeed { index: src, .. } => {
             reg_depends_on_y_index_memo(row, src, target_y_index, memo)
         }
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {

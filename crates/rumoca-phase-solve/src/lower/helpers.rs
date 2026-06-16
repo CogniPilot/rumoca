@@ -181,6 +181,55 @@ pub(super) fn sorted_flat_entries(entries: &[IndexedBinding]) -> Vec<&IndexedBin
     flat
 }
 
+/// Given a sorted `(indices, parameter-slot)` grid, return `(base, count,
+/// row_major_strides)` when the elements form a dense, 1-based, rectangular
+/// array whose parameter slots are contiguous in row-major order. Returns
+/// `None` otherwise, so the caller falls back to the select-chain lowering.
+pub(super) fn contiguous_param_grid_layout(
+    grid: &[(Vec<usize>, usize)],
+) -> Option<(usize, usize, Vec<usize>)> {
+    let ndim = grid.first()?.0.len();
+    if ndim == 0 {
+        return None;
+    }
+    // Per-dimension extents; every index must be 1-based.
+    let mut extents = vec![0usize; ndim];
+    for (indices, _) in grid {
+        if indices.len() != ndim {
+            return None;
+        }
+        for (d, &i) in indices.iter().enumerate() {
+            if i == 0 {
+                return None;
+            }
+            extents[d] = extents[d].max(i);
+        }
+    }
+    // Dense rectangular coverage: the element count must equal the box volume.
+    let total: usize = extents.iter().product();
+    if total != grid.len() {
+        return None;
+    }
+    // Row-major strides (last dimension contiguous).
+    let mut strides = vec![1usize; ndim];
+    for d in (0..ndim - 1).rev() {
+        strides[d] = strides[d + 1] * extents[d + 1];
+    }
+    // Slots must be contiguous in row-major order from a common base.
+    let base = grid.iter().map(|(_, slot)| *slot).min()?;
+    for (indices, slot) in grid {
+        let flat: usize = indices
+            .iter()
+            .enumerate()
+            .map(|(d, &i)| (i - 1) * strides[d])
+            .sum();
+        if *slot != base + flat {
+            return None;
+        }
+    }
+    Some((base, grid.len(), strides))
+}
+
 pub(super) fn infer_indexed_dims(entries: &[IndexedBinding]) -> Vec<usize> {
     let has_multi_dim = entries.iter().any(|entry| entry.indices.len() > 1);
     if has_multi_dim {

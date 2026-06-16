@@ -77,6 +77,19 @@ pub fn seeds_affecting_regs(ops: &[LinearOp]) -> HashMap<Reg, Vec<usize>> {
             | LinearOp::LoadP { dst, .. } => {
                 reg_seeds.insert(dst, vec![]);
             }
+            // A runtime-indexed parameter load is piecewise-constant in the
+            // (discrete) index, so its value carries no solver-y seed — same as
+            // a plain `LoadP`.
+            LinearOp::LoadIndexedP { dst, .. } => {
+                reg_seeds.insert(dst, vec![]);
+            }
+            // A runtime-indexed seed load may select any column in its run; be
+            // conservative and propagate the whole `[base, base+count)` range.
+            LinearOp::LoadIndexedSeed {
+                dst, base, count, ..
+            } => {
+                reg_seeds.insert(dst, (base..base + count).collect());
+            }
             LinearOp::Move { dst, src } => {
                 let seeds = reg_seeds.get(&src).cloned().unwrap_or_default();
                 reg_seeds.insert(dst, seeds);

@@ -991,6 +991,13 @@ impl<'a> LowerBuilder<'a> {
             .map(|subscript| self.lower_structural_index_selector(subscript, scope, call_depth))
             .collect::<Result<Vec<_>, _>>()?;
         let fallback_span = subscript_fallback_span(subscripts);
+        // Fast path: when the dynamic subscript resolves to a contiguous,
+        // row-major run of constant parameter slots, emit a single indexed
+        // load instead of an N-deep `(idx==k ? p[slot_k] : prev)` select chain.
+        // Falls through to the select chain for anything that does not match.
+        if let Some(reg) = self.try_lower_indexed_param_load(&target, &selectors, fallback_span)? {
+            return Ok(reg);
+        }
         let candidates = self.lower_dynamic_indexed_binding_candidates(
             &target,
             fallback_span,
@@ -1047,6 +1054,142 @@ impl<'a> LowerBuilder<'a> {
         }
         candidates.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
         Ok(candidates)
+    }
+
+    /// Attempt to lower a dynamic parameter-array subscript to a single
+    /// [`LinearOp::LoadIndexedP`]. Returns `Ok(None)` (so the caller falls back
+    /// to the select chain) unless every element resolves to a contiguous,
+    /// row-major run of constant parameter slots with no computed override.
+    fn try_lower_indexed_param_load(
+        &mut self,
+        target: &DynamicBindingTarget,
+        selectors: &[Reg],
+        fallback_span: Option<rumoca_core::Span>,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(grid) = self.indexed_param_grid(target, selectors.len(), fallback_span) else {
+            return Ok(None);
+        };
+        let Some((base, count, strides)) = contiguous_param_grid_layout(&grid) else {
+            return Ok(None);
+        };
+        // Flat 0-based offset register: `Σ_d (selector_d - 1) * stride_d`. The
+        // load op rounds and clamps the accumulated offset, so the selectors do
+        // not need per-term rounding here.
+        let mut offset: Option<Reg> = None;
+        for (d, &selector) in selectors.iter().enumerate() {
+            let one = self.emit_const(1.0);
+            let zero_based = self.emit_binary(BinaryOp::Sub, selector, one);
+            let term = if strides[d] == 1 {
+                zero_based
+            } else {
+                let stride = self.emit_const(strides[d] as f64);
+                self.emit_binary(BinaryOp::Mul, zero_based, stride)
+            };
+            offset = Some(match offset {
+                None => term,
+                Some(acc) => self.emit_binary(BinaryOp::Add, acc, term),
+            });
+        }
+        let offset = offset.expect("dynamic subscript has at least one dimension");
+        Ok(Some(self.emit_load_indexed_p(base, count, offset)))
+    }
+
+    /// The `(indices, parameter-slot)` grid for a dynamic subscript target, but
+    /// only when every element is a pure constant-parameter slot with no
+    /// locally-computed binding or direct-assignment override. Non-emitting:
+    /// it reads layout metadata so the fast-path check stays side-effect free.
+    fn indexed_param_grid(
+        &self,
+        target: &DynamicBindingTarget,
+        ndim: usize,
+        fallback_span: Option<rumoca_core::Span>,
+    ) -> Option<Vec<(Vec<usize>, usize)>> {
+        // Accumulate `indices -> parameter-slot` from both the function-argument
+        // (local) and model-layout sources; either helper returning `None`
+        // aborts the fast path.
+        let mut grid: IndexMap<Vec<usize>, usize> = IndexMap::new();
+        self.collect_local_param_slots(target, ndim, &mut grid)?;
+        self.collect_layout_param_slots(target, ndim, fallback_span, &mut grid)?;
+        if grid.is_empty() {
+            return None;
+        }
+        let mut out: Vec<(Vec<usize>, usize)> = grid.into_iter().collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(out)
+    }
+
+    /// Add the function-argument array elements (local indexed bindings) to
+    /// `grid`, recovering each element's parameter slot from its CSE'd load
+    /// register. `None` if any element is not a stored parameter slot.
+    fn collect_local_param_slots(
+        &self,
+        target: &DynamicBindingTarget,
+        ndim: usize,
+        grid: &mut IndexMap<Vec<usize>, usize>,
+    ) -> Option<()> {
+        // No local bindings for this target: nothing to add, not a failure.
+        let Some(locals) = self.local_indexed_bindings.get(&target.display_key) else {
+            return Some(());
+        };
+        let reg_to_pslot: std::collections::HashMap<Reg, usize> = self
+            .cse
+            .slots
+            .iter()
+            .filter_map(|(key, &reg)| match key {
+                cse::SlotLoadKey::P(index) => Some((reg, *index)),
+                _ => None,
+            })
+            .collect();
+        for entry in locals {
+            if entry.indices.len() != ndim {
+                return None;
+            }
+            let slot = reg_to_pslot.get(&entry.reg).copied()?;
+            if grid
+                .insert(entry.indices.clone(), slot)
+                .is_some_and(|prev| prev != slot)
+            {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    /// Add model-level parameter-array slots from the solve layout to `grid`.
+    /// `None` if any element has a direct-assignment override or is not a pure
+    /// parameter slot. Layout-lookup errors leave `grid` unchanged (the
+    /// select-chain fallback re-runs the same lookup authoritatively).
+    fn collect_layout_param_slots(
+        &self,
+        target: &DynamicBindingTarget,
+        ndim: usize,
+        fallback_span: Option<rumoca_core::Span>,
+        grid: &mut IndexMap<Vec<usize>, usize>,
+    ) -> Option<()> {
+        let Ok((entry_display_key, entries)) = self.dynamic_layout_entries(target, fallback_span)
+        else {
+            return Some(());
+        };
+        for entry in sorted_flat_entries(&entries) {
+            if entry.indices.len() != ndim {
+                return None;
+            }
+            // A direct assignment would shadow the stored parameter value.
+            let scalar_key = format_subscript_binding_key(&entry_display_key, &entry.indices);
+            if self.direct_assignments.contains_key(&scalar_key) {
+                return None;
+            }
+            let ScalarSlot::P { index, .. } = entry.slot else {
+                return None;
+            };
+            if grid
+                .insert(entry.indices.clone(), index)
+                .is_some_and(|prev| prev != index)
+            {
+                return None;
+            }
+        }
+        Some(())
     }
 
     fn dynamic_layout_entries(

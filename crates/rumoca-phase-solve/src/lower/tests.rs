@@ -209,7 +209,18 @@ fn eval_linear_ops_collect(ops: &[LinearOp], y: &[f64], p: &[f64], t: f64) -> (V
             LinearOp::LoadP { dst, index } => {
                 write_reg(&mut regs, dst, p.get(index).copied().unwrap_or(0.0))
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot =
+                    rumoca_ir_solve::resolve_indexed_slot(read_reg(&regs, index), base, count);
+                write_reg(&mut regs, dst, p.get(slot).copied().unwrap_or(0.0));
+            }
             LinearOp::LoadSeed { dst, .. } => write_reg(&mut regs, dst, 0.0),
+            LinearOp::LoadIndexedSeed { dst, .. } => write_reg(&mut regs, dst, 0.0),
             LinearOp::Move { dst, src } => {
                 let value = read_reg(&regs, src);
                 write_reg(&mut regs, dst, value);

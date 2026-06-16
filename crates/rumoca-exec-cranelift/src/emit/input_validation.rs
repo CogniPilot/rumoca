@@ -47,8 +47,16 @@ fn input_requirements_for_linear_op(op: LinearOp) -> InputRequirements {
             p_len: index.saturating_add(1),
             ..Default::default()
         },
+        LinearOp::LoadIndexedP { base, count, .. } => InputRequirements {
+            p_len: base.saturating_add(count),
+            ..Default::default()
+        },
         LinearOp::LoadSeed { index, .. } => InputRequirements {
             seed_len: index.saturating_add(1),
+            ..Default::default()
+        },
+        LinearOp::LoadIndexedSeed { base, count, .. } => InputRequirements {
+            seed_len: base.saturating_add(count),
             ..Default::default()
         },
         _ => InputRequirements::default(),

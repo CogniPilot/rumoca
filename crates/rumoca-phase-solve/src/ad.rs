@@ -318,7 +318,16 @@ impl AdBuilder {
             LinearOp::LoadTime { dst } => self.lower_load_time(dst),
             LinearOp::LoadY { dst, index } => self.lower_load_y(dst, index),
             LinearOp::LoadP { dst, index } => self.lower_load_p(dst, index),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.lower_load_indexed_p(dst, base, count, index),
             LinearOp::LoadSeed { .. } => Err(unsupported("unexpected LoadSeed in primal row")),
+            LinearOp::LoadIndexedSeed { .. } => {
+                Err(unsupported("unexpected LoadIndexedSeed in primal row"))
+            }
             LinearOp::Move { dst, src } => self.lower_move(dst, src),
             LinearOp::LinearSolveComponent {
                 dst,
@@ -460,6 +469,29 @@ impl AdBuilder {
         let du = match self.seed_mode {
             SeedMode::SolverYOnly => self.zero_reg(),
             SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)),
+        };
+        self.bind(dst, DualReg { re, du })
+    }
+
+    /// Forward-mode dual of a runtime-indexed parameter load. The value is
+    /// loaded at the same runtime offset; its tangent is zero under solver-y AD
+    /// and, under parameter-seed AD, the seed at the matching offset shifted
+    /// into the seed region (`p_seed_index` is affine, so the whole run shifts
+    /// by `p_seed_offset` while the index register is reused unchanged).
+    fn lower_load_indexed_p(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), LowerError> {
+        let idx = self.lookup(index)?;
+        let re = self.emit_load_indexed_p(base, count, idx.re);
+        let du = match self.seed_mode {
+            SeedMode::SolverYOnly => self.zero_reg(),
+            SeedMode::SolverYAndP { .. } => {
+                self.emit_load_indexed_seed(self.p_seed_index(base), count, idx.re)
+            }
         };
         self.bind(dst, DualReg { re, du })
     }
@@ -859,6 +891,28 @@ impl AdBuilder {
     fn emit_load_seed(&mut self, index: usize) -> Reg {
         let dst = self.alloc_reg();
         self.ops.push(LinearOp::LoadSeed { dst, index });
+        dst
+    }
+
+    fn emit_load_indexed_p(&mut self, base: usize, count: usize, index: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        });
+        dst
+    }
+
+    fn emit_load_indexed_seed(&mut self, base: usize, count: usize, index: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::LoadIndexedSeed {
+            dst,
+            base,
+            count,
+            index,
+        });
         dst
     }
 

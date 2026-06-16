@@ -133,8 +133,8 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
         .compile_path_dae(&model)
         .expect("SE_2(3) 13-state quadrotor should compile to DAE");
 
-    let problem =
-        rumoca_sim::lower_solve_problem(&compiled.dae).expect("derivative should lower to solve IR");
+    let problem = rumoca_sim::lower_solve_problem(&compiled.dae)
+        .expect("derivative should lower to solve IR");
     let block = &problem.continuous.derivative_rhs;
     let scalar = rumoca_eval_solve::to_scalar_program_block(block);
     let total_ops: usize = scalar.programs.iter().map(|program| program.len()).sum();
@@ -185,5 +185,38 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
         approx_bytes < 16 * 1024 * 1024,
         "scalar derivative program is {} KB — function-projection duplication regression?",
         approx_bytes / 1024
+    );
+
+    // Runtime-variable subscripts into the constant reference tables
+    // (`Xref[i-1,j]`, `nref`, `aref`, `tg`, where `i` depends on input time)
+    // lower to `LoadIndexedP` indexed loads, NOT N-deep select chains. Before
+    // this fix the derivative was ~158k ops / ~88k selects (rendered to a 143 MB
+    // C file that `cc -O2` could not compile); the indexed-load lowering
+    // collapses it to ~9k ops / ~400 selects (a 1.8 MB C file). Lock in the
+    // collapse so a regression to select-chain indexing is caught here.
+    let (selects, indexed_loads) =
+        scalar
+            .programs
+            .iter()
+            .flatten()
+            .fold((0usize, 0usize), |(s, i), op| match op {
+                rumoca_ir_solve::LinearOp::Select { .. } => (s + 1, i),
+                rumoca_ir_solve::LinearOp::LoadIndexedP { .. } => (s, i + 1),
+                _ => (s, i),
+            });
+    assert!(
+        indexed_loads >= 40,
+        "expected runtime table subscripts to lower to LoadIndexedP (got {indexed_loads}); \
+         dynamic-index → select-chain regression?"
+    );
+    assert!(
+        total_ops < 20_000,
+        "scalar derivative is {total_ops} ops; expected ~9k after indexed-load lowering — \
+         select-chain blowup regression?"
+    );
+    assert!(
+        selects < 5_000,
+        "scalar derivative has {selects} selects; expected ~400 after indexed-load lowering — \
+         dynamic-index select-chain regression?"
     );
 }

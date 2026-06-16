@@ -102,10 +102,9 @@ fn scalarize_linsolve(
     let mut ops = setup_ops.to_vec();
     // `next_reg` is the producer's first-free register after setup; guard against
     // any mismatch by also clearing the registers actually present in `ops`.
-    let mut next = next_reg.max(next_free_reg(&ops));
+    let next = next_reg.max(next_free_reg(&ops));
     for component in 0..n {
-        let dst = next;
-        next += 1;
+        let dst = next + component as Reg;
         ops.push(LinearOp::LinearSolveComponent {
             dst,
             matrix_start,
@@ -255,7 +254,11 @@ mod tests {
             .iter()
             .filter(|op| matches!(op, LinearOp::LoadP { .. }))
             .count();
-        assert_eq!(load_p_count, m * k + k * n, "operands must not be duplicated");
+        assert_eq!(
+            load_p_count,
+            m * k + k * n,
+            "operands must not be duplicated"
+        );
     }
 
     /// Every computed destination register in the single program must be unique
@@ -318,7 +321,10 @@ mod tests {
         let mut components = 0;
         for op in &scalar.programs[0] {
             if let LinearOp::LinearSolveComponent { dst, component, .. } = op {
-                assert!(seen.insert(*dst), "duplicate solve-component register {dst}");
+                assert!(
+                    seen.insert(*dst),
+                    "duplicate solve-component register {dst}"
+                );
                 assert_eq!(*component, components);
                 components += 1;
             }
@@ -349,7 +355,9 @@ fn max_reg_in_op(op: &LinearOp) -> Reg {
         | LinearOp::RandomState { dst, .. }
         | LinearOp::ImpureRandomInit { dst, .. }
         | LinearOp::ImpureRandom { dst, .. }
-        | LinearOp::ImpureRandomInteger { dst, .. } => dst,
+        | LinearOp::ImpureRandomInteger { dst, .. }
+        | LinearOp::LoadIndexedP { dst, .. }
+        | LinearOp::LoadIndexedSeed { dst, .. } => dst,
         LinearOp::StoreOutput { src } => src,
     }
 }

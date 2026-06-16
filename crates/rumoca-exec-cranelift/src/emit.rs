@@ -18,7 +18,7 @@ use rumoca_eval_solve::{
     try_eval_table_bound_value_in, try_eval_table_lookup_slope_value_in,
     try_eval_table_lookup_value_in, try_eval_time_table_next_event_value_in,
 };
-use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp};
+use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp, resolve_indexed_slot};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -670,7 +670,24 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             LinearOp::LoadTime { dst } => self.insert(dst, self.t_value),
             LinearOp::LoadY { dst, index } => self.lower_loaded_reg(dst, self.y_ptr, index),
             LinearOp::LoadP { dst, index } => self.lower_loaded_reg(dst, self.p_ptr, index),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.lower_indexed_loaded_reg(dst, self.p_ptr, base, count, index),
             LinearOp::LoadSeed { dst, index } => self.lower_seed_reg(dst, index),
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let base_ptr = self.v_ptr.ok_or_else(|| {
+                    CompileError::Backend("LoadIndexedSeed in row without seed input".to_string())
+                })?;
+                self.lower_indexed_loaded_reg(dst, base_ptr, base, count, index)
+            }
             LinearOp::Move { dst, src } => {
                 let value = lookup_reg(self.regs, src)?;
                 self.insert(dst, value)
@@ -745,6 +762,37 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         index: usize,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
         let value = load_f64(self.fb, self.flags, base, index)?;
+        self.insert(dst, value)
+    }
+
+    /// Lower `mem[base_ptr + 8*(base + clamp(round(index_reg), 0, count-1))]`,
+    /// matching [`rumoca_ir_solve::resolve_indexed_slot`]: round the runtime
+    /// f64 index to nearest, clamp into `[0, count-1]`, convert to an integer
+    /// byte offset, then add the run-relative `base` and dereference.
+    fn lower_indexed_loaded_reg(
+        &mut self,
+        dst: u32,
+        base_ptr: cranelift_codegen::ir::Value,
+        base: usize,
+        count: usize,
+        index: u32,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let idx = lookup_reg(self.regs, index)?;
+        let rounded = self.fb.ins().nearest(idx);
+        let zero = self.fb.ins().f64const(0.0);
+        let lo = self.fb.ins().fmax(rounded, zero);
+        let last = self.fb.ins().f64const(count.saturating_sub(1) as f64);
+        let clamped = self.fb.ins().fmin(lo, last);
+        let idx_i = self.fb.ins().fcvt_to_sint(types::I64, clamped);
+        let byte_off = self
+            .fb
+            .ins()
+            .imul_imm(idx_i, std::mem::size_of::<f64>() as i64);
+        let base_bytes = i64::try_from(base.saturating_mul(std::mem::size_of::<f64>()))
+            .map_err(|_| CompileError::Backend("indexed load base exceeds i64".to_string()))?;
+        let abs_off = self.fb.ins().iadd_imm(byte_off, base_bytes);
+        let addr = self.fb.ins().iadd(base_ptr, abs_off);
+        let value = self.fb.ins().load(types::F64, self.flags, addr, 0);
         self.insert(dst, value)
     }
 
@@ -1339,6 +1387,8 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
     !matches!(
         op,
         LinearOp::LoadSeed { .. }
+            | LinearOp::LoadIndexedP { .. }
+            | LinearOp::LoadIndexedSeed { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
             | LinearOp::TableBounds { .. }
@@ -1382,6 +1432,8 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
             if_false,
         }),
         LinearOp::LoadSeed { .. }
+        | LinearOp::LoadIndexedP { .. }
+        | LinearOp::LoadIndexedSeed { .. }
         | LinearOp::Move { .. }
         | LinearOp::LinearSolveComponent { .. }
         | LinearOp::TableBounds { .. }
@@ -1416,6 +1468,8 @@ fn max_reg_index(op: LinearOp) -> Option<usize> {
         | LinearOp::TableLookup { dst, .. }
         | LinearOp::TableLookupSlope { dst, .. }
         | LinearOp::TableNextEvent { dst, .. } => Some(dst as usize),
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => Some(dst.max(index) as usize),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
@@ -1490,6 +1544,8 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::Unary { dst, .. }
         | LinearOp::Binary { dst, .. }
         | LinearOp::Compare { dst, .. }
+        | LinearOp::LoadIndexedP { dst, .. }
+        | LinearOp::LoadIndexedSeed { dst, .. }
         | LinearOp::Select { dst, .. } => Some(dst as usize),
         LinearOp::StoreOutput { .. } => None,
     }
@@ -1497,6 +1553,9 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
 
 fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileError> {
     match op {
+        LinearOp::LoadIndexedP { index, .. } | LinearOp::LoadIndexedSeed { index, .. } => {
+            validate_reg_defined(defined, index)
+        }
         LinearOp::TableBounds { table_id, .. } => validate_reg_defined(defined, table_id),
         LinearOp::TableLookup {
             table_id,
@@ -1722,9 +1781,30 @@ fn execute_general_op(
             let value = read_input_value("p", p, index)?;
             set_reg_value(regs, dst as usize, value);
         }
+        LinearOp::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        } => {
+            let slot = resolve_indexed_slot(read_reg_value(regs, index as usize), base, count);
+            let value = read_input_value("p", p, slot)?;
+            set_reg_value(regs, dst as usize, value);
+        }
         LinearOp::LoadSeed { dst, index } => {
             let seed = seed.ok_or_else(|| input_compile_error("seed", index, 0))?;
             let value = read_input_value("seed", seed, index)?;
+            set_reg_value(regs, dst as usize, value);
+        }
+        LinearOp::LoadIndexedSeed {
+            dst,
+            base,
+            count,
+            index,
+        } => {
+            let seed = seed.ok_or_else(|| input_compile_error("seed", base, 0))?;
+            let slot = resolve_indexed_slot(read_reg_value(regs, index as usize), base, count);
+            let value = read_input_value("seed", seed, slot)?;
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::Move { dst, src } => {

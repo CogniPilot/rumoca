@@ -106,10 +106,35 @@ pub enum LinearOp {
         dst: Reg,
         index: usize,
     },
+    /// Runtime-indexed parameter load: `p[base + clamp(round(index), 0, count-1)]`.
+    ///
+    /// Lowering emits this in place of an N-deep `(idx==k ? p[slot_k] : prev)`
+    /// select chain when a dynamic array subscript resolves to a contiguous,
+    /// row-major run of parameter slots (`base..base+count`). `index` is a
+    /// register holding the 0-based flat offset; it is rounded and clamped at
+    /// evaluation so an in-range model index is exact and out-of-range is
+    /// saturated rather than silently zero.
+    LoadIndexedP {
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    },
     /// Load AD seed for a state/algebraic/output scalar from `v[]`.
     LoadSeed {
         dst: Reg,
         index: usize,
+    },
+    /// Runtime-indexed AD seed load: `seed[base + clamp(round(index), 0, count-1)]`.
+    ///
+    /// Forward-mode dual of [`LinearOp::LoadIndexedP`] under parameter-seed AD
+    /// (`SeedMode::SolverYAndP`): the loaded parameter's tangent is the seed at
+    /// the same runtime offset, shifted into the seed region.
+    LoadIndexedSeed {
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
     },
     /// Copy a register value. This keeps packed register ranges explicit
     /// without introducing expression-level aliases into solver IR.
@@ -226,6 +251,27 @@ pub enum LinearOp {
     },
 }
 
+/// Resolve a runtime flat offset register value to an absolute slot in a
+/// contiguous `[base, base+count)` run, with the round-then-clamp semantics
+/// shared by [`LinearOp::LoadIndexedP`] / [`LinearOp::LoadIndexedSeed`] across
+/// the interpreter, JIT, and every codegen backend. `count == 0` is degenerate
+/// and saturates to `base`.
+#[must_use]
+pub fn resolve_indexed_slot(index_value: f64, base: usize, count: usize) -> usize {
+    if count == 0 {
+        return base;
+    }
+    let rounded = index_value.round();
+    let clamped = if rounded < 0.0 {
+        0
+    } else if rounded as usize >= count {
+        count - 1
+    } else {
+        rounded as usize
+    };
+    base + clamped
+}
+
 impl LinearOp {
     pub fn dst_register(&self) -> Option<Reg> {
         match *self {
@@ -233,7 +279,9 @@ impl LinearOp {
             | Self::LoadTime { dst }
             | Self::LoadY { dst, .. }
             | Self::LoadP { dst, .. }
+            | Self::LoadIndexedP { dst, .. }
             | Self::LoadSeed { dst, .. }
+            | Self::LoadIndexedSeed { dst, .. }
             | Self::Move { dst, .. }
             | Self::LinearSolveComponent { dst, .. }
             | Self::TableBounds { dst, .. }

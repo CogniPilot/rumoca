@@ -17,7 +17,7 @@ use std::{
 
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
-    SolveEventMessagePart, SolveEventPartition, UnaryOp,
+    SolveEventMessagePart, SolveEventPartition, UnaryOp, resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
@@ -36,7 +36,7 @@ mod update_rows;
 pub use compute_block_scalarize::to_scalar_program_block;
 pub use eval_at::{EvalAtReport, EvalAtSlot};
 pub use jacobian::JacobianReport;
-use linear_solve::{solve_component, solve_component_unchecked};
+use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{PreparedComputeBlock, PreparedScalarProgramBlock};
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
@@ -674,6 +674,18 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             LinearOp::LoadP { dst, index } => {
                 self.set(dst, read_input("p", self.input.p, index)?)?;
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.eval_load_indexed_p(dst, base, count, index)?,
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => self.eval_load_indexed_seed(dst, base, count, index)?,
             LinearOp::LoadSeed { dst, index } => {
                 let seed = self
                     .input
@@ -689,21 +701,8 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             LinearOp::Move { dst, src } => {
                 self.set(dst, self.get(src)?)?;
             }
-            LinearOp::LinearSolveComponent {
-                dst,
-                matrix_start,
-                rhs_start,
-                n,
-                component,
-            } => {
-                let value = solve_component(
-                    self.regs,
-                    self.initialized,
-                    matrix_start,
-                    rhs_start,
-                    n,
-                    component,
-                )?;
+            LinearOp::LinearSolveComponent { dst, .. } => {
+                let value = solve_component_op(self.regs, self.initialized, op)?;
                 self.set(dst, value)?;
             }
             LinearOp::Unary { dst, op, arg } => {
@@ -756,6 +755,37 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
         Ok(())
     }
 
+    fn eval_load_indexed_p(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), EvalSolveError> {
+        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        self.set(dst, read_input("p", self.input.p, slot)?)
+    }
+
+    fn eval_load_indexed_seed(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), EvalSolveError> {
+        let seed = self
+            .input
+            .context
+            .seed
+            .ok_or(EvalSolveError::MissingInput {
+                vector: "seed",
+                index: base,
+                len: 0,
+            })?;
+        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        self.set(dst, read_input("seed", seed, slot)?)
+    }
+
     fn get(&self, reg: Reg) -> Result<f64, EvalSolveError> {
         get(self.regs, self.initialized, reg)
     }
@@ -781,6 +811,29 @@ fn eval_row_prepared_fast(
             }
             LinearOp::LoadP { dst, index } => {
                 regs[dst as usize] = input.p[index];
+            }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = resolve_indexed_slot(regs[index as usize], base, count);
+                regs[dst as usize] = input.p[slot];
+            }
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let seed = input.context.seed.ok_or(EvalSolveError::MissingInput {
+                    vector: "seed",
+                    index: base,
+                    len: 0,
+                })?;
+                let slot = resolve_indexed_slot(regs[index as usize], base, count);
+                regs[dst as usize] = seed[slot];
             }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = input.context.seed.ok_or(EvalSolveError::MissingInput {
@@ -1065,8 +1118,16 @@ fn input_requirements_for_op(op: LinearOp) -> RowInputRequirements {
             p_len: index.saturating_add(1),
             ..Default::default()
         },
+        LinearOp::LoadIndexedP { base, count, .. } => RowInputRequirements {
+            p_len: base.saturating_add(count),
+            ..Default::default()
+        },
         LinearOp::LoadSeed { index, .. } => RowInputRequirements {
             seed_len: index.saturating_add(1),
+            ..Default::default()
+        },
+        LinearOp::LoadIndexedSeed { base, count, .. } => RowInputRequirements {
+            seed_len: base.saturating_add(count),
             ..Default::default()
         },
         _ => RowInputRequirements::default(),
@@ -1149,6 +1210,8 @@ fn max_register(op: &LinearOp) -> u32 {
         | LinearOp::TableLookup { dst, .. }
         | LinearOp::TableLookupSlope { dst, .. }
         | LinearOp::TableNextEvent { dst, .. } => dst,
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => dst.max(index),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
@@ -1201,6 +1264,8 @@ fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
         | LinearOp::LoadSeed { .. } => true,
         LinearOp::Move { src, .. }
         | LinearOp::Unary { arg: src, .. }
+        | LinearOp::LoadIndexedP { index: src, .. }
+        | LinearOp::LoadIndexedSeed { index: src, .. }
         | LinearOp::StoreOutput { src } => reg_initialized(initialized, src),
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
             reg_initialized(initialized, lhs) && reg_initialized(initialized, rhs)

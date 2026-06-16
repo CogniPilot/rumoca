@@ -490,8 +490,17 @@ fn validate_op_inputs(
         solve::LinearOp::LoadSeed { index, .. } => Err(solve_validation_error(format!(
             "{context}[{op_idx}]: LoadSeed[{index}] is only valid in derivative/JVP artifact rows"
         ))),
+        // A runtime-indexed seed load is a derivative/JVP-only construct, like
+        // `LoadSeed`, but it also reads an index register that must be defined.
+        solve::LinearOp::LoadIndexedSeed { index, .. } if seed_use == SeedUse::Allowed => {
+            validate_defined_reg(context, op_idx, *index, defined)
+        }
+        solve::LinearOp::LoadIndexedSeed { .. } => Err(solve_validation_error(format!(
+            "{context}[{op_idx}]: LoadIndexedSeed is only valid in derivative/JVP artifact rows"
+        ))),
         solve::LinearOp::Move { src, .. }
         | solve::LinearOp::Unary { arg: src, .. }
+        | solve::LinearOp::LoadIndexedP { index: src, .. }
         | solve::LinearOp::StoreOutput { src } => {
             validate_defined_reg(context, op_idx, *src, defined)
         }

@@ -701,6 +701,9 @@ fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
         }
         Op::LoadY { dst, index } => def_use(dst, Some(index), Vec::new()),
         Op::LoadSeed { dst, .. } => def_use(dst, None, Vec::new()),
+        Op::LoadIndexedP { dst, index, .. } | Op::LoadIndexedSeed { dst, index, .. } => {
+            def_use(dst, None, vec![index])
+        }
         Op::Move { dst, src } | Op::Unary { dst, arg: src, .. } => def_use(dst, None, vec![src]),
         Op::Binary { dst, lhs, rhs, .. } | Op::Compare { dst, lhs, rhs, .. } => {
             def_use(dst, None, vec![lhs, rhs])
