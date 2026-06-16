@@ -280,6 +280,20 @@ pub(super) fn alg_rhs_for_var_function(
     }
 }
 
+/// Extract algebraic RHS from a DAE context object.
+///
+/// This is a convenience wrapper for templates that carry the prepared DAE
+/// context alongside Solve IR and therefore have `dae` rather than `dae.f_x`
+/// at the call site.
+pub(super) fn alg_rhs_for_var_with_dae_function(
+    var_name: Value,
+    dae: Value,
+    config: Value,
+) -> RenderResult {
+    let equations = crate::codegen::get_field(&dae, "f_x").unwrap_or(Value::UNDEFINED);
+    alg_rhs_for_var_function(var_name, equations, config)
+}
+
 /// Extract algebraic RHS like `alg_rhs_for_var`, but if no matching equation is
 /// found, return the current variable alias (hold-last-value semantics).
 ///

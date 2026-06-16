@@ -744,6 +744,40 @@ fn test_alg_rhs_rejects_unrenderable_direct_assignment_rhs() {
 }
 
 #[test]
+fn test_alg_rhs_with_dae_reads_fx_from_context_object() {
+    let dae_json = serde_json::json!({
+        "f_x": [{
+            "lhs": "y",
+            "rhs": {
+                "VarRef": {
+                    "name": "u",
+                    "subscripts": []
+                }
+            }
+        }]
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true} %}
+{{ alg_rhs_for_var_with_dae("y", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "u");
+}
+
+#[test]
+fn test_alg_rhs_with_dae_without_fx_uses_missing_equation_warning() {
+    let dae_json = serde_json::json!({});
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true} %}
+{{ alg_rhs_for_var_with_dae("y", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(rendered.contains("WARNING: no equation found for y"));
+}
+
+#[test]
 fn test_alg_rhs_rejects_unrenderable_subtraction_rhs() {
     let dae_json = serde_json::json!({
         "f_x": [{

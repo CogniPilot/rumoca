@@ -1269,6 +1269,7 @@ fn create_environment() -> Environment<'static> {
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
+    env.add_filter("json", json_filter);
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.
@@ -1322,6 +1323,10 @@ fn create_environment() -> Environment<'static> {
 
     // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
     env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
+    env.add_function(
+        "alg_rhs_for_var_with_dae",
+        render_c::alg_rhs_for_var_with_dae_function,
+    );
     env.add_function(
         "alg_rhs_for_var_or_self",
         render_c::alg_rhs_for_var_or_self_function,
@@ -1412,6 +1417,15 @@ fn product_filter(value: Value) -> Value {
         }
     }
     Value::from(result)
+}
+
+fn json_filter(value: Value) -> RenderResult {
+    serde_json::to_string(&value).map_err(|err| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("json filter serialization failed: {err}"),
+        )
+    })
 }
 
 fn value_to_string(value: &Value) -> String {

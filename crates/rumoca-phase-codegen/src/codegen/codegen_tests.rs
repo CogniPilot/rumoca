@@ -377,6 +377,14 @@ fn test_sanitize_filter() {
 }
 
 #[test]
+fn test_json_filter() {
+    let dae = dae::Dae::new();
+    let template = r#"{{ 'Model "A"' | json }} {{ ['libm', 'libc'] | json }}"#;
+    let result = render_template(&dae, template).unwrap();
+    assert_eq!(result, r#""Model \"A\"" ["libm","libc"]"#);
+}
+
+#[test]
 fn test_access_dae_fields() {
     let dae = dae::Dae::new();
     let template = r#"
