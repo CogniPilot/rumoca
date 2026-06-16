@@ -290,7 +290,8 @@ pub(super) fn alg_rhs_for_var_with_dae_function(
     dae: Value,
     config: Value,
 ) -> RenderResult {
-    let equations = crate::codegen::get_field(&dae, "f_x").unwrap_or(Value::UNDEFINED);
+    let equations = crate::codegen::get_field(&dae, "f_x")
+        .unwrap_or_else(|_| Value::from_serialize(Vec::<serde_json::Value>::new()));
     alg_rhs_for_var_function(var_name, equations, config)
 }
 
