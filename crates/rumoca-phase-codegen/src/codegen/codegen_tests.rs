@@ -682,7 +682,6 @@ fn test_render_solve_row_c_template_function_uses_dense_linear_solve_op() {
     assert!(rendered.contains("(double[]){8"));
 }
 
-
 #[test]
 fn test_fmi3_event_indicators_render_from_solver_ir() {
     let dae = dae::Dae::new();

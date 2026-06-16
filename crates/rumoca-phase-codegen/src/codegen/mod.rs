@@ -1889,9 +1889,9 @@ pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;
 
 #[cfg(test)]
-mod codegen_tests;
-#[cfg(test)]
 mod codegen_block_render_tests;
+#[cfg(test)]
+mod codegen_tests;
 #[cfg(test)]
 mod fmi_template_tests;
 #[cfg(test)]

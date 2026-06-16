@@ -163,9 +163,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             && let Ok(row) = lower_direct_row_group(analysis, i, group_len, &lowering_ctx)
         {
             pending_scalar_programs.push(row);
-            for j in i..i + group_len {
-                processed[j] = true;
-            }
+            processed[i..i + group_len].fill(true);
             i += group_len;
             continue;
         }

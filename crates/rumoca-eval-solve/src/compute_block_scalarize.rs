@@ -197,6 +197,35 @@ fn next_free_reg(ops: &[LinearOp]) -> Reg {
     ops.iter().map(max_reg_in_op).max().unwrap_or(0) + 1
 }
 
+fn max_reg_in_op(op: &LinearOp) -> Reg {
+    match *op {
+        LinearOp::Const { dst, .. }
+        | LinearOp::LoadTime { dst }
+        | LinearOp::LoadY { dst, .. }
+        | LinearOp::LoadP { dst, .. }
+        | LinearOp::LoadSeed { dst, .. }
+        | LinearOp::Move { dst, .. }
+        | LinearOp::Unary { dst, .. }
+        | LinearOp::Binary { dst, .. }
+        | LinearOp::Compare { dst, .. }
+        | LinearOp::Select { dst, .. }
+        | LinearOp::LinearSolveComponent { dst, .. }
+        | LinearOp::TableBounds { dst, .. }
+        | LinearOp::TableLookup { dst, .. }
+        | LinearOp::TableLookupSlope { dst, .. }
+        | LinearOp::TableNextEvent { dst, .. }
+        | LinearOp::RandomInitialState { dst, .. }
+        | LinearOp::RandomResult { dst, .. }
+        | LinearOp::RandomState { dst, .. }
+        | LinearOp::ImpureRandomInit { dst, .. }
+        | LinearOp::ImpureRandom { dst, .. }
+        | LinearOp::ImpureRandomInteger { dst, .. }
+        | LinearOp::LoadIndexedP { dst, .. }
+        | LinearOp::LoadIndexedSeed { dst, .. } => dst,
+        LinearOp::StoreOutput { src } => src,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,34 +359,5 @@ mod tests {
             }
         }
         assert_eq!(components, n);
-    }
-}
-
-fn max_reg_in_op(op: &LinearOp) -> Reg {
-    match *op {
-        LinearOp::Const { dst, .. }
-        | LinearOp::LoadTime { dst }
-        | LinearOp::LoadY { dst, .. }
-        | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::Move { dst, .. }
-        | LinearOp::Unary { dst, .. }
-        | LinearOp::Binary { dst, .. }
-        | LinearOp::Compare { dst, .. }
-        | LinearOp::Select { dst, .. }
-        | LinearOp::LinearSolveComponent { dst, .. }
-        | LinearOp::TableBounds { dst, .. }
-        | LinearOp::TableLookup { dst, .. }
-        | LinearOp::TableLookupSlope { dst, .. }
-        | LinearOp::TableNextEvent { dst, .. }
-        | LinearOp::RandomInitialState { dst, .. }
-        | LinearOp::RandomResult { dst, .. }
-        | LinearOp::RandomState { dst, .. }
-        | LinearOp::ImpureRandomInit { dst, .. }
-        | LinearOp::ImpureRandom { dst, .. }
-        | LinearOp::ImpureRandomInteger { dst, .. }
-        | LinearOp::LoadIndexedP { dst, .. }
-        | LinearOp::LoadIndexedSeed { dst, .. } => dst,
-        LinearOp::StoreOutput { src } => src,
     }
 }

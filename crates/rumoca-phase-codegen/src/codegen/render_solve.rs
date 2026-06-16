@@ -1389,37 +1389,70 @@ fn render_solve_block_for(
             .map_err(|_| render_err("solve program must be an array of LinearOp values"))?
             .collect();
         let read_counts = collect_solve_read_counts(&ops)?;
-        let mut regs = Vec::<String>::new();
+        let mut rendered = SolveProgramRender {
+            body: &mut body,
+            regs: Vec::new(),
+            temp_counter: &mut temp_counter,
+            output_index: &mut output_index,
+        };
         for op in &ops {
-            // A leaf op (Const / Load*) has no register operands; its expression
-            // is O(1) and safe to inline. Non-leaf ops carry register operands, so
-            // inlining them as nested strings would re-expand deep single-use
-            // chains into O(n^2) text — materialize those into a temp instead.
-            let is_leaf = solve_op_read_regs(op)?.is_empty();
-            match solve_op_expr(op, cfg, dialect, &regs)? {
-                SolveOpEffect::Compute { dst, expr } => {
-                    let reads = read_counts.get(dst).copied().unwrap_or(0);
-                    if reads >= 2 || (reads >= 1 && !is_leaf) {
-                        let name = format!("__r{temp_counter}");
-                        temp_counter += 1;
-                        body.push_str(&dialect.temp_decl(&name, &expr));
-                        store_solve_reg(&mut regs, dst, name);
-                    } else {
-                        store_solve_reg(&mut regs, dst, expr);
-                    }
-                }
-                SolveOpEffect::Store { src } => {
-                    let value = solve_reg(&regs, src)?;
-                    body.push_str(&format!(
-                        "\t{};\n",
-                        format_solve_set(out_set, output_index, &value)
-                    ));
-                    output_index += 1;
-                }
-            }
+            rendered.render_op(op, cfg, dialect, out_set, &read_counts)?;
         }
     }
     Ok(body)
+}
+
+/// Mutable state threaded while rendering one solve program's ops: the output
+/// buffer plus the register file and the running temp / output counters (the
+/// counters are shared across programs, so they are borrowed from the caller).
+struct SolveProgramRender<'a> {
+    body: &'a mut String,
+    regs: Vec<String>,
+    temp_counter: &'a mut usize,
+    output_index: &'a mut usize,
+}
+
+impl SolveProgramRender<'_> {
+    /// Render a single solve op into `body`. Pulling this out of the per-program
+    /// loop keeps the loop body shallow: the materialization decision is one
+    /// level deep here instead of four levels deep inside two nested `for`s and a
+    /// `match`.
+    fn render_op(
+        &mut self,
+        op: &Value,
+        cfg: &SolveRowCConfig,
+        dialect: SolveRowDialect,
+        out_set: &str,
+        read_counts: &[usize],
+    ) -> Result<(), minijinja::Error> {
+        // A leaf op (Const / Load*) has no register operands; its expression is
+        // O(1) and safe to inline. Non-leaf ops carry register operands, so
+        // inlining them as nested strings would re-expand deep single-use chains
+        // into O(n^2) text — materialize those into a temp instead.
+        let is_leaf = solve_op_read_regs(op)?.is_empty();
+        match solve_op_expr(op, cfg, dialect, &self.regs)? {
+            SolveOpEffect::Compute { dst, expr } => {
+                let reads = read_counts.get(dst).copied().unwrap_or(0);
+                if reads >= 2 || (reads >= 1 && !is_leaf) {
+                    let name = format!("__r{}", self.temp_counter);
+                    *self.temp_counter += 1;
+                    self.body.push_str(&dialect.temp_decl(&name, &expr));
+                    store_solve_reg(&mut self.regs, dst, name);
+                } else {
+                    store_solve_reg(&mut self.regs, dst, expr);
+                }
+            }
+            SolveOpEffect::Store { src } => {
+                let value = solve_reg(&self.regs, src)?;
+                self.body.push_str(&format!(
+                    "\t{};\n",
+                    format_solve_set(out_set, *self.output_index, &value)
+                ));
+                *self.output_index += 1;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Count how many times each register is read across a program's ops.

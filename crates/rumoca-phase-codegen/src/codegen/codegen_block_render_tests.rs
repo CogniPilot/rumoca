@@ -22,8 +22,14 @@ fn test_render_solve_block_c_emits_multi_output_and_shares_registers() {
         render_template_with_dae_json(&serde_json::json!({ "programs": programs }), template)
             .unwrap();
 
-    assert!(rendered.contains("out[0] ="), "missing first output: {rendered}");
-    assert!(rendered.contains("out[1] ="), "missing second output: {rendered}");
+    assert!(
+        rendered.contains("out[0] ="),
+        "missing first output: {rendered}"
+    );
+    assert!(
+        rendered.contains("out[1] ="),
+        "missing second output: {rendered}"
+    );
     // Register 0 is read twice, so it must be materialized once as a temp.
     assert!(
         rendered.contains("double __r"),

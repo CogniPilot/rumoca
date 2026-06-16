@@ -378,15 +378,15 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
         move |k| {
             let e = &problem.events;
             match k {
-                "root_conditions" => {
-                    Some(scalar_program_block_value(Arc::new(e.root_conditions.clone())))
-                }
+                "root_conditions" => Some(scalar_program_block_value(Arc::new(
+                    e.root_conditions.clone(),
+                ))),
                 "dynamic_time_event_rhs" => Some(scalar_program_block_value(Arc::new(
                     e.dynamic_time_event_rhs.clone(),
                 ))),
-                "action_conditions" => {
-                    Some(scalar_program_block_value(Arc::new(e.action_conditions.clone())))
-                }
+                "action_conditions" => Some(scalar_program_block_value(Arc::new(
+                    e.action_conditions.clone(),
+                ))),
                 "root_relation_memory_targets" => {
                     Some(Value::from_serialize(&e.root_relation_memory_targets))
                 }
@@ -403,26 +403,30 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
 
 pub(super) fn artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
     lazy_map(&["continuous"], move |k| {
-        (k == "continuous").then(|| {
-            let artifacts = artifacts.clone();
-            lazy_map(
-                &["mass_matrix", "implicit_jacobian_v", "full_jacobian_v"],
-                move |k| {
-                    let c = &artifacts.continuous;
-                    match k {
-                        "implicit_jacobian_v" => {
-                            Some(compute_block_value(Arc::new(c.implicit_jacobian_v.clone())))
-                        }
-                        "full_jacobian_v" => {
-                            Some(scalar_program_block_value(Arc::new(c.full_jacobian_v.clone())))
-                        }
-                        "mass_matrix" => Some(Value::from_serialize(&c.mass_matrix)),
-                        _ => None,
-                    }
-                },
-            )
-        })
+        (k == "continuous").then(|| continuous_artifacts_value(artifacts.clone()))
     })
+}
+
+/// Lazy `solve.artifacts.continuous` map: the continuous Jacobian / mass-matrix
+/// artifacts, each produced on demand so a target that never reads them pays
+/// nothing for materializing op-heavy blocks.
+fn continuous_artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
+    lazy_map(
+        &["mass_matrix", "implicit_jacobian_v", "full_jacobian_v"],
+        move |k| {
+            let c = &artifacts.continuous;
+            match k {
+                "implicit_jacobian_v" => {
+                    Some(compute_block_value(Arc::new(c.implicit_jacobian_v.clone())))
+                }
+                "full_jacobian_v" => Some(scalar_program_block_value(Arc::new(
+                    c.full_jacobian_v.clone(),
+                ))),
+                "mass_matrix" => Some(Value::from_serialize(&c.mass_matrix)),
+                _ => None,
+            }
+        },
+    )
 }
 
 /// Lazy `solve` context object: the `SolveProblem` fields plus an embedded
@@ -476,4 +480,3 @@ pub(super) fn derivative_nodes_value(problem: Arc<solve::SolveProblem>) -> Value
         compute_node_value(Arc::new(problem.continuous.derivative_rhs.nodes[i].clone()))
     })
 }
-
