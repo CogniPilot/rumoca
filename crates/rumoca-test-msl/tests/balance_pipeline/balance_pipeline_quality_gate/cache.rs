@@ -222,9 +222,7 @@ pub(super) fn persist_simulation_parity_cache_entry(
 }
 
 pub(super) fn current_omc_version() -> io::Result<String> {
-    let output = std::process::Command::new("omc")
-        .arg("--version")
-        .output()?;
+    let output = omc_version_command().output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "failed to query OMC version (status={})",
@@ -242,6 +240,24 @@ pub(super) fn current_omc_version() -> io::Result<String> {
         return Err(io::Error::other("omc --version returned empty output"));
     }
     Ok(version)
+}
+
+fn omc_version_command() -> std::process::Command {
+    if let Ok(image) = std::env::var("RUMOCA_OMC_DOCKER_IMAGE")
+        && !image.trim().is_empty()
+    {
+        let mut command = std::process::Command::new("docker");
+        command
+            .arg("run")
+            .arg("--rm")
+            .arg(image.trim())
+            .arg("omc")
+            .arg("--version");
+        return command;
+    }
+    let mut command = std::process::Command::new("omc");
+    command.arg("--version");
+    command
 }
 
 pub(super) fn parity_cache_matches_targets_and_msl(

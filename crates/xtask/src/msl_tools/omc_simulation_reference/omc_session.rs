@@ -14,14 +14,15 @@
 //! same win the rumoca warm worker provides.
 
 use anyhow::{Context, Result, anyhow};
+use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::super::common::apply_omc_thread_env;
-
 /// Poll interval while waiting for the OMC ZeroMQ port file to appear.
 const PORT_FILE_POLL: Duration = Duration::from_millis(20);
+const FALLBACK_DOCKER_OMC_IMAGE: &str = "openmodelica/openmodelica:v1.26.3-minimal";
 
 /// Per-model timing self-reported by OMC's `SimulationResult` record. These are
 /// OMC's own internal phase timers, so they are independent of scheduling jitter
@@ -68,6 +69,7 @@ pub(super) struct OmcSession {
     // The context must outlive the socket; keep it owned by the session.
     _ctx: zmq::Context,
     port_file: PathBuf,
+    suffix: String,
 }
 
 impl OmcSession {
@@ -88,12 +90,7 @@ impl OmcSession {
             )
         })?;
 
-        let mut command = Command::new("omc");
-        command
-            .arg("--interactive=zmq")
-            .arg(format!("-z={suffix}"))
-            .arg("--locale=C");
-        apply_omc_thread_env(&mut command, omc_threads);
+        let mut command = build_omc_interactive_command(work_dir, &suffix, omc_threads);
         // Keep the port file and any scratch output inside our work dir so
         // concurrent worker sessions never collide on the default $TMPDIR file.
         command
@@ -144,6 +141,7 @@ impl OmcSession {
             socket,
             _ctx: ctx,
             port_file,
+            suffix,
         };
 
         for expr in msl_load_exprs {
@@ -205,6 +203,7 @@ impl OmcSession {
         self.kill_process_group();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.kill_docker_container_by_suffix();
         let _ = std::fs::remove_file(&self.port_file);
     }
 
@@ -220,6 +219,39 @@ impl OmcSession {
             );
         }
     }
+
+    fn kill_docker_container_by_suffix(&self) {
+        let Ok(output) = Command::new("docker")
+            .args([
+                "ps",
+                "--no-trunc",
+                "--filter",
+                &format!("ancestor={}", docker_omc_image()),
+                "--format",
+                "{{.ID}} {{.Command}}",
+            ])
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if !line.contains(&self.suffix) {
+                continue;
+            }
+            if let Some(container_id) = line.split_whitespace().next() {
+                let _ = Command::new("docker")
+                    .arg("kill")
+                    .arg(container_id)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
 }
 
 impl Drop for OmcSession {
@@ -230,8 +262,130 @@ impl Drop for OmcSession {
         self.kill_process_group();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.kill_docker_container_by_suffix();
         let _ = std::fs::remove_file(&self.port_file);
     }
+}
+
+fn build_omc_interactive_command(work_dir: &Path, suffix: &str, omc_threads: usize) -> Command {
+    if omc_command_is_docker_wrapper() {
+        return build_docker_omc_interactive_command(work_dir, suffix, omc_threads);
+    }
+    let mut command = Command::new("omc");
+    command
+        .arg("--interactive=zmq")
+        .arg(format!("-z={suffix}"))
+        .arg("--locale=C");
+    apply_omc_thread_env_to_native_command(&mut command, omc_threads);
+    command
+}
+
+fn build_docker_omc_interactive_command(
+    work_dir: &Path,
+    suffix: &str,
+    omc_threads: usize,
+) -> Command {
+    let threads = omc_threads.max(1).to_string();
+    let home = env::var_os("HOME").unwrap_or_else(|| OsString::from("/tmp"));
+    let user = docker_user_arg();
+    let image = docker_omc_image();
+    let mut command = Command::new("docker");
+    command
+        .arg("run")
+        .arg("--rm")
+        .arg("-i")
+        .arg("--network")
+        .arg("host")
+        .arg("-v")
+        .arg(format!(
+            "{}:{}",
+            home.to_string_lossy(),
+            home.to_string_lossy()
+        ))
+        .arg("-e")
+        .arg(format!("HOME={}", home.to_string_lossy()))
+        .arg("-e")
+        .arg(format!("TMPDIR={}", work_dir.display()))
+        .arg("-e")
+        .arg(format!("OMP_NUM_THREADS={threads}"))
+        .arg("-e")
+        .arg(format!("OPENBLAS_NUM_THREADS={threads}"))
+        .arg("-e")
+        .arg(format!("MKL_NUM_THREADS={threads}"))
+        .arg("-e")
+        .arg(format!("NUMEXPR_NUM_THREADS={threads}"))
+        .arg("-w")
+        .arg(work_dir)
+        .arg("--user")
+        .arg(user)
+        .arg(image)
+        .arg("omc")
+        .arg("--interactive=zmq")
+        .arg(format!("-z={suffix}"))
+        .arg("--locale=C")
+        .arg(format!("--numProcs={threads}"));
+    command
+}
+
+fn apply_omc_thread_env_to_native_command(command: &mut Command, omc_threads: usize) {
+    let threads = omc_threads.max(1).to_string();
+    command.arg(format!("--numProcs={threads}"));
+    command.env("OMP_NUM_THREADS", &threads);
+    command.env("OPENBLAS_NUM_THREADS", &threads);
+    command.env("MKL_NUM_THREADS", &threads);
+    command.env("NUMEXPR_NUM_THREADS", &threads);
+}
+
+fn docker_user_arg() -> String {
+    format!(
+        "{}:{}",
+        command_stdout("id", &["-u"]),
+        command_stdout("id", &["-g"])
+    )
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> String {
+    Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0".to_string())
+}
+
+fn omc_command_is_docker_wrapper() -> bool {
+    let Some(path) = find_executable_on_path("omc") else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("docker run") && text.contains("openmodelica/openmodelica:")
+}
+
+fn docker_omc_image() -> String {
+    if let Ok(image) = env::var("RUMOCA_OMC_DOCKER_IMAGE")
+        && !image.trim().is_empty()
+    {
+        return image.trim().to_string();
+    }
+    find_executable_on_path("omc")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| {
+            text.split_whitespace()
+                .find(|word| word.starts_with("openmodelica/openmodelica:"))
+                .map(|word| word.trim_end_matches('\\').to_string())
+        })
+        .unwrap_or_else(|| FALLBACK_DOCKER_OMC_IMAGE.to_string())
+}
+
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 fn unique_session_suffix() -> String {

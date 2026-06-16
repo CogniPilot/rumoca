@@ -246,14 +246,31 @@ pub fn msl_top_packages(paths: &MslPaths) -> Vec<&'static str> {
 }
 
 pub fn get_omc_version() -> String {
-    let mut command = Command::new("omc");
-    command.arg("--version");
+    let mut command = omc_version_command();
     let timeout = Duration::from_secs(10);
     let output = run_command_with_timeout(&mut command, timeout);
     match output {
         Ok(output) if !output.stdout.trim().is_empty() => output.stdout.trim().to_string(),
         _ => "unknown".to_string(),
     }
+}
+
+pub fn omc_version_command() -> Command {
+    if let Ok(image) = std::env::var("RUMOCA_OMC_DOCKER_IMAGE")
+        && !image.trim().is_empty()
+    {
+        let mut command = Command::new("docker");
+        command
+            .arg("run")
+            .arg("--rm")
+            .arg(image.trim())
+            .arg("omc")
+            .arg("--version");
+        return command;
+    }
+    let mut command = Command::new("omc");
+    command.arg("--version");
+    command
 }
 
 pub fn get_git_commit(repo_root: &Path) -> String {

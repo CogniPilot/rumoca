@@ -45,6 +45,13 @@ pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.35;
 /// rumoca, so a larger budget only lets more OMC models complete (the measured
 /// `timeSimulation` it reports is unchanged, so the timing comparison stays fair).
 pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 120;
+/// Whole-stage watchdog for generating the OMC simulation reference.
+///
+/// This covers the complete batch of Rumoca-sim-ok models, not a single OMC
+/// `simulate()` call. Keep it aligned with the outer parity-stage budget so
+/// slower local or shared runners can finish a progressing reference batch
+/// without weakening any model-level timeout or parity quality gate.
+pub(super) const OMC_SIM_REFERENCE_STAGE_TIMEOUT_SECONDS: u64 = 7200;
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
@@ -891,7 +898,10 @@ fn ensure_simulation_parity_reference(
     sim_targets_path: &Path,
     sim_targets: &[String],
 ) -> io::Result<()> {
-    let _sim_ref_watchdog = StageAbortWatchdog::new("parity_simulation_reference", 3600);
+    let _sim_ref_watchdog = StageAbortWatchdog::new(
+        "parity_simulation_reference",
+        OMC_SIM_REFERENCE_STAGE_TIMEOUT_SECONDS,
+    );
     let sim_policy = current_simulation_parity_cache_policy();
     let omc_simulation_reference = omc_simulation_reference_path();
     let sim_cache_key = simulation_parity_cache_key(

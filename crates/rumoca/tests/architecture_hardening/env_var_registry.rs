@@ -28,10 +28,15 @@ use super::*;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Registered `RUMOCA_*` environment variables. Intentionally empty: the policy
-/// is literal zero (see module docs). Adding an entry here is a deliberate,
-/// reviewable policy exception — not the default escape hatch.
-const REGISTERED_ENV_VARS: &[&str] = &[];
+/// Registered `RUMOCA_*` environment variables. Intentionally tiny: the policy
+/// is literal zero by default (see module docs). Adding an entry here is a
+/// deliberate, reviewable policy exception — not the default escape hatch.
+///
+/// `RUMOCA_OMC_DOCKER_IMAGE` is a host/CI compatibility override for the
+/// Docker-backed `omc` wrapper used by MSL parity verification. The parity
+/// harness cannot pass argv into the shell wrapper, and the committed MSL
+/// baseline is tied to a specific OpenModelica image version.
+const REGISTERED_ENV_VARS: &[&str] = &["RUMOCA_OMC_DOCKER_IMAGE"];
 
 /// Extract every `RUMOCA_<NAME>` token on one source line that is used as an
 /// environment variable, across both Rust and JS/TS source. A token qualifies
