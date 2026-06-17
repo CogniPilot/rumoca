@@ -10,14 +10,13 @@
 //! `ProjectSession` Python class provides a reusable session for workloads that
 //! want to retain loaded source roots and compile/query caches across calls.
 
-use ::rumoca::CompilationResult as HighLevelCompilationResult;
+use ::rumoca::{CompilationResult as HighLevelCompilationResult, TemplateIr};
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetTemplateIr, TargetTemplateSource,
     render_dae_target_files, validate_dae_target_capabilities,
 };
-use rumoca_compile::codegen::{SolveTemplateRenderer, dae_for_solve_template_context};
 use rumoca_compile::compile::{FailedPhase, PhaseResult, Session, SessionConfig, SourceRootKind};
 use rumoca_compile::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
@@ -26,7 +25,7 @@ use rumoca_compile::source_roots::{
     canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
-use rumoca_sim::{lower_dae_for_simulation, simulate_dae};
+use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimSolverMode as RuntimeSimSolverMode};
 use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
@@ -985,39 +984,28 @@ fn render_compiled_target(
         .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
 }
 
-/// Render a solve-IR target's files from a compiled DAE.
+/// Render a solve-IR target's files from a compiled model.
 ///
-/// Mirrors the CLI's solve-target path: lower the DAE to the solve problem +
-/// artifacts, build one `SolveTemplateRenderer` over the solve context (with the
-/// scalarized DAE exposed so templates can read `dae.*`), and render each
-/// manifest file's path and template through it.
+/// Renders each manifest file's path and template through the compilation
+/// result's own IR-aware renderer (`render_template_str_with_name_and_ir` with
+/// `TemplateIr::Solve`) — the exact same call the CLI's `compile --target` makes,
+/// so the binding's output is byte-for-byte identical to the CLI's.
 fn render_solve_target_files(
     bundle: &TargetBundle,
     manifest: &rumoca_compile::codegen::targets::TargetManifest,
     result: &HighLevelCompilationResult,
     model_name: &str,
 ) -> Result<Vec<RenderedTargetFile>, PyRuntimeStringError> {
-    let solve_model = lower_dae_for_simulation(&result.dae, &SimOptions::default())
-        .map_err(|e| PyRuntimeStringError(format!("Solve lowering error: {e}")))?;
-    let template_dae = dae_for_solve_template_context(&result.dae)
-        .map_err(|e| PyRuntimeStringError(format!("Solve template context error: {e}")))?;
-    let renderer = SolveTemplateRenderer::new_with_dae(
-        &solve_model.problem,
-        &solve_model.artifacts,
-        template_dae,
-    )
-    .map_err(|e| PyRuntimeStringError(format!("Solve renderer error: {e}")))?;
-
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        let path = renderer
-            .render_with_name(&file.path, model_name)
+        let path = result
+            .render_template_str_with_name_and_ir(&file.path, model_name, TemplateIr::Solve)
             .map_err(|e| PyRuntimeStringError(format!("Render target path '{}': {e}", file.path)))?;
         let template = bundle
             .template_source(&file.template)
             .map_err(|e| PyRuntimeStringError(format!("Target template '{}': {e}", file.template)))?;
-        let content = renderer
-            .render_with_name(template.as_ref(), model_name)
+        let content = result
+            .render_template_str_with_name_and_ir(template.as_ref(), model_name, TemplateIr::Solve)
             .map_err(|e| {
                 PyRuntimeStringError(format!("Render target template '{}': {e}", file.template))
             })?;
