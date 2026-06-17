@@ -40,9 +40,9 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, SolveTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
-    render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_flat_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
+    render_ast_template_with_name, render_dae_template_with_json,
+    render_dae_template_with_json_and_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -88,25 +88,13 @@ pub enum TemplateIr {
     Ast,
 }
 
-/// Return a scalarized clone of `dae` — vector equations like
-/// `der(x) = -x` for `x: Real[3]` are expanded to one equation per element.
-///
-/// For scalar-only models this is a no-op on the resulting DAE, so it is
-/// safe to apply unconditionally before template rendering.
-fn scalarized_dae(dae: &Dae) -> Result<Dae, CodegenError> {
-    let mut dae = dae.clone();
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
-        .map_err(|err| CodegenError::template(err.to_string()))?;
-    Ok(dae)
-}
-
 fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
-    let dae = scalarized_dae(dae_model).map_err(CompilerError::TemplateError)?;
-    let problem = lower_solve_problem(&dae)
+    let problem = lower_solve_problem(dae_model)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
     let artifacts = lower_solve_artifacts(&problem)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
+    let template_dae = dae_for_solve_template_context(dae_model)?;
+    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
         .map_err(CompilerError::TemplateError)
 }
 
@@ -409,11 +397,21 @@ impl CompilationResult {
         Self::push_nonempty(&mut canonical, "z", &self.dae.variables.discrete_reals)?;
         Self::push_nonempty(&mut canonical, "m", &self.dae.variables.discrete_valued)?;
         Self::push_nonempty(&mut canonical, "f_x", &f_x)?;
+        Self::push_nonempty(
+            &mut canonical,
+            "for_equations",
+            &self.dae.continuous.for_equations,
+        )?;
         Self::push_nonempty(&mut canonical, "f_z", &f_z)?;
         Self::push_nonempty(&mut canonical, "f_m", &f_m)?;
         Self::push_nonempty(&mut canonical, "f_c", &f_c)?;
         Self::push_nonempty(&mut canonical, "relation", &self.dae.conditions.relations)?;
         Self::push_nonempty(&mut canonical, "initial", &initial)?;
+        Self::push_nonempty(
+            &mut canonical,
+            "initial_for_equations",
+            &self.dae.initialization.for_equations,
+        )?;
         Self::push_nonempty(&mut canonical, "functions", &self.dae.symbols.functions)?;
 
         serde_json::to_string_pretty(&Value::Object(canonical))
@@ -1476,6 +1474,36 @@ mod tests {
             .expect("DAE template should render from native DAE context");
 
         assert_eq!(rendered.trim(), "1 2");
+    }
+
+    #[test]
+    fn test_solve_template_dae_context_scalarizes_array_equations() {
+        let source = r#"
+            model SolveTemplateDaeContext
+              parameter Integer N = 2;
+              Real x[N](start = {1, 2});
+            equation
+              der(x) = {-x[1], -x[N]};
+            end SolveTemplateDaeContext;
+        "#;
+
+        let result = Compiler::new()
+            .model("SolveTemplateDaeContext")
+            .compile_str(source, "SolveTemplateDaeContext.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                "{% for eq in dae.f_x %}{{ eq.scalar_count }} {% endfor %}",
+                "SolveTemplateDaeContext",
+                TemplateIr::Solve,
+            )
+            .expect("Solve template should expose scalarized DAE equations");
+
+        assert_eq!(
+            rendered.trim(),
+            "1 1",
+            "Solve templates should receive scalar DAE rows, while Solve IR still lowers from native DAE"
+        );
     }
 
     #[test]

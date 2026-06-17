@@ -184,6 +184,17 @@ fn compute_node_value(node: Arc<solve::ComputeNode>) -> Value {
         solve::ComputeNode::LinSolve { .. } => lazy_map(&["LinSolve"], move |k| {
             (k == "LinSolve").then(|| linsolve_value(node.clone()))
         }),
+        // An affine stencil renders as its scalarized expansion — matching how
+        // `c_renderable_derivative_nodes` lowers stencils for the C templates.
+        solve::ComputeNode::AffineStencil { .. } => {
+            let scalar = rumoca_eval_solve::to_scalar_program_block(&solve::ComputeBlock {
+                nodes: vec![node.as_ref().clone()],
+            });
+            lazy_map(&["ScalarPrograms"], move |k| {
+                (k == "ScalarPrograms")
+                    .then(|| scalar_program_block_value(Arc::new(scalar.clone())))
+            })
+        }
     }
 }
 
@@ -470,13 +481,5 @@ pub(super) fn nodes_value(block: Arc<solve::ComputeBlock>) -> Value {
     let len = block.nodes.len();
     lazy_seq(len, move |i| {
         compute_node_value(Arc::new(block.nodes[i].clone()))
-    })
-}
-
-/// Lazy `solve_derivative_nodes`: the `nodes` of the continuous derivative block.
-pub(super) fn derivative_nodes_value(problem: Arc<solve::SolveProblem>) -> Value {
-    let len = problem.continuous.derivative_rhs.nodes.len();
-    lazy_seq(len, move |i| {
-        compute_node_value(Arc::new(problem.continuous.derivative_rhs.nodes[i].clone()))
     })
 }

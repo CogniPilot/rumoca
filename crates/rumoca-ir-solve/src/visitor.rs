@@ -24,6 +24,8 @@ pub enum LinearOpSliceKind {
     MatMulRhs { node_index: usize, span: Span },
     /// The matrix/rhs setup stream for `ComputeNode::LinSolve`.
     LinSolveSetup { node_index: usize, span: Span },
+    /// The base row for `ComputeNode::AffineStencil`.
+    AffineStencilBase { node_index: usize, span: Span },
 }
 
 pub enum VisitScope<'a> {
@@ -346,6 +348,13 @@ pub fn walk_compute_node<V: SolveVisitor + ?Sized>(
                 span: *span,
             },
             setup_ops,
+        ),
+        ComputeNode::AffineStencil { base_ops, span, .. } => visitor.visit_linear_op_slice(
+            LinearOpSliceKind::AffineStencilBase {
+                node_index,
+                span: *span,
+            },
+            base_ops,
         ),
     }
 }

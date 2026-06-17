@@ -35,6 +35,7 @@ mod path_utils;
 mod projection_suffix;
 mod runtime_assignments;
 pub mod solve_model;
+mod stencil;
 #[cfg(test)]
 #[path = "tests/test_support.rs"]
 mod test_support;

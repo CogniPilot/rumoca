@@ -5,7 +5,8 @@ use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    RowInputRequirements, SimulationRuntimeState, eval_program_single,
+    RowInputRequirements, SimulationRuntimeState,
+    compute_block_scalarize::scalarize_affine_stencil, eval_program_single,
     eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked, record_solve_block_eval,
     required_registers, row_input_requirements, row_register_flow_is_valid,
     to_scalar_program_block, validate_input_requirements, validate_output_len,
@@ -952,6 +953,19 @@ impl PreparedComputeNode {
                 rhs_start: *rhs_start,
                 n: *n,
             },
+            ComputeNode::AffineStencil {
+                count,
+                base_ops,
+                load_strides,
+                const_strides,
+                span,
+                ..
+            } => Self::ScalarPrograms(PreparedScalarProgramBlock::new(
+                ScalarProgramBlock::with_program_spans(
+                    scalarize_affine_stencil(base_ops, load_strides, const_strides, *count),
+                    std::iter::repeat_n(*span, *count).collect(),
+                ),
+            )),
         }
     }
 

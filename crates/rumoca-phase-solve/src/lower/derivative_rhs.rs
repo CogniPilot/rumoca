@@ -11,9 +11,7 @@ pub(super) use linear_parts::*;
 pub(super) use projection::*;
 use rumoca_core::{Literal, OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve::{
-    BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, ScalarProgramBlock, VarLayout,
-};
+use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, VarLayout};
 use std::sync::Arc;
 
 #[path = "derivative_rhs/function_projection.rs"]
@@ -33,6 +31,7 @@ pub(in crate::lower) struct DerivativeEquation {
     coefficients: IndexMap<String, rumoca_core::Expression>,
     rhs: rumoca_core::Expression,
     span: rumoca_core::Span,
+    source_equation_index: Option<usize>,
 }
 
 pub(in crate::lower) struct DerivativeLinearCtx<'a> {
@@ -107,7 +106,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         indexed_bindings: &indexed_bindings,
     };
     let mut block = ComputeBlock::default();
-    let mut pending_scalar_programs: Vec<Vec<LinearOp>> = Vec::new();
+    let mut pending_scalar_programs: Vec<crate::stencil::SourceScalarProgram> = Vec::new();
     let mut processed = vec![false; analysis.states.len()];
     let mut i = 0;
 
@@ -126,11 +125,11 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         if component.len() > 1 {
             // Flush preceding scalar rows into a ScalarPrograms node.
             if !pending_scalar_programs.is_empty() {
-                block
-                    .nodes
-                    .push(ComputeNode::ScalarPrograms(ScalarProgramBlock::new(
-                        std::mem::take(&mut pending_scalar_programs),
-                    )));
+                crate::stencil::push_source_structured_rows(
+                    &mut block.nodes,
+                    &mut pending_scalar_programs,
+                    &dae_model.continuous.for_equations,
+                );
             }
 
             let group = component
@@ -162,25 +161,39 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         if let Some(group_len) = direct_vector_group_len(analysis, &processed, i)
             && let Ok(row) = lower_direct_row_group(analysis, i, group_len, &lowering_ctx)
         {
-            pending_scalar_programs.push(row);
+            // A shared-RHS multi-output program is not a per-iteration stencil
+            // row, so leave its source equation unset: the stencil detector then
+            // treats it as a standalone residual `ScalarPrograms` (preserving its
+            // multiple `StoreOutput`s) rather than trying to prove a stencil.
+            pending_scalar_programs.push(crate::stencil::SourceScalarProgram {
+                ops: row,
+                source_equation_index: None,
+            });
             processed[i..i + group_len].fill(true);
             i += group_len;
             continue;
         }
 
         // Scalar / direct-equation state — build one row.
+        let source_equation_index = analysis
+            .direct_equations
+            .get(&state.name)
+            .and_then(|equation| analysis.equations[*equation].source_equation_index);
         let row = lower_state_derivative_row(state, &analysis.direct_equations, &lowering_ctx)?;
-        pending_scalar_programs.push(row);
+        pending_scalar_programs.push(crate::stencil::SourceScalarProgram {
+            ops: row,
+            source_equation_index,
+        });
         processed[i] = true;
         i += 1;
     }
 
     if !pending_scalar_programs.is_empty() {
-        block
-            .nodes
-            .push(ComputeNode::ScalarPrograms(ScalarProgramBlock::new(
-                pending_scalar_programs,
-            )));
+        crate::stencil::push_source_structured_rows(
+            &mut block.nodes,
+            &mut pending_scalar_programs,
+            &dae_model.continuous.for_equations,
+        );
     }
 
     Ok(block)
@@ -870,6 +883,7 @@ fn expanded_direct_derivative_equations(
                 coefficients: IndexMap::from([(key, one_expr())]),
                 rhs,
                 span,
+                source_equation_index: None,
             })
             .collect(),
     )
@@ -891,6 +905,7 @@ fn derivative_equation_from_if_residual(
         coefficients,
         rhs: rhs_without_remainder(zero_expr(), remainder),
         span,
+        source_equation_index: None,
     })
 }
 #[cfg(test)]

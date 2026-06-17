@@ -56,103 +56,105 @@ pub fn lower_initial_residual_full_ad(
 /// For `LinSolve` nodes: emits another `LinSolve` using
 /// `dx = A^{-1}(db - dA * x)` so coupled systems keep tensor solve structure.
 pub fn lower_compute_block_jvp(block: &ComputeBlock) -> Result<ComputeBlock, LowerError> {
-    let mut jvp_nodes = Vec::with_capacity(block.nodes.len());
-    for node in &block.nodes {
-        match node {
-            ComputeNode::ScalarPrograms(rows) => {
-                let jvp_rows = lower_scalar_program_block_ad(&rows.programs)?;
-                jvp_nodes.push(ComputeNode::ScalarPrograms(
-                    ScalarProgramBlock::with_program_spans(jvp_rows, rows.program_spans.clone()),
-                ));
-            }
-            ComputeNode::MatMul {
-                lhs_ops,
-                lhs_start,
-                rhs_ops,
-                rhs_start,
-                m,
-                k,
-                n,
-                lhs_sparsity,
-                rhs_sparsity,
-                metadata,
-                span,
-            } => {
-                let lhs_reads_y = ops_reference_y(lhs_ops);
-                let rhs_reads_y = ops_reference_y(rhs_ops);
-                match (lhs_reads_y, rhs_reads_y) {
-                    (false, true) => {
-                        let jvp_rhs_ops = substitute_load_y_with_seed(rhs_ops);
-                        jvp_nodes.push(ComputeNode::MatMul {
-                            lhs_ops: lhs_ops.clone(),
-                            lhs_start: *lhs_start,
-                            rhs_ops: jvp_rhs_ops,
-                            rhs_start: *rhs_start,
-                            m: *m,
-                            k: *k,
-                            n: *n,
-                            lhs_sparsity: lhs_sparsity.clone(),
-                            rhs_sparsity: rhs_sparsity.clone(),
-                            metadata: metadata.clone(),
-                            span: *span,
-                        });
-                    }
-                    (true, false) => {
-                        let jvp_lhs_ops = substitute_load_y_with_seed(lhs_ops);
-                        jvp_nodes.push(ComputeNode::MatMul {
-                            lhs_ops: jvp_lhs_ops,
-                            lhs_start: *lhs_start,
-                            rhs_ops: rhs_ops.clone(),
-                            rhs_start: *rhs_start,
-                            m: *m,
-                            k: *k,
-                            n: *n,
-                            lhs_sparsity: lhs_sparsity.clone(),
-                            rhs_sparsity: rhs_sparsity.clone(),
-                            metadata: metadata.clone(),
-                            span: *span,
-                        });
-                    }
-                    (false, false) => {
-                        jvp_nodes.push(ComputeNode::ScalarPrograms(zero_scalar_program_block(
-                            *m * *n,
-                            *span,
-                        )));
-                    }
-                    (true, true) => {
-                        let scalar = ComputeBlock {
-                            nodes: vec![node.clone()],
-                        };
-                        let scalar_programs = rumoca_eval_solve::to_scalar_program_block(&scalar);
-                        let jvp_rows = lower_scalar_program_block_ad(&scalar_programs.programs)?;
-                        jvp_nodes.push(ComputeNode::ScalarPrograms(
-                            ScalarProgramBlock::with_program_spans(
-                                jvp_rows,
-                                scalar_programs.program_spans,
-                            ),
-                        ));
-                    }
-                }
-            }
-            ComputeNode::LinSolve {
-                setup_ops,
-                matrix_start,
-                rhs_start,
-                n,
-                metadata,
-                span,
-                ..
-            } => jvp_nodes.push(lower_linsolve_jvp_node(
-                setup_ops,
-                *matrix_start,
-                *rhs_start,
-                *n,
-                metadata.clone(),
-                *span,
-            )?),
+    let nodes = block
+        .nodes
+        .iter()
+        .map(lower_compute_node_jvp)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ComputeBlock { nodes })
+}
+
+fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
+    match node {
+        ComputeNode::ScalarPrograms(rows) => {
+            let jvp_rows = lower_scalar_program_block_ad(&rows.programs)?;
+            Ok(ComputeNode::ScalarPrograms(
+                ScalarProgramBlock::with_program_spans(jvp_rows, rows.program_spans.clone()),
+            ))
         }
+        ComputeNode::MatMul { .. } => lower_matmul_jvp_node(node),
+        ComputeNode::LinSolve {
+            setup_ops,
+            matrix_start,
+            rhs_start,
+            n,
+            metadata,
+            span,
+            ..
+        } => lower_linsolve_jvp_node(
+            setup_ops,
+            *matrix_start,
+            *rhs_start,
+            *n,
+            metadata.clone(),
+            *span,
+        ),
+        ComputeNode::AffineStencil { .. } => scalarized_node_jvp(node),
     }
-    Ok(ComputeBlock { nodes: jvp_nodes })
+}
+
+fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
+    let ComputeNode::MatMul {
+        lhs_ops,
+        lhs_start,
+        rhs_ops,
+        rhs_start,
+        m,
+        k,
+        n,
+        lhs_sparsity,
+        rhs_sparsity,
+        metadata,
+        span,
+    } = node
+    else {
+        unreachable!("lower_matmul_jvp_node only accepts MatMul nodes");
+    };
+
+    match (ops_reference_y(lhs_ops), ops_reference_y(rhs_ops)) {
+        (false, true) => Ok(ComputeNode::MatMul {
+            lhs_ops: lhs_ops.clone(),
+            lhs_start: *lhs_start,
+            rhs_ops: substitute_load_y_with_seed(rhs_ops),
+            rhs_start: *rhs_start,
+            m: *m,
+            k: *k,
+            n: *n,
+            lhs_sparsity: lhs_sparsity.clone(),
+            rhs_sparsity: rhs_sparsity.clone(),
+            metadata: metadata.clone(),
+            span: *span,
+        }),
+        (true, false) => Ok(ComputeNode::MatMul {
+            lhs_ops: substitute_load_y_with_seed(lhs_ops),
+            lhs_start: *lhs_start,
+            rhs_ops: rhs_ops.clone(),
+            rhs_start: *rhs_start,
+            m: *m,
+            k: *k,
+            n: *n,
+            lhs_sparsity: lhs_sparsity.clone(),
+            rhs_sparsity: rhs_sparsity.clone(),
+            metadata: metadata.clone(),
+            span: *span,
+        }),
+        (false, false) => Ok(ComputeNode::ScalarPrograms(zero_scalar_program_block(
+            *m * *n,
+            *span,
+        ))),
+        (true, true) => scalarized_node_jvp(node),
+    }
+}
+
+fn scalarized_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
+    let scalar = ComputeBlock {
+        nodes: vec![node.clone()],
+    };
+    let scalar_programs = rumoca_eval_solve::to_scalar_program_block(&scalar);
+    let jvp_rows = lower_scalar_program_block_ad(&scalar_programs.programs)?;
+    Ok(ComputeNode::ScalarPrograms(
+        ScalarProgramBlock::with_program_spans(jvp_rows, scalar_programs.program_spans),
+    ))
 }
 
 /// Returns true if any op in the slice is `LoadY`.

@@ -82,16 +82,24 @@ export async function probeGpu() {
     return adapter;
 }
 
-// Integrate a prepared model on the GPU with fixed-step RK4.
+// Build a reusable GPU program for a prepared model: a WebGPU device, the
+// compiled WGSL modules, compute pipelines, device buffers, and bind groups,
+// plus a per-run `simulate(prep, onPhase)` closure.
+//
+// Everything built here is fully determined by the rendered shader and layout
+// (i.e. the model source) and never by parameter *values*, so a parameter-only
+// re-run can reuse the whole program and just re-upload y0/p0. `runGpuSimulation`
+// caches the program keyed on `prep.wgsl`; call this directly only if you want
+// to manage the program lifetime yourself.
 //
 //   adapter : GPUAdapter (from `probeGpu`)
 //   prep    : the parsed JSON from WASM `prepare_gpu_simulation`
 //             ({ wgsl, layout, n_states, y0, p0, t_start, t_end, dt })
 //   onPhase : optional (message, fraction|null) progress callback
 //
-// Returns { payload: { names, allData, nStates, simDetails }, metrics }
-// shaped like `simulate_model` so plots/viz scripts work unchanged.
-export async function runGpuSimulation(adapter, prep, onPhase = () => {}) {
+// Returns { device, simulate } where `simulate(prepNow, onPhaseNow)` runs the
+// RK4 loop and resolves to a result shaped like `simulate_model`.
+export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const layout = prep.layout || {};
     const nStates = prep.n_states | 0;
     const yLen = Math.max(layout.y_len | 0, 1);
@@ -160,10 +168,6 @@ export async function runGpuSimulation(adapter, prep, onPhase = () => {}) {
     const yStage = storage(yLen, 'y-stage');
     const pBuf = storage(Math.max(layout.p_len | 0, 1), 'p');
     const kBufs = [0, 1, 2, 3].map((i) => storage(rows, `k${i + 1}`));
-    const y0 = new Float32Array(prep.y0 || []);
-    device.queue.writeBuffer(yBuf, 0, y0);
-    device.queue.writeBuffer(yStage, 0, y0);
-    device.queue.writeBuffer(pBuf, 0, new Float32Array(prep.p0 || []));
 
     const timeUniform = device.createBuffer({
         size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -254,82 +258,138 @@ export async function runGpuSimulation(adapter, prep, onPhase = () => {}) {
     const writeTime = (t) => device.queue.writeBuffer(
         timeUniform, 0, new Float32Array([t, 0, 0, 0]));
 
-    const times = [tStart];
-    const samples = [Array.from(y0)];
-    onPhase(`Simulating on WebGPU (0/${steps} steps)`, 0);
-    const wallStart = performance.now();
-    // One readback per step keeps the driver simple; the GPU work per
-    // step is small enough that this is not the bottleneck yet.
-    for (let step = 0; step < steps; step++) {
-        const t = tStart + step * dt;
-        const enc = device.createCommandEncoder();
-        writeTime(t);
-        dispatchDer(enc, 0);
-        dispatchStage(enc, axpyPipeline, axpyBinds[0]);
-        device.queue.submit([enc.finish()]);
-        const enc2 = device.createCommandEncoder();
-        writeTime(t + dt / 2);
-        dispatchDer(enc2, 1);
-        dispatchStage(enc2, axpyPipeline, axpyBinds[1]);
-        device.queue.submit([enc2.finish()]);
-        const enc3 = device.createCommandEncoder();
-        dispatchDer(enc3, 2);
-        dispatchStage(enc3, axpyPipeline, axpyBinds[2]);
-        device.queue.submit([enc3.finish()]);
-        const enc4 = device.createCommandEncoder();
-        writeTime(t + dt);
-        dispatchDer(enc4, 3);
-        dispatchStage(enc4, combinePipeline, combineBind);
-        enc4.copyBufferToBuffer(yBuf, 0, readback, 0, yLen * 4);
-        device.queue.submit([enc4.finish()]);
-        await readback.mapAsync(GPUMapMode.READ);
-        samples.push(Array.from(new Float32Array(readback.getMappedRange())));
-        readback.unmap();
-        times.push(t + dt);
-        if (step % 5 === 4 || step === steps - 1) {
-            onPhase(
-                `Simulating on WebGPU (${step + 1}/${steps} steps)`,
-                (step + 1) / steps
-            );
-        }
-    }
-    const gpuSeconds = (performance.now() - wallStart) / 1000;
-    device.destroy();
+    // Per-run execution. Only y0/p0 change when a parameter slider moves, so
+    // this re-uploads them and steps the RK4 loop; the device, modules,
+    // pipelines, buffers, and bind groups above are reused untouched.
+    async function simulate(prepNow, onPhaseNow = () => {}) {
+        const y0 = new Float32Array(prepNow.y0 || []);
+        device.queue.writeBuffer(yBuf, 0, y0);
+        device.queue.writeBuffer(yStage, 0, y0);
+        device.queue.writeBuffer(pBuf, 0, new Float32Array(prepNow.p0 || []));
 
-    // Shape the result like simulate_model so plots and viz scripts work
-    // unchanged. Names come from the layout bindings (y-kind slots).
-    // Bindings include bare base-name aliases ("u" -> 0) alongside the
-    // indexed names ("u[1,1]" -> 0); prefer indexed names so array
-    // models keep their element naming.
-    const names = new Array(yLen).fill(null);
-    for (const [name, slot] of Object.entries(layout.bindings || {})) {
-        if (!slot || slot.kind !== 'y' || slot.index >= yLen) {
-            continue;
+        const times = [tStart];
+        const samples = [Array.from(y0)];
+        onPhaseNow(`Simulating on WebGPU (0/${steps} steps)`, 0);
+        const wallStart = performance.now();
+        // One readback per step keeps the driver simple; the GPU work per
+        // step is small enough that this is not the bottleneck yet.
+        for (let step = 0; step < steps; step++) {
+            const t = tStart + step * dt;
+            const enc = device.createCommandEncoder();
+            writeTime(t);
+            dispatchDer(enc, 0);
+            dispatchStage(enc, axpyPipeline, axpyBinds[0]);
+            device.queue.submit([enc.finish()]);
+            const enc2 = device.createCommandEncoder();
+            writeTime(t + dt / 2);
+            dispatchDer(enc2, 1);
+            dispatchStage(enc2, axpyPipeline, axpyBinds[1]);
+            device.queue.submit([enc2.finish()]);
+            const enc3 = device.createCommandEncoder();
+            dispatchDer(enc3, 2);
+            dispatchStage(enc3, axpyPipeline, axpyBinds[2]);
+            device.queue.submit([enc3.finish()]);
+            const enc4 = device.createCommandEncoder();
+            writeTime(t + dt);
+            dispatchDer(enc4, 3);
+            dispatchStage(enc4, combinePipeline, combineBind);
+            enc4.copyBufferToBuffer(yBuf, 0, readback, 0, yLen * 4);
+            device.queue.submit([enc4.finish()]);
+            await readback.mapAsync(GPUMapMode.READ);
+            samples.push(Array.from(new Float32Array(readback.getMappedRange())));
+            readback.unmap();
+            times.push(t + dt);
+            if (step % 5 === 4 || step === steps - 1) {
+                onPhaseNow(
+                    `Simulating on WebGPU (${step + 1}/${steps} steps)`,
+                    (step + 1) / steps
+                );
+            }
         }
-        const existing = names[slot.index];
-        if (!existing || (!existing.includes('[') && name.includes('['))) {
-            names[slot.index] = name;
+        const gpuSeconds = (performance.now() - wallStart) / 1000;
+
+        // Shape the result like simulate_model so plots and viz scripts work
+        // unchanged. Names come from the layout bindings (y-kind slots).
+        // Bindings include bare base-name aliases ("u" -> 0) alongside the
+        // indexed names ("u[1,1]" -> 0); prefer indexed names so array
+        // models keep their element naming.
+        const names = new Array(yLen).fill(null);
+        for (const [name, slot] of Object.entries(layout.bindings || {})) {
+            if (!slot || slot.kind !== 'y' || slot.index >= yLen) {
+                continue;
+            }
+            const existing = names[slot.index];
+            if (!existing || (!existing.includes('[') && name.includes('['))) {
+                names[slot.index] = name;
+            }
         }
-    }
-    for (let i = 0; i < yLen; i++) {
-        if (!names[i]) names[i] = `y[${i}]`;
-    }
-    const allData = [times];
-    for (let i = 0; i < yLen; i++) {
-        allData.push(samples.map((row) => row[i]));
-    }
-    const eventNote = (layout.runtime_event_roots | 0) > 0
-        ? ' · events frozen (GPU v1)' : '';
-    return {
-        payload: {
-            names,
-            allData,
-            nStates,
-            simDetails: {
-                actual: { t_start: tStart, t_end: times[times.length - 1], points: times.length, variables: names.length },
-                requested: { solver: `wgsl-solve RK4 (f32)${eventNote}`, t_start: tStart, t_end: tEnd, dt },
+        for (let i = 0; i < yLen; i++) {
+            if (!names[i]) names[i] = `y[${i}]`;
+        }
+        const allData = [times];
+        for (let i = 0; i < yLen; i++) {
+            allData.push(samples.map((row) => row[i]));
+        }
+        const eventNote = (layout.runtime_event_roots | 0) > 0
+            ? ' · events frozen (GPU v1)' : '';
+        return {
+            payload: {
+                names,
+                allData,
+                nStates,
+                simDetails: {
+                    actual: { t_start: tStart, t_end: times[times.length - 1], points: times.length, variables: names.length },
+                    requested: { solver: `wgsl-solve RK4 (f32)${eventNote}`, t_start: tStart, t_end: tEnd, dt },
+                },
             },
-        },
-        metrics: { simulateSeconds: gpuSeconds },
-    };
+            metrics: { simulateSeconds: gpuSeconds },
+        };
+    }
+
+    return { device, simulate };
+}
+
+// Module-level fallback cache for callers that do not supply their own. Pass an
+// explicit per-instance `cache` object (e.g. one per widget) when running
+// independent models concurrently so they do not evict each other.
+const sharedGpuCache = {};
+
+// Integrate a prepared model on the GPU with fixed-step RK4, reusing a compiled
+// program across runs.
+//
+//   adapter : GPUAdapter (from `probeGpu`)
+//   prep    : the parsed JSON from WASM `prepare_gpu_simulation`
+//   onPhase : optional (message, fraction|null) progress callback
+//   cache   : caller-owned `{ program?, wgsl? }` holder; defaults to a shared
+//             module-level cache
+//
+// The program (device, modules, pipelines, buffers, bind groups) is fully
+// determined by `prep.wgsl`, so a parameter-only re-run (same shader, new
+// y0/p0) reuses the cached program and skips the shader recompile + pipeline
+// rebuild entirely. A source edit re-renders the shader (new key -> rebuild,
+// destroying the old device). If a reused device is lost (context loss, tab
+// backgrounding), the cache is dropped so the next run rebuilds from a fresh
+// device.
+//
+// Returns { payload: { names, allData, nStates, simDetails }, metrics } shaped
+// like `simulate_model` so plots/viz scripts work unchanged.
+export async function runGpuSimulation(adapter, prep, onPhase = () => {}, cache = sharedGpuCache) {
+    if (!cache.program || cache.wgsl !== prep.wgsl) {
+        if (cache.program) {
+            try { cache.program.device.destroy(); } catch (err) { /* device already lost */ }
+            cache.program = null;
+        }
+        cache.program = await buildGpuProgram(adapter, prep, onPhase);
+        cache.wgsl = prep.wgsl;
+    }
+    try {
+        return await cache.program.simulate(prep, onPhase);
+    } catch (err) {
+        // A reused device can be lost (context loss, tab backgrounding).
+        // Drop the cache so the next run rebuilds from a fresh device,
+        // restoring the self-healing the per-run rebuild used to give.
+        cache.program = null;
+        cache.wgsl = null;
+        throw err;
+    }
 }

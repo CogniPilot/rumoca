@@ -120,10 +120,10 @@ pub mod project {
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
-        render_dae_template, render_dae_template_with_json, render_dae_template_with_json_and_name,
-        render_dae_template_with_name, render_flat_template_with_name,
-        render_solve_template_with_name,
+        CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
+        render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
+        render_dae_template_with_json_and_name, render_dae_template_with_name,
+        render_flat_template_with_name, render_solve_template_with_name,
     };
     pub mod targets {
         pub use crate::codegen_target::{
