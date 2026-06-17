@@ -1101,6 +1101,117 @@ mod tests {
         );
     }
 
+    /// Forward-AD of a runtime-indexed parameter load: under solver-y-only AD
+    /// the tangent is zero (parameters are constant w.r.t. y, and the index is
+    /// discrete), and under parameter-seed AD it becomes a `LoadIndexedSeed`
+    /// over the same run shifted into the seed region by `p_seed_offset`, reusing
+    /// the same runtime index register.
+    #[test]
+    fn full_ad_of_indexed_param_load_emits_shifted_indexed_seed() {
+        let primal = vec![
+            LinearOp::Const { dst: 0, value: 2.0 }, // 0-based flat offset
+            LinearOp::LoadIndexedP {
+                dst: 1,
+                base: 3,
+                count: 5,
+                index: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ];
+
+        // Solver-y-only: zero tangent, no indexed-seed load.
+        let solver = lower_row_ad(&primal, SeedMode::SolverYOnly).expect("solver AD");
+        assert!(
+            !solver
+                .iter()
+                .any(|op| matches!(op, LinearOp::LoadIndexedSeed { .. })),
+            "solver-y AD of an indexed parameter load must have a zero tangent: {solver:?}"
+        );
+
+        // Parameter-seed AD: the real part keeps the `LoadIndexedP`; the tangent
+        // is a `LoadIndexedSeed` over the same run shifted by `p_seed_offset`.
+        let full = lower_row_ad(&primal, SeedMode::SolverYAndP { p_seed_offset: 2 })
+            .expect("parameter-seed AD");
+        assert!(
+            full.iter().any(|op| matches!(
+                op,
+                LinearOp::LoadIndexedP {
+                    base: 3,
+                    count: 5,
+                    ..
+                }
+            )),
+            "parameter-seed AD must keep the real indexed parameter load: {full:?}"
+        );
+        assert!(
+            full.iter().any(|op| matches!(
+                op,
+                LinearOp::LoadIndexedSeed {
+                    base: 5, // p_seed_offset (2) + base (3)
+                    count: 5,
+                    ..
+                }
+            )),
+            "parameter-seed AD tangent must be a LoadIndexedSeed shifted by p_seed_offset: {full:?}"
+        );
+    }
+
+    /// Numeric parity: evaluating the parameter-seed AD of an indexed parameter
+    /// load yields the seed at exactly the selected slot, matching the analytic
+    /// tangent d(p[base + clamp(round(idx))])/d(seed) = seed[p_seed_index(slot)].
+    #[test]
+    fn indexed_param_load_ad_tangent_reads_seed_at_selected_slot() {
+        use rumoca_ir_solve::ScalarProgramBlock;
+
+        let p_seed_offset = 2usize;
+        let base = 3usize;
+        let count = 5usize;
+        let offset = 2usize; // clamp(round(2.0))
+        let primal = vec![
+            LinearOp::Const {
+                dst: 0,
+                value: offset as f64,
+            },
+            LinearOp::LoadIndexedP {
+                dst: 1,
+                base,
+                count,
+                index: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ];
+        let ad_row = lower_row_ad(&primal, SeedMode::SolverYAndP { p_seed_offset })
+            .expect("parameter-seed AD");
+        let block = ScalarProgramBlock::new(vec![ad_row]);
+
+        // Seed a single 1.0 at the slot the tangent should select; the stored
+        // output (the dual) must read exactly that value.
+        let selected = p_seed_offset + base + offset; // 7
+        let mut seed = vec![0.0; 16];
+        seed[selected] = 4.0;
+        let p = vec![0.0; 16];
+        let mut out = [0.0];
+        rumoca_eval_solve::eval_scalar_program_block(&block, &[], &p, 0.0, Some(&seed), &mut out)
+            .expect("evaluate parameter-seed AD row");
+        assert!(
+            (out[0] - 4.0).abs() < 1e-12,
+            "indexed-load tangent must read seed[{selected}] = 4.0, got {}",
+            out[0]
+        );
+
+        // Seeding a neighbouring slot must NOT leak into the tangent.
+        let mut seed2 = vec![0.0; 16];
+        seed2[selected + 1] = 9.0;
+        let mut out2 = [0.0];
+        rumoca_eval_solve::eval_scalar_program_block(&block, &[], &p, 0.0, Some(&seed2), &mut out2)
+            .expect("evaluate parameter-seed AD row");
+        assert!(
+            out2[0].abs() < 1e-12,
+            "tangent must isolate the selected slot, got {}",
+            out2[0]
+        );
+    }
+
     #[test]
     fn compute_block_jvp_scalar_programs_applies_standard_ad() {
         // A ComputeBlock with only ScalarPrograms should produce the same result as
