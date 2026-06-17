@@ -149,6 +149,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
             rumoca_ir_solve::ComputeNode::ScalarPrograms(_) => "ScalarPrograms",
             rumoca_ir_solve::ComputeNode::MatMul { .. } => "MatMul",
             rumoca_ir_solve::ComputeNode::LinSolve { .. } => "LinSolve",
+            rumoca_ir_solve::ComputeNode::AffineStencil { .. } => "AffineStencil",
         })
         .collect();
     eprintln!(
