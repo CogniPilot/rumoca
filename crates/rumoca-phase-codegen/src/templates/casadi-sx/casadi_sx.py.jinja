@@ -104,7 +104,7 @@ def Modelica_ComplexMath_arg(c_re, c_im=0):
     return ca.atan2(c_im, c_re)
 
 {# Configuration for render_expr - CasADi/Python style #}
-{% set cfg = {"prefix": "ca.", "power": "**", "power_fn": "ca.power", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "python_range": true, "condition_aliases": dae.condition_aliases, "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
+{% set cfg = {"prefix": "ca.", "power": "**", "power_fn": "ca.power", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "python_range": true, "array_start": "ca.vertcat(", "array_end": ")", "condition_aliases": dae.condition_aliases, "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
 {# Emit scalar element aliases for array variables so that sanitized
    equation references like p_e_1_ resolve to the correct CasADi symbol.
    Handles 1-D (dims=[n]) and 2-D (dims=[m,n]) arrays. #}
@@ -187,6 +187,13 @@ def create_model():
         for _state, _deriv in _der_pairs:
             if _state.shape == v.shape and ca.is_equal(v, _state):
                 return _deriv
+        # General fallback: der() of a state element/slice written as a subref
+        # (e.g. vel[0] == _x[3:6][0]) does not match the precomputed pairs by
+        # ca.is_equal, but it is a linear selection of the state vector, so
+        # d/dt(v) = (dv/d_x) @ _xdot. Exact for any linear projection of _x.
+        _Jx = ca.jacobian(v, _x)
+        if _Jx.nnz() > 0:
+            return ca.mtimes(_Jx, _xdot)
         raise ValueError(f"der() called on non-state variable: {v}")
 {% else %}
     n_x = 0

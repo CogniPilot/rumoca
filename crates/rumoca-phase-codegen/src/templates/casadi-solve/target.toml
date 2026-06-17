@@ -1,0 +1,10 @@
+version = 1
+ir = "solve"
+name = "casadi-solve"
+description = "CasADi explicit ODE rhs(x, u, p) from the solve IR"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+
+[[files]]
+path = "{{ model_name }}_casadi_solve.py"
+template = "casadi_solve.py.jinja"

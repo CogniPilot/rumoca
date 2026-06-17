@@ -667,6 +667,29 @@ pub(super) fn render_solve_block_rust_function(
     )
 }
 
+/// Python (CasADi/JAX) counterpart of [`render_solve_block_c_function`].
+///
+/// Emits one-tab-indented Python statements (`__rN = …`, `out[i] = …;`) that
+/// build a symbolic expression graph from the solve bytecode. Function names are
+/// bare (`sin`, `fabs`, `if_else`, …) and must be bound by the consuming
+/// template to the chosen array namespace. The `cfg` patterns are typically
+/// `{"y": "x[{}]", "p": "P[{}]", "time": "0.0"}` and `out_set` `"out[{}] = {}"`.
+pub(super) fn render_solve_block_py_function(
+    programs: Value,
+    config: Value,
+    out_set: Value,
+    output_offset: Option<Value>,
+) -> RenderResult {
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_block_for(
+        &programs,
+        &cfg,
+        SolveRowDialect::Python,
+        &value_to_string(&out_set),
+        output_offset.and_then(|v| v.as_usize()).unwrap_or(0),
+    )
+}
+
 /// Total number of outputs (`StoreOutput` ops) across a list of scalar programs.
 /// Used by templates to size output buffers and advance running output offsets
 /// when a program may emit more than one output.
@@ -1553,6 +1576,13 @@ enum SolveRowDialect {
     /// WGSL compute-shader dialect (WebGPU). f32 baseline precision; boolean
     /// values keep the numeric 0.0/1.0 encoding via `select`.
     Wgsl,
+    /// Python dialect for symbolic array backends (CasADi, JAX). Emits bare
+    /// function names (`sin`, `fabs`, `atan2`, `if_else`, `fmin`, …) that the
+    /// consuming template binds to the appropriate namespace (`ca.*` / `jnp.*`),
+    /// so one dialect serves both. Comparisons/select stay value-style (no
+    /// ternary) since the operands are symbolic, matching the reference
+    /// `rumoca_backend` interpreter.
+    Python,
 }
 
 impl SolveRowDialect {
@@ -1562,6 +1592,8 @@ impl SolveRowDialect {
             Self::Rust => "f64::INFINITY",
             // WGSL has no portable infinity literal; f32::MAX approximates it.
             Self::Wgsl => "3.4028235e38",
+            // Bound to ca.inf / jnp.inf by the consuming template.
+            Self::Python => "inf",
         }
     }
 
@@ -1569,7 +1601,7 @@ impl SolveRowDialect {
     /// form for integer-looking constants. C and Rust are unchanged.
     fn format_const(self, value: String) -> String {
         match self {
-            Self::C | Self::Rust => value,
+            Self::C | Self::Rust | Self::Python => value,
             Self::Wgsl => {
                 let looks_integer = !value.is_empty()
                     && !value.contains(['.', 'e', 'E'])
@@ -1591,6 +1623,7 @@ impl SolveRowDialect {
         match self {
             Self::C | Self::Rust => render_solve_compare(op, lhs, rhs),
             Self::Wgsl => render_solve_compare_wgsl(op, lhs, rhs),
+            Self::Python => render_solve_compare_py(op, lhs, rhs),
         }
     }
 
@@ -1602,6 +1635,9 @@ impl SolveRowDialect {
             Self::Wgsl => {
                 format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
             }
+            // if_else bound to ca.if_else / jnp.where; both take a boolean/0-1
+            // condition and return the symbolic branch value.
+            Self::Python => format!("if_else({cond}, {if_true}, {if_false})"),
         }
     }
 
@@ -1621,6 +1657,10 @@ impl SolveRowDialect {
             }
             // WGSL indices are u32 and arithmetic is f32.
             Self::Wgsl => format!("({base}u + u32(clamp(round({index_expr}), 0.0, f32({last}))))"),
+            // Python integer index; valid for a constant-folded index_expr.
+            Self::Python => {
+                format!("({base} + int(min(max(round({index_expr}), 0.0), {last}.0)))")
+            }
         }
     }
 
@@ -1656,6 +1696,11 @@ impl SolveRowDialect {
                 "LinearSolveComponent is not supported by the WGSL dialect yet; \
                  models with implicit linear blocks cannot target wgsl-solve",
             )),
+            // `_linsolve_component` is bound by the consuming template (a small
+            // Gaussian-elimination helper over the chosen array namespace).
+            Self::Python => Ok(format!(
+                "_linsolve_component([{matrix}], [{rhs}], {n}, {component})"
+            )),
         }
     }
 
@@ -1664,6 +1709,7 @@ impl SolveRowDialect {
             Self::C => render_solve_unary_c(op, arg),
             Self::Rust => render_solve_unary_rust(op, arg),
             Self::Wgsl => render_solve_unary_wgsl(op, arg),
+            Self::Python => render_solve_unary_py(op, arg),
         }
     }
 
@@ -1672,6 +1718,7 @@ impl SolveRowDialect {
             Self::C => render_solve_binary_c(op, lhs, rhs),
             Self::Rust => render_solve_binary_rust(op, lhs, rhs),
             Self::Wgsl => render_solve_binary_wgsl(op, lhs, rhs),
+            Self::Python => render_solve_binary_py(op, lhs, rhs),
         }
     }
 
@@ -1681,8 +1728,77 @@ impl SolveRowDialect {
             Self::C => format!("\tdouble {name} = {expr};\n"),
             Self::Rust => format!("\tlet {name} = {expr};\n"),
             Self::Wgsl => format!("\tlet {name} = {expr};\n"),
+            Self::Python => format!("\t{name} = {expr}\n"),
         }
     }
+}
+
+/// Unary ops for the Python (CasADi/JAX) dialect. Emits bare function names the
+/// consuming template binds to `ca.*` / `jnp.*`. Mirrors the reference
+/// `rumoca_backend` interpreter's op table.
+fn render_solve_unary_py(op: &str, arg: String) -> RenderResult {
+    match op {
+        "Neg" => Ok(format!("(-({arg}))")),
+        "Not" => Ok(format!("if_else(({arg}) == 0.0, 1.0, 0.0)")),
+        "Abs" => Ok(format!("fabs({arg})")),
+        "Sign" => Ok(format!("sign({arg})")),
+        "Sqrt" => Ok(format!("sqrt({arg})")),
+        "Floor" => Ok(format!("floor({arg})")),
+        "Ceil" => Ok(format!("ceil({arg})")),
+        "Trunc" => Ok(format!("trunc({arg})")),
+        "Sin" => Ok(format!("sin({arg})")),
+        "Cos" => Ok(format!("cos({arg})")),
+        "Tan" => Ok(format!("tan({arg})")),
+        "Asin" => Ok(format!("asin({arg})")),
+        "Acos" => Ok(format!("acos({arg})")),
+        "Atan" => Ok(format!("atan({arg})")),
+        "Sinh" => Ok(format!("sinh({arg})")),
+        "Cosh" => Ok(format!("cosh({arg})")),
+        "Tanh" => Ok(format!("tanh({arg})")),
+        "Exp" => Ok(format!("exp({arg})")),
+        "Log" => Ok(format!("log({arg})")),
+        "Log10" => Ok(format!("log10({arg})")),
+        _ => Err(render_err(format!("unsupported solve unary op: {op}"))),
+    }
+}
+
+/// Binary ops for the Python (CasADi/JAX) dialect.
+fn render_solve_binary_py(op: &str, lhs: String, rhs: String) -> RenderResult {
+    match op {
+        "Add" => Ok(format!("(({lhs}) + ({rhs}))")),
+        "Sub" => Ok(format!("(({lhs}) - ({rhs}))")),
+        "Mul" => Ok(format!("(({lhs}) * ({rhs}))")),
+        "Div" => Ok(format!("(({lhs}) / ({rhs}))")),
+        "Pow" => Ok(format!("(({lhs}) ** ({rhs}))")),
+        // Numeric 0/1 result, independent of casadi (0/1) vs jax (bool) compare
+        // semantics, so downstream arithmetic is well-typed in both.
+        "And" => Ok(format!(
+            "if_else(logical_and(({lhs}) != 0.0, ({rhs}) != 0.0), 1.0, 0.0)"
+        )),
+        "Or" => Ok(format!(
+            "if_else(logical_or(({lhs}) != 0.0, ({rhs}) != 0.0), 1.0, 0.0)"
+        )),
+        "Atan2" => Ok(format!("atan2({lhs}, {rhs})")),
+        "Min" => Ok(format!("fmin({lhs}, {rhs})")),
+        "Max" => Ok(format!("fmax({lhs}, {rhs})")),
+        _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
+    }
+}
+
+/// Comparison ops for the Python (CasADi/JAX) dialect. Bare relational
+/// operators, matching `rumoca_backend` (CasADi yields 0/1, JAX yields bool;
+/// both feed `if_else`/`where` and numeric use correctly).
+fn render_solve_compare_py(op: &str, lhs: String, rhs: String) -> RenderResult {
+    let op = match op {
+        "Lt" => "<",
+        "Le" => "<=",
+        "Gt" => ">",
+        "Ge" => ">=",
+        "Eq" => "==",
+        "Ne" | "Neq" => "!=",
+        _ => return Err(render_err(format!("unsupported solve compare op: {op}"))),
+    };
+    Ok(format!("(({lhs}) {op} ({rhs}))"))
 }
 
 fn render_solve_unary_wgsl(op: &str, arg: String) -> RenderResult {
