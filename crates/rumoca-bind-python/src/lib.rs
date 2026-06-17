@@ -1000,10 +1000,12 @@ fn render_solve_target_files(
     for file in &manifest.files {
         let path = result
             .render_template_str_with_name_and_ir(&file.path, model_name, TemplateIr::Solve)
-            .map_err(|e| PyRuntimeStringError(format!("Render target path '{}': {e}", file.path)))?;
-        let template = bundle
-            .template_source(&file.template)
-            .map_err(|e| PyRuntimeStringError(format!("Target template '{}': {e}", file.template)))?;
+            .map_err(|e| {
+                PyRuntimeStringError(format!("Render target path '{}': {e}", file.path))
+            })?;
+        let template = bundle.template_source(&file.template).map_err(|e| {
+            PyRuntimeStringError(format!("Target template '{}': {e}", file.template))
+        })?;
         let content = result
             .render_template_str_with_name_and_ir(template.as_ref(), model_name, TemplateIr::Solve)
             .map_err(|e| {

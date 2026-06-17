@@ -29,8 +29,8 @@ use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
     render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
     render_solve_block_py_function, render_solve_block_rust_function,
-    render_solve_pre_param_binding_c_function,
-    render_solve_row_c_function, render_solve_row_rust_function, render_solve_row_wgsl_function,
+    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
+    render_solve_row_rust_function, render_solve_row_wgsl_function,
     render_solve_slot_assign_c_function, solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};

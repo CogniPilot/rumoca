@@ -1,4 +1,12 @@
 //! C and MLIR rendering for solver-facing row IR.
+//!
+//! SPEC_0021: file-size exception. This is a cohesive solve-IR rendering module
+//! — the shared row/block walker plus the per-dialect op renderers (C, Rust,
+//! WGSL, Python) that must stay co-located with the `SolveRowDialect` enum and
+//! `SolveRowCConfig` they switch on. The split plan: when it next grows, extract
+//! per-dialect op renderers (`render_solve_{unary,binary,compare}_{c,rust,wgsl,
+//! py}` and their `SolveRowDialect` arms) into a `render_solve_ops` submodule,
+//! leaving the row/block walker and context builders here.
 
 use std::sync::Arc;
 
