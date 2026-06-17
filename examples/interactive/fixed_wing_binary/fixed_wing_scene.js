@@ -226,13 +226,17 @@ ctx.onInit = async function (api) {
   // ── Waypoint beacons + reference path (Minecraft-style light beams) ─────
   // Controller waypoints from CubControl.FixedWingOuterLoop (NWU coords).
   const waypoints = [
-    [-4.0, -5.0, 3.0],
-    [-3.0, 2.0, 3.0],
-    [16.20, 2.0, 3.0],
-    [16.0, -4.22, 3.0],
-    [6.88, -5.1, 3.0],
-    [-4.0, -5.0, 3.0],
+    [100.0, 0.0, 10.0],
+    [100.0, 100.0, 10.0],
+    [0.0, 100.0, 10.0],
+    [0.0, 0.0, 10.0],
+    [100.0, 0.0, 10.0],
+    [100.0, 100.0, 10.0],
   ];
+  const NWAYPOINTS = 6;
+  s.WP_SWITCH_THRESHOLD = 20;
+  s.sceneWpIdx = 1;
+
   // NWU → Three.js: {fwd,left,up} → {left,up,fwd}
   const wpThree = waypoints.map(([wx, wy, wz]) => [wy, wz, wx]);
   const refPathGeo = new THREE.BufferGeometry().setFromPoints(
@@ -246,6 +250,7 @@ ctx.onInit = async function (api) {
   s.refPath = refPath;
 
   const beaconColor = 0x00ffaa;
+  const activeColor = 0xff8800;
   s.beacons = [];
   for (const [wx, wy, wz] of waypoints) {
     const tx = wy, ty = wz, tz = wx;
@@ -254,55 +259,49 @@ ctx.onInit = async function (api) {
     g.position.set(tx, 0, tz);
 
     // Glass-like base platform
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.2, 1.8, 0.6, 8),
-      new THREE.MeshPhysicalMaterial({
-        color: 0x88ddcc, roughness: 0.1, metalness: 0.0,
-        transparent: true, opacity: 0.7, envMapIntensity: 0.5,
-      })
-    );
+    const baseMat = new THREE.MeshPhysicalMaterial({
+      color: 0x88ddcc, roughness: 0.1, metalness: 0.0,
+      transparent: true, opacity: 0.7, envMapIntensity: 0.5,
+    });
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.8, 0.6, 8), baseMat);
     base.position.y = 0.3;
     g.add(base);
 
     // Inner glow core
-    const core = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.8, 0.4, 8),
-      new THREE.MeshBasicMaterial({ color: beaconColor })
-    );
+    const coreMat = new THREE.MeshBasicMaterial({ color: beaconColor });
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, 0.4, 8), coreMat);
     core.position.y = 0.4;
     g.add(core);
 
     // Light beam column (translucent, fading upward)
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: beaconColor, transparent: true, opacity: 0.15,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
     const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.4, 0.8, beamHeight, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: beaconColor, transparent: true, opacity: 0.15,
-        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-      })
+      new THREE.CylinderGeometry(0.4, 0.8, beamHeight, 8, 1, true), beamMat
     );
     beam.position.y = beamHeight / 2 + 0.6;
     beam.userData.baseOpacity = 0.15;
     g.add(beam);
 
     // Outer glow halo
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: beaconColor, transparent: true, opacity: 0.04,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
     const halo = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.2, 2.5, beamHeight * 0.7, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: beaconColor, transparent: true, opacity: 0.04,
-        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-      })
+      new THREE.CylinderGeometry(1.2, 2.5, beamHeight * 0.7, 8, 1, true), haloMat
     );
     halo.position.y = beamHeight * 0.35 + 0.6;
     g.add(halo);
 
     // Top glow sphere (the "star")
-    const star = new THREE.Mesh(
-      new THREE.SphereGeometry(1.0, 12, 12),
-      new THREE.MeshBasicMaterial({
-        color: beaconColor, transparent: true, opacity: 0.7,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      })
-    );
+    const starMat = new THREE.MeshBasicMaterial({
+      color: beaconColor, transparent: true, opacity: 0.7,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const star = new THREE.Mesh(new THREE.SphereGeometry(1.0, 12, 12), starMat);
     star.position.y = beamHeight + 0.6;
     g.add(star);
 
@@ -319,8 +318,23 @@ ctx.onInit = async function (api) {
     g.add(ring);
 
     scene.add(g);
-    s.beacons.push({ group: g, star, ring, beam, halo, base, core });
+    s.beacons.push({
+      group: g, star, ring, beam, halo, base, core,
+      mats: { base: baseMat, core: coreMat, beam: beamMat, halo: haloMat, star: starMat },
+    });
   }
+
+  function getWpSegment(idx) {
+    const wp1 = waypoints[0], wp2 = waypoints[1], wp3 = waypoints[2],
+          wp4 = waypoints[3], wp5 = waypoints[4], wp6 = waypoints[5];
+    if (idx < 1.5) return { prev: [0,0,0], next: wp1 };
+    if (idx < 2.5) return { prev: wp1, next: wp2 };
+    if (idx < 3.5) return { prev: wp2, next: wp3 };
+    if (idx < 4.5) return { prev: wp3, next: wp4 };
+    if (idx < 5.5) return { prev: wp4, next: wp5 };
+    return { prev: wp5, next: wp6 };
+  }
+  s.getWpSegment = getWpSegment;
 
   // Camera: chase from behind/above (meter scale — aircraft ~1.5 m span).
   api.cam.target.set(0, 1, 0);
@@ -402,13 +416,44 @@ ctx.onFrame = function (api) {
 
   if (s.haze) s.haze.position.copy(api.camera.position);
 
+  // Track active waypoint and color beacons.
+  if (s.beacons && s.getWpSegment) {
+    const nwx = numericSignal(get("px"));
+    const nwy = numericSignal(get("py"));
+    const seg = s.getWpSegment(s.sceneWpIdx);
+    const pv = seg.prev, nx = seg.next;
+    const pathVx = nx[0] - pv[0], pathVy = nx[1] - pv[1];
+    const pathLen = Math.sqrt(pathVx * pathVx + pathVy * pathVy) || 1e-6;
+    const uAx = pathVx / pathLen, uAy = pathVy / pathLen;
+    const along0 = (nwx - pv[0]) * uAx + (nwy - pv[1]) * uAy;
+    const alongRem = Math.max(0, pathLen - Math.min(Math.max(along0, 0), pathLen));
+    if (alongRem < s.WP_SWITCH_THRESHOLD) {
+      s.sceneWpIdx = s.sceneWpIdx >= NWAYPOINTS ? 1 : s.sceneWpIdx + 1;
+    }
+    const activeColor = 0xff8800;
+    const inactiveColor = 0x00ffaa;
+    s.beacons.forEach((b, i) => {
+      const isActive = (i === s.sceneWpIdx - 1);
+      const col = isActive ? activeColor : inactiveColor;
+      b.mats.base.color.setHex(0x88ddcc);
+      b.mats.core.color.setHex(col);
+      b.mats.beam.color.setHex(col);
+      b.mats.halo.color.setHex(col);
+      b.mats.star.color.setHex(col);
+      b.mats.beam.opacity = isActive ? 0.30 : 0.10;
+      b.mats.halo.opacity = isActive ? 0.10 : 0.03;
+      b.mats.star.opacity = isActive ? 1.0 : 0.5;
+    });
+  }
+
   // Animate beacon beams (pulse + rotate).
   if (s.beacons) {
     const t = numericSignal(get("t"));
     for (const b of s.beacons) {
+      b.beam.userData.baseOpacity = b.mats.beam.opacity;
       b.beam.material.opacity = b.beam.userData.baseOpacity * (0.7 + 0.3 * Math.sin(t * 1.5));
       b.ring.rotation.z = t * 0.6;
-      b.star.material.opacity = 0.5 + 0.25 * Math.sin(t * 2.0);
+      b.star.material.opacity = b.mats.star.opacity * (0.5 + 0.25 * Math.sin(t * 2.0));
     }
   }
 };

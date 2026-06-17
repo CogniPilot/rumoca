@@ -1896,6 +1896,54 @@ fn test_embedded_c_templates_render_solve_ir() {
 }
 
 #[test]
+fn test_embedded_c_templates_render_named_slot_macros() {
+    let mut solve = solve::SolveProblem::with_derivative_rhs(
+        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::default()),
+    );
+    solve.layout = serde_json::from_value(serde_json::json!({
+        "bindings": {
+            "alt": {"Y": {"index": 0, "byte_offset": 0}},
+            "waypoints": {"P": {"index": 3, "byte_offset": 24}},
+            "waypoints[1,2]": {"P": {"index": 4, "byte_offset": 32}},
+            "__pre__.current_wp": {"P": {"index": 103, "byte_offset": 824}},
+            "current_wp": {"P": {"index": 205, "byte_offset": 1640}}
+        },
+        "shapes": {
+            "waypoints": [3, 2]
+        },
+        "y_scalars": 1,
+        "p_scalars": 206
+    }))
+    .unwrap();
+    let artifacts = solve::SolveArtifacts::default();
+
+    let header = render_solve_template_with_name(
+        &solve,
+        &artifacts,
+        builtin_template("embedded-c", "model.h.jinja"),
+        "EmbeddedSlots",
+    )
+    .unwrap();
+    let source = render_solve_template_with_name(
+        &solve,
+        &artifacts,
+        builtin_template("embedded-c", "model.c.jinja"),
+        "EmbeddedSlots",
+    )
+    .unwrap();
+
+    assert!(header.contains("#define MODEL_Y_ALT 0 /* y[0]: alt */"));
+    assert!(header.contains("#define MODEL_P_WAYPOINTS 3 /* p[3]: waypoints */"));
+    assert!(header.contains("#define MODEL_P_WAYPOINTS_LEN 6"));
+    assert!(header.contains("#define MODEL_P_WAYPOINTS_1_2 4 /* p[4]: waypoints[1,2] */"));
+    assert!(header.contains("#define MODEL_P_CURRENT_WP 205 /* p[205]: current_wp */"));
+    assert!(header.contains("void EmbeddedSlots_sync_pre(EmbeddedSlots_t *m);"));
+    assert!(header.contains("EmbeddedSlots_get_p"));
+    assert!(source.contains("{\"current_wp\", EMBEDDEDSLOTS_SLOT_P, 205, 1}"));
+    assert!(source.contains("m->p[103] = m->p[205]; /* __pre__.current_wp <- current_wp */"));
+}
+
+#[test]
 fn test_embedded_c_templates_render_periodic_clock_schedule() {
     let mut solve = solve::SolveProblem::with_derivative_rhs(
         solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::default()),

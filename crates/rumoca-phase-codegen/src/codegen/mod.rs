@@ -647,6 +647,8 @@ fn render_solve_context(
 ) -> Result<String, CodegenError> {
     let solve_value = Value::from_serialize(solve_problem);
     let artifacts_value = Value::from_serialize(artifacts);
+    let solve_symbols = Value::from_serialize(solve_symbols_for_layout(&solve_problem.layout));
+    let solve_pre_pairs = Value::from_serialize(solve_pre_pairs_for_layout(&solve_problem.layout));
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
     let derivative_nodes = Value::from_serialize(&solve_problem.continuous.derivative_rhs.nodes);
     let implicit_rows =
@@ -659,6 +661,8 @@ fn render_solve_context(
         Some(name) => Ok(tmpl.render(minijinja::context! {
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
+            solve_symbols => solve_symbols,
+            solve_pre_pairs => solve_pre_pairs,
             ir => solve_value,
             ir_kind => "solve",
             model_name => name,
@@ -670,6 +674,8 @@ fn render_solve_context(
         None => Ok(tmpl.render(minijinja::context! {
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
+            solve_symbols => solve_symbols,
+            solve_pre_pairs => solve_pre_pairs,
             ir => solve_value,
             ir_kind => "solve",
             solve_blocks => solve_blocks,
@@ -677,6 +683,122 @@ fn render_solve_context(
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => jacobian_rows,
         })?),
+    }
+}
+
+fn solve_symbols_for_layout(layout: &solve::VarLayout) -> serde_json::Value {
+    let mut used = HashMap::<String, usize>::new();
+    let symbols = layout
+        .bindings()
+        .iter()
+        .filter_map(|(name, slot)| {
+            let (kind, index) = match slot {
+                solve::ScalarSlot::Y { index, .. } => ("Y", *index),
+                solve::ScalarSlot::P { index, .. } => ("P", *index),
+                solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => return None,
+            };
+            let raw_macro = format!("MODEL_{kind}_{}", c_macro_fragment(name));
+            let macro_name = unique_symbol_name(raw_macro, &mut used);
+            let length = layout
+                .shape(name)
+                .map(|dims| dims.iter().copied().product())
+                .unwrap_or(1);
+            Some(serde_json::json!({
+                "name": name,
+                "macro_name": macro_name,
+                "kind": kind,
+                "index": index,
+                "length": length,
+            }))
+        })
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(symbols)
+}
+
+fn solve_pre_pairs_for_layout(layout: &solve::VarLayout) -> serde_json::Value {
+    let bindings = layout.bindings();
+    let pairs = bindings
+        .iter()
+        .filter_map(|(pre_name, pre_slot)| {
+            let current_name = pre_name.strip_prefix("__pre__.")?;
+            let current_slot = bindings.get(current_name)?;
+            let (kind, pre_index, current_index) = match (pre_slot, current_slot) {
+                (
+                    solve::ScalarSlot::Y {
+                        index: pre_index, ..
+                    },
+                    solve::ScalarSlot::Y {
+                        index: current_index,
+                        ..
+                    },
+                ) => ("Y", *pre_index, *current_index),
+                (
+                    solve::ScalarSlot::P {
+                        index: pre_index, ..
+                    },
+                    solve::ScalarSlot::P {
+                        index: current_index,
+                        ..
+                    },
+                ) => ("P", *pre_index, *current_index),
+                _ => return None,
+            };
+            Some(serde_json::json!({
+                "name": current_name,
+                "pre_name": pre_name,
+                "kind": kind,
+                "pre_index": pre_index,
+                "current_index": current_index,
+            }))
+        })
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(pairs)
+}
+
+fn c_macro_fragment(name: &str) -> String {
+    let sanitized = sanitize_name(name).to_ascii_uppercase();
+    let mut out = String::with_capacity(sanitized.len());
+    let mut previous_was_underscore = false;
+    for ch in sanitized.chars() {
+        if ch == '_' {
+            if !previous_was_underscore {
+                out.push(ch);
+            }
+            previous_was_underscore = true;
+        } else {
+            out.push(ch);
+            previous_was_underscore = false;
+        }
+    }
+    while out.starts_with('_') {
+        out.remove(0);
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push_str("SLOT");
+    }
+    if out
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        out.insert(0, '_');
+    }
+    out
+}
+
+fn unique_symbol_name(raw: String, used: &mut HashMap<String, usize>) -> String {
+    match used.get_mut(&raw) {
+        Some(count) => {
+            *count += 1;
+            format!("{raw}_{count}")
+        }
+        None => {
+            used.insert(raw.clone(), 1);
+            raw
+        }
     }
 }
 
@@ -846,6 +968,8 @@ pub fn render_template_with_dae_json(
         dae_value.clone()
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
+    let solve_symbols = solve_symbols_from_dae_json(dae_json)?;
+    let solve_pre_pairs = solve_pre_pairs_from_dae_json(dae_json)?;
     let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json);
     let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
     let result = tmpl.render(minijinja::context! {
@@ -853,6 +977,8 @@ pub fn render_template_with_dae_json(
         solve => solve_value,
         ir => ir_value,
         ir_kind => ir_kind,
+        solve_symbols => solve_symbols,
+        solve_pre_pairs => solve_pre_pairs,
         solve_blocks => solve_blocks,
         solve_derivative_nodes => solve_derivative_nodes,
         solve_jacobian_rows => solve_jacobian_rows,
@@ -879,6 +1005,8 @@ pub fn render_template_with_dae_json_and_name(
         dae_value.clone()
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
+    let solve_symbols = solve_symbols_from_dae_json(dae_json)?;
+    let solve_pre_pairs = solve_pre_pairs_from_dae_json(dae_json)?;
     let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json);
     let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
     let tmpl = env.get_template("inline")?;
@@ -888,6 +1016,8 @@ pub fn render_template_with_dae_json_and_name(
         ir => ir_value,
         ir_kind => ir_kind,
         model_name => model_name,
+        solve_symbols => solve_symbols,
+        solve_pre_pairs => solve_pre_pairs,
         solve_blocks => solve_blocks,
         solve_derivative_nodes => solve_derivative_nodes,
         solve_jacobian_rows => solve_jacobian_rows,
@@ -898,6 +1028,42 @@ pub fn render_template_with_dae_json_and_name(
 
 fn optional_object_field(value: &Value, name: &str) -> Value {
     get_field(value, name).unwrap_or_else(|_| Value::from_serialize(serde_json::Map::new()))
+}
+
+fn solve_symbols_from_dae_json(dae_json: &serde_json::Value) -> Result<Value, CodegenError> {
+    if template_ir_kind_from_dae_json(dae_json) != "solve" {
+        return Ok(Value::from_serialize(serde_json::Value::Array(Vec::new())));
+    }
+    let Some(solve_json) = dae_json.get("solve") else {
+        return Ok(Value::from_serialize(serde_json::Value::Array(Vec::new())));
+    };
+    let mut problem_json = solve_json.clone();
+    if let Some(object) = problem_json.as_object_mut() {
+        object.remove("artifacts");
+    }
+    let problem: solve::SolveProblem =
+        serde_json::from_value(problem_json).map_err(|err| CodegenError::SerializationFailed {
+            message: format!("SolveProblem template symbols context: {err}"),
+        })?;
+    Ok(Value::from_serialize(solve_symbols_for_layout(&problem.layout)))
+}
+
+fn solve_pre_pairs_from_dae_json(dae_json: &serde_json::Value) -> Result<Value, CodegenError> {
+    if template_ir_kind_from_dae_json(dae_json) != "solve" {
+        return Ok(Value::from_serialize(serde_json::Value::Array(Vec::new())));
+    }
+    let Some(solve_json) = dae_json.get("solve") else {
+        return Ok(Value::from_serialize(serde_json::Value::Array(Vec::new())));
+    };
+    let mut problem_json = solve_json.clone();
+    if let Some(object) = problem_json.as_object_mut() {
+        object.remove("artifacts");
+    }
+    let problem: solve::SolveProblem =
+        serde_json::from_value(problem_json).map_err(|err| CodegenError::SerializationFailed {
+            message: format!("SolveProblem template pre-pair context: {err}"),
+        })?;
+    Ok(Value::from_serialize(solve_pre_pairs_for_layout(&problem.layout)))
 }
 
 fn template_ir_kind_from_dae_json(dae_json: &serde_json::Value) -> &'static str {

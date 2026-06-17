@@ -409,3 +409,52 @@ equation
   pitch = asin(pitch_arg);
   yaw = atan2(2.0 * (quat[1] * quat[4] + quat[2] * quat[3]), 1.0 - 2.0 * (quat[3] * quat[3] + quat[4] * quat[4]));
 end FixedWing;
+
+
+model FixedWingDirect "Fixed-wing plant with direct surface commands (no FBW)"
+  input Real stick_roll(start = 0) "Surface-level aileron [-1..1]";
+  input Real stick_pitch(start = 0) "Surface-level elevator [-1..1]";
+  input Real stick_yaw(start = 0) "Rudder [-1..1]";
+  input Real stick_throttle(start = 0) "Throttle [0..1]";
+  input Real armed(start = 0) "Arm signal [0/1]";
+
+  output Real position[3] "World position [m]";
+  output Real velocity[3] "World velocity [m/s]";
+  output Real quat[4] "Quaternion w,x,y,z";
+  output Real gyro[3] "Body angular rate FLU [rad/s]";
+  output Real airspeed "True airspeed [m/s]";
+  output Real alpha_deg "Angle of attack [deg]";
+  output Real ail_rad "Aileron deflection [rad]";
+  output Real elev_rad "Elevator deflection [rad]";
+  output Real rud_rad "Rudder deflection [rad]";
+  output Real thr_out "Throttle fraction [0..1]";
+  output Real roll "Euler roll [rad]";
+  output Real pitch "Euler pitch [rad]";
+  output Real yaw "Euler yaw [rad]";
+
+protected
+  FixedWingPlant vehicle;
+  Real pitch_arg;
+
+equation
+  vehicle.ail = armed * stick_roll;
+  vehicle.elev = armed * stick_pitch;
+  vehicle.rud = armed * stick_yaw;
+  vehicle.thr = armed * stick_throttle;
+
+  position = vehicle.position;
+  velocity = vehicle.velocity;
+  quat = vehicle.quat;
+  gyro = vehicle.gyro;
+  airspeed = vehicle.airspeed;
+  alpha_deg = vehicle.alpha_deg;
+  ail_rad = vehicle.ail_rad;
+  elev_rad = vehicle.elev_rad;
+  rud_rad = vehicle.rud_rad;
+  thr_out = vehicle.thr_out;
+
+  roll = atan2(2.0 * (quat[1] * quat[2] + quat[3] * quat[4]), 1.0 - 2.0 * (quat[2] * quat[2] + quat[3] * quat[3]));
+  pitch_arg = min(1.0, max(-1.0, 2.0 * (quat[1] * quat[3] - quat[4] * quat[2])));
+  pitch = asin(pitch_arg);
+  yaw = atan2(2.0 * (quat[1] * quat[4] + quat[2] * quat[3]), 1.0 - 2.0 * (quat[3] * quat[3] + quat[4] * quat[4]));
+end FixedWingDirect;

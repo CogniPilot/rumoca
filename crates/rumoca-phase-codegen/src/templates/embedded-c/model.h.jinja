@@ -24,6 +24,31 @@ enum {
     {{ model_name | upper }}_PERIODIC_EVENT_LEN = {{ periodic_len }}
 };
 
+/* Named Solve slots. Array symbols point at the first scalar slot and define
+ * *_LEN for the contiguous scalar span; indexed symbols have length 1.
+ */
+{%- for sym in solve_symbols %}
+#define {{ sym.macro_name }} {{ sym.index }} /* {{ sym.kind | lower }}[{{ sym.index }}]: {{ sym.name }} */
+{%- if sym.length > 1 %}
+#define {{ sym.macro_name }}_LEN {{ sym.length }}
+{%- endif %}
+{%- endfor %}
+
+typedef enum {
+    {{ model_name | upper }}_SLOT_Y = 0,
+    {{ model_name | upper }}_SLOT_P = 1
+} {{ model_name }}_slot_kind_t;
+
+typedef struct {
+    const char *name;
+    {{ model_name }}_slot_kind_t kind;
+    int index;
+    int length;
+} {{ model_name }}_symbol_t;
+
+extern const {{ model_name }}_symbol_t {{ model_name }}_symbols[];
+extern const size_t {{ model_name }}_symbol_count;
+
 typedef struct {
     real_t time;
     real_t y[{{ y_len if y_len > 0 else 1 }}];
@@ -33,6 +58,27 @@ typedef struct {
     real_t next_periodic_event[{{ periodic_len if periodic_len > 0 else 1 }}];
 } {{ model_name }}_t;
 
+static inline real_t {{ model_name }}_get_y(const {{ model_name }}_t *m, int index) {
+    return (m && index >= 0 && index < {{ model_name | upper }}_Y_LEN) ? m->y[index] : 0.0;
+}
+
+static inline real_t {{ model_name }}_get_p(const {{ model_name }}_t *m, int index) {
+    return (m && index >= 0 && index < {{ model_name | upper }}_P_LEN) ? m->p[index] : 0.0;
+}
+
+static inline void {{ model_name }}_set_y({{ model_name }}_t *m, int index, real_t value) {
+    if (m && index >= 0 && index < {{ model_name | upper }}_Y_LEN) {
+        m->y[index] = value;
+    }
+}
+
+static inline void {{ model_name }}_set_p({{ model_name }}_t *m, int index, real_t value) {
+    if (m && index >= 0 && index < {{ model_name | upper }}_P_LEN) {
+        m->p[index] = value;
+    }
+}
+
 void startup({{ model_name }}_t *m);
 void dostep({{ model_name }}_t *m, real_t dt);
 void recalibrate({{ model_name }}_t *m);
+void {{ model_name }}_sync_pre({{ model_name }}_t *m);

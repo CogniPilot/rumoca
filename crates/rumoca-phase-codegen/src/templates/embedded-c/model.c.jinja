@@ -24,6 +24,29 @@
 #include <math.h>
 #include <string.h>
 
+const {{ model_name }}_symbol_t {{ model_name }}_symbols[] = {
+{%- for sym in solve_symbols %}
+    {"{{ sym.name }}", {{ model_name | upper }}_SLOT_{{ sym.kind }}, {{ sym.index }}, {{ sym.length }}},
+{%- endfor %}
+};
+
+const size_t {{ model_name }}_symbol_count = sizeof({{ model_name }}_symbols) / sizeof({{ model_name }}_symbols[0]);
+
+void {{ model_name }}_sync_pre({{ model_name }}_t *m) {
+    if (!m) {
+        return;
+    }
+{%- for pair in solve_pre_pairs %}
+{%- if pair.kind == "Y" %}
+    m->y[{{ pair.pre_index }}] = m->y[{{ pair.current_index }}]; /* {{ pair.pre_name }} <- {{ pair.name }} */
+{%- elif pair.kind == "P" %}
+    m->p[{{ pair.pre_index }}] = m->p[{{ pair.current_index }}]; /* {{ pair.pre_name }} <- {{ pair.name }} */
+{%- endif %}
+{%- else %}
+    (void)m;
+{%- endfor %}
+}
+
 static inline void set_y({{ model_name }}_t *m, int index, real_t value) {
     if (index >= 0 && index < {{ model_name | upper }}_Y_LEN) {
         m->y[index] = value;

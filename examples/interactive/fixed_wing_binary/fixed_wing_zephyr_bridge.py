@@ -15,6 +15,7 @@ import time
 RUMOCA_STATE = ("127.0.0.1", 4250)
 RUMOCA_COMMAND = ("127.0.0.1", 4251)
 ZEPHYR_INPUT = ("127.0.0.1", 4242)
+CUBS2_INPUT = ("127.0.0.1", 4245)
 ZEPHYR_FLIGHT = ("127.0.0.1", 4243)
 
 PLANT_FIELDS = [
@@ -159,14 +160,44 @@ def is_uninitialized_command(command: dict[str, float]) -> bool:
     )
 
 
+def write_trace_header(trace) -> None:
+    trace.write(
+        "seq,timestamp_ns,x,y,z,roll,pitch,yaw,"
+        "aileron,elevator,throttle,rudder,stabilizer\n"
+    )
+
+
+def write_trace_row(trace, seq: int, state: dict[str, float], command: dict[str, float] | None) -> None:
+    command = command or {}
+    fields = [
+        seq,
+        int(state.get("timestamp_ns", 0.0)),
+        state.get("x", 0.0),
+        state.get("y", 0.0),
+        state.get("z", 0.0),
+        state.get("roll", 0.0),
+        state.get("pitch", 0.0),
+        state.get("yaw", 0.0),
+        command.get("aileron", ""),
+        command.get("elevator", ""),
+        command.get("throttle", ""),
+        command.get("rudder", ""),
+        command.get("stabilizer", ""),
+    ]
+    trace.write(",".join(str(value) for value in fields) + "\n")
+
+
 def main() -> int:
     global child_proc
     debug = os.environ.get("CUBS2_ZEPHYR_BRIDGE_DEBUG") == "1"
 
     log_path = "/tmp/bridge_debug.log"
-    with open(log_path, "w", buffering=1) as log:
+    trace_path = os.environ.get("CUBS2_ZEPHYR_TRACE_CSV", "/tmp/fixed_wing_zephyr_trace.csv")
+    with open(log_path, "w", buffering=1) as log, open(trace_path, "w", buffering=1) as trace:
+        write_trace_header(trace)
         log.write(f"Bridge starting at {__import__('datetime').datetime.now()}\n")
         log.write(f"CUBS2_ZEPHYR_EXE={os.environ.get('CUBS2_ZEPHYR_EXE', '')}\n")
+        log.write(f"trace_csv={trace_path}\n")
         log.write(f"debug={debug}\n")
         log.flush()
 
@@ -181,7 +212,7 @@ def main() -> int:
         zephyr_exe = os.environ.get("CUBS2_ZEPHYR_EXE", ZEPHYR_EXE_DEFAULT)
         log.write(f"Using zephyr_exe={zephyr_exe}\n")
 
-        zephyr_log = open("/tmp/zephyr_bridge_zephyr.log", "w", buffering=1) if debug else subprocess.DEVNULL
+        zephyr_log = open("/tmp/zephyr_bridge_zephyr.log", "w", buffering=1)
         proc = subprocess.Popen(
             [zephyr_exe],
             stdout=zephyr_log,
@@ -217,7 +248,9 @@ def main() -> int:
                     states_seen += 1
                     if states_seen <= 3:
                         log.write(f"state#{states_seen}: {state}\n")
-                    tx.sendto(pack_sim_input(state), ZEPHYR_INPUT)
+                    sim_input = pack_sim_input(state)
+                    tx.sendto(sim_input, ZEPHYR_INPUT)
+                    tx.sendto(sim_input, CUBS2_INPUT)
 
                 command = None
                 zephyr_packets = 0
@@ -242,6 +275,8 @@ def main() -> int:
                     if commands_sent <= 3:
                         log.write(f"cmd#{commands_sent}: {command}\n")
                     tx.sendto(pack_table(COMMAND_FIELDS, command), RUMOCA_COMMAND)
+                if state:
+                    write_trace_row(trace, states_seen, state, command)
         except KeyboardInterrupt:
             pass
         finally:

@@ -48,7 +48,7 @@ type = "bool"
 
 [model]
 file = "FixedWingSIL.mo"
-name = "FixedWing"
+name = "FixedWingDirect"
 
 [reset]
 on_signal = "reset"
