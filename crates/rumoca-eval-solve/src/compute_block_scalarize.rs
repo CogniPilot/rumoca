@@ -92,9 +92,9 @@ impl SolveVisitor for ScalarProgramCollector {
         span: Option<rumoca_core::Span>,
         ops: &[LinearOp],
     ) -> Result<(), Self::Error> {
+        let span = span.unwrap_or(rumoca_core::Span::DUMMY);
         self.rows.push(ops.to_vec());
-        self.program_spans
-            .push(span.unwrap_or(rumoca_core::Span::DUMMY));
+        self.program_spans.push(span);
         Ok(())
     }
 }

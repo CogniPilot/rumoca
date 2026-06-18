@@ -39,6 +39,11 @@ impl Clone for PreparedScalarProgramBlock {
 
 impl PreparedScalarProgramBlock {
     pub fn new(block: ScalarProgramBlock) -> Self {
+        // Expand multi-output programs into one single-output program per
+        // StoreOutput so that program index == output index. This is
+        // required for per-row evaluation where the caller supplies an output
+        // index (solver variable index) rather than a program index.
+        let block = expand_multi_output_programs(block);
         let mut row_registers = Vec::with_capacity(block.programs.len());
         let mut row_requirements = Vec::with_capacity(block.programs.len());
         let mut row_register_safe = Vec::with_capacity(block.programs.len());
@@ -462,6 +467,58 @@ impl TargetAssignmentShape {
             }
         }
     }
+}
+
+/// Expand multi-output programs in a `ScalarProgramBlock` into one
+/// single-output program per `StoreOutput`. Each sub-program keeps all
+/// non-`StoreOutput` computation ops but retains only its target
+/// `StoreOutput`, ensuring that program index equals output index.
+fn expand_multi_output_programs(block: ScalarProgramBlock) -> ScalarProgramBlock {
+    let needs_expansion = block
+        .programs
+        .iter()
+        .any(|p| ScalarProgramBlock::program_output_count(p) > 1);
+    if !needs_expansion {
+        return block;
+    }
+    let mut programs = Vec::with_capacity(block.output_count());
+    let mut spans = Vec::with_capacity(block.output_count());
+    for (program_idx, program) in block.programs.iter().enumerate() {
+        let output_count = ScalarProgramBlock::program_output_count(program);
+        let span = block
+            .program_spans
+            .get(program_idx)
+            .copied()
+            .unwrap_or(rumoca_core::Span::DUMMY);
+        if output_count <= 1 {
+            programs.push(program.clone());
+            spans.push(span);
+        } else {
+            for target in 0..output_count {
+                programs.push(split_single_output(program, target));
+                spans.push(span);
+            }
+        }
+    }
+    ScalarProgramBlock::with_program_spans(programs, spans)
+}
+
+/// Extract the `target`-th output from a multi-output program: keep all
+/// non-`StoreOutput` ops but retain only the `target`-th `StoreOutput`.
+fn split_single_output(program: &[LinearOp], target: usize) -> Vec<LinearOp> {
+    let mut sub_ops = Vec::with_capacity(program.len());
+    let mut store_idx = 0;
+    for op in program {
+        if matches!(op, LinearOp::StoreOutput { .. }) {
+            if store_idx == target {
+                sub_ops.push(*op);
+            }
+            store_idx += 1;
+        } else {
+            sub_ops.push(*op);
+        }
+    }
+    sub_ops
 }
 
 fn target_assignment_shape(row: &[LinearOp]) -> Option<TargetAssignmentShape> {
