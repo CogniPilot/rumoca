@@ -402,101 +402,192 @@ impl ModelicaLanguageServer {
         }))
     }
 
-    pub(super) async fn reload_project_config(&self) {
-        let _ = self.reload_project_config_with_timing().await;
+    pub(super) async fn reload_scenario_config(&self) {
+        let _ = self.reload_scenario_config_with_timing().await;
     }
 
-    pub(super) async fn reload_project_config_with_timing(&self) -> ProjectReloadTiming {
+    async fn workspace_config_focus_paths(&self, workspace_root: &Path) -> Vec<PathBuf> {
+        let mut paths = self
+            .session
+            .read()
+            .await
+            .document_uris()
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| path.starts_with(workspace_root))
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            paths.push(workspace_root.to_path_buf());
+        }
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    pub(super) async fn reload_scenario_config_with_timing(&self) -> ScenarioReloadTiming {
         let reload_started = Instant::now();
         let previous_paths = self.source_root_paths.read().await.clone();
         let initial_source_root_paths = self.initial_source_root_paths.read().await.clone();
-        let workspace_root = self.workspace_root.read().await.clone();
-        let mut timing = ProjectReloadTiming::default();
-        let next_paths = if let Some(workspace_root) = workspace_root {
-            let discover_started = Instant::now();
-            match ProjectConfig::discover(&workspace_root) {
-                Ok(config) => {
-                    self.log_project_diagnostics(
-                        config
-                            .as_ref()
-                            .map_or(&[], |cfg| cfg.diagnostics.as_slice()),
-                    )
-                    .await;
-                    *self.project_config.write().await = config;
-                }
-                Err(error) => {
-                    *self.project_config.write().await = None;
-                    self.client
-                        .log_message(
-                            MessageType::WARNING,
-                            format!("[rumoca] failed to load colocated model configs: {error}"),
-                        )
-                        .await;
-                }
-            }
-            timing.project_discover_ms = discover_started.elapsed().as_millis() as u64;
-            let resolve_started = Instant::now();
-            let project_paths = self
-                .project_config
-                .read()
-                .await
-                .as_ref()
-                .map(|cfg| cfg.resolve_all_source_root_paths())
-                .unwrap_or_default();
-            let next_paths = merge_source_root_paths(&project_paths, &initial_source_root_paths);
-            timing.resolve_source_root_paths_ms = resolve_started.elapsed().as_millis() as u64;
-            next_paths
-        } else {
-            *self.project_config.write().await = None;
-            let resolve_started = Instant::now();
-            let next_paths = merge_source_root_paths(&[], &initial_source_root_paths);
-            timing.resolve_source_root_paths_ms = resolve_started.elapsed().as_millis() as u64;
-            next_paths
-        };
+        let mut timing = ScenarioReloadTiming::default();
+        let next_paths = self
+            .resolve_reload_source_root_paths(&initial_source_root_paths, &mut timing)
+            .await;
 
         let should_reset = source_root_paths_changed(&previous_paths, &next_paths);
         timing.source_root_paths_changed = should_reset;
         *self.source_root_paths.write().await = next_paths;
         if should_reset {
-            let reset_started = Instant::now();
-            self.reset_session_and_loaded_source_roots().await;
-            timing.reset_session_ms = reset_started.elapsed().as_millis() as u64;
-            let initial_startup =
-                previous_paths.is_empty() && self.session.read().await.document_uris().is_empty();
-
-            let durable_started = Instant::now();
-            let durable_timing = self.prewarm_durable_source_roots().await;
-            timing.durable_prewarm_ms = durable_started.elapsed().as_millis() as u64;
-            timing.durable_collect_files_ms = durable_timing.durable_collect_files_ms;
-            timing.durable_hash_inputs_ms = durable_timing.durable_hash_inputs_ms;
-            timing.durable_cache_lookup_ms = durable_timing.durable_cache_lookup_ms;
-            timing.durable_cache_deserialize_ms = durable_timing.durable_cache_deserialize_ms;
-            timing.durable_parse_files_ms = durable_timing.durable_parse_files_ms;
-            timing.durable_validate_layout_ms = durable_timing.durable_validate_layout_ms;
-            timing.durable_cache_write_ms = durable_timing.durable_cache_write_ms;
-            timing.durable_apply_ms = durable_timing.durable_apply_ms;
-
-            if !initial_startup {
-                let workspace_symbol_started = Instant::now();
-                self.session
-                    .read()
-                    .await
-                    .workspace_symbol_snapshot()
-                    .prewarm_workspace_symbol_queries();
-                timing.workspace_symbol_prewarm_ms =
-                    workspace_symbol_started.elapsed().as_millis() as u64;
-            }
-
-            let namespace_started = Instant::now();
-            self.spawn_background_source_root_read_prewarm().await;
-            timing.source_root_read_prewarm_spawn_ms =
-                namespace_started.elapsed().as_millis() as u64;
+            self.apply_source_root_reload(&previous_paths, &mut timing)
+                .await;
         }
         timing.total_ms = reload_started.elapsed().as_millis() as u64;
         timing
     }
 
-    pub(super) async fn prewarm_durable_source_roots(&self) -> ProjectReloadTiming {
+    async fn resolve_reload_source_root_paths(
+        &self,
+        initial_source_root_paths: &[String],
+        timing: &mut ScenarioReloadTiming,
+    ) -> Vec<String> {
+        let Some(workspace_root) = self.workspace_root.read().await.clone() else {
+            *self.scenario_config.write().await = None;
+            let resolve_started = Instant::now();
+            let next_paths = merge_source_root_paths(&[], initial_source_root_paths);
+            timing.resolve_source_root_paths_ms = resolve_started.elapsed().as_millis() as u64;
+            return next_paths;
+        };
+
+        let scenario_paths = self
+            .discover_scenario_source_root_paths(&workspace_root, timing)
+            .await;
+        let resolve_started = Instant::now();
+        let workspace_paths = self
+            .discover_workspace_source_root_paths(&workspace_root)
+            .await;
+        let workspace_and_scenario_paths =
+            merge_source_root_paths(&workspace_paths, &scenario_paths);
+        let next_paths =
+            merge_source_root_paths(&workspace_and_scenario_paths, initial_source_root_paths);
+        timing.resolve_source_root_paths_ms = resolve_started.elapsed().as_millis() as u64;
+        next_paths
+    }
+
+    async fn discover_scenario_source_root_paths(
+        &self,
+        workspace_root: &Path,
+        timing: &mut ScenarioReloadTiming,
+    ) -> Vec<String> {
+        let discover_started = Instant::now();
+        let config = self.discover_scenario_config(workspace_root).await;
+        *self.scenario_config.write().await = config;
+        timing.scenario_discover_ms = discover_started.elapsed().as_millis() as u64;
+        self.scenario_config
+            .read()
+            .await
+            .as_ref()
+            .map(|cfg| cfg.resolve_all_source_root_paths())
+            .unwrap_or_default()
+    }
+
+    async fn discover_scenario_config(&self, workspace_root: &Path) -> Option<ScenarioConfig> {
+        match ScenarioConfig::discover(workspace_root) {
+            Ok(config) => {
+                self.log_scenario_diagnostics(
+                    config
+                        .as_ref()
+                        .map_or(&[], |cfg| cfg.diagnostics.as_slice()),
+                )
+                .await;
+                config
+            }
+            Err(error) => {
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("[rumoca] failed to load colocated model configs: {error}"),
+                    )
+                    .await;
+                None
+            }
+        }
+    }
+
+    async fn discover_workspace_source_root_paths(&self, workspace_root: &Path) -> Vec<String> {
+        let mut workspace_paths = Vec::new();
+        for workspace_focus_path in self.workspace_config_focus_paths(workspace_root).await {
+            let focus_paths = self
+                .workspace_source_roots_for_focus(workspace_root, &workspace_focus_path)
+                .await;
+            workspace_paths = merge_source_root_paths(&workspace_paths, &focus_paths);
+        }
+        workspace_paths
+    }
+
+    async fn workspace_source_roots_for_focus(
+        &self,
+        workspace_root: &Path,
+        workspace_focus_path: &Path,
+    ) -> Vec<String> {
+        let config = match WorkspaceConfig::discover(workspace_root, workspace_focus_path) {
+            Ok(config) => config,
+            Err(error) => {
+                self.client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!("[rumoca] failed to load workspace config: {error}"),
+                    )
+                    .await;
+                return Vec::new();
+            }
+        };
+        config.map_or_else(Vec::new, |cfg| {
+            cfg.effective_source_roots_for(workspace_focus_path)
+        })
+    }
+
+    async fn apply_source_root_reload(
+        &self,
+        previous_paths: &[String],
+        timing: &mut ScenarioReloadTiming,
+    ) {
+        let reset_started = Instant::now();
+        self.reset_session_and_loaded_source_roots().await;
+        timing.reset_session_ms = reset_started.elapsed().as_millis() as u64;
+        let initial_startup =
+            previous_paths.is_empty() && self.session.read().await.document_uris().is_empty();
+
+        self.prewarm_durable_source_roots_with_timing(timing).await;
+        if !initial_startup {
+            let workspace_symbol_started = Instant::now();
+            self.session
+                .read()
+                .await
+                .workspace_symbol_snapshot()
+                .prewarm_workspace_symbol_queries();
+            timing.workspace_symbol_prewarm_ms =
+                workspace_symbol_started.elapsed().as_millis() as u64;
+        }
+
+        let namespace_started = Instant::now();
+        self.spawn_background_source_root_read_prewarm().await;
+        timing.source_root_read_prewarm_spawn_ms = namespace_started.elapsed().as_millis() as u64;
+    }
+
+    async fn prewarm_durable_source_roots_with_timing(&self, timing: &mut ScenarioReloadTiming) {
+        let durable_started = Instant::now();
+        let durable_timing = self.prewarm_durable_source_roots().await;
+        timing.durable_prewarm_ms = durable_started.elapsed().as_millis() as u64;
+        timing.durable_collect_files_ms = durable_timing.durable_collect_files_ms;
+        timing.durable_hash_inputs_ms = durable_timing.durable_hash_inputs_ms;
+        timing.durable_cache_lookup_ms = durable_timing.durable_cache_lookup_ms;
+        timing.durable_cache_deserialize_ms = durable_timing.durable_cache_deserialize_ms;
+        timing.durable_parse_files_ms = durable_timing.durable_parse_files_ms;
+        timing.durable_validate_layout_ms = durable_timing.durable_validate_layout_ms;
+        timing.durable_cache_write_ms = durable_timing.durable_cache_write_ms;
+        timing.durable_apply_ms = durable_timing.durable_apply_ms;
+    }
+
+    pub(super) async fn prewarm_durable_source_roots(&self) -> ScenarioReloadTiming {
         let durable_source_root_paths = self.initial_source_root_paths.read().await.clone();
         let (already_loaded, mut source_root_state_epoch) = {
             let session = self.session.read().await;
@@ -506,7 +597,7 @@ impl ModelicaLanguageServer {
             )
         };
         let load_plan = plan_source_root_loads(&durable_source_root_paths, &already_loaded);
-        let mut timing = ProjectReloadTiming::default();
+        let mut timing = ScenarioReloadTiming::default();
 
         for source_root_path in load_plan.load_paths {
             let path_key = canonical_path_key(&source_root_path);

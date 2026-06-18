@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
 use wasm_bindgen::prelude::*;
 
 use rumoca_compile::Session;
@@ -13,7 +13,7 @@ use rumoca_compile::source_roots::resolve_source_root_cache_dir;
 
 use super::{
     BUNDLED_SOURCE_ROOT_CACHE_BYTES, BUNDLED_SOURCE_ROOT_MANIFEST_JSON, BundledSourceRootManifest,
-    SESSION, WASM_BUNDLED_SOURCE_ROOT_SET_ID, WASM_PROJECT_SOURCE_SET_ID,
+    SESSION, WASM_BUNDLED_SOURCE_ROOT_SET_ID, WASM_WORKSPACE_SOURCE_SET_ID,
     compile_source_in_session, wasm_elapsed_ms, wasm_timing_start,
 };
 
@@ -67,7 +67,7 @@ pub(crate) struct SourceLoadSummary {
     pub(crate) skipped_files: Vec<String>,
 }
 
-struct ParsedProjectSourceLoad {
+struct ParsedWorkspaceSourceLoad {
     definitions: Vec<(String, StoredDefinition)>,
     parsed_count: usize,
     skipped_files: Vec<String>,
@@ -95,10 +95,10 @@ fn report_parse_progress(scope: &str, current: usize, total: usize) {
     let _ = message;
 }
 
-fn parse_text_sources_json(sources_json: &str) -> Result<BTreeMap<String, String>, JsValue> {
+fn parse_text_sources_json(sources_json: &str) -> Result<IndexMap<String, String>, JsValue> {
     let trimmed = sources_json.trim();
     if trimmed.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(IndexMap::new());
     }
     serde_json::from_str(trimmed).map_err(|e| JsValue::from_str(&format!("Invalid JSON: {}", e)))
 }
@@ -199,7 +199,7 @@ fn synthetic_source_root_path(source_set_id: &str) -> PathBuf {
     }
 }
 
-fn load_source_root_sources_in_session(
+pub(crate) fn load_source_root_sources_in_session(
     session: &mut Session,
     source_roots_json: &str,
 ) -> Result<SourceLoadSummary, JsValue> {
@@ -211,44 +211,44 @@ fn load_source_root_sources_in_session(
     )
 }
 
-pub(crate) fn load_project_sources_in_session(
+pub(crate) fn load_workspace_sources_in_session(
     session: &mut Session,
-    project_sources_json: &str,
+    workspace_sources_json: &str,
 ) -> Result<SourceLoadSummary, JsValue> {
     let cache_root = source_root_semantic_cache_root();
-    let parsed_roots = parse_project_source_roots(project_sources_json)?;
-    sync_project_source_roots(session, parsed_roots, cache_root.as_deref())
+    let parsed_roots = parse_workspace_source_roots(workspace_sources_json)?;
+    sync_workspace_source_roots(session, parsed_roots, cache_root.as_deref())
 }
 
-pub fn load_project_sources_for_simulation(
+pub fn load_workspace_sources_for_simulation(
     session: &mut Session,
-    project_sources_json: &str,
+    workspace_sources_json: &str,
 ) -> Result<(), JsValue> {
-    load_project_sources_in_session(session, project_sources_json).map(|_| ())
+    load_workspace_sources_in_session(session, workspace_sources_json).map(|_| ())
 }
 
 #[cfg(test)]
-pub(crate) fn sync_project_sources_with_cache_root_for_tests(
-    project_sources_json: &str,
+pub(crate) fn sync_workspace_sources_with_cache_root_for_tests(
+    workspace_sources_json: &str,
     cache_root: &Path,
 ) -> Result<String, JsValue> {
     super::with_singleton_session(|session| {
-        let parsed_roots = parse_project_source_roots(project_sources_json)?;
-        let summary = sync_project_source_roots(session, parsed_roots, Some(cache_root))?;
+        let parsed_roots = parse_workspace_source_roots(workspace_sources_json)?;
+        let summary = sync_workspace_source_roots(session, parsed_roots, Some(cache_root))?;
         source_load_summary_json(&summary)
     })
 }
 
-fn parse_project_source_roots(
-    project_sources_json: &str,
-) -> Result<ParsedProjectSourceLoad, JsValue> {
-    let sources = parse_text_sources_json(project_sources_json)?;
+fn parse_workspace_source_roots(
+    workspace_sources_json: &str,
+) -> Result<ParsedWorkspaceSourceLoad, JsValue> {
+    let sources = parse_text_sources_json(workspace_sources_json)?;
     let mut parsed_count = 0usize;
     let mut skipped_files = Vec::new();
     let mut definitions = Vec::with_capacity(sources.len());
     let total_sources = sources.len();
     for (index, (filename, source)) in sources.into_iter().enumerate() {
-        report_parse_progress(WASM_PROJECT_SOURCE_SET_ID, index + 1, total_sources);
+        report_parse_progress(WASM_WORKSPACE_SOURCE_SET_ID, index + 1, total_sources);
         let normalized_filename = normalize_source_path(&filename);
         match parse_source_to_ast(&source, &normalized_filename) {
             Ok(definition) => {
@@ -259,25 +259,25 @@ fn parse_project_source_roots(
         }
     }
 
-    Ok(ParsedProjectSourceLoad {
+    Ok(ParsedWorkspaceSourceLoad {
         definitions,
         parsed_count,
         skipped_files,
     })
 }
 
-fn sync_project_source_roots(
+fn sync_workspace_source_roots(
     session: &mut Session,
-    parsed_load: ParsedProjectSourceLoad,
+    parsed_load: ParsedWorkspaceSourceLoad,
     cache_root: Option<&Path>,
 ) -> Result<SourceLoadSummary, JsValue> {
-    let ParsedProjectSourceLoad {
+    let ParsedWorkspaceSourceLoad {
         definitions,
         parsed_count,
         skipped_files,
     } = parsed_load;
     let inserted_count = session.sync_partitioned_source_root_family(
-        WASM_PROJECT_SOURCE_SET_ID,
+        WASM_WORKSPACE_SOURCE_SET_ID,
         SourceRootKind::Workspace,
         definitions,
         cache_root,
@@ -455,21 +455,21 @@ pub fn compile_check_with_source_roots_with_options(
 }
 
 #[wasm_bindgen]
-pub fn compile_with_project_sources(
+pub fn compile_with_workspace_sources(
     source: &str,
     model_name: &str,
-    project_sources_json: &str,
+    workspace_sources_json: &str,
 ) -> Result<String, JsValue> {
     super::with_singleton_session(|session| {
-        load_project_sources_in_session(session, project_sources_json)?;
+        load_workspace_sources_in_session(session, workspace_sources_json)?;
         compile_source_in_session(session, source, model_name)
     })
 }
 
 #[wasm_bindgen]
-pub fn sync_project_sources(project_sources_json: &str) -> Result<String, JsValue> {
+pub fn sync_workspace_sources(workspace_sources_json: &str) -> Result<String, JsValue> {
     super::with_singleton_session(|session| {
-        let summary = load_project_sources_in_session(session, project_sources_json)?;
+        let summary = load_workspace_sources_in_session(session, workspace_sources_json)?;
         source_load_summary_json(&summary)
     })
 }
@@ -526,6 +526,7 @@ pub fn merge_parsed_source_roots(definitions_json: &str) -> Result<u32, JsValue>
             count += 1;
         }
     }
+    let _ = session.namespace_index_query("");
 
     Ok(count)
 }
@@ -540,7 +541,20 @@ pub fn merge_parsed_source_roots_binary(bytes: &[u8]) -> Result<u32, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
     let session = lock.get_or_insert_with(Session::default);
     session.add_parsed_batch(definitions);
+    let _ = session.namespace_index_query("");
     Ok(count)
+}
+
+#[wasm_bindgen]
+pub fn prime_source_root_completion_cache() -> Result<u32, JsValue> {
+    let mut lock = SESSION
+        .lock()
+        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
+    let session = lock.get_or_insert_with(Session::default);
+    let items = session
+        .namespace_index_query("")
+        .map_err(|e| JsValue::from_str(&format!("Namespace cache error: {}", e)))?;
+    Ok(items.len() as u32)
 }
 
 #[wasm_bindgen]

@@ -108,7 +108,7 @@ fn compile_quadrotor_acro_if_cmm_available() -> Option<rumoca::CompilationResult
 
 #[cfg(feature = "runner")]
 fn compile_quadrotor_acro_config_if_cmm_available() -> Option<rumoca::CompilationResult> {
-    let config_path = example_root().join("interactive/quadrotor/rum.acro.toml");
+    let config_path = example_root().join("interactive/quadrotor/rumoca-scenario.acro.toml");
     compile_toml_model_if_source_roots_exist(&config_path)
 }
 
@@ -167,7 +167,7 @@ fn collect_scenario_files(root: &Path, out: &mut Vec<PathBuf>) {
 fn is_scenario_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(rumoca_compile::project::is_rumoca_task_filename)
+        .is_some_and(rumoca_compile::scenario::is_rumoca_task_filename)
 }
 
 fn load_example_toml_config(config_path: &Path) -> ExampleTomlConfig {
@@ -482,7 +482,7 @@ fn examples_directory_scenario_configs_compile_and_smoke_requested_task() {
 
     assert!(
         !configs.is_empty(),
-        "examples directory should contain rum.toml scenarios to smoke-test"
+        "examples directory should contain rumoca-scenario.toml scenarios to smoke-test"
     );
     for config_path in configs {
         let config = load_example_toml_config(&config_path);
@@ -598,9 +598,9 @@ fn pde_docs_examples_emit_source_stencil_opcodes() {
 #[cfg(feature = "runner")]
 #[test]
 fn rover_config_steering_input_changes_delta_and_heading() {
-    let config_path = example_root().join("interactive/rover/rum.toml");
+    let config_path = example_root().join("interactive/rover/rumoca-scenario.toml");
     let result = compile_toml_model_if_source_roots_exist(&config_path)
-        .expect("rover rum.toml should compile without extra source roots");
+        .expect("rover rumoca-scenario.toml should compile without extra source roots");
     let mut stepper = SimStepper::new_with_diagnostics(
         &result.dae,
         SimOptions {
@@ -612,7 +612,7 @@ fn rover_config_steering_input_changes_delta_and_heading() {
             ..Default::default()
         },
     )
-    .expect("rover rum.toml should create an RK-like simulation stepper");
+    .expect("rover rumoca-scenario.toml should create an RK-like simulation stepper");
 
     assert!(
         stepper.input_names().iter().any(|name| name == "steering"),
@@ -660,7 +660,7 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
             ..Default::default()
         },
     )
-    .expect("rum.acro.toml should create an RK-like simulation stepper");
+    .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
     stepper
         .set_inputs(&[
             ("stick_roll", 0.0),
@@ -669,10 +669,10 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
             ("stick_throttle", 0.0),
             ("armed", 0.0),
         ])
-        .expect("rum.acro.toml inputs should bind to the stepper");
+        .expect("rumoca-scenario.acro.toml inputs should bind to the stepper");
     stepper
         .step(0.01)
-        .expect("rum.acro.toml stepper should advance one frame");
+        .expect("rumoca-scenario.acro.toml stepper should advance one frame");
 
     assert!(stepper.time() > 0.0);
 }
@@ -704,7 +704,7 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
                 ..Default::default()
             },
         )
-        .expect("rum.acro.toml should create an RK-like simulation stepper");
+        .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
         stepper
             .set_inputs(&[
                 ("stick_roll", 0.0),
@@ -713,14 +713,14 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
                 ("stick_throttle", 0.65),
                 ("armed", 1.0),
             ])
-            .expect("rum.acro.toml inputs should bind to the stepper");
+            .expect("rumoca-scenario.acro.toml inputs should bind to the stepper");
         stepper
             .set_input(axis_input, 1.0)
-            .expect("rum.acro.toml axis input should bind to the stepper");
+            .expect("rumoca-scenario.acro.toml axis input should bind to the stepper");
         for _ in 0..20 {
             stepper
                 .step(0.01)
-                .expect("rum.acro.toml stepper should advance under axis command");
+                .expect("rumoca-scenario.acro.toml stepper should advance under axis command");
         }
 
         let state = stepper.state();
@@ -791,7 +791,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     );
 
     let mut stepper = SimStepper::new_with_diagnostics(&result.dae, sim_options)
-        .expect("rum.acro.toml should create an RK-like simulation stepper");
+        .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
 
     stepper
         .set_inputs(&[
@@ -801,18 +801,18 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             ("stick_throttle", 0.0),
             ("armed", 1.0),
         ])
-        .expect("rum.acro.toml should arm while throttle is low");
+        .expect("rumoca-scenario.acro.toml should arm while throttle is low");
     stepper
         .step(0.01)
-        .expect("rum.acro.toml should advance after arming");
+        .expect("rumoca-scenario.acro.toml should advance after arming");
     stepper
         .set_inputs(&[("stick_throttle", 1.0), ("stick_roll", 1.0)])
-        .expect("rum.acro.toml should accept throttle and roll commands");
+        .expect("rumoca-scenario.acro.toml should accept throttle and roll commands");
 
     for _ in 0..1_000 {
         stepper
             .step(0.01)
-            .expect("rum.acro.toml should advance under full roll command");
+            .expect("rumoca-scenario.acro.toml should advance under full roll command");
     }
 
     let state = stepper.state();
@@ -940,7 +940,7 @@ fn ball_example_rk_simulation_applies_reinit_bounce() {
 
 #[test]
 fn ball_results_panel_path_applies_reinit_bounce() {
-    let config_path = example_root().join("simulation/rum.ball.toml");
+    let config_path = example_root().join("simulation/rumoca-scenario.ball.toml");
     let config = load_example_toml_config(&config_path);
     let result = compile_toml_model_if_source_roots_exist(&config_path)
         .expect("Ball simulation config should not require external source roots");
@@ -970,7 +970,7 @@ fn ball_results_panel_path_applies_reinit_bounce() {
 
     assert!(
         bounced,
-        "examples/simulation/rum.ball.toml should exercise the same RK-like \
+        "examples/simulation/rumoca-scenario.ball.toml should exercise the same RK-like \
          results-panel path and reverse velocity after ground contact"
     );
     assert!(

@@ -5,7 +5,7 @@
 GitHub Pages serves one artifact assembled by the WASM build job in CI:
 
 ```text
-https://cognipilot.github.io/rumoca/            ← playground (editors/wasm)
+https://cognipilot.github.io/rumoca/            ← playground (packages/playground)
 https://cognipilot.github.io/rumoca/user-guide/ ← mdBook, docs/user-guide
 https://cognipilot.github.io/rumoca/dev-guide/  ← mdBook, docs/dev-guide
 https://cognipilot.github.io/rumoca/pkg/<subdir>/ ← rumoca-bind-wasm package
@@ -21,10 +21,26 @@ step (`.github/workflows/ci.yml`, "Prepare GitHub Pages content").
 Both books are mdBook projects (`docs/user-guide`, `docs/dev-guide`).
 
 ```bash
-mdbook build docs/user-guide
-mdbook build docs/dev-guide
+cargo xtask docs build       # build both books
+cargo xtask docs serve       # build and host both books locally
 cargo xtask verify docs        # the docs CI gate
 ```
+
+## Repository Web Layout
+
+| Location | Role |
+|---|---|
+| `packages/rumoca` | npm/WASM package entrypoint. Its build writes generated `dist/<profile>-<variant>` packages; checked-in sources stay small. |
+| `packages/rumoca-web` | Single source for hand-written browser runtime and visualization JavaScript/CSS, plus npm-managed browser dependencies. |
+| `crates/rumoca-web` | Rust crate that embeds the web package for native reports/viewer shells; `crates/rumoca-web/web` points at `packages/rumoca-web` so Cargo packaging and npm packaging use the same sources. |
+| `packages/playground` | Static playground app and browser smoke tests; it is a product package, not a reusable JavaScript library. |
+| `packages/vscode` | VS Code extension, including offline webview assets built from the same `packages/rumoca-web` source package. |
+| `docs/user-guide/live` | mdBook live-example runner. `docs/dev-guide/live` is a symlink to it. |
+| `infra/` | Installer, Docker, and Nix integration; not npm/Cargo package source. |
+
+Do not check generated/minified vendor JavaScript into the tree. Browser
+dependencies are normal npm dependencies and are staged into ignored/generated
+outputs by package-local builds or `cargo xtask` commands.
 
 ## Live Examples
 
@@ -37,20 +53,30 @@ single source.
 
 How it works:
 
-- **Editors** are Monaco (same CDN as the playground), using the shared
+- **Editors** are Monaco from staged local vendor assets, using the shared
   Modelica language definition
-  `editors/wasm/src/modules/modelica_language.js`, with a plain-textarea
-  fallback when the CDN is unreachable.
+  `packages/rumoca-web/runtime/modelica_language.js`, with a plain-textarea
+  fallback when those assets are absent.
 - **Language services** (completion, hover, diagnostics-as-markers) call
   the `lsp_*` functions of `rumoca-bind-wasm` directly on the main thread —
   book examples are small, so no worker is needed.
-- **Simulate** calls `simulate_model(source, model, 0, 0, "")`, deferring
-  to the model's `experiment` annotation; results render as an inline SVG
-  plot. **Show DAE** renders the `dae-modelica` target.
+- **Simulate** calls the shared `packages/rumoca-web/runtime/rumoca_runtime.js`
+  interface, which loads the parsed source-root cache and routes explicit BDF
+  requests through the lazy diffsol addon. Results render as an inline SVG
+  plot. **Show DAE** uses the same runtime to render the `dae-modelica`
+  target.
+- **Scenario blocks** can point at a staged `rumoca-scenario.toml` with
+  `// rumoca-live-scenario: ...`. The book build copies repository examples
+  into `repo-examples/` and writes a visible `rumoca-workspace.toml` for the
+  staged examples. When the pinned MSL/CMM libraries are present under
+  `target/`, it writes a parsed source-root cache plus manifest so browser runs
+  honor the effective workspace roots without loading raw library source files
+  at runtime.
 - **Package discovery** probes `<site>/pkg/<subdir>/` (deployed layout)
-  and `<repo>/pkg/<subdir>/` (local repo-root serve), overridable with
+  and `<repo>/packages/rumoca/dist/<subdir>/` (local repo-root serve), overridable with
   `window.RUMOCA_LIVE_PKG_BASE`. The WASM download happens lazily on first
-  interaction.
+  interaction. `cargo xtask docs serve` builds the missing local package
+  before serving unless `--skip-wasm-build` is passed.
 - **Visualizations**: a `viz-radial` fence annotation adds a built-in
   animated cross-section for 1-D array states; a following
   `js,rumoca-viz` fence becomes an *editable* visualization script that
@@ -69,16 +95,14 @@ Keep embedded models validated — simulate them with the native CLI before
 committing, and give them an `experiment` annotation so browser runs have
 sensible defaults.
 
-Local testing with the WASM parts active: build the package
-(`cargo xtask wasm build`), build the books, then serve the **repository
-root** (e.g. `python3 -m http.server`) and open
-`docs/user-guide/book/index.html` from there. A manual browser smoke test
+Local testing with the WASM parts active: run `cargo xtask docs serve` and
+open the printed guide URL. A manual browser smoke test
 covering the live widgets lives at
-`editors/wasm/tests/book_live_smoke.mjs`.
+`packages/playground/tests/book_live_smoke.mjs`.
 
 ## Updating the Pages Artifact
 
-`mdbook build` runs inside the WASM CI job for both books; broken book
-builds therefore block the Pages deployment rather than shipping. The
-symlinked `live/` assets are copied into each book's output with hashed
-filenames automatically.
+`cargo xtask docs build` runs inside the WASM CI job for both books after
+`cargo xtask repo modelica-deps ensure`; broken book builds therefore block
+the Pages deployment rather than shipping. The symlinked `live/` assets are
+copied into each book's output with hashed filenames automatically.

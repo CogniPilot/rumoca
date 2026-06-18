@@ -52,7 +52,6 @@ use rumoca_compile::{
     codegen::{render_ast_template_with_name, render_flat_template_with_name},
     compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
     compile::{Dae, FlatModel, ResolvedTree, Session, SessionConfig},
-    project::{write_last_simulation_result_for_model, write_simulation_run},
 };
 use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
@@ -402,7 +401,7 @@ struct SimCommandArgs {
     #[arg(name = "MODELICA_FILE")]
     model_file: Option<String>,
 
-    /// Run a rum.toml scenario (rum.toml / rum.<profile>.toml) instead of a
+    /// Run a rumoca-scenario.toml scenario (rumoca-scenario.toml / rumoca-scenario.<profile>.toml) instead of a
     /// direct sim. Create one with `rumoca sim init`; validate with `sim check`.
     #[arg(short, long)]
     config: Option<String>,
@@ -470,9 +469,9 @@ enum InspectKind {
 
 #[derive(Subcommand, Debug)]
 enum SimSubcommand {
-    /// Validate a rum.toml scenario file without running it
+    /// Validate a rumoca-scenario.toml scenario file without running it
     Check(SimCheckArgs),
-    /// Print a commented rum.toml scenario template (e.g. `sim init > rum.toml`)
+    /// Print a commented rumoca-scenario.toml scenario template (e.g. `sim init > rumoca-scenario.toml`)
     Init,
     /// Benchmark compile, preparation, and hot simulation throughput
     Bench(sim_bench::SimBenchArgs),
@@ -485,11 +484,11 @@ enum SimSubcommand {
     clap::ArgGroup::new("sim_check_config").required(true).args(["config_positional", "config"])
 ))]
 struct SimCheckArgs {
-    /// rum.toml scenario to validate (positional form)
+    /// rumoca-scenario.toml scenario to validate (positional form)
     #[arg(value_name = "CONFIG")]
     config_positional: Option<String>,
 
-    /// rum.toml scenario to validate (flag form, same as the positional)
+    /// rumoca-scenario.toml scenario to validate (flag form, same as the positional)
     #[arg(short, long, value_name = "CONFIG")]
     config: Option<String>,
 }
@@ -873,7 +872,7 @@ fn resolve_scene_and_asset_dir(
 
 fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
     let config_path = args.config.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("rumoca sim requires MODELICA_FILE or --config <rum.toml>")
+        anyhow::anyhow!("rumoca sim requires MODELICA_FILE or --config <rumoca-scenario.toml>")
     })?;
     let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
@@ -1417,19 +1416,19 @@ fn ensure_model_file_readable(model_file: &str) -> Result<()> {
     if !path.exists() {
         bail!("model file `{model_file}` not found");
     }
-    // A rum.toml scenario fed to the model path otherwise parses as Modelica and
+    // A rumoca-scenario.toml scenario fed to the model path otherwise parses as Modelica and
     // dies on `[` with a dead-end syntax error; point at the right command
     // instead.
     if looks_like_scenario_config(path) {
         bail!(
-            "`{model_file}` looks like a rum.toml scenario, not a Modelica model; \
+            "`{model_file}` looks like a rumoca-scenario.toml scenario, not a Modelica model; \
              did you mean `rumoca sim check -c {model_file}` (or `rumoca sim -c {model_file}`)?"
         );
     }
     Ok(())
 }
 
-/// Whether `path` is a rum.toml scenario rather than a Modelica model: a `.toml`
+/// Whether `path` is a rumoca-scenario.toml scenario rather than a Modelica model: a `.toml`
 /// extension, or a first non-blank line of `[rumoca]`/`[model]`.
 fn looks_like_scenario_config(path: &Path) -> bool {
     if path.extension().is_some_and(|ext| ext == "toml") {
@@ -1888,7 +1887,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         atol: opts.atol,
     };
     let metrics = SimulationRunMetrics::default();
-    let report = rumoca_sim::report::write_html_report(
+    rumoca_sim::report::write_html_report(
         &sim,
         run.model,
         &out_path,
@@ -1896,21 +1895,6 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         &metrics,
         run.workspace_root,
     )?;
-    if let Some(workspace_root) = run.workspace_root {
-        write_last_simulation_result_for_model(
-            workspace_root,
-            run.model,
-            &report.payload,
-            Some(&report.metrics),
-        )?;
-        write_simulation_run(
-            workspace_root,
-            run.model,
-            &report.payload,
-            Some(&report.metrics),
-            Some(&report.views),
-        )?;
-    }
     // Human progress lines above went to stderr; the report path is the sole
     // stdout line so `report=$(rumoca sim model.mo)` captures just the artifact
     // path. Keep it bare/unlabeled for that reason.

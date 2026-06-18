@@ -131,14 +131,14 @@ fn cli_parses_configured_sim_command() {
         "rumoca",
         "sim",
         "--config",
-        "examples/interactive/quadrotor/rum.acro.toml",
+        "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
     ])
     .expect("parse sim --config");
     match cli.command {
         Commands::Sim(args) => {
             assert_eq!(
                 args.config.as_deref(),
-                Some("examples/interactive/quadrotor/rum.acro.toml")
+                Some("examples/interactive/quadrotor/rumoca-scenario.acro.toml")
             );
             assert!(args.command.is_none());
         }
@@ -209,7 +209,7 @@ fn cli_parses_sim_bench_command() {
         "sim",
         "bench",
         "--config",
-        "examples/interactive/quadrotor/rum.acro.toml",
+        "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
         "--iterations",
         "3",
         "--solver",
@@ -221,7 +221,7 @@ fn cli_parses_sim_bench_command() {
             Some(SimSubcommand::Bench(bench)) => {
                 assert_eq!(
                     bench.config.as_deref(),
-                    Some("examples/interactive/quadrotor/rum.acro.toml")
+                    Some("examples/interactive/quadrotor/rumoca-scenario.acro.toml")
                 );
                 assert_eq!(bench.iterations, 3);
                 assert_eq!(bench.solver, Some(sim_bench::BenchSolverMode::Bdf));

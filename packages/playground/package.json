@@ -1,0 +1,9 @@
+{
+  "name": "@cognipilot/rumoca-playground",
+  "description": "Static Rumoca playground app and browser integration smoke tests; not a JavaScript library.",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "playwright-core": "^1.55.0"
+  }
+}

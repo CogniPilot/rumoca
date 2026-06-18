@@ -1,9 +1,9 @@
-# Scenario Files (rum.toml)
+# Scenario Files (rumoca-scenario.toml)
 
 Rumoca scenarios are plain TOML files and the preferred way to run
 repeatable simulation and code generation jobs. They follow a filename
-convention — `rum.toml` for the default scenario and `rum.<profile>.toml`
-for named profiles (such as `rum.f16.toml` or `rum.bench.toml`) — and live
+convention — `rumoca-scenario.toml` for the default scenario and `rumoca-scenario.<profile>.toml`
+for named profiles (such as `rumoca-scenario.f16.toml` or `rumoca-scenario.bench.toml`) — and live
 next to the model they operate on. The filename is the editor/discovery
 hook; the required `[rumoca]` marker section is the authoritative
 declaration.
@@ -15,9 +15,9 @@ of guessing from a `.mo` file.
 ## Getting Started
 
 ```bash
-rumoca sim init > rum.toml    # commented starter template
-rumoca sim check -c rum.toml  # validate without running
-rumoca sim -c rum.toml        # run
+rumoca sim init > rumoca-scenario.toml    # commented starter template
+rumoca sim check -c rumoca-scenario.toml  # validate without running
+rumoca sim -c rumoca-scenario.toml        # run
 ```
 
 ## A Minimal Batch Scenario
@@ -43,7 +43,7 @@ x = "time"
 y = ["x", "v"]
 ```
 
-Paths are resolved relative to the `rum.toml` file.
+Paths are resolved relative to the `rumoca-scenario.toml` file.
 
 ## Section Reference
 
@@ -106,9 +106,9 @@ x = "time"
 y = ["x", "v"]
 ```
 
-### `[transport.*]` — interactive viewer and coupling
+### `[transport.*]` — external viewer and coupling
 
-HTTP and WebSocket transports serve the interactive browser viewer:
+HTTP and WebSocket transports serve an external browser viewer surface:
 
 ```toml
 [transport.websocket]
@@ -167,11 +167,14 @@ Types are `"bool"`, `"float"`, or `"array"` (with `element` and `len`).
 
 ### `[signals]`, `[input]` — input routing
 
-Map keyboard, gamepad, and viewer inputs onto model `input` variables for
-interactive runs. The worked interactive examples are the best reference:
+Map keyboard, gamepad, and browser inputs onto model `input` variables for
+input-enabled simulations. Input routing is independent from viewer panels or
+external web presentation; `[sim].mode` controls the clock and viewer/transport
+sections control where the run is shown. The worked examples are the best
+reference:
 
-- `examples/interactive/quadrotor/rum.acro.toml`
-- `examples/interactive/rover/rum.toml`
+- `examples/interactive/quadrotor/rumoca-scenario.acro.toml`
+- `examples/interactive/rover/rumoca-scenario.toml`
 
 ## Validation
 

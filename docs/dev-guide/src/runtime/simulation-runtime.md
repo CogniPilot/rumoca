@@ -15,7 +15,7 @@ in the shared runtime layer, and solver backends are thin adapters.
 | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad` | Interactive input devices |
 | `rumoca-signal-frame` | Signal payload types |
 | `rumoca-transport-udp`, `rumoca-transport-websocket` | External coupling and viewer transport |
-| `rumoca-viz-web` | Browser viewer assets |
+| `rumoca-web` | Browser viewer assets |
 
 ## Shared Responsibilities
 

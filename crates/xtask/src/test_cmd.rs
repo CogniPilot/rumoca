@@ -3,7 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::run_status;
+use crate::{docs_cmd, run_status};
 
 pub(crate) fn run_workspace_fmt_check(root: &Path) -> Result<()> {
     run_cargo(root, &["fmt", "--all", "--", "--check"])
@@ -59,19 +59,7 @@ pub(crate) fn run_workspace_clippy(root: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_workspace_docs(root: &Path) -> Result<()> {
-    let mut doc = Command::new("cargo");
-    doc.arg("doc")
-        .arg("--workspace")
-        .arg("--no-deps")
-        .arg("--exclude")
-        .arg("rumoca-bind-python")
-        .arg("--exclude")
-        .arg("rumoca-bind-wasm")
-        .env("RUSTDOCFLAGS", "-D warnings")
-        .current_dir(root);
-    run_status(doc)?;
-    run_mdbook(root, "docs/user-guide")?;
-    run_mdbook(root, "docs/dev-guide")
+    docs_cmd::check(root)
 }
 
 pub(crate) fn run_workspace_tests(root: &Path) -> Result<()> {
@@ -106,12 +94,6 @@ pub(crate) fn run_workspace_binary_build(root: &Path) -> Result<()> {
 fn run_cargo(root: &Path, args: &[&str]) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(args).current_dir(root);
-    run_status(cmd)
-}
-
-fn run_mdbook(root: &Path, book_dir: &str) -> Result<()> {
-    let mut cmd = Command::new("mdbook");
-    cmd.arg("build").arg(book_dir).current_dir(root);
     run_status(cmd)
 }
 

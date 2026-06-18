@@ -34,7 +34,6 @@ members = [
     "crates/rumoca-sim",
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
-    "crates/rumoca-viz-web",
     "crates/rumoca-phase-typecheck",
     # Compile pipeline and tools
     "crates/rumoca-compile",
@@ -93,7 +92,6 @@ rumoca-solver = { path = "crates/rumoca-solver" }
 rumoca-sim = { path = "crates/rumoca-sim", default-features = false }
 rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
-rumoca-viz-web = { path = "crates/rumoca-viz-web" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }

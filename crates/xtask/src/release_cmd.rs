@@ -87,7 +87,7 @@ fn release_paths(root: &Path) -> ReleasePaths {
     ReleasePaths {
         cargo_toml: root.join("Cargo.toml"),
         pyproject: root.join("crates/rumoca-bind-python/pyproject.toml"),
-        package_json: root.join("editors/vscode/package.json"),
+        package_json: root.join("packages/vscode/package.json"),
     }
 }
 
@@ -155,7 +155,7 @@ fn run_release_git_commit(root: &Path, version: &str) -> Result<()> {
         .arg("Cargo.toml")
         .arg("Cargo.lock")
         .arg("crates/rumoca-bind-python/pyproject.toml")
-        .arg("editors/vscode/package.json")
+        .arg("packages/vscode/package.json")
         .current_dir(root);
     crate::run_status(add)?;
 

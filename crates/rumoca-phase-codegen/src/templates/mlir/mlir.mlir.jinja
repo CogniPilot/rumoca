@@ -219,7 +219,7 @@ module @{{ name }} {
 {% endfor %}
     func.return
   }
-{% if impl_rows | length > 0 %}
+{% if impl_rows[0] is defined %}
   // eval_implicit_rhs — DAE residual: out[i] = g_i(y, p, t)  (g = 0 at solution)
   // Implements MLS B.1a in implicit residual form.
   func.func @eval_implicit_rhs(
@@ -233,7 +233,7 @@ module @{{ name }} {
     func.return
   }
 {% endif %}
-{% if jac_rows | length > 0 %}
+{% if impl_rows[0] is defined and jac_rows[0] is defined %}
   // eval_jacobian_v — forward-mode JVP of eval_implicit_rhs:
   //   out[i] = sum_j (d g_i / d y_j) * seed[j]
   // Used by implicit solvers (BDF) for Jacobian-vector products.

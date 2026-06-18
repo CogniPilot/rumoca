@@ -15,19 +15,19 @@ On the command line, pass `--source-root` (repeatable):
 ```bash
 rumoca sim my_model.mo \
   --model MyPackage.MyModel \
-  --source-root target/msl/ModelicaStandardLibrary-4.1.0/Modelica\ 4.1.0 \
+  --source-root target/msl/ModelicaStandardLibrary-4.1.0 \
   --source-root helper.mo
 ```
 
-In a `rum.toml` scenario, use the top-level `source_roots` key with paths
+In a `rumoca-scenario.toml` scenario, use the top-level `source_roots` key with paths
 relative to the scenario file:
 
 ```toml
 source_roots = ["../modelica_libraries"]
 ```
 
-In VS Code, set `rumoca.sourceRootPaths` (see
-[VS Code Extension](../tools/vscode.md)).
+For workspace-wide editor, playground, and docs examples, use
+`rumoca-workspace.toml` (see [VS Code Extension](../tools/vscode.md)).
 
 ## MODELICAPATH
 
@@ -45,9 +45,36 @@ cargo xtask repo modelica-deps ensure
 ```
 
 This downloads MSL and the CogniPilot Modelica Models (CMM) into `target/`.
-The repository's committed VS Code settings reference those directories with
-workspace-relative paths, so simulation and completion work for every
-contributor without machine-specific configuration.
+The repository's committed `examples/rumoca-workspace.toml` references those
+directories with workspace-relative paths, so simulation and completion work
+for every contributor without machine-specific configuration.
+
+## Library-Backed Scenarios
+
+The MSL and CMM-backed scenarios live with the other batch runs under
+`examples/simulation/`, but they belong conceptually here because the main
+thing they demonstrate is package/source-root resolution.
+
+### KalmanFilterStepTest
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.kalman_filter_step_test.toml
+```
+
+### PIDMSL
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.pidmsl.toml
+```
+
+### SwitchedRLC_MSL
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.switched_rlc_msl.toml
+```
+
+For a local book build, run `cargo xtask repo modelica-deps ensure` before
+building if you want these blocks to compile against the pinned libraries.
 
 ## Packages and `within`
 

@@ -44,29 +44,29 @@ Use `--source-root` for packages that are not in the same source tree:
 ```bash
 rumoca sim my_model.mo \
   --model MyPackage.MyModel \
-  --source-root target/msl/ModelicaStandardLibrary-4.1.0/Modelica\ 4.1.0
+  --source-root target/msl/ModelicaStandardLibrary-4.1.0
 ```
 
 ## Run a Scenario
 
-The preferred repeatable workflow is a colocated `rum.toml` scenario file
+The preferred repeatable workflow is a colocated `rumoca-scenario.toml` scenario file
 that records the model, solver, plots, and viewer settings in one place:
 
 ```bash
-rumoca sim -c examples/simulation/rum.ball.toml
+rumoca sim -c examples/simulation/rumoca-scenario.ball.toml
 ```
 
 Interactive examples use the same command shape:
 
 ```bash
-rumoca sim -c examples/interactive/quadrotor/rum.acro.toml
+rumoca sim -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 ```
 
 Generate a commented starter scenario and validate it without running:
 
 ```bash
-rumoca sim init > rum.toml
-rumoca sim check -c rum.toml
+rumoca sim init > rumoca-scenario.toml
+rumoca sim check -c rumoca-scenario.toml
 ```
 
 See [Scenario Files](../simulation/scenario-tomls.md) for the full format.

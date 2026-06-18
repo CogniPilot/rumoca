@@ -78,6 +78,47 @@
     border-top: 1px solid var(--table-border-color, #ccc);
 }
 
+.rumoca-live-settings {
+    border-top: 1px solid var(--table-border-color, #ccc);
+    background: var(--quote-bg, #f6f7f6);
+}
+
+.rumoca-live-settings-frame {
+    display: block;
+    width: 100%;
+    min-height: 34em;
+    border: 0;
+    background: transparent;
+}
+
+.rumoca-live-settings-raw {
+    display: grid;
+    gap: 0.35em;
+    padding: 0.8em;
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
+.rumoca-live-settings-raw textarea {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--table-border-color, #bbb);
+    border-radius: 4px;
+    padding: 0.55em 0.65em;
+    background: var(--bg, #fff);
+    color: var(--fg, #333);
+    font-family: var(--mono-font, "Source Code Pro", monospace);
+    font-size: 0.9em;
+    resize: vertical;
+}
+
+.rumoca-live-settings-actions {
+    display: flex;
+    gap: 0.5em;
+    flex-wrap: wrap;
+    padding: 0 0.8em 0.8em;
+}
+
 .rumoca-live-plot-svg {
     width: 100%;
     height: auto;
@@ -132,6 +173,97 @@
 
 .rumoca-live-radial-canvas {
     max-width: 100%;
+}
+
+.rumoca-live-surface-host {
+    width: 100%;
+    max-width: 46em;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #071825;
+}
+
+.rumoca-live-surface-host canvas {
+    display: block;
+    width: 100%;
+    touch-action: none;
+}
+
+.rumoca-live-interactive {
+    display: grid;
+    gap: 0.45em;
+}
+
+.rumoca-live-interactive-host {
+    position: relative;
+    width: 100%;
+    min-height: 28em;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #071825;
+}
+
+.rumoca-live-interactive-host:focus {
+    outline: 2px solid #2470c2;
+    outline-offset: 2px;
+}
+
+.rumoca-live-interactive-host canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+}
+
+.rumoca-interactive-flight-hud {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+}
+
+.rumoca-live-interactive-help {
+    font-size: 0.76em;
+    opacity: 0.85;
+}
+
+.rumoca-live-note {
+    border: 1px solid rgba(128, 171, 203, 0.35);
+    border-radius: 6px;
+    background: rgba(32, 48, 60, 0.35);
+    color: var(--fg);
+    padding: 0.75em 0.9em;
+    font-size: 0.9em;
+}
+
+.rumoca-interactive-controls {
+    position: absolute;
+    left: 0.6em;
+    right: 0.6em;
+    bottom: 0.6em;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4em;
+    pointer-events: auto;
+}
+
+.rumoca-interactive-controls button {
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 5px;
+    background: rgba(5, 10, 16, 0.78);
+    color: #f4f7fb;
+    font: inherit;
+    font-size: 0.76em;
+    line-height: 1;
+    min-height: 2.3em;
+    padding: 0.45em 0.65em;
+    touch-action: none;
+}
+
+.rumoca-interactive-controls.is-capturing .rumoca-interactive-capture-toggle {
+    border-color: #7fc7ff;
+    background: rgba(16, 103, 153, 0.9);
 }
 
 .rumoca-live-radial-controls {

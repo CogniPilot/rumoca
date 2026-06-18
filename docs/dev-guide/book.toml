@@ -1,5 +1,5 @@
 [book]
-title = "Rumoca Internals"
+title = "Rumoca Dev Guide"
 authors = ["Rumoca Contributors"]
 language = "en"
 src = "src"
@@ -10,6 +10,8 @@ build-dir = "book"
 [output.html]
 git-repository-url = "https://github.com/CogniPilot/rumoca"
 edit-url-template = "https://github.com/CogniPilot/rumoca/edit/main/docs/dev-guide/{path}"
+default-theme = "rust"
+preferred-dark-theme = "ayu"
 # Live Modelica example runner, shared with the user guide (single source).
 additional-js = ["live/rumoca-live.js"]
 additional-css = ["live/rumoca-live.css"]

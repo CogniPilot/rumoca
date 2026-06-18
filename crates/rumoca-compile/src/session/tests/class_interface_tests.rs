@@ -45,6 +45,24 @@ end Outer;
         vec!["Lib.Components.Gain".to_string()],
         "import candidate resolution should deduplicate explicit and wildcard matches"
     );
+    assert_eq!(
+        imports.resolve_candidates("Alias.Inner"),
+        vec![
+            "Lib.Helper.Inner".to_string(),
+            "Lib.Components.Alias.Inner".to_string(),
+        ],
+        "explicit and wildcard imports should anchor dotted paths"
+    );
+    assert_eq!(
+        imports.resolve_candidates("Gain.Inner"),
+        vec!["Lib.Components.Gain.Inner".to_string()],
+        "qualified imports should anchor the first segment of a dotted path"
+    );
+    assert_eq!(
+        imports.resolve_candidates("Continuous.PID"),
+        vec!["Lib.Components.Continuous.PID".to_string()],
+        "wildcard imports should anchor qualified references whose first segment comes from the imported package"
+    );
 
     assert_eq!(class_interface.component_type("gain"), Some("Gain"));
     assert_eq!(class_interface.component_type("helper"), Some("Alias"));
@@ -96,12 +114,12 @@ end Outer;
             "Lib.Components.Alias".to_string(),
             "Alias".to_string(),
         ],
-        "type candidates should preserve explicit import, wildcard import, and raw-name fallback order"
+        "simple type candidates should preserve imports and raw-name fallback order"
     );
     assert_eq!(
         session.class_type_resolution_candidates_query("input.mo", "Demo.Outer", "Gain"),
-        vec!["Lib.Components.Gain".to_string(), "Gain".to_string()],
-        "type candidates should include imported class names before the raw name"
+        vec!["Lib.Components.Gain".to_string(), "Gain".to_string(),],
+        "simple type candidates should include imported class names before the raw name"
     );
     assert_eq!(
         session.class_type_resolution_candidates_query("input.mo", "Demo.Outer", "Inner"),
@@ -110,7 +128,7 @@ end Outer;
             "Lib.Components.Inner".to_string(),
             "Inner".to_string(),
         ],
-        "type candidates should keep nested classes ahead of wildcard imports and the raw fallback"
+        "simple type candidates should keep nested classes ahead of wildcard imports and raw fallback"
     );
     assert_eq!(
         session.class_type_resolution_candidates_query(
@@ -118,8 +136,31 @@ end Outer;
             "Demo.Outer",
             "Lib.Components.Gain",
         ),
+        vec![
+            "Demo.Outer.Lib.Components.Gain".to_string(),
+            "Demo.Lib.Components.Gain".to_string(),
+            "Lib.Components.Gain".to_string(),
+        ],
+        "relative qualified names should use lexical scopes before top-level resolution"
+    );
+    assert_eq!(
+        session.class_type_resolution_candidates_query("input.mo", "Demo.Outer", "Continuous.PID"),
+        vec![
+            "Lib.Components.Continuous.PID".to_string(),
+            "Demo.Outer.Continuous.PID".to_string(),
+            "Demo.Continuous.PID".to_string(),
+            "Continuous.PID".to_string(),
+        ],
+        "wildcard imports should resolve the first segment of a dotted reference before suffix fallback"
+    );
+    assert_eq!(
+        session.class_type_resolution_candidates_query(
+            "input.mo",
+            "Demo.Outer",
+            ".Lib.Components.Gain",
+        ),
         vec!["Lib.Components.Gain".to_string()],
-        "qualified names should stay exact"
+        "leading-dot names should resolve as top-level absolute names"
     );
 }
 

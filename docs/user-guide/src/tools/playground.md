@@ -11,7 +11,7 @@ https://cognipilot.github.io/rumoca/
 It is useful for small models, quick experiments, sharing reproductions in
 bug reports, and demos.
 
-## Live Examples in This Book
+## Runnable Blocks in This Book
 
 The runnable code blocks throughout this book (look for the **▶ Simulate**
 button) use the same WASM package as the playground, embedded as focused

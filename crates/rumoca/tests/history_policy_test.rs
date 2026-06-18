@@ -31,6 +31,9 @@ fn collect_policy_text_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn should_skip_policy_dir(path: &Path) -> bool {
+    if path.ends_with(Path::new("docs/dev-guide/book")) {
+        return true;
+    }
     matches!(
         path.file_name().and_then(OsStr::to_str),
         Some(".git" | ".vscode-test" | "dev" | "target" | "node_modules" | "pkg" | "vendor")

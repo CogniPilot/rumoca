@@ -83,7 +83,7 @@ The HTML report `HangingMass_results.html` plots all variables.
 ## Recording the Run as a Scenario
 
 Once a model has settings worth keeping — solver, plots, output paths —
-record them in a `rum.toml` scenario next to the model:
+record them in a `rumoca-scenario.toml` scenario next to the model:
 
 ```toml
 [rumoca]
@@ -101,7 +101,7 @@ output = "hanging_mass.html"
 ```
 
 ```bash
-rumoca sim -c rum.toml
+rumoca sim -c rumoca-scenario.toml
 ```
 
 From here:
@@ -111,4 +111,4 @@ From here:
 - [Events and Discrete Behavior](../language/events.md) adds switching,
   impacts, and sampled control.
 - [Scenario Files](../simulation/scenario-tomls.md) documents everything a
-  `rum.toml` can do.
+  `rumoca-scenario.toml` can do.

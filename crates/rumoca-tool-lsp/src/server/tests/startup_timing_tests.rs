@@ -7,8 +7,8 @@ struct LoggedStartupTimingSummary {
     source_root_paths_changed: bool,
     parse_init_options_ms: u64,
     workspace_root_ms: u64,
-    reload_project_config_ms: u64,
-    project_discover_ms: u64,
+    reload_scenario_config_ms: u64,
+    scenario_discover_ms: u64,
     resolve_source_root_paths_ms: u64,
     reset_session_ms: u64,
     durable_prewarm_ms: u64,
@@ -89,11 +89,11 @@ fn initialize_writes_startup_timing_breakdown() {
             entry.source_root_paths_changed,
             "initialize should reset/prewarm when configured source-root paths change"
         );
-        assert!(entry.total_ms >= entry.reload_project_config_ms);
-        assert!(entry.reload_project_config_ms >= entry.project_discover_ms);
-        assert!(entry.reload_project_config_ms >= entry.resolve_source_root_paths_ms);
-        assert!(entry.reload_project_config_ms >= entry.reset_session_ms);
-        assert!(entry.reload_project_config_ms >= entry.durable_prewarm_ms);
+        assert!(entry.total_ms >= entry.reload_scenario_config_ms);
+        assert!(entry.reload_scenario_config_ms >= entry.scenario_discover_ms);
+        assert!(entry.reload_scenario_config_ms >= entry.resolve_source_root_paths_ms);
+        assert!(entry.reload_scenario_config_ms >= entry.reset_session_ms);
+        assert!(entry.reload_scenario_config_ms >= entry.durable_prewarm_ms);
         let durable_substeps_ms = entry.durable_collect_files_ms
             + entry.durable_hash_inputs_ms
             + entry.durable_cache_lookup_ms
@@ -103,11 +103,11 @@ fn initialize_writes_startup_timing_breakdown() {
             + entry.durable_cache_write_ms
             + entry.durable_apply_ms;
         assert!(entry.durable_prewarm_ms >= durable_substeps_ms);
-        assert!(entry.reload_project_config_ms >= entry.workspace_symbol_prewarm_ms);
+        assert!(entry.reload_scenario_config_ms >= entry.workspace_symbol_prewarm_ms);
         assert!(
             entry.parse_init_options_ms <= entry.total_ms
                 && entry.workspace_root_ms <= entry.total_ms
-                && entry.source_root_read_prewarm_spawn_ms <= entry.reload_project_config_ms,
+                && entry.source_root_read_prewarm_spawn_ms <= entry.reload_scenario_config_ms,
             "startup breakdown should stay internally consistent"
         );
     });

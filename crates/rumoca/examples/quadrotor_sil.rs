@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rumoca_sim::viz_web::THREE_JS;
+use rumoca_sim::web::three_js;
 use rumoca_sim::{SimOptions, SimStepper};
 use tungstenite::{Message, accept};
 
@@ -658,8 +658,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Prepare HTML
+    let three_js = three_js()?;
     let html = HTML_PAGE
-        .replace("__THREE_JS__", THREE_JS)
+        .replace("__THREE_JS__", &three_js)
         .replace("__WS_PORT__", &WS_PORT.to_string());
 
     // Start HTTP server

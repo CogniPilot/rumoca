@@ -3235,6 +3235,7 @@ dependencies = [
  "bincode",
  "console_error_panic_hook",
  "getrandom 0.3.4",
+ "indexmap",
  "js-sys",
  "lsp-types",
  "rumoca-compile",
@@ -3656,11 +3657,11 @@ dependencies = [
  "rumoca-solver-rk45",
  "rumoca-transport-udp",
  "rumoca-transport-websocket",
- "rumoca-viz-web",
  "serde",
  "serde_json",
  "signal-hook",
  "thiserror 2.0.17",
+ "tiny_http",
  "toml",
  "tracing",
 ]
@@ -3799,15 +3800,6 @@ dependencies = [
  "serde_json",
  "tracing",
  "tungstenite",
-]
-
-[[package]]
-name = "rumoca-viz-web"
-version = "0.9.4"
-dependencies = [
- "anyhow",
- "serde_json",
- "tiny_http",
 ]
 
 [[package]]
@@ -5529,6 +5521,7 @@ name = "xtask"
 version = "0.9.4"
 dependencies = [
  "anyhow",
+ "bincode",
  "blake3",
  "clap",
  "clap_complete",

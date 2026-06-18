@@ -33,10 +33,42 @@ The canonical top-level command groups are:
 - `cargo xtask verify quick` for the same verification surface except the long full-MSL parity gate
 - `cargo xtask verify ...` for local and CI verification gates
 - `cargo xtask vscode ...` for VS Code extension workflows
-- `cargo xtask wasm ...` for wasm editor workflows
+- `cargo xtask playground ...` for browser playground workflows
 - `cargo xtask python ...` for Python binding workflows
 - `cargo xtask coverage ...` for coverage generation, reporting, and gating
 - `cargo xtask repo ...` for hooks, completions, releases, graphs, policy helpers, and MSL reference-data maintenance
+
+## Local Prerequisites
+
+Rust-only workflows do not require Node/npm:
+
+```bash
+cargo build
+cargo check
+cargo test
+cargo xtask --help
+```
+
+Package, playground, VS Code, and browser-asset workflows do require Node/npm.
+CI uses Node 20, so local package validation should use Node 20 as well:
+
+```bash
+node --version
+npm --version
+```
+
+Commands that may install npm dependencies or run npm package builds include:
+
+```bash
+cargo xtask web build
+cargo xtask playground test
+cargo xtask vscode build
+cargo xtask vscode package --target linux-x64
+```
+
+Cargo builds must remain Rust-only. If a selected package/web command reports a
+missing `node` or `npm`, install Node 20 using your platform package manager,
+Volta, nvm, or the official Node installer, then retry that command.
 
 ## Common Commands
 
@@ -53,8 +85,9 @@ cargo xtask verify template-runtimes
 `cargo xtask verify quick` runs the same verification surface as GitHub CI except
 for the slow full-MSL parity gate. `cargo xtask verify full` includes that parity
 run. Because those commands include coverage, VS Code, and wasm gates, they
-expect the same local prerequisites that CI installs: `cargo-llvm-cov`, Node/npm,
-and the wasm Rust target/tooling. `cargo xtask verify template-runtimes` wraps
+expect the same local prerequisites that CI installs: `cargo-llvm-cov`, Node
+20/npm for package/web tasks, and the wasm Rust target/tooling.
+`cargo xtask verify template-runtimes` wraps
 Cargo-native opt-in example-template execution checks such as
 `cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
 
@@ -62,7 +95,7 @@ Editor validation:
 
 ```bash
 cargo xtask vscode test
-cargo xtask wasm test
+cargo xtask playground test
 ```
 
 Extension packaging:

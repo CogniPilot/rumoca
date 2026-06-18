@@ -10,11 +10,13 @@ include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 mod class_browser_helpers;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod gpu_api;
+mod scenario_config_api;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
 pub mod source_root_api;
-#[cfg(feature = "stepper-diffsol")]
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 mod stepper_api;
+mod workspace_config_api;
 
 use std::{
     collections::BTreeMap,
@@ -60,24 +62,28 @@ use crate::class_browser_helpers::{
 pub use crate::gpu_api::{prepare_gpu_simulation, update_gpu_parameters};
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{
-    lower_model_to_solve_json_impl, simulate_model_impl, simulate_model_with_project_sources_impl,
+    lower_model_to_solve_json_impl, model_parameter_metadata_impl,
+    model_parameter_metadata_with_source_roots_impl,
+    model_parameter_metadata_with_workspace_sources_impl, simulate_model_impl,
+    simulate_model_with_source_roots_impl, simulate_model_with_workspace_sources_impl,
 };
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots,
-    compile_check_with_source_roots_with_options, compile_with_project_sources,
-    compile_with_source_roots, compile_with_source_roots_with_options,
+    compile_check_with_source_roots_with_options, compile_with_source_roots,
+    compile_with_source_roots_with_options, compile_with_workspace_sources,
     export_parsed_source_roots_binary, get_bundled_source_root_manifest,
     get_source_root_document_count, get_source_root_statuses, load_bundled_source_root_cache,
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
-    parse_source_root_file, sync_project_sources,
+    parse_source_root_file, sync_workspace_sources,
 };
-#[cfg(feature = "stepper-diffsol")]
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::stepper_api::WasmStepper;
+pub use crate::workspace_config_api::workspace_effective_source_roots;
 
 /// Global compilation session containing both bundled source-root and user documents.
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 const WASM_BUNDLED_SOURCE_ROOT_SET_ID: &str = "wasm::bundled-source-roots";
-const WASM_PROJECT_SOURCE_SET_ID: &str = "wasm::project";
+const WASM_WORKSPACE_SOURCE_SET_ID: &str = "wasm::workspace";
 const BUNDLED_SOURCE_ROOT_MANIFEST_JSON: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/bundled_source_root_manifest.json"
@@ -528,6 +534,139 @@ pub fn get_simulation_models(source: &str, default_model: &str) -> Result<String
         error: None,
     })
     .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+}
+
+// --- Scenario (`rumoca-scenario.toml`) configuration commands --------------------------
+// These operate on the editor's in-memory workspace source map (`path ->
+// content` JSON) and mirror the LSP server's `rumoca.scenario.*` config
+// commands, sharing the implementation in `rumoca_compile::scenario`.
+
+/// Effective + preset + default simulation settings for a model, given the
+/// workspace's `rumoca-scenario.toml` files and an optional editor `fallback` settings JSON.
+#[wasm_bindgen]
+pub fn scenario_get_simulation_config(
+    workspace_sources_json: &str,
+    model: &str,
+    fallback_json: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::get_simulation_config_impl(workspace_sources_json, model, fallback_json)
+}
+
+/// Write a model's simulation preset into its colocated `rum.<model>.toml`.
+/// Returns `{ writes, result }` for the editor to apply to its workspace store.
+#[wasm_bindgen]
+pub fn scenario_set_simulation_preset(
+    workspace_sources_json: &str,
+    model: &str,
+    preset_json: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::set_simulation_preset_impl(workspace_sources_json, model, preset_json)
+}
+
+/// Clear a model's simulation preset. Returns `{ writes, result }`.
+#[wasm_bindgen]
+pub fn scenario_reset_simulation_preset(
+    workspace_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::reset_simulation_preset_impl(workspace_sources_json, model)
+}
+
+/// Configured plot/visualization views for a model (`{ views: [...] }`).
+#[wasm_bindgen]
+pub fn scenario_get_visualization_config(
+    workspace_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::get_visualization_config_impl(workspace_sources_json, model)
+}
+
+/// Write a model's plot/visualization views. Returns `{ writes, result }`.
+#[wasm_bindgen]
+pub fn scenario_set_visualization_config(
+    workspace_sources_json: &str,
+    model: &str,
+    views_json: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::set_visualization_config_impl(workspace_sources_json, model, views_json)
+}
+
+/// Configured `[codegen]` target settings for a model (`{ target, outputDir }`).
+#[wasm_bindgen]
+pub fn scenario_get_codegen_config(
+    workspace_sources_json: &str,
+    model: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::get_codegen_config_impl(workspace_sources_json, model)
+}
+
+/// Write a model's `[codegen]` target settings. Returns `{ writes, result }`.
+#[wasm_bindgen]
+pub fn scenario_set_codegen_config(
+    workspace_sources_json: &str,
+    model: &str,
+    codegen_json: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::set_codegen_config_impl(workspace_sources_json, model, codegen_json)
+}
+
+/// Scenario-local source roots configured for a model (`{ sourceRootPaths }`).
+#[wasm_bindgen]
+pub fn scenario_get_source_roots(
+    workspace_sources_json: &str,
+    model: &str,
+    task: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::get_source_roots_impl(workspace_sources_json, model, task)
+}
+
+/// Write a model's scenario-local source roots. Returns `{ writes, result }`.
+#[wasm_bindgen]
+pub fn scenario_set_source_roots(
+    workspace_sources_json: &str,
+    model: &str,
+    source_roots_json: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::set_source_roots_impl(workspace_sources_json, model, source_roots_json)
+}
+
+/// Parse a single `rumoca-scenario.toml` scenario file (by workspace path) into the editor's
+/// scenario descriptor (`task`, `model`, `viewerMode`, interactive ports, ...).
+#[wasm_bindgen]
+pub fn scenario_get_scenario_config(
+    workspace_sources_json: &str,
+    path: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::get_scenario_config_impl(workspace_sources_json, path)
+}
+
+/// Full `rumoca-scenario.toml` scenario as a JSON tree for the config GUI:
+/// `{ ok, config: <toml-as-json>, descriptor }`. The `config` tree round-trips
+/// every section (including nested interactive-IO) losslessly.
+#[wasm_bindgen]
+pub fn scenario_get_scenario_config_full(
+    workspace_sources_json: &str,
+    path: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::get_scenario_config_full_impl(workspace_sources_json, path)
+}
+
+/// Render a `rumoca-scenario.toml` from the config GUI's JSON tree. Returns
+/// `{ writes: [{path, content}], result }` for the editor to apply.
+#[wasm_bindgen]
+pub fn scenario_set_scenario_config(path: &str, config_json: &str) -> Result<String, JsValue> {
+    scenario_config_api::set_scenario_config_impl(path, config_json)
+}
+
+/// Default colocated `rumoca-scenario.<model>.toml` (`{ ok, path, content }`)
+/// for a create-config action on a Modelica model.
+#[wasm_bindgen]
+pub fn scenario_default_scenario_config(
+    workspace_sources_json: &str,
+    model: &str,
+    task: &str,
+) -> Result<String, JsValue> {
+    scenario_config_api::default_scenario_config_impl(workspace_sources_json, model, task)
 }
 
 #[derive(Default)]
@@ -1458,8 +1597,16 @@ pub fn simulate_model(
     t_end: f64,
     dt: f64,
     solver: &str,
+    parameter_overrides_json: &str,
 ) -> Result<String, JsValue> {
-    simulate_model_impl(source, model_name, t_end, dt, solver)
+    simulate_model_impl(
+        source,
+        model_name,
+        t_end,
+        dt,
+        solver,
+        parameter_overrides_json,
+    )
 }
 
 /// Compile a model and return its lowered `SolveModel` as JSON, for the lazy
@@ -1472,28 +1619,83 @@ pub fn lower_model_to_solve_json(
     model_name: &str,
     t_end: f64,
     dt: f64,
+    parameter_overrides_json: &str,
 ) -> Result<String, JsValue> {
-    lower_model_to_solve_json_impl(source, model_name, t_end, dt)
+    lower_model_to_solve_json_impl(source, model_name, t_end, dt, parameter_overrides_json)
 }
 
-/// Compile with additional project-local sources and simulate a Modelica model.
+/// Compile a model and return tunable scalar parameter metadata as JSON.
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[wasm_bindgen]
-pub fn simulate_model_with_project_sources(
+pub fn model_parameter_metadata(source: &str, model_name: &str) -> Result<String, JsValue> {
+    model_parameter_metadata_impl(source, model_name)
+}
+
+/// Compile with additional workspace-local sources and return parameter metadata.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn model_parameter_metadata_with_workspace_sources(
     source: &str,
     model_name: &str,
-    project_sources_json: &str,
+    workspace_sources_json: &str,
+) -> Result<String, JsValue> {
+    model_parameter_metadata_with_workspace_sources_impl(source, model_name, workspace_sources_json)
+}
+
+/// Compile with additional source-root libraries and return parameter metadata.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn model_parameter_metadata_with_source_roots(
+    source: &str,
+    model_name: &str,
+    source_roots_json: &str,
+) -> Result<String, JsValue> {
+    model_parameter_metadata_with_source_roots_impl(source, model_name, source_roots_json)
+}
+
+/// Compile with additional workspace-local sources and simulate a Modelica model.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn simulate_model_with_workspace_sources(
+    source: &str,
+    model_name: &str,
+    workspace_sources_json: &str,
     t_end: f64,
     dt: f64,
     solver: &str,
+    parameter_overrides_json: &str,
 ) -> Result<String, JsValue> {
-    simulate_model_with_project_sources_impl(
+    simulate_model_with_workspace_sources_impl(
         source,
         model_name,
-        project_sources_json,
+        workspace_sources_json,
         t_end,
         dt,
         solver,
+        parameter_overrides_json,
+    )
+}
+
+/// Compile with additional source-root libraries and simulate a Modelica model.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn simulate_model_with_source_roots(
+    source: &str,
+    model_name: &str,
+    source_roots_json: &str,
+    t_end: f64,
+    dt: f64,
+    solver: &str,
+    parameter_overrides_json: &str,
+) -> Result<String, JsValue> {
+    simulate_model_with_source_roots_impl(
+        source,
+        model_name,
+        source_roots_json,
+        t_end,
+        dt,
+        solver,
+        parameter_overrides_json,
     )
 }
 

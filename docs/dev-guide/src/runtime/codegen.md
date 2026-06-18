@@ -26,9 +26,15 @@ chapter for the user-facing workflow).
 its generation mode (symbolic / compiled / source-transform / packaged),
 deployment class, readiness level (0 experimental … 2 validated), and
 per-feature support columns (scalar, matmul, linsolve, sparse, dynamic
-control flow, events, forward/reverse AD). These come from the target
+control flow, affine stencils, events, forward/reverse AD). These come from the target
 manifests — keep them honest when extending a target; the table is the
 user-facing contract.
+
+Solve-level tensor nodes, including `ComputeNode::AffineStencil`, arrive at
+templates with scalar fallback behavior already proven. Stencil-aware targets
+such as `wgsl-solve` should render the native tensor node directly; scalar
+targets should use the fallback programs and must not infer stencil structure
+by scanning flattened row text.
 
 ## Template Runtime Tests
 

@@ -1,16 +1,16 @@
 use super::*;
 
 #[test]
-fn test_compile_with_project_sources_resolves_workspace_package_imports() {
+fn test_compile_with_workspace_sources_resolves_workspace_package_imports() {
     let _guard = session_test_guard();
     clear_source_root_cache();
 
-    let compiled = compile_with_project_sources(
+    let compiled = compile_with_workspace_sources(
         USES_WORKSPACE_PACKAGE_SOURCE,
         "UsesWorkspacePackage",
         &workspace_package_sources_json(),
     )
-    .expect("compile_with_project_sources should succeed");
+    .expect("compile_with_workspace_sources should succeed");
     let compiled_result: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
 
@@ -20,20 +20,20 @@ fn test_compile_with_project_sources_resolves_workspace_package_imports() {
             .and_then(|b| b.get("is_balanced"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "expected compile_with_project_sources to resolve project-local packages, got: {compiled_result:?}"
+        "expected compile_with_workspace_sources to resolve workspace-local packages, got: {compiled_result:?}"
     );
 
     clear_source_root_cache();
 }
 
 #[test]
-fn test_sync_project_sources_enables_workspace_package_completion_and_diagnostics() {
+fn test_sync_workspace_sources_enables_workspace_package_completion_and_diagnostics() {
     let _guard = session_test_guard();
     clear_source_root_cache();
-    sync_project_sources("{}").expect("empty project sync should succeed");
+    sync_workspace_sources("{}").expect("empty workspace sync should succeed");
 
-    sync_project_sources(&workspace_package_sources_json())
-        .expect("sync_project_sources should succeed");
+    sync_workspace_sources(&workspace_package_sources_json())
+        .expect("sync_workspace_sources should succeed");
 
     let import_completion_source = r#"
     model UsesWorkspaceImport
@@ -75,18 +75,21 @@ fn test_sync_project_sources_enables_workspace_package_completion_and_diagnostic
     );
 
     clear_source_root_cache();
-    sync_project_sources("{}").expect("empty project sync should succeed");
+    sync_workspace_sources("{}").expect("empty workspace sync should succeed");
 }
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_sync_project_sources_writes_workspace_semantic_summary_cache_when_cache_root_exists() {
+fn test_sync_workspace_sources_writes_workspace_semantic_summary_cache_when_cache_root_exists() {
     let _guard = session_test_guard();
     clear_source_root_cache();
     let cache_root = unique_test_cache_root();
 
-    sync_project_sources_with_cache_root_for_tests(&workspace_package_sources_json(), &cache_root)
-        .expect("sync_project_sources should succeed");
+    sync_workspace_sources_with_cache_root_for_tests(
+        &workspace_package_sources_json(),
+        &cache_root,
+    )
+    .expect("sync_workspace_sources should succeed");
 
     let summary_dir = cache_root.join("semantic-summaries");
     let entries: Vec<_> = std::fs::read_dir(&summary_dir)
@@ -99,8 +102,11 @@ fn test_sync_project_sources_writes_workspace_semantic_summary_cache_when_cache_
     );
 
     clear_source_root_cache();
-    sync_project_sources_with_cache_root_for_tests(&workspace_package_sources_json(), &cache_root)
-        .expect("second sync_project_sources should succeed");
+    sync_workspace_sources_with_cache_root_for_tests(
+        &workspace_package_sources_json(),
+        &cache_root,
+    )
+    .expect("second sync_workspace_sources should succeed");
 
     let diagnostics_json =
         lsp_diagnostics(USES_WORKSPACE_PACKAGE_SOURCE).expect("diagnostics should succeed");
@@ -120,7 +126,7 @@ fn test_sync_project_sources_writes_workspace_semantic_summary_cache_when_cache_
 }
 
 #[test]
-fn test_sync_project_sources_removes_stale_workspace_package_roots() {
+fn test_sync_workspace_sources_removes_stale_workspace_package_roots() {
     let _guard = session_test_guard();
     clear_source_root_cache();
 
@@ -131,7 +137,7 @@ fn test_sync_project_sources_removes_stale_workspace_package_roots() {
         "PkgB/B.mo": "within PkgB; model B Real y; equation der(y)=1; end B;",
     })
     .to_string();
-    sync_project_sources(&initial_sources).expect("initial project sync should succeed");
+    sync_workspace_sources(&initial_sources).expect("initial workspace sync should succeed");
 
     let source = r#"
     model UsesBoth
@@ -154,7 +160,7 @@ fn test_sync_project_sources_removes_stale_workspace_package_roots() {
         "PkgA/A.mo": "within PkgA; model A Real x; equation der(x)=1; end A;",
     })
     .to_string();
-    sync_project_sources(&trimmed_sources).expect("trimmed project sync should succeed");
+    sync_workspace_sources(&trimmed_sources).expect("trimmed workspace sync should succeed");
 
     let trimmed_diagnostics = lsp_diagnostics(source).expect("trimmed diagnostics should succeed");
     let trimmed_diagnostics: Vec<lsp_types::Diagnostic> =

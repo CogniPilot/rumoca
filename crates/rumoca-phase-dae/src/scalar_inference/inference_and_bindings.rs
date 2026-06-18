@@ -584,7 +584,7 @@ pub(crate) fn create_dae_variable(
         nominal_span: var.nominal.as_ref().and_then(Expression::span),
         unit: var.unit.clone(),
         state_select: var.state_select,
-        description: None,
+        description: var.description.clone(),
         causality: variable_causality(var, is_tunable),
         is_tunable,
         origin: rumoca_ir_dae::VariableOrigin::Source,

@@ -20,10 +20,10 @@ settings worth repeating, switch to a scenario.
 
 ## Scenario Runs
 
-A scenario is a `rum.toml` file colocated with the model it runs:
+A scenario is a `rumoca-scenario.toml` file colocated with the model it runs:
 
 ```bash
-rumoca sim -c examples/simulation/rum.ball.toml
+rumoca sim -c examples/simulation/rumoca-scenario.ball.toml
 ```
 
 The scenario records the model file and name, simulation settings, plots,
@@ -33,6 +33,49 @@ button runs the scenario instead of guessing solver and source roots from a
 bare `.mo` file.
 
 See [Scenario Files](./scenario-tomls.md) for the format.
+
+## Repository Simulation Scenarios
+
+Runnable simulation scenarios live under `examples/simulation/`. These are
+the same files opened by the playground and VS Code scenario GUI.
+
+### SympyDecay
+
+A one-state exponential decay, useful as a minimal solver and codegen smoke:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.sympy_decay.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.sympy_decay.toml
+```
+
+### Ball
+
+The bouncing ball event model from
+[Events and Discrete Behavior](../language/events.md), saved as a reusable
+scenario:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.ball.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.ball.toml
+```
+
+### SwitchedRLC
+
+A compact circuit-style example with switching behavior:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.switched_rlc.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.switched_rlc.toml
+```
 
 ## What a Run Produces
 
@@ -51,7 +94,7 @@ speed on a large model or are comparing solver settings:
 
 ```bash
 rumoca sim bench Ball.mo --model Ball
-rumoca sim bench -c rum.toml
+rumoca sim bench -c rumoca-scenario.toml
 ```
 
 ## Caching

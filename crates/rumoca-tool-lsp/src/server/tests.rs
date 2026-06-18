@@ -777,12 +777,12 @@ fn session_document_uri_key_uses_decoded_file_path() {
 }
 
 #[test]
-fn project_config_uri_detection_handles_file_paths_with_spaces() {
+fn scenario_config_uri_detection_handles_file_paths_with_spaces() {
     let path = std::env::temp_dir()
         .join("workspace with spaces")
-        .join("rum.toml");
+        .join("rumoca-scenario.toml");
     let uri = Url::from_file_path(path).expect("file uri");
-    assert!(is_project_config_uri(&uri));
+    assert!(is_scenario_config_uri(&uri));
 }
 
 #[test]

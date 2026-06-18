@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::config::{
     DeriveSpec, GamepadAxis as GamepadAxisConfig, GamepadButton as GamepadButtonConfig,
-    GamepadConfig, InputConfig, Integrator, KeyBinding, KeyDecay, KeyboardConfig, LocalDef,
+    GamepadConfig, InputConfig, Integrator, KeyBinding, KeyboardConfig, LocalDef,
 };
 use crate::device::{
     GamepadAxis, GamepadButton, KeyCode, KeyModifiers, parse_gamepad_axis, parse_gamepad_button,
@@ -214,13 +214,6 @@ pub struct CompiledKey {
 }
 
 #[derive(Debug, Clone)]
-pub struct CompiledDecay {
-    pub targets: Vec<Path>,
-    pub factor: f64,
-    pub ref_dt: f64,
-}
-
-#[derive(Debug, Clone)]
 pub enum DeriveRule {
     Linear {
         from: Path,
@@ -248,7 +241,6 @@ pub struct CompiledInput {
     pub gamepad_axes: Vec<CompiledGamepadAxis>,
     pub gamepad_integrators: Vec<CompiledIntegrator>,
     pub gamepad_buttons: Vec<CompiledGamepadButton>,
-    pub keyboard_decay: Option<CompiledDecay>,
     pub keyboard_keys: Vec<CompiledKey>,
     pub keyboard_integrators: Vec<CompiledIntegrator>,
     pub derive: Vec<CompiledDerive>,
@@ -304,9 +296,6 @@ fn compile_keyboard(
     locals: &HashMap<String, LocalDef>,
     out: &mut CompiledInput,
 ) -> Result<()> {
-    if let Some(decay) = kb.decay.as_ref() {
-        out.keyboard_decay = Some(compile_decay(decay, locals)?);
-    }
     for (name, key) in &kb.keys {
         out.keyboard_keys.push(compile_key(name, key, locals)?);
     }
@@ -471,23 +460,6 @@ fn compile_key(
         debounce_ms: key.debounce_ms.unwrap_or(0),
         precondition,
         reject_message: key.reject_message.clone(),
-    })
-}
-
-fn compile_decay(decay: &KeyDecay, locals: &HashMap<String, LocalDef>) -> Result<CompiledDecay> {
-    let targets = decay
-        .targets
-        .iter()
-        .map(|t| {
-            let path = Path::parse(t);
-            validate_local_ref(&path, locals, &format!("decay target '{}'", t))?;
-            Ok(path)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(CompiledDecay {
-        targets,
-        factor: decay.factor,
-        ref_dt: decay.ref_dt,
     })
 }
 
@@ -683,7 +655,6 @@ mod tests {
         assert_eq!(compiled.gamepad_axes.len(), 3);
         assert_eq!(compiled.gamepad_integrators.len(), 1);
         assert_eq!(compiled.gamepad_buttons.len(), 3);
-        assert!(compiled.keyboard_decay.is_some());
         assert_eq!(compiled.keyboard_keys.len(), 12);
         assert_eq!(compiled.keyboard_integrators.len(), 1);
         assert_eq!(compiled.derive.len(), 5);
@@ -728,11 +699,6 @@ deadband = 0.1
 rate = 0.7
 source = "LeftStickY"
 write = "throttle"
-
-[input.keyboard.decay]
-factor = 0.85
-ref_dt = 0.016
-targets = ["roll_cmd", "pitch_cmd", "yaw_cmd", "throttle_input"]
 
 [input.keyboard.integrators.throttle]
 clamp = [0.0, 1.0]

@@ -16,11 +16,12 @@ strict-ir-validation = [
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
-viz = ["dep:rumoca-viz-web"]
-# HTML simulation report renderer. Pure-Rust deps (viz-web + compile);
+# Browser assets are built by packages/rumoca-web and loaded at runtime.
+viz = []
+# HTML simulation report renderer. Pure-Rust deps (web + compile);
 # cross-compiles cleanly. Independent of `runner` so non-lockstep
 # CLIs can still emit HTML reports from `simulate`.
-report = ["viz", "dep:rumoca-compile"]
+report = ["dep:rumoca-compile"]
 runner = [
     "native-solvers",
     "viz",
@@ -33,6 +34,7 @@ runner = [
     "dep:rumoca-transport-websocket",
     "dep:rumoca-compile",
     "dep:signal-hook",
+    "dep:tiny_http",
     "dep:anyhow",
     "dep:toml",
 ]
@@ -60,10 +62,10 @@ rumoca-input = { workspace = true, optional = true }
 rumoca-input-keyboard = { workspace = true, optional = true }
 rumoca-transport-udp = { workspace = true, optional = true }
 rumoca-transport-websocket = { workspace = true, optional = true }
-rumoca-viz-web = { workspace = true, optional = true }
 rumoca-compile = { workspace = true, optional = true }
 signal-hook = { version = "0.3", optional = true }
 anyhow = { workspace = true, optional = true }
+tiny_http = { version = "0.12", optional = true }
 toml = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]

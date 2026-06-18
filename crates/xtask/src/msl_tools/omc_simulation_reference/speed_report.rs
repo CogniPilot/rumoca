@@ -13,8 +13,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use anyhow::Result;
-use rumoca_sim::viz_web::{UPLOT_CSS, UPLOT_JS};
+use anyhow::{Context, Result};
+use rumoca_sim::web::{uplot_css, uplot_js};
 use serde_json::json;
 
 use super::super::common::{MslPaths, round3, write_pretty_json};
@@ -72,18 +72,19 @@ pub(super) fn write_and_print_speed_comparison(
         &paths.results_dir.join("msl_speed_comparison.json"),
         &build_payload(&records, &size_curve, &state_curve),
     )?;
+    crate::web_assets::ensure_web_vendor_assets(&paths.repo_root)?;
     std::fs::write(
         paths.results_dir.join("msl_speed_scaling.html"),
-        generate_scaling_html(&records),
+        generate_scaling_html(&records)?,
     )?;
     print_speed_comparison(&records, &size_curve);
     Ok(())
 }
 
 /// Self-contained local scalability plot using the same embedded uPlot backend
-/// as `plot-compare` (`rumoca_sim::viz_web`). One scatter point per model:
+/// as `plot-compare` (`rumoca_sim::web`). One scatter point per model:
 /// x = flattened scalar equations, y = compile seconds, two series (rumoca, OMC).
-fn generate_scaling_html(records: &[ModelSpeedRecord]) -> String {
+fn generate_scaling_html(records: &[ModelSpeedRecord]) -> Result<String> {
     let mut sorted: Vec<&ModelSpeedRecord> = records.iter().collect();
     sorted.sort_by_key(|record| record.scalar_equations);
     let xs: Vec<f64> = sorted.iter().map(|r| r.scalar_equations as f64).collect();
@@ -91,6 +92,8 @@ fn generate_scaling_html(records: &[ModelSpeedRecord]) -> String {
     let omc_ys: Vec<f64> = sorted.iter().map(|r| r.omc_compile).collect();
     let data_json = serde_json::to_string(&[xs, rumoca_ys, omc_ys])
         .unwrap_or_else(|_| "[[],[],[]]".to_string());
+    let uplot_css = uplot_css().context("failed to load uPlot CSS from web package assets")?;
+    let uplot_js = uplot_js().context("failed to load uPlot JS from web package assets")?;
     let app_js = format!(
         "const data = {data_json};\n\
          const opts = {{\n\
@@ -107,15 +110,15 @@ fn generate_scaling_html(records: &[ModelSpeedRecord]) -> String {
          new uPlot(opts, data, document.getElementById('plot'));\n",
         n = records.len()
     );
-    format!(
+    Ok(format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n<title>Rumoca vs OMC compile scalability</title>\n\
-         <style>{UPLOT_CSS}</style>\n\
+         <style>{uplot_css}</style>\n\
          <style>body{{margin:0;padding:12px;background:#1e1e1e;color:#d4d4d4;font-family:monospace}}</style>\n\
          </head>\n<body>\n<div id=\"plot\"></div>\n\
-         <script>{UPLOT_JS}</script>\n<script>{app_js}</script>\n\
+         <script>{uplot_js}</script>\n<script>{app_js}</script>\n\
          </body>\n</html>"
-    )
+    ))
 }
 
 fn collect_speed_records(

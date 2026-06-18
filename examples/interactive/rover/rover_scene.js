@@ -3,33 +3,13 @@
 // Matches the dessert environment used by the quadrotor demo (sky, sun,
 // dunes, rocks, cacti) so a rover and a drone can share the same world.
 //
-// Expects these state keys from rum.toml `[signals.viewer]`:
+// Expects these state keys from rumoca-scenario.toml `[signals.viewer]`:
 //   x, y             — planar world position [m]
 //   theta            — heading [rad] (0 = +x axis)
 //   wheel_rpm        — rear-wheel angular velocity [rad/s] (rolling)
 //   front_wheel_yaw  — front steering angle [rad]
 
-// "Buggy" by Nick Slough (poly.pizza) — https://poly.pizza/m/eZ_13w7qZh7, CC-BY 3.0.
-// The GLB has 101 un-transformed nodes (geometry baked in world coords),
-// so we load it, then for each wheel node: compute its bbox centroid,
-// shift geometry so the centroid is at origin, wrap in a pivot Group at
-// the original centroid. After that, pivot.rotation.y = steering yaw and
-// wheel.rotation.z = rolling — same animation as the procedural rover.
-const JEEP_URL = "https://static.poly.pizza/8036e526-b08a-4d8c-a4b3-0214097cbc18.glb";
-const JEEP_SCALE = 0.30;  // tune to match Rover.mo physical dimensions
-// Wheel node indices, identified from the GLB by bbox analysis. The jeep
-// model's nose points at GLB -X, and the viewer frame convention puts
-// model-forward on renderer +Z at identity, so we rotate 90° about Y below
-// (Ry(π/2): GLB (x,z) → renderer (z,-x)). GLB cz=-c lands at renderer
-// X=-c, the left side (model FLU +y/left is renderer -X).
-//   Front wheels (thin, narrower track): nodes 82, 83 at cx≈-1.27
-//   Rear wheels  (fat off-road tires):   nodes 76, 77 at cx≈+0.78
-const WHEEL_NODES = {
-  frontLeft:  83,  // GLB cz=-0.58 → renderer -X (left)
-  frontRight: 82,  // GLB cz=+0.59 → renderer +X (right)
-  rearLeft:   77,  // GLB cz=-0.78 → renderer -X (left)
-  rearRight:  76,  // GLB cz=+0.75 → renderer +X (right)
-};
+// Procedural rover geometry keeps the demo self-contained and offline.
 
 ctx.onInit = async function(api) {
   const THREE = api.THREE;
@@ -137,43 +117,41 @@ ctx.onInit = async function(api) {
   s.shadow.position.y = 0.001;
   scene.add(s.shadow);
 
-  const loader = new api.GLTFLoader();
-  const gltf = await loader.loadAsync(JEEP_URL);
-  const model = gltf.scene;
-
-  // Recenter each wheel's geometry onto its hub, reparent into a pivot.
-  // Done in GLB local space (before we apply model scale/position) so bbox
-  // math is in the coordinates the vertices were authored in.
   const wheelPivots = {};
-  for (const [slot, nodeIdx] of Object.entries(WHEEL_NODES)) {
-    const node = await gltf.parser.getDependency("node", nodeIdx);
-    const box = new THREE.Box3().setFromObject(node);
-    const centroid = new THREE.Vector3();
-    box.getCenter(centroid);
+  const chassisMat = new THREE.MeshStandardMaterial({ color: 0xd85b2a, roughness: 0.58, metalness: 0.08 });
+  const deckMat = new THREE.MeshStandardMaterial({ color: 0x2a2f35, roughness: 0.65, metalness: 0.15 });
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.9, metalness: 0.02 });
+  const hubMat = new THREE.MeshStandardMaterial({ color: 0xb6b6b6, roughness: 0.35, metalness: 0.4 });
 
-    node.traverse((c) => {
-      if (c.isMesh && c.geometry) {
-        c.geometry.translate(-centroid.x, -centroid.y, -centroid.z);
-      }
-    });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.18, 1.0), chassisMat);
+  body.position.y = 0.32;
+  rover.add(body);
 
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.22, 0.34), deckMat);
+  cabin.position.set(0, 0.53, -0.08);
+  rover.add(cabin);
+
+  const bumper = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.08, 0.08), deckMat);
+  bumper.position.set(0, 0.25, 0.56);
+  rover.add(bumper);
+
+  function addWheel(slot, x, z) {
     const pivot = new THREE.Group();
-    pivot.position.copy(centroid);
-    if (node.parent) node.parent.remove(node);
-    pivot.add(node);
-    model.add(pivot);
-    wheelPivots[slot] = { pivot, wheel: node };
+    pivot.position.set(x, 0.22, z);
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 24), wheelMat);
+    wheel.rotation.z = Math.PI / 2;
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.13, 16), hubMat);
+    hub.rotation.z = Math.PI / 2;
+    pivot.add(wheel);
+    pivot.add(hub);
+    rover.add(pivot);
+    wheelPivots[slot] = { pivot, wheel };
   }
 
-  // Fit the jeep onto the rover group: the viewer's frame convention puts
-  // model-forward on renderer +Z at identity, and the GLB nose is authored
-  // on -X, so rotate 90° about Y; scale, then lift so the lowest vertex
-  // sits on y=0.
-  model.rotation.y = Math.PI / 2;
-  model.scale.setScalar(JEEP_SCALE);
-  rover.add(model);
-  const box = new THREE.Box3().setFromObject(model);
-  model.position.y -= box.min.y;
+  addWheel("frontLeft", -0.42, 0.34);
+  addWheel("frontRight", 0.42, 0.34);
+  addWheel("rearLeft", -0.42, -0.36);
+  addWheel("rearRight", 0.42, -0.36);
 
   // Trail
   s.maxTrail = 512;
