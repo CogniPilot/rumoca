@@ -1,6 +1,6 @@
-use core::result::Result;
+use core::result::Result::{self, Err};
 
-use rumoca_core::{Expression, Literal, OpBinary, OpUnary, VarName};
+use rumoca_core::{Expression, Literal, OpBinary, OpUnary, Statement, VarName};
 use rumoca_ir_dae as dae;
 
 use crate::admissibility::{GalecAdmissibleDae, fixed_sample_period_variable};
@@ -265,7 +265,7 @@ fn lower_recalibrate_block(dae: &dae::Dae) -> Result<GalecBlock, GalecLowerError
             equation
                 .lhs
                 .as_ref()
-                .is_some_and(|lhs| dependent_parameters.contains(&lhs))
+                .is_some_and(|lhs| dependent_parameters.contains(&lhs.var_name()))
         })
         .map(lower_equation_to_assignment)
         .collect::<Result<Vec<_>, _>>()?;
@@ -289,6 +289,21 @@ fn lower_equations_to_block(equations: &[dae::Equation]) -> Result<GalecBlock, G
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(GalecBlock { statements })
+}
+
+pub fn lower_statements_to_galec_block(
+    statements: &[Statement],
+) -> Result<GalecBlock, GalecLowerError> {
+    let statements = statements
+        .iter()
+        .map(lower_statement_to_galec)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(GalecBlock { statements })
+}
+
+pub fn lower_statement_to_galec(statement: &Statement) -> Result<GalecStmt, GalecLowerError> {
+    lower_stmt(statement)
 }
 
 fn lower_equation_to_assignment(equation: &dae::Equation) -> Result<GalecStmt, GalecLowerError> {
@@ -355,6 +370,21 @@ fn lower_expr(expr: &Expression) -> Result<GalecExpr, GalecLowerError> {
                 ))),
             }
         }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            let branches = branches
+                .iter()
+                .map(|(condition, value)| Ok((lower_expr(condition)?, lower_expr(value)?)))
+                .collect::<Result<Vec<_>, GalecLowerError>>()?;
+            let else_expr = Box::new(lower_expr(else_branch)?);
+            Ok(GalecExpr::If {
+                branches,
+                else_expr,
+            })
+        }
         other => Err(GalecLowerError::Unsupported(format!(
             "expression form `{}` is not supported yet",
             expression_kind(other)
@@ -396,4 +426,66 @@ fn expression_kind(expr: &Expression) -> &'static str {
 pub enum GalecLowerError {
     #[error("unsupported GALEC lowering case: {0}")]
     Unsupported(String),
+}
+
+fn lower_stmt(statement: &Statement) -> Result<GalecStmt, GalecLowerError> {
+    match statement {
+        Statement::Assignment { comp, value, .. } => Ok(GalecStmt::Assign {
+            lhs: comp.to_string(),
+            rhs: lower_expr(&value)?,
+        }),
+
+        Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            let branches = cond_blocks
+                .iter()
+                .map(|block| {
+                    let condition = lower_expr(&block.cond)?;
+                    let statements = block
+                        .stmts
+                        .iter()
+                        .map(lower_stmt)
+                        .collect::<Result<Vec<_>, GalecLowerError>>()?;
+
+                    Ok((condition, statements))
+                })
+                .collect::<Result<Vec<_>, GalecLowerError>>()?;
+
+            let else_branch = else_block
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(lower_stmt)
+                .collect::<Result<Vec<_>, GalecLowerError>>()?;
+
+            Ok(GalecStmt::If {
+                branches,
+                else_branch,
+            })
+        }
+
+        other => Err(GalecLowerError::Unsupported(format!(
+            "statement form `{}` is not supported yet",
+            statement_kind(other),
+        ))),
+    }
+}
+
+fn statement_kind(statement: &Statement) -> &'static str {
+    match statement {
+        Statement::Empty { .. } => "empty statement",
+        Statement::Assignment { .. } => "assignment",
+        Statement::Return { .. } => "return",
+        Statement::Break { .. } => "break",
+        Statement::For { .. } => "for statement",
+        Statement::While { .. } => "while statement",
+        Statement::If { .. } => "if statement",
+        Statement::When { .. } => "when statement",
+        Statement::FunctionCall { .. } => "function call",
+        Statement::Reinit { .. } => "reinit",
+        Statement::Assert { .. } => "assert",
+    }
 }

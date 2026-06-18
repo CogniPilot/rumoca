@@ -34,6 +34,18 @@ algorithm
 end FlatOnlyFixture;
 ";
 
+const GALEC_GATE_FIXTURE: &str = "\
+model GalecGateFixture
+  constant Real samplePeriod(unit = \"s\") = 0.1;
+  input Real u(start = 0.0);
+  discrete output Real y(start = 0.0);
+algorithm
+  when sample(0.0, samplePeriod) then
+    y := u;
+  end when;
+end GalecGateFixture;
+";
+
 fn fixture_file() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("EmitFixture.mo");
@@ -131,6 +143,27 @@ fn emit_ast_mo_is_well_formed_modelica() {
     assert!(
         out.contains("reinit(v, -v)") || out.contains("reinit(v,-v)"),
         "the `when` body must be rendered, got:\n{out}"
+    );
+}
+
+#[test]
+fn emit_galec_reaches_the_admissibility_gate() {
+    let (_dir, file) = named_fixture_file("GalecGateFixture", GALEC_GATE_FIXTURE);
+    let output = compile_emit(&file, "galec");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "fixture is not GALEC-admissible yet"
+    );
+    assert!(
+        stderr.contains("model is not GALEC-admissible")
+            && stderr.contains("dynamic clock constructors"),
+        "`--emit galec` should run the GALEC gate and expose its diagnostics:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("invalid value 'galec'"),
+        "clap should recognize `galec` as an emit target:\n{stderr}"
     );
 }
 

@@ -152,20 +152,33 @@ pub struct GalecBlock {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum GalecStmt {
-    Assign { lhs: String, rhs: GalecExpr },
+    Assign {
+        lhs: String,
+        rhs: GalecExpr,
+    },
+    If {
+        branches: Vec<(GalecExpr, Vec<GalecStmt>)>,
+        else_branch: Vec<GalecStmt>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum GalecExpr {
+    // primitives
     RealLiteral(f64),
     IntegerLiteral(i64),
     BooleanLiteral(bool),
+
+    // variable name
     Variable(String),
 
+    // binary arithmetic ops
     Add(Box<GalecExpr>, Box<GalecExpr>),
     Sub(Box<GalecExpr>, Box<GalecExpr>),
     Mul(Box<GalecExpr>, Box<GalecExpr>),
     Div(Box<GalecExpr>, Box<GalecExpr>),
+
+    // binary logical ops
     Eq(Box<GalecExpr>, Box<GalecExpr>),
     Neq(Box<GalecExpr>, Box<GalecExpr>),
     Lt(Box<GalecExpr>, Box<GalecExpr>),
@@ -176,4 +189,10 @@ pub enum GalecExpr {
     Or(Box<GalecExpr>, Box<GalecExpr>),
     Neg(Box<GalecExpr>),
     Not(Box<GalecExpr>),
+
+    // control flow
+    If {
+        branches: Vec<(GalecExpr, GalecExpr)>,
+        else_expr: Box<GalecExpr>,
+    },
 }

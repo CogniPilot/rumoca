@@ -12,6 +12,7 @@ rumoca-ir-dae = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }
+minijinja = { workspace = true }
 
 [lints]
 workspace = true

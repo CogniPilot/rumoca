@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, VarName};
+use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Statement, VarName};
 use rumoca_ir_dae as dae;
 
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +51,23 @@ pub fn check_galec_admissible(
     }
 
     Ok(GalecAdmissibleDae { dae, profile })
+}
+
+pub fn check_galec_statements_admissible(
+    statements: &[Statement],
+    _profile: GalecProfile,
+) -> Result<(), GalecAdmissibilityError> {
+    let mut report = GalecAdmissibilityReport::default();
+
+    for statement in statements {
+        check_supported_stmt(statement, &mut report);
+    }
+
+    if !report.violations.is_empty() {
+        return Err(GalecAdmissibilityError { report });
+    }
+
+    Ok(())
 }
 
 pub(crate) fn fixed_sample_period_variable(dae: &dae::Dae) -> Option<(&VarName, &dae::Variable)> {
@@ -440,9 +457,10 @@ fn check_recalibrate_equation(
     assigned: &mut HashSet<VarName>,
     report: &mut GalecAdmissibilityReport,
 ) {
-    let Some(lhs) = &equation.lhs else {
+    let Some(lhs_ref) = &equation.lhs else {
         return;
     };
+    let lhs = lhs_ref.var_name();
 
     if !assigned.insert(lhs.clone()) {
         push(
@@ -478,7 +496,7 @@ fn check_explicit_equation<'a>(
     method: &str,
     report: &mut GalecAdmissibilityReport,
 ) -> Option<&'a VarName> {
-    let Some(lhs) = &equation.lhs else {
+    let Some(lhs_ref) = &equation.lhs else {
         push(
             report,
             format!(
@@ -488,6 +506,7 @@ fn check_explicit_equation<'a>(
         );
         return None;
     };
+    let lhs = lhs_ref.var_name();
 
     if protected_targets.contains(lhs) {
         push(
@@ -574,6 +593,24 @@ fn check_supported_expr(expr: &Expression, report: &mut GalecAdmissibilityReport
             }
             check_supported_expr(lhs, report);
             check_supported_expr(rhs, report);
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            if branches.is_empty() {
+                push(
+                    report,
+                    "if expressions must have at least one branch for GALEC lowering".to_string(),
+                );
+            }
+
+            for (condition, value) in branches {
+                check_supported_expr(condition, report);
+                check_supported_expr(value, report);
+            }
+            check_supported_expr(else_branch, report);
         }
         Expression::BuiltinCall { function, .. } if is_source_temporal_builtin(*function) => {
             push(
@@ -858,4 +895,65 @@ fn expression_kind(expr: &Expression) -> &'static str {
 
 fn push(report: &mut GalecAdmissibilityReport, message: String) {
     report.violations.push(GalecViolation { message });
+}
+
+fn statement_kind(statement: &Statement) -> &'static str {
+    match statement {
+        Statement::Empty { .. } => "empty statement",
+        Statement::Assignment { .. } => "assignment",
+        Statement::Return { .. } => "return",
+        Statement::Break { .. } => "break",
+        Statement::For { .. } => "for statement",
+        Statement::While { .. } => "while statement",
+        Statement::If { .. } => "if statement",
+        Statement::When { .. } => "when statement",
+        Statement::FunctionCall { .. } => "function call",
+        Statement::Reinit { .. } => "reinit",
+        Statement::Assert { .. } => "assert",
+    }
+}
+
+fn check_supported_stmt(statement: &Statement, report: &mut GalecAdmissibilityReport) {
+    match statement {
+        Statement::Assignment { value, .. } => {
+            check_supported_expr(value, report);
+        }
+
+        Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            if cond_blocks.is_empty() {
+                push(
+                    report,
+                    "if statements must have at least one branch for GALEC lowering".to_string(),
+                );
+            }
+
+            for block in cond_blocks {
+                check_supported_expr(&block.cond, report);
+
+                for statement in &block.stmts {
+                    check_supported_stmt(statement, report);
+                }
+            }
+
+            if let Some(else_block) = else_block {
+                for statement in else_block {
+                    check_supported_stmt(statement, report);
+                }
+            }
+        }
+
+        other => {
+            push(
+                report,
+                format!(
+                    "statement form `{}` is not supported by the initial GALEC profile",
+                    statement_kind(other),
+                ),
+            );
+        }
+    }
 }

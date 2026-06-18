@@ -72,6 +72,7 @@ pub(crate) fn run(json: bool) -> Result<()> {
         ("flat-mo / flat-json", "flattened model"),
         ("dae-mo / dae-json", "DAE system"),
         ("solve-json", "solver IR (no Modelica form)"),
+        ("galec", "eFMI GALEC Algorithm Code"),
     ] {
         println!("  --emit {id:<22} {stage}");
     }

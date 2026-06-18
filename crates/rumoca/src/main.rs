@@ -287,7 +287,8 @@ struct CompileArgs {
     input: ModelInputArgs,
 
     /// Dump an intermediate representation: `<stage>-mo` for Modelica or
-    /// `<stage>-json` for JSON (stage = ast/flat/dae/solve). See possible values.
+    /// `<stage>-json` for JSON (stage = ast/flat/dae/solve), or `galec` for
+    /// eFMI Algorithm Code. See possible values.
     #[arg(long, value_enum, conflicts_with = "target")]
     emit: Option<EmitTarget>,
 
@@ -365,6 +366,8 @@ enum EmitTarget {
     DaeJson,
     #[value(name = "solve-json")]
     SolveJson,
+    #[value(name = "galec")]
+    Galec,
 }
 
 impl EmitTarget {
@@ -372,7 +375,7 @@ impl EmitTarget {
         match self {
             Self::AstMo | Self::AstJson => CompilePhase::Ast,
             Self::FlatMo | Self::FlatJson => CompilePhase::Flat,
-            Self::DaeMo | Self::DaeJson => CompilePhase::Dae,
+            Self::DaeMo | Self::DaeJson | Self::Galec => CompilePhase::Dae,
             Self::SolveJson => CompilePhase::Solve,
         }
     }
@@ -382,6 +385,10 @@ impl EmitTarget {
             self,
             Self::AstJson | Self::FlatJson | Self::DaeJson | Self::SolveJson
         )
+    }
+
+    fn is_galec(self) -> bool {
+        matches!(self, Self::Galec)
     }
 }
 
@@ -1003,6 +1010,10 @@ fn run_compile(args: CompileArgs) -> Result<()> {
 
     match (args.emit, args.target) {
         // IR dump of one compiler stage (--emit conflicts with --target).
+        (Some(emit), _) if emit.is_galec() => {
+            let rendered = rumoca_compile::galec::render_galec(&result.dae, &model)?;
+            write_galec_dump(&rendered, args.output)
+        }
         (Some(emit), _) => run_ir_dump(&result, &model, emit.phase(), emit.is_json(), args.output),
         // Code-gen target; --phase (clap-required to accompany --target) only
         // picks the IR a raw .jinja template receives.
@@ -1028,6 +1039,29 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn write_galec_dump(rendered: &str, output: Option<PathBuf>) -> Result<()> {
+    match output {
+        Some(path) => {
+            if path.is_dir() {
+                bail!(
+                    "output path `{}` is a directory; --emit galec must write to a file \
+                     (e.g. model.alg)",
+                    path.display()
+                );
+            }
+            std::fs::write(&path, rendered).with_context(|| format!("write {}", path.display()))?;
+            eprintln!("wrote GALEC Algorithm Code to {}", path.display());
+        }
+        None => {
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
+                println!();
+            }
+        }
+    }
+    Ok(())
 }
 
 enum EarlyIrArtifact {

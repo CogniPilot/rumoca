@@ -3301,6 +3301,7 @@ dependencies = [
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
+ "rumoca-phase-galec",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
@@ -3547,9 +3548,10 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-galec"
-version = "0.8.13"
+version = "0.9.4"
 dependencies = [
  "miette",
+ "minijinja",
  "rumoca-core",
  "rumoca-ir-dae",
  "serde",

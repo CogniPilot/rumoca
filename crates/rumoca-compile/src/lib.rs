@@ -43,6 +43,7 @@ pub mod cache;
 mod codegen_api;
 mod codegen_target;
 mod experiment;
+mod galec_api;
 mod instrumentation;
 #[cfg(test)]
 mod instrumentation_tests;
@@ -136,6 +137,11 @@ pub mod codegen {
             target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
         };
     }
+}
+
+/// GALEC admissibility, lowering, and Algorithm Code rendering.
+pub mod galec {
+    pub use crate::galec_api::{GalecPipelineError, render_galec};
 }
 
 /// Read-only DAE analysis helpers exposed through the compile facade.

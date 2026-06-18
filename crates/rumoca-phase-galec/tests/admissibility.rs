@@ -16,6 +16,13 @@ fn bool_literal(value: bool) -> Expression {
     }
 }
 
+fn string_literal(value: &str) -> Expression {
+    Expression::Literal {
+        value: Literal::String(value.to_string()),
+        span: Span::DUMMY,
+    }
+}
+
 fn var_ref(name: &str) -> Expression {
     Expression::VarRef {
         name: Reference::new(name),
@@ -170,7 +177,7 @@ fn rejects_event_partitions() {
     dae.events.event_actions.push(dae::DaeEventAction {
         condition: bool_literal(true),
         kind: dae::DaeEventActionKind::Terminate {
-            message: "stop".to_string(),
+            message: string_literal("stop"),
         },
         span: Span::DUMMY,
         origin: "test".to_string(),

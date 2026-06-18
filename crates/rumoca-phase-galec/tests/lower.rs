@@ -1,8 +1,12 @@
-use rumoca_core::{Expression, Literal, OpBinary, Reference, Span, VarName};
+use rumoca_core::{
+    Expression, Literal, OpBinary, Reference, Span, Statement, StatementBlock, VarName,
+    component_reference_from_flat_name,
+};
 use rumoca_ir_dae as dae;
 use rumoca_phase_galec::{
     GalecDeclRole, GalecExpr, GalecMethodKind, GalecProfile, GalecStmt, GalecType,
-    GalecVariableRole, check_galec_admissible, lower_to_galec, template_context,
+    GalecVariableRole, check_galec_admissible, check_galec_statements_admissible,
+    lower_statements_to_galec_block, lower_to_galec, template_context,
 };
 
 fn real_literal(value: f64) -> Expression {
@@ -39,6 +43,15 @@ fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
         op,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
+        span: Span::DUMMY,
+    }
+}
+
+fn assignment(name: &str, value: Expression) -> Statement {
+    Statement::Assignment {
+        comp: component_reference_from_flat_name(&VarName::new(name), Span::DUMMY)
+            .expect("test component reference should be valid"),
+        value,
         span: Span::DUMMY,
     }
 }
@@ -152,6 +165,59 @@ fn lower_converts_explicit_discrete_dae_update_to_step_assignment() {
                 Box::new(GalecExpr::Variable("k".to_string())),
                 Box::new(GalecExpr::Variable("u".to_string())),
             ),
+        }
+    );
+}
+
+#[test]
+fn lowers_core_statement_if_to_galec_statement_if() {
+    let statements = vec![Statement::If {
+        cond_blocks: vec![StatementBlock {
+            cond: var_ref("firstTick"),
+            stmts: vec![
+                assignment("x", real_literal(0.0)),
+                assignment("y", real_literal(1.0)),
+            ],
+        }],
+        else_block: Some(vec![
+            assignment("x", real_literal(2.0)),
+            assignment("y", real_literal(3.0)),
+        ]),
+        span: Span::DUMMY,
+    }];
+
+    check_galec_statements_admissible(&statements, GalecProfile::Efmi10)
+        .expect("statement-level if should be GALEC-admissible");
+
+    let block = lower_statements_to_galec_block(&statements)
+        .expect("statement-level if should lower to GALEC statements");
+
+    assert_eq!(
+        block.statements[0],
+        GalecStmt::If {
+            branches: vec![(
+                GalecExpr::Variable("firstTick".to_string()),
+                vec![
+                    GalecStmt::Assign {
+                        lhs: "x".to_string(),
+                        rhs: GalecExpr::RealLiteral(0.0),
+                    },
+                    GalecStmt::Assign {
+                        lhs: "y".to_string(),
+                        rhs: GalecExpr::RealLiteral(1.0),
+                    },
+                ],
+            )],
+            else_branch: vec![
+                GalecStmt::Assign {
+                    lhs: "x".to_string(),
+                    rhs: GalecExpr::RealLiteral(2.0),
+                },
+                GalecStmt::Assign {
+                    lhs: "y".to_string(),
+                    rhs: GalecExpr::RealLiteral(3.0),
+                },
+            ],
         }
     );
 }

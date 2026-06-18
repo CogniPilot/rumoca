@@ -178,7 +178,11 @@ fn test_cli_uses_facades_not_phase_crates() {
     let cargo_toml = workspace_root().join("crates/rumoca/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read CLI Cargo.toml");
 
-    for phase_dep in ["rumoca-phase-dae", "rumoca-phase-solve"] {
+    for phase_dep in [
+        "rumoca-phase-dae",
+        "rumoca-phase-galec",
+        "rumoca-phase-solve",
+    ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", phase_dep),
             "CLI production dependencies must go through rumoca-compile/rumoca-sim facades; \
