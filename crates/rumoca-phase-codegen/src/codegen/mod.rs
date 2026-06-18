@@ -21,6 +21,7 @@ use std::path::Path;
 mod render_c;
 mod render_expr;
 mod render_solve;
+mod render_solve_ops;
 mod render_stmt;
 mod solve_lazy;
 
