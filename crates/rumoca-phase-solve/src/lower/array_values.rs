@@ -237,6 +237,22 @@ fn expr_span_from_subscripts(subscripts: &[rumoca_core::Subscript]) -> rumoca_co
         .unwrap_or(rumoca_core::Span::DUMMY)
 }
 
+/// True when every subscript selects a single element (no `:` and no range),
+/// i.e. the access reduces to one scalar array element. Such selections — even
+/// with a runtime (non-constant) index like `wp[current_wp, 1]` — must use the
+/// scalar VarRef path (which lowers runtime indices to indexed loads), not the
+/// compile-time slice enumeration which would try to fold the index.
+fn subscripts_select_single_element(subscripts: &[rumoca_core::Subscript]) -> bool {
+    !subscripts.is_empty()
+        && subscripts.iter().all(|subscript| match subscript {
+            rumoca_core::Subscript::Colon { .. } => false,
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                !matches!(&**expr, rumoca_core::Expression::Range { .. })
+            }
+            _ => true,
+        })
+}
+
 fn collect_indexed_record_field_keys(
     base_key: &str,
     field: &str,
@@ -1332,6 +1348,21 @@ impl<'a> LowerBuilder<'a> {
         match self.local_shadowed_subscript_values(name, subscripts, scope, call_depth)? {
             LocalSubscriptResolution::Values(values) => return Ok(values),
             LocalSubscriptResolution::NotLocal => {}
+        }
+        // A single-element selection (no `:`/range) yields one scalar element.
+        // Route it through the scalar VarRef path, which supports runtime
+        // (non-constant) subscripts via indexed loads. The compile-time slice
+        // enumeration below only handles constant indices/ranges, so sending a
+        // runtime index like `wp[current_wp, 1]` (e.g. as a function argument)
+        // through it would fail trying to fold the index.
+        if subscripts_select_single_element(subscripts) {
+            return Ok(vec![self.lower_var_ref(
+                name,
+                subscripts,
+                expr_span_from_subscripts(subscripts),
+                scope,
+                call_depth,
+            )?]);
         }
         if let Some(values) = self.lower_indexed_reference_slice_values(
             name,
