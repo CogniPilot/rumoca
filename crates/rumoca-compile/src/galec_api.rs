@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use rumoca_ir_dae::Dae;
 use rumoca_phase_galec::{
-    GalecProfile, check_galec_admissible, lower_to_galec, render_galec as render_galec_model,
+    GalecProfile, check_galec_admissible, lower_to_galec, prepare_for_galec,
+    render_galec as render_galec_model,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -13,11 +14,15 @@ pub enum GalecPipelineError {
     Lowering(String),
     #[error("GALEC rendering failed: {0}")]
     Rendering(String),
+    #[error("GALEC preparation failed: {0}")]
+    Preparation(String),
 }
 
 /// Run the DAE -> GALEC admissibility -> GALEC IR -> Algorithm Code pipeline.
 pub fn render_galec(dae: &Dae, model_name: &str) -> Result<String, GalecPipelineError> {
-    let admissible = check_galec_admissible(dae, GalecProfile::Efmi10).map_err(|error| {
+    let prepared = prepare_for_galec(dae)
+        .map_err(|error| GalecPipelineError::Preparation(error.to_string()))?;
+    let admissible = check_galec_admissible(&prepared, GalecProfile::Efmi10).map_err(|error| {
         let mut seen = HashSet::new();
         GalecPipelineError::Admissibility {
             violations: error

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Statement, VarName};
+use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Statement, Subscript, VarName};
 use rumoca_ir_dae as dae;
 
 #[derive(Debug, Clone, Copy)]
@@ -75,15 +75,30 @@ pub(crate) fn fixed_sample_period_variable(dae: &dae::Dae) -> Option<(&VarName, 
         return None;
     };
 
-    let mut matches = dae.variables.constants.iter().filter(|(_, variable)| {
+    let period_matches = schedule.period_seconds;
+    let period_predicate = |variable: &dae::Variable| {
         variable.fixed != Some(false)
             && unit_is_seconds(variable.unit.as_deref())
             && literal_real_value(variable.start.as_ref())
-                .is_some_and(|value| floats_equal(value, schedule.period_seconds))
-    });
+                .is_some_and(|value| floats_equal(value, period_matches))
+    };
 
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
+    // Prefer a unique constant match, then fall back to a unique parameter match.
+    let mut c = dae
+        .variables
+        .constants
+        .iter()
+        .filter(|(_, v)| period_predicate(v));
+    if let (Some(first), None) = (c.next(), c.next()) {
+        return Some(first);
+    }
+    let mut p = dae
+        .variables
+        .parameters
+        .iter()
+        .filter(|(_, v)| period_predicate(v));
+    let first = p.next()?;
+    p.next().is_none().then_some(first)
 }
 
 fn check_sample_clock(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
@@ -119,7 +134,10 @@ fn check_sample_clock(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
         ),
     }
 
-    if !dae.clocks.constructor_exprs.is_empty() || !dae.clocks.triggered_conditions.is_empty() {
+    // `constructor_exprs` retains the source clock expression even after the DAE
+    // phase resolves it into a static schedule. Only `triggered_conditions`
+    // represents clocks whose ticks still depend on runtime values.
+    if !dae.clocks.triggered_conditions.is_empty() {
         push(
             report,
             "dynamic clock constructors are not supported by the initial GALEC profile".to_string(),
@@ -198,7 +216,17 @@ fn check_unsupported_partitions(dae: &dae::Dae, report: &mut GalecAdmissibilityR
 }
 
 fn check_variables(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
+    let metadata_inputs = dae
+        .variables
+        .parameters
+        .keys()
+        .chain(dae.variables.constants.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
     for variable in all_variables(dae) {
+        if !dae.algorithms.model.is_empty() && variable.name.as_str().starts_with("__pre__.") {
+            continue;
+        }
         for dim in &variable.dims {
             if *dim <= 0 {
                 push(
@@ -211,11 +239,14 @@ fn check_variables(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
             }
         }
 
-        check_literal_metadata(variable, report);
+        check_metadata_expressions(variable, &metadata_inputs, report);
         check_range_metadata(variable, report);
     }
 
     for variable in block_variables(dae) {
+        if !dae.algorithms.model.is_empty() && variable.name.as_str().starts_with("__pre__.") {
+            continue;
+        }
         if variable.start.is_none() {
             push(
                 report,
@@ -228,24 +259,61 @@ fn check_variables(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
     }
 }
 
-fn check_literal_metadata(variable: &dae::Variable, report: &mut GalecAdmissibilityReport) {
+fn check_metadata_expressions(
+    variable: &dae::Variable,
+    metadata_inputs: &HashSet<VarName>,
+    report: &mut GalecAdmissibilityReport,
+) {
     for (attribute, expr) in [
         ("start", variable.start.as_ref()),
         ("min", variable.min.as_ref()),
         ("max", variable.max.as_ref()),
         ("nominal", variable.nominal.as_ref()),
     ] {
-        if let Some(expr) = expr
-            && !matches!(expr, Expression::Literal { .. })
-        {
-            push(
-                report,
-                format!(
-                    "variable `{}` has non-literal `{attribute}` metadata; initial GALEC manifest lowering only supports literal metadata",
-                    variable.name.as_str()
-                ),
-            );
+        if let Some(expr) = expr {
+            check_supported_metadata_expr(variable, attribute, expr, metadata_inputs, report);
         }
+    }
+}
+
+fn check_supported_metadata_expr(
+    variable: &dae::Variable,
+    attribute: &str,
+    expr: &Expression,
+    metadata_inputs: &HashSet<VarName>,
+    report: &mut GalecAdmissibilityReport,
+) {
+    match expr {
+        Expression::Literal { value, .. } if !matches!(value, Literal::String(_)) => {}
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() && metadata_inputs.contains(name.var_name()) => {}
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => check_supported_metadata_expr(variable, attribute, rhs, metadata_inputs, report),
+        Expression::Binary { op, lhs, rhs, .. }
+            if matches!(
+                op,
+                OpBinary::Add | OpBinary::Sub | OpBinary::Mul | OpBinary::Div
+            ) =>
+        {
+            check_supported_metadata_expr(variable, attribute, lhs, metadata_inputs, report);
+            check_supported_metadata_expr(variable, attribute, rhs, metadata_inputs, report);
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            for element in elements {
+                check_supported_metadata_expr(variable, attribute, element, metadata_inputs, report);
+            }
+        }
+        _ => push(
+            report,
+            format!(
+                "variable `{}` has unsupported `{attribute}` metadata expression for GALEC lowering",
+                variable.name.as_str()
+            ),
+        ),
     }
 }
 
@@ -401,22 +469,29 @@ fn check_start_range_f64(
 
 fn check_equations(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
     let roles = RoleSets::new(dae);
-    let mut step_assigned = HashSet::new();
-
-    for equation in dae
-        .discrete
-        .real_updates
-        .iter()
-        .chain(dae.discrete.valued_updates.iter())
-    {
-        check_explicit_equation(
-            equation,
-            &roles.step_targets,
-            &roles.protected_targets,
-            &mut step_assigned,
-            "DoStep",
-            report,
-        );
+    if dae.algorithms.model.is_empty() {
+        let mut step_assigned = HashSet::new();
+        for equation in dae
+            .discrete
+            .real_updates
+            .iter()
+            .chain(dae.discrete.valued_updates.iter())
+        {
+            check_explicit_equation(
+                equation,
+                &roles.step_targets,
+                &roles.protected_targets,
+                &mut step_assigned,
+                "DoStep",
+                report,
+            );
+        }
+    } else {
+        for algorithm in &dae.algorithms.model {
+            for statement in &algorithm.statements {
+                check_supported_stmt(statement, report);
+            }
+        }
     }
 
     let mut startup_assigned = HashSet::new();
@@ -542,6 +617,13 @@ fn check_explicit_equation<'a>(
     Some(lhs)
 }
 
+fn check_supported_subscript(subscript: &Subscript, report: &mut GalecAdmissibilityReport) {
+    match subscript {
+        Subscript::Index { .. } | Subscript::Colon { .. } => {}
+        Subscript::Expr { expr, .. } => check_supported_expr(expr, report),
+    }
+}
+
 fn check_supported_expr(expr: &Expression, report: &mut GalecAdmissibilityReport) {
     match expr {
         Expression::Literal { value, .. } => {
@@ -553,12 +635,8 @@ fn check_supported_expr(expr: &Expression, report: &mut GalecAdmissibilityReport
             }
         }
         Expression::VarRef { subscripts, .. } => {
-            if !subscripts.is_empty() {
-                push(
-                    report,
-                    "subscripted variable references require GALEC bounds analysis before lowering"
-                        .to_string(),
-                );
+            for subscript in subscripts {
+                check_supported_subscript(subscript, report);
             }
         }
         Expression::Unary { op, rhs, .. } => {
@@ -577,6 +655,7 @@ fn check_supported_expr(expr: &Expression, report: &mut GalecAdmissibilityReport
                     | OpBinary::Sub
                     | OpBinary::Mul
                     | OpBinary::Div
+                    | OpBinary::Exp
                     | OpBinary::Eq
                     | OpBinary::Neq
                     | OpBinary::Lt
@@ -618,10 +697,30 @@ fn check_supported_expr(expr: &Expression, report: &mut GalecAdmissibilityReport
                 format!("source temporal builtin `{function:?}` cannot survive into GALEC IR"),
             );
         }
+        Expression::BuiltinCall { function, args, .. }
+            if is_galec_supported_builtin(*function) =>
+        {
+            for arg in args {
+                check_supported_expr(arg, report);
+            }
+        }
         Expression::BuiltinCall { function, .. } => push(
             report,
             format!("builtin `{function:?}` is not supported by the initial GALEC profile"),
         ),
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            for element in elements {
+                check_supported_expr(element, report);
+            }
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            check_supported_expr(base, report);
+            for subscript in subscripts {
+                check_supported_subscript(subscript, report);
+            }
+        }
         other => push(
             report,
             format!(
@@ -650,9 +749,6 @@ impl RoleSets {
             .extend(dae.variables.inputs.keys().cloned());
         roles
             .protected_targets
-            .extend(tunable_parameters(dae).cloned());
-        roles
-            .protected_targets
             .extend(dae.variables.constants.keys().cloned());
 
         roles
@@ -667,6 +763,9 @@ impl RoleSets {
         roles
             .startup_targets
             .extend(dae.variables.algebraics.keys().cloned());
+        roles
+            .startup_targets
+            .extend(tunable_parameters(dae).cloned());
         roles
             .startup_targets
             .extend(dependent_parameters(dae).cloned());
@@ -715,7 +814,9 @@ fn dependent_parameters(dae: &dae::Dae) -> impl Iterator<Item = &VarName> {
         .parameters
         .iter()
         .filter_map(|(name, variable)| {
-            (variable.causality == dae::VariableCausality::CalculatedParameter).then_some(name)
+            (variable.causality == dae::VariableCausality::CalculatedParameter
+                && (dae.algorithms.model.is_empty() || !name.as_str().starts_with("__pre__.")))
+            .then_some(name)
         })
 }
 
@@ -753,6 +854,16 @@ fn collect_var_refs(expr: &Expression, refs: &mut HashSet<VarName>) {
         Expression::Binary { lhs, rhs, .. } => {
             collect_var_refs(lhs, refs);
             collect_var_refs(rhs, refs);
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            collect_var_refs(base, refs);
+            for subscript in subscripts {
+                if let Subscript::Expr { expr, .. } = subscript {
+                    collect_var_refs(expr, refs);
+                }
+            }
         }
         Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
             for arg in args {
@@ -811,6 +922,39 @@ fn is_source_temporal_builtin(function: BuiltinFunction) -> bool {
     )
 }
 
+fn is_galec_supported_builtin(function: BuiltinFunction) -> bool {
+    matches!(
+        function,
+        BuiltinFunction::Sin
+            | BuiltinFunction::Cos
+            | BuiltinFunction::Tan
+            | BuiltinFunction::Atan
+            | BuiltinFunction::Atan2
+            | BuiltinFunction::Asin
+            | BuiltinFunction::Acos
+            | BuiltinFunction::Exp
+            | BuiltinFunction::Log
+            | BuiltinFunction::Log10
+            | BuiltinFunction::Sqrt
+            | BuiltinFunction::Abs
+            | BuiltinFunction::Min
+            | BuiltinFunction::Max
+            | BuiltinFunction::Sign
+            | BuiltinFunction::Div
+            | BuiltinFunction::Mod
+            | BuiltinFunction::Rem
+            | BuiltinFunction::Floor
+            | BuiltinFunction::Ceil
+            | BuiltinFunction::Sinh
+            | BuiltinFunction::Cosh
+            | BuiltinFunction::Tanh
+            | BuiltinFunction::NoEvent
+            | BuiltinFunction::Smooth
+            | BuiltinFunction::Homotopy
+            | BuiltinFunction::Integer
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 enum GalecLiteralValue {
     Real(f64),
@@ -832,6 +976,15 @@ fn literal_value(expr: Option<&Expression>) -> Option<GalecLiteralValue> {
             value: Literal::Boolean(_),
             ..
         } => Some(GalecLiteralValue::Boolean),
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => match literal_value(Some(rhs))? {
+            GalecLiteralValue::Real(value) => Some(GalecLiteralValue::Real(-value)),
+            GalecLiteralValue::Integer(value) => Some(GalecLiteralValue::Integer(-value)),
+            GalecLiteralValue::Boolean => None,
+        },
         _ => None,
     }
 }

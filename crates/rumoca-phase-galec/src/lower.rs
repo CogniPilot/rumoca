@@ -1,6 +1,6 @@
 use core::result::Result::{self, Err};
 
-use rumoca_core::{Expression, Literal, OpBinary, OpUnary, Statement, VarName};
+use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Statement, Subscript, VarName};
 use rumoca_ir_dae as dae;
 
 use crate::admissibility::{GalecAdmissibleDae, fixed_sample_period_variable};
@@ -8,6 +8,7 @@ use crate::ir::{
     GalecBlock, GalecDecl, GalecDeclRole, GalecExpr, GalecInterface, GalecModel, GalecSampleTime,
     GalecStmt, GalecType, GalecVariable, GalecVariableRole,
 };
+use crate::prepare::{SNAPSHOT_ORIGIN, SNAPSHOT_PREFIX};
 
 pub fn lower_to_galec(
     admissible: GalecAdmissibleDae<'_>,
@@ -85,6 +86,9 @@ fn lower_parameter_variables(
     declarations: &mut Vec<GalecDecl>,
 ) -> Result<(), GalecLowerError> {
     for variable in dae.variables.parameters.values() {
+        if !dae.algorithms.model.is_empty() && variable.name.as_str().starts_with("__pre__.") {
+            continue;
+        }
         let role = match variable.causality {
             dae::VariableCausality::CalculatedParameter => GalecVariableRole::DependentParameter,
             _ => GalecVariableRole::TunableParameter,
@@ -117,10 +121,14 @@ fn lower_discrete_real_variables(
     declarations: &mut Vec<GalecDecl>,
 ) -> Result<(), GalecLowerError> {
     for variable in dae.variables.discrete_reals.values() {
-        let role = match variable.causality {
-            dae::VariableCausality::Input => GalecVariableRole::Input,
-            dae::VariableCausality::Output => GalecVariableRole::Output,
-            _ => GalecVariableRole::State,
+        let role = if variable.name.as_str().starts_with(SNAPSHOT_PREFIX) {
+            GalecVariableRole::Local
+        } else {
+            match variable.causality {
+                dae::VariableCausality::Input => GalecVariableRole::Input,
+                dae::VariableCausality::Output => GalecVariableRole::Output,
+                _ => GalecVariableRole::State,
+            }
         };
         let galec_var = lower_variable(variable, role, GalecType::Real)?;
         place_variable(galec_var, interface, declarations);
@@ -140,7 +148,9 @@ fn lower_discrete_valued_variables(
                 variable.name.as_str()
             ))
         })?;
-        let role = if dae
+        let role = if variable.name.as_str().starts_with(SNAPSHOT_PREFIX) {
+            GalecVariableRole::Local
+        } else if dae
             .metadata
             .discrete_input_names
             .iter()
@@ -244,12 +254,32 @@ fn infer_scalar_type(variable: &dae::Variable) -> Option<GalecType> {
 }
 
 fn lower_step_block(dae: &dae::Dae) -> Result<GalecBlock, GalecLowerError> {
-    let statements = dae
+    if !dae.algorithms.model.is_empty() {
+        let statements = dae
+            .algorithms
+            .model
+            .iter()
+            .flat_map(|algorithm| algorithm.statements.iter())
+            .map(lower_statement_to_galec)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(GalecBlock { statements });
+    }
+
+    let equations = dae
         .discrete
         .real_updates
         .iter()
         .chain(dae.discrete.valued_updates.iter())
-        .map(lower_equation_to_assignment)
+        .collect::<Vec<_>>();
+    let statements = equations
+        .iter()
+        .filter(|equation| equation.origin == SNAPSHOT_ORIGIN)
+        .chain(
+            equations
+                .iter()
+                .filter(|equation| equation.origin != SNAPSHOT_ORIGIN),
+        )
+        .map(|equation| lower_equation_to_assignment(equation))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(GalecBlock { statements })
@@ -332,12 +362,23 @@ fn lower_expr(expr: &Expression) -> Result<GalecExpr, GalecLowerError> {
         Expression::VarRef {
             name, subscripts, ..
         } => {
-            if !subscripts.is_empty() {
-                return Err(GalecLowerError::Unsupported(
-                    "subscripted variable references are not supported yet".to_string(),
-                ));
+            let mut expr = GalecExpr::Variable(name.as_str().to_string());
+            for subscript in subscripts {
+                let index = match subscript {
+                    Subscript::Index { value, .. } => GalecExpr::IntegerLiteral(*value),
+                    Subscript::Colon { .. } => {
+                        return Err(GalecLowerError::Unsupported(
+                            "colon subscripts are not supported yet".to_string(),
+                        ));
+                    }
+                    Subscript::Expr { expr, .. } => lower_expr(expr)?,
+                };
+                expr = GalecExpr::BuiltinCall {
+                    function: "index".to_string(),
+                    args: vec![expr, index],
+                };
             }
-            Ok(GalecExpr::Variable(name.as_str().to_string()))
+            Ok(expr)
         }
         Expression::Unary { op, rhs, .. } => {
             let rhs = Box::new(lower_expr(rhs)?);
@@ -357,6 +398,7 @@ fn lower_expr(expr: &Expression) -> Result<GalecExpr, GalecLowerError> {
                 OpBinary::Sub => Ok(GalecExpr::Sub(lhs, rhs)),
                 OpBinary::Mul => Ok(GalecExpr::Mul(lhs, rhs)),
                 OpBinary::Div => Ok(GalecExpr::Div(lhs, rhs)),
+                OpBinary::Exp => Ok(GalecExpr::Pow(lhs, rhs)),
                 OpBinary::Eq => Ok(GalecExpr::Eq(lhs, rhs)),
                 OpBinary::Neq => Ok(GalecExpr::Neq(lhs, rhs)),
                 OpBinary::Lt => Ok(GalecExpr::Lt(lhs, rhs)),
@@ -384,6 +426,46 @@ fn lower_expr(expr: &Expression) -> Result<GalecExpr, GalecLowerError> {
                 branches,
                 else_expr,
             })
+        }
+        Expression::BuiltinCall { function, args, .. } => {
+            let fn_name = builtin_galec_name(*function);
+            let args = args
+                .iter()
+                .map(|arg| lower_expr(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(GalecExpr::BuiltinCall {
+                function: fn_name,
+                args,
+            })
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            let elements = elements
+                .iter()
+                .map(lower_expr)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(GalecExpr::Array(elements))
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base = lower_expr(base)?;
+            let mut expr = base;
+            for subscript in subscripts {
+                let index = match subscript {
+                    Subscript::Index { value, .. } => GalecExpr::IntegerLiteral(*value),
+                    Subscript::Colon { .. } => {
+                        return Err(GalecLowerError::Unsupported(
+                            "colon subscripts are not supported yet".to_string(),
+                        ));
+                    }
+                    Subscript::Expr { expr, .. } => lower_expr(expr)?,
+                };
+                expr = GalecExpr::BuiltinCall {
+                    function: "index".to_string(),
+                    args: vec![expr, index],
+                };
+            }
+            Ok(expr)
         }
         other => Err(GalecLowerError::Unsupported(format!(
             "expression form `{}` is not supported yet",
@@ -472,6 +554,40 @@ fn lower_stmt(statement: &Statement) -> Result<GalecStmt, GalecLowerError> {
             statement_kind(other),
         ))),
     }
+}
+
+fn builtin_galec_name(function: BuiltinFunction) -> String {
+    match function {
+        BuiltinFunction::Sin => "sin",
+        BuiltinFunction::Cos => "cos",
+        BuiltinFunction::Tan => "tan",
+        BuiltinFunction::Asin => "asin",
+        BuiltinFunction::Acos => "acos",
+        BuiltinFunction::Atan => "atan",
+        BuiltinFunction::Atan2 => "atan2",
+        BuiltinFunction::Sqrt => "sqrt",
+        BuiltinFunction::Exp => "exp",
+        BuiltinFunction::Log => "log",
+        BuiltinFunction::Log10 => "log10",
+        BuiltinFunction::Abs => "abs",
+        BuiltinFunction::Sign => "sign",
+        BuiltinFunction::Min => "min",
+        BuiltinFunction::Max => "max",
+        BuiltinFunction::Div => "div",
+        BuiltinFunction::Mod => "mod",
+        BuiltinFunction::Rem => "rem",
+        BuiltinFunction::Floor => "floor",
+        BuiltinFunction::Ceil => "ceil",
+        BuiltinFunction::Sinh => "sinh",
+        BuiltinFunction::Cosh => "cosh",
+        BuiltinFunction::Tanh => "tanh",
+        BuiltinFunction::Integer => "integer",
+        BuiltinFunction::NoEvent => "noEvent",
+        BuiltinFunction::Smooth => "smooth",
+        BuiltinFunction::Homotopy => "homotopy",
+        _ => "unknown_builtin",
+    }
+    .to_string()
 }
 
 fn statement_kind(statement: &Statement) -> &'static str {

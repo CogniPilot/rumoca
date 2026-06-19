@@ -177,6 +177,7 @@ pub enum GalecExpr {
     Sub(Box<GalecExpr>, Box<GalecExpr>),
     Mul(Box<GalecExpr>, Box<GalecExpr>),
     Div(Box<GalecExpr>, Box<GalecExpr>),
+    Pow(Box<GalecExpr>, Box<GalecExpr>),
 
     // binary logical ops
     Eq(Box<GalecExpr>, Box<GalecExpr>),
@@ -195,4 +196,13 @@ pub enum GalecExpr {
         branches: Vec<(GalecExpr, GalecExpr)>,
         else_expr: Box<GalecExpr>,
     },
+
+    // builtin function calls
+    BuiltinCall {
+        function: String,
+        args: Vec<GalecExpr>,
+    },
+
+    // array literal
+    Array(Vec<GalecExpr>),
 }

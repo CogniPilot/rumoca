@@ -176,7 +176,13 @@ fn render_variable_decl(variable: &GalecVariable) -> Result<String, GalecCodegen
     };
     let (ty, dims) = render_type(&variable.ty)?;
     let attrs = render_attributes(variable)?;
-    Ok(format!("{role}{ty} {}{dims}{attrs};", variable.name))
+    let start = match (&variable.start, variable.role) {
+        (Some(start), GalecVariableRole::Constant) => {
+            format!(" = {}", render_expr(start, &HashSet::new())?)
+        }
+        _ => String::new(),
+    };
+    Ok(format!("{role}{ty} {}{dims}{attrs}{start};", variable.name))
 }
 
 fn render_attributes(variable: &GalecVariable) -> Result<String, GalecCodegenError> {
@@ -287,6 +293,7 @@ fn render_expr(
         GalecExpr::Sub(lhs, rhs) => render_binary("-", lhs, rhs, block_variables),
         GalecExpr::Mul(lhs, rhs) => render_binary("*", lhs, rhs, block_variables),
         GalecExpr::Div(lhs, rhs) => render_binary("/", lhs, rhs, block_variables),
+        GalecExpr::Pow(lhs, rhs) => render_binary("^", lhs, rhs, block_variables),
         GalecExpr::Eq(lhs, rhs) => render_binary("==", lhs, rhs, block_variables),
         GalecExpr::Neq(lhs, rhs) => render_binary("<>", lhs, rhs, block_variables),
         GalecExpr::Lt(lhs, rhs) => render_binary("<", lhs, rhs, block_variables),
@@ -301,6 +308,20 @@ fn render_expr(
             branches,
             else_expr,
         } => render_if_expr(branches, else_expr, block_variables),
+        GalecExpr::BuiltinCall { function, args } => {
+            let args = args
+                .iter()
+                .map(|arg| render_expr(arg, block_variables))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("{}({})", function, args.join(", ")))
+        }
+        GalecExpr::Array(elements) => {
+            let elements = elements
+                .iter()
+                .map(|element| render_expr(element, block_variables))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("{{{}}}", elements.join(", ")))
+        }
     }
 }
 

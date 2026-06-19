@@ -27,7 +27,7 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 3;
+pub const DAE_SCHEMA_VERSION: u16 = 4;
 
 mod event_threshold;
 mod expr_query;
@@ -98,6 +98,10 @@ pub struct Dae {
     pub continuous: DaeContinuousPartition,
     pub initialization: DaeInitializationPartition,
     pub discrete: DaeDiscretePartition,
+    /// Structured algorithms retained alongside solved equation partitions.
+    /// Solver-facing consumers continue to use `discrete`; imperative
+    /// backends such as GALEC may consume this structure-preserving view.
+    pub algorithms: DaeAlgorithmPartition,
     pub conditions: DaeConditionPartition,
     pub events: DaeEventPartition,
     pub clocks: DaeClockPartition,
@@ -135,6 +139,10 @@ struct DaeWire {
     real_updates: Vec<Equation>,
     #[serde(rename = "f_m")]
     valued_updates: Vec<Equation>,
+    #[serde(default)]
+    model_algorithms: Vec<Algorithm>,
+    #[serde(default)]
+    initial_algorithms: Vec<Algorithm>,
     #[serde(rename = "f_c")]
     condition_equations: Vec<Equation>,
     #[serde(default, rename = "relation")]
@@ -164,6 +172,7 @@ impl Default for Dae {
             continuous: DaeContinuousPartition::default(),
             initialization: DaeInitializationPartition::default(),
             discrete: DaeDiscretePartition::default(),
+            algorithms: DaeAlgorithmPartition::default(),
             conditions: DaeConditionPartition::default(),
             events: DaeEventPartition::default(),
             clocks: DaeClockPartition::default(),
@@ -179,7 +188,7 @@ impl Serialize for Dae {
         S: serde::Serializer,
     {
         if !serializer.is_human_readable() {
-            let mut tuple = serializer.serialize_tuple(28)?;
+            let mut tuple = serializer.serialize_tuple(30)?;
             tuple.serialize_element(&self.schema_version)?;
             tuple.serialize_element(&self.variables.states)?;
             tuple.serialize_element(&self.variables.algebraics)?;
@@ -195,6 +204,8 @@ impl Serialize for Dae {
             tuple.serialize_element(&self.initialization.for_equations)?;
             tuple.serialize_element(&self.discrete.real_updates)?;
             tuple.serialize_element(&self.discrete.valued_updates)?;
+            tuple.serialize_element(&self.algorithms.model)?;
+            tuple.serialize_element(&self.algorithms.initial)?;
             tuple.serialize_element(&self.conditions.equations)?;
             tuple.serialize_element(&self.conditions.relations)?;
             tuple.serialize_element(&self.events.synthetic_root_conditions)?;
@@ -211,7 +222,7 @@ impl Serialize for Dae {
             return tuple.end();
         }
 
-        let mut state = serializer.serialize_struct("Dae", 28)?;
+        let mut state = serializer.serialize_struct("Dae", 30)?;
         state.serialize_field("schema_version", &self.schema_version)?;
         state.serialize_field("x", &self.variables.states)?;
         state.serialize_field("y", &self.variables.algebraics)?;
@@ -227,6 +238,8 @@ impl Serialize for Dae {
         state.serialize_field("initial_for_equations", &self.initialization.for_equations)?;
         state.serialize_field("f_z", &self.discrete.real_updates)?;
         state.serialize_field("f_m", &self.discrete.valued_updates)?;
+        state.serialize_field("model_algorithms", &self.algorithms.model)?;
+        state.serialize_field("initial_algorithms", &self.algorithms.initial)?;
         state.serialize_field("f_c", &self.conditions.equations)?;
         state.serialize_field("relation", &self.conditions.relations)?;
         state.serialize_field(
@@ -283,6 +296,10 @@ impl<'de> Deserialize<'de> for Dae {
             discrete: DaeDiscretePartition {
                 real_updates: wire.real_updates,
                 valued_updates: wire.valued_updates,
+            },
+            algorithms: DaeAlgorithmPartition {
+                model: wire.model_algorithms,
+                initial: wire.initial_algorithms,
             },
             conditions: DaeConditionPartition {
                 equations: wire.condition_equations,
@@ -455,6 +472,14 @@ pub struct DaeDiscretePartition {
     /// Extracted from when-clauses that assign to Boolean/Integer/enum variables.
     #[serde(rename = "f_m")]
     pub valued_updates: Vec<Equation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DaeAlgorithmPartition {
+    /// Runtime model algorithms with source statement/branch structure.
+    pub model: Vec<Algorithm>,
+    /// Initial algorithms with source statement/branch structure.
+    pub initial: Vec<Algorithm>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -95,6 +95,44 @@ fn admits_minimal_explicit_discrete_dae_model() {
 }
 
 #[test]
+fn admits_resolved_static_clock_constructor_metadata() {
+    let mut dae = clocked_dae();
+    dae.clocks.constructor_exprs.push(Expression::BuiltinCall {
+        function: BuiltinFunction::Sample,
+        args: vec![real_literal(0.0), var_ref("samplePeriod")],
+        span: Span::DUMMY,
+    });
+    dae.variables
+        .outputs
+        .insert(VarName::new("y"), real_var("y"));
+    dae.discrete.real_updates.push(dae::Equation::explicit(
+        VarName::new("y"),
+        real_literal(1.0),
+        Span::DUMMY,
+        "y update",
+    ));
+
+    check_galec_admissible(&dae, GalecProfile::Efmi10)
+        .expect("resolved static clock constructor metadata should be admissible");
+}
+
+#[test]
+fn rejects_runtime_triggered_clock_conditions() {
+    let mut dae = clocked_dae();
+    dae.clocks.triggered_conditions.push(var_ref("clockGate"));
+
+    let err = check_galec_admissible(&dae, GalecProfile::Efmi10)
+        .expect_err("runtime-triggered clocks should be rejected");
+
+    let messages = violation_messages(err);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("dynamic clock constructors"))
+    );
+}
+
+#[test]
 fn rejects_missing_fixed_clock() {
     let dae = dae::Dae::new();
 

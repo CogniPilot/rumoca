@@ -2,6 +2,7 @@ pub mod admissibility;
 pub mod codegen;
 pub mod ir;
 pub mod lower;
+pub mod prepare;
 
 pub use ir::{
     GalecAlgorithmPackage, GalecBlock, GalecDecl, GalecDeclRole, GalecExpr, GalecInterface,
@@ -18,3 +19,4 @@ pub use codegen::{GalecCodegenError, GalecTemplateContext, render_galec, templat
 pub use lower::{
     GalecLowerError, lower_statement_to_galec, lower_statements_to_galec_block, lower_to_galec,
 };
+pub use prepare::{GalecPrepareError, prepare_for_galec};

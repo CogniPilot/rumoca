@@ -147,23 +147,101 @@ fn emit_ast_mo_is_well_formed_modelica() {
 }
 
 #[test]
-fn emit_galec_reaches_the_admissibility_gate() {
+fn emit_galec_compiles_a_statically_sampled_model() {
     let (_dir, file) = named_fixture_file("GalecGateFixture", GALEC_GATE_FIXTURE);
     let output = compile_emit(&file, "galec");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        !output.status.success(),
-        "fixture is not GALEC-admissible yet"
+        output.status.success(),
+        "sampled fixture should emit GALEC.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("model is not GALEC-admissible")
-            && stderr.contains("dynamic clock constructors"),
-        "`--emit galec` should run the GALEC gate and expose its diagnostics:\n{stderr}"
+        stdout.contains("block GalecGateFixture")
+            && stdout.contains("method Startup")
+            && stdout.contains("method DoStep")
+            && stdout.contains("self.y := self.u;"),
+        "`--emit galec` should render the sampled assignment:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("initial(") && !stdout.contains("__pre__") && !stdout.contains("c["),
+        "solver-only temporal/condition artifacts must not leak into GALEC:\n{stdout}"
     );
     assert!(
         !stderr.contains("invalid value 'galec'"),
         "clap should recognize `galec` as an emit target:\n{stderr}"
+    );
+}
+
+#[test]
+fn emit_galec_compiles_the_discrete_pid_model() {
+    let file =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/models/EfmiDiscretePid.mo");
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(&file)
+        .arg("--model")
+        .arg("EfmiDiscretePid")
+        .arg("--emit")
+        .arg("galec")
+        .output()
+        .expect("compile discrete PID to GALEC");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "discrete PID should emit GALEC.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("self.firstTick := true;")
+            && stdout.contains("if self.firstTick then")
+            && stdout.contains("self.limiterUMin := (-self.limiterUMax);")
+            && stdout.contains("self.vMotor := (if"),
+        "PID output should contain startup, previous-value, dependent-parameter, and limiter logic:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("initial(")
+            && !stdout.contains("__pre__")
+            && !stdout.contains("galec_previous_")
+            && !stdout.contains("c["),
+        "solver-only DAE artifacts must not leak into PID GALEC:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("if self.firstTick then").count(),
+        1,
+        "the source statement branch should be emitted once rather than duplicated per equation:\n{stdout}"
+    );
+}
+
+#[test]
+fn dae_retains_pid_algorithm_structure_alongside_equations() {
+    let file =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/models/EfmiDiscretePid.mo");
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(&file)
+        .arg("--model")
+        .arg("EfmiDiscretePid")
+        .arg("--emit")
+        .arg("dae-json")
+        .output()
+        .expect("compile discrete PID to DAE JSON");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "PID DAE export failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let dae: serde_json::Value = serde_json::from_str(&stdout).expect("valid DAE JSON");
+    assert_eq!(dae["f_z"].as_array().map(Vec::len), Some(10));
+    assert_eq!(dae["f_m"].as_array().map(Vec::len), Some(1));
+    let algorithm = &dae["model_algorithms"][0];
+    let rendered = algorithm.to_string();
+    assert!(
+        rendered.contains("\"When\"") && rendered.contains("\"If\""),
+        "DAE must preserve the sampled algorithm and nested if statement: {algorithm}"
     );
 }
 

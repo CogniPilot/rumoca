@@ -404,6 +404,16 @@ impl CompilationResult {
         )?;
         Self::push_nonempty(&mut canonical, "f_z", &f_z)?;
         Self::push_nonempty(&mut canonical, "f_m", &f_m)?;
+        Self::push_nonempty(
+            &mut canonical,
+            "model_algorithms",
+            &self.dae.algorithms.model,
+        )?;
+        Self::push_nonempty(
+            &mut canonical,
+            "initial_algorithms",
+            &self.dae.algorithms.initial,
+        )?;
         Self::push_nonempty(&mut canonical, "f_c", &f_c)?;
         Self::push_nonempty(&mut canonical, "relation", &self.dae.conditions.relations)?;
         Self::push_nonempty(&mut canonical, "initial", &initial)?;

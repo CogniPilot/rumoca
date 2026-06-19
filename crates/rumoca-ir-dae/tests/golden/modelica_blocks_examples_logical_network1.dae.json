@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "x": {},
   "y": {},
   "u": {},
@@ -383,6 +383,8 @@
       "scalar_count": 1
     }
   ],
+  "model_algorithms": [],
+  "initial_algorithms": [],
   "f_c": [
     {
       "lhs": {
