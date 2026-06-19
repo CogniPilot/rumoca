@@ -139,7 +139,8 @@ pub(crate) fn normalized_discrete_update_equations(
             true,
         )?;
     }
-    let alias_equations = oriented_discrete_alias_equations(&alias_edges, &protected_lhs_names)?;
+    let alias_equations =
+        oriented_discrete_alias_equations(dae_model, &alias_edges, &protected_lhs_names)?;
     reserve_discrete_capacity(
         &mut normalized_equations,
         alias_equations.len(),
@@ -599,6 +600,7 @@ fn discrete_alias_edges(
 // components, and emits equations in deterministic order.
 #[allow(clippy::too_many_lines)]
 fn oriented_discrete_alias_equations(
+    dae_model: &dae::Dae,
     edges: &[DiscreteAliasEdge],
     protected_lhs_names: &IndexSet<rumoca_core::VarName>,
 ) -> Result<Vec<dae::Equation>, LowerError> {
@@ -664,7 +666,7 @@ fn oriented_discrete_alias_equations(
             continue;
         }
         let component = collect_alias_component(&root_candidate, &adjacency, span)?;
-        let roots = alias_component_roots(&component, protected_lhs_names, span)?;
+        let roots = alias_component_roots(dae_model, &component, protected_lhs_names, span)?;
         for root in &roots {
             if !visited.contains(root) {
                 reserve_discrete_index_set_capacity(
@@ -794,22 +796,26 @@ fn collect_alias_component(
 }
 
 fn alias_component_roots(
+    dae_model: &dae::Dae,
     component: &[rumoca_core::VarName],
     protected_lhs_names: &IndexSet<rumoca_core::VarName>,
     span: rumoca_core::Span,
 ) -> Result<Vec<rumoca_core::VarName>, LowerError> {
-    let mut protected = discrete_vec_with_capacity(
+    // Inputs are read-only sources: force them to be roots so alias edges always
+    // orient *away* from them (`state := input`), never toward them. Protected
+    // names (non-alias update targets) are likewise forced roots.
+    let mut forced = discrete_vec_with_capacity(
         component.len(),
-        "alias component protected root count",
+        "alias component forced root count",
         span,
     )?;
     for name in component {
-        if protected_lhs_names.contains(name) {
-            protected.push(name.clone());
+        if protected_lhs_names.contains(name) || is_discrete_input_name(dae_model, name) {
+            forced.push(name.clone());
         }
     }
-    if !protected.is_empty() {
-        return Ok(protected);
+    if !forced.is_empty() {
+        return Ok(forced);
     }
     let mut roots = discrete_vec_with_capacity(1, "alias component root count", span)?;
     if let Some(name) = component.first() {
@@ -999,6 +1005,20 @@ fn should_reorient_discrete_alias(
 ) -> Result<bool, LowerError> {
     let lhs_names = discrete_update_lhs_names(dae_model, lhs, scalar_count, span)?;
     let target_names = discrete_update_lhs_names(dae_model, alias_target, scalar_count, span)?;
+
+    // Inputs are read-only: never reorient an alias so an input becomes the write
+    // target, and always reorient away from one if the current target is an input.
+    let lhs_is_input = lhs_names.iter().any(|n| is_discrete_input_name(dae_model, n));
+    let target_is_input = target_names
+        .iter()
+        .any(|n| is_discrete_input_name(dae_model, n));
+    if target_is_input {
+        return Ok(false);
+    }
+    if lhs_is_input {
+        return Ok(true);
+    }
+
     let lhs_protected = any_name_in_set(&lhs_names, protected_lhs_names);
     let target_protected = any_name_in_set(&target_names, protected_lhs_names);
     if lhs_protected != target_protected {
@@ -1425,6 +1445,20 @@ fn is_discrete_update_name(dae_model: &dae::Dae, name: &rumoca_core::VarName) ->
             dae_model.variables.discrete_reals.contains_key(&base)
                 || dae_model.variables.discrete_valued.contains_key(&base)
                 || dae_model.variables.inputs.contains_key(&base)
+        })
+}
+
+/// An input variable is known externally each tick and is read-only inside the
+/// model: it can be an alias *endpoint* (the read side of `state := input`) but
+/// must never be selected as an update target. Orienting an alias edge so an
+/// input is written would clobber the caller's per-tick input every step.
+fn is_discrete_input_name(dae_model: &dae::Dae, name: &rumoca_core::VarName) -> bool {
+    dae_model.variables.inputs.contains_key(name)
+        || dae::component_base_name(name.as_str()).is_some_and(|base| {
+            dae_model
+                .variables
+                .inputs
+                .contains_key(&rumoca_core::VarName::new(base))
         })
 }
 
