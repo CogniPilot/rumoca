@@ -30,6 +30,8 @@ get slow.
 
 Skybox, PBR textures, and glb models are served from the shared
 [`examples/assets/`](../../assets) root (`[transport.http].asset_dir = "../../assets"`).
+Model asset licenses and attributions are recorded in
+[`../../assets/models/README.md`](../../assets/models/README.md).
 
 ## Running
 

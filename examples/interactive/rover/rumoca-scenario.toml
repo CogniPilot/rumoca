@@ -13,6 +13,14 @@ write = "steering"
 source = "LeftStickY"
 write = "throttle"
 
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = [
+    "throttle",
+    "steering",
+]
+
 [input.keyboard.keys.ArrowDown]
 action = "set"
 target = "throttle"
@@ -84,6 +92,7 @@ mode = "realtime"
 solver = "rk-like"
 
 [transport.http]
+asset_dir = "../../assets"
 port = 8080
 scene = "rover_scene.js"
 
@@ -122,6 +131,10 @@ action = "Reset"
 [[viewer.controls.keyboard]]
 keys = "T"
 action = "Realtime"
+
+[[viewer.controls.keyboard]]
+keys = "F"
+action = "Fullscreen"
 
 [[viewer.controls.keyboard]]
 keys = "C"

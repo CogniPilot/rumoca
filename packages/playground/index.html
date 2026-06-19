@@ -328,8 +328,7 @@
             .project-panel select,
             .sidebar-context-item,
             .titlebar-action,
-            .toolbar-icon,
-            .rumoca-interactive-controls button {
+            .toolbar-icon {
                 min-height: 42px;
                 font-size: 16px;
             }
@@ -1144,43 +1143,6 @@
             color: var(--app-muted);
             font-size: 12px;
         }
-        .rumoca-interactive-controls {
-            position: absolute;
-            left: 12px;
-            right: 12px;
-            bottom: 12px;
-            z-index: 5;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            align-items: center;
-            pointer-events: auto;
-        }
-        .rumoca-interactive-controls button,
-        .rumoca-interactive-controls .rumoca-interactive-key-echo {
-            min-height: 28px;
-            padding: 4px 9px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 6px;
-            background: rgba(10, 14, 18, 0.82);
-            color: #f4f7fb;
-            font: inherit;
-            font-size: 12px;
-            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
-        }
-        .rumoca-interactive-controls button {
-            cursor: pointer;
-        }
-        .rumoca-interactive-controls.is-capturing .rumoca-interactive-capture-toggle {
-            border-color: #37b7ff;
-            background: rgba(0, 103, 168, 0.88);
-        }
-        .rumoca-interactive-flight-hud {
-            position: absolute;
-            inset: 0;
-            z-index: 4;
-            pointer-events: none;
-        }
         .asset-glb-body {
             display: grid;
             grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
@@ -1233,12 +1195,35 @@
             color: var(--app-muted);
             text-transform: uppercase;
         }
+        .asset-glb-controls {
+            display: grid;
+            gap: 7px;
+            justify-items: end;
+            min-width: 132px;
+        }
         .asset-glb-toggle {
             display: inline-flex;
             align-items: center;
             gap: 6px;
             color: var(--app-muted);
             font-size: 12px;
+        }
+        .asset-glb-opacity {
+            display: grid;
+            grid-template-columns: auto minmax(72px, 1fr) 34px;
+            gap: 6px;
+            align-items: center;
+            width: 100%;
+            color: var(--app-muted);
+            font-size: 12px;
+        }
+        .asset-glb-opacity input {
+            width: 100%;
+        }
+        .asset-glb-opacity output {
+            color: var(--app-text);
+            font-variant-numeric: tabular-nums;
+            text-align: right;
         }
         .asset-glb-tree {
             min-height: 0;

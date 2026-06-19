@@ -87,6 +87,94 @@
             .join('/');
     }
 
+    function normalizeWorkspacePath(raw) {
+        const trimmed = String(raw || '')
+            .replace(/\\/g, '/')
+            .replace(/^\/+/, '')
+            .replace(/\/+/g, '/')
+            .trim();
+        if (!trimmed || trimmed === '.') {
+            return '';
+        }
+        return trimmed
+            .split('/')
+            .filter((part) => part && part !== '.')
+            .join('/');
+    }
+
+    function normalizeWorkspaceSourceRootPath(raw) {
+        const parts = [];
+        for (const part of normalizeWorkspacePath(raw).split('/')) {
+            if (!part) {
+                continue;
+            }
+            if (part === '..') {
+                parts.pop();
+            } else {
+                parts.push(part);
+            }
+        }
+        return parts.join('/');
+    }
+
+    function isInsideWorkspaceSourceRoot(filePath, sourceRootPath) {
+        return filePath === sourceRootPath || filePath.startsWith(`${sourceRootPath}/`);
+    }
+
+    function workspaceModelicaSourceMap(entries, options = {}) {
+        const excludedPath = normalizeWorkspacePath(options.excludePath);
+        const excludedRoots = normalizeStringArray(options.excludeSourceRootPaths)
+            .map(normalizeWorkspaceSourceRootPath)
+            .filter(Boolean);
+        const sources = {};
+        for (const entry of Array.isArray(entries) ? entries : []) {
+            const path = normalizeWorkspacePath(entry && entry.path);
+            if (!path || path === excludedPath || !path.endsWith('.mo')) {
+                continue;
+            }
+            if (entry && entry.sourceKind === 'packageArchive') {
+                continue;
+            }
+            if (typeof (entry && entry.content) !== 'string') {
+                continue;
+            }
+            const sourceRootPath = normalizeWorkspaceSourceRootPath(path);
+            if (excludedRoots.some((root) => isInsideWorkspaceSourceRoot(sourceRootPath, root))) {
+                continue;
+            }
+            sources[path] = entry.content;
+        }
+        return sources;
+    }
+
+    function workspaceModelicaSourcesJson(entries, options = {}) {
+        return JSON.stringify(workspaceModelicaSourceMap(entries, options));
+    }
+
+    function workspaceSourceRootSourceMap(entries, sourceRootPaths = []) {
+        const roots = normalizeStringArray(sourceRootPaths)
+            .map(normalizeWorkspaceSourceRootPath)
+            .filter(Boolean);
+        if (roots.length === 0) {
+            return {};
+        }
+        const sources = {};
+        for (const entry of Array.isArray(entries) ? entries : []) {
+            const path = normalizeWorkspaceSourceRootPath(entry && entry.path);
+            if (!path || !path.endsWith('.mo') || typeof (entry && entry.content) !== 'string') {
+                continue;
+            }
+            if (roots.some((root) => isInsideWorkspaceSourceRoot(path, root))) {
+                sources[path] = entry.content;
+            }
+        }
+        return sources;
+    }
+
+    function workspaceSourceRootSourcesJson(entries, sourceRootPaths = []) {
+        return JSON.stringify(workspaceSourceRootSourceMap(entries, sourceRootPaths));
+    }
+
     function nextSimulationRunLocation(model, pathExists, resultDirectory = '') {
         const date = new Date();
         const timestamp = resultTimestamp(date);
@@ -1623,6 +1711,7 @@ ctx.onFrame = (api) => {
             mode: trimMaybeString(input.mode),
             enabled: Boolean(trimMaybeString(input.mode)
                 || sortedObjectEntries(config && config.locals).length
+                || (keyboard.decay && typeof keyboard.decay === 'object')
                 || sortedObjectEntries(keyboard.keys).length
                 || sortedObjectEntries(keyboard.integrators).length
                 || sortedObjectEntries(gamepad.axes).length
@@ -1644,6 +1733,11 @@ ctx.onFrame = (api) => {
                 debounceMs: binding && binding.debounce_ms !== undefined ? String(binding.debounce_ms) : '',
                 precondition: trimMaybeString(binding && binding.precondition),
             })),
+            keyboardDecay: keyboard.decay && typeof keyboard.decay === 'object' ? {
+                factor: keyboard.decay.factor,
+                ref_dt: keyboard.decay.ref_dt ?? keyboard.decay.refDt,
+                targets: normalizeStringArray(keyboard.decay.targets),
+            } : null,
             keyboardIntegrators: sortedObjectEntries(keyboard.integrators).map(([name, integrator]) => scenarioInputIntegrator(name, integrator)),
             gamepadAxes: sortedObjectEntries(gamepad.axes).map(([name, axis]) => ({
                 name,
@@ -2184,6 +2278,11 @@ ctx.onFrame = (api) => {
     body[data-theme="midnight"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #d6dee8; --vscode-editor-background: #0f1419; --vscode-sideBar-background: #151e27; --vscode-panel-border: #263341; --vscode-input-background: #18222d; --vscode-input-foreground: #d6dee8; --vscode-input-border: #334155; --vscode-descriptionForeground: #8b9aac; --vscode-button-background: #0891b2; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #73c991; --vscode-errorForeground: #ff8a8a; --muted: #8b9aac; --ok: #73c991; --error: #ff8a8a; }
     body[data-theme="graphite"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #e4e4e7; --vscode-editor-background: #161616; --vscode-sideBar-background: #232326; --vscode-panel-border: #37373d; --vscode-input-background: #2b2b30; --vscode-input-foreground: #e4e4e7; --vscode-input-border: #45454d; --vscode-descriptionForeground: #a1a1aa; --vscode-button-background: #0284c7; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #73c991; --vscode-errorForeground: #fca5a5; --muted: #a1a1aa; --ok: #73c991; --error: #fca5a5; }
     body[data-theme="paper"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #1f2937; --vscode-editor-background: #fbfaf7; --vscode-sideBar-background: #f3f0ea; --vscode-panel-border: #d2cbc0; --vscode-input-background: #ffffff; --vscode-input-foreground: #1f2937; --vscode-input-border: #c8c1b6; --vscode-descriptionForeground: #697386; --vscode-button-background: #0369a1; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #047857; --vscode-errorForeground: #b91c1c; --muted: #697386; --ok: #047857; --error: #b91c1c; }
+    body[data-theme="navy"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #d6dee8; --vscode-editor-background: #0f1419; --vscode-sideBar-background: #151e27; --vscode-panel-border: #263341; --vscode-input-background: #1a2530; --vscode-input-foreground: #d6dee8; --vscode-input-border: #263341; --vscode-descriptionForeground: #8b9aac; --vscode-button-background: #0891b2; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #73c991; --vscode-errorForeground: #ff8a8a; --muted: #8b9aac; --ok: #73c991; --error: #ff8a8a; }
+    body[data-theme="coal"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #e4e4e7; --vscode-editor-background: #161616; --vscode-sideBar-background: #232326; --vscode-panel-border: #37373d; --vscode-input-background: #2b2b30; --vscode-input-foreground: #e4e4e7; --vscode-input-border: #37373d; --vscode-descriptionForeground: #a1a1aa; --vscode-button-background: #0284c7; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #73c991; --vscode-errorForeground: #fca5a5; --muted: #a1a1aa; --ok: #73c991; --error: #fca5a5; }
+    body[data-theme="light"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #0f172a; --vscode-editor-background: #f8fafc; --vscode-sideBar-background: #f1f5f9; --vscode-panel-border: #cbd5e1; --vscode-input-background: #ffffff; --vscode-input-foreground: #0f172a; --vscode-input-border: #cbd5e1; --vscode-descriptionForeground: #475569; --vscode-button-background: #0d9488; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #047857; --vscode-errorForeground: #b91c1c; --muted: #475569; --ok: #047857; --error: #b91c1c; }
+    body[data-theme="rust"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #2f211b; --vscode-editor-background: #fff8f2; --vscode-sideBar-background: #f5eadf; --vscode-panel-border: #d6bda8; --vscode-input-background: #fffaf5; --vscode-input-foreground: #2f211b; --vscode-input-border: #d6bda8; --vscode-descriptionForeground: #6f574b; --vscode-button-background: #c05220; --vscode-button-foreground: #ffffff; --vscode-button-border: transparent; --vscode-testing-iconPassed: #047857; --vscode-errorForeground: #a52727; --muted: #6f574b; --ok: #047857; --error: #a52727; }
+    body[data-theme="ayu"] { --vscode-font-family: Inter, ui-sans-serif, system-ui, sans-serif; --vscode-foreground: #d9e0ee; --vscode-editor-background: #0f1419; --vscode-sideBar-background: #1b2430; --vscode-panel-border: #2d3f55; --vscode-input-background: #223043; --vscode-input-foreground: #d9e0ee; --vscode-input-border: #2d3f55; --vscode-descriptionForeground: #8fa0b5; --vscode-button-background: #ffb454; --vscode-button-foreground: #2f2616; --vscode-button-border: transparent; --vscode-testing-iconPassed: #73c991; --vscode-errorForeground: #ff8f8f; --muted: #8fa0b5; --ok: #73c991; --error: #ff8f8f; }
     html, body { height: 100%; }
     body { margin: 0; font-family: var(--vscode-font-family, system-ui, sans-serif); color: var(--vscode-foreground, #d4d4d4); background: var(--vscode-editor-background, #1e1e1e); }
     .page { padding: var(--pad); display: grid; gap: 12px; }
@@ -2898,8 +2997,10 @@ ctx.onFrame = (api) => {
       const gamepadAxes = collectGamepadAxes();
       const gamepadIntegrators = collectIntegrators('[data-gamepad-integrator-row]', 'Gamepad integrator');
       const gamepadButtons = collectGamepadButtons();
+      const keyboardDecay = initialState.inputMappings && initialState.inputMappings.keyboardDecay;
       const input = { mode: String(document.querySelector('[data-input-mode]')?.value || 'auto') };
-      if (keyboardKeys || keyboardIntegrators) input.keyboard = {
+      if (keyboardKeys || keyboardIntegrators || keyboardDecay) input.keyboard = {
+        ...(keyboardDecay ? { decay: keyboardDecay } : {}),
         ...(keyboardKeys ? { keys: keyboardKeys } : {}),
         ...(keyboardIntegrators ? { integrators: keyboardIntegrators } : {}),
       };
@@ -3164,6 +3265,10 @@ const VisualizationShared = {
         removeVisualizationScriptFilesForViews,
         sanitizeResultsPathSegment,
         simulationRunDocumentPath,
+        workspaceModelicaSourceMap,
+        workspaceModelicaSourcesJson,
+        workspaceSourceRootSourceMap,
+        workspaceSourceRootSourcesJson,
         writePersistedSimulationRunDocument,
     };
 
@@ -3205,6 +3310,10 @@ export {
         removeVisualizationScriptFilesForViews,
         sanitizeResultsPathSegment,
         simulationRunDocumentPath,
+        workspaceModelicaSourceMap,
+        workspaceModelicaSourcesJson,
+        workspaceSourceRootSourceMap,
+        workspaceSourceRootSourcesJson,
         writePersistedSimulationRunDocument,
 };
 

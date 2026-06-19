@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const WEB_VENDOR_REQUIRED_FILES: &[&str] = &[
-    "results_app.css",
     "markdown_renderer.js",
+    "modelica_language.js",
+    "results_app.css",
     "results_report_inline.js",
     "three_global.js",
     "three_viewer.js",

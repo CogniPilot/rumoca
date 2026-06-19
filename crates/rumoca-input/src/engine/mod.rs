@@ -18,8 +18,8 @@ pub use crate::device::{GamepadSnapshot, InputMode, KeyboardEvent};
 
 pub use compile::{
     ButtonAction, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton, CompiledInput,
-    CompiledIntegrator, CompiledKey, DeriveRule, IntegratorSource, KeyAction, Path, Precondition,
-    PreconditionOp,
+    CompiledIntegrator, CompiledKey, CompiledKeyboardDecay, DeriveRule, IntegratorSource,
+    KeyAction, Path, Precondition, PreconditionOp,
 };
 
 // ── Runtime values ─────────────────────────────────────────────────────────
@@ -244,6 +244,8 @@ impl InputEngine {
             }
         }
 
+        self.apply_keyboard_decay(dt);
+
         // 3. Re-apply browser-held set controls once per input tick. This
         // keeps held controls active without requiring the browser to stream
         // repeated key packets.
@@ -272,7 +274,11 @@ impl InputEngine {
                 {
                     return;
                 }
-                self.write_local(target, if event.pressed { *value } else { 0.0 });
+                if event.pressed {
+                    self.write_local(target, *value);
+                } else if !self.has_keyboard_decay_target(target) {
+                    self.write_local(target, 0.0);
+                }
             }
             KeyAction::Toggle { state } => {
                 if !event.pressed {
@@ -327,6 +333,30 @@ impl InputEngine {
             }
             self.write_local(target, *value);
         }
+    }
+
+    fn apply_keyboard_decay(&mut self, dt: f64) {
+        let Some(decay) = self.compiled.keyboard_decay.clone() else {
+            return;
+        };
+        if dt <= 0.0 {
+            return;
+        }
+        let scale = decay.factor.powf(dt / decay.ref_dt);
+        for target in &decay.targets {
+            if let Some(current) = self.read_path(target) {
+                self.write_local(target, current * scale);
+            }
+        }
+    }
+
+    fn has_keyboard_decay_target(&self, target: &Path) -> bool {
+        self.compiled.keyboard_decay.as_ref().is_some_and(|decay| {
+            decay
+                .targets
+                .iter()
+                .any(|decay_target| decay_target == target)
+        })
     }
 
     // ── Shared helpers (used by gamepad now, keyboard next) ───────────────
@@ -1004,6 +1034,57 @@ when_true = 2000
             0.01,
         );
         assert_eq!(eng.get("throttle_input"), Some(0.0));
+    }
+
+    #[test]
+    fn configured_keyboard_decay_eases_released_set_target() {
+        let cfg: InputSections = toml::from_str(
+            r#"
+[input]
+mode = "keyboard"
+
+[input.keyboard.decay]
+factor = 0.5
+ref_dt = 1.0
+targets = ["stick"]
+
+[input.keyboard.keys.w]
+action = "set"
+target = "stick"
+value = 1.0
+
+[locals.stick]
+default = 0.0
+type = "float"
+"#,
+        )
+        .expect("parse decay config");
+        let mut eng = build_for_test(&cfg);
+
+        eng.process_keyboard(
+            &[KeyboardEvent::holdable_press(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.0,
+        );
+        assert_eq!(eng.get("stick"), Some(1.0));
+
+        eng.process_keyboard(
+            &[KeyboardEvent::released(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.0,
+        );
+        assert_eq!(
+            eng.get("stick"),
+            Some(1.0),
+            "configured decay target should not clear immediately on release"
+        );
+
+        eng.process_keyboard(&[], 1.0);
+        assert_eq!(eng.get("stick"), Some(0.5));
     }
 
     #[test]

@@ -522,6 +522,7 @@ fn cmd_playground(args: PlaygroundArgs) -> Result<()> {
             let root = repo_root();
             let rayon = args.rayon;
             playground_cmd::stage_playground_vendor_assets(&root)?;
+            modelica_dependency_cache::ensure_cmm_library(&root, false)?;
             ensure_wasm_deps(&root)?;
             build_wasm(
                 &root,

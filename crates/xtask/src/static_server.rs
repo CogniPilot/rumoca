@@ -111,8 +111,12 @@ fn handle_http_request(
             include_body,
         );
     }
+    if url == "/" {
+        let location = default_url(options);
+        return write_redirect_response(stream, &location, include_body);
+    }
 
-    match resolve_static_path(root, url, options.default_path) {
+    match resolve_static_path(root, url) {
         Some(path) if path.is_file() => {
             if is_wasm_editor_index(root, &path) {
                 let body = wasm_editor_index_body(&path, options.editor_pkg_subdir)?;
@@ -179,8 +183,38 @@ fn write_http_response_with_body_policy(
     Ok(())
 }
 
+fn write_redirect_response(
+    stream: &mut TcpStream,
+    location: &str,
+    include_body: bool,
+) -> Result<()> {
+    let body = format!("redirecting to {location}\n");
+    let headers = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\nExpires: 0\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .context("failed writing HTTP redirect headers")?;
+    if include_body {
+        stream
+            .write_all(body.as_bytes())
+            .context("failed writing HTTP redirect body")?;
+    }
+    stream.flush().context("failed flushing HTTP redirect")?;
+    Ok(())
+}
+
 fn is_wasm_editor_index(root: &Path, path: &Path) -> bool {
     path == root.join("packages/playground/index.html")
+}
+
+fn default_url(options: &ServeOptions<'_>) -> String {
+    options
+        .urls
+        .first()
+        .map(|(_, url)| String::from(*url))
+        .unwrap_or_else(|| format!("/{}", options.default_path.trim_start_matches('/')))
 }
 
 fn wasm_editor_index_body(path: &Path, editor_pkg_subdir: Option<&str>) -> Result<String> {
@@ -201,10 +235,7 @@ fn wasm_editor_index_body(path: &Path, editor_pkg_subdir: Option<&str>) -> Resul
     Ok(body)
 }
 
-fn resolve_static_path(root: &Path, url: &str, default_path: &str) -> Option<PathBuf> {
-    if url == "/" {
-        return Some(root.join(default_path));
-    }
+fn resolve_static_path(root: &Path, url: &str) -> Option<PathBuf> {
     let relative = url.trim_start_matches('/');
     let mut safe = PathBuf::new();
     for component in Path::new(relative).components() {
@@ -213,7 +244,7 @@ fn resolve_static_path(root: &Path, url: &str, default_path: &str) -> Option<Pat
         }
     }
     if safe.as_os_str().is_empty() {
-        return Some(root.join(default_path));
+        return None;
     }
     let mut path = root.join(safe);
     if path.is_dir() {
@@ -233,5 +264,44 @@ fn mime_for_path(path: &Path) -> &'static str {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn default_url_uses_first_configured_url() {
+        let options = ServeOptions {
+            explicit_port: None,
+            editor_pkg_subdir: None,
+            default_path: "packages/playground/index.html",
+            urls: &[("Editor", "/packages/playground/index.html")],
+        };
+
+        assert_eq!(default_url(&options), "/packages/playground/index.html");
+    }
+
+    #[test]
+    fn default_url_falls_back_to_default_path() {
+        let options = ServeOptions {
+            explicit_port: None,
+            editor_pkg_subdir: None,
+            default_path: "docs/user-guide/book/index.html",
+            urls: &[],
+        };
+
+        assert_eq!(default_url(&options), "/docs/user-guide/book/index.html");
+    }
+
+    #[test]
+    fn root_path_no_longer_resolves_to_nested_index() {
+        let root = Path::new("/tmp/rumoca");
+
+        let resolved = resolve_static_path(root, "/");
+
+        assert_eq!(resolved, None);
     }
 }

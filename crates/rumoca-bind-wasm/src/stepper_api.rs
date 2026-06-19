@@ -12,9 +12,6 @@ use crate::{
 #[wasm_bindgen]
 pub struct WasmStepper {
     stepper: rumoca_sim::SimStepper,
-    /// Kept for `reset()` — recreates the stepper from scratch.
-    dae: rumoca_compile::compile::Dae,
-    opts: rumoca_sim::SimOptions,
 }
 
 #[wasm_bindgen]
@@ -37,7 +34,7 @@ impl WasmStepper {
         let stepper = rumoca_sim::SimStepper::new(&dae, opts.clone())
             .map_err(|e| JsValue::from_str(&format!("Stepper creation error: {e}")))?;
 
-        Ok(WasmStepper { stepper, dae, opts })
+        Ok(WasmStepper { stepper })
     }
 
     /// Set an input value by name. Takes effect on the next `step()` call.
@@ -86,7 +83,8 @@ impl WasmStepper {
 
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), JsValue> {
-        self.stepper = rumoca_sim::SimStepper::new(&self.dae, self.opts.clone())
+        self.stepper
+            .reset(0.0)
             .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
         Ok(())
     }

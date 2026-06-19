@@ -10,7 +10,7 @@ directly.
 |---|---|
 | `Rover.mo` | Plant model (kinematic bicycle; 5 states: x, y, theta, v, delta) |
 | `rumoca-scenario.toml` | Config: locals, input bindings, direct `[signals.stepper_inputs]` |
-| `rover_scene.js` | Three.js desert scene: rover body + 4 wheels (front pair steers) + chase camera |
+| `rover_scene.js` | Three.js desert scene: buggy GLB model + chase camera |
 
 ## Controls
 
@@ -77,16 +77,19 @@ loop applies them to the stepper each frame. No external process.
 
 ## Scene-visualization helpers
 
-`Rover.mo` exposes three derived outputs purely for the viewer:
+`Rover.mo` exposes three derived outputs that are available to the viewer:
 
-- `wheel_rpm = v / wheel_radius` — drives wheel-roll animation
-- `front_wheel_yaw = delta` — yaws the two front-wheel pivot groups
-- `yaw_rate = der(theta)` — available for HUDs / chase-cam smoothing
+- `wheel_rpm = v / wheel_radius`
+- `front_wheel_yaw = delta`
+- `yaw_rate = der(theta)`
 
 The Three.js scene uses the same desert environment as the quadrotor
 example.
 
 ## 3D Model Assets
 
-The rover mesh is procedural Three.js geometry in `rover_scene.js`, so this
-example does not require downloaded model assets.
+The rover visual model uses `examples/assets/models/buggy.glb`, loaded by
+`rover_scene.js`.
+
+Model asset licenses and attributions are recorded in
+[`../../assets/models/README.md`](../../assets/models/README.md).
