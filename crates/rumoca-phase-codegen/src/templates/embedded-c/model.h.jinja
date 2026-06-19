@@ -1,11 +1,23 @@
-{#- Embedded C header over prepared Solve IR. -#}
+{#- Embedded C header over prepared Solve IR.
+
+    Supports both continuous (forward-Euler ODE) and discrete/sampled
+    (`when`/`sample`/`pre`) models. State and parameter vectors are the flat
+    Solve IR layout:
+      y[] = [continuous states | algebraics | outputs]
+      p[] = [parameters | inputs | discrete reals | discrete valued]
+    Index macros below name the user-visible slots so callers do not hard-code
+    positions (e.g. `m.p[{{ model_name | upper }}_P_u] = 1.0;`).
+-#}
 {%- if ir_kind != "solve" -%}
 {{ fail("embedded-c target requires Solve IR") }}
 {%- endif -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
+{%- set dae = dae if dae is defined else {} -%}
 {%- set y_len = solve.layout.y_scalars -%}
 {%- set p_len = solve.layout.p_scalars -%}
 {%- set derivative_len = solve_blocks.continuous.derivative_rhs.output_count -%}
+{%- set bindings = solve.layout.bindings -%}
+{%- set MODEL = model_name | upper -%}
 #pragma once
 
 #include <stddef.h>
@@ -13,11 +25,43 @@
 typedef double real_t;
 
 enum {
-    {{ model_name | upper }}_Y_LEN = {{ y_len }},
-    {{ model_name | upper }}_P_LEN = {{ p_len }},
-    {{ model_name | upper }}_STATE_LEN = {{ solve.solve_layout.state_scalar_count }},
-    {{ model_name | upper }}_DERIVATIVE_LEN = {{ derivative_len }}
+    {{ MODEL }}_Y_LEN = {{ y_len }},
+    {{ MODEL }}_P_LEN = {{ p_len }},
+    {{ MODEL }}_STATE_LEN = {{ solve.solve_layout.state_scalar_count }},
+    {{ MODEL }}_DERIVATIVE_LEN = {{ derivative_len }}
 };
+
+{#- Emit slot-index macros for user-visible scalars. `vars` come from the DAE
+    IR; their flat slot is resolved through the Solve layout bindings. -#}
+{%- macro index_macros(vars, kind) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- for i in range(var.dims | product) -%}
+{%- set key = source_ref(name, var.dims, i + 1) -%}
+{%- set slot = bindings[key] -%}
+{%- if slot and slot.Y is defined %}
+#define {{ MODEL }}_Y_{{ key | sanitize }} {{ slot.Y.index }}  /* {{ kind }} {{ key }} */
+{%- elif slot and slot.P is defined %}
+#define {{ MODEL }}_P_{{ key | sanitize }} {{ slot.P.index }}  /* {{ kind }} {{ key }} */
+{%- endif -%}
+{%- endfor -%}
+{%- else -%}
+{%- set slot = bindings[name] -%}
+{%- if slot and slot.Y is defined %}
+#define {{ MODEL }}_Y_{{ name | sanitize }} {{ slot.Y.index }}  /* {{ kind }} {{ name }} */
+{%- elif slot and slot.P is defined %}
+#define {{ MODEL }}_P_{{ name | sanitize }} {{ slot.P.index }}  /* {{ kind }} {{ name }} */
+{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+/* ---- Variable slot indices (name -> flat array position) ---- */
+{{ index_macros(dae.u | default({}), "input") }}
+{{ index_macros(dae.x | default({}), "state") }}
+{{ index_macros(dae.z | default({}), "discrete") }}
+{{ index_macros(dae.m | default({}), "discrete") }}
+{{ index_macros(dae.y | default({}), "algebraic") }}
+{{ index_macros(dae.w | default({}), "output") }}
 
 typedef struct {
     real_t time;
@@ -25,6 +69,13 @@ typedef struct {
     real_t p[{{ p_len if p_len > 0 else 1 }}];
 } {{ model_name }}_t;
 
+/* Initialise to start values and run the initialization (`initial()`) event. */
 void {{ model_name }}_init({{ model_name }}_t *m);
+
+/* Continuous derivative RHS: writes dy/dt for the state block into out[]. */
 void {{ model_name }}_derivative_rhs(const {{ model_name }}_t *m, real_t *out);
+
+/* Advance one step of size dt: forward-Euler for continuous states, then one
+   discrete/sample tick (snapshot pre(), evaluate when-equations). Call once per
+   control period for a fixed-rate discrete controller. */
 void {{ model_name }}_step({{ model_name }}_t *m, real_t dt);
