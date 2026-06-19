@@ -120,13 +120,19 @@ fn apply_component_subscripts_to_dims(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Vec<usize> {
+    // `pos` tracks the dimension the next subscript applies to. Scalar
+    // indexing removes that dimension (so the cursor stays put, now pointing
+    // at the following dimension); slice/colon indexing keeps it and advances
+    // the cursor. This positional walk is what lets `a[:, i]` on `[3, 4]`
+    // drop dimension 1 and yield `[3]` rather than removing dimension 0.
+    let mut pos = 0usize;
     for part in &cr.parts {
         let Some(subs) = &part.subs else { continue };
         for sub in subs {
-            if dims.is_empty() {
-                return Vec::new();
+            if pos >= dims.len() {
+                return dims;
             }
-            apply_subscript_to_dims(sub, &mut dims, ctx, scope);
+            apply_subscript_to_dims(sub, &mut dims, &mut pos, ctx, scope);
         }
     }
     dims
@@ -135,21 +141,23 @@ fn apply_component_subscripts_to_dims(
 fn apply_subscript_to_dims(
     sub: &Subscript,
     dims: &mut Vec<usize>,
+    pos: &mut usize,
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) {
     match sub {
         Subscript::Expression(expr) if matches!(expr, Expression::Range { .. }) => {
-            if let Some(first_dim) = dims.first_mut() {
-                *first_dim = infer_range_length(expr, ctx, scope).unwrap_or(*first_dim);
-            }
+            dims[*pos] = infer_range_length(expr, ctx, scope).unwrap_or(dims[*pos]);
+            *pos += 1;
         }
-        // Scalar indexing consumes one dimension.
+        // Scalar indexing consumes the dimension at the cursor.
         Subscript::Expression(_) => {
-            dims.remove(0);
+            dims.remove(*pos);
         }
         // `:` keeps the current dimension unchanged.
-        Subscript::Range { .. } | Subscript::Empty => {}
+        Subscript::Range { .. } | Subscript::Empty => {
+            *pos += 1;
+        }
     }
 }
 
