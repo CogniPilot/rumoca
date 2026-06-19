@@ -14,11 +14,12 @@ use rumoca_compile::compile::{
 use rumoca_compile::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, parse_source_to_ast,
 };
-use rumoca_compile::project::{
-    EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
-    ProjectConfigFile, ProjectTask, ScenarioViewerMode, SimulationModelOverride,
-    clear_model_simulation_preset, load_plot_views_for_model, load_simulation_snapshot_for_model,
-    write_model_simulation_preset, write_plot_views_for_model,
+use rumoca_compile::scenario::{
+    EffectiveSimulationConfig, ScenarioConfig, ScenarioConfigFile, ScenarioTask,
+    clear_model_simulation_preset, load_codegen_config_for_model, load_plot_views_for_model,
+    load_simulation_snapshot_for_model, load_source_roots_for_model_task,
+    write_codegen_config_for_model, write_model_simulation_preset, write_plot_views_for_model,
+    write_source_roots_for_model_task,
 };
 use rumoca_compile::source_roots::{
     PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
@@ -27,11 +28,12 @@ use rumoca_compile::source_roots::{
     render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
     render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
 };
+use rumoca_compile::workspace::WorkspaceConfig;
 use rumoca_sim::{SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationDiagnosticError, simulate_dae_with_diagnostics};
 use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
-    build_simulation_payload,
+    build_simulation_payload, build_tunable_parameter_meta,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -50,7 +52,7 @@ mod diagnostics;
 mod lanes;
 mod navigation;
 mod preview;
-mod project_commands;
+mod scenario_commands;
 mod simulation_jobs;
 mod source_root_runtime;
 mod support;
@@ -120,7 +122,7 @@ pub struct ModelicaLanguageServer {
     source_root_load_diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
     source_root_load_diagnostic_uris: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
-    project_config: Arc<RwLock<Option<ProjectConfig>>>,
+    scenario_config: Arc<RwLock<Option<ScenarioConfig>>>,
     completion_timing_path: Arc<RwLock<Option<PathBuf>>>,
     completion_progress_path: Arc<RwLock<Option<PathBuf>>>,
     diagnostics_timing_path: Arc<RwLock<Option<PathBuf>>>,
@@ -169,7 +171,7 @@ impl ModelicaLanguageServer {
             source_root_load_diagnostics: Arc::new(RwLock::new(HashMap::new())),
             source_root_load_diagnostic_uris: Arc::new(RwLock::new(HashMap::new())),
             workspace_root: Arc::new(RwLock::new(None)),
-            project_config: Arc::new(RwLock::new(None)),
+            scenario_config: Arc::new(RwLock::new(None)),
             completion_timing_path: Arc::new(RwLock::new(timing_paths.completion)),
             completion_progress_path: Arc::new(RwLock::new(timing_paths.completion_progress)),
             diagnostics_timing_path: Arc::new(RwLock::new(timing_paths.diagnostics)),
@@ -226,17 +228,25 @@ impl ModelicaLanguageServer {
             }),
             execute_command_provider: Some(ExecuteCommandOptions {
                 commands: vec![
-                    "rumoca.project.getSimulationConfig".to_string(),
-                    "rumoca.project.setSimulationPreset".to_string(),
-                    "rumoca.project.resetSimulationPreset".to_string(),
-                    "rumoca.project.getVisualizationConfig".to_string(),
-                    "rumoca.project.setVisualizationConfig".to_string(),
-                    "rumoca.project.getScenarioConfig".to_string(),
-                    "rumoca.project.simulate".to_string(),
-                    "rumoca.project.getSimulationModels".to_string(),
-                    "rumoca.project.setSelectedSimulationModel".to_string(),
-                    "rumoca.project.startSimulation".to_string(),
-                    "rumoca.project.prepareSimulationModels".to_string(),
+                    "rumoca.scenario.getSimulationConfig".to_string(),
+                    "rumoca.scenario.setSimulationPreset".to_string(),
+                    "rumoca.scenario.resetSimulationPreset".to_string(),
+                    "rumoca.scenario.getVisualizationConfig".to_string(),
+                    "rumoca.scenario.setVisualizationConfig".to_string(),
+                    "rumoca.scenario.getCodegenConfig".to_string(),
+                    "rumoca.scenario.setCodegenConfig".to_string(),
+                    "rumoca.scenario.getSourceRoots".to_string(),
+                    "rumoca.scenario.setSourceRoots".to_string(),
+                    "rumoca.scenario.getScenarioConfig".to_string(),
+                    "rumoca.scenario.getScenarioConfigFull".to_string(),
+                    "rumoca.scenario.renderScenarioConfig".to_string(),
+                    "rumoca.scenario.setScenarioConfig".to_string(),
+                    "rumoca.scenario.simulate".to_string(),
+                    "rumoca.scenario.getSimulationModels".to_string(),
+                    "rumoca.scenario.setSelectedSimulationModel".to_string(),
+                    "rumoca.scenario.startSimulation".to_string(),
+                    "rumoca.scenario.prepareSimulationModels".to_string(),
+                    "rumoca.model.parameterMetadata".to_string(),
                     "rumoca.workspace.getBuiltinTargets".to_string(),
                     "rumoca.workspace.renderTarget".to_string(),
                 ],
@@ -584,14 +594,14 @@ impl ModelicaLanguageServer {
         &self,
         uri: &Url,
     ) -> std::result::Result<(Url, String, String), String> {
-        if !is_project_config_uri(uri) {
+        if !is_scenario_config_uri(uri) {
             let source = self.open_document_source_for_uri(uri).await?;
             let uri_path = session_document_uri_key(uri);
             return Ok((uri.clone(), uri_path, source));
         }
 
         let config_source = self.open_document_source_for_uri(uri).await?;
-        let config = toml::from_str::<ProjectConfigFile>(&config_source)
+        let config = toml::from_str::<ScenarioConfigFile>(&config_source)
             .map_err(|error| format!("failed to parse scenario config: {error}"))?;
         let model_file = config
             .model
@@ -656,12 +666,27 @@ impl ModelicaLanguageServer {
     async fn simulate_compiled_result(
         compiled: &crate::server::simulation_jobs::SimulationCompileResult,
         opts: &SimOptions,
+        parameter_overrides: &[(String, f64)],
     ) -> std::result::Result<(rumoca_sim::SimResult, f64), Value> {
         let sim_opts = opts.clone();
         let compiled_dae = compiled.compiled.dae.clone();
+        let parameter_overrides = parameter_overrides.to_vec();
         let sim_start = std::time::Instant::now();
         let sim = match tokio::task::spawn_blocking(move || {
-            simulate_dae_with_diagnostics(&compiled_dae, &sim_opts)
+            if parameter_overrides.is_empty() {
+                return simulate_dae_with_diagnostics(&compiled_dae, &sim_opts);
+            }
+            let mut solve_model = rumoca_sim::lower_dae_for_simulation(&compiled_dae, &sim_opts)
+                .map_err(SimulationDiagnosticError::SolveLowering)?;
+            let (initial_y, parameters) = rumoca_sim::refresh_prepared_vectors(
+                &solve_model,
+                sim_opts.t_start,
+                &parameter_overrides,
+            )
+            .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?;
+            solve_model.initial_y = initial_y;
+            solve_model.parameters = parameters;
+            rumoca_sim::simulate_solve_model(&solve_model, &sim_opts)
         })
         .await
         {
@@ -743,10 +768,13 @@ impl ModelicaLanguageServer {
         let compile_elapsed = compile_start.elapsed().as_secs_f64();
 
         let opts = Self::simulation_options_from_settings(&settings, &compiled.compiled);
-        let (sim, sim_elapsed) = match Self::simulate_compiled_result(&compiled, &opts).await {
-            Ok(result) => result,
-            Err(response) => return Some(response),
-        };
+        let (sim, sim_elapsed) =
+            match Self::simulate_compiled_result(&compiled, &opts, &settings.parameter_overrides)
+                .await
+            {
+                Ok(result) => result,
+                Err(response) => return Some(response),
+            };
         if let Some(response) = self.stale_simulation_response(request_token).await {
             return Some(response);
         }
@@ -763,6 +791,77 @@ impl ModelicaLanguageServer {
         let payload = build_simulation_payload(&sim, &report_request, &report_metrics);
         let metrics_value = build_simulation_metrics_value(&sim, &report_metrics);
         Some(Self::simulation_success_value(payload, metrics_value))
+    }
+
+    async fn execute_model_parameter_metadata(&self, params: Option<Value>) -> Option<Value> {
+        let request_token = self.begin_analysis_request().await;
+        let params_value = params?;
+        let obj = params_value.as_object()?;
+        let uri = obj
+            .get("uri")
+            .and_then(Value::as_str)
+            .and_then(|value| Url::parse(value).ok());
+        let Some(model) = obj
+            .get("modelName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToString::to_string)
+        else {
+            return Some(Self::simulation_error_value("modelName is required"));
+        };
+
+        let (focus_uri, uri_path, source) = if let Some(uri) = uri.as_ref() {
+            match self.simulation_focus_for_uri(uri).await {
+                Ok(focus) => focus,
+                Err(error) => return Some(Self::simulation_error_value(error)),
+            }
+        } else {
+            let source = obj.get("source").and_then(Value::as_str)?.to_string();
+            (
+                Url::parse("file:///input.mo").ok()?,
+                "input.mo".to_string(),
+                source,
+            )
+        };
+
+        let settings =
+            parse_simulation_request_settings(obj.get("fallback")).unwrap_or_else(|| {
+                SimulationRequestSettings {
+                    solver: "auto".to_string(),
+                    t_end: 10.0,
+                    dt: None,
+                    source_root_paths: Vec::new(),
+                    parameter_overrides: Vec::new(),
+                }
+            });
+        let request_token = self
+            .ensure_simulation_source_roots_loaded(&source, &uri_path, &settings, request_token)
+            .await;
+        if let Some(response) = self.stale_simulation_response(request_token).await {
+            return Some(response);
+        }
+
+        let _strict_lane = self.work_lanes.strict.lock().await;
+        let compiled = match self.compile_model_for_simulation(&model, &uri_path).await {
+            Ok(result) => result,
+            Err(error) => {
+                return Some(
+                    self.simulation_compile_failure_response(&focus_uri, &source, &uri_path, error)
+                        .await,
+                );
+            }
+        };
+        let opts = Self::simulation_options_from_settings(&settings, &compiled.compiled);
+        match rumoca_sim::lower_dae_for_simulation(&compiled.compiled.dae, &opts) {
+            Ok(solve_model) => Some(json!({
+                "ok": true,
+                "parameters": build_tunable_parameter_meta(&compiled.compiled.dae, &solve_model),
+            })),
+            Err(error) => Some(Self::simulation_error_value(format!(
+                "failed to lower parameter metadata model: {error}",
+            ))),
+        }
     }
 
     async fn ensure_completion_source_roots(
@@ -897,6 +996,17 @@ impl ModelicaLanguageServer {
             &loaded,
         ))
     }
+
+    async fn should_reload_config_for_document(&self, uri: &Url, uri_path: &str) -> bool {
+        if is_scenario_config_uri(uri) {
+            return true;
+        }
+        self.workspace_root
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|workspace_root| Path::new(uri_path).starts_with(workspace_root))
+    }
 }
 
 fn completion_source_root_progress_message(
@@ -961,7 +1071,7 @@ impl LanguageServer for ModelicaLanguageServer {
             });
         let workspace_root_ms = workspace_root_started.elapsed().as_millis() as u64;
         *self.workspace_root.write().await = workspace_root;
-        let reload_timing = self.reload_project_config_with_timing().await;
+        let reload_timing = self.reload_scenario_config_with_timing().await;
         let total_ms = initialize_started.elapsed().as_millis() as u64;
         let startup_timing_path = self.startup_timing_path.read().await.clone();
         write_startup_timing_summary(
@@ -970,8 +1080,8 @@ impl LanguageServer for ModelicaLanguageServer {
                 source_root_paths_changed: reload_timing.source_root_paths_changed,
                 parse_init_options_ms,
                 workspace_root_ms,
-                reload_project_config_ms: reload_timing.total_ms,
-                project_discover_ms: reload_timing.project_discover_ms,
+                reload_scenario_config_ms: reload_timing.total_ms,
+                scenario_discover_ms: reload_timing.scenario_discover_ms,
                 resolve_source_root_paths_ms: reload_timing.resolve_source_root_paths_ms,
                 reset_session_ms: reload_timing.reset_session_ms,
                 durable_prewarm_ms: reload_timing.durable_prewarm_ms,
@@ -1014,9 +1124,6 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri_path = session_document_uri_key(&uri);
         self.record_open_document_version(&uri_path, params.text_document.version)
             .await;
-        if is_project_config_uri(&uri) {
-            self.reload_project_config().await;
-        }
         let text = params.text_document.text;
         let stats_before = session_cache_stats();
         {
@@ -1024,6 +1131,12 @@ impl LanguageServer for ModelicaLanguageServer {
             let mut change = SessionChange::default();
             change.set_file_text(&uri_path, &text);
             session.apply_change(change);
+        }
+        if self
+            .should_reload_config_for_document(&uri, &uri_path)
+            .await
+        {
+            self.reload_scenario_config().await;
         }
         self.clear_simulation_compile_cache().await;
         self.completion_mutation_epoch
@@ -1047,9 +1160,6 @@ impl LanguageServer for ModelicaLanguageServer {
         {
             return;
         }
-        if is_project_config_uri(&uri) {
-            self.reload_project_config().await;
-        }
         if let Some(change) = params.content_changes.into_iter().last() {
             self.wait_for_document_source_root_read_prewarm(&uri_path)
                 .await;
@@ -1059,6 +1169,12 @@ impl LanguageServer for ModelicaLanguageServer {
                 let mut session_change = SessionChange::default();
                 session_change.set_file_text(&uri_path, &change.text);
                 session.apply_change(session_change);
+            }
+            if self
+                .should_reload_config_for_document(&uri, &uri_path)
+                .await
+            {
+                self.reload_scenario_config().await;
             }
             self.clear_simulation_compile_cache().await;
             self.publish_diagnostics(uri, &change.text, DiagnosticsTrigger::Live, stats_before)
@@ -1073,7 +1189,8 @@ impl LanguageServer for ModelicaLanguageServer {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let uri_path = session_document_uri_key(&params.text_document.uri);
+        let uri = params.text_document.uri;
+        let uri_path = session_document_uri_key(&uri);
         self.document_versions.write().await.remove(&uri_path);
         self.selected_simulation_models
             .write()
@@ -1086,6 +1203,12 @@ impl LanguageServer for ModelicaLanguageServer {
         change.remove_file(&uri_path);
         session.apply_change(change);
         drop(session);
+        if self
+            .should_reload_config_for_document(&uri, &uri_path)
+            .await
+        {
+            self.reload_scenario_config().await;
+        }
         self.clear_simulation_compile_cache().await;
         self.completion_mutation_epoch
             .fetch_add(1, Ordering::AcqRel);
@@ -1093,8 +1216,8 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
-        if is_project_config_uri(&uri) {
-            self.reload_project_config().await;
+        if is_scenario_config_uri(&uri) {
+            self.reload_scenario_config().await;
         }
         if let Some(text) = params.text {
             self.publish_diagnostics(uri, &text, DiagnosticsTrigger::Save, session_cache_stats())
@@ -1625,27 +1748,39 @@ impl LanguageServer for ModelicaLanguageServer {
         };
 
         let response = match params.command.as_str() {
-            "rumoca.project.getSimulationConfig" => self.execute_get_simulation_config(arg0).await,
-            "rumoca.project.setSimulationPreset" => self.execute_set_simulation_preset(arg0).await,
-            "rumoca.project.resetSimulationPreset" => {
+            "rumoca.scenario.getSimulationConfig" => self.execute_get_simulation_config(arg0).await,
+            "rumoca.scenario.setSimulationPreset" => self.execute_set_simulation_preset(arg0).await,
+            "rumoca.scenario.resetSimulationPreset" => {
                 self.execute_reset_simulation_preset(arg0).await
             }
-            "rumoca.project.getVisualizationConfig" => {
+            "rumoca.scenario.getVisualizationConfig" => {
                 self.execute_get_visualization_config(arg0).await
             }
-            "rumoca.project.setVisualizationConfig" => {
+            "rumoca.scenario.setVisualizationConfig" => {
                 self.execute_set_visualization_config(arg0).await
             }
-            "rumoca.project.getScenarioConfig" => self.execute_get_scenario_config(arg0).await,
-            "rumoca.project.simulate" => self.execute_simulate_model(arg0, None).await,
-            "rumoca.project.getSimulationModels" => self.execute_get_simulation_models(arg0).await,
-            "rumoca.project.setSelectedSimulationModel" => {
+            "rumoca.scenario.getCodegenConfig" => self.execute_get_codegen_config(arg0).await,
+            "rumoca.scenario.setCodegenConfig" => self.execute_set_codegen_config(arg0).await,
+            "rumoca.scenario.getSourceRoots" => self.execute_get_source_roots(arg0).await,
+            "rumoca.scenario.setSourceRoots" => self.execute_set_source_roots(arg0).await,
+            "rumoca.scenario.getScenarioConfig" => self.execute_get_scenario_config(arg0).await,
+            "rumoca.scenario.getScenarioConfigFull" => {
+                self.execute_get_scenario_config_full(arg0).await
+            }
+            "rumoca.scenario.renderScenarioConfig" => {
+                self.execute_render_scenario_config(arg0).await
+            }
+            "rumoca.scenario.setScenarioConfig" => self.execute_set_scenario_config(arg0).await,
+            "rumoca.scenario.simulate" => self.execute_simulate_model(arg0, None).await,
+            "rumoca.scenario.getSimulationModels" => self.execute_get_simulation_models(arg0).await,
+            "rumoca.scenario.setSelectedSimulationModel" => {
                 self.execute_set_selected_simulation_model(arg0).await
             }
-            "rumoca.project.startSimulation" => self.execute_start_simulation(arg0).await,
-            "rumoca.project.prepareSimulationModels" => {
+            "rumoca.scenario.startSimulation" => self.execute_start_simulation(arg0).await,
+            "rumoca.scenario.prepareSimulationModels" => {
                 self.execute_prepare_simulation_models(arg0).await
             }
+            "rumoca.model.parameterMetadata" => self.execute_model_parameter_metadata(arg0).await,
             "rumoca.workspace.getBuiltinTargets" => self.execute_get_builtin_targets().await,
             "rumoca.workspace.renderTarget" => self.execute_render_target(arg0).await,
             _ => None,

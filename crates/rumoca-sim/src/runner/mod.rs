@@ -215,7 +215,7 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
         .context("Serialize viewer config")?
         .unwrap_or_else(|| serde_json::json!({}));
     thread::spawn(move || {
-        if let Err(e) = rumoca_viz_web::start_viewer_server(
+        if let Err(e) = crate::web::start_viewer_server(
             http_port,
             ws_port,
             scene_script.as_deref(),

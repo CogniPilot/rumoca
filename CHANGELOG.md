@@ -5,7 +5,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 ## 0.9.x
 
 - Added a new SymForce codegen backend with native automatic-differentiation support.
-- Rebuilt the docs as a user Handbook and a Rumoca Internals guide, with live interactive Monaco examples and visualizations in the browser.
+- Rebuilt the docs as a Rumoca User Guide and a Rumoca Dev Guide, with live interactive Monaco examples and visualizations in the browser.
 - Made the Python API explicit (`rumoca.compile` / `rumoca.compile_file`) and refreshed the notebook and SymPy templates.
 - Improved MSL correctness and performance, including the SwitchedRLC fix, binary sim-worker IPC, per-model compile isolation, and deterministic v4.1.0 staging.
 - Sharpened the editor and LSP experience with separate interactive/strict work lanes, binary library caching, and cleaner import diagnostics.

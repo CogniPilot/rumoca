@@ -28,7 +28,7 @@ matches the committed example `source_roots`.
 
 Without `rum`, download the same packages yourself, then either:
 
-- Put their package roots in the `rum.toml` scenario `source_roots`.
+- Put their package roots in the `rumoca-scenario.toml` scenario `source_roots`.
 - Add their package roots to `MODELICAPATH`.
 
 Scenario `source_roots` are checked before `MODELICAPATH`, so a scenario can

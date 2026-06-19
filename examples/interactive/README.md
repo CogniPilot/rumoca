@@ -1,12 +1,12 @@
 # Interactive Examples
 
-Interactive scenarios use the same `rum.toml` TOML format as batch simulation, but
+Interactive scenarios use the same `rumoca-scenario.toml` TOML format as batch simulation, but
 add viewer, input, and transport configuration.
 
 ```bash
-cargo run -p rumoca --release -- sim -c examples/interactive/rover/rum.toml
-cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/rum.acro.toml
-cargo run -p rumoca --release -- sim -c examples/interactive/fixedwing/rum.toml
+cargo run -p rumoca --release -- sim -c examples/interactive/rover/rumoca-scenario.toml
+cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
+cargo run -p rumoca --release -- sim -c examples/interactive/fixedwing/rumoca-scenario.toml
 ```
 
 - `rover/`: standalone Ackermann rover controlled by keyboard or gamepad.

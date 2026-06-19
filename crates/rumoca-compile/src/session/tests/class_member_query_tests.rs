@@ -157,6 +157,49 @@ fn class_component_members_query_collects_extends_and_breaks_across_files() {
 }
 
 #[test]
+fn class_component_members_query_resolves_relative_qualified_extends() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "interfaces.mo",
+            concat!(
+                "within Lib.Blocks;\n",
+                "package Interfaces\n",
+                "  partial block SISO\n",
+                "    input Real u;\n",
+                "    output Real y;\n",
+                "  end SISO;\n",
+                "end Interfaces;\n",
+            ),
+        )
+        .expect("interfaces should parse");
+    session
+        .add_document(
+            "continuous.mo",
+            concat!(
+                "within Lib.Blocks;\n",
+                "package Continuous\n",
+                "  block PID\n",
+                "    extends Interfaces.SISO;\n",
+                "    parameter Real y_start;\n",
+                "  end PID;\n",
+                "end Continuous;\n",
+            ),
+        )
+        .expect("continuous package should parse");
+
+    assert_eq!(
+        session.class_component_members_query("Lib.Blocks.Continuous.PID"),
+        vec![
+            ("u".to_string(), "Real".to_string()),
+            ("y".to_string(), "Real".to_string()),
+            ("y_start".to_string(), "Real".to_string()),
+        ],
+        "relative qualified extends should resolve through enclosing package scopes"
+    );
+}
+
+#[test]
 fn class_component_members_query_cache_stays_warm_for_unrelated_edits_and_rebuilds_for_dependencies()
  {
     let mut session = Session::default();

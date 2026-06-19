@@ -51,11 +51,12 @@ mod package_layout;
 pub mod parallelism;
 mod parse;
 mod parsed_artifact_cache;
-mod project_config;
+mod scenario_config;
 mod session;
 mod source_root_cache;
 mod source_root_discovery;
 mod traversal_adapter;
+mod workspace_config;
 
 /// Source-root discovery and cache helpers.
 pub mod source_roots {
@@ -102,17 +103,30 @@ pub mod parsing {
     };
 }
 
-/// Workspace colocated model config and generated result helpers.
-pub mod project {
-    pub use crate::project_config::{
+/// Workspace colocated model config helpers.
+pub mod scenario {
+    pub use crate::scenario_config::{
         CodegenConfig, EffectiveSimulationConfig, EffectiveSimulationPreset, ModelConfig,
-        PlotConfig, PlotDefaults, PlotModelConfig, PlotViewConfig, ProjectConfig,
-        ProjectConfigFile, ProjectSimulationSnapshot, ProjectTask, RumocaTaskMarker,
+        PlotConfig, PlotDefaults, PlotModelConfig, PlotViewConfig, RumocaTaskMarker,
+        ScenarioConfig, ScenarioConfigFile, ScenarioSimulationSnapshot, ScenarioTask,
         ScenarioViewerConfig, ScenarioViewerMode, SimulationConfig, SimulationDefaults,
-        SimulationModelOverride, clear_model_simulation_preset, is_rumoca_task_filename,
-        load_last_simulation_result_for_model, load_plot_views_for_model, load_simulation_run,
-        load_simulation_snapshot_for_model, write_last_simulation_result_for_model,
-        write_model_simulation_preset, write_plot_views_for_model, write_simulation_run,
+        SimulationModelOverride, clear_model_simulation_preset, codegen_config_from_json,
+        codegen_config_to_json, is_rumoca_task_filename, load_codegen_config_for_model,
+        load_plot_views_for_model, load_simulation_snapshot_for_model, load_source_roots_for_model,
+        load_source_roots_for_model_task, parse_fallback_simulation, parse_views_payload,
+        scenario_config_full_to_json, scenario_config_response, scenario_config_text_from_json,
+        simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
+        source_roots_from_json, source_roots_to_json, visualization_views_to_json,
+        write_codegen_config_for_model, write_model_simulation_preset, write_plot_views_for_model,
+        write_source_roots_for_model, write_source_roots_for_model_task,
+    };
+}
+
+/// Workspace context config shared by editors, WASM, and docs.
+pub mod workspace {
+    pub use crate::workspace_config::{
+        WORKSPACE_CONFIG_FILE_NAME, WorkspaceConfig, WorkspaceConfigFile, WorkspaceSourceRootScope,
+        collect_workspace_config_paths, is_workspace_config_filename,
     };
 }
 

@@ -51,7 +51,7 @@ narrow loops you will actually iterate with, see
 Open the repository root in VS Code with the **Rumoca Modelica** extension.
 For compiler development, enable `rumoca.useSystemServer` and put your
 locally built `rumoca-lsp` on `PATH` so the editor exercises your changes.
-Launch the extension from source in `editors/vscode` when working on the
+Launch the extension from source in `packages/vscode` when working on the
 extension itself.
 
 ## Find Your Bearings

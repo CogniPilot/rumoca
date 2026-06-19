@@ -24,7 +24,7 @@ pub(crate) struct SimBenchArgs {
     #[arg(name = "MODELICA_FILE")]
     pub(crate) model_file: Option<String>,
 
-    /// Run a rum.toml scenario (rum.toml / rum.<profile>.toml) instead of a direct benchmark.
+    /// Run a rumoca-scenario.toml scenario (rumoca-scenario.toml / rumoca-scenario.<profile>.toml) instead of a direct benchmark.
     #[arg(short, long)]
     pub(crate) config: Option<String>,
 

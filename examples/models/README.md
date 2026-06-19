@@ -2,7 +2,7 @@
 
 This directory contains Modelica models shared by simulation and codegen
 scenarios. The files are intentionally top-level models or packages, not an
-`Examples` package, so a `rum.toml` scenario can sit next to any workflow and point
+`Examples` package, so a `rumoca-scenario.toml` scenario can sit next to any workflow and point
 at the model it needs.
 
 - `Ball.mo`: bouncing ball with `reinit` event behavior.

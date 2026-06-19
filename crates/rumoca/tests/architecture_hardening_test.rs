@@ -619,8 +619,8 @@ fn test_session_is_compile_only() {
         "rumoca-compile must not depend on rumoca-solver-diffsol; concrete runtime backends belong outside the compile/session facade"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-compile must not depend on rumoca-viz-web; visualization belongs outside the compile/session facade"
+        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        "rumoca-compile must not depend on rumoca-web; visualization belongs outside the compile/session facade"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "diffsol"),
@@ -669,8 +669,8 @@ fn test_sim_contract_crate_has_no_backend_dependency() {
 Author reminder: keep codegen/template rendering outside the runtime-contract crate."
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-solver must not depend on rumoca-viz-web; \
+        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        "rumoca-solver must not depend on rumoca-web; \
 Author reminder: keep visualization assets outside the runtime-contract crate."
     );
     assert!(
@@ -856,8 +856,8 @@ DAE-to-Solve lowering belong upstream in rumoca-phase-solve"
         );
     }
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-solver-diffsol must not depend on rumoca-viz-web"
+        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        "rumoca-solver-diffsol must not depend on rumoca-web"
     );
 }
 
@@ -1301,8 +1301,8 @@ DAE-to-Solve lowering belong upstream in rumoca-phase-solve"
         );
     }
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-solver-rk45 must not depend on rumoca-viz-web"
+        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        "rumoca-solver-rk45 must not depend on rumoca-web"
     );
 }
 
@@ -1316,7 +1316,7 @@ fn test_io_contract_crate_is_runtime_and_visualization_free() {
         "rumoca-solver",
         "rumoca-solver-diffsol",
         "rumoca-solver-rk45",
-        "rumoca-viz-web",
+        "rumoca-web",
         "tiny_http",
         "tungstenite",
     ] {
@@ -1388,7 +1388,7 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
             && !content.contains("pub use rumoca_phase_solve::*")
             && !content.contains("pub use rumoca_solver_diffsol::*")
             && !content.contains("pub use rumoca_solver_rk45::*")
-            && !content.contains("pub use rumoca_viz_web::*"),
+            && !content.contains("pub use rumoca_web::*"),
         "rumoca-sim must not wildcard-forward lower-layer APIs"
     );
 }
@@ -1414,7 +1414,7 @@ fn test_codec_flatbuffers_crate_is_protocol_only() {
         "rumoca-solver",
         "rumoca-solver-diffsol",
         "rumoca-solver-rk45",
-        "rumoca-viz-web",
+        "rumoca-web",
         "tiny_http",
         "tungstenite",
         "gilrs",
@@ -1473,7 +1473,7 @@ fn test_sim_facade_owns_no_visualization_assets() {
     let sim_lib_content = fs::read_to_string(&sim_lib).expect("read rumoca-solver src/lib.rs");
     assert!(
         !sim_lib_content.contains("pub mod results_web;"),
-        "rumoca-solver must not expose a results_web module once visualization moves to rumoca-viz-web"
+        "rumoca-solver must not expose a results_web module; browser visualization assets are package-owned"
     );
 
     for removed_path in [
@@ -1491,30 +1491,32 @@ fn test_sim_facade_owns_no_visualization_assets() {
 }
 
 #[test]
-fn test_viz_web_is_isolated_from_session_and_backends() {
-    let cargo_toml = workspace_root().join("crates/rumoca-viz-web/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-viz-web Cargo.toml");
-
-    for banned in ["rumoca-compile", "rumoca-solver", "diffsol"] {
-        assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-viz-web must not depend on {banned}; \
-Author reminder: keep web visualization independent of session and backend ownership."
-        );
-    }
+fn test_web_assets_are_package_owned_not_a_rust_crate() {
+    assert!(
+        !workspace_root()
+            .join("crates/rumoca-web/Cargo.toml")
+            .exists(),
+        "web visualization assets must be package-owned under packages/rumoca-web; \
+         Rust crates may consume prepared assets but must not own browser package builds"
+    );
+    assert!(
+        workspace_root()
+            .join("packages/rumoca-web/package.json")
+            .is_file(),
+        "packages/rumoca-web must remain the browser asset package"
+    );
 }
 
-// The rumoca-sim-fb crate was dissolved — its app-level composition lives
-// in crates/rumoca/src/sim/ now. The codec-crate-boundary guarantees
-// that used to live here are covered by test_viz_web_is_isolated_from_*
-// plus the per-solver boundary tests above.
+// The rumoca-sim-fb and rumoca-web crates were dissolved. App-level simulation
+// composition lives in rumoca-sim/rumoca, while browser dependency ownership
+// lives in packages/rumoca-web.
 
 #[test]
 fn test_rumoca_entry_uses_session_facade_for_ir() {
     let cargo_toml = workspace_root().join("crates/rumoca/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca Cargo.toml");
 
-    // rumoca-sim is the runner-facade dep; it transitively wraps viz-web,
+    // rumoca-sim is the runner-facade dep; it transitively wraps web,
     // transports, codecs, input devices, and signal-hook so the CLI no
     // longer names the lower-level runtime crates directly.
     for required in [

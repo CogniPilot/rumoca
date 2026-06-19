@@ -59,6 +59,45 @@ equation
 end VanDerPol;
 ```
 
+The same equation style handles coupled systems. Here two masses exchange
+energy through a weak coupling spring:
+
+```modelica,interactive
+model CoupledOscillators
+  parameter Real m = 1.0;
+  parameter Real k = 10.0 "Outer springs";
+  parameter Real kc = 1.0 "Coupling spring";
+  Real x1(start = 1.0);
+  Real v1(start = 0.0);
+  Real x2(start = 0.0);
+  Real v2(start = 0.0);
+equation
+  der(x1) = v1;
+  m * der(v1) = -k * x1 - kc * (x1 - x2);
+  der(x2) = v2;
+  m * der(v2) = -k * x2 - kc * (x2 - x1);
+  annotation(experiment(StopTime = 30.0));
+end CoupledOscillators;
+```
+
+And nonlinear equations do not need to be mechanical. This predator-prey
+model has two interacting states and closed orbits:
+
+```modelica,interactive
+model LotkaVolterra
+  parameter Real alpha = 1.1 "Prey growth";
+  parameter Real beta = 0.4 "Predation";
+  parameter Real delta = 0.1 "Predator efficiency";
+  parameter Real gamma = 0.4 "Predator death";
+  Real prey(start = 10.0);
+  Real predator(start = 10.0);
+equation
+  der(prey) = alpha * prey - beta * prey * predator;
+  der(predator) = delta * prey * predator - gamma * predator;
+  annotation(experiment(StopTime = 50.0));
+end LotkaVolterra;
+```
+
 ## Structure: Models, Packages, Extends
 
 Modelica organizes code in classes:
@@ -100,4 +139,4 @@ You can watch each stage with `rumoca compile --emit <stage>` and
 `--inspect structure` — see
 [Inspecting and Debugging Models](../simulation/inspect.md). The full
 pipeline is documented for contributors in the
-[Rumoca Internals](https://cognipilot.github.io/rumoca/dev-guide/) book.
+[Rumoca Dev Guide](https://cognipilot.github.io/rumoca/dev-guide/) book.

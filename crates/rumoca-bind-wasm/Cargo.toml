@@ -28,6 +28,7 @@ rumoca-tool-lint = { workspace = true }
 rumoca-tool-lsp = { workspace = true, default-features = false }
 bincode = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
+indexmap = { workspace = true }
 wasm-bindgen = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }

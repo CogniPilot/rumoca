@@ -11,7 +11,7 @@ controller in the same simulation, plus a Three.js viewer.
 | `QuadrotorSIL.mo` | 6-DOF plant, `AcroRatePID`, and `QuadrotorAcro` wrapper |
 | `../../../target/cmm/CMM-v0.0.2/LieGroup/package.mo` | SO(3) attitude utilities |
 | `../../../target/cmm/CMM-v0.0.2/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
-| `rum.acro.toml` | Config — `QuadrotorAcro` closed-loop Modelica model |
+| `rumoca-scenario.acro.toml` | Config — `QuadrotorAcro` closed-loop Modelica model |
 | `quadrotor_scene.js` | Three.js scene |
 | `../../assets/models/drone.glb` | CC-BY-4.0 quadrotor model used by the scene |
 | `../../assets/skybox/` | CC-BY-SA-3.0 `arid2` skybox used by the scene |
@@ -25,10 +25,10 @@ Skybox, PBR textures, and glb models are served from the shared
 ```bash
 cargo xtask repo modelica-deps ensure
 cargo run -p rumoca --release -- \
-  sim -c examples/interactive/quadrotor/rum.acro.toml
+  sim -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 ```
 
-`sim -c` reads the `rum.toml` scenario, loads the shared `LieGroup` and `RigidBody`
+`sim -c` reads the `rumoca-scenario.toml` scenario, loads the shared `LieGroup` and `RigidBody`
 Modelica packages from `source_roots`, compiles `QuadrotorAcro`, starts the
 HTTP / WS viewer servers, and enters the configured pacing loop.
 Then open [http://localhost:8080](http://localhost:8080).
@@ -105,7 +105,7 @@ and `gyro`.
 Copy this directory, edit the files:
 
 - `.mo` — your top-level Modelica model; include any controller composition there
-- `rum.toml` — point `[model]` at that top-level class
+- `rumoca-scenario.toml` — point `[model]` at that top-level class
 - `.js` — your Three.js scene
 
 See `examples/interactive/rover/` for a standalone example where the input engine

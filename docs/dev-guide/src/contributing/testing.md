@@ -17,8 +17,8 @@
 Editor surfaces have their own gates:
 
 ```bash
-cargo xtask vscode test   # extension compile + tests
-cargo xtask wasm test     # wasm build + browser smoke tests
+cargo xtask vscode test      # extension compile + tests
+cargo xtask playground test  # wasm build + browser smoke tests
 ```
 
 `verify quick`/`full` include the coverage, VS Code, and wasm gates, so

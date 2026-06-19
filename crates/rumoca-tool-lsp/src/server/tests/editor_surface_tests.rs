@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_compile::scenario::SimulationModelOverride;
 use std::sync::atomic::Ordering;
 
 pub(super) async fn assert_formatting_wraps_handler(
@@ -235,7 +236,7 @@ fn assert_query_backed_member_completion_timing(
 }
 
 #[test]
-fn execute_command_dispatches_safe_project_command() {
+fn execute_command_dispatches_safe_scenario_command() {
     run_async_test(async {
         let workspace_root = new_temp_dir("execute-command");
         let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
@@ -251,7 +252,7 @@ fn execute_command_dispatches_safe_project_command() {
 
         let response = server
             .execute_command(ExecuteCommandParams {
-                command: "rumoca.project.getSimulationConfig".to_string(),
+                command: "rumoca.scenario.getSimulationConfig".to_string(),
                 arguments: vec![serde_json::json!({
                     "workspaceRoot": workspace_root.display().to_string(),
                     "model": "Ball",
@@ -314,9 +315,9 @@ fn execute_command_dispatches_workspace_target_catalog_command() {
 }
 
 #[test]
-fn reload_project_config_rewarms_durable_libraries_when_paths_change() {
+fn reload_scenario_config_rewarms_durable_libraries_when_paths_change() {
     run_async_test(async {
-        let workspace_root = new_temp_dir("reload-project-config-source-root-reset");
+        let workspace_root = new_temp_dir("reload-scenario-config-source-root-reset");
         let focus = workspace_root.join("Root.mo");
         let source_root_a = write_test_source_root(&workspace_root, "LibA");
         let source_root_b = write_test_source_root(&workspace_root, "LibB");
@@ -366,7 +367,7 @@ fn reload_project_config_rewarms_durable_libraries_when_paths_change() {
 
         *server.initial_source_root_paths.write().await =
             vec![source_root_b.to_string_lossy().to_string()];
-        server.reload_project_config().await;
+        server.reload_scenario_config().await;
 
         assert!(
             server.simulation_compile_cache.read().await.is_empty(),
@@ -396,7 +397,89 @@ fn reload_project_config_rewarms_durable_libraries_when_paths_change() {
         assert_eq!(
             source_root_path_keys,
             vec![canonical_path_key(&source_root_b.to_string_lossy())],
-            "reloaded project config should publish the updated source-root path set"
+            "reloaded scenario config should publish the updated source-root path set"
+        );
+    });
+}
+
+#[test]
+fn reload_scenario_config_uses_open_document_for_workspace_config_focus() {
+    run_async_test(async {
+        let workspace_root = new_temp_dir("reload-workspace-config-focused-document");
+        let focus_dir = workspace_root.join("examples/control");
+        std::fs::create_dir_all(&focus_dir).expect("mkdir focus dir");
+        let base_root = workspace_root.join("lib/Base");
+        let scoped_root = workspace_root.join("lib/Control");
+        let child_root = focus_dir.join("local/Child");
+        std::fs::create_dir_all(&base_root).expect("mkdir base root");
+        std::fs::create_dir_all(&scoped_root).expect("mkdir scoped root");
+        std::fs::create_dir_all(&child_root).expect("mkdir child root");
+        std::fs::write(
+            workspace_root.join("rumoca-workspace.toml"),
+            r#"
+source_roots = ["lib/Base"]
+
+[source_root_scopes."examples/control"]
+source_roots = ["lib/Control"]
+"#,
+        )
+        .expect("write root workspace config");
+        std::fs::write(
+            focus_dir.join("rumoca-workspace.toml"),
+            r#"source_roots = ["local/Child"]"#,
+        )
+        .expect("write child workspace config");
+        let focus = focus_dir.join("Plant.mo");
+        std::fs::write(&focus, "model Plant\nend Plant;\n").expect("write focus");
+
+        let service = new_test_service();
+        let server = service.inner();
+        *server.workspace_root.write().await = Some(workspace_root.clone());
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(&focus).expect("focus uri"),
+                    language_id: "modelica".to_string(),
+                    version: 1,
+                    text: std::fs::read_to_string(&focus).expect("read focus"),
+                },
+            })
+            .await;
+
+        let paths = server.source_root_paths.read().await.clone();
+        let expected_paths = [
+            base_root.as_path(),
+            scoped_root.as_path(),
+            child_root.as_path(),
+        ]
+        .into_iter()
+        .map(|path| {
+            std::fs::canonicalize(path)
+                .expect("canonical source root")
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(paths, expected_paths);
+
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::from_file_path(&focus).expect("focus uri"),
+                },
+            })
+            .await;
+
+        let paths = server.source_root_paths.read().await.clone();
+        let expected_paths = vec![
+            std::fs::canonicalize(&base_root)
+                .expect("canonical base root")
+                .to_string_lossy()
+                .to_string(),
+        ];
+        assert_eq!(
+            paths, expected_paths,
+            "did_close should remove closed documents from workspace-config focus"
         );
     });
 }

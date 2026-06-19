@@ -1,4 +1,10 @@
-# Rumoca Internals
+<p align="center">
+  <img
+    src="./assets/rumoca-dev-guide.png"
+    alt="Rumoca Dev Guide cover"
+    style="max-width: min(100%, 300px); height: auto;"
+  />
+</p>
 
 This book explains **how the Rumoca compiler works** and **how to contribute
 to it**. It is written for humans first: the chapters tell the story of a

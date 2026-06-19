@@ -24,14 +24,22 @@ Built-in targets include:
 | `onnx` | dae | symbolic | ONNX graph |
 | `rust-solve` / `c-solve` / `embedded-c` | solve | compiled | Self-contained simulation kernels |
 | `cuda-c` / `cuda-nvrtc-solve-jit` | solve | compiled/JIT | GPU kernels |
+| `wgsl-solve` | solve | compiled | Experimental WebGPU kernels for browser runs |
 | `cranelift-solve-jit` / `mlir` | solve | JIT/compiled | In-process execution backends |
 | `fmi2` / `fmi3` | solve | packaged | FMU export |
 | `modelica` / `flat-modelica` / `dae-modelica` / `base-modelica` | ast/flat/dae | source-transform | Modelica source at each stage |
 
 The `rumoca targets` table also reports a readiness level (0 = experimental
 … 2 = validated) and per-feature support columns (scalarization, matmul,
-linear solve, events, AD, …) for each target. Treat the table — not this
-page — as the current source of truth.
+linear solve, affine stencils, events, AD, …) for each target. Treat the table
+— not this page — as the current source of truth.
+
+Regular `for`-equation domains in array/PDE-style models can lower to
+source-proven affine stencils. Native stencil-aware targets, currently the
+experimental `wgsl-solve` path used by browser GPU runs, can emit one
+parametric kernel for the repeated grid operation. Other Solve targets still
+receive the scalar fallback, so stencil support changes performance and code
+shape rather than model semantics.
 
 ## Rendering a Target
 
@@ -46,14 +54,14 @@ rumoca compile examples/models/SympyDecay.mo \
 
 ## Codegen Scenarios
 
-Like simulations, generation jobs worth repeating belong in a `rum.toml`
+Like simulations, generation jobs worth repeating belong in a `rumoca-scenario.toml`
 with `task = "codegen"`. Runnable examples live under `examples/codegen/`
 and write into `examples/codegen/gen/` (git-ignored):
 
-- `examples/codegen/rum.ball_jax.toml` — built-in JAX target
-- `examples/codegen/rum.sympy_decay_sympy.toml` — built-in SymPy target
-- `examples/codegen/rum.sympy_decay_standalone_web.toml` — custom web target
-- `examples/codegen/rum.sympy_decay_custom_casadi.toml` — raw Jinja template
+- `examples/codegen/rumoca-scenario.ball_jax.toml` — built-in JAX target
+- `examples/codegen/rumoca-scenario.sympy_decay_sympy.toml` — built-in SymPy target
+- `examples/codegen/rumoca-scenario.sympy_decay_standalone_web.toml` — custom web target
+- `examples/codegen/rumoca-scenario.sympy_decay_custom_casadi.toml` — raw Jinja template
 
 ## IR Dumps vs Targets
 

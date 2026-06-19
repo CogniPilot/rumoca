@@ -6,9 +6,9 @@
 // and a "Show DAE" view of the flattened system.
 //
 // Loading strategy:
-//   - Monaco loads from the same CDN as the web playground when a page
-//     contains at least one interactive block. If the CDN is unreachable the
-//     widget falls back to a plain editable textarea.
+//   - Monaco loads from generated local vendor assets when a page contains at
+//     least one interactive block. If those assets are absent, the widget falls
+//     back to a plain editable textarea.
 //   - The Rumoca WASM package loads lazily on first interaction (editor
 //     focus or a toolbar click), so reading a page stays cheap.
 //
@@ -20,13 +20,15 @@
 (function () {
     'use strict';
 
-    const MONACO_CDN_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min';
     const PKG_SUBDIRS = ['release-full-web', 'release-full-web-rayon'];
     const LANGUAGE_MODULE_CANDIDATES = [
-        // GitHub Pages: editors/wasm/src is deployed at the site root.
-        '../src/modules/modelica_language.js',
+        // GitHub Pages: staged runtime package next to the deployed book.
+        '../pkg/release-full-web/modelica_language.js',
+        '../pkg/release-full-web-rayon/modelica_language.js',
         // Local: repository root served directly, book at docs/<book>/book/.
-        '../../../editors/wasm/src/modules/modelica_language.js',
+        '../../../packages/rumoca/dist/release-full-web/modelica_language.js',
+        '../../../packages/rumoca/dist/release-full-web-rayon/modelica_language.js',
+        '../../../packages/rumoca-web/runtime/modelica_language.js',
     ];
     const SERIES_COLORS = [
         '#2470c2', '#d94f30', '#2c9462', '#9356c8', '#c8842c', '#3aa0ab',
@@ -44,9 +46,34 @@
     let resolvedPkgBase = null;
     // Cached promise for the diffsol driver module (rumoca_diffsol.js).
     let diffsolDriverPromise = null;
+    // Cached promise for the shared browser runtime module from rumoca-web.
+    let runtimeDriverPromise = null;
+    // Cached promise for the shared browser interactive runtime module.
+    let interactiveRuntimePromise = null;
     // Cached promise for the WebGPU RK4 driver module (rumoca_gpu.js).
     let gpuDriverPromise = null;
+    // Cached promise for the local Three.js bundle used by custom guide viz.
+    let threeModulePromise = null;
+    // Cached promise for shared browser UI helpers from rumoca-web.
+    let visualizationSharedPromise = null;
+    // Cached resolver for docs-staged parsed Modelica source-root caches.
+    let sourceRootCacheResolverPromise = null;
+    let monacoThemeObserver = null;
+    const monacoEditors = new Set();
+    const monacoModelWidgets = new WeakMap();
     const widgets = [];
+    const scenarioConfigHostHandlers = new Map();
+
+    window.RumocaScenarioConfigHost = {
+        async request(method, payload = {}) {
+            const path = trimMaybeString(payload?.path) || 'rumoca-scenario.toml';
+            const handler = scenarioConfigHostHandlers.get(path);
+            if (!handler) {
+                throw new Error(`No scenario config host is registered for ${path}`);
+            }
+            return await handler(method, payload);
+        },
+    };
 
     function bookRoot() {
         // mdBook defines `path_to_root` as a top-level const in every page.
@@ -58,6 +85,32 @@
         return new URL(relative, window.location.href).href;
     }
 
+    function trimMaybeString(value) {
+        return typeof value === 'string' ? value.trim() : '';
+    }
+
+    function normalizeStringArray(values) {
+        return Array.isArray(values)
+            ? values.map(trimMaybeString).filter(Boolean)
+            : [];
+    }
+
+    function uniqueStrings(values) {
+        const seen = new Set();
+        const result = [];
+        for (const value of normalizeStringArray(values)) {
+            if (!seen.has(value)) {
+                seen.add(value);
+                result.push(value);
+            }
+        }
+        return result;
+    }
+
+    function encodeUrlPath(path) {
+        return String(path || '').split('/').map(encodeURIComponent).join('/');
+    }
+
     // ---------------------------------------------------------------------
     // WASM package loading
     // ---------------------------------------------------------------------
@@ -67,7 +120,7 @@
             return [window.RUMOCA_LIVE_PKG_BASE];
         }
         const root = bookRoot();
-        const layouts = [root + '../pkg/', root + '../../../pkg/'];
+        const layouts = [root + '../pkg/', root + '../../../packages/rumoca/dist/'];
         const candidates = [];
         for (const layout of layouts) {
             for (const subdir of PKG_SUBDIRS) {
@@ -92,9 +145,114 @@
         throw new Error(
             'Rumoca WASM package not found next to this book. ' +
             'Live examples work on the published site ' +
-            '(https://cognipilot.github.io/rumoca/user-guide/) or when the ' +
-            'repository root is served locally after `cargo xtask wasm build`.'
+            '(https://cognipilot.github.io/rumoca/user-guide/) or through ' +
+            'the local preview command `cargo xtask docs serve`.'
         );
+    }
+
+    function monacoBaseCandidates() {
+        if (window.RUMOCA_LIVE_MONACO_BASE) {
+            return [window.RUMOCA_LIVE_MONACO_BASE];
+        }
+        const root = bookRoot();
+        return [
+            root + '../vendor/monaco/',
+            root + '../../../vendor/monaco/',
+            root + '../../../packages/rumoca-web/vendor/monaco/',
+            root + '../../../packages/playground/vendor/monaco/',
+        ];
+    }
+
+    async function locateMonacoBase() {
+        for (const base of monacoBaseCandidates()) {
+            const probe = pageUrl(base + 'vs/loader.js');
+            try {
+                const response = await fetch(probe, { method: 'HEAD' });
+                if (response.ok) {
+                    return probe.replace(/vs\/loader\.js$/, '');
+                }
+            } catch (_error) {
+                // Try the next layout.
+            }
+        }
+        throw new Error('Monaco vendor assets not found');
+    }
+
+    function threeModuleCandidates() {
+        if (window.RUMOCA_LIVE_THREE_MODULE) {
+            return [window.RUMOCA_LIVE_THREE_MODULE];
+        }
+        const root = bookRoot();
+        return [
+            root + '../vendor/three_viewer.js',
+            root + '../../../vendor/three_viewer.js',
+            root + '../../../packages/rumoca-web/vendor/three_viewer.js',
+        ];
+    }
+
+    async function locateThreeModule() {
+        for (const candidate of threeModuleCandidates()) {
+            const probe = pageUrl(candidate);
+            try {
+                const response = await fetch(probe, { method: 'HEAD' });
+                if (response.ok) {
+                    return probe;
+                }
+            } catch (_error) {
+                // Try the next layout.
+            }
+        }
+        throw new Error('Three.js vendor module not found');
+    }
+
+    function loadThreeModule() {
+        if (!threeModulePromise) {
+            threeModulePromise = locateThreeModule()
+                .then((url) => import(url))
+                .catch((error) => {
+                    threeModulePromise = null;
+                    throw error;
+                });
+        }
+        return threeModulePromise;
+    }
+
+    function visualizationSharedCandidates() {
+        const root = bookRoot();
+        return [
+            root + '../vendor/visualization_shared.js',
+            root + '../../../vendor/visualization_shared.js',
+            root + '../../../packages/rumoca-web/viz/visualization_shared.js',
+            root + '../../../packages/rumoca-web/vendor/visualization_shared.js',
+            root + '../../../packages/playground/vendor/visualization_shared.js',
+        ];
+    }
+
+    async function locateVisualizationShared() {
+        for (const candidate of visualizationSharedCandidates()) {
+            const probe = pageUrl(candidate);
+            try {
+                const response = await fetch(probe, { method: 'HEAD' });
+                if (response.ok) {
+                    return probe;
+                }
+            } catch (_error) {
+                // Try the next layout.
+            }
+        }
+        throw new Error('Rumoca shared scenario GUI module not found');
+    }
+
+    function loadVisualizationShared() {
+        if (!visualizationSharedPromise) {
+            visualizationSharedPromise = locateVisualizationShared()
+                .then((url) => import(url))
+                .catch((error) => {
+                    visualizationSharedPromise = null;
+                    throw error;
+                });
+        }
+        return visualizationSharedPromise;
     }
 
     function loadWasm() {
@@ -127,12 +285,132 @@
         return wasmModulePromise;
     }
 
+    function loadRuntimeDriver() {
+        if (!runtimeDriverPromise) {
+            runtimeDriverPromise = (async () => {
+                const base = resolvedPkgBase || await locatePkgBase();
+                return import(base + 'rumoca_runtime.js');
+            })().catch((error) => {
+                runtimeDriverPromise = null;
+                throw error;
+            });
+        }
+        return runtimeDriverPromise;
+    }
+
+    function loadInteractiveRuntime() {
+        if (!interactiveRuntimePromise) {
+            interactiveRuntimePromise = (async () => {
+                const base = resolvedPkgBase || await locatePkgBase();
+                const packageRuntime = base + 'rumoca_interactive.js';
+                const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_interactive.js');
+                const localPreview = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
+                const candidates = localPreview
+                    ? [sourceRuntime, packageRuntime]
+                    : [packageRuntime, sourceRuntime];
+                let lastError = null;
+                for (const candidate of candidates) {
+                    try {
+                        const url = new URL(candidate, window.location.href);
+                        url.searchParams.set('rumoca_live_interactive', String(Date.now()));
+                        return await import(url.href);
+                    } catch (error) {
+                        lastError = error;
+                    }
+                }
+                throw lastError || new Error('Rumoca interactive runtime module not found');
+            })().catch((error) => {
+                interactiveRuntimePromise = null;
+                throw error;
+            });
+        }
+        return interactiveRuntimePromise;
+    }
+
+    function sourceRootManifestUrl() {
+        return pageUrl(bookRoot() + 'repo-examples/source-roots/manifest.json');
+    }
+
+    async function loadSourceRootCacheResolver() {
+        if (!sourceRootCacheResolverPromise) {
+            sourceRootCacheResolverPromise = loadRuntimeDriver()
+                .then((runtime) =>
+                    runtime.createSourceRootCacheResolver({
+                        manifestUrl: sourceRootManifestUrl(),
+                    })
+                )
+                .catch((error) => {
+                    sourceRootCacheResolverPromise = null;
+                    throw error;
+                });
+        }
+        return sourceRootCacheResolverPromise;
+    }
+
+    async function loadSourceRootCacheUrlForRoots(sourceRoots) {
+        if (sourceRoots.length === 0) {
+            return '';
+        }
+        const resolver = await loadSourceRootCacheResolver();
+        return resolver.cacheUrlFor(sourceRoots);
+    }
+
+    function repoExamplesRootUrl() {
+        return pageUrl(bookRoot() + 'repo-examples/');
+    }
+
+    function repoExamplesRelativePath(urlOrPath) {
+        const root = new URL(repoExamplesRootUrl());
+        const absolute = new URL(urlOrPath, window.location.href);
+        if (absolute.origin !== root.origin || !absolute.pathname.startsWith(root.pathname)) {
+            return '';
+        }
+        return decodeURIComponent(absolute.pathname.slice(root.pathname.length));
+    }
+
+    function workspaceConfigPathsForFocus(focusPath) {
+        const parts = trimMaybeString(focusPath).split('/').filter(Boolean);
+        if (parts.length === 0) {
+            return [];
+        }
+        parts.pop();
+        const paths = ['rumoca-workspace.toml'];
+        let prefix = '';
+        for (const part of parts) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            paths.push(`${prefix}/rumoca-workspace.toml`);
+        }
+        return paths;
+    }
+
+    async function fetchWorkspaceConfig(path) {
+        const response = await fetch(new URL(encodeUrlPath(path), repoExamplesRootUrl()).href);
+        if (response.status === 404) {
+            return null;
+        }
+        if (!response.ok) {
+            throw new Error(`Workspace config is unavailable (${response.status}): ${path}`);
+        }
+        return response.text();
+    }
+
+    async function loadWorkspaceSourcesForFocus(focusPath) {
+        const sources = {};
+        for (const path of workspaceConfigPathsForFocus(focusPath)) {
+            const text = await fetchWorkspaceConfig(path);
+            if (text !== null) {
+                sources[path] = text;
+            }
+        }
+        return sources;
+    }
+
     // Lazily import the diffsol driver (rumoca_diffsol.js), which sits next to
     // the main WASM. It feature-detects relaxed-SIMD and lazy-loads the separate
     // diffsol addon. Returns null if unavailable (older package without it).
     function loadDiffsolDriver() {
-        if (!diffsolDriverPromise && resolvedPkgBase) {
-            diffsolDriverPromise = import(resolvedPkgBase + 'rumoca_diffsol.js')
+        if (!diffsolDriverPromise) {
+            diffsolDriverPromise = loadRuntimeDriver()
                 .catch(() => {
                     diffsolDriverPromise = null;
                     return null;
@@ -171,6 +449,12 @@
     function buildSimWorkerSource(pkgBase) {
         return `
 import init, * as rumoca from '${pkgBase}rumoca_bind_wasm.js';
+import {
+    ensureParsedSourceRootCache,
+    prepareGpuSimulationWithRuntime,
+    renderDaeTextWithRuntime,
+    simulateModelWithRuntime,
+} from '${pkgBase}rumoca_runtime.js';
 const ready = init();
 self.onmessage = async (event) => {
     const { id, action, args } = event.data;
@@ -178,25 +462,68 @@ self.onmessage = async (event) => {
         await ready;
         let result;
         if (action === 'simulate') {
-            result = rumoca.simulate_model(args.source, args.model, 0, 0, '');
+            result = JSON.stringify(await simulateModelWithRuntime({
+                wasm: rumoca,
+                pkgBase: '${pkgBase}',
+                source: args.source,
+                modelName: args.model,
+                tEnd: args.tEnd || 0,
+                dt: args.dt || 0,
+                solver: args.solver || 'auto',
+                sourceRootCacheUrl: args.sourceRootCacheUrl || '',
+                parameterOverrides: args.parameterOverrides || {},
+            }));
         } else if (action === 'prepare_gpu') {
-            if (typeof rumoca.prepare_gpu_simulation !== 'function') {
-                throw new Error('prepare_gpu_simulation missing in this WASM build');
-            }
-            result = rumoca.prepare_gpu_simulation(args.source, args.model);
+            result = await prepareGpuSimulationWithRuntime({
+                wasm: rumoca,
+                source: args.source,
+                modelName: args.model,
+                sourceRootCacheUrl: args.sourceRootCacheUrl || '',
+            });
         } else if (action === 'update_gpu') {
             if (typeof rumoca.update_gpu_parameters !== 'function') {
                 throw new Error('update_gpu_parameters missing in this WASM build');
             }
             result = rumoca.update_gpu_parameters(args.source, args.model, args.overrides);
         } else if (action === 'dae') {
-            const envelope = JSON.parse(rumoca.compile(args.source, args.model));
-            const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
-            const rendered = rumoca.render_target(daeJson, args.model, 'dae-modelica', '', '{}');
-            const files = rendered.files;
-            result = Array.isArray(files)
-                ? files.map((file) => file.content || '').join('\\n')
-                : '';
+            result = await renderDaeTextWithRuntime({
+                wasm: rumoca,
+                source: args.source,
+                modelName: args.model,
+                sourceRootCacheUrl: args.sourceRootCacheUrl || '',
+            });
+        } else if (action === 'rumoca.model.parameterMetadata') {
+            await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
+            if (typeof rumoca.model_parameter_metadata !== 'function') {
+                throw new Error('model_parameter_metadata missing in this WASM build');
+            }
+            result = rumoca.model_parameter_metadata(args.source || '', args.modelName || '');
+        } else if (action === 'diagnostics') {
+            await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
+            if (typeof rumoca.lsp_diagnostics !== 'function') {
+                throw new Error('lsp_diagnostics missing in this WASM build');
+            }
+            result = rumoca.lsp_diagnostics(args.source || '');
+        } else if (action === 'completion') {
+            await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
+            if (typeof rumoca.lsp_completion !== 'function') {
+                throw new Error('lsp_completion missing in this WASM build');
+            }
+            result = rumoca.lsp_completion(
+                args.source || '',
+                args.line || 0,
+                args.character || 0
+            );
+        } else if (action === 'hover') {
+            await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
+            if (typeof rumoca.lsp_hover !== 'function') {
+                throw new Error('lsp_hover missing in this WASM build');
+            }
+            result = rumoca.lsp_hover(
+                args.source || '',
+                args.line || 0,
+                args.character || 0
+            );
         } else {
             throw new Error('unknown action ' + action);
         }
@@ -309,25 +636,79 @@ self.onmessage = async (event) => {
     function loadMonaco() {
         if (!monacoPromise) {
             monacoPromise = (async () => {
+                const monacoBase = await locateMonacoBase();
                 if (!window.require) {
-                    await injectScript(`${MONACO_CDN_BASE}/vs/loader.min.js`);
+                    await injectScript(`${monacoBase}vs/loader.js`);
                 }
-                window.require.config({ paths: { vs: `${MONACO_CDN_BASE}/vs` } });
+                window.require.config({ paths: { vs: `${monacoBase}vs` } });
                 await new Promise((resolve, reject) => {
                     window.require(['vs/editor/editor.main'], resolve, reject);
                 });
                 const monaco = window.monaco;
                 await loadModelicaLanguage(monaco);
+                registerMonacoThemeSync(monaco);
                 return monaco;
             })();
         }
         return monacoPromise;
     }
 
+    function mdbookSavedTheme() {
+        try {
+            return trimMaybeString(localStorage.getItem('mdbook-theme'));
+        } catch (_error) {
+            return '';
+        }
+    }
+
+    function mdbookCurrentTheme() {
+        const saved = mdbookSavedTheme();
+        if (saved) {
+            return saved;
+        }
+        const classes = [
+            ...document.documentElement.classList,
+            ...(document.body ? [...document.body.classList] : []),
+        ];
+        return classes.find((name) => ['light', 'rust', 'coal', 'navy', 'ayu'].includes(name)) || '';
+    }
+
     function monacoTheme() {
-        const html = document.documentElement;
-        const dark = ['coal', 'navy', 'ayu'].some((theme) => html.classList.contains(theme));
+        const theme = mdbookCurrentTheme();
+        const dark = ['coal', 'navy', 'ayu'].includes(theme)
+            || (!theme && window.matchMedia?.('(prefers-color-scheme: dark)')?.matches);
         return dark ? 'vs-dark' : 'vs';
+    }
+
+    function registerMonacoThemeSync(monaco) {
+        const apply = () => {
+            monaco?.editor?.setTheme?.(monacoTheme());
+            for (const editor of monacoEditors) {
+                editor.layout?.();
+                editor.render?.(true);
+            }
+        };
+        apply();
+        if (monacoThemeObserver) {
+            return;
+        }
+        monacoThemeObserver = new MutationObserver(apply);
+        monacoThemeObserver.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['class'],
+        });
+        if (document.body) {
+            monacoThemeObserver.observe(document.body, {
+                attributes: true,
+                attributeFilter: ['class'],
+            });
+        }
+        window.addEventListener('storage', (event) => {
+            if (event.key === 'mdbook-theme') {
+                apply();
+            }
+        });
+        window.matchMedia?.('(prefers-color-scheme: dark)')?.addEventListener?.('change', apply);
     }
 
     // ---------------------------------------------------------------------
@@ -352,15 +733,22 @@ self.onmessage = async (event) => {
         languageServicesRegistered = true;
         const monaco = window.monaco;
 
+        async function sourceRootCacheUrlForModel(model) {
+            const widget = monacoModelWidgets.get(model);
+            return widget ? await widget.sourceRootCacheUrl(wasm) : '';
+        }
+
         monaco.languages.registerCompletionItemProvider('modelica', {
             triggerCharacters: ['.', '(', ','],
-            provideCompletionItems(model, position) {
+            async provideCompletionItems(model, position) {
                 try {
-                    const json = wasm.lsp_completion(
-                        model.getValue(),
-                        position.lineNumber - 1,
-                        position.column - 1
-                    );
+                    const worker = await loadSimWorker();
+                    const json = await worker.request('completion', {
+                        source: model.getValue(),
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                        sourceRootCacheUrl: await sourceRootCacheUrlForModel(model),
+                    });
                     const completions = JSON.parse(json);
                     const items = (completions && completions.items) || completions || [];
                     const kinds = monaco.languages.CompletionItemKind;
@@ -394,13 +782,15 @@ self.onmessage = async (event) => {
         });
 
         monaco.languages.registerHoverProvider('modelica', {
-            provideHover(model, position) {
+            async provideHover(model, position) {
                 try {
-                    const json = wasm.lsp_hover(
-                        model.getValue(),
-                        position.lineNumber - 1,
-                        position.column - 1
-                    );
+                    const worker = await loadSimWorker();
+                    const json = await worker.request('hover', {
+                        source: model.getValue(),
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                        sourceRootCacheUrl: await sourceRootCacheUrlForModel(model),
+                    });
                     const hover = JSON.parse(json);
                     if (hover && hover.contents) {
                         const content = typeof hover.contents === 'string'
@@ -416,10 +806,41 @@ self.onmessage = async (event) => {
         });
     }
 
-    function updateDiagnostics(wasm, monaco, model) {
+    async function ensureWasmSourceRootsLoaded(wasm, widget) {
+        const sourceRoots = await (widget?.sourceRootPaths?.(wasm) || []);
+        if (sourceRoots.length === 0) {
+            return;
+        }
+        const cacheUrl = await widget.sourceRootCacheUrl(wasm);
+        const cacheKey = `cache:${cacheUrl}`;
+        if (widget.sourceRootsSessionKey === cacheKey) {
+            return;
+        }
+        const runtime = await loadRuntimeDriver();
+        await runtime.ensureParsedSourceRootCache(wasm, cacheUrl);
+        widget.sourceRootsSessionKey = cacheKey;
+    }
+
+    async function updateDiagnostics(wasm, monaco, model, widget) {
+        const source = model.getValue();
+        const versionId = model.getVersionId?.();
+        const requestId = (widget.diagnosticsRequestId || 0) + 1;
+        widget.diagnosticsRequestId = requestId;
         let diagnostics = [];
         try {
-            diagnostics = JSON.parse(wasm.lsp_diagnostics(model.getValue())) || [];
+            const sourceRootCacheUrl = await widget.sourceRootCacheUrl(wasm);
+            const worker = await loadSimWorker();
+            const diagnosticsJson = await worker.request('diagnostics', {
+                source,
+                sourceRootCacheUrl,
+            });
+            if (
+                widget.diagnosticsRequestId !== requestId
+                || (versionId !== undefined && model.getVersionId?.() !== versionId)
+            ) {
+                return;
+            }
+            diagnostics = JSON.parse(diagnosticsJson) || [];
         } catch (error) {
             console.warn('rumoca-live diagnostics error:', error);
             return;
@@ -587,10 +1008,17 @@ self.onmessage = async (event) => {
         container.replaceChildren(svg, legend);
     }
 
-    function pickPlotSeries(payload) {
+    function pickPlotSeries(payload, requestedNames) {
         const names = payload.names || [];
         const allData = payload.allData || [];
         const data = allData.slice(1);
+        const requested = Array.isArray(requestedNames) ? requestedNames : [];
+        const pickedByName = requested
+            .map((name) => names.indexOf(name))
+            .filter((index) => index >= 0 && Array.isArray(data[index]));
+        if (pickedByName.length > 0) {
+            return pickedByName.map((index) => ({ name: names[index], values: data[index] }));
+        }
         const nStates = payload.nStates || names.length;
         // Rank states by dynamic range so flat series (e.g. clamped boundary
         // cells of a discretized field) do not crowd out the real dynamics.
@@ -911,6 +1339,17 @@ self.onmessage = async (event) => {
             heatColor,
             formatTick,
             formatClock,
+            loadThree: loadThreeModule,
+            hideDefaultPlot: () => {
+                if (widget) {
+                    widget.hideDefaultPlot = true;
+                }
+            },
+            plotSeries: (seriesNames) => {
+                if (widget) {
+                    widget.plotSeries = Array.isArray(seriesNames) ? seriesNames.slice() : [];
+                }
+            },
             makeCanvas: (width, height) => makeCanvas(container, width, height),
             addAnimation: (times, drawFrame, durationMs) =>
                 addAnimation(container, times, drawFrame, durationMs),
@@ -955,13 +1394,13 @@ self.onmessage = async (event) => {
         return true;
     }
 
-    function runCustomViz(container, payload, times, code, widget) {
+    async function runCustomViz(container, payload, times, code, widget) {
         const api = makeVizApi(payload, container, widget);
         const render = new Function(
             '{ payload, times, names, data, container, api }',
-            code
+            `return (async () => {\n${code}\n})();`
         );
-        render({
+        await render({
             payload,
             times,
             names: payload.names || [],
@@ -969,17 +1408,6 @@ self.onmessage = async (event) => {
             container,
             api,
         });
-    }
-
-    // render_target returns { ok, files: [{ path, content }, ...] }.
-    function targetFilesToText(files) {
-        if (Array.isArray(files)) {
-            return files.map((file) => file.content || '').join('\n');
-        }
-        if (files instanceof Map) {
-            return [...files.values()].join('\n');
-        }
-        return Object.values(files || {}).join('\n');
     }
 
     function describeRun(result) {
@@ -1021,7 +1449,7 @@ self.onmessage = async (event) => {
             lineNumbers: 'on',
             lineNumbersMinChars: 3,
             automaticLayout: true,
-            quickSuggestions: true,
+            quickSuggestions: false,
             suggestOnTriggerCharacters: true,
             glyphMargin: false,
             folding: false,
@@ -1033,6 +1461,7 @@ self.onmessage = async (event) => {
         editor.onDidChangeModelContent(() => {
             host.style.height = `${heightFor(editor.getValue())}px`;
         });
+        monacoEditors.add(editor);
         return {
             getValue: () => editor.getValue(),
             setValue: (text) => editor.setValue(text),
@@ -1071,6 +1500,36 @@ self.onmessage = async (event) => {
         };
     }
 
+    function parseLiveDirectives(source) {
+        const directives = {};
+        const pattern = /^\s*\/\/\s*rumoca-live-([a-z-]+):\s*(.*?)\s*$/gm;
+        for (const match of source.matchAll(pattern)) {
+            directives[match[1]] = match[2];
+        }
+        return directives;
+    }
+
+    function modelFileNameForInlineScenario(model) {
+        const safe = String(model || 'Model')
+            .trim()
+            .replace(/[^A-Za-z0-9_.-]+/g, '_')
+            .replace(/^_+|_+$/g, '');
+        return `${safe || 'Model'}.mo`;
+    }
+
+    function experimentNumber(source, key) {
+        const pattern = new RegExp(`\\b${key}\\s*=\\s*([-+]?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)`);
+        const match = pattern.exec(source || '');
+        const value = match ? Number(match[1]) : NaN;
+        return Number.isFinite(value) && value > 0 ? value : undefined;
+    }
+
+    function experimentSolver(source) {
+        const match = /\bSolver\s*=\s*"([^"]+)"/.exec(source || '');
+        const solver = trimMaybeString(match?.[1]).toLowerCase();
+        return solver === 'bdf' || solver === 'rk-like' ? solver : 'auto';
+    }
+
     // ---------------------------------------------------------------------
     // Widget
     // ---------------------------------------------------------------------
@@ -1101,9 +1560,109 @@ self.onmessage = async (event) => {
 
     function buildWidget(codeEl, monaco) {
         const pre = codeEl.parentElement;
-        const originalSource = codeEl.textContent.replace(/\n$/, '');
+        let originalSource = codeEl.textContent.replace(/\n$/, '');
+        const liveDirectives = parseLiveDirectives(originalSource);
+        let sourceUrl = liveDirectives.source || '';
+        const scenarioUrl = liveDirectives.scenario || '';
+        let modelOverride = liveDirectives.model || '';
+        const directiveSourceOnly = liveDirectives.mode === 'source';
+        let sourceOnly = directiveSourceOnly;
+        let scenarioText = '';
+        let scenarioConfig = null;
+        let scenarioDescriptor = null;
         const wantsRadialViz = /\bviz-radial\b/.test(codeEl.className || '');
         const gpuDefault = /\bgpu\b/.test(codeEl.className || '');
+        const workspaceFocusPath = () =>
+            repoExamplesRelativePath(scenarioUrl || sourceUrl);
+        const scenarioWorkspacePath = () =>
+            repoExamplesRelativePath(scenarioUrl) || 'rumoca-scenario.toml';
+
+        function scenarioWorkspaceSources(text = scenarioText) {
+            return JSON.stringify({ [scenarioWorkspacePath()]: text });
+        }
+
+        async function parseScenarioTextWithWasm(text) {
+            const wasm = await loadWasm();
+            if (typeof wasm.scenario_get_scenario_config_full !== 'function') {
+                throw new Error('scenario_get_scenario_config_full missing in this WASM build');
+            }
+            const parsed = JSON.parse(wasm.scenario_get_scenario_config_full(
+                scenarioWorkspaceSources(text),
+                scenarioWorkspacePath()
+            ));
+            if (!parsed?.ok) {
+                throw new Error(parsed?.error || 'failed to parse scenario config');
+            }
+            return parsed;
+        }
+
+        async function renderScenarioConfigWithWasm(config) {
+            const wasm = await loadWasm();
+            if (typeof wasm.scenario_set_scenario_config !== 'function') {
+                throw new Error('scenario_set_scenario_config missing in this WASM build');
+            }
+            const response = JSON.parse(wasm.scenario_set_scenario_config(
+                scenarioWorkspacePath(),
+                JSON.stringify(config)
+            ));
+            const write = Array.isArray(response?.writes) ? response.writes[0] : null;
+            if (!write || typeof write.content !== 'string') {
+                throw new Error('scenario config render did not return TOML content');
+            }
+            return write.content.replace(/\n$/, '');
+        }
+
+        function inlineScenarioConfig(source, model) {
+            const script = widget?.vizEditor?.getValue?.() || '';
+            const views = [];
+            if (script) {
+                widget.viewerScriptsByPath.set('viewer.js', script);
+                views.push({
+                    id: 'viewer',
+                    title: 'Viewer',
+                    type: '3d',
+                    scriptPath: 'viewer.js',
+                });
+            }
+            views.push({
+                id: 'states_time',
+                title: 'States vs Time',
+                type: 'timeseries',
+                x: 'time',
+                y: ['*states'],
+            });
+            const dt = experimentNumber(source, 'Interval');
+            return {
+                rumoca: { version: '1', task: 'simulate' },
+                model: {
+                    file: sourceUrl ? repoExamplesRelativePath(sourceUrl) || sourceUrl : modelFileNameForInlineScenario(model),
+                    name: model,
+                },
+                sim: {
+                    solver: experimentSolver(source),
+                    t_end: experimentNumber(source, 'StopTime') || 10,
+                    ...(dt ? { dt } : {}),
+                },
+                viewer: { mode: 'results_panel' },
+                plot: { views },
+            };
+        }
+
+        async function ensureScenarioConfigForSettings() {
+            if (scenarioConfig) {
+                return;
+            }
+            const wasm = await loadWasm();
+            const source = editor.getValue();
+            const model = modelOverride || inferModelName(wasm, source);
+            if (!model) {
+                throw new Error('No model/block/class found in this example.');
+            }
+            await applyScenarioText(
+                await renderScenarioConfigWithWasm(inlineScenarioConfig(source, model)),
+                { rerenderSettings: false }
+            );
+        }
 
         const container = document.createElement('div');
         container.className = 'rumoca-live';
@@ -1124,13 +1683,17 @@ self.onmessage = async (event) => {
         resetBtn.type = 'button';
         resetBtn.className = 'rumoca-live-button';
         resetBtn.textContent = 'Reset';
+        const settingsBtn = document.createElement('button');
+        settingsBtn.type = 'button';
+        settingsBtn.className = 'rumoca-live-button';
+        settingsBtn.textContent = 'Settings';
         const solverLabel = document.createElement('label');
         solverLabel.className = 'rumoca-live-solver';
         const solverSelect = document.createElement('select');
         solverSelect.className = 'rumoca-live-solver-select';
         let bdfOption = null;
         for (const { value, label } of [
-            { value: '', label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'rk-like', label: 'RK45 (explicit)' },
             { value: 'bdf', label: 'BDF (stiff)' },
         ]) {
@@ -1155,8 +1718,7 @@ self.onmessage = async (event) => {
         gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
-        toolbar.append(runBtn, daeBtn, resetBtn, solverLabel, gpuLabel, status);
-
+        toolbar.append(runBtn, daeBtn, resetBtn, settingsBtn, solverLabel, gpuLabel, status);
         // Enable the stiff (BDF/diffsol) option only when the browser can load
         // the relaxed-SIMD addon; otherwise leave it greyed out with a reason.
         async function refreshBdfAvailability() {
@@ -1176,7 +1738,7 @@ self.onmessage = async (event) => {
                     'The stiff (diffsol) solver needs a browser with WebAssembly '
                     + 'relaxed-SIMD (Chrome 114+, Firefox 120+, Safari 16.4+).';
                 if (solverSelect.value === 'bdf') {
-                    solverSelect.value = '';
+                    solverSelect.value = 'auto';
                 }
             }
         }
@@ -1191,13 +1753,26 @@ self.onmessage = async (event) => {
         const output = document.createElement('div');
         output.className = 'rumoca-live-output';
         output.hidden = true;
+        const settingsPanel = document.createElement('div');
+        settingsPanel.className = 'rumoca-live-settings';
+        settingsPanel.hidden = true;
 
-        container.append(editorHost, toolbar, progress, output);
+        container.append(editorHost, toolbar, settingsPanel, progress, output);
         pre.replaceWith(container);
 
         const editor = monaco
             ? createMonacoEditor(monaco, editorHost, originalSource)
             : createTextareaEditor(editorHost, originalSource);
+        if (editor.model) {
+            monacoModelWidgets.set(editor.model, null);
+        }
+        if (sourceUrl || scenarioUrl) {
+            runBtn.disabled = true;
+            daeBtn.disabled = true;
+            resetBtn.disabled = true;
+            settingsBtn.disabled = true;
+            status.textContent = `Loading ${scenarioUrl || sourceUrl}…`;
+        }
 
         const lastRunMs = {};
         let progressTimer = null;
@@ -1266,9 +1841,103 @@ self.onmessage = async (event) => {
         const widget = {
             busy: false,
             vizEditor: null,
+            viewerScriptsByPath: new Map(),
             gpuPrep: null,
+            interactiveRunner: null,
             paramOverrides: {},
+            plotSeries: null,
             tunerInputs: [],
+            languageServicesActive: false,
+            diagnosticsTimer: null,
+            diagnosticsSubscription: null,
+            diagnosticsRequestId: 0,
+            sourceRootCacheUrlPromise: null,
+            sourceRootsSessionKey: null,
+            workspaceSourceRootsPromise: null,
+            scenarioSourceRootPaths() {
+                return normalizeStringArray(scenarioConfig?.source_roots);
+            },
+            scenarioParameterOverrides() {
+                const parameters = scenarioConfig?.parameters;
+                if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+                    return {};
+                }
+                const overrides = {};
+                for (const [name, value] of Object.entries(parameters)) {
+                    const number = Number(value);
+                    if (name && Number.isFinite(number)) {
+                        overrides[name] = number;
+                    }
+                }
+                return overrides;
+            },
+            async workspaceSourceRootPaths(wasm) {
+                const focusPath = workspaceFocusPath();
+                if (!focusPath) {
+                    return [];
+                }
+                if (!widget.workspaceSourceRootsPromise) {
+                    widget.workspaceSourceRootsPromise = (async () => {
+                        const workspaceSources = await loadWorkspaceSourcesForFocus(focusPath);
+                        if (Object.keys(workspaceSources).length === 0) {
+                            return [];
+                        }
+                        if (!wasm || typeof wasm.workspace_effective_source_roots !== 'function') {
+                            throw new Error('workspace_effective_source_roots missing in this WASM build');
+                        }
+                        return normalizeStringArray(JSON.parse(wasm.workspace_effective_source_roots(
+                            JSON.stringify(workspaceSources),
+                            focusPath
+                        )));
+                    })().catch((error) => {
+                        widget.workspaceSourceRootsPromise = null;
+                        throw error;
+                    });
+                }
+                return widget.workspaceSourceRootsPromise;
+            },
+            async sourceRootPaths(wasm) {
+                const sourceRoots = uniqueStrings([
+                    ...(await widget.workspaceSourceRootPaths(wasm)),
+                    ...widget.scenarioSourceRootPaths(),
+                ]);
+                if (widget.scenarioSourceRootPaths().length > 0 && sourceRoots.length === 0) {
+                    throw new Error(
+                        `No effective Modelica source roots were resolved for ${workspaceFocusPath()}. ` +
+                        'Check the scenario source_roots and the staged source-root cache.'
+                    );
+                }
+                return sourceRoots;
+            },
+            sourceRootCacheUrl(wasm) {
+                if (!widget.sourceRootCacheUrlPromise) {
+                    widget.sourceRootCacheUrlPromise = widget.sourceRootPaths(wasm)
+                        .then(loadSourceRootCacheUrlForRoots)
+                        .catch((error) => {
+                            widget.sourceRootCacheUrlPromise = null;
+                            throw error;
+                        });
+                }
+                return widget.sourceRootCacheUrlPromise;
+            },
+            async refreshSourceRootStatus(wasm) {
+                if (!workspaceFocusPath() || widget.busy) {
+                    return;
+                }
+                try {
+                    const roots = await widget.sourceRootPaths(wasm);
+                    if (roots.length > 0 && !widget.busy) {
+                        widget.setStatus(`${roots.length} Modelica source roots loaded from rumoca-workspace.toml.`);
+                    } else if (!widget.busy) {
+                        widget.setStatus('');
+                    }
+                } catch (error) {
+                    if (!widget.busy) {
+                        widget.setStatus(error instanceof Error ? error.message : String(error));
+                    }
+                    throw error;
+                }
+            },
             requestRun() {
                 if (!widget.busy) {
                     runBtn.click();
@@ -1276,29 +1945,371 @@ self.onmessage = async (event) => {
             },
             setStatus(text) { status.textContent = text; },
             onWasmReady(wasm) {
-                // Independent of Monaco: enable the BDF option if supported.
-                refreshBdfAvailability();
-                if (!monaco || !editor.model) {
-                    return;
+                if (widget.languageServicesActive) {
+                    activateEditorLanguageServices(wasm);
                 }
-                updateDiagnostics(wasm, monaco, editor.model);
-                let timer = null;
-                editor.onChange(() => {
-                    clearTimeout(timer);
-                    timer = setTimeout(
-                        () => updateDiagnostics(wasm, monaco, editor.model),
-                        DIAGNOSTIC_DEBOUNCE_MS
-                    );
-                });
             },
         };
         widgets.push(widget);
+        if (editor.model) {
+            monacoModelWidgets.set(editor.model, widget);
+        }
+
+        function scheduleDiagnostics(wasm) {
+            if (!monaco || !editor.model) {
+                return;
+            }
+            clearTimeout(widget.diagnosticsTimer);
+            widget.diagnosticsTimer = setTimeout(
+                () => updateDiagnostics(wasm, monaco, editor.model, widget),
+                DIAGNOSTIC_DEBOUNCE_MS
+            );
+        }
+
+        function activateEditorLanguageServices(wasm) {
+            refreshBdfAvailability();
+            widget.languageServicesActive = true;
+            if (!monaco || !editor.model) {
+                widget.refreshSourceRootStatus(wasm).catch(() => { /* shown in status */ });
+                return;
+            }
+            updateDiagnostics(wasm, monaco, editor.model, widget);
+            widget.refreshSourceRootStatus(wasm).catch(() => { /* shown in status */ });
+            if (!widget.diagnosticsSubscription) {
+                widget.diagnosticsSubscription = editor.onChange(() => scheduleDiagnostics(wasm));
+            }
+        }
+
+        function hasSourceRoots() {
+            return widget.scenarioSourceRootPaths().length > 0;
+        }
+
+        function stopInteractiveRunner() {
+            if (widget.interactiveRunner) {
+                widget.interactiveRunner.dispose();
+                widget.interactiveRunner = null;
+            }
+        }
+
+        function scenarioWantsInputRuntime(runtime) {
+            if (!scenarioConfig) {
+                return false;
+            }
+            if (runtime?.scenarioUsesInputRuntime) {
+                return runtime.scenarioUsesInputRuntime(scenarioConfig);
+            }
+            return Boolean(scenarioConfig.input);
+        }
+
+        function scenarioViewerMode() {
+            return trimMaybeString(scenarioConfig?.viewer?.mode).toLowerCase();
+        }
+
+        function scenarioRelativeUrl(path) {
+            const base = scenarioUrl || sourceUrl || window.location.href;
+            return new URL(path, pageUrl(base)).href;
+        }
+
+        function scenarioAssetBaseUrl() {
+            const assetDir = trimMaybeString(scenarioConfig?.transport?.http?.asset_dir);
+            if (!assetDir) {
+                return '';
+            }
+            const url = scenarioRelativeUrl(assetDir.endsWith('/') ? assetDir : `${assetDir}/`);
+            return url.endsWith('/') ? url : `${url}/`;
+        }
+
+        async function scenarioInteractiveScript() {
+            const scriptPath = trimMaybeString(scenarioConfig?.transport?.http?.scene);
+            if (scriptPath) {
+                const response = await fetch(scenarioRelativeUrl(scriptPath));
+                if (!response.ok) {
+                    throw new Error(`${scriptPath}: ${response.status} ${response.statusText}`);
+                }
+                return response.text();
+            }
+            return '';
+        }
+
+        async function startExternalInteractiveViewer({
+            wasm,
+            THREE,
+            source,
+            model,
+            interactiveRuntime,
+            sourceRootCacheUrl,
+            scriptText,
+        }) {
+            const title = `${model} - Rumoca interactive viewer`;
+            const external = window.open('', `rumoca-${model}-interactive`);
+            if (!external) {
+                throw new Error('External viewer window was blocked. Allow popups for this page and try again.');
+            }
+            external.document.open();
+            external.document.write(`<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rumoca interactive viewer</title>
+<style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #071825; color: #d8e6f3; font-family: system-ui, sans-serif; }
+#viewer { position: fixed; inset: 0; outline: none; }
+#status { position: fixed; top: 0.75rem; left: 0.75rem; z-index: 4; padding: 0.35rem 0.55rem; border-radius: 5px; background: rgba(5, 10, 16, 0.72); font: 12px monospace; }
+.rumoca-interactive-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.rumoca-interactive-flight-hud { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.rumoca-interactive-controls { position: absolute; left: 0.75rem; right: 0.75rem; bottom: 0.75rem; z-index: 3; display: flex; gap: 0.4rem; pointer-events: auto; }
+.rumoca-interactive-controls button { border: 1px solid rgba(255,255,255,0.3); border-radius: 5px; background: rgba(5,10,16,0.78); color: #f4f7fb; font: 13px system-ui, sans-serif; min-height: 2.3em; padding: 0.45em 0.65em; touch-action: none; }
+.rumoca-interactive-controls.is-capturing .rumoca-interactive-capture-toggle { border-color: #7fc7ff; background: rgba(16,103,153,0.9); }
+</style>
+</head>
+<body>
+<div id="viewer" tabindex="0"></div>
+<div id="status">starting</div>
+</body>
+</html>`);
+            external.document.close();
+            external.document.title = title;
+            const host = external.document.getElementById('viewer');
+            const statusNode = external.document.getElementById('status');
+            const runner = await interactiveRuntime.createInteractiveSimulation({
+                wasm,
+                THREE,
+                source,
+                modelName: model,
+                config: scenarioConfig,
+                sourceRootCacheUrl,
+                container: host,
+                scriptText,
+                assetBaseUrl: scenarioAssetBaseUrl(),
+                onStatus: (text) => {
+                    widget.setStatus(text);
+                    statusNode.textContent = `${text || 'running'} · Esc releases capture · Q stops`;
+                },
+            });
+            external.addEventListener('beforeunload', () => {
+                if (widget.interactiveRunner?.runner === runner) {
+                    widget.interactiveRunner = null;
+                }
+                runner.dispose();
+            }, { once: true });
+            runner.start();
+            statusNode.textContent = 'running · Esc releases capture · Q stops';
+            return {
+                runner,
+                reset() {
+                    runner.reset();
+                    statusNode.textContent = 'reset · Esc releases capture · Q stops';
+                },
+                dispose() {
+                    runner.dispose();
+                    if (!external.closed) {
+                        external.close();
+                    }
+                },
+            };
+        }
+
+        function refreshExecutionAvailability(loading = false) {
+            const unavailable = sourceOnly;
+            runBtn.disabled = loading || unavailable;
+            daeBtn.disabled = loading || unavailable;
+            if (loading) {
+                return;
+            }
+            if (unavailable) {
+                status.textContent = 'Source only; run the scenario command below.';
+            } else if (hasSourceRoots()) {
+                status.textContent = 'Source roots configured; dependencies load when editing.';
+            } else {
+                status.textContent = '';
+            }
+        }
+
+        function syncScenarioControls() {
+            if (!scenarioConfig) return;
+            const sim = scenarioConfig.sim || {};
+            const solver = trimMaybeString(sim.solver).toLowerCase();
+            if (solver === 'rk-like' || solver === 'bdf') {
+                solverSelect.value = solver;
+            } else {
+                solverSelect.value = 'auto';
+            }
+            const views = Array.isArray(scenarioConfig.plot?.views)
+                ? scenarioConfig.plot.views
+                : [];
+            const firstSeries = views.find((view) => Array.isArray(view.y) && view.y.length > 0);
+            if (firstSeries) {
+                widget.plotSeries = firstSeries.y.filter((name) => name !== '*states');
+            }
+        }
+
+        async function renderScenarioSettingsFrame() {
+            await ensureScenarioConfigForSettings();
+            if (!scenarioConfig) {
+                settingsPanel.replaceChildren();
+                return;
+            }
+            try {
+                const shared = await loadVisualizationShared();
+                const wasm = await loadWasm();
+                const effectiveSourceRootPaths = await widget.sourceRootPaths(wasm);
+                const parameterMetadata = await loadScenarioParameterMetadata(wasm, effectiveSourceRootPaths);
+                const frame = document.createElement('iframe');
+                frame.className = 'rumoca-live-settings-frame';
+                frame.title = 'Rumoca Scenario Config';
+                frame.srcdoc = shared.buildScenarioConfigDocument({
+                    path: scenarioWorkspacePath(),
+                    config: scenarioConfig,
+                    descriptor: scenarioDescriptor,
+                    effectiveSourceRootPaths,
+                    parameterMetadata,
+                });
+                settingsPanel.replaceChildren(frame);
+            } catch (error) {
+                settingsPanel.replaceChildren();
+                throw error;
+            }
+        }
+
+        async function loadScenarioParameterMetadata(wasm, effectiveSourceRootPaths) {
+            const source = editor.getValue();
+            const modelName = trimMaybeString(scenarioConfig?.model?.name) || modelOverride || inferModelName(wasm, source);
+            if (!source || !modelName) {
+                return [];
+            }
+            const sourceRootCacheUrl = await widget.sourceRootCacheUrl(wasm);
+            const payload = {
+                path: scenarioWorkspacePath(),
+                source,
+                modelName,
+                fallback: { sourceRootPaths: effectiveSourceRootPaths },
+                sourceRootCacheUrl,
+                timeoutMs: 8000,
+            };
+            try {
+                const raw = await runHeavy('rumoca.model.parameterMetadata', payload, async () => {
+                    await ensureWasmSourceRootsLoaded(wasm, widget);
+                    if (typeof wasm.model_parameter_metadata !== 'function') {
+                        throw new Error('model_parameter_metadata missing in this WASM build');
+                    }
+                    return wasm.model_parameter_metadata(source, modelName);
+                });
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch {
+                return [];
+            }
+        }
+
+        function renderScenarioRawSettings() {
+            settingsPanel.innerHTML = `
+                <label class="rumoca-live-settings-raw">rumoca-scenario.toml
+                  <textarea data-setting="raw" rows="16"></textarea>
+                </label>
+                <div class="rumoca-live-settings-actions">
+                  <button type="button" class="rumoca-live-button" data-action="apply-toml">Apply TOML</button>
+                  <button type="button" class="rumoca-live-button" data-action="show-gui">GUI</button>
+                </div>`;
+            settingsPanel.querySelector('[data-setting="raw"]').value = scenarioText;
+        }
+
+        async function saveScenarioConfigEdits(edits) {
+            const shared = await loadVisualizationShared();
+            const config = shared.applyScenarioConfigEdits(scenarioConfig || {}, edits || []);
+            await applyScenarioText(await renderScenarioConfigWithWasm(config));
+            widget.setStatus('Scenario settings saved');
+            return { ok: true };
+        }
+
+        async function handleScenarioConfigRequest(method, payload = {}) {
+            if (method === 'save') {
+                return await saveScenarioConfigEdits(payload?.edits);
+            }
+            if (method === 'run') {
+                await saveScenarioConfigEdits(payload?.edits);
+                runBtn.click();
+                return { ok: true, message: 'Scenario run requested' };
+            }
+            if (method === 'toggleRaw') {
+                renderScenarioRawSettings();
+                return { ok: true };
+            }
+            throw new Error(`Unknown scenario config request: ${method}`);
+        }
+
+        async function applyScenarioText(nextText, options = {}) {
+            const rerenderSettings = options?.rerenderSettings !== false;
+            const parsed = await parseScenarioTextWithWasm(nextText);
+            scenarioText = nextText;
+            scenarioConfig = parsed.config || {};
+            scenarioDescriptor = parsed.descriptor || {};
+            widget.sourceRootCacheUrlPromise = null;
+            widget.sourceRootsSessionKey = null;
+            modelOverride = trimMaybeString(scenarioDescriptor.model)
+                || trimMaybeString(scenarioConfig.model?.name)
+                || modelOverride;
+            syncScenarioControls();
+            if (rerenderSettings && !settingsPanel.hidden) {
+                await renderScenarioSettingsFrame();
+            }
+            refreshExecutionAvailability();
+        }
+
+        scenarioConfigHostHandlers.set(scenarioWorkspacePath(), handleScenarioConfigRequest);
+
+        async function loadScenarioSource() {
+            const response = await fetch(pageUrl(scenarioUrl));
+            if (!response.ok) {
+                throw new Error(`${response.status} ${response.statusText}`);
+            }
+            await applyScenarioText((await response.text()).replace(/\n$/, ''));
+            sourceOnly = directiveSourceOnly;
+            sourceUrl = new URL(trimMaybeString(scenarioConfig.model?.file), pageUrl(scenarioUrl)).href;
+        }
+
+        async function loadExternalSource() {
+            if (!sourceUrl && !scenarioUrl) {
+                return;
+            }
+            try {
+                if (scenarioUrl) {
+                    await loadScenarioSource();
+                }
+                const response = await fetch(sourceUrl.startsWith('http') ? sourceUrl : pageUrl(sourceUrl));
+                if (!response.ok) {
+                    throw new Error(`${response.status} ${response.statusText}`);
+                }
+                originalSource = (await response.text()).replace(/\n$/, '');
+                editor.setValue(originalSource);
+                resetBtn.disabled = false;
+                settingsBtn.disabled = false;
+                refreshExecutionAvailability();
+                if (widget.languageServicesActive && wasmModulePromise && monaco && editor.model) {
+                    wasmModulePromise.then((wasm) => {
+                        updateDiagnostics(wasm, monaco, editor.model, widget);
+                        widget.refreshSourceRootStatus(wasm).catch(() => { /* shown in status */ });
+                    });
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                status.textContent = `Failed to load ${scenarioUrl || sourceUrl}: ${message}`;
+                resetBtn.disabled = false;
+                settingsBtn.disabled = false;
+            }
+        }
+        loadExternalSource();
 
         // Editing intent: start the WASM download so diagnostics and
         // completion are ready by the time they are wanted.
         editor.onFocus(() => {
             if (!wasmRequested) {
-                loadWasm().catch(() => { /* surfaced via status */ });
+                loadWasm()
+                    .then(activateEditorLanguageServices)
+                    .catch(() => { /* surfaced via status */ });
+            } else if (wasmModulePromise) {
+                wasmModulePromise
+                    .then(activateEditorLanguageServices)
+                    .catch(() => { /* surfaced via status */ });
             }
         });
 
@@ -1326,10 +2337,11 @@ self.onmessage = async (event) => {
                 const wasm = await loadWasm();
                 started = beginProgress(key, busyLabel);
                 const source = editor.getValue();
-                const model = inferModelName(wasm, source);
+                const model = modelOverride || inferModelName(wasm, source);
                 if (!model) {
                     throw new Error('No model/block/class found in this example.');
                 }
+                activateEditorLanguageServices(wasm);
                 await action(wasm, source, model);
                 succeeded = true;
             } catch (error) {
@@ -1348,12 +2360,72 @@ self.onmessage = async (event) => {
         };
 
         runBtn.addEventListener('click', () => withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model) => {
+            stopInteractiveRunner();
+            const sim = scenarioConfig?.sim || {};
+            const solver = trimMaybeString(sim.solver).toLowerCase() || solverSelect.value || 'auto';
+            const tEnd = Number.isFinite(sim.t_end) ? sim.t_end : 0;
+            const dt = Number.isFinite(sim.dt) ? sim.dt : 0;
+            const sourceRootCacheUrl = await widget.sourceRootCacheUrl(wasm);
+            if (sourceRootCacheUrl) {
+                setPhase('Loading source-root cache', null);
+            }
+            await ensureWasmSourceRootsLoaded(wasm, widget);
+            if (scenarioWantsInputRuntime(null)) {
+                const interactiveRuntime = await loadInteractiveRuntime();
+                const THREE = await loadThreeModule();
+                const scriptText = await scenarioInteractiveScript();
+                if (scenarioViewerMode() === 'external_web') {
+                    setPhase('Opening external interactive viewer', null);
+                    widget.interactiveRunner = await startExternalInteractiveViewer({
+                        wasm,
+                        THREE,
+                        source,
+                        model,
+                        interactiveRuntime,
+                        sourceRootCacheUrl,
+                        scriptText,
+                    });
+                    output.replaceChildren(Object.assign(document.createElement('div'), {
+                        className: 'rumoca-live-note',
+                        textContent: 'External interactive viewer opened in a separate browser window. Press Esc there to release input capture; Q stops the simulation.',
+                    }));
+                    output.hidden = false;
+                    widget.setStatus('External interactive simulation running');
+                    return;
+                }
+                const shell = document.createElement('div');
+                shell.className = 'rumoca-live-interactive';
+                const host = document.createElement('div');
+                host.className = 'rumoca-live-interactive-host';
+                const help = document.createElement('div');
+                help.className = 'rumoca-live-interactive-help';
+                help.textContent = 'Press Capture, then use W/S for throttle, arrows for roll/pitch, A/D for yaw, Space to arm, C for camera, H for HUD, R to reset, Q to stop. Esc releases input capture.';
+                shell.append(host, help);
+                output.replaceChildren(shell);
+                output.hidden = false;
+                setPhase('Compiling interactive stepper', null);
+                widget.interactiveRunner = await interactiveRuntime.createInteractiveSimulation({
+                    wasm,
+                    THREE,
+                    source,
+                    modelName: model,
+                    config: scenarioConfig,
+                    sourceRootCacheUrl,
+                    container: host,
+                    scriptText,
+                    assetBaseUrl: scenarioAssetBaseUrl(),
+                    onStatus: (text) => widget.setStatus(text),
+                });
+                widget.interactiveRunner.start();
+                widget.setStatus('Interactive simulation running');
+                return;
+            }
             if (gpuCheck.checked) {
                 const gpu = await loadGpuDriver();
                 if (!gpu || typeof gpu.probeGpu !== 'function') {
                     throw new Error(
                         'GPU driver (rumoca_gpu.js) not found in this package; '
-                        + 'rebuild it (cargo xtask wasm build) or uncheck GPU to '
+                        + 'rebuild it (cargo xtask playground build) or uncheck GPU to '
                         + 'simulate on the CPU (WASM) path.'
                     );
                 }
@@ -1361,7 +2433,7 @@ self.onmessage = async (event) => {
                 if (typeof wasm.prepare_gpu_simulation !== 'function') {
                     throw new Error(
                         'This WASM build predates the wgsl-solve backend; '
-                        + 'rebuild the package (cargo xtask wasm build) or '
+                        + 'rebuild the package (cargo xtask playground build) or '
                         + 'uncheck GPU to simulate on the CPU (WASM) path.'
                     );
                 }
@@ -1372,8 +2444,16 @@ self.onmessage = async (event) => {
                     setPhase('Compiling model (Modelica → Solve IR → WGSL)', null);
                     prep = JSON.parse(await runHeavy(
                         'prepare_gpu',
-                        { source, model },
-                        () => wasm.prepare_gpu_simulation(source, model)
+                        { source, model, sourceRootCacheUrl },
+                        async () => {
+                            const runtime = await loadRuntimeDriver();
+                            return runtime.prepareGpuSimulationWithRuntime({
+                                wasm,
+                                source,
+                                modelName: model,
+                                sourceRootCacheUrl,
+                            });
+                        }
                     ));
                     widget.gpuPrep = { source, prep };
                 }
@@ -1394,7 +2474,7 @@ self.onmessage = async (event) => {
                 // the compiled shader + pipelines and just re-uploads y0/p0.
                 widget.gpu = widget.gpu || {};
                 const result = await gpu.runGpuSimulation(adapter, prep, setPhase, widget.gpu);
-                renderRunResult(result);
+                await renderRunResult(result);
                 return;
             }
             if (Object.keys(widget.paramOverrides).length > 0) {
@@ -1404,47 +2484,92 @@ self.onmessage = async (event) => {
                     + 're-run on the CPU.'
                 );
             }
-            const solver = solverSelect.value;
             if (solver === 'bdf') {
                 // Stiff path: the diffsol addon (separate relaxed-SIMD module)
                 // runs on the main thread, like the GPU path. The main module
                 // lowers the model and the addon simulates it. t_end/dt = 0
                 // defer to the model's experiment annotation.
-                const driver = await loadDiffsolDriver();
-                if (!driver || typeof driver.simulateWithDiffsol !== 'function') {
-                    throw new Error('the diffsol (stiff) solver addon is unavailable in this build');
-                }
+                const runtime = await loadRuntimeDriver();
                 setPhase('Compiling & simulating (stiff · diffsol)', null);
-                const result = await driver.simulateWithDiffsol(wasm, resolvedPkgBase, source, model, 0, 0);
-                renderRunResult(result);
+                const result = await runtime.simulateModelWithRuntime({
+                    wasm,
+                    pkgBase: resolvedPkgBase,
+                    source,
+                    modelName: model,
+                    tEnd,
+                    dt,
+                    solver,
+                    sourceRootCacheUrl,
+                    parameterOverrides: widget.scenarioParameterOverrides(),
+                });
+                await renderRunResult(result);
                 return;
             }
             // t_end = 0 / dt = 0 defer to the model's experiment annotation,
             // falling back to runtime defaults. `solver` is "" (auto/annotation)
             // or "rk-like". Runs in a worker so the page stays live.
-            const raw = await runHeavy('simulate', { source, model },
-                () => wasm.simulate_model(source, model, 0, 0, solver));
-            renderRunResult(JSON.parse(raw));
+            const args = { source, model, tEnd, dt, solver, sourceRootCacheUrl };
+            const raw = await runHeavy('simulate', args, async () => {
+                setPhase('Loading source-root cache', null);
+                const runtime = await loadRuntimeDriver();
+                return JSON.stringify(await runtime.simulateModelWithRuntime({
+                    wasm,
+                    pkgBase: resolvedPkgBase,
+                    source,
+                    modelName: model,
+                    tEnd,
+                    dt,
+                    solver,
+                    sourceRootCacheUrl,
+                    parameterOverrides: widget.scenarioParameterOverrides(),
+                }));
+            });
+            await renderRunResult(JSON.parse(raw));
         }));
 
-        function renderRunResult(result) {
+        async function renderRunResult(result) {
             const payload = result.payload || {};
             const allData = payload.allData || [];
             if (allData.length < 2) {
                 throw new Error('Simulation produced no plottable variables.');
             }
             const views = [];
-            if (widget.vizEditor) {
+            widget.hideDefaultPlot = false;
+            const configuredViews = Array.isArray(scenarioConfig?.plot?.views)
+                ? scenarioConfig.plot.views
+                : [];
+            if (configuredViews.length > 0) {
+                widget.hideDefaultPlot = true;
+                for (const view of configuredViews) {
+                    const type = trimMaybeString(view?.type).toLowerCase() || 'timeseries';
+                    if (type === '3d') {
+                        const custom = document.createElement('div');
+                        custom.className = 'rumoca-live-radial';
+                        try {
+                            const script = await configuredViewScript(view);
+                            if (!script) {
+                                throw new Error('3D viewer panel has no script_path.');
+                            }
+                            await runCustomViz(custom, payload, allData[0], script, widget);
+                            views.push(custom);
+                        } catch (error) {
+                            views.push(visualizationErrorBox(error));
+                        }
+                        continue;
+                    }
+                    const plot = document.createElement('div');
+                    plot.className = 'rumoca-live-plot';
+                    renderPlot(plot, allData[0], pickPlotSeries(payload, Array.isArray(view?.y) ? view.y : []));
+                    views.push(plot);
+                }
+            } else if (widget.vizEditor) {
                 const custom = document.createElement('div');
                 custom.className = 'rumoca-live-radial';
                 try {
-                    runCustomViz(custom, payload, allData[0], widget.vizEditor.getValue(), widget);
+                    await runCustomViz(custom, payload, allData[0], widget.vizEditor.getValue(), widget);
                     views.push(custom);
                 } catch (error) {
-                    const errBox = document.createElement('pre');
-                    errBox.className = 'rumoca-live-error';
-                    errBox.textContent = `Visualization script error: ${error.message || error}`;
-                    views.push(errBox);
+                    views.push(visualizationErrorBox(error));
                 }
             } else if (wantsRadialViz) {
                 const radial = document.createElement('div');
@@ -1453,23 +2578,55 @@ self.onmessage = async (event) => {
                     views.push(radial);
                 }
             }
-            const plot = document.createElement('div');
-            plot.className = 'rumoca-live-plot';
-            renderPlot(plot, allData[0], pickPlotSeries(payload));
-            views.push(plot);
+            if (!widget.hideDefaultPlot) {
+                const plot = document.createElement('div');
+                plot.className = 'rumoca-live-plot';
+                renderPlot(plot, allData[0], pickPlotSeries(payload, widget.plotSeries));
+                views.push(plot);
+            }
             output.replaceChildren(...views);
             output.hidden = false;
             widget.setStatus(describeRun(result));
         }
 
+        function visualizationErrorBox(error) {
+            const errBox = document.createElement('pre');
+            errBox.className = 'rumoca-live-error';
+            errBox.textContent = `Visualization script error: ${error.message || error}`;
+            return errBox;
+        }
+
+        async function configuredViewScript(view) {
+            const scriptPath = trimMaybeString(view?.script_path) || trimMaybeString(view?.scriptPath);
+            if (!scriptPath) {
+                return '';
+            }
+            const embedded = widget.viewerScriptsByPath.get(scriptPath);
+            if (embedded) {
+                return embedded;
+            }
+            const base = scenarioUrl || sourceUrl || window.location.href;
+            const response = await fetch(new URL(scriptPath, pageUrl(base)).href);
+            if (!response.ok) {
+                throw new Error(`${scriptPath}: ${response.status} ${response.statusText}`);
+            }
+            return response.text();
+        }
+
         daeBtn.addEventListener('click', () => withWasm('dae', 'Compiling to DAE…', async (wasm, source, model) => {
-            const text = await runHeavy('dae', { source, model }, () => {
-                // compile() returns an envelope; render_target wants the
-                // native DAE document from its `dae_native` field.
-                const envelope = JSON.parse(wasm.compile(source, model));
-                const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
-                const rendered = wasm.render_target(daeJson, model, 'dae-modelica', '', '{}');
-                return targetFilesToText(rendered.files);
+            const sourceRootCacheUrl = await widget.sourceRootCacheUrl(wasm);
+            if (sourceRootCacheUrl) {
+                setPhase('Loading source-root cache', null);
+            }
+            await ensureWasmSourceRootsLoaded(wasm, widget);
+            const text = await runHeavy('dae', { source, model, sourceRootCacheUrl }, async () => {
+                const runtime = await loadRuntimeDriver();
+                return runtime.renderDaeTextWithRuntime({
+                    wasm,
+                    source,
+                    modelName: model,
+                    sourceRootCacheUrl,
+                });
             });
             const daeBox = document.createElement('pre');
             daeBox.className = 'rumoca-live-dae';
@@ -1480,13 +2637,51 @@ self.onmessage = async (event) => {
         }));
 
         resetBtn.addEventListener('click', () => {
+            if (widget.interactiveRunner && typeof widget.interactiveRunner.reset === 'function') {
+                widget.interactiveRunner.reset();
+                widget.setStatus('Interactive simulation reset');
+                return;
+            }
+            stopInteractiveRunner();
             editor.setValue(originalSource);
             if (widget.vizEditor) {
                 widget.vizEditor.reset();
             }
+            if (!settingsPanel.hidden) {
+                void renderScenarioSettingsFrame().catch(showError);
+            }
             output.hidden = true;
             output.replaceChildren();
             widget.setStatus('');
+        });
+
+        settingsBtn.addEventListener('click', () => {
+            settingsPanel.hidden = !settingsPanel.hidden;
+            if (!settingsPanel.hidden) {
+                void renderScenarioSettingsFrame().catch(showError);
+            }
+        });
+
+        settingsPanel.addEventListener('click', async (event) => {
+            const action = event.target?.dataset?.action;
+            if (!action || !scenarioConfig) return;
+            if (action === 'apply-toml') {
+                try {
+                    await applyScenarioText(settingsPanel.querySelector('[data-setting="raw"]').value);
+                    widget.setStatus('Settings applied from TOML');
+                } catch (error) {
+                    showError(error);
+                    widget.setStatus('Scenario TOML has errors');
+                }
+                return;
+            }
+            if (action === 'show-gui') {
+                try {
+                    await renderScenarioSettingsFrame();
+                } catch (error) {
+                    showError(error);
+                }
+            }
         });
 
         return widget;

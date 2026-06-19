@@ -25,12 +25,27 @@ impl ImportMap {
         let mut seen = IndexSet::new();
         let mut candidates = Vec::new();
 
+        let (first_segment, rest) =
+            rumoca_core::split_first_top_level(raw_name).unwrap_or((raw_name, ""));
         for (local_name, qualified_name) in &self.explicit_bindings {
-            if local_name == raw_name && seen.insert(qualified_name.clone()) {
-                candidates.push(qualified_name.clone());
+            if local_name != first_segment {
+                continue;
+            }
+            let candidate = if rest.is_empty() {
+                qualified_name.clone()
+            } else {
+                format!("{qualified_name}.{rest}")
+            };
+            if seen.insert(candidate.clone()) {
+                candidates.push(candidate);
             }
         }
         for wildcard_path in &self.wildcard_paths {
+            let wildcard_root =
+                rumoca_core::split_first_top_level(wildcard_path).map(|(root, _)| root);
+            if wildcard_root == Some(first_segment) || raw_name == wildcard_path {
+                continue;
+            }
             let qualified_name = format!("{wildcard_path}.{raw_name}");
             if seen.insert(qualified_name.clone()) {
                 candidates.push(qualified_name);
@@ -166,6 +181,7 @@ impl ClassInterface {
         &self.class_type
     }
 
+    #[cfg(test)]
     pub(crate) fn import_map(&self) -> &ImportMap {
         &self.import_map
     }
@@ -205,37 +221,12 @@ impl ClassInterface {
         enclosing_qualified_name: &str,
         raw_type_name: &str,
     ) -> Vec<String> {
-        if raw_type_name.is_empty() {
-            return Vec::new();
+        ClassNameScope {
+            enclosing_qualified_name,
+            imports: &self.import_map,
+            nested_classes: &self.nested_classes,
         }
-
-        let mut seen = IndexSet::new();
-        let mut candidates = Vec::new();
-        let mut push = |candidate: String| {
-            if !candidate.is_empty() && seen.insert(candidate.clone()) {
-                candidates.push(candidate);
-            }
-        };
-
-        if rumoca_core::has_top_level_dot(raw_type_name) {
-            push(raw_type_name.to_string());
-            return candidates;
-        }
-
-        if self
-            .nested_classes
-            .iter()
-            .any(|nested_class| nested_class.name == raw_type_name)
-        {
-            push(format!("{enclosing_qualified_name}.{raw_type_name}"));
-        }
-
-        for candidate in self.import_map.resolve_candidates(raw_type_name) {
-            push(candidate);
-        }
-
-        push(raw_type_name.to_string());
-        candidates
+        .type_resolution_candidates(raw_type_name)
     }
 
     pub(crate) fn local_completion_items(&self) -> Vec<ClassLocalCompletionItem> {
@@ -263,6 +254,64 @@ impl ClassInterface {
     pub(crate) fn local_component_info(&self, component_name: &str) -> Option<LocalComponentInfo> {
         self.component_interface(component_name)
             .map(|component| component.local_component_info(component_name))
+    }
+}
+
+struct ClassNameScope<'a> {
+    enclosing_qualified_name: &'a str,
+    imports: &'a ImportMap,
+    nested_classes: &'a [NestedClassInterface],
+}
+
+impl ClassNameScope<'_> {
+    fn type_resolution_candidates(&self, raw_type_name: &str) -> Vec<String> {
+        if raw_type_name.is_empty() {
+            return Vec::new();
+        }
+
+        let mut seen = IndexSet::new();
+        let mut candidates = Vec::new();
+        let mut push = |candidate: String| {
+            if !candidate.is_empty() && seen.insert(candidate.clone()) {
+                candidates.push(candidate);
+            }
+        };
+
+        if raw_type_name.starts_with('.') {
+            push(raw_type_name.trim_start_matches('.').to_string());
+            return candidates;
+        }
+
+        self.push_nested_class_candidate(raw_type_name, &mut push);
+        for candidate in self.imports.resolve_candidates(raw_type_name) {
+            push(candidate);
+        }
+        if rumoca_core::parent_scope(raw_type_name).is_some() {
+            self.push_enclosing_scope_candidates(raw_type_name, &mut push);
+        }
+        push(raw_type_name.to_string());
+        candidates
+    }
+
+    fn push_nested_class_candidate(&self, raw_type_name: &str, push: &mut impl FnMut(String)) {
+        if self
+            .nested_classes
+            .iter()
+            .any(|nested_class| nested_class.name == raw_type_name)
+        {
+            push(format!(
+                "{}.{}",
+                self.enclosing_qualified_name, raw_type_name
+            ));
+        }
+    }
+
+    fn push_enclosing_scope_candidates(&self, raw_type_name: &str, push: &mut impl FnMut(String)) {
+        let mut scope = Some(self.enclosing_qualified_name);
+        while let Some(current_scope) = scope {
+            push(format!("{current_scope}.{raw_type_name}"));
+            scope = rumoca_core::parent_scope(current_scope);
+        }
     }
 }
 
@@ -354,32 +403,6 @@ impl ClassInterface {
                 .collect(),
         }
     }
-}
-
-pub(crate) fn resolve_import_candidates(
-    raw_type_name: &str,
-    import_map: Option<&ImportMap>,
-) -> Vec<String> {
-    let mut seen = std::collections::HashSet::<String>::new();
-    let mut candidates = Vec::new();
-    let mut push = |name: String| {
-        if !name.is_empty() && seen.insert(name.clone()) {
-            candidates.push(name);
-        }
-    };
-
-    push(raw_type_name.to_string());
-    if rumoca_core::has_top_level_dot(raw_type_name) {
-        return candidates;
-    }
-
-    if let Some(import_map) = import_map {
-        for candidate in import_map.resolve_candidates(raw_type_name) {
-            push(candidate);
-        }
-    }
-
-    candidates
 }
 
 fn import_map_from_summary(class: &super::file_summary::ClassSummary) -> ImportMap {

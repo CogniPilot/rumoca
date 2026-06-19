@@ -2,11 +2,13 @@ mod completion_cmd;
 mod coverage_analysis;
 mod coverage_gate;
 mod crate_dag_cmd;
+mod docs_cmd;
 mod lsp_benchmark_cmd;
 #[cfg(test)]
 mod main_tests;
 mod modelica_dependency_cache;
 mod msl_flamegraph_cmd;
+mod playground_cmd;
 mod release_cmd;
 mod repo_cli_cmd;
 mod review_packet_cmd;
@@ -29,6 +31,7 @@ use coverage_analysis::{
 };
 use coverage_gate::CoverageGateArgs;
 use crate_dag_cmd::CrateDagArgs;
+use docs_cmd::DocsArgs;
 use rumoca_compile::compile::core::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
@@ -39,8 +42,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use verify_cmd::VerifyArgs;
 
-use xtask::msl_tools;
 pub(crate) use xtask::msl_tools::common;
+use xtask::{msl_tools, web_assets};
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask")]
@@ -57,12 +60,16 @@ enum Commands {
     Verify(VerifyArgs),
     /// VS Code extension workflows
     Vscode(VscodeArgs),
-    /// WASM editor workflows
-    Wasm(WasmArgs),
+    /// Shared browser asset workflows
+    Web(WebArgs),
+    /// Playground workflows
+    Playground(PlaygroundArgs),
     /// Python binding workflows
     Python(PythonArgs),
     /// Coverage generation, reporting, and policy gates
     Coverage(CoverageArgs),
+    /// Documentation book and rustdoc workflows
+    Docs(DocsArgs),
     /// Repository maintenance, packaging, and release workflows
     Repo(RepoArgs),
 }
@@ -125,7 +132,7 @@ struct VscodeInstallCheckArgs {
 
 #[derive(Debug, Args, Clone)]
 struct VscodeHostArgs {
-    /// Skip rebuilding/copying rumoca-lsp into editors/vscode/bin
+    /// Skip rebuilding/copying rumoca-lsp into packages/vscode/bin
     #[arg(long)]
     skip_lsp_build: bool,
     /// Skip TypeScript esbuild watch process
@@ -157,13 +164,25 @@ enum VscodeCommand {
 }
 
 #[derive(Debug, Args, Clone)]
-struct WasmArgs {
+struct WebArgs {
     #[command(subcommand)]
-    command: WasmCommand,
+    command: WebCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum WebCommand {
+    /// Install npm dependencies if needed and rebuild packages/rumoca-web/vendor
+    Build,
 }
 
 #[derive(Debug, Args, Clone)]
-struct WasmBuildArgs {
+struct PlaygroundArgs {
+    #[command(subcommand)]
+    command: PlaygroundCommand,
+}
+
+#[derive(Debug, Args, Clone)]
+struct PlaygroundBuildArgs {
     /// Build with wasm-pack --dev for faster local iteration
     #[arg(long)]
     dev: bool,
@@ -187,25 +206,22 @@ enum WasmVariant {
 }
 
 #[derive(Debug, Subcommand, Clone)]
-enum WasmCommand {
-    /// Build the WASM editor bundle
-    Build(WasmBuildArgs),
-    /// WASM editor verification gate
+enum PlaygroundCommand {
+    /// Build the playground WASM bundle
+    Build(PlaygroundBuildArgs),
+    /// Playground verification gate
     Test,
-    /// Build and serve the WASM editor
-    Edit(WasmEditArgs),
+    /// Build and serve the playground
+    Edit(PlaygroundEditArgs),
     /// Clean generated WASM artifacts
     Clean,
 }
 
 #[derive(Debug, Args, Clone)]
-struct WasmEditArgs {
+struct PlaygroundEditArgs {
     /// Override serve port (default: PORT env or 8080)
     #[arg(long)]
     port: Option<u16>,
-    /// Serve existing WASM assets without rebuilding first
-    #[arg(long)]
-    skip_build: bool,
     /// Build and serve the threaded wasm-rayon package
     #[arg(long)]
     rayon: bool,
@@ -469,9 +485,11 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Verify(args) => verify_cmd::run(args, &repo_root()),
         Commands::Vscode(args) => cmd_vscode(args),
-        Commands::Wasm(args) => cmd_wasm(args),
+        Commands::Web(args) => cmd_web(args),
+        Commands::Playground(args) => cmd_playground(args),
         Commands::Python(args) => cmd_python(args),
         Commands::Coverage(args) => cmd_coverage(args),
+        Commands::Docs(args) => docs_cmd::run(args, &repo_root()),
         Commands::Repo(args) => cmd_repo(args),
     }
 }
@@ -486,28 +504,38 @@ fn cmd_vscode(args: VscodeArgs) -> Result<()> {
     }
 }
 
-fn cmd_wasm(args: WasmArgs) -> Result<()> {
+fn cmd_web(args: WebArgs) -> Result<()> {
     match args.command {
-        WasmCommand::Build(args) => cmd_build_wasm(args),
-        WasmCommand::Test => run_wasm_test_suite(&repo_root()),
-        WasmCommand::Edit(args) => {
+        WebCommand::Build => {
+            let vendor_dir = web_assets::build_web_vendor_assets(&repo_root())?;
+            println!("Built web vendor assets: {}", vendor_dir.display());
+            Ok(())
+        }
+    }
+}
+
+fn cmd_playground(args: PlaygroundArgs) -> Result<()> {
+    match args.command {
+        PlaygroundCommand::Build(args) => cmd_build_playground(args),
+        PlaygroundCommand::Test => playground_cmd::run_playground_test_suite(&repo_root()),
+        PlaygroundCommand::Edit(args) => {
             let root = repo_root();
             let rayon = args.rayon;
-            if !args.skip_build {
-                ensure_wasm_deps(&root)?;
-                build_wasm(
-                    &root,
-                    WasmBuildProfile::Release,
-                    WasmVariant::FullWeb,
-                    rayon,
-                    false,
-                    false,
-                )?;
-            }
-            let pkg_subdir = select_full_web_pkg_subdir(&root, rayon);
+            playground_cmd::stage_playground_vendor_assets(&root)?;
+            ensure_wasm_deps(&root)?;
+            build_wasm(
+                &root,
+                WasmBuildProfile::Release,
+                WasmVariant::FullWeb,
+                rayon,
+                false,
+                false,
+            )?;
+            let pkg_subdir =
+                wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, rayon);
             serve_wasm(&root, args.port, &pkg_subdir)
         }
-        WasmCommand::Clean => clean_wasm(&repo_root()),
+        PlaygroundCommand::Clean => clean_wasm(&repo_root()),
     }
 }
 
@@ -1626,8 +1654,9 @@ fn run_cargo_with_args(root: &Path, args: &[String]) -> Result<()> {
     run_status(command)
 }
 
-fn cmd_build_wasm(args: WasmBuildArgs) -> Result<()> {
+fn cmd_build_playground(args: PlaygroundBuildArgs) -> Result<()> {
     let root = repo_root();
+    playground_cmd::stage_playground_vendor_assets(&root)?;
     ensure_wasm_deps(&root)?;
     let profile = if args.dev {
         WasmBuildProfile::Dev
@@ -1641,136 +1670,6 @@ fn cmd_build_wasm(args: WasmBuildArgs) -> Result<()> {
         args.rayon,
         args.pack,
         args.pack,
-    )
-}
-
-pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
-    let mut wasm_tests = Command::new("cargo");
-    wasm_tests
-        .arg("test")
-        .arg("-p")
-        .arg("rumoca-bind-wasm")
-        .arg("--all-features")
-        .arg("--verbose")
-        .current_dir(root);
-    run_status(wasm_tests)?;
-
-    run_wasm_editor_smoke_check(root)
-}
-
-pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
-    let js_checks = [
-        "editors/wasm/src/main.js",
-        "editors/wasm/src/modules/command_palette.js",
-        "editors/wasm/src/modules/diagnostics_panel.js",
-        "editors/wasm/src/modules/monaco_setup.js",
-        "editors/wasm/src/modules/modelica_language.js",
-        "editors/wasm/rumoca_worker.js",
-        "docs/user-guide/live/rumoca-live.js",
-    ];
-    for file in js_checks {
-        let mut cmd = Command::new("node");
-        cmd.arg("--check").arg(file).current_dir(root);
-        run_status(cmd)?;
-    }
-
-    ensure_any_file_contains(
-        root,
-        &[
-            "editors/wasm/src/modules/diagnostics_panel.js",
-            "editors/wasm/index.html",
-        ],
-        "diagnostic-quick-fix",
-    )?;
-    ensure_any_file_contains(
-        root,
-        &[
-            "editors/wasm/src/main.js",
-            "editors/wasm/src/modules/diagnostics_panel.js",
-        ],
-        "triggerModelicaQuickFix",
-    )?;
-    ensure_any_file_contains(
-        root,
-        &[
-            "editors/wasm/src/main.js",
-            "editors/wasm/src/modules/diagnostics_panel.js",
-        ],
-        "triggerQuickFixAtCursor",
-    )?;
-    ensure_any_file_contains(
-        root,
-        &["editors/wasm/src/modules/package_archive_controller.js"],
-        ".rumoca/cache/package-archives/v2/",
-    )?;
-    ensure_any_file_contains(
-        root,
-        &["editors/wasm/src/modules/package_archive_controller.js"],
-        "Discarding stale package-archive binary cache",
-    )?;
-
-    // Non-rayon (single-threaded) editor smoke build.
-    let rayon = false;
-    ensure_wasm_deps(root)?;
-    build_wasm(
-        root,
-        WasmBuildProfile::Release,
-        WasmVariant::FullWeb,
-        rayon,
-        false,
-        false,
-    )?;
-    let smoke_rayon = false;
-    if rayon {
-        build_wasm(
-            root,
-            WasmBuildProfile::Release,
-            WasmVariant::FullWeb,
-            smoke_rayon,
-            false,
-            false,
-        )?;
-    }
-    let pkg_subdir =
-        wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, smoke_rayon);
-    run_wasm_simulation_smoke(root, &pkg_subdir)?;
-    run_wasm_source_root_smoke(root, &pkg_subdir)?;
-    Ok(())
-}
-
-fn run_wasm_simulation_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
-    let mut wasm_smoke = Command::new("node");
-    wasm_smoke
-        .arg("editors/wasm/tests/simulate_smoke.mjs")
-        .arg("--pkg-subdir")
-        .arg(pkg_subdir)
-        .current_dir(root);
-    run_status(wasm_smoke)
-}
-
-fn run_wasm_source_root_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
-    let mut wasm_smoke = Command::new("node");
-    wasm_smoke
-        .arg("editors/wasm/tests/source_root_smoke.mjs")
-        .arg("--pkg-subdir")
-        .arg(pkg_subdir)
-        .current_dir(root);
-    run_status(wasm_smoke)
-}
-
-fn ensure_any_file_contains(root: &Path, files: &[&str], needle: &str) -> Result<()> {
-    for file in files {
-        let path = root.join(file);
-        let contents = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read smoke-check file {}", path.display()))?;
-        if contents.contains(needle) {
-            return Ok(());
-        }
-    }
-
-    bail!(
-        "expected to find `{needle}` in one of: {}",
-        files.join(", ")
     )
 }
 
@@ -1877,18 +1776,8 @@ fn wasm_build_subdir_name(profile: WasmBuildProfile, variant: WasmVariant, rayon
     }
 }
 
-fn select_full_web_pkg_subdir(root: &Path, rayon: bool) -> String {
-    let preferred = wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, rayon);
-    if root.join("pkg").join(&preferred).is_dir() {
-        return preferred;
-    }
-
-    let fallback = wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, !rayon);
-    if root.join("pkg").join(&fallback).is_dir() {
-        return fallback;
-    }
-
-    preferred
+fn wasm_package_dist_dir(root: &Path) -> PathBuf {
+    root.join("packages/rumoca/dist")
 }
 
 fn build_wasm(
@@ -1901,7 +1790,7 @@ fn build_wasm(
 ) -> Result<()> {
     let mut command = Command::new("node");
     command
-        .arg("packaging/npm/build.mjs")
+        .arg("packages/rumoca/build.mjs")
         .arg("--profile")
         .arg(match profile {
             WasmBuildProfile::Dev => "dev",
@@ -1920,12 +1809,55 @@ fn build_wasm(
         command.arg("--no-patch");
     }
     run_status(command)?;
-    println!("WASM build complete: {}", root.join("pkg").display());
+    println!(
+        "WASM build complete: {}",
+        wasm_package_dist_dir(root).display()
+    );
     Ok(())
 }
 
+pub(crate) fn ensure_docs_wasm_package(root: &Path) -> Result<()> {
+    let package_dir = wasm_package_dist_dir(root).join(wasm_build_subdir_name(
+        WasmBuildProfile::Release,
+        WasmVariant::FullWeb,
+        false,
+    ));
+    if docs_wasm_package_supports_live_examples(&package_dir)? {
+        println!(
+            "WASM package ready for docs live examples: {}",
+            package_dir.display()
+        );
+        return Ok(());
+    }
+
+    ensure_wasm_deps(root)?;
+    build_wasm(
+        root,
+        WasmBuildProfile::Release,
+        WasmVariant::FullWeb,
+        false,
+        false,
+        false,
+    )
+}
+
+fn docs_wasm_package_supports_live_examples(package_dir: &Path) -> Result<bool> {
+    if !package_dir.join("rumoca_bind_wasm.js").is_file() {
+        return Ok(false);
+    }
+    let types_path = package_dir.join("rumoca_bind_wasm.d.ts");
+    let types = match fs::read_to_string(&types_path) {
+        Ok(types) => types,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", types_path.display()));
+        }
+    };
+    Ok(types.contains("export class WasmStepper"))
+}
+
 fn clean_wasm(root: &Path) -> Result<()> {
-    let pkg = root.join("pkg");
+    let pkg = wasm_package_dist_dir(root);
     if pkg.exists() {
         fs::remove_dir_all(&pkg).with_context(|| format!("failed to remove {}", pkg.display()))?;
     }

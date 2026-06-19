@@ -1,6 +1,9 @@
 use wasm_bindgen::prelude::*;
 
-use crate::{compile_requested_model, qualify_input_model_name, with_singleton_session};
+use crate::{
+    compile_requested_model, qualify_input_model_name, simulation_api::build_simulation_options,
+    with_singleton_session,
+};
 
 /// Opaque handle to a real-time simulation stepper running in WASM.
 ///
@@ -11,32 +14,30 @@ pub struct WasmStepper {
     stepper: rumoca_sim::SimStepper,
     /// Kept for `reset()` — recreates the stepper from scratch.
     dae: rumoca_compile::compile::Dae,
+    opts: rumoca_sim::SimOptions,
 }
 
 #[wasm_bindgen]
 impl WasmStepper {
     /// Compile a Modelica model and create a stepper ready for interactive stepping.
     ///
-    /// `source` is the full Modelica source text, `model_name` is the class to simulate.
+    /// `source` is the full Modelica source text and `model_name` is the class
+    /// to simulate. The stepper backend is chosen by the compiled package and
+    /// model experiment metadata, not by the batch simulation solver selector.
     #[wasm_bindgen(constructor)]
     pub fn new(source: &str, model_name: &str) -> Result<WasmStepper, JsValue> {
-        let dae = with_singleton_session(|session| {
+        let (dae, opts) = with_singleton_session(|session| {
             session.update_document("input.mo", source);
             let requested_model = qualify_input_model_name(session, model_name);
             let result = compile_requested_model(session, &requested_model)?;
-            Ok(result.dae)
+            let (opts, _solver_label) = build_simulation_options(&result, 0.0, 0.0, "");
+            Ok((result.dae, opts))
         })?;
 
-        let opts = rumoca_sim::SimOptions {
-            rtol: 1e-3,
-            atol: 1e-3,
-            solver_mode: rumoca_sim::SimSolverMode::Bdf,
-            ..rumoca_sim::SimOptions::default()
-        };
-        let stepper = rumoca_sim::SimStepper::new(&dae, opts)
+        let stepper = rumoca_sim::SimStepper::new(&dae, opts.clone())
             .map_err(|e| JsValue::from_str(&format!("Stepper creation error: {e}")))?;
 
-        Ok(WasmStepper { stepper, dae })
+        Ok(WasmStepper { stepper, dae, opts })
     }
 
     /// Set an input value by name. Takes effect on the next `step()` call.
@@ -85,13 +86,7 @@ impl WasmStepper {
 
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), JsValue> {
-        let opts = rumoca_sim::SimOptions {
-            rtol: 1e-3,
-            atol: 1e-3,
-            solver_mode: rumoca_sim::SimSolverMode::Bdf,
-            ..rumoca_sim::SimOptions::default()
-        };
-        self.stepper = rumoca_sim::SimStepper::new(&self.dae, opts)
+        self.stepper = rumoca_sim::SimStepper::new(&self.dae, self.opts.clone())
             .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
         Ok(())
     }

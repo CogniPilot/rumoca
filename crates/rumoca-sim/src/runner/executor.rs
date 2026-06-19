@@ -965,7 +965,7 @@ fn step_substeps(stepper: &mut impl InteractiveStepper, dt: f64) -> Result<()> {
 }
 
 // WebSocket server lives in rumoca-transport-websocket.
-// HTTP viewer server lives in rumoca-viz-web.
+// HTTP viewer server lives in rumoca-sim::web.
 
 #[cfg(test)]
 mod tests {

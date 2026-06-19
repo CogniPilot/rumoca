@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DEFAULT_OUTPUT_PREFIX_REL: &str = "target/crate-dag/workspace-crate-dag";
-const DEFAULT_SHARED_VIEW_REL: &str = ".rumoca/crate-dag-default-view.json";
+const DEFAULT_SHARED_VIEW_REL: &str = "rumoca-crate-dag-default-view.json";
 
 #[derive(Debug, Clone, ClapArgs)]
 pub(crate) struct CrateDagArgs {
@@ -28,7 +28,7 @@ pub(crate) struct CrateDagArgs {
     /// Graph presentation style
     #[arg(long, value_enum, default_value_t = PresentationLayout::Force)]
     layout: PresentationLayout,
-    /// Shared default view JSON (default: .rumoca/crate-dag-default-view.json when present)
+    /// Shared default view JSON (default: rumoca-crate-dag-default-view.json when present)
     #[arg(long)]
     shared_view: Option<PathBuf>,
     /// Open the generated output with the system viewer

@@ -26,7 +26,7 @@
 # Simulation
 
 - [Running Simulations](./simulation/running.md)
-- [Scenario Files (rum.toml)](./simulation/scenario-tomls.md)
+- [Scenario Files (rumoca-scenario.toml)](./simulation/scenario-tomls.md)
 - [Solvers and Accuracy](./simulation/solvers.md)
 - [Interactive Simulation](./simulation/interactive.md)
 - [Inspecting and Debugging Models](./simulation/inspect.md)
@@ -35,11 +35,6 @@
 
 - [Targets and Templates](./codegen/targets.md)
 - [Custom Targets](./codegen/custom-targets.md)
-
-# Examples
-
-- [Examples Overview](./examples/index.md)
-- [Live Examples](./examples/live.md)
 
 ---
 

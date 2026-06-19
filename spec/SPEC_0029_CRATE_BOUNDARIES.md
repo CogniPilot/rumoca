@@ -249,7 +249,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Simulation facade/runner | `rumoca-sim` | Composes solvers/reporting/viz behind features |
 | Interactive stepper APIs | separate from runtime contracts | Stepper is one runtime mode, not THE runtime |
 | Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
-| Visualization | `rumoca-viz-web` | MUST NOT own solver/backend policy |
+| Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |
 | Protocol codecs (FlatBuffers, etc.) | `rumoca-codec-*` | No simulation, no controller, no HTTP, no scene |
 
@@ -284,9 +284,8 @@ stable execution ABI and share the prepared-interpreter equivalence tests used
 by concrete solver backends.
 
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
-MUST NOT directly depend on concrete solver packages or visualization asset
-crates; backend-selection user APIs MUST affect runtime behavior, not only
-metadata.
+MUST NOT depend on concrete solvers or visualization assets; backend-selection
+APIs MUST affect runtime behavior, not only metadata.
 
 ## Dependency Tiers
 
@@ -306,28 +305,27 @@ Tier 3 (Phases/Evaluation) → Tier 2 (IR data) → Tier 1 (Foundation).
 Dependencies flow strictly downward.
 ```
 
-Input boundary rule:
+Input boundary:
 
 - `rumoca-input` owns abstract input identifiers, config compilation, local
   state, and signal mapping only. It MUST NOT depend on concrete adapters or
   native device crates such as `gilrs` or `crossterm`.
-- Concrete input adapters depend on `rumoca-input` and translate native device
-  events into `rumoca-input` snapshots/events.
-- Facades such as `rumoca-sim` MAY compose input adapters behind optional runner
-  features, but adapter dependencies MUST remain opt-in.
+- Concrete adapters depend on `rumoca-input` and translate device events.
+- Facades MAY compose input adapters behind opt-in runner features.
 
-Simulation composition rule:
+Simulation composition:
 
-- Simulation applications are data/config composition, not per-vehicle framework code.
+- Simulation apps are data/config composition, not per-vehicle framework code.
 - `rumoca-sim` and CLI MAY wire axes from config; app-specific signal names,
   routes, controller conventions, and viewer keys stay in examples/config/assets.
-- The durable simulation axes are separate crate families:
+- Durable simulation axes are separate crate families:
   - `rumoca-codec` and codec implementations own logical signal-frame encoding.
   - Transport crates own bytes-on-the-wire movement.
   - Solver crates own numerical integration backends.
   - Input crates own abstract input state and native device adapters.
-  - Visualization crates own HTTP/viewer assets only.
-- Coupled and standalone modes share compiler/solver contracts; loop policy is runtime behavior.
+  - Browser packages own HTTP/viewer assets and npm locks; Rust crates MAY
+    serve prepared assets, but MUST NOT build frontend packages.
+- Coupled and standalone modes share compiler/solver contracts; loop policy is runtime.
 - Configured signal references MAY read compiled model values, local input state,
   runtime counters, and constants. The signal-reference language must stay in the
   simulation/config layer and MUST NOT leak into compiler IR.
