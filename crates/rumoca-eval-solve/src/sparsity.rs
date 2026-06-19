@@ -57,6 +57,25 @@ pub fn row_seed_dependencies(program: &[LinearOp]) -> Vec<usize> {
             LinearOp::LoadSeed { dst, index } => {
                 set_reg_deps(&mut deps, dst, BTreeSet::from([index]));
             }
+            // A runtime-indexed parameter load carries the seed dependencies of
+            // its index register (which select decided the slot), matching the
+            // select-chain form it replaces.
+            LinearOp::LoadIndexedP { dst, index, .. } => {
+                let src_deps = reg_deps(&deps, index);
+                set_reg_deps(&mut deps, dst, src_deps);
+            }
+            // A runtime-indexed seed load may resolve to any column in its run,
+            // plus whatever its index register depends on.
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let mut op_deps = reg_deps(&deps, index);
+                op_deps.extend(base..base + count);
+                set_reg_deps(&mut deps, dst, op_deps);
+            }
             LinearOp::Move { dst, src } => {
                 let src_deps = reg_deps(&deps, src);
                 set_reg_deps(&mut deps, dst, src_deps);

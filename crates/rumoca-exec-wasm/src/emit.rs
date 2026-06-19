@@ -288,6 +288,8 @@ fn max_register_for_op(op: &LinearOp) -> usize {
         | LinearOp::LoadP { dst, .. }
         | LinearOp::LoadSeed { dst, .. }
         | LinearOp::TableBounds { dst, .. } => dst as usize,
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => dst.max(index) as usize,
         LinearOp::RandomInitialState {
             dst,
             local_seed,
@@ -405,6 +407,18 @@ impl<'a> BodyEmitter<'a> {
                 self.push(Instruction::F64Load(memarg_for_index(index)?));
                 self.set_reg(dst);
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.emit_indexed_load(dst, base, count, index, P_PTR_PARAM)?,
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => self.emit_indexed_load(dst, base, count, index, SEED_PTR_PARAM)?,
             LinearOp::Move { dst, src } => {
                 self.push_reg(src);
                 self.set_reg(dst);
@@ -439,6 +453,35 @@ impl<'a> BodyEmitter<'a> {
             } => self.emit_select(dst, cond, if_true, if_false),
             LinearOp::StoreOutput { src } => self.emit_store_output(src)?,
         }
+        Ok(())
+    }
+
+    /// Emit `mem[ptr + 8*(base + clamp(round(index), 0, count-1))]` as an f64
+    /// load, matching [`rumoca_ir_solve::resolve_indexed_slot`]: round the
+    /// runtime f64 index to nearest, clamp into `[0, count-1]`, scale to bytes,
+    /// add the run-relative base via the static load offset.
+    fn emit_indexed_load(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+        ptr_param: u32,
+    ) -> Result<(), String> {
+        let last = count.saturating_sub(1) as f64;
+        self.push_reg(index);
+        self.push(Instruction::F64Nearest);
+        self.push(Instruction::F64Const(0.0f64.into()));
+        self.push(Instruction::F64Max);
+        self.push(Instruction::F64Const(last.into()));
+        self.push(Instruction::F64Min);
+        self.push(Instruction::I32TruncF64S);
+        self.push(Instruction::I32Const(8));
+        self.push(Instruction::I32Mul);
+        self.push(Instruction::LocalGet(ptr_param));
+        self.push(Instruction::I32Add);
+        self.push(Instruction::F64Load(memarg_for_index(base)?));
+        self.set_reg(dst);
         Ok(())
     }
 

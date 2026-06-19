@@ -10,12 +10,13 @@
 //! `ProjectSession` Python class provides a reusable session for workloads that
 //! want to retain loaded source roots and compile/query caches across calls.
 
-use ::rumoca::CompilationResult as HighLevelCompilationResult;
+use ::rumoca::{CompilationResult as HighLevelCompilationResult, TemplateIr};
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
 use rumoca_compile::codegen::targets::{
-    TargetBundle, render_dae_target_files, validate_dae_target_capabilities,
+    RenderedTargetFile, TargetBundle, TargetTemplateIr, TargetTemplateSource,
+    render_dae_target_files, validate_dae_target_capabilities,
 };
 use rumoca_compile::compile::{FailedPhase, PhaseResult, Session, SessionConfig, SourceRootKind};
 use rumoca_compile::parsing::{
@@ -1506,10 +1507,53 @@ fn render_compiled_target(
         validate_dae_target_capabilities(&result.dae, &manifest, capabilities)
             .map_err(|e| PyRuntimeStringError(format!("Target capability error: {e}")))?;
     }
-    let files = render_dae_target_files(&bundle, &manifest, &result.dae, model_name)
-        .map_err(|e| PyRuntimeStringError(format!("Target rendering error: {e}")))?;
+    // DAE-IR targets render straight from the DAE; solve-IR targets (casadi-solve,
+    // jax-solve, fmi*, c-solve, rust-solve, wgsl-solve, ...) must first lower the
+    // DAE to the scalarized, causalized solve IR and render through a
+    // SolveTemplateRenderer — the same path the CLI's `compile --target` uses.
+    let files = if manifest.ir == TargetTemplateIr::Solve {
+        render_solve_target_files(&bundle, &manifest, result, model_name)?
+    } else {
+        render_dae_target_files(&bundle, &manifest, &result.dae, model_name)
+            .map_err(|e| PyRuntimeStringError(format!("Target rendering error: {e}")))?
+    };
     serde_json::to_string_pretty(&files)
         .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+}
+
+/// Render a solve-IR target's files from a compiled model.
+///
+/// Renders each manifest file's path and template through the compilation
+/// result's own IR-aware renderer (`render_template_str_with_name_and_ir` with
+/// `TemplateIr::Solve`) — the exact same call the CLI's `compile --target` makes,
+/// so the binding's output is byte-for-byte identical to the CLI's.
+fn render_solve_target_files(
+    bundle: &TargetBundle,
+    manifest: &rumoca_compile::codegen::targets::TargetManifest,
+    result: &HighLevelCompilationResult,
+    model_name: &str,
+) -> Result<Vec<RenderedTargetFile>, PyRuntimeStringError> {
+    let mut files = Vec::with_capacity(manifest.files.len());
+    for file in &manifest.files {
+        let path = result
+            .render_template_str_with_name_and_ir(&file.path, model_name, TemplateIr::Solve)
+            .map_err(|e| {
+                PyRuntimeStringError(format!("Render target path '{}': {e}", file.path))
+            })?;
+        let template = bundle.template_source(&file.template).map_err(|e| {
+            PyRuntimeStringError(format!("Target template '{}': {e}", file.template))
+        })?;
+        let content = result
+            .render_template_str_with_name_and_ir(template.as_ref(), model_name, TemplateIr::Solve)
+            .map_err(|e| {
+                PyRuntimeStringError(format!("Render target template '{}': {e}", file.template))
+            })?;
+        files.push(RenderedTargetFile {
+            path: path.trim().to_string(),
+            content,
+        });
+    }
+    Ok(files)
 }
 
 fn seconds_since(started: Instant) -> f64 {

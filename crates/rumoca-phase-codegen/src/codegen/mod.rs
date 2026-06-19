@@ -21,14 +21,18 @@ use std::path::Path;
 mod render_c;
 mod render_expr;
 mod render_solve;
+mod render_solve_ops;
 mod render_stmt;
+mod solve_lazy;
 
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_pre_param_binding_c_function,
-    render_solve_row_c_function, render_solve_row_rust_function, render_solve_row_wgsl_function,
-    render_solve_slot_assign_c_function,
+    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
+    render_solve_block_py_function, render_solve_block_rust_function,
+    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
+    render_solve_row_rust_function, render_solve_row_wgsl_function,
+    render_solve_slot_assign_c_function, solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 
@@ -841,7 +845,9 @@ fn solve_template_blocks_value(
 fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Value, CodegenError> {
     let scalar_programs = rumoca_eval_solve::to_scalar_program_block(block);
     let uses_linear_solve = scalar_program_block_uses_linear_solve_component(&scalar_programs);
-    let nodes = Value::from_serialize(&block.nodes);
+    // Lazy nodes (one ComputeNode -> ops materialized on demand) so blocks whose
+    // nodes contain large op programs don't materialize as eager Values.
+    let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()));
     let program_spans = Value::from_serialize(&scalar_programs.program_spans);
     let (stencils, residual_rows) = stencil_template_partition(block);
     let stencil_residual_rows = Value::from_serialize(&residual_rows);
@@ -1311,6 +1317,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
+    env.add_function("render_solve_block_c", render_solve_block_c_function);
+    env.add_function("render_solve_block_rust", render_solve_block_rust_function);
+    env.add_function("render_solve_block_py", render_solve_block_py_function);
+    env.add_function("store_output_count", solve_block_output_count_function);
     env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
     env.add_function(
         "render_solve_stencil_wgsl",
@@ -1950,6 +1960,8 @@ mod solve_renderer;
 pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;
 
+#[cfg(test)]
+mod codegen_block_render_tests;
 #[cfg(test)]
 mod codegen_tests;
 #[cfg(test)]

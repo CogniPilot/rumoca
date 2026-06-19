@@ -2,7 +2,7 @@
 //!
 //! SPEC_0021 file-size exception: this facade coordinates solve lowering
 //! submodules and still owns shared lowering dispatch. split plan: continue
-//! moving projection, branch, and row-family logic into focused submodules.
+//! moving projection and branch logic into focused submodules.
 
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use rumoca_ir_solve::{
 use rumoca_ir_solve::{ScalarSlot, VarLayout};
 
 mod array_values;
+mod builtin_dispatch;
 mod builtin_methods;
 mod clock;
 mod compile_time;
@@ -991,6 +992,13 @@ impl<'a> LowerBuilder<'a> {
             .map(|subscript| self.lower_structural_index_selector(subscript, scope, call_depth))
             .collect::<Result<Vec<_>, _>>()?;
         let fallback_span = subscript_fallback_span(subscripts);
+        // Fast path: when the dynamic subscript resolves to a contiguous,
+        // row-major run of constant parameter slots, emit a single indexed
+        // load instead of an N-deep `(idx==k ? p[slot_k] : prev)` select chain.
+        // Falls through to the select chain for anything that does not match.
+        if let Some(reg) = self.try_lower_indexed_param_load(&target, &selectors, fallback_span)? {
+            return Ok(reg);
+        }
         let candidates = self.lower_dynamic_indexed_binding_candidates(
             &target,
             fallback_span,
@@ -1047,6 +1055,142 @@ impl<'a> LowerBuilder<'a> {
         }
         candidates.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
         Ok(candidates)
+    }
+
+    /// Attempt to lower a dynamic parameter-array subscript to a single
+    /// [`LinearOp::LoadIndexedP`]. Returns `Ok(None)` (so the caller falls back
+    /// to the select chain) unless every element resolves to a contiguous,
+    /// row-major run of constant parameter slots with no computed override.
+    fn try_lower_indexed_param_load(
+        &mut self,
+        target: &DynamicBindingTarget,
+        selectors: &[Reg],
+        fallback_span: Option<rumoca_core::Span>,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(grid) = self.indexed_param_grid(target, selectors.len(), fallback_span) else {
+            return Ok(None);
+        };
+        let Some((base, count, strides)) = contiguous_param_grid_layout(&grid) else {
+            return Ok(None);
+        };
+        // Flat 0-based offset register: `Σ_d (selector_d - 1) * stride_d`. The
+        // load op rounds and clamps the accumulated offset, so the selectors do
+        // not need per-term rounding here.
+        let mut offset: Option<Reg> = None;
+        for (d, &selector) in selectors.iter().enumerate() {
+            let one = self.emit_const(1.0);
+            let zero_based = self.emit_binary(BinaryOp::Sub, selector, one);
+            let term = if strides[d] == 1 {
+                zero_based
+            } else {
+                let stride = self.emit_const(strides[d] as f64);
+                self.emit_binary(BinaryOp::Mul, zero_based, stride)
+            };
+            offset = Some(match offset {
+                None => term,
+                Some(acc) => self.emit_binary(BinaryOp::Add, acc, term),
+            });
+        }
+        let offset = offset.expect("dynamic subscript has at least one dimension");
+        Ok(Some(self.emit_load_indexed_p(base, count, offset)))
+    }
+
+    /// The `(indices, parameter-slot)` grid for a dynamic subscript target, but
+    /// only when every element is a pure constant-parameter slot with no
+    /// locally-computed binding or direct-assignment override. Non-emitting:
+    /// it reads layout metadata so the fast-path check stays side-effect free.
+    fn indexed_param_grid(
+        &self,
+        target: &DynamicBindingTarget,
+        ndim: usize,
+        fallback_span: Option<rumoca_core::Span>,
+    ) -> Option<Vec<(Vec<usize>, usize)>> {
+        // Accumulate `indices -> parameter-slot` from both the function-argument
+        // (local) and model-layout sources; either helper returning `None`
+        // aborts the fast path.
+        let mut grid: IndexMap<Vec<usize>, usize> = IndexMap::new();
+        self.collect_local_param_slots(target, ndim, &mut grid)?;
+        self.collect_layout_param_slots(target, ndim, fallback_span, &mut grid)?;
+        if grid.is_empty() {
+            return None;
+        }
+        let mut out: Vec<(Vec<usize>, usize)> = grid.into_iter().collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(out)
+    }
+
+    /// Add the function-argument array elements (local indexed bindings) to
+    /// `grid`, recovering each element's parameter slot from its CSE'd load
+    /// register. `None` if any element is not a stored parameter slot.
+    fn collect_local_param_slots(
+        &self,
+        target: &DynamicBindingTarget,
+        ndim: usize,
+        grid: &mut IndexMap<Vec<usize>, usize>,
+    ) -> Option<()> {
+        // No local bindings for this target: nothing to add, not a failure.
+        let Some(locals) = self.local_indexed_bindings.get(&target.display_key) else {
+            return Some(());
+        };
+        let reg_to_pslot: std::collections::HashMap<Reg, usize> = self
+            .cse
+            .slots
+            .iter()
+            .filter_map(|(key, &reg)| match key {
+                cse::SlotLoadKey::P(index) => Some((reg, *index)),
+                _ => None,
+            })
+            .collect();
+        for entry in locals {
+            if entry.indices.len() != ndim {
+                return None;
+            }
+            let slot = reg_to_pslot.get(&entry.reg).copied()?;
+            if grid
+                .insert(entry.indices.clone(), slot)
+                .is_some_and(|prev| prev != slot)
+            {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    /// Add model-level parameter-array slots from the solve layout to `grid`.
+    /// `None` if any element has a direct-assignment override or is not a pure
+    /// parameter slot. Layout-lookup errors leave `grid` unchanged (the
+    /// select-chain fallback re-runs the same lookup authoritatively).
+    fn collect_layout_param_slots(
+        &self,
+        target: &DynamicBindingTarget,
+        ndim: usize,
+        fallback_span: Option<rumoca_core::Span>,
+        grid: &mut IndexMap<Vec<usize>, usize>,
+    ) -> Option<()> {
+        let Ok((entry_display_key, entries)) = self.dynamic_layout_entries(target, fallback_span)
+        else {
+            return Some(());
+        };
+        for entry in sorted_flat_entries(&entries) {
+            if entry.indices.len() != ndim {
+                return None;
+            }
+            // A direct assignment would shadow the stored parameter value.
+            let scalar_key = format_subscript_binding_key(&entry_display_key, &entry.indices);
+            if self.direct_assignments.contains_key(&scalar_key) {
+                return None;
+            }
+            let ScalarSlot::P { index, .. } = entry.slot else {
+                return None;
+            };
+            if grid
+                .insert(entry.indices.clone(), index)
+                .is_some_and(|prev| prev != index)
+            {
+                return None;
+            }
+        }
+        Some(())
     }
 
     fn dynamic_layout_entries(
@@ -1771,233 +1915,6 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::OpUnary::Empty => rhs,
         };
         Ok(reg)
-    }
-
-    fn lower_simple_builtin(
-        &mut self,
-        function: rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-        span: rumoca_core::Span,
-    ) -> Option<Result<Reg, LowerError>> {
-        let arg = |builder: &mut Self, idx: usize| -> Result<Reg, LowerError> {
-            let expr = args.get(idx).ok_or_else(|| LowerError::ContractViolation {
-                reason: format!(
-                    "builtin {:?} requires argument at index {}, but only {} were provided",
-                    function,
-                    idx,
-                    args.len()
-                ),
-                span: rumoca_core::Span::DUMMY,
-            })?;
-            builder.lower_expr(expr, scope, call_depth)
-        };
-        let unary = |builder: &mut Self, op: UnaryOp| -> Result<Reg, LowerError> {
-            let x = arg(builder, 0)?;
-            Ok(builder.emit_unary(op, x))
-        };
-        let binary = |builder: &mut Self, op: BinaryOp| -> Result<Reg, LowerError> {
-            let x = arg(builder, 0)?;
-            let y = arg(builder, 1)?;
-            Ok(builder.emit_binary(op, x, y))
-        };
-
-        let result = match function {
-            rumoca_core::BuiltinFunction::Abs => unary(self, UnaryOp::Abs),
-            rumoca_core::BuiltinFunction::Sign => unary(self, UnaryOp::Sign),
-            rumoca_core::BuiltinFunction::Sqrt => unary(self, UnaryOp::Sqrt),
-            rumoca_core::BuiltinFunction::Floor | rumoca_core::BuiltinFunction::Integer => {
-                unary(self, UnaryOp::Floor)
-            }
-            rumoca_core::BuiltinFunction::Ceil => unary(self, UnaryOp::Ceil),
-            rumoca_core::BuiltinFunction::Sin => unary(self, UnaryOp::Sin),
-            rumoca_core::BuiltinFunction::Cos => unary(self, UnaryOp::Cos),
-            rumoca_core::BuiltinFunction::Tan => unary(self, UnaryOp::Tan),
-            rumoca_core::BuiltinFunction::Asin => unary(self, UnaryOp::Asin),
-            rumoca_core::BuiltinFunction::Acos => unary(self, UnaryOp::Acos),
-            rumoca_core::BuiltinFunction::Atan => unary(self, UnaryOp::Atan),
-            rumoca_core::BuiltinFunction::Sinh => unary(self, UnaryOp::Sinh),
-            rumoca_core::BuiltinFunction::Cosh => unary(self, UnaryOp::Cosh),
-            rumoca_core::BuiltinFunction::Tanh => unary(self, UnaryOp::Tanh),
-            rumoca_core::BuiltinFunction::Exp => unary(self, UnaryOp::Exp),
-            rumoca_core::BuiltinFunction::Log => unary(self, UnaryOp::Log),
-            rumoca_core::BuiltinFunction::Log10 => unary(self, UnaryOp::Log10),
-            rumoca_core::BuiltinFunction::Atan2 => binary(self, BinaryOp::Atan2),
-            rumoca_core::BuiltinFunction::Div => self.lower_div_builtin(args, scope, call_depth),
-            rumoca_core::BuiltinFunction::Mod => {
-                self.lower_remainder_builtin(args, scope, call_depth, UnaryOp::Floor, "mod")
-            }
-            rumoca_core::BuiltinFunction::Rem => {
-                self.lower_remainder_builtin(args, scope, call_depth, UnaryOp::Trunc, "rem")
-            }
-            rumoca_core::BuiltinFunction::NoEvent => arg(self, 0),
-            rumoca_core::BuiltinFunction::Homotopy => {
-                arg(self, usize::from(self.is_initial_mode && args.len() > 1))
-            }
-            rumoca_core::BuiltinFunction::Smooth => arg(self, 1),
-            rumoca_core::BuiltinFunction::Zeros => Ok(self.emit_const(0.0)),
-            rumoca_core::BuiltinFunction::Ones => Ok(self.emit_const(1.0)),
-            rumoca_core::BuiltinFunction::Fill
-            | rumoca_core::BuiltinFunction::Scalar
-            | rumoca_core::BuiltinFunction::Vector
-            | rumoca_core::BuiltinFunction::Matrix
-            | rumoca_core::BuiltinFunction::Diagonal
-            | rumoca_core::BuiltinFunction::Transpose
-            | rumoca_core::BuiltinFunction::Linspace
-            | rumoca_core::BuiltinFunction::Cat
-            | rumoca_core::BuiltinFunction::Cross
-            | rumoca_core::BuiltinFunction::Skew
-            | rumoca_core::BuiltinFunction::OuterProduct
-            | rumoca_core::BuiltinFunction::Symmetric => {
-                self.lower_builtin_first_array_like_value(function, args, scope, call_depth, span)
-            }
-            rumoca_core::BuiltinFunction::Ndims => {
-                let dims = match self.infer_expr_dims(
-                    args.first()
-                        .expect("ndims() requires exactly 1 argument — malformed Solve-IR"),
-                    scope,
-                ) {
-                    Ok(dims) => dims,
-                    Err(err) => return Some(Err(err)),
-                };
-                Ok(self.emit_const(dims.len() as f64))
-            }
-            rumoca_core::BuiltinFunction::Identity => Ok(self.emit_const(1.0)),
-            _ => return None,
-        };
-        Some(result)
-    }
-
-    fn lower_div_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        if args.len() != 2 {
-            return Err(LowerError::ContractViolation {
-                reason: format!("div() requires exactly 2 arguments, got {}", args.len()),
-                span: rumoca_core::Span::DUMMY,
-            });
-        }
-        let x = self.lower_expr(&args[0], scope, call_depth)?;
-        let y = self.lower_expr(&args[1], scope, call_depth)?;
-        let q = self.emit_binary(BinaryOp::Div, x, y);
-        Ok(self.emit_unary(UnaryOp::Trunc, q))
-    }
-
-    fn lower_remainder_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-        quotient_rounding: UnaryOp,
-        function_name: &str,
-    ) -> Result<Reg, LowerError> {
-        if args.len() != 2 {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
-                    "{function_name}() requires exactly 2 arguments, got {}",
-                    args.len()
-                ),
-                span: rumoca_core::Span::DUMMY,
-            });
-        }
-        let x = self.lower_expr(&args[0], scope, call_depth)?;
-        let y = self.lower_expr(&args[1], scope, call_depth)?;
-        let q = self.emit_binary(BinaryOp::Div, x, y);
-        let q_rounded = self.emit_unary(quotient_rounding, q);
-        let product = self.emit_binary(BinaryOp::Mul, q_rounded, y);
-        Ok(self.emit_binary(BinaryOp::Sub, x, product))
-    }
-
-    fn lower_builtin(
-        &mut self,
-        function: rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-        span: rumoca_core::Span,
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        if let Some(result) = self.lower_simple_builtin(function, args, scope, call_depth, span) {
-            return result;
-        }
-
-        let arg = |builder: &mut Self, idx: usize| -> Result<Reg, LowerError> {
-            let expr = args.get(idx).ok_or_else(|| LowerError::ContractViolation {
-                reason: format!(
-                    "builtin {:?} requires argument at index {}, but only {} were provided",
-                    function,
-                    idx,
-                    args.len()
-                ),
-                span,
-            })?;
-            builder.lower_expr(expr, scope, call_depth)
-        };
-
-        match function {
-            rumoca_core::BuiltinFunction::Min => {
-                self.lower_min_max_builtin(args, scope, call_depth, BinaryOp::Min, f64::INFINITY)
-            }
-            rumoca_core::BuiltinFunction::Max => self.lower_min_max_builtin(
-                args,
-                scope,
-                call_depth,
-                BinaryOp::Max,
-                f64::NEG_INFINITY,
-            ),
-            // MLS §3.7.2: delay(expr, delayTime) reads expr at a previous
-            // time instant. During event iteration it must not feed the
-            // current unknown value back into the same discrete solve.
-            rumoca_core::BuiltinFunction::Delay => {
-                if args.is_empty() {
-                    return Err(LowerError::ContractViolation {
-                        reason: "delay() requires at least 1 argument".to_string(),
-                        span,
-                    });
-                }
-                self.lower_expr_in_mode(&args[0], scope, call_depth, ValueMode::Pre)
-            }
-            rumoca_core::BuiltinFunction::SemiLinear => {
-                let x = arg(self, 0)?;
-                let k1 = arg(self, 1)?;
-                let k2 = arg(self, 2)?;
-                let zero = self.emit_const(0.0);
-                let cond = self.emit_compare(CompareOp::Ge, x, zero);
-                let pos = self.emit_binary(BinaryOp::Mul, k1, x);
-                let neg = self.emit_binary(BinaryOp::Mul, k2, x);
-                Ok(self.emit_select(cond, pos, neg))
-            }
-            rumoca_core::BuiltinFunction::Der => Ok(self.emit_const(0.0)),
-            rumoca_core::BuiltinFunction::Pre => Err(unsupported_at(
-                "pre() must be lowered to __pre__ parameters before Solve-IR lowering",
-                span,
-            )),
-            rumoca_core::BuiltinFunction::Edge => self.lower_edge_builtin(args, scope, call_depth),
-            rumoca_core::BuiltinFunction::Change => {
-                self.lower_change_builtin(args, scope, call_depth)
-            }
-            rumoca_core::BuiltinFunction::Initial => self.lower_initial_builtin(),
-            // MLS §8.6: terminal() is false during ordinary simulation
-            // evaluation; terminal-event handling can override this phase
-            // marker explicitly when that event is implemented.
-            rumoca_core::BuiltinFunction::Terminal => Ok(self.emit_const(0.0)),
-            rumoca_core::BuiltinFunction::Sum => self.lower_sum_builtin(args, scope, call_depth),
-            rumoca_core::BuiltinFunction::Product => {
-                self.lower_product_builtin(args, scope, call_depth)
-            }
-            rumoca_core::BuiltinFunction::Size => self.lower_size_builtin(args, scope, call_depth),
-            rumoca_core::BuiltinFunction::Sample => {
-                self.lower_sample_builtin(args, scope, call_depth)
-            }
-            rumoca_core::BuiltinFunction::Reinit => Err(unsupported_at(
-                "reinit() must be converted to event update equations before Solve-IR row lowering",
-                span,
-            )),
-            _ => unreachable!("simple builtin handled before detailed lowering"),
-        }
     }
 }
 

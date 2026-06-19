@@ -534,13 +534,18 @@ fn build_implicit_rhs_rows(
     let mut rows = vec![zero_rhs_row(); solver_scalar_count];
     let mut row_targets = vec![None; solver_scalar_count];
     let mut occupied = vec![false; solver_scalar_count];
+    // When the derivative lowers to one program per state, copy each into its
+    // state row. When it lowers to fewer (multi-output) programs — e.g. a vector
+    // function call shared across states — the per-state scalar rows here are
+    // placeholders: the real computation is supplied by the structured
+    // `derivative_rhs` ComputeBlock in `build_implicit_rhs_compute_block`
+    // (taken whenever output_count == state_count), and the projection plan only
+    // analyzes the algebraic (tail) rows. Only the y-slot targets matter here.
+    let per_state_derivative_rows = derivative_rhs.len() == state_scalar_count;
     for (idx, target_row) in rows.iter_mut().enumerate().take(state_scalar_count) {
-        let Some(row) = derivative_rhs.get(idx) else {
-            return Err(LowerError::Unsupported {
-                reason: format!("missing state derivative RHS row {idx} for solve layout"),
-            });
-        };
-        *target_row = row.clone();
+        if per_state_derivative_rows {
+            *target_row = derivative_rhs[idx].clone();
+        }
         row_targets[idx] = Some(solve::scalar_slot_y(idx));
         occupied[idx] = true;
     }
@@ -697,6 +702,9 @@ fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
         }
         Op::LoadY { dst, index } => def_use(dst, Some(index), Vec::new()),
         Op::LoadSeed { dst, .. } => def_use(dst, None, Vec::new()),
+        Op::LoadIndexedP { dst, index, .. } | Op::LoadIndexedSeed { dst, index, .. } => {
+            def_use(dst, None, vec![index])
+        }
         Op::Move { dst, src } | Op::Unary { dst, arg: src, .. } => def_use(dst, None, vec![src]),
         Op::Binary { dst, lhs, rhs, .. } | Op::Compare { dst, lhs, rhs, .. } => {
             def_use(dst, None, vec![lhs, rhs])

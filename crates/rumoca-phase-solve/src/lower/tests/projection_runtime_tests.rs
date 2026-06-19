@@ -785,6 +785,76 @@ fn lower_expression_handles_dynamic_varref_subscript_expr() {
         );
     }
 }
+
+/// A runtime subscript into a constant *parameter* array lowers to a single
+/// `LoadIndexedP` (an O(1) indexed load) instead of an N-deep select chain,
+/// and reads the same element the select chain would for in-range indices.
+#[test]
+fn lower_expression_dynamic_param_subscript_emits_indexed_load() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("tbl"), array_var("tbl", &[3]));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("i"), scalar_var("i"));
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name("tbl")),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name("i"),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            },
+        ))],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("dynamic parameter varref should lower");
+
+    // The hallmark of the fix: one indexed load, no per-element select chain.
+    let indexed = lowered
+        .ops
+        .iter()
+        .filter(|op| matches!(op, LinearOp::LoadIndexedP { .. }))
+        .count();
+    let selects = lowered
+        .ops
+        .iter()
+        .filter(|op| matches!(op, LinearOp::Select { .. }))
+        .count();
+    assert_eq!(
+        indexed, 1,
+        "expected exactly one LoadIndexedP, got {indexed}"
+    );
+    assert_eq!(
+        selects, 0,
+        "parameter-array dynamic subscript must not emit a select chain"
+    );
+
+    // `tbl` occupies the first three parameter slots, `i` the fourth.
+    let i_slot = 3usize;
+    for idx in [1.0, 2.0, 2.7, 3.0] {
+        let mut p = vec![10.0, 20.0, 30.0, 0.0];
+        p[i_slot] = idx;
+        let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+        let compiled = read_reg(&regs, lowered.result);
+        let expected = match rounded_index(idx) {
+            1 => 10.0,
+            2 => 20.0,
+            _ => 30.0,
+        };
+        assert!(
+            (compiled - expected).abs() < 1e-12,
+            "indexed-load mismatch for i={idx}: compiled={compiled}, expected={expected}"
+        );
+    }
+}
 #[test]
 fn lower_expression_handles_binary_operand_with_dynamic_varref_subscript() {
     // Shape inference of a binary operand like `t - tg[i]` must not require

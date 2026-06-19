@@ -153,6 +153,27 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             continue;
         }
 
+        // Consecutive vector components sharing one direct RHS (e.g.
+        // `der(X) = f(...)`) lower to a SINGLE multi-output program so the RHS
+        // is computed once instead of re-inlined per component. This is a pure
+        // optimization: if the shared base cannot be lowered as a whole vector,
+        // fall back to per-state lowering below.
+        if let Some(group_len) = direct_vector_group_len(analysis, &processed, i)
+            && let Ok(row) = lower_direct_row_group(analysis, i, group_len, &lowering_ctx)
+        {
+            // A shared-RHS multi-output program is not a per-iteration stencil
+            // row, so leave its source equation unset: the stencil detector then
+            // treats it as a standalone residual `ScalarPrograms` (preserving its
+            // multiple `StoreOutput`s) rather than trying to prove a stencil.
+            pending_scalar_programs.push(crate::stencil::SourceScalarProgram {
+                ops: row,
+                source_equation_index: None,
+            });
+            processed[i..i + group_len].fill(true);
+            i += group_len;
+            continue;
+        }
+
         // Scalar / direct-equation state — build one row.
         let source_equation_index = analysis
             .direct_equations
@@ -349,6 +370,107 @@ fn lower_direct_row(
     let coeff = builder.lower_expr(&equation.coefficients[&state.name], &scope, 0)?;
     let value = builder.emit_binary(BinaryOp::Div, rhs, coeff);
     builder.ops.push(LinearOp::StoreOutput { src: value });
+    Ok(builder.ops)
+}
+
+/// When several consecutive state scalars share one vector-valued direct
+/// equation (e.g. `der(X) = quad_deriv13(...)` projected over X[1..n]), lower
+/// the shared RHS ONCE into a single multi-output program with one StoreOutput
+/// per component, instead of one self-contained program per output that each
+/// re-derive the whole RHS. Returns the size of the group starting at `start`,
+/// or `None` if no valid complete vector group is present.
+/// The shared computation behind a per-component derivative RHS. For
+/// `der(X) = f(...)` each component's RHS is `f(...)[k]` (an `Index` over the
+/// same base call); the base `f(...)` is what we want to compute once.
+fn shared_vector_rhs_base(expr: &rumoca_core::Expression) -> &rumoca_core::Expression {
+    match expr {
+        rumoca_core::Expression::Index { base, .. } => base,
+        other => other,
+    }
+}
+
+fn direct_vector_group_len(
+    analysis: &DerivativeRhsAnalysis,
+    processed: &[bool],
+    start: usize,
+) -> Option<usize> {
+    let head = &analysis.states[start];
+    let base_size = head.base_size;
+    if base_size <= 1 || processed[start] || head.component != 0 {
+        return None;
+    }
+    // The whole group must fit, be single-SCC each (the linsolve grouping owns
+    // coupled states), all direct equations whose RHS projects the SAME base
+    // computation, with components 0..base_size laid out consecutively.
+    if start + base_size > analysis.states.len() {
+        return None;
+    }
+    let head_eq_idx = *analysis.direct_equations.get(&head.name)?;
+    let head_base = shared_vector_rhs_base(&analysis.equations[head_eq_idx].rhs);
+    for offset in 0..base_size {
+        let idx = start + offset;
+        let state = &analysis.states[idx];
+        if processed[idx]
+            || state.base != head.base
+            || state.base_size != base_size
+            || state.component != offset
+        {
+            return None;
+        }
+        let component = analysis.components.get(&analysis.component_roots[idx])?;
+        if component.len() > 1 {
+            return None;
+        }
+        let eq_idx = *analysis.direct_equations.get(&state.name)?;
+        if shared_vector_rhs_base(&analysis.equations[eq_idx].rhs) != head_base {
+            return None;
+        }
+    }
+    Some(base_size)
+}
+
+/// Lower a group of consecutive vector-state components that share one direct
+/// RHS into a single multi-output program: compute the RHS vector once, then
+/// emit `value[component] / coeff` + StoreOutput for each component in order.
+fn lower_direct_row_group(
+    analysis: &DerivativeRhsAnalysis,
+    start: usize,
+    group_len: usize,
+    ctx: &DerivativeRhsLoweringContext<'_>,
+) -> Result<Vec<LinearOp>, LowerError> {
+    let mut builder = row_builder(
+        ctx.dae_model,
+        ctx.layout,
+        ctx.direct_assignments,
+        ctx.structural_bindings,
+        ctx.indexed_bindings,
+    );
+    let scope = Scope::new();
+
+    let head = &analysis.states[start];
+    let head_eq = &analysis.equations[analysis.direct_equations[&head.name]];
+    // Compute every component of the shared base RHS once (shared by RowCse
+    // within this single builder), then project each component below.
+    let head_base = shared_vector_rhs_base(&head_eq.rhs);
+    let values = builder.lower_array_like_values(head_base, &scope, 0)?;
+    if values.len() != group_len {
+        return Err(LowerError::Unsupported {
+            reason: format!(
+                "vector derivative RHS for `{}` produced {} values for a group of {group_len}",
+                head.base,
+                values.len()
+            ),
+        });
+    }
+
+    for offset in 0..group_len {
+        let state = &analysis.states[start + offset];
+        let equation = &analysis.equations[analysis.direct_equations[&state.name]];
+        let rhs = values[state.component];
+        let coeff = builder.lower_expr(&equation.coefficients[&state.name], &scope, 0)?;
+        let value = builder.emit_binary(BinaryOp::Div, rhs, coeff);
+        builder.ops.push(LinearOp::StoreOutput { src: value });
+    }
     Ok(builder.ops)
 }
 

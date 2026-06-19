@@ -17,7 +17,7 @@ use std::{
 
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
-    SolveEventMessagePart, SolveEventPartition, UnaryOp,
+    SolveEventMessagePart, SolveEventPartition, UnaryOp, resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
@@ -36,7 +36,7 @@ mod update_rows;
 pub use compute_block_scalarize::to_scalar_program_block;
 pub use eval_at::{EvalAtReport, EvalAtSlot};
 pub use jacobian::JacobianReport;
-use linear_solve::{solve_component, solve_component_unchecked};
+use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{PreparedComputeBlock, PreparedScalarProgramBlock};
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
@@ -388,13 +388,46 @@ pub fn eval_scalar_program_block_with_context(
     validate_scalar_program_block_io(block, y, p, context.seed, out)?;
     out.fill(0.0);
     let mut scratch = RowEvalScratch::default();
-    for (row_idx, row) in block.programs.iter().enumerate() {
-        out[row_idx] = eval_row_prepared_with_context(
+    let mut sink = OutputCursor::new(out);
+    for row in &block.programs {
+        eval_row_prepared_with_context(
             PreparedRowEval::new(row, required_registers(row), y, p, t, context),
             &mut scratch,
+            &mut sink,
         )?;
     }
     Ok(())
+}
+
+/// Output sink for a (possibly multi-output) scalar program block.
+///
+/// `StoreOutput` ops write to the next free slot in order (the running-counter
+/// invariant on [`rumoca_ir_solve::ScalarProgramBlock::output_count`]). One
+/// cursor is shared across all programs of a block so a matmul/linsolve program
+/// that emits several outputs lands in consecutive slots.
+pub(crate) struct OutputCursor<'out> {
+    out: &'out mut [f64],
+    cursor: usize,
+}
+
+impl<'out> OutputCursor<'out> {
+    pub(crate) fn new(out: &'out mut [f64]) -> Self {
+        Self { out, cursor: 0 }
+    }
+
+    fn store(&mut self, value: f64) -> Result<(), EvalSolveError> {
+        match self.out.get_mut(self.cursor) {
+            Some(slot) => {
+                *slot = value;
+                self.cursor += 1;
+                Ok(())
+            }
+            None => Err(EvalSolveError::OutputTooSmall {
+                required: self.cursor.saturating_add(1),
+                len: self.out.len(),
+            }),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -551,22 +584,43 @@ pub fn eval_row_with_context(
     };
     validate_row_inputs(row, y, p, context.seed)?;
     let mut scratch = RowEvalScratch::default();
-    eval_row_prepared_with_context(
+    eval_program_single(
         PreparedRowEval::new(row, required_registers(row), y, p, t, context),
+        false,
         &mut scratch,
     )
+}
+
+/// Evaluate a single-output program and return its stored value.
+///
+/// Convenience for callers that operate on programs with exactly one
+/// `StoreOutput` (residual rows, root conditions, event-message numbers,
+/// target-assignment rows). Returns the last value stored, matching the
+/// historical "last `StoreOutput` wins" behavior for those programs.
+pub(crate) fn eval_program_single(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<f64, EvalSolveError> {
+    let mut buf = [0.0f64];
+    {
+        let mut sink = OutputCursor::new(&mut buf);
+        eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)?;
+    }
+    Ok(buf[0])
 }
 
 pub(crate) fn eval_row_prepared_maybe_fast(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
-) -> Result<f64, EvalSolveError> {
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
     let start = solve_row_eval_trace_enabled().then(Instant::now);
     let result = if register_safe {
-        eval_row_prepared_fast(input, scratch)
+        eval_row_prepared_fast(input, scratch, sink)
     } else {
-        eval_row_prepared_with_context(input, scratch)
+        eval_row_prepared_with_context(input, scratch, sink)
     };
     if let Some(start) = start {
         ROW_EVAL_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -578,7 +632,8 @@ pub(crate) fn eval_row_prepared_maybe_fast(
 fn eval_row_prepared_with_context(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
-) -> Result<f64, EvalSolveError> {
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
     scratch.regs.resize(input.register_count, 0.0);
     scratch.initialized.resize(input.register_count, false);
     scratch.regs.fill(0.0);
@@ -587,24 +642,24 @@ fn eval_row_prepared_with_context(
         regs: &mut scratch.regs,
         initialized: &mut scratch.initialized,
         input,
-        output: 0.0,
+        sink,
     }
     .eval()
 }
 
-struct CheckedRowEvaluator<'scratch, 'row, 'ctx> {
+struct CheckedRowEvaluator<'scratch, 'row, 'ctx, 'out> {
     regs: &'scratch mut [f64],
     initialized: &'scratch mut [bool],
     input: PreparedRowEval<'row, 'ctx>,
-    output: f64,
+    sink: &'scratch mut OutputCursor<'out>,
 }
 
-impl CheckedRowEvaluator<'_, '_, '_> {
-    fn eval(mut self) -> Result<f64, EvalSolveError> {
+impl CheckedRowEvaluator<'_, '_, '_, '_> {
+    fn eval(mut self) -> Result<(), EvalSolveError> {
         for op in self.input.row {
             self.eval_op(*op)?;
         }
-        Ok(self.output)
+        Ok(())
     }
 
     fn eval_op(&mut self, op: LinearOp) -> Result<(), EvalSolveError> {
@@ -619,6 +674,18 @@ impl CheckedRowEvaluator<'_, '_, '_> {
             LinearOp::LoadP { dst, index } => {
                 self.set(dst, read_input("p", self.input.p, index)?)?;
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.eval_load_indexed_p(dst, base, count, index)?,
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => self.eval_load_indexed_seed(dst, base, count, index)?,
             LinearOp::LoadSeed { dst, index } => {
                 let seed = self
                     .input
@@ -634,21 +701,8 @@ impl CheckedRowEvaluator<'_, '_, '_> {
             LinearOp::Move { dst, src } => {
                 self.set(dst, self.get(src)?)?;
             }
-            LinearOp::LinearSolveComponent {
-                dst,
-                matrix_start,
-                rhs_start,
-                n,
-                component,
-            } => {
-                let value = solve_component(
-                    self.regs,
-                    self.initialized,
-                    matrix_start,
-                    rhs_start,
-                    n,
-                    component,
-                )?;
+            LinearOp::LinearSolveComponent { dst, .. } => {
+                let value = solve_component_op(self.regs, self.initialized, op)?;
                 self.set(dst, value)?;
             }
             LinearOp::Unary { dst, op, arg } => {
@@ -694,10 +748,42 @@ impl CheckedRowEvaluator<'_, '_, '_> {
                 )?;
             }
             LinearOp::StoreOutput { src } => {
-                self.output = self.get(src)?;
+                let value = self.get(src)?;
+                self.sink.store(value)?;
             }
         }
         Ok(())
+    }
+
+    fn eval_load_indexed_p(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), EvalSolveError> {
+        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        self.set(dst, read_input("p", self.input.p, slot)?)
+    }
+
+    fn eval_load_indexed_seed(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), EvalSolveError> {
+        let seed = self
+            .input
+            .context
+            .seed
+            .ok_or(EvalSolveError::MissingInput {
+                vector: "seed",
+                index: base,
+                len: 0,
+            })?;
+        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        self.set(dst, read_input("seed", seed, slot)?)
     }
 
     fn get(&self, reg: Reg) -> Result<f64, EvalSolveError> {
@@ -712,10 +798,10 @@ impl CheckedRowEvaluator<'_, '_, '_> {
 fn eval_row_prepared_fast(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
-) -> Result<f64, EvalSolveError> {
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
     scratch.regs.resize(input.register_count, 0.0);
     let regs = &mut scratch.regs;
-    let mut output = 0.0;
     for op in input.row {
         match *op {
             LinearOp::Const { dst, value } => regs[dst as usize] = value,
@@ -725,6 +811,29 @@ fn eval_row_prepared_fast(
             }
             LinearOp::LoadP { dst, index } => {
                 regs[dst as usize] = input.p[index];
+            }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = resolve_indexed_slot(regs[index as usize], base, count);
+                regs[dst as usize] = input.p[slot];
+            }
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let seed = input.context.seed.ok_or(EvalSolveError::MissingInput {
+                    vector: "seed",
+                    index: base,
+                    len: 0,
+                })?;
+                let slot = resolve_indexed_slot(regs[index as usize], base, count);
+                regs[dst as usize] = seed[slot];
             }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = input.context.seed.ok_or(EvalSolveError::MissingInput {
@@ -782,10 +891,10 @@ fn eval_row_prepared_fast(
                 scratch.initialized.resize(input.register_count, true);
                 apply_random_op(regs, &mut scratch.initialized, op, input.t, input.context)?
             }
-            LinearOp::StoreOutput { src } => output = regs[src as usize],
+            LinearOp::StoreOutput { src } => sink.store(regs[src as usize])?,
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 fn apply_table_op(
@@ -1009,8 +1118,16 @@ fn input_requirements_for_op(op: LinearOp) -> RowInputRequirements {
             p_len: index.saturating_add(1),
             ..Default::default()
         },
+        LinearOp::LoadIndexedP { base, count, .. } => RowInputRequirements {
+            p_len: base.saturating_add(count),
+            ..Default::default()
+        },
         LinearOp::LoadSeed { index, .. } => RowInputRequirements {
             seed_len: index.saturating_add(1),
+            ..Default::default()
+        },
+        LinearOp::LoadIndexedSeed { base, count, .. } => RowInputRequirements {
+            seed_len: base.saturating_add(count),
             ..Default::default()
         },
         _ => RowInputRequirements::default(),
@@ -1024,7 +1141,7 @@ pub fn validate_scalar_program_block_io(
     seed: Option<&[f64]>,
     out: &[f64],
 ) -> Result<(), EvalSolveError> {
-    validate_output_len(out, block.programs.len())?;
+    validate_output_len(out, block.output_count())?;
     validate_input_requirements(scalar_program_block_input_requirements(block), y, p, seed)
 }
 
@@ -1093,6 +1210,8 @@ fn max_register(op: &LinearOp) -> u32 {
         | LinearOp::TableLookup { dst, .. }
         | LinearOp::TableLookupSlope { dst, .. }
         | LinearOp::TableNextEvent { dst, .. } => dst,
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => dst.max(index),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
@@ -1145,6 +1264,8 @@ fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
         | LinearOp::LoadSeed { .. } => true,
         LinearOp::Move { src, .. }
         | LinearOp::Unary { arg: src, .. }
+        | LinearOp::LoadIndexedP { index: src, .. }
+        | LinearOp::LoadIndexedSeed { index: src, .. }
         | LinearOp::StoreOutput { src } => reg_initialized(initialized, src),
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
             reg_initialized(initialized, lhs) && reg_initialized(initialized, rhs)

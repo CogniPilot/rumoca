@@ -139,6 +139,13 @@ def create_model():
         for _state, _deriv in _der_pairs:
             if _state.shape == v.shape and ca.is_equal(v, _state):
                 return _deriv
+        # General fallback: der() of a state element/slice written as a subref
+        # (e.g. vel[0] == _x[3:6][0]) does not match the precomputed pairs by
+        # ca.is_equal, but it is a linear selection of the state vector, so
+        # d/dt(v) = (dv/d_x) @ _xdot. Exact for any linear projection of _x.
+        _Jx = ca.jacobian(v, _x)
+        if _Jx.nnz() > 0:
+            return ca.mtimes(_Jx, _xdot)
         raise ValueError(f"der() called on non-state variable: {v}")
 
     # =========================================================================
@@ -451,6 +458,7 @@ if __name__ == '__main__':
     print(f"\nDAE Function: {dae_fn}")
     print(f"  Inputs: {dae_fn.name_in()}")
     print(f"  Outputs: {dae_fn.name_out()}")
+
 
     # Verify differentiability
     if model['n_x'] > 0:

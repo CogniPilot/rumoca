@@ -1,0 +1,10 @@
+version = 1
+ir = "solve"
+name = "jax-solve"
+description = "JAX explicit ODE rhs(x, u, p) from the solve IR"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+
+[[files]]
+path = "{{ model_name }}_jax_solve.py"
+template = "jax_solve.py.jinja"

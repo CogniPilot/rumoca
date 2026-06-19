@@ -320,7 +320,16 @@ impl AdBuilder {
             LinearOp::LoadTime { dst } => self.lower_load_time(dst),
             LinearOp::LoadY { dst, index } => self.lower_load_y(dst, index),
             LinearOp::LoadP { dst, index } => self.lower_load_p(dst, index),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.lower_load_indexed_p(dst, base, count, index),
             LinearOp::LoadSeed { .. } => Err(unsupported("unexpected LoadSeed in primal row")),
+            LinearOp::LoadIndexedSeed { .. } => {
+                Err(unsupported("unexpected LoadIndexedSeed in primal row"))
+            }
             LinearOp::Move { dst, src } => self.lower_move(dst, src),
             LinearOp::LinearSolveComponent {
                 dst,
@@ -462,6 +471,29 @@ impl AdBuilder {
         let du = match self.seed_mode {
             SeedMode::SolverYOnly => self.zero_reg(),
             SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)),
+        };
+        self.bind(dst, DualReg { re, du })
+    }
+
+    /// Forward-mode dual of a runtime-indexed parameter load. The value is
+    /// loaded at the same runtime offset; its tangent is zero under solver-y AD
+    /// and, under parameter-seed AD, the seed at the matching offset shifted
+    /// into the seed region (`p_seed_index` is affine, so the whole run shifts
+    /// by `p_seed_offset` while the index register is reused unchanged).
+    fn lower_load_indexed_p(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), LowerError> {
+        let idx = self.lookup(index)?;
+        let re = self.emit_load_indexed_p(base, count, idx.re);
+        let du = match self.seed_mode {
+            SeedMode::SolverYOnly => self.zero_reg(),
+            SeedMode::SolverYAndP { .. } => {
+                self.emit_load_indexed_seed(self.p_seed_index(base), count, idx.re)
+            }
         };
         self.bind(dst, DualReg { re, du })
     }
@@ -864,6 +896,28 @@ impl AdBuilder {
         dst
     }
 
+    fn emit_load_indexed_p(&mut self, base: usize, count: usize, index: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        });
+        dst
+    }
+
+    fn emit_load_indexed_seed(&mut self, base: usize, count: usize, index: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::LoadIndexedSeed {
+            dst,
+            base,
+            count,
+            index,
+        });
+        dst
+    }
+
     fn p_seed_index(&self, index: usize) -> usize {
         match self.seed_mode {
             SeedMode::SolverYOnly => index,
@@ -1046,6 +1100,117 @@ mod tests {
                 .any(|op| matches!(op, LinearOp::LoadSeed { index: 1, .. })),
             "solver Jacobian should remain with respect to solver-y slots only: {:?}",
             rows[0]
+        );
+    }
+
+    /// Forward-AD of a runtime-indexed parameter load: under solver-y-only AD
+    /// the tangent is zero (parameters are constant w.r.t. y, and the index is
+    /// discrete), and under parameter-seed AD it becomes a `LoadIndexedSeed`
+    /// over the same run shifted into the seed region by `p_seed_offset`, reusing
+    /// the same runtime index register.
+    #[test]
+    fn full_ad_of_indexed_param_load_emits_shifted_indexed_seed() {
+        let primal = vec![
+            LinearOp::Const { dst: 0, value: 2.0 }, // 0-based flat offset
+            LinearOp::LoadIndexedP {
+                dst: 1,
+                base: 3,
+                count: 5,
+                index: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ];
+
+        // Solver-y-only: zero tangent, no indexed-seed load.
+        let solver = lower_row_ad(&primal, SeedMode::SolverYOnly).expect("solver AD");
+        assert!(
+            !solver
+                .iter()
+                .any(|op| matches!(op, LinearOp::LoadIndexedSeed { .. })),
+            "solver-y AD of an indexed parameter load must have a zero tangent: {solver:?}"
+        );
+
+        // Parameter-seed AD: the real part keeps the `LoadIndexedP`; the tangent
+        // is a `LoadIndexedSeed` over the same run shifted by `p_seed_offset`.
+        let full = lower_row_ad(&primal, SeedMode::SolverYAndP { p_seed_offset: 2 })
+            .expect("parameter-seed AD");
+        assert!(
+            full.iter().any(|op| matches!(
+                op,
+                LinearOp::LoadIndexedP {
+                    base: 3,
+                    count: 5,
+                    ..
+                }
+            )),
+            "parameter-seed AD must keep the real indexed parameter load: {full:?}"
+        );
+        assert!(
+            full.iter().any(|op| matches!(
+                op,
+                LinearOp::LoadIndexedSeed {
+                    base: 5, // p_seed_offset (2) + base (3)
+                    count: 5,
+                    ..
+                }
+            )),
+            "parameter-seed AD tangent must be a LoadIndexedSeed shifted by p_seed_offset: {full:?}"
+        );
+    }
+
+    /// Numeric parity: evaluating the parameter-seed AD of an indexed parameter
+    /// load yields the seed at exactly the selected slot, matching the analytic
+    /// tangent d(p[base + clamp(round(idx))])/d(seed) = seed[p_seed_index(slot)].
+    #[test]
+    fn indexed_param_load_ad_tangent_reads_seed_at_selected_slot() {
+        use rumoca_ir_solve::ScalarProgramBlock;
+
+        let p_seed_offset = 2usize;
+        let base = 3usize;
+        let count = 5usize;
+        let offset = 2usize; // clamp(round(2.0))
+        let primal = vec![
+            LinearOp::Const {
+                dst: 0,
+                value: offset as f64,
+            },
+            LinearOp::LoadIndexedP {
+                dst: 1,
+                base,
+                count,
+                index: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ];
+        let ad_row = lower_row_ad(&primal, SeedMode::SolverYAndP { p_seed_offset })
+            .expect("parameter-seed AD");
+        let block = ScalarProgramBlock::new(vec![ad_row]);
+
+        // Seed a single 1.0 at the slot the tangent should select; the stored
+        // output (the dual) must read exactly that value.
+        let selected = p_seed_offset + base + offset; // 7
+        let mut seed = vec![0.0; 16];
+        seed[selected] = 4.0;
+        let p = vec![0.0; 16];
+        let mut out = [0.0];
+        rumoca_eval_solve::eval_scalar_program_block(&block, &[], &p, 0.0, Some(&seed), &mut out)
+            .expect("evaluate parameter-seed AD row");
+        assert!(
+            (out[0] - 4.0).abs() < 1e-12,
+            "indexed-load tangent must read seed[{selected}] = 4.0, got {}",
+            out[0]
+        );
+
+        // Seeding a neighbouring slot must NOT leak into the tangent.
+        let mut seed2 = vec![0.0; 16];
+        seed2[selected + 1] = 9.0;
+        let mut out2 = [0.0];
+        rumoca_eval_solve::eval_scalar_program_block(&block, &[], &p, 0.0, Some(&seed2), &mut out2)
+            .expect("evaluate parameter-seed AD row");
+        assert!(
+            out2[0].abs() < 1e-12,
+            "tangent must isolate the selected slot, got {}",
+            out2[0]
         );
     }
 

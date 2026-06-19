@@ -62,11 +62,10 @@ fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() 
     set_p_value(&layout, &mut p, "v[1]", 10.0);
     set_p_value(&layout, &mut p, "v[2]", 100.0);
 
-    let (_, first) = eval_linear_ops(&rows[0], &[], &p, 0.0);
-    let (_, second) = eval_linear_ops(&rows[1], &[], &p, 0.0);
+    let outputs = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
-    assert_eq!(first, Some(210.0));
-    assert_eq!(second, Some(430.0));
+    assert_eq!(outputs[0], 210.0);
+    assert_eq!(outputs[1], 430.0);
 }
 
 #[test]
@@ -601,10 +600,7 @@ fn lower_discrete_rhs_lowers_matrix_matrix_multiply_as_array_rows() {
     set_p_value(&layout, &mut p, "b[2,1]", 7.0);
     set_p_value(&layout, &mut p, "b[2,2]", 8.0);
 
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![19.0, 22.0, 43.0, 50.0]);
 }
@@ -713,10 +709,7 @@ fn lower_discrete_rhs_preserves_singleton_vector_rank_for_cat() {
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "X[1]", 0.25);
     set_p_value(&layout, &mut p, "X[2]", 0.50);
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![0.25, 0.50, 0.25]);
 }
@@ -782,10 +775,7 @@ fn lower_discrete_rhs_selects_compile_time_if_array_branch_before_width_check() 
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "X[1]", 0.25);
     set_p_value(&layout, &mut p, "X[2]", 0.50);
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![0.25, 0.50, 0.25]);
 }
@@ -829,10 +819,7 @@ fn lower_discrete_rhs_lowers_scalar_array_multiply_as_broadcast_rows() {
     set_p_value(&layout, &mut p, "u[1]", 2.0);
     set_p_value(&layout, &mut p, "u[2]", 4.0);
 
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![6.0, 12.0]);
 }
@@ -897,10 +884,7 @@ fn lower_discrete_rhs_lowers_array_constructor_with_vector_elements_as_matrix() 
     set_p_value(&layout, &mut p, "x[2]", 2.0);
     set_p_value(&layout, &mut p, "x[3]", 3.0);
 
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert!((actual[0] + 2.0).abs() < 1e-12, "{actual:?}");
     assert!((actual[1] - 2.0).abs() < 1e-12, "{actual:?}");
@@ -982,10 +966,7 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
     set_p_value(&layout, &mut p, "x[2]", 1.0);
     set_p_value(&layout, &mut p, "x[3]", 1.0);
 
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![6.0, 15.0]);
 }
@@ -1039,10 +1020,7 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
     set_p_value(&layout, &mut p, "x[1]", 1.0);
     set_p_value(&layout, &mut p, "x[2]", 2.0);
     set_p_value(&layout, &mut p, "x[3]", 3.0);
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![1.0, 2.0, 3.0]);
 }
@@ -1224,11 +1202,11 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
     // Numerical check via scalarization: C = A * B should match manual product.
     // A = [[1, 2, 3], [4, 5, 6]], B = [[7, 8], [9, 10], [11, 12]]
     // C = [[58, 64], [139, 154]]
-    let rows = rumoca_eval_solve::to_scalar_program_block(&block).programs;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&block);
     assert_eq!(
-        rows.len(),
+        scalar.output_count(),
         4,
-        "expected 4 scalar output rows for 2×2 result"
+        "expected 4 scalar outputs for 2×2 result"
     );
 
     let mut p = vec![0.0; layout.p_scalars()];
@@ -1245,15 +1223,12 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
     set_p_value(&layout, &mut p, "B[3,1]", 11.0);
     set_p_value(&layout, &mut p, "B[3,2]", 12.0);
 
-    let (_, c00) = eval_linear_ops(&rows[0], &[], &p, 0.0);
-    let (_, c01) = eval_linear_ops(&rows[1], &[], &p, 0.0);
-    let (_, c10) = eval_linear_ops(&rows[2], &[], &p, 0.0);
-    let (_, c11) = eval_linear_ops(&rows[3], &[], &p, 0.0);
+    let c = eval_programs_all_outputs(&scalar.programs, &[], &p, 0.0);
 
-    assert_eq!(c00, Some(58.0), "C[1,1]");
-    assert_eq!(c01, Some(64.0), "C[1,2]");
-    assert_eq!(c10, Some(139.0), "C[2,1]");
-    assert_eq!(c11, Some(154.0), "C[2,2]");
+    assert_eq!(c[0], 58.0, "C[1,1]");
+    assert_eq!(c[1], 64.0, "C[1,2]");
+    assert_eq!(c[2], 139.0, "C[2,1]");
+    assert_eq!(c[3], 154.0, "C[2,2]");
 }
 
 #[test]
@@ -1328,9 +1303,7 @@ fn lower_expression_rows_preserves_vector_matrix_products_as_matmul_nodes() {
             block.nodes
         );
         assert_eq!(
-            rumoca_eval_solve::to_scalar_program_block(&block)
-                .programs
-                .len(),
+            rumoca_eval_solve::to_scalar_program_block(&block).output_count(),
             scalar_count
         );
     }
@@ -1380,10 +1353,7 @@ fn lower_discrete_rhs_lowers_cross_builtin_as_vector_rows() {
         set_p_value(&layout, &mut p, name, value);
     }
 
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![-3.0, 6.0, -3.0]);
 }
@@ -1562,10 +1532,7 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
     let rows = lower_residual(&dae_model, &layout)
         .expect("multi-output function call should flatten all outputs");
     let p = vec![0.0; layout.p_scalars()];
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(actual, vec![-1.0, -2.0, -3.0]);
 }
@@ -1633,10 +1600,7 @@ fn lower_discrete_rhs_lowers_easy_array_builtins() {
     set_p_value(&layout, &mut p, "v[2]", 2.0);
     set_p_value(&layout, &mut p, "v[3]", 3.0);
 
-    let actual = rows
-        .iter()
-        .map(|row| eval_linear_ops(row, &[], &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
 
     assert_eq!(
         actual,

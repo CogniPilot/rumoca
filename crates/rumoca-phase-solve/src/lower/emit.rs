@@ -85,6 +85,20 @@ impl LowerBuilder<'_> {
         dst
     }
 
+    /// Emit a runtime-indexed parameter load over the contiguous slot run
+    /// `base..base+count`, addressed by the 0-based flat-offset register
+    /// `index`. Not CSE'd: the offset register is runtime-variable.
+    pub(super) fn emit_load_indexed_p(&mut self, base: usize, count: usize, index: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        });
+        dst
+    }
+
     pub(super) fn emit_slot_load(&mut self, slot: ScalarSlot) -> Result<Reg, LowerError> {
         let key = match slot {
             ScalarSlot::Time => SlotLoadKey::Time,

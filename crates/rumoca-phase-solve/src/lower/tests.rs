@@ -143,9 +143,62 @@ fn apply_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
     op.compare_as_f64(lhs, rhs)
 }
 
+/// Evaluate a single program and return its register file plus the value of its
+/// last `StoreOutput` (historical single-output behavior, used by most tests).
 fn eval_linear_ops(ops: &[LinearOp], y: &[f64], p: &[f64], t: f64) -> (Vec<f64>, Option<f64>) {
+    let (regs, outputs) = eval_linear_ops_collect(ops, y, p, t);
+    (regs, outputs.last().copied())
+}
+
+/// Evaluate output `output_index` of a (possibly multi-output) scalar program
+/// block, regardless of which program emits it. Replaces the old
+/// `eval_linear_ops(&block.programs[output_index], ..)` now that matmul/linsolve
+/// nodes lower to a single multi-`StoreOutput` program.
+fn eval_block_output(
+    block: &rumoca_ir_solve::ScalarProgramBlock,
+    output_index: usize,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+) -> (Vec<f64>, Option<f64>) {
+    let program_index = block
+        .program_index_for_output(output_index)
+        .expect("output index within block");
+    let prior: usize = block.programs[..program_index]
+        .iter()
+        .map(|program| rumoca_ir_solve::ScalarProgramBlock::program_output_count(program))
+        .sum();
+    let (regs, outputs) = eval_linear_ops_collect(&block.programs[program_index], y, p, t);
+    (regs, outputs.get(output_index - prior).copied())
+}
+
+/// Evaluate every output of a (possibly multi-output) scalar program block, in
+/// output order. Replaces the old `block.programs.iter().map(|row|
+/// eval_linear_ops(row, ..).1)` idiom now that one program may emit several
+/// outputs.
+fn eval_block_all_outputs(
+    block: &rumoca_ir_solve::ScalarProgramBlock,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+) -> Vec<f64> {
+    eval_programs_all_outputs(&block.programs, y, p, t)
+}
+
+/// Same as [`eval_block_all_outputs`] for callers that hold the raw program list
+/// (`Vec<Vec<LinearOp>>`) returned by `lower_residual` / `lower_discrete_rhs`.
+fn eval_programs_all_outputs(programs: &[Vec<LinearOp>], y: &[f64], p: &[f64], t: f64) -> Vec<f64> {
+    programs
+        .iter()
+        .flat_map(|program| eval_linear_ops_collect(program, y, p, t).1)
+        .collect()
+}
+
+/// Evaluate a single program, returning its register file and every
+/// `StoreOutput` value in order.
+fn eval_linear_ops_collect(ops: &[LinearOp], y: &[f64], p: &[f64], t: f64) -> (Vec<f64>, Vec<f64>) {
     let mut regs = Vec::new();
-    let mut output = None;
+    let mut outputs = Vec::new();
     for op in ops {
         match *op {
             LinearOp::Const { dst, value } => write_reg(&mut regs, dst, value),
@@ -156,7 +209,18 @@ fn eval_linear_ops(ops: &[LinearOp], y: &[f64], p: &[f64], t: f64) -> (Vec<f64>,
             LinearOp::LoadP { dst, index } => {
                 write_reg(&mut regs, dst, p.get(index).copied().unwrap_or(0.0))
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot =
+                    rumoca_ir_solve::resolve_indexed_slot(read_reg(&regs, index), base, count);
+                write_reg(&mut regs, dst, p.get(slot).copied().unwrap_or(0.0));
+            }
             LinearOp::LoadSeed { dst, .. } => write_reg(&mut regs, dst, 0.0),
+            LinearOp::LoadIndexedSeed { dst, .. } => write_reg(&mut regs, dst, 0.0),
             LinearOp::Move { dst, src } => {
                 let value = read_reg(&regs, src);
                 write_reg(&mut regs, dst, value);
@@ -213,11 +277,11 @@ fn eval_linear_ops(ops: &[LinearOp], y: &[f64], p: &[f64], t: f64) -> (Vec<f64>,
                 write_reg(&mut regs, dst, result);
             }
             LinearOp::StoreOutput { src } => {
-                output = Some(read_reg(&regs, src));
+                outputs.push(read_reg(&regs, src));
             }
         }
     }
-    (regs, output)
+    (regs, outputs)
 }
 
 fn eval_linear_solve_component(

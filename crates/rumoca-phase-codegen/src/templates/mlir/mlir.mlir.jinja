@@ -106,6 +106,17 @@
 {%- elif op.LoadP is defined %}
     %ip{{ r }}_{{ op.LoadP.dst }} = arith.constant {{ op.LoadP.index }} : index
     %r{{ r }}_{{ op.LoadP.dst }} = memref.load %p[%ip{{ r }}_{{ op.LoadP.dst }}] : memref<?xf64>
+{%- elif op.LoadIndexedP is defined %}
+    %rnd{{ r }}_{{ op.LoadIndexedP.dst }} = math.round %r{{ r }}_{{ op.LoadIndexedP.index }} : f64
+    %zr{{ r }}_{{ op.LoadIndexedP.dst }} = arith.constant 0.0 : f64
+    %lo{{ r }}_{{ op.LoadIndexedP.dst }} = arith.maximumf %rnd{{ r }}_{{ op.LoadIndexedP.dst }}, %zr{{ r }}_{{ op.LoadIndexedP.dst }} : f64
+    %hi{{ r }}_{{ op.LoadIndexedP.dst }} = arith.constant {{ op.LoadIndexedP.count - 1 }}.0 : f64
+    %cl{{ r }}_{{ op.LoadIndexedP.dst }} = arith.minimumf %lo{{ r }}_{{ op.LoadIndexedP.dst }}, %hi{{ r }}_{{ op.LoadIndexedP.dst }} : f64
+    %si{{ r }}_{{ op.LoadIndexedP.dst }} = arith.fptosi %cl{{ r }}_{{ op.LoadIndexedP.dst }} : f64 to i64
+    %ic{{ r }}_{{ op.LoadIndexedP.dst }} = arith.index_cast %si{{ r }}_{{ op.LoadIndexedP.dst }} : i64 to index
+    %bs{{ r }}_{{ op.LoadIndexedP.dst }} = arith.constant {{ op.LoadIndexedP.base }} : index
+    %ix{{ r }}_{{ op.LoadIndexedP.dst }} = arith.addi %ic{{ r }}_{{ op.LoadIndexedP.dst }}, %bs{{ r }}_{{ op.LoadIndexedP.dst }} : index
+    %r{{ r }}_{{ op.LoadIndexedP.dst }} = memref.load %p[%ix{{ r }}_{{ op.LoadIndexedP.dst }}] : memref<?xf64>
 {%- elif op.LoadSeed is defined %}
     %is{{ r }}_{{ op.LoadSeed.dst }} = arith.constant {{ op.LoadSeed.index }} : index
     %r{{ r }}_{{ op.LoadSeed.dst }} = memref.load %seed[%is{{ r }}_{{ op.LoadSeed.dst }}] : memref<?xf64>
@@ -190,8 +201,8 @@
     %{{ pfx }}_comp = arith.constant {{ comp }} : i64
     %r{{ r }}_{{ dst }} = func.call @rumoca_solve_linear_component(%{{ pfx }}_Ai64, %{{ pfx }}_bi64, %{{ pfx }}_n, %{{ pfx }}_comp) : (i64, i64, i64, i64) -> f64
 {%- elif op.StoreOutput is defined %}
-    %outi{{ r }} = arith.constant {{ i }} : index
-    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi{{ r }}] : memref<?xf64>
+    %outi_{{ i }} = arith.constant {{ i }} : index
+    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi_{{ i }}] : memref<?xf64>
 {%- endif %}
 {%- endmacro %}
 
@@ -214,8 +225,9 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in drv_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -227,8 +239,9 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in impl_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -243,8 +256,9 @@ module @{{ name }} {
       %seed : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in jac_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -257,8 +271,9 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+{%- set ns = namespace(out=0) %}
 {% for row in root_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, r) }}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }

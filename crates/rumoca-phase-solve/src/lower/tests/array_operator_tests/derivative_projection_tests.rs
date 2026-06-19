@@ -59,7 +59,7 @@ fn lower_derivative_rhs_inlines_direct_matrix_vector_assignment() {
     set_y_value(&layout, &mut y, "R[3,3]", 1.0);
     set_y_value(&layout, &mut y, "v_w[3]", 0.0);
 
-    let (_, output) = eval_linear_ops(&rows.programs[2], &y, &[], 0.0);
+    let (_, output) = eval_block_output(&rows, 2, &y, &[], 0.0);
 
     assert_eq!(output, Some(24.0));
 }
@@ -102,7 +102,7 @@ fn lower_derivative_rhs_indexes_builtin_array_rhs() {
     let mut y = vec![0.0; layout.y_scalars()];
     set_y_value(&layout, &mut y, "A[1,2]", 42.0);
 
-    let (_, output) = eval_linear_ops(&rows.programs[0], &y, &[], 0.0);
+    let (_, output) = eval_block_output(&rows, 0, &y, &[], 0.0);
 
     assert_eq!(output, Some(42.0));
 }
@@ -206,7 +206,7 @@ fn lower_derivative_rhs_projects_scalarized_vector_function_output_with_vector_a
     let mut y = vec![0.0; layout.y_scalars()];
     set_y_value(&layout, &mut y, "omega[1]", 12.0);
 
-    let (_, output) = eval_linear_ops(&rows.programs[0], &y, &[], 0.0);
+    let (_, output) = eval_block_output(&rows, 0, &y, &[], 0.0);
 
     assert_eq!(output, Some(12.0));
 }
@@ -257,15 +257,7 @@ fn lower_derivative_rhs_lowers_compact_matrix_times_state_derivative() {
         set_y_value(&layout, &mut y, &format!("M_body[{idx}]"), 6.0);
     }
 
-    let outputs = rows
-        .programs
-        .iter()
-        .map(|row| {
-            eval_linear_ops(row, &y, &p, 0.0)
-                .1
-                .expect("derivative output")
-        })
-        .collect::<Vec<_>>();
+    let outputs = eval_block_all_outputs(&rows, &y, &p, 0.0);
     assert_eq!(outputs, vec![6.0, 3.0, 2.0]);
 }
 
@@ -559,11 +551,7 @@ fn lower_derivative_rhs_projects_matrix_function_output_inside_record_constructo
     set_y_value(&layout, &mut y, "frame.R.w[1]", 711.0);
     set_y_value(&layout, &mut y, "frame.R.w[2]", 1602.0);
     set_y_value(&layout, &mut y, "frame.R.w[3]", 2652.0);
-    let actual = rows
-        .programs
-        .iter()
-        .map(|row| eval_linear_ops(row, &y, &[], 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_block_all_outputs(&rows, &y, &[], 0.0);
 
     assert!(
         actual
@@ -990,11 +978,7 @@ fn lower_derivative_rhs_extracts_dot_product_with_vector_function_derivative() {
             set_p_value(&layout, &mut p, &format!("T[{idx},{col}]"), value);
         }
     }
-    let actual = rows
-        .programs
-        .iter()
-        .map(|row| eval_linear_ops(row, &y, &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_block_all_outputs(&rows, &y, &p, 0.0);
 
     assert_eq!(actual, vec![1.0, 2.0, 3.0]);
 }
@@ -1198,11 +1182,7 @@ fn assert_vector_derivative_divided_outputs(
         }
     }
     set_p_value(layout, &mut p, "length", 2.0);
-    let actual = rows
-        .programs
-        .iter()
-        .map(|row| eval_linear_ops(row, &y, &p, 0.0).1.expect("row output"))
-        .collect::<Vec<_>>();
+    let actual = eval_block_all_outputs(&rows, &y, &p, 0.0);
     assert_eq!(actual, vec![2.0, 4.0, 6.0]);
 }
 

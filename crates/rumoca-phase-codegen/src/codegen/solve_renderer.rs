@@ -131,8 +131,14 @@ fn solve_render_context_value_with_dae(
     model_name: Option<&str>,
     dae_entry: Value,
 ) -> Result<Value, CodegenError> {
-    let solve_value = Value::from_serialize(solve_problem);
-    let artifacts_value = Value::from_serialize(artifacts);
+    // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
+    // fields serialize on demand and op lists materialize one op at a time, so a
+    // ~150k-op model costs O(one program) here instead of ~5 GB of eager `Value`
+    // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
+    let problem_arc = std::sync::Arc::new(solve_problem.clone());
+    let artifacts_arc = std::sync::Arc::new(artifacts.clone());
+    let solve_value = super::solve_lazy::solve_value(problem_arc.clone(), artifacts_arc.clone());
+    let artifacts_value = super::solve_lazy::artifacts_value(artifacts_arc.clone());
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
     let derivative_nodes = Value::from_serialize(c_renderable_derivative_nodes(
         &solve_problem.continuous.derivative_rhs,
