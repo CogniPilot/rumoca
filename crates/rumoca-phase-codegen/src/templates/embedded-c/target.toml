@@ -9,8 +9,8 @@ Compile: cc -O2 -Wall -c {{ out_dir }}/{{ model_name }}.c"""
 
 [capabilities]
 scalar_fallback = true
-events = false
-runtime_events = false
+events = true
+runtime_events = true
 forward_ad = false
 reverse_ad = false
 dynamic_control_flow = false
