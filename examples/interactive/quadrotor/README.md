@@ -113,16 +113,8 @@ drives model inputs directly.
 
 ## 3D Model Attribution
 
-The viewer uses a Sketchfab model:
-
-- Title: `Drone`
-- Source: <https://sketchfab.com/3d-models/drone-2588b8a0917d474e97886763c98a65af>
-- Author: Cafitz3D (<https://sketchfab.com/Cafitz3D>)
-- License: CC-BY-4.0 (<http://creativecommons.org/licenses/by/4.0/>)
-
-Credit text:
-
-This work is based on "Drone" (<https://sketchfab.com/3d-models/drone-2588b8a0917d474e97886763c98a65af>) by Cafitz3D (<https://sketchfab.com/Cafitz3D>) licensed under CC-BY-4.0 (<http://creativecommons.org/licenses/by/4.0/>).
+Model asset licenses and attributions are recorded in
+[`../../assets/models/README.md`](../../assets/models/README.md).
 
 ## Skybox Attribution
 

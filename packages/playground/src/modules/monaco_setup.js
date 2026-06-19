@@ -1,4 +1,4 @@
-import { registerModelicaLanguage } from '../../../rumoca-web/runtime/modelica_language.js';
+import { registerModelicaLanguage } from '../../vendor/modelica_language.js';
 
 function ensureMarkdownLanguage(monaco) {
     const languages = typeof monaco.languages.getLanguages === 'function'
@@ -42,6 +42,57 @@ function ensureMarkdownLanguage(monaco) {
                 [/\[[^\]]+\]\([^)]+\)/, 'string.link'],
                 [/\*\*[^*]+\*\*/, 'keyword'],
                 [/\*[^*]+\*/, 'emphasis'],
+            ],
+        },
+    });
+}
+
+function ensureTomlLanguage(monaco) {
+    const languages = typeof monaco.languages.getLanguages === 'function'
+        ? monaco.languages.getLanguages()
+        : [];
+    if (languages.some((language) => language?.id === 'toml')) {
+        return;
+    }
+    monaco.languages.register({
+        id: 'toml',
+        extensions: ['.toml'],
+        aliases: ['TOML', 'toml'],
+        mimetypes: ['application/toml'],
+    });
+    monaco.languages.setLanguageConfiguration('toml', {
+        comments: {
+            lineComment: '#',
+        },
+        brackets: [
+            ['[', ']'],
+            ['{', '}'],
+        ],
+        autoClosingPairs: [
+            { open: '[', close: ']' },
+            { open: '{', close: '}' },
+            { open: '"', close: '"', notIn: ['string', 'comment'] },
+            { open: "'", close: "'", notIn: ['string', 'comment'] },
+        ],
+        surroundingPairs: [
+            { open: '[', close: ']' },
+            { open: '{', close: '}' },
+            { open: '"', close: '"' },
+            { open: "'", close: "'" },
+        ],
+    });
+    monaco.languages.setMonarchTokensProvider('toml', {
+        tokenizer: {
+            root: [
+                [/^\s*#.*$/, 'comment'],
+                [/^\s*\[\[.*\]\]\s*$/, 'keyword'],
+                [/^\s*\[.*\]\s*$/, 'keyword'],
+                [/^\s*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?=\s*=)/, 'attribute.name'],
+                [/"([^"\\]|\\.)*"/, 'string'],
+                [/'[^']*'/, 'string'],
+                [/\b(true|false)\b/, 'constant'],
+                [/[+-]?\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+)?/, 'number'],
+                [/[=,\[\]{}]/, 'delimiter'],
             ],
         },
     });
@@ -115,6 +166,7 @@ end Ball;`,
     };
 registerModelicaLanguage(monaco);
 ensureMarkdownLanguage(monaco);
+ensureTomlLanguage(monaco);
 setupJavaScriptLanguageService(monaco);
 monaco.languages.register({ id: 'jinja2' });
 monaco.languages.setLanguageConfiguration('jinja2', {

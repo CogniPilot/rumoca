@@ -25,6 +25,7 @@ const configTree = {
   sim: { solver: "auto", mode: "realtime" },
   input: {
     keyboard: {
+      decay: { factor: 0.85, ref_dt: 0.016, targets: ["throttle"] },
       integrators: {
         throttle: { source: "local:throttle_input", write: "throttle", rate: 0.7, clamp: [0.0, 1.0] },
       },
@@ -107,6 +108,7 @@ function documentRendersSectionsAndControls() {
   assert(html.includes('data-input-enabled'), "expected input mapping to be explicitly enabled");
   assert(html.includes('data-add-keyboard-key'), "expected typed keyboard input mapping controls");
   assert(html.includes('data-add-keyboard-integrator'), "expected typed keyboard integrator controls");
+  assert(html.includes('"keyboardDecay"'), "expected keyboard decay to be preserved in scenario state");
   assert(html.includes('data-add-gamepad-axis'), "expected typed gamepad input mapping controls");
   assert(html.includes('data-add-gamepad-integrator'), "expected typed gamepad integrator controls");
   assert(html.includes('data-add-stepper-input'), "expected typed Modelica input routing controls");
@@ -124,9 +126,24 @@ function documentHandlesEmptyConfig() {
   assert(html.includes("<select"), "expected default typed controls");
 }
 
+function documentUsesPlaygroundThemeTokens() {
+  const html = shared.buildScenarioConfigDocument({
+    path: "rumoca-scenario.toml",
+    config: configTree,
+    theme: "light",
+  });
+  assert(html.includes('<body data-theme="light">'), "expected playground theme on scenario body");
+  assert(html.includes('body[data-theme="light"]'), "expected playground light theme CSS");
+  assert(
+    html.includes("--vscode-editor-background: #f8fafc"),
+    "expected scenario form to use the playground light background",
+  );
+}
+
 flattenExposesNestedLeaves();
 editsApplyByPathAndPreserveSiblings();
 undefinedEditDeletesKey();
 documentRendersSectionsAndControls();
 documentHandlesEmptyConfig();
+documentUsesPlaygroundThemeTokens();
 console.log("scenario_config_form_smoke: ok");

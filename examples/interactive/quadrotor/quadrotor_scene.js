@@ -449,6 +449,12 @@ ctx.onInit = async function(api) {
   s.cameraMount = new THREE.Object3D();
   s.cameraMount.name = "camera_mount";
   s.vehicleCameraFrame.add(s.cameraMount);
+
+  // The drone GLB's visual nose is along local +X, so the chase camera sits
+  // on local -X instead of the side of the vehicle.
+  if (api.cam) {
+    api.cam.angle = -Math.PI / 2;
+  }
 };
 
 ctx.onFrame = function(api) {

@@ -20,6 +20,7 @@ end BallWasmSmoke;
 `;
 
 let simulate_model_fn = null;
+let simulate_model_with_workspace_sources_fn = null;
 const pkgSubdirArgIndex = process.argv.indexOf("--pkg-subdir");
 const wasmPkgSubdir =
   pkgSubdirArgIndex >= 0 ? process.argv[pkgSubdirArgIndex + 1] : "release-full-web";
@@ -107,6 +108,31 @@ function runBouncingBallSmoke() {
   assert(sawFallingPosition, "bouncing ball: expected position to decrease under gravity");
 }
 
+function runWorkspaceSourceExclusionSmoke() {
+  const workspaceSources = JSON.stringify({
+    "examples/simulation/rumoca-scenario.ball.toml": [
+      "version = 2",
+      "[model]",
+      'name = "BallWasmSmoke"',
+      "",
+    ].join("\n"),
+  });
+  const raw = simulate_model_with_workspace_sources_fn(
+    BALL_SOURCE,
+    "BallWasmSmoke",
+    workspaceSources,
+    1.5,
+    0.01,
+    "auto",
+    "{}",
+  );
+  const parsed = parseSimulationJson(raw);
+  assert(
+    parsed.times.length >= 20,
+    `workspace-source exclusion: expected at least 20 samples, got ${parsed.times.length}`,
+  );
+}
+
 function runCoupledStateSmoke() {
   const raw = simulate_model_fn(COUPLED_STATE_SOURCE, "CoupledStateWasmSmoke", 1.0, 0.05, "auto", "{}");
   const parsed = parseSimulationJson(raw);
@@ -128,12 +154,18 @@ async function run() {
   const wasmModule = await import(`../../rumoca/dist/${wasmPkgSubdir}/rumoca_bind_wasm.js`);
   const init = wasmModule.default;
   simulate_model_fn = wasmModule.simulate_model;
+  simulate_model_with_workspace_sources_fn = wasmModule.simulate_model_with_workspace_sources;
+  assert(
+    typeof simulate_model_with_workspace_sources_fn === "function",
+    "simulate_model_with_workspace_sources export must be available",
+  );
   const wasmBytes = await readFile(
     new URL(`../../rumoca/dist/${wasmPkgSubdir}/rumoca_bind_wasm_bg.wasm`, import.meta.url),
   );
   await init({ module_or_path: wasmBytes });
   runLinearSmoke();
   runBouncingBallSmoke();
+  runWorkspaceSourceExclusionSmoke();
   runCoupledStateSmoke();
 }
 

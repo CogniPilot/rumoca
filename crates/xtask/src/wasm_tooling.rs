@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-const DEFAULT_WASM_PACK_VERSION: &str = "0.13.1";
+const DEFAULT_WASM_PACK_VERSION: &str = "0.15.0";
 
 fn parse_tool_version(output: &str) -> Option<String> {
     output

@@ -98,7 +98,7 @@ ARG RUSTUP_HOME=/opt/rumoca/rustup
 ARG NODE_VERSION=22.22.1
 ARG NODE_URL=https://nodejs.org/dist/v22.22.1/node-v22.22.1-linux-x64.tar.xz
 ARG NODE_SHA256=9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa
-ARG WASM_PACK_VERSION=0.13.1
+ARG WASM_PACK_VERSION=0.15.0
 
 ENV CARGO_HOME=${CARGO_HOME} \
     PATH=/opt/node/bin:${CARGO_HOME}/bin:${PYTHON_VENV}/bin:/opt/julia/bin:${PATH} \

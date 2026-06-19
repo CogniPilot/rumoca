@@ -79,6 +79,25 @@ async function bundleStdinModule(contents, outfile, options = {}) {
   });
 }
 
+async function stripSourceMapComments(rootDir) {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      await stripSourceMapComments(entryPath);
+      continue;
+    }
+    if (!entry.isFile() || !['.css', '.js'].includes(path.extname(entry.name))) {
+      continue;
+    }
+    const contents = await fs.readFile(entryPath, 'utf8');
+    const stripped = contents.replace(/\n?\/\/# sourceMappingURL=.*\.map\s*$/u, '');
+    if (stripped !== contents) {
+      await fs.writeFile(entryPath, stripped);
+    }
+  }
+}
+
 async function main() {
   await fs.rm(vendorRoot, { recursive: true, force: true });
   await fs.mkdir(vendorRoot, { recursive: true });
@@ -94,6 +113,10 @@ async function main() {
   await fs.copyFile(
     path.join(webRoot, 'viz', 'visualization_shared.js'),
     path.join(vendorRoot, 'visualization_shared.js'),
+  );
+  await fs.copyFile(
+    path.join(webRoot, 'runtime', 'modelica_language.js'),
+    path.join(vendorRoot, 'modelica_language.js'),
   );
   await bundleStdinModule(
     `export * from './viz/visualization_shared.js';\n`,
@@ -165,11 +188,13 @@ async function main() {
     path.join(vendorRoot, 'results_app.css'),
   );
 
+  const monacoVsDir = path.join(vendorRoot, 'monaco', 'vs');
   await fs.cp(
     path.dirname(require.resolve('monaco-editor/min/vs/loader.js')),
-    path.join(vendorRoot, 'monaco', 'vs'),
+    monacoVsDir,
     { recursive: true },
   );
+  await stripSourceMapComments(monacoVsDir);
 }
 
 main().catch((error) => {

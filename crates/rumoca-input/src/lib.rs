@@ -22,7 +22,7 @@ pub use device::{
 pub use engine::compile;
 pub use engine::{
     ButtonAction, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton, CompiledInput,
-    CompiledIntegrator, CompiledKey, DeriveRule, InputEngine, IntegratorSource, KeyAction,
-    LocalValue, Path, Precondition, PreconditionOp,
+    CompiledIntegrator, CompiledKey, CompiledKeyboardDecay, DeriveRule, InputEngine,
+    IntegratorSource, KeyAction, LocalValue, Path, Precondition, PreconditionOp,
 };
 pub use signal_mapper::{RuntimeContext, SignalMapper};

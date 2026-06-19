@@ -42,10 +42,14 @@ function createFakeEditor(options = {}) {
 
 function createFakeMonaco() {
   const languageConfigurations = [];
+  const registeredLanguages = [];
+  const tokenProviders = [];
 
   return {
     captured: {
       languageConfigurations,
+      registeredLanguages,
+      tokenProviders,
     },
     Emitter: FakeEmitter,
     MarkerSeverity: {
@@ -83,14 +87,18 @@ function createFakeMonaco() {
       CompletionItemInsertTextRule: {
         InsertAsSnippet: 4,
       },
-      register() {},
+      register(language) {
+        registeredLanguages.push(language);
+      },
       getLanguages() {
         return [];
       },
       setLanguageConfiguration(languageId, config) {
         languageConfigurations.push([languageId, config]);
       },
-      setMonarchTokensProvider() {},
+      setMonarchTokensProvider(languageId, provider) {
+        tokenProviders.push([languageId, provider]);
+      },
       registerCompletionItemProvider() {
         return { dispose() {} };
       },
@@ -164,6 +172,15 @@ test("setupMonacoWorkspace wires comment metadata for editable languages", async
         blockComment: ["{#", "#}"],
       },
     });
+    assert.equal(languageConfigurations.get("toml").comments.lineComment, "#");
+    assert(
+      fakeMonaco.captured.registeredLanguages.some((language) => language?.id === "toml"),
+      "expected setup to register a local TOML language",
+    );
+    assert(
+      fakeMonaco.captured.tokenProviders.some(([languageId]) => languageId === "toml"),
+      "expected setup to register local TOML tokenization",
+    );
   } finally {
     globalThis.window = originalWindow;
     globalThis.document = originalDocument;

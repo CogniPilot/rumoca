@@ -864,6 +864,9 @@ jobs:
               packages/playground/index.html > gh-pages/index.html
 
           cargo xtask repo modelica-deps ensure
+          mkdir -p gh-pages/target/cmm
+          cp -a target/cmm/CMM-v0.0.2 gh-pages/target/cmm/
+
           cargo xtask docs build --book user
           cargo xtask docs build --book dev
           mkdir -p "$GITHUB_WORKSPACE/gh-pages/user-guide" "$GITHUB_WORKSPACE/gh-pages/dev-guide"

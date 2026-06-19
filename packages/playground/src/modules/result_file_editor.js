@@ -283,6 +283,18 @@ function formatVector3(vector) {
     ].join(' · ');
 }
 
+function clampNumber(value, min, max) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return min;
+    }
+    return Math.min(max, Math.max(min, numeric));
+}
+
+function formatPercent(value) {
+    return `${Math.round(clampNumber(value, 0, 1) * 100)}%`;
+}
+
 function collectGlbNodes(root) {
     const nodes = [];
     root.traverse?.((node) => {
@@ -300,24 +312,154 @@ function collectGlbNodes(root) {
     return nodes;
 }
 
-function createGlbInspector(THREE, inspector, modelRoot) {
+function glbMeshMaterials(node) {
+    if (!node?.isMesh || !node.material) {
+        return [];
+    }
+    return Array.isArray(node.material) ? node.material.filter(Boolean) : [node.material];
+}
+
+function createGlbOpacityController(modelRoot) {
+    const originalState = new WeakMap();
+    let opacity = 1;
+
+    function remember(material) {
+        if (!originalState.has(material)) {
+            originalState.set(material, {
+                opacity: Number.isFinite(material.opacity) ? material.opacity : 1,
+                transparent: Boolean(material.transparent),
+                depthWrite: material.depthWrite,
+            });
+        }
+        return originalState.get(material);
+    }
+
+    function applyMaterial(material) {
+        const original = remember(material);
+        material.opacity = original.opacity * opacity;
+        material.transparent = original.transparent || opacity < 0.999;
+        material.depthWrite = opacity < 0.999 ? false : original.depthWrite;
+        material.needsUpdate = true;
+    }
+
+    function setOpacity(nextOpacity) {
+        opacity = clampNumber(nextOpacity, 0.08, 1);
+        modelRoot.traverse?.((node) => {
+            for (const material of glbMeshMaterials(node)) {
+                applyMaterial(material);
+            }
+        });
+    }
+
+    return {
+        get opacity() {
+            return opacity;
+        },
+        refresh() {
+            setOpacity(opacity);
+        },
+        restore() {
+            modelRoot.traverse?.((node) => {
+                for (const material of glbMeshMaterials(node)) {
+                    const original = originalState.get(material);
+                    if (!original) continue;
+                    material.opacity = original.opacity;
+                    material.transparent = original.transparent;
+                    material.depthWrite = original.depthWrite;
+                    material.needsUpdate = true;
+                }
+            });
+        },
+        setOpacity,
+    };
+}
+
+function selectedNodeAxisSize(THREE, node) {
+    if (!node) {
+        return 0.35;
+    }
+    const box = new THREE.Box3().setFromObject(node);
+    if (box.isEmpty()) {
+        return 0.35;
+    }
+    const size = box.getSize(new THREE.Vector3());
+    return clampNumber(Math.max(size.x, size.y, size.z) * 0.45, 0.18, 3);
+}
+
+function createSelectionHighlight(THREE, selectedNode) {
+    const highlights = [];
+    selectedNode?.traverse?.((node) => {
+        if (!node.isMesh || !node.geometry) {
+            return;
+        }
+        const edges = new THREE.LineSegments(
+            new THREE.EdgesGeometry(node.geometry, 18),
+            new THREE.LineBasicMaterial({
+                color: 0x00a2ff,
+                transparent: true,
+                opacity: 0.95,
+                depthTest: false,
+                depthWrite: false,
+            })
+        );
+        edges.name = '__rumoca_glb_selection_edges';
+        edges.renderOrder = 1000;
+        node.add(edges);
+        highlights.push(edges);
+    });
+    return highlights;
+}
+
+function disposeSelectionHighlights(highlights) {
+    for (const highlight of highlights) {
+        highlight.parent?.remove(highlight);
+        highlight.geometry?.dispose?.();
+        highlight.material?.dispose?.();
+    }
+    highlights.length = 0;
+}
+
+function createGlbInspector(THREE, inspector, modelRoot, opacityController) {
     const axes = new THREE.AxesHelper(0.35);
     axes.visible = true;
     let selectedNode = null;
     let selectedButton = null;
+    let selectionHighlights = [];
+    const buttonByNode = new Map();
 
     const title = document.createElement('div');
     title.className = 'asset-glb-inspector-title';
     title.textContent = 'Model';
+
     const axesLabel = document.createElement('label');
     axesLabel.className = 'asset-glb-toggle';
     const axesCheckbox = document.createElement('input');
     axesCheckbox.type = 'checkbox';
     axesCheckbox.checked = true;
     axesLabel.append(axesCheckbox, document.createTextNode('Axes'));
+
+    const opacityLabel = document.createElement('label');
+    opacityLabel.className = 'asset-glb-opacity';
+    const opacityText = document.createElement('span');
+    opacityText.textContent = 'Opacity';
+    const opacitySlider = document.createElement('input');
+    opacitySlider.type = 'range';
+    opacitySlider.min = '0.08';
+    opacitySlider.max = '1';
+    opacitySlider.step = '0.01';
+    opacitySlider.value = String(opacityController.opacity);
+    const opacityValue = document.createElement('output');
+    opacityValue.value = formatPercent(opacityController.opacity);
+    opacityValue.textContent = opacityValue.value;
+    opacityLabel.append(opacityText, opacitySlider, opacityValue);
+
+    const controls = document.createElement('div');
+    controls.className = 'asset-glb-controls';
+    controls.append(axesLabel, opacityLabel);
+
     const header = document.createElement('div');
     header.className = 'asset-glb-inspector-header';
-    header.append(title, axesLabel);
+    header.append(title, controls);
 
     const tree = document.createElement('div');
     tree.className = 'asset-glb-tree';
@@ -333,14 +475,19 @@ function createGlbInspector(THREE, inspector, modelRoot) {
 
     function setSelected(node, button = null) {
         removeAxes();
+        disposeSelectionHighlights(selectionHighlights);
         selectedNode = node;
         if (selectedButton) {
             selectedButton.classList.remove('selected');
         }
-        selectedButton = button;
+        selectedButton = button || buttonByNode.get(node) || null;
         selectedButton?.classList.add('selected');
         if (selectedNode && axesCheckbox.checked) {
+            axes.scale.setScalar(selectedNodeAxisSize(THREE, selectedNode));
             selectedNode.add(axes);
+        }
+        if (selectedNode) {
+            selectionHighlights = createSelectionHighlight(THREE, selectedNode);
         }
         updateDetails();
     }
@@ -377,15 +524,24 @@ function createGlbInspector(THREE, inspector, modelRoot) {
 
     axesCheckbox.addEventListener('change', () => {
         if (axesCheckbox.checked && selectedNode) {
+            axes.scale.setScalar(selectedNodeAxisSize(THREE, selectedNode));
             selectedNode.add(axes);
         } else {
             removeAxes();
         }
     });
 
+    opacitySlider.addEventListener('input', () => {
+        const opacity = clampNumber(opacitySlider.value, 0.08, 1);
+        opacityController.setOpacity(opacity);
+        opacityValue.value = formatPercent(opacity);
+        opacityValue.textContent = opacityValue.value;
+    });
+
     function loadTree(sceneRoot) {
         const items = collectGlbNodes(sceneRoot);
         tree.innerHTML = '';
+        buttonByNode.clear();
         items.forEach((item, index) => {
             const button = document.createElement('button');
             button.type = 'button';
@@ -394,6 +550,7 @@ function createGlbInspector(THREE, inspector, modelRoot) {
             button.textContent = glbNodeLabel(item.node, index);
             button.title = `${button.textContent} (${item.node.type || 'Object3D'})`;
             button.addEventListener('click', () => setSelected(item.node, button));
+            buttonByNode.set(item.node, button);
             tree.appendChild(button);
             if (index === 0) {
                 setSelected(item.node, button);
@@ -403,23 +560,48 @@ function createGlbInspector(THREE, inspector, modelRoot) {
 
     return {
         loadTree,
+        selectNode: setSelected,
         updateDetails,
         dispose() {
             removeAxes();
+            disposeSelectionHighlights(selectionHighlights);
             axes.geometry?.dispose?.();
             axes.material?.dispose?.();
+            opacityController.restore();
         },
     };
 }
 
-function attachGlbViewportControls(viewport, camera, modelRoot, distanceState) {
+function pickGlbNodeAt(THREE, viewport, camera, modelRoot, clientX, clientY, raycaster, pointer) {
+    const rect = viewport.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+        return null;
+    }
+    pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObjects(modelRoot.children, true)
+        .find((intersection) => intersection.object?.isMesh);
+    return hit?.object || null;
+}
+
+function attachGlbViewportControls(THREE, viewport, camera, modelRoot, distanceState, { onSelect } = {}) {
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
+    let startX = 0;
+    let startY = 0;
+    let moved = false;
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+
     viewport.addEventListener('pointerdown', (event) => {
         dragging = true;
         lastX = event.clientX;
         lastY = event.clientY;
+        startX = event.clientX;
+        startY = event.clientY;
+        moved = false;
         viewport.setPointerCapture?.(event.pointerId);
     });
     viewport.addEventListener('pointermove', (event) => {
@@ -428,11 +610,21 @@ function attachGlbViewportControls(viewport, camera, modelRoot, distanceState) {
         const dy = event.clientY - lastY;
         lastX = event.clientX;
         lastY = event.clientY;
+        if (Math.hypot(event.clientX - startX, event.clientY - startY) > 4) {
+            moved = true;
+        }
+        if (!moved) {
+            return;
+        }
         modelRoot.rotation.y += dx * 0.01;
         modelRoot.rotation.x += dy * 0.01;
     });
-    viewport.addEventListener('pointerup', () => {
+    viewport.addEventListener('pointerup', (event) => {
+        if (!moved) {
+            onSelect?.(pickGlbNodeAt(THREE, viewport, camera, modelRoot, event.clientX, event.clientY, raycaster, pointer));
+        }
         dragging = false;
+        viewport.releasePointerCapture?.(event.pointerId);
     });
     viewport.addEventListener('wheel', (event) => {
         event.preventDefault();
@@ -474,7 +666,8 @@ function renderGlbAsset(path, content) {
     }
 
     const { scene, camera, renderer, modelRoot } = createGlbScene(THREE, viewport);
-    const glbInspector = createGlbInspector(THREE, inspector, modelRoot);
+    const opacityController = createGlbOpacityController(modelRoot);
+    const glbInspector = createGlbInspector(THREE, inspector, modelRoot, opacityController);
     const distanceState = { value: 4 };
     const resize = () => resizeGlbViewport(viewport, camera, renderer);
     let animationFrame = null;
@@ -486,9 +679,14 @@ function renderGlbAsset(path, content) {
     }
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(viewport);
-    attachGlbViewportControls(viewport, camera, modelRoot, distanceState);
+    attachGlbViewportControls(THREE, viewport, camera, modelRoot, distanceState, {
+        onSelect(node) {
+            glbInspector.selectNode(node);
+        },
+    });
     try {
         loadGlbScene(THREE, bytes, modelRoot, camera, viewport, distanceState, (loadedScene) => {
+            opacityController.refresh();
             glbInspector.loadTree(loadedScene);
         });
     } catch (error) {
@@ -654,6 +852,14 @@ export function createResultFileEditorController({
         scheduleWorkspacePersistence?.();
     }
 
+    async function resolveInteractiveRunForError(path) {
+        try {
+            return await resolveInteractiveRun?.(path) || null;
+        } catch {
+            return null;
+        }
+    }
+
     function renderInteractiveRun(path) {
         const status = document.createElement('div');
         status.className = 'asset-file-meta';
@@ -665,7 +871,7 @@ export function createResultFileEditorController({
         host.className = 'interactive-run-host';
         const help = document.createElement('div');
         help.className = 'interactive-run-help';
-        help.textContent = 'Press Capture, then use the configured keyboard, mouse, or gamepad inputs. Esc releases capture. C changes camera, H toggles HUD, R resets, Q stops.';
+        help.textContent = 'Press Capture, then use the configured keyboard, mouse, or gamepad inputs. Esc releases capture. C changes camera, H toggles HUD, T toggles realtime/fast, F toggles fullscreen, R resets, Q stops.';
         body.classList.add('interactive-run-body');
         body.prepend(status);
         body.append(host, help);
@@ -726,7 +932,7 @@ export function createResultFileEditorController({
             status.textContent = 'running';
         })().catch(async (error) => {
             if (!mounted.disposed) {
-                const run = await resolveInteractiveRun?.(path).catch(() => null);
+                const run = await resolveInteractiveRunForError(path);
                 reportInteractiveRunError?.(run, path, error);
                 host.replaceChildren();
                 status.textContent = 'failed';

@@ -118,9 +118,21 @@ pub struct GamepadButton {
 #[serde(deny_unknown_fields)]
 pub struct KeyboardConfig {
     #[serde(default)]
+    pub decay: Option<KeyboardDecay>,
+    #[serde(default)]
     pub keys: HashMap<String, KeyBinding>,
     #[serde(default)]
     pub integrators: HashMap<String, Integrator>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KeyboardDecay {
+    #[serde(default)]
+    pub factor: Option<f64>,
+    #[serde(default)]
+    pub ref_dt: Option<f64>,
+    #[serde(default)]
+    pub targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

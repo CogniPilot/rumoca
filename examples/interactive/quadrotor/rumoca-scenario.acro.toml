@@ -51,6 +51,16 @@ rate = 0.7
 source = "local:throttle_input"
 write = "throttle"
 
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = [
+    "roll_cmd",
+    "pitch_cmd",
+    "yaw_cmd",
+    "throttle_input",
+]
+
 [input.keyboard.keys.ArrowDown]
 action = "set"
 target = "roll_cmd"
@@ -273,6 +283,10 @@ keys = "R"
 [[viewer.controls.keyboard]]
 action = "Realtime"
 keys = "T"
+
+[[viewer.controls.keyboard]]
+action = "Fullscreen"
+keys = "F"
 
 [[viewer.controls.keyboard]]
 action = "Camera"

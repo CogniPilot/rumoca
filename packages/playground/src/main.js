@@ -2502,7 +2502,7 @@ function resolveSupportedEditorLanguage(languageId) {
     const nextId = trimMaybeString(languageId) || 'plaintext';
     const getLanguages = monacoApi?.languages?.getLanguages;
     if (typeof getLanguages !== 'function') {
-        return nextId === 'toml' ? 'ini' : nextId;
+        return nextId === 'toml' ? 'plaintext' : nextId;
     }
     const supported = getLanguages.call(monacoApi.languages)
         .some((entry) => trimMaybeString(entry?.id) === nextId);
@@ -2510,7 +2510,7 @@ function resolveSupportedEditorLanguage(languageId) {
         return nextId;
     }
     if (nextId === 'toml') {
-        return 'ini';
+        return 'plaintext';
     }
     return 'plaintext';
 }
@@ -2746,6 +2746,19 @@ function compileProgressLabel(progress) {
 function handleWorkerProgress(progress) {
     if (progress?.kind === 'parse') {
         packageArchiveController.handleWorkerProgress(progress);
+    }
+    if (
+        progress?.kind === 'request'
+        && progress?.phase === 'finish'
+        && [
+            'rumoca.workspace.loadSourceRoots',
+            'rumoca.workspace.mergeParsedSourceRootsBinary',
+            'rumoca.workspace.exportParsedSourceRootsBinary',
+            'rumoca.workspace.effectiveSourceRoots',
+        ].includes(trimMaybeString(progress?.command))
+    ) {
+        setCompileStatusBadge('Idle', 'loading');
+        return;
     }
     const label = compileProgressLabel(progress);
     if (label) {
@@ -3483,27 +3496,24 @@ function currentSimulationModel() {
     );
 }
 
-function collectWorkspaceModelicaSources(excludePath = workspaceFs.getActiveDocumentPath()) {
-    const excluded = normalizePath(excludePath);
-    const sources = {};
-    for (const entry of workspaceFs.listFiles()) {
-        const path = normalizePath(entry?.path);
-        if (!path || path === excluded || !path.endsWith('.mo')) {
-            continue;
-        }
-        if (entry?.sourceKind === 'packageArchive') {
-            continue;
-        }
-        if (typeof entry?.content !== 'string') {
-            continue;
-        }
-        sources[path] = entry.content;
-    }
-    return sources;
+function collectWorkspaceModelicaSources(
+    excludePath = workspaceFs.getActiveDocumentPath(),
+    excludeSourceRootPaths = [],
+) {
+    return shared.workspaceModelicaSourceMap(workspaceFs.listFiles(), {
+        excludePath,
+        excludeSourceRootPaths,
+    });
 }
 
-function collectWorkspaceModelicaSourcesJson(excludePath = workspaceFs.getActiveDocumentPath()) {
-    return JSON.stringify(collectWorkspaceModelicaSources(excludePath));
+function collectWorkspaceModelicaSourcesJson(
+    excludePath = workspaceFs.getActiveDocumentPath(),
+    excludeSourceRootPaths = [],
+) {
+    return shared.workspaceModelicaSourcesJson(workspaceFs.listFiles(), {
+        excludePath,
+        excludeSourceRootPaths,
+    });
 }
 
 function normalizeSourceRootPath(path) {
@@ -3519,23 +3529,7 @@ function normalizeSourceRootPath(path) {
 }
 
 function collectWorkspaceSourceRootsJson(sourceRootPaths = []) {
-    const roots = Array.isArray(sourceRootPaths)
-        ? Array.from(new Set(sourceRootPaths.map(normalizeSourceRootPath).filter(Boolean)))
-        : [];
-    if (roots.length === 0) {
-        return '{}';
-    }
-    const sources = {};
-    for (const entry of workspaceFs.listFiles()) {
-        const path = normalizeSourceRootPath(entry?.path);
-        if (!path || !path.endsWith('.mo') || typeof entry?.content !== 'string') {
-            continue;
-        }
-        if (roots.some((root) => path === root || path.startsWith(`${root}/`))) {
-            sources[path] = entry.content;
-        }
-    }
-    return JSON.stringify(sources);
+    return shared.workspaceSourceRootSourcesJson(workspaceFs.listFiles(), sourceRootPaths);
 }
 
 function scenarioUsesInputRuntime(config) {
@@ -3603,7 +3597,8 @@ async function interactiveSourceRootPaths(context) {
 
 async function storeInteractiveRunContext(context) {
     const runPath = interactiveRunPathForScenario(context.path, context.modelName);
-    const sourceRoots = collectWorkspaceSourceRootsJson(await interactiveSourceRootPaths(context));
+    const sourceRootPaths = await interactiveSourceRootPaths(context);
+    const sourceRoots = collectWorkspaceSourceRootsJson(sourceRootPaths);
     interactiveRunContexts.set(runPath, {
         path: runPath,
         scenarioPath: context.path,
@@ -3614,7 +3609,10 @@ async function storeInteractiveRunContext(context) {
         assetBaseUrl: scenarioAssetBaseUrl(context.config, context.path),
         sourceRootCacheUrl: '',
         sourceRoots,
-        workspaceSources: collectWorkspaceModelicaSourcesJson(context.modelPath || context.path),
+        workspaceSources: collectWorkspaceModelicaSourcesJson(
+            context.modelPath || context.path,
+            sourceRootPaths,
+        ),
     });
     resultFileEditorController?.invalidatePath(runPath);
     return runPath;
@@ -3829,6 +3827,7 @@ async function runSimulationWithContext({ modelName, source, focusPath, excludeP
 
     status.textContent = 'Simulating...';
     status.style.color = '#9a6700';
+    setTerminalOutput(`Simulating ${model}...`);
 
     try {
         const simulationPayload = {
@@ -3840,10 +3839,11 @@ async function runSimulationWithContext({ modelName, source, focusPath, excludeP
         if (shared.isRumocaScenarioPath(rootFocusPath)) {
             simulationPayload.scenarioPath = rootFocusPath;
         }
-        if (!workspaceSourcesSynced) {
-            simulationPayload.workspaceSources = collectWorkspaceModelicaSourcesJson(workspaceExcludePath);
-            workspaceSourcesSynced = true;
-        }
+        simulationPayload.workspaceSources = collectWorkspaceModelicaSourcesJson(
+            workspaceExcludePath,
+            simulationConfig.effective?.sourceRootPaths,
+        );
+        workspaceSourcesSynced = true;
         const result = await scenarioInterface.execute('rumoca.scenario.startSimulation', simulationPayload);
         const simulateMs = Math.round((Number(result.metrics?.simulateSeconds) || 0) * 1000);
         status.textContent =
@@ -3859,6 +3859,11 @@ async function runSimulationWithContext({ modelName, source, focusPath, excludeP
                 forceReload: true,
             });
         }
+        setTerminalOutput(
+            persistedRun?.runPath
+                ? `Saved simulation results to ${persistedRun.runPath}\n${result.metrics?.points ?? 0} points, ${result.metrics?.variables ?? 0} variables (${simulateMs}ms).`
+                : `Simulated ${model}\n${result.metrics?.points ?? 0} points, ${result.metrics?.variables ?? 0} variables (${simulateMs}ms).`,
+        );
         return {
             ok: true,
             message: persistedRun?.runPath
@@ -3869,6 +3874,7 @@ async function runSimulationWithContext({ modelName, source, focusPath, excludeP
     } catch (e) {
         status.textContent = e.message || 'Simulation failed';
         status.style.color = '#c9184a';
+        setTerminalOutput(`Simulation failed for ${model}: ${e.message || e}`);
         throw e;
     }
 }

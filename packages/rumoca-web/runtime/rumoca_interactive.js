@@ -44,6 +44,104 @@ function clamp(value, limits) {
     : value;
 }
 
+function normalizePacingMode(value) {
+  const text = trimMaybeString(value).toLowerCase().replace(/[-\s]+/g, '_');
+  return text === 'as_fast_as_possible' ? 'as_fast_as_possible' : 'realtime';
+}
+
+function pacingModeLabel(mode) {
+  return mode === 'as_fast_as_possible' ? 'fast' : 'realtime';
+}
+
+function speedRatioLabel(value) {
+  const ratio = finiteNumber(value, 0);
+  if (ratio >= 100) {
+    return `${ratio.toFixed(0)}x`;
+  }
+  if (ratio >= 10) {
+    return `${ratio.toFixed(1)}x`;
+  }
+  return `${ratio.toFixed(2)}x`;
+}
+
+function ensureInteractiveRuntimeStyles(ownerDocument) {
+  if (!ownerDocument || ownerDocument.getElementById('rumoca-interactive-runtime-styles')) {
+    return;
+  }
+  const style = ownerDocument.createElement('style');
+  style.id = 'rumoca-interactive-runtime-styles';
+  style.textContent = `
+.rumoca-interactive-root {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+}
+.rumoca-interactive-root:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #071825;
+}
+.rumoca-interactive-root:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  background: #071825;
+}
+.rumoca-interactive-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.rumoca-interactive-flight-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.rumoca-interactive-controls {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  pointer-events: auto;
+}
+.rumoca-interactive-controls button,
+.rumoca-interactive-controls .rumoca-interactive-key-echo {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  background: rgba(10, 14, 18, 0.82);
+  color: #f4f7fb;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.rumoca-interactive-controls button {
+  cursor: pointer;
+}
+.rumoca-interactive-controls.is-capturing .rumoca-interactive-capture-toggle,
+.rumoca-interactive-controls .rumoca-interactive-pacing-toggle.is-fast,
+.rumoca-interactive-controls .rumoca-interactive-fullscreen-toggle.is-fullscreen {
+  border-color: #37b7ff;
+  background: rgba(0, 103, 168, 0.88);
+}
+@media (max-width: 640px) {
+  .rumoca-interactive-controls button,
+  .rumoca-interactive-controls .rumoca-interactive-key-echo {
+    min-height: 42px;
+    font-size: 16px;
+  }
+}
+`;
+  (ownerDocument.head || ownerDocument.documentElement).appendChild(style);
+}
+
 function localDefault(def) {
   if (!def || typeof def !== 'object') {
     return 0;
@@ -52,6 +150,36 @@ function localDefault(def) {
     return Boolean(def.default);
   }
   return finiteNumber(def.default, 0);
+}
+
+function inferredKeyboardDecayTargets(keyboardBindings) {
+  const targets = new Set();
+  for (const binding of Object.values(keyboardBindings || {})) {
+    if (trimMaybeString(binding?.action).toLowerCase() !== 'set') {
+      continue;
+    }
+    const target = trimMaybeString(binding.target);
+    if (target) {
+      targets.add(target);
+    }
+  }
+  return Array.from(targets).sort((a, b) => a.localeCompare(b));
+}
+
+function createKeyboardDecaySpec(decay, keyboardBindings) {
+  const raw = decay && typeof decay === 'object' ? decay : null;
+  const hasExplicitTargets = raw && Object.prototype.hasOwnProperty.call(raw, 'targets');
+  const targets = hasExplicitTargets
+    ? (Array.isArray(raw.targets) ? raw.targets.map(trimMaybeString).filter(Boolean) : [])
+    : inferredKeyboardDecayTargets(keyboardBindings);
+  if (targets.length === 0) {
+    return null;
+  }
+  return {
+    factor: finiteNumber(raw?.factor, 0.85),
+    ref_dt: raw?.ref_dt ?? raw?.refDt ?? 0.016,
+    targets,
+  };
 }
 
 function sourceValue(source, locals, stepper, runtime) {
@@ -137,7 +265,7 @@ function normalizedKeyboardKey(eventOrKey) {
   return typeof key === 'string' && key.length === 1 ? key.toLowerCase() : trimMaybeString(key);
 }
 
-function createInputRuntime(config) {
+export function createInputRuntime(config) {
   const locals = new Map();
   const keyboardBindings = {};
   for (const [key, binding] of sortedEntries(config?.input?.keyboard?.keys)) {
@@ -152,8 +280,10 @@ function createInputRuntime(config) {
   const pressedKeys = new Set();
   const signals = new Set();
   const debounceUntil = new Map();
+  const pressedButtons = new Set();
   let connectedGamepad = null;
   let lastMode = 'keyboard';
+  const keyboardDecay = createKeyboardDecaySpec(config?.input?.keyboard?.decay, keyboardBindings);
 
   function resetLocals() {
     locals.clear();
@@ -197,14 +327,26 @@ function createInputRuntime(config) {
     }
   }
 
+  function applyHeldKeyboardAction(id, binding, nowMs) {
+    if (trimMaybeString(binding?.action).toLowerCase() === 'set') {
+      applyAction(id, binding, true, nowMs);
+    }
+  }
+
   function keyDown(event) {
     const key = normalizedKeyboardKey(event);
     const binding = keyboardBindings[key];
     if (!binding) {
       return false;
     }
+    const wasPressed = pressedKeys.has(key);
     pressedKeys.add(key);
-    applyAction(`key:${key}`, binding, true, performance.now());
+    const id = `key:${key}`;
+    if (wasPressed) {
+      applyHeldKeyboardAction(id, binding, performance.now());
+    } else {
+      applyAction(id, binding, true, performance.now());
+    }
     event.preventDefault();
     return true;
   }
@@ -239,9 +381,10 @@ function createInputRuntime(config) {
       lastMode = 'keyboard';
     }
     const nowMs = performance.now();
+    applyKeyboardDecay(keyboardDecay, dt);
     for (const [key, binding] of sortedEntries(keyboardBindings)) {
       if (pressedKeys.has(key)) {
-        applyAction(`key:${key}`, binding, true, nowMs);
+        applyHeldKeyboardAction(`key:${key}`, binding, nowMs);
       }
     }
     applyIntegrators(input.keyboard?.integrators, dt, null);
@@ -249,6 +392,31 @@ function createInputRuntime(config) {
       applyGamepadAxes(input.gamepad?.axes, gamepad);
       applyIntegrators(input.gamepad?.integrators, dt, gamepad);
       applyGamepadButtons(input.gamepad?.buttons, gamepad, nowMs);
+    }
+  }
+
+  function applyKeyboardDecay(decay, dt) {
+    if (!decay || typeof decay !== 'object') {
+      return;
+    }
+    const targets = Array.isArray(decay.targets)
+      ? decay.targets.map(trimMaybeString).filter(Boolean)
+      : [];
+    if (targets.length === 0) {
+      return;
+    }
+    const elapsed = finiteNumber(dt, 0);
+    if (elapsed <= 0) {
+      return;
+    }
+    const factor = clamp(finiteNumber(decay.factor, 1), [0, 1]);
+    const refDt = Math.max(finiteNumber(decay.ref_dt ?? decay.refDt, 0.016), Number.EPSILON);
+    const scale = Math.pow(factor, elapsed / refDt);
+    for (const target of targets) {
+      const current = locals.get(target);
+      if (typeof current === 'number' && Number.isFinite(current)) {
+        locals.set(target, current * scale);
+      }
     }
   }
 
@@ -274,7 +442,19 @@ function createInputRuntime(config) {
 
   function applyGamepadButtons(buttons, gamepad, nowMs) {
     for (const [name, spec] of sortedEntries(buttons)) {
-      applyAction(`button:${name}`, spec, sourceGamepadButton(spec.source || name, gamepad), nowMs);
+      const id = `button:${name}`;
+      const active = sourceGamepadButton(spec.source || name, gamepad);
+      const action = trimMaybeString(spec?.action).toLowerCase();
+      if (action === 'set') {
+        applyAction(id, spec, active, nowMs);
+      } else if (active && !pressedButtons.has(id)) {
+        applyAction(id, spec, true, nowMs);
+      }
+      if (active) {
+        pressedButtons.add(id);
+      } else {
+        pressedButtons.delete(id);
+      }
     }
   }
 
@@ -294,6 +474,7 @@ function createInputRuntime(config) {
     },
     releaseKeys() {
       pressedKeys.clear();
+      pressedButtons.clear();
     },
     resetLocals,
     takeSignal,
@@ -329,7 +510,7 @@ function createViewerRuntime({ THREE, container, viewerSignals, assetBaseUrl, po
   const cam = {
     target: new THREE.Vector3(0, 0, 0),
     dist: 7,
-    angle: Math.PI,
+    angle: -Math.PI / 2,
     elev: 0.22,
   };
   const viewerConfig = config?.viewer || {};
@@ -742,12 +923,16 @@ export async function createInteractiveSimulation(options) {
   onStatus('ready');
 
   const simDt = Math.max(0.001, finiteNumber(config?.sim?.dt, 0.01));
+  let pacingMode = normalizePacingMode(config?.sim?.mode);
   let frameNum = 0;
   let running = false;
   let raf = null;
   let lastTime = 0;
   let accumulator = 0;
+  let speedRatio = 0;
   let updateCaptureUi = () => {};
+  let updatePacingUi = () => {};
+  let updateFullscreenUi = () => {};
 
   function refreshViewerSignals() {
     viewerSignals.clear();
@@ -777,15 +962,64 @@ export async function createInteractiveSimulation(options) {
     onError(error);
   }
 
+  function statusLine() {
+    const inputMode = input.runtimeFields(frameNum, stepper.time()).input_mode;
+    return `live t=${stepper.time().toFixed(2)} s · ${pacingModeLabel(pacingMode)} · ${speedRatioLabel(speedRatio)} · ${inputMode}`;
+  }
+
+  function recordSpeed(simAdvanced, wallDt) {
+    if (wallDt <= 0) {
+      return;
+    }
+    const instant = Math.max(0, simAdvanced) / wallDt;
+    speedRatio = speedRatio === 0 ? instant : (speedRatio * 0.82 + instant * 0.18);
+  }
+
+  function resetSimulation(options = {}) {
+    const {
+      resetLocals = true,
+      resetStepper = true,
+      render = true,
+      statusText = 'reset',
+    } = options;
+    if (resetLocals) {
+      input.resetLocals();
+    }
+    input.releaseKeys();
+    if (resetStepper) {
+      stepper.reset();
+    }
+    frameNum = 0;
+    accumulator = 0;
+    lastTime = 0;
+    speedRatio = 0;
+    refreshViewerSignals();
+    if (render) {
+      viewer.render();
+    }
+    updatePacingUi();
+    onStatus(statusText);
+  }
+
+  function togglePacingMode() {
+    pacingMode = pacingMode === 'realtime' ? 'as_fast_as_possible' : 'realtime';
+    accumulator = 0;
+    lastTime = 0;
+    speedRatio = 0;
+    updatePacingUi();
+    onStatus(statusLine());
+    return pacingMode;
+  }
+
   function routeFrame(dt) {
     input.update(dt);
     if (config?.reset?.on_signal && input.takeSignal(config.reset.on_signal)) {
-      if (config.reset.reset_locals) {
-        input.resetLocals();
-      }
-      if (config.reset.rebuild_stepper) {
-        stepper.reset();
-      }
+      resetSimulation({
+        resetLocals: Boolean(config.reset.reset_locals),
+        resetStepper: Boolean(config.reset.rebuild_stepper),
+        render: false,
+        statusText: 'reset',
+      });
     }
     if (input.takeSignal(trimMaybeString(config?.quit?.on_signal) || 'quit')) {
       stopAnimation();
@@ -817,16 +1051,31 @@ export async function createInteractiveSimulation(options) {
     if (lastTime === 0) {
       lastTime = now;
     }
-    accumulator += Math.min(0.08, Math.max(0, (now - lastTime) / 1000));
+    const wallDt = Math.min(0.08, Math.max(0, (now - lastTime) / 1000));
     lastTime = now;
+    let simAdvanced = 0;
     let steps = 0;
-    while (accumulator >= simDt && steps < 8) {
-      if (!routeFrame(simDt)) {
-        return;
+    if (pacingMode === 'as_fast_as_possible') {
+      const started = performance.now();
+      do {
+        if (!routeFrame(simDt)) {
+          return;
+        }
+        simAdvanced += simDt;
+        steps += 1;
+      } while (steps < 250 && performance.now() - started < 12);
+    } else {
+      accumulator += wallDt;
+      while (accumulator >= simDt && steps < 8) {
+        if (!routeFrame(simDt)) {
+          return;
+        }
+        accumulator -= simDt;
+        simAdvanced += simDt;
+        steps += 1;
       }
-      accumulator -= simDt;
-      steps += 1;
     }
+    recordSpeed(simAdvanced, wallDt);
     if (typeof scene.onFrame === 'function') {
       scene.onFrame(viewer.api);
     }
@@ -834,7 +1083,8 @@ export async function createInteractiveSimulation(options) {
     pointer.dy = 0;
     pointer.wheel = 0;
     viewer.render();
-    onStatus(`live t=${stepper.time().toFixed(2)} s · ${input.runtimeFields(frameNum).input_mode}`);
+    updatePacingUi();
+    onStatus(statusLine());
     raf = ownerWindow.requestAnimationFrame(tick);
   }
 
@@ -844,7 +1094,15 @@ export async function createInteractiveSimulation(options) {
   const eventCaptureOptions = { capture: true, passive: false };
   const ownerDocument = viewer.ownerDocument;
   const ownerWindow = viewer.ownerWindow;
-  const keyDown = (event) => input.keyDown(event);
+  container.classList.add('rumoca-interactive-root');
+  ensureInteractiveRuntimeStyles(ownerDocument);
+  const keyDown = (event) => {
+    if (!event.repeat && handleViewerKeyDown(event)) {
+      event.preventDefault();
+      return true;
+    }
+    return input.keyDown(event);
+  };
   const keyUp = (event) => input.keyUp(event);
   const updatePointerFromEvent = (event) => {
     const rect = viewer.canvas.getBoundingClientRect();
@@ -875,6 +1133,37 @@ export async function createInteractiveSimulation(options) {
       pointerLockExitReleasesCapture = true;
     });
   };
+  const fullscreenElement = () => ownerDocument.fullscreenElement || ownerDocument.webkitFullscreenElement || null;
+  const isFullscreenActive = () => {
+    const activeElement = fullscreenElement();
+    return activeElement === container || container.contains(activeElement);
+  };
+  const setFullscreenActive = async (active) => {
+    try {
+      if (active) {
+        if (!isFullscreenActive()) {
+          const request = container.requestFullscreen || container.webkitRequestFullscreen;
+          if (typeof request === 'function') {
+            await Promise.resolve(request.call(container));
+          }
+        }
+      } else if (isFullscreenActive()) {
+        const exit = ownerDocument.exitFullscreen || ownerDocument.webkitExitFullscreen;
+        if (typeof exit === 'function') {
+          await Promise.resolve(exit.call(ownerDocument));
+        }
+      }
+    } finally {
+      updateFullscreenUi();
+      focus();
+      viewer.render();
+    }
+  };
+  const toggleFullscreen = () => {
+    setFullscreenActive(!isFullscreenActive()).catch((error) => {
+      onStatus(`fullscreen unavailable: ${error?.message || error}`);
+    });
+  };
   const setCaptureActive = (active, options = {}) => {
     inputCaptureActive = Boolean(active);
     if (!inputCaptureActive) {
@@ -895,12 +1184,23 @@ export async function createInteractiveSimulation(options) {
     const key = normalizedKeyboardKey(event);
     if (key === 'c') {
       lastCapturedKey = `camera ${viewer.cycleCamera()}`;
-      updateCaptureUi(true);
+      updateCaptureUi(inputCaptureActive);
       return true;
     }
     if (key === 'h') {
       lastCapturedKey = `hud ${viewer.toggleHud() ? 'on' : 'off'}`;
-      updateCaptureUi(true);
+      updateCaptureUi(inputCaptureActive);
+      return true;
+    }
+    if (key === 't') {
+      lastCapturedKey = `time ${pacingModeLabel(togglePacingMode())}`;
+      updateCaptureUi(inputCaptureActive);
+      return true;
+    }
+    if (key === 'f') {
+      lastCapturedKey = 'fullscreen';
+      toggleFullscreen();
+      updateCaptureUi(inputCaptureActive);
       return true;
     }
     return false;
@@ -998,6 +1298,16 @@ export async function createInteractiveSimulation(options) {
   captureToggle.type = 'button';
   captureToggle.className = 'rumoca-interactive-capture-toggle';
   captureToggle.title = 'Capture keyboard and mouse input. Press Escape to release capture.';
+  const pacingToggle = ownerDocument.createElement('button');
+  pacingToggle.type = 'button';
+  pacingToggle.className = 'rumoca-interactive-pacing-toggle';
+  pacingToggle.title = 'Toggle simulation pacing. Shortcut: T.';
+  const speedReadout = ownerDocument.createElement('span');
+  speedReadout.className = 'rumoca-interactive-key-echo rumoca-interactive-speed-readout';
+  const fullscreenToggle = ownerDocument.createElement('button');
+  fullscreenToggle.type = 'button';
+  fullscreenToggle.className = 'rumoca-interactive-fullscreen-toggle';
+  fullscreenToggle.title = 'Toggle fullscreen. Shortcut: F.';
   updateCaptureUi = (active) => {
     captureToggle.textContent = active
       ? `Release: Esc${lastCapturedKey ? ` · ${keyDisplayName(lastCapturedKey)}` : ''}${pointer.captured ? ' · mouse' : ''}`
@@ -1005,14 +1315,43 @@ export async function createInteractiveSimulation(options) {
     captureToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
     controls.classList.toggle('is-capturing', active);
   };
+  updatePacingUi = () => {
+    const label = pacingModeLabel(pacingMode);
+    pacingToggle.textContent = label === 'fast' ? 'Fast' : 'Realtime';
+    pacingToggle.setAttribute('aria-pressed', pacingMode === 'as_fast_as_possible' ? 'true' : 'false');
+    pacingToggle.classList.toggle('is-fast', pacingMode === 'as_fast_as_possible');
+    speedReadout.textContent = `Speed ${speedRatioLabel(speedRatio)}`;
+  };
+  updateFullscreenUi = () => {
+    const active = isFullscreenActive();
+    fullscreenToggle.textContent = active ? 'Exit Fullscreen' : 'Fullscreen';
+    fullscreenToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
+    fullscreenToggle.classList.toggle('is-fullscreen', active);
+  };
   captureToggle.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     event.stopPropagation();
     setCaptureActive(!inputCaptureActive, { requestPointerLock: true });
     container.focus({ preventScroll: true });
   });
+  pacingToggle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    togglePacingMode();
+    container.focus({ preventScroll: true });
+  });
+  fullscreenToggle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleFullscreen();
+  });
   controls.appendChild(captureToggle);
+  controls.appendChild(pacingToggle);
+  controls.appendChild(speedReadout);
+  controls.appendChild(fullscreenToggle);
   updateCaptureUi(false);
+  updatePacingUi();
+  updateFullscreenUi();
   container.appendChild(controls);
   container.tabIndex = 0;
   viewer.canvas.tabIndex = -1;
@@ -1032,6 +1371,8 @@ export async function createInteractiveSimulation(options) {
   ownerDocument.addEventListener('pointercancel', capturePointerEvent, true);
   ownerDocument.addEventListener('wheel', captureWheel, eventCaptureOptions);
   ownerDocument.addEventListener('pointerlockchange', handlePointerLockChange);
+  ownerDocument.addEventListener('fullscreenchange', updateFullscreenUi);
+  ownerDocument.addEventListener('webkitfullscreenchange', updateFullscreenUi);
   ownerWindow.addEventListener('blur', releaseCapture);
   container.focus({ preventScroll: true });
   const resize = () => viewer.render();
@@ -1079,20 +1420,14 @@ export async function createInteractiveSimulation(options) {
       ownerDocument.removeEventListener('pointercancel', capturePointerEvent, true);
       ownerDocument.removeEventListener('wheel', captureWheel, eventCaptureOptions);
       ownerDocument.removeEventListener('pointerlockchange', handlePointerLockChange);
+      ownerDocument.removeEventListener('fullscreenchange', updateFullscreenUi);
+      ownerDocument.removeEventListener('webkitfullscreenchange', updateFullscreenUi);
       ownerWindow.removeEventListener('blur', releaseCapture);
       ownerWindow.removeEventListener('resize', resize);
       releasePointerCapture();
     },
     reset() {
-      input.resetLocals();
-      input.releaseKeys();
-      stepper.reset();
-      frameNum = 0;
-      accumulator = 0;
-      lastTime = 0;
-      refreshViewerSignals();
-      viewer.render();
-      onStatus('reset');
+      resetSimulation({ resetLocals: true, resetStepper: true });
     },
   };
 }

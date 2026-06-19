@@ -3,7 +3,9 @@ const DEFAULT_ACTIVE_DOCUMENT = 'examples/models/Ball.mo';
 const DEFAULT_EXAMPLE_FILE_PATHS = [
     'examples/.gitignore',
     'examples/README.md',
+    'examples/assets/models/README.md',
     'examples/assets/models/airplane.glb',
+    'examples/assets/models/buggy.glb',
     'examples/assets/models/drone.glb',
     'examples/assets/sand_pbr/GroundSand005_AO_1K.jpg',
     'examples/assets/sand_pbr/GroundSand005_BUMP_1K.jpg',
