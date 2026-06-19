@@ -315,6 +315,12 @@ struct VisualizationViewPayload {
     x: Option<String>,
     #[serde(default)]
     y: Vec<String>,
+    #[serde(
+        default,
+        rename = "scatterSeries",
+        skip_serializing_if = "Option::is_none"
+    )]
+    _scatter_series: Option<Vec<Value>>,
     script: Option<String>,
     script_path: Option<String>,
 }
@@ -327,6 +333,7 @@ impl From<PlotViewConfig> for VisualizationViewPayload {
             view_type: view.view_type,
             x: view.x,
             y: view.y,
+            _scatter_series: None,
             script: view.script,
             script_path: view.script_path,
         }
