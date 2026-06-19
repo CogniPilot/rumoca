@@ -46,9 +46,28 @@ def main() -> None:
     statuses = json.loads(session.source_root_statuses())
     assert statuses
 
-    sim = json.loads(session.simulate_file(str(MODEL_FILE), t_end=0.2, dt=0.1, solver="auto"))
+    sim_options = rumoca.SimulationOptions(t_end=0.2, dt=0.1, solver="auto")
+    sim = json.loads(session.simulate_file(str(MODEL_FILE), options=sim_options))
     assert sim["model"] == "UsesLib"
     assert sim["metrics"]["points"] >= 2
+
+    project = rumoca.Project.open(
+        str(FIXTURE_ROOT),
+        model_name="UsesLib",
+        model_file=str(MODEL_FILE),
+        source_roots=[str(SOURCE_ROOT)],
+    )
+    project_compile = project.compile_file()
+    assert project_compile.model_name == "UsesLib"
+    assert_raw_dae_model(project_compile.to_dict())
+
+    project_sim = project.simulate_file(options=sim_options)
+    assert project_sim.model_name == "UsesLib"
+    assert project_sim.metrics["points"] >= 2
+
+    project_codegen = project.codegen_file(target="dae-modelica")
+    assert project_codegen.paths
+    assert "class UsesLib" in project_codegen.to_dict()[0]["content"]
 
 
 if __name__ == "__main__":

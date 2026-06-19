@@ -75,6 +75,26 @@ test("simulate command publishes failures to Problems diagnostics", () => {
   );
 });
 
+test("input-enabled results-panel scenarios stay on batch results path", () => {
+  const source = readExtensionSource();
+  const predicateBlock = sliceFrom(
+    source,
+    "function scenarioNeedsInputRunner(",
+    "const DEFAULT_CODEGEN_TARGET_ID",
+  );
+
+  assert.equal(
+    predicateBlock.includes("scenario.viewerMode === 'external_web'"),
+    true,
+    "external viewer routing should be selected by viewerMode",
+  );
+  assert.equal(
+    predicateBlock.includes("inputEnabled"),
+    false,
+    "input routing alone should not bypass the results-panel simulation path",
+  );
+});
+
 test("interactive viewer launch waits for runner ready output", () => {
   const source = readExtensionSource();
   const startInteractiveScenarioBlock = sliceFrom(

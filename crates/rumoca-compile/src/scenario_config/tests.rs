@@ -226,6 +226,27 @@ mode = "auto"
 }
 
 #[test]
+fn parse_views_payload_accepts_scatter_series_from_editor() {
+    let payload = serde_json::json!([
+        {
+            "id": "scatter_main",
+            "title": "Phase",
+            "type": "scatter",
+            "x": "time",
+            "y": ["x"],
+            "scatterSeries": [
+                { "name": "x vs time", "x": "time", "y": "x" }
+            ]
+        }
+    ]);
+
+    let views = parse_views_payload(&payload).expect("scatter view payload parses");
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].id, "scatter_main");
+    assert_eq!(views[0].view_type, "scatter");
+}
+
+#[test]
 fn input_enabled_scenario_defaults_to_results_panel_viewer() {
     let descriptor = scenario_config_response(
         r#"

@@ -1164,7 +1164,7 @@ interface ScenarioConfigFullResponse {
 }
 
 function scenarioNeedsInputRunner(scenario: ScenarioConfigResponse): boolean {
-    return scenario.inputEnabled === true;
+    return scenario.viewerMode === 'external_web';
 }
 
 const DEFAULT_CODEGEN_TARGET_ID = 'sympy';
