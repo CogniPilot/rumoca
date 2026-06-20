@@ -15,14 +15,11 @@ const WORKSPACE_EDITOR_STATE_KEYS = new Set([
     'leftAreaWidth',
     'sidebarWidth',
     'bottomPanelHeight',
-    'explorerSectionHeight',
     'explorerCollapsedNodeIds',
     'outlineCollapsedNodeIds',
     'selectedExplorerPath',
     'editorPaneVisible',
     'openDocuments',
-    'documentLockStates',
-    'folderLockStates',
 ]);
 const WORKSPACE_TEXT_FILE_EXTENSIONS = new Set([
     '.mo',

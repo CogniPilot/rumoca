@@ -9,6 +9,7 @@ import {
     createResultFileEditorController,
     interactiveRunPathForScenario,
     isInteractiveRunPath,
+    isRumocaResultPath,
 } from './modules/result_file_editor.js';
 import { setupMonacoWorkspace } from './modules/monaco_setup.js';
 import { createScenarioInterface } from './modules/scenario_interface.js';
@@ -25,6 +26,7 @@ const workspaceFs = createWorkspaceFilesystem();
 const WASM_WORKSPACE_PERSIST_DB = 'rumoca-wasm-editor';
 const WASM_WORKSPACE_PERSIST_STORE = 'autosave';
 const WASM_WORKSPACE_PERSIST_KEY = 'active-workspace';
+const DEFAULT_WEB_RESULTS_OUTPUT_DIR = 'results';
 let workspacePersistenceTimer = null;
 let workspacePersistenceInFlight = Promise.resolve();
 let workspacePersistenceReady = false;
@@ -67,7 +69,6 @@ const explorerNewFolderBtn = document.getElementById('explorerNewFolderBtn');
 const explorerTreeToggleBtn = document.getElementById('explorerTreeToggleBtn');
 const outlineTreeToggleBtn = document.getElementById('outlineTreeToggleBtn');
 const resizeHandleSidebar = document.getElementById('resizeHandleSidebar');
-const resizeHandleSidebarV = document.getElementById('resizeHandleSidebarV');
 const explorerTree = document.getElementById('explorerTree');
 const outlineTree = document.getElementById('outlineTree');
 const editorWorkbench = document.getElementById('editorWorkbench');
@@ -611,6 +612,26 @@ function baseName(path) {
     return pathParts(path).at(-1) || '';
 }
 
+function friendlyEditorTabLabel(path) {
+    const nextPath = normalizePath(path);
+    if (!isRumocaResultPath(nextPath)) {
+        return baseName(nextPath) || nextPath;
+    }
+    const content = workspaceFs.getFileContent(nextPath);
+    if (typeof content === 'string') {
+        try {
+            const model = trimMaybeString(JSON.parse(content)?.model);
+            if (model) {
+                return `${model.split('.').pop() || model} Results`;
+            }
+        } catch {
+            // Fall through to the compact result filename.
+        }
+    }
+    const filename = baseName(nextPath);
+    return filename.length > 24 ? 'Simulation Results' : filename;
+}
+
 function parentDirectory(path) {
     const parts = pathParts(path);
     return parts.length > 1 ? parts.slice(0, -1).join('/') : '';
@@ -638,10 +659,7 @@ function resolveWorkspaceRelativePath(basePath, relativePath) {
 function scenarioResultDirectory(config) {
     const effective = config?.effective || {};
     const scenarioDir = parentDirectory(normalizePath(config?.scenarioPath || workspaceFs.getActiveDocumentPath()));
-    const outputDir = normalizePath(effective.outputDir || '');
-    if (!outputDir) {
-        return scenarioDir;
-    }
+    const outputDir = normalizePath(effective.outputDir || DEFAULT_WEB_RESULTS_OUTPUT_DIR);
     return scenarioDir ? normalizePath(`${scenarioDir}/${outputDir}`) : outputDir;
 }
 
@@ -849,7 +867,6 @@ function setSidebarCollapsed(collapsed) {
     workbenchSidepanel.classList.toggle('collapsed', nextCollapsed);
     syncSidebarModeButtons();
     syncSidebarBackdrop();
-    updateSidebarSplitHandleVisibility();
     scheduleWorkspacePersistence();
 }
 
@@ -899,7 +916,6 @@ function toggleSidebarSection(sectionName) {
         return;
     }
     setSidebarSectionCollapsed(sectionName, !section.classList.contains('collapsed'));
-    updateSidebarSplitHandleVisibility();
 }
 
 function closeSidebarContextMenu() {
@@ -1204,7 +1220,6 @@ function setActiveEditorPane(
     if (refreshNavigation) {
         refreshActiveDocumentNavigation({ outlineDelayMs });
     }
-    applyActiveEditorLockState();
     scenarioConfigEditorController.syncPane(nextPane.id);
     resultFileEditorController?.syncPane(nextPane.id);
     if (
@@ -1265,6 +1280,7 @@ async function closeWorkspaceDocument(path = workspaceFs.getActiveDocumentPath()
 
 window.closeActiveWorkspaceDocument = () => closeWorkspaceDocument(workspaceFs.getActiveDocumentPath(), activeEditorPaneId);
 window.closeActivePaneDocument = (paneId) => closeWorkspaceDocument(getEditorPane(paneId)?.activePath || '', paneId);
+window.getActiveEditorPaneId = () => activeEditorPaneId;
 
 async function closeOtherWorkspaceDocuments(path, paneId = activeEditorPaneId) {
     const pane = getEditorPane(paneId);
@@ -1343,225 +1359,6 @@ function openEditorTabContextMenu(clientX, clientY, path, paneId = activeEditorP
     ]);
 }
 
-function activeDocumentEntry(path = workspaceFs.getActiveDocumentPath()) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return null;
-    }
-    return workspaceFs.getFileEntry(nextPath);
-}
-
-function readDocumentLockStates() {
-    const raw = workspaceFs.getEditorState()?.documentLockStates;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        return {};
-    }
-    const next = {};
-    for (const [path, locked] of Object.entries(raw)) {
-        const normalizedPath = trimMaybeString(path);
-        if (!normalizedPath || typeof locked !== 'boolean') {
-            continue;
-        }
-        next[normalizedPath] = locked;
-    }
-    return next;
-}
-
-function readFolderLockStates() {
-    const raw = workspaceFs.getEditorState()?.folderLockStates;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        return {};
-    }
-    const next = {};
-    for (const [path, locked] of Object.entries(raw)) {
-        const normalizedPath = trimMaybeString(path);
-        if (!normalizedPath || typeof locked !== 'boolean') {
-            continue;
-        }
-        next[normalizedPath] = locked;
-    }
-    return next;
-}
-
-function hasExplicitDocumentLock(path) {
-    const nextPath = trimMaybeString(path);
-    return Boolean(nextPath)
-        && Object.prototype.hasOwnProperty.call(readDocumentLockStates(), nextPath);
-}
-
-function hasExplicitFolderLock(path) {
-    const nextPath = trimMaybeString(path);
-    return Boolean(nextPath)
-        && Object.prototype.hasOwnProperty.call(readFolderLockStates(), nextPath);
-}
-
-function defaultLockStateForEntry(entry) {
-    const path = trimMaybeString(entry?.path);
-    return entry?.sourceKind === 'packageArchive'
-        || path === 'examples'
-        || path.startsWith('examples/')
-        || path === 'target'
-        || path.startsWith('target/');
-}
-
-function inheritedFolderLock(path) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return null;
-    }
-    const folderLockStates = readFolderLockStates();
-    let bestPath = '';
-    let bestValue = null;
-    for (const [folderPath, locked] of Object.entries(folderLockStates)) {
-        if (nextPath === folderPath || nextPath.startsWith(`${folderPath}/`)) {
-            if (folderPath.length > bestPath.length) {
-                bestPath = folderPath;
-                bestValue = locked;
-            }
-        }
-    }
-    return typeof bestValue === 'boolean' ? bestValue : null;
-}
-
-function isDocumentLocked(path = workspaceFs.getActiveDocumentPath()) {
-    const nextPath = trimMaybeString(path);
-    const entry = activeDocumentEntry(nextPath);
-    const lockStates = readDocumentLockStates();
-    if (Object.prototype.hasOwnProperty.call(lockStates, nextPath)) {
-        return Boolean(lockStates[nextPath]);
-    }
-    const inherited = inheritedFolderLock(nextPath);
-    if (typeof inherited === 'boolean') {
-        return inherited;
-    }
-    return defaultLockStateForEntry(entry);
-}
-
-function isDefaultLockRoot(path) {
-    const nextPath = trimMaybeString(path);
-    return nextPath === 'examples' || nextPath === 'target';
-}
-
-function shouldQuietLockBadge(path, locked, kind = 'file') {
-    if (!locked) {
-        return false;
-    }
-    if (kind === 'folder') {
-        return !hasExplicitFolderLock(path) && !isDefaultLockRoot(path);
-    }
-    return !hasExplicitDocumentLock(path);
-}
-
-function setDocumentLocked(path, locked) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return;
-    }
-    const existingState = workspaceFs.getEditorState() || {};
-    workspaceFs.setEditorState({
-        ...existingState,
-        documentLockStates: {
-            ...readDocumentLockStates(),
-            [nextPath]: Boolean(locked),
-        },
-    });
-}
-
-function isFolderLocked(path, entries = workspaceFs.listFileEntries()) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return false;
-    }
-    const folderLockStates = readFolderLockStates();
-    if (Object.prototype.hasOwnProperty.call(folderLockStates, nextPath)) {
-        return Boolean(folderLockStates[nextPath]);
-    }
-    const descendants = entries.filter(
-        (entry) => entry.path === nextPath || entry.path.startsWith(`${nextPath}/`),
-    );
-    if (descendants.length === 0) {
-        return false;
-    }
-    return descendants.every((entry) => isDocumentLocked(entry.path));
-}
-
-function isPathLockedForMutation(path, kind = 'file') {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return true;
-    }
-    if (kind === 'folder') {
-        return workspaceFs.listFileEntries().some(
-            (entry) => (entry.path === nextPath || entry.path.startsWith(`${nextPath}/`))
-                && isDocumentLocked(entry.path),
-        );
-    }
-    return isDocumentLocked(nextPath);
-}
-
-function setFolderLocked(path, locked) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return;
-    }
-    const existingState = workspaceFs.getEditorState() || {};
-    const documentLockStates = readDocumentLockStates();
-    for (const candidatePath of Object.keys(documentLockStates)) {
-        if (candidatePath === nextPath || candidatePath.startsWith(`${nextPath}/`)) {
-            delete documentLockStates[candidatePath];
-        }
-    }
-    const folderLockStates = readFolderLockStates();
-    for (const candidatePath of Object.keys(folderLockStates)) {
-        if (candidatePath.startsWith(`${nextPath}/`)) {
-            delete folderLockStates[candidatePath];
-        }
-    }
-    folderLockStates[nextPath] = Boolean(locked);
-    workspaceFs.setEditorState({
-        ...existingState,
-        documentLockStates,
-        folderLockStates,
-    });
-}
-
-function applyActiveEditorLockState() {
-    if (!editor) {
-        return;
-    }
-    const entry = activeDocumentEntry();
-    const locked = isDocumentLocked(entry?.path || '');
-    if (typeof editor.updateOptions === 'function') {
-        editor.updateOptions({ readOnly: locked });
-    }
-}
-
-function toggleDocumentLock(path = workspaceFs.getActiveDocumentPath()) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return;
-    }
-    setDocumentLocked(nextPath, !isDocumentLocked(nextPath));
-    applyActiveEditorLockState();
-    refreshWorkbenchNavigation();
-    scheduleWorkspacePersistence();
-}
-
-function toggleFolderLock(path) {
-    const nextPath = trimMaybeString(path);
-    if (!nextPath) {
-        return;
-    }
-    setFolderLocked(nextPath, !isFolderLocked(nextPath));
-    applyActiveEditorLockState();
-    refreshWorkbenchNavigation();
-    scheduleWorkspacePersistence();
-}
-
-window.toggleActiveEditorLock = function() {
-    toggleDocumentLock(workspaceFs.getActiveDocumentPath());
-};
-
 function appendSidebarEmpty(container, message) {
     container.innerHTML = '';
     const empty = document.createElement('div');
@@ -1582,10 +1379,11 @@ function appendSidebarRow(container, {
     onClick = null,
     sourceKind = 'workspace',
     sourceBadge = '',
+    iconKind = '',
     hasChildren = false,
     collapsed = false,
     onContextMenu = null,
-    action = null,
+    onToggle = null,
     hidden = false,
 }) {
     const shell = document.createElement('div');
@@ -1625,10 +1423,17 @@ function appendSidebarRow(container, {
     const expander = document.createElement('span');
     expander.className = 'expander';
     expander.textContent = hasChildren ? (collapsed ? '▸' : '▾') : '';
+    if (hasChildren && typeof onToggle === 'function') {
+        expander.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onToggle();
+        });
+    }
     row.appendChild(expander);
 
     const icon = document.createElement('span');
-    icon.className = 'icon';
+    icon.className = ['icon', iconKind].filter(Boolean).join(' ');
     row.appendChild(icon);
 
     const text = document.createElement('span');
@@ -1652,26 +1457,6 @@ function appendSidebarRow(container, {
 
     shell.appendChild(row);
 
-    if (action && typeof action.run === 'function') {
-        const actionBtn = document.createElement('button');
-        actionBtn.type = 'button';
-        actionBtn.className = [
-            'sidebar-row-action',
-            action.locked ? 'locked' : 'unlocked',
-            action.quiet ? 'quiet' : '',
-        ].filter(Boolean).join(' ');
-        actionBtn.textContent = action.icon || '🔒';
-        actionBtn.title = action.title || '';
-        actionBtn.setAttribute('aria-label', action.ariaLabel || action.title || '');
-        actionBtn.setAttribute('aria-pressed', String(Boolean(action.locked)));
-        actionBtn.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            action.run();
-        });
-        shell.appendChild(actionBtn);
-    }
-
     container.appendChild(shell);
 }
 
@@ -1681,10 +1466,10 @@ function createSidebarNode(id, label, {
     meta = '',
     sourceKind = 'workspace',
     sourceBadge = '',
+    iconKind = '',
     run = null,
     active = false,
     contextAction = null,
-    action = null,
 } = {}) {
     return {
         id,
@@ -1694,10 +1479,10 @@ function createSidebarNode(id, label, {
         meta,
         sourceKind,
         sourceBadge,
+        iconKind,
         run,
         active,
         contextAction,
-        action,
         children: [],
     };
 }
@@ -1714,11 +1499,14 @@ function ensureSidebarBranch(nodes, id, label, options = {}) {
         if (options.sourceBadge) {
             existing.sourceBadge = options.sourceBadge;
         }
+        if (options.iconKind) {
+            existing.iconKind = options.iconKind;
+        }
+        if (typeof options.run === 'function' && typeof existing.run !== 'function') {
+            existing.run = options.run;
+        }
         if (options.contextAction) {
             existing.contextAction = options.contextAction;
-        }
-        if (options.action) {
-            existing.action = options.action;
         }
         return existing;
     }
@@ -1769,6 +1557,7 @@ function renderSidebarTreeNodes(container, nodes, {
     depth = 0,
     collapsedKeys = new Set(),
     onToggle = null,
+    branchClick = 'toggle',
     ancestorIds = [],
 } = {}) {
     for (const node of nodes) {
@@ -1784,33 +1573,36 @@ function renderSidebarTreeNodes(container, nodes, {
             depth,
             meta: node.meta,
             active: Boolean(node.active),
-            onClick: node.kind === 'dir'
-                ? () => {
+            onClick: () => {
+                if (node.kind === 'dir' && branchClick === 'toggle') {
                     if (node.path) {
                         setSelectedExplorerPath(node.path);
                     }
                     if (hasChildren) {
                         onToggle?.(node.id);
                     }
+                    return;
                 }
-                : (typeof node.run === 'function'
-                    ? () => {
-                        if (node.path) {
-                            setSelectedExplorerPath(node.path);
-                        }
-                        node.run();
-                    }
-                    : null),
+                if (node.path) {
+                    setSelectedExplorerPath(node.path);
+                }
+                if (typeof node.run === 'function') {
+                    node.run();
+                } else if (hasChildren) {
+                    onToggle?.(node.id);
+                }
+            },
             sourceKind: node.sourceKind || 'workspace',
             sourceBadge: node.sourceBadge || '',
+            iconKind: node.iconKind || '',
             hasChildren,
             collapsed: isCollapsed,
+            onToggle: hasChildren ? () => onToggle?.(node.id) : null,
             onContextMenu: node.contextAction
                 ? (event) => {
                     openSidebarContextMenu(event.clientX, event.clientY, node.contextAction);
                 }
                 : null,
-            action: node.action || null,
             hidden,
         });
         if (hasChildren) {
@@ -1818,6 +1610,7 @@ function renderSidebarTreeNodes(container, nodes, {
                 depth: depth + 1,
                 collapsedKeys,
                 onToggle,
+                branchClick,
                 ancestorIds: ancestorIds.concat(node.id),
             });
         }
@@ -1847,10 +1640,6 @@ function updateRenderedTreeVisibility(container, collapsedKeys = new Set()) {
 
 async function deleteExplorerFolder(path) {
     closeSidebarContextMenu();
-    if (isPathLockedForMutation(path, 'folder')) {
-        setTerminalOutput(`Folder is locked and cannot be deleted: ${path}`);
-        return;
-    }
     if (!window.confirm(`Delete folder "${path}"?`)) {
         return;
     }
@@ -1886,10 +1675,6 @@ async function deleteExplorerFolder(path) {
 
 async function deleteExplorerFile(path) {
     closeSidebarContextMenu();
-    if (isPathLockedForMutation(path, 'file')) {
-        setTerminalOutput(`File is locked and cannot be deleted: ${path}`);
-        return;
-    }
     if (!window.confirm(`Delete file "${path}"?`)) {
         return;
     }
@@ -1920,7 +1705,6 @@ async function deleteExplorerFile(path) {
 }
 
 function createExplorerFolderAction(path) {
-    const locked = isPathLockedForMutation(path, 'folder');
     return [
         {
             label: 'Download Folder',
@@ -1930,8 +1714,6 @@ function createExplorerFolderAction(path) {
         {
             label: 'Delete Folder',
             danger: true,
-            disabled: locked,
-            title: locked ? 'Locked folders cannot be deleted.' : '',
             run: async () => {
                 await deleteExplorerFolder(path);
             },
@@ -1940,7 +1722,6 @@ function createExplorerFolderAction(path) {
 }
 
 function createExplorerFileAction(path) {
-    const locked = isPathLockedForMutation(path, 'file');
     return [
         {
             label: 'Download',
@@ -1949,57 +1730,11 @@ function createExplorerFileAction(path) {
         {
             label: 'Delete File',
             danger: true,
-            disabled: locked,
-            title: locked ? 'Locked files cannot be deleted.' : '',
             run: async () => {
                 await deleteExplorerFile(path);
             },
         },
     ];
-}
-
-function explorerLockAction(path, sourceKind) {
-    const locked = isDocumentLocked(path);
-    const imported = sourceKind === 'packageArchive';
-    return {
-        locked,
-        quiet: shouldQuietLockBadge(path, locked, 'file'),
-        title: imported
-            ? (locked
-                ? 'Imported file is locked. Click to unlock editing for this file.'
-                : 'Imported file is unlocked. Click to lock editing for this file.')
-            : (locked
-                ? 'File is locked. Click to unlock editing for this file.'
-                : 'File is unlocked. Click to lock editing for this file.'),
-        ariaLabel: imported
-            ? (locked ? 'Unlock imported file' : 'Lock imported file')
-            : (locked ? 'Unlock file' : 'Lock file'),
-        run: () => {
-            toggleDocumentLock(path);
-        },
-    };
-}
-
-function explorerFolderLockAction(path, sourceKind, locked) {
-    const imported = sourceKind === 'packageArchive';
-    const isLocked = Boolean(locked);
-    return {
-        locked: isLocked,
-        quiet: shouldQuietLockBadge(path, isLocked, 'folder'),
-        title: imported
-            ? (locked
-                ? 'Imported folder is locked. Click to unlock editing for files in this folder.'
-                : 'Imported folder is unlocked. Click to lock editing for files in this folder.')
-            : (locked
-                ? 'Folder is locked. Click to unlock editing for files in this folder.'
-                : 'Folder is unlocked. Click to lock editing for files in this folder.'),
-        ariaLabel: imported
-            ? (locked ? 'Unlock imported folder' : 'Lock imported folder')
-            : (locked ? 'Unlock folder' : 'Lock folder'),
-        run: () => {
-            toggleFolderLock(path);
-        },
-    };
 }
 
 async function createWorkspaceFileFromExplorer() {
@@ -2082,12 +1817,11 @@ function buildExplorerNodes(folderPaths, entries, activePath) {
             folderStats.set(normalized, {
                 totalFiles: 0,
                 packageArchiveFiles: 0,
-                lockedFiles: 0,
             });
         }
         return folderStats.get(normalized);
     };
-    const addFolderStats = (path, sourceKind, locked) => {
+    const addFolderStats = (path, sourceKind) => {
         const stats = ensureFolderStats(path);
         if (!stats) {
             return;
@@ -2095,9 +1829,6 @@ function buildExplorerNodes(folderPaths, entries, activePath) {
         stats.totalFiles += 1;
         if (sourceKind === 'packageArchive') {
             stats.packageArchiveFiles += 1;
-        }
-        if (locked) {
-            stats.lockedFiles += 1;
         }
     };
     const registerFolderPath = (path) => {
@@ -2114,7 +1845,7 @@ function buildExplorerNodes(folderPaths, entries, activePath) {
         let prefix = '';
         for (const part of pathParts(parentDirectory(entry.path))) {
             prefix = prefix ? `${prefix}/${part}` : part;
-            addFolderStats(prefix, entry.sourceKind, isDocumentLocked(entry.path));
+            addFolderStats(prefix, entry.sourceKind);
         }
     }
     const folderSourceKind = (path) => {
@@ -2123,10 +1854,6 @@ function buildExplorerNodes(folderPaths, entries, activePath) {
             ? 'packageArchive'
             : 'workspace';
     };
-    const folderLocked = (path) => {
-        const stats = folderStats.get(path);
-        return Boolean(stats && stats.totalFiles > 0 && stats.lockedFiles === stats.totalFiles);
-    }
     const ensureDirectoryPath = (path) => {
         const parts = pathParts(path);
         let currentNodes = rootNodes;
@@ -2139,7 +1866,6 @@ function buildExplorerNodes(folderPaths, entries, activePath) {
                 sourceKind,
                 active: prefix === activePath,
                 contextAction: createExplorerFolderAction(prefix),
-                action: explorerFolderLockAction(prefix, sourceKind, folderLocked(prefix)),
             });
             currentNodes = branch.children;
         }
@@ -2164,7 +1890,6 @@ function buildExplorerNodes(folderPaths, entries, activePath) {
                 void openWorkspaceDocument(entry.path, { paneId: 'primary' });
             },
             contextAction: createExplorerFileAction(entry.path),
-            action: explorerLockAction(entry.path, entry.sourceKind),
         }));
     }
     return rootNodes;
@@ -2197,7 +1922,7 @@ function renderEditorTabsForPane(paneId) {
 
         const name = document.createElement('span');
         name.className = 'tab-name';
-        name.textContent = baseName(path) || path;
+        name.textContent = friendlyEditorTabLabel(path);
         tabButton.appendChild(name);
 
         tabButton.addEventListener('click', () => {
@@ -2379,7 +2104,7 @@ explorerTree?.addEventListener('click', (event) => {
     if (!(target instanceof Element)) {
         return;
     }
-    if (target.closest('.sidebar-row') || target.closest('.sidebar-row-action')) {
+    if (target.closest('.sidebar-row')) {
         return;
     }
     setSelectedExplorerPath(EXPLORER_ROOT_SELECTION);
@@ -2439,6 +2164,7 @@ async function renderOutlinePane() {
     updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
     renderSidebarTreeNodes(outlineTree, items, {
         collapsedKeys: outlineCollapsedNodes,
+        branchClick: 'run',
         onToggle(nodeId) {
             if (outlineCollapsedNodes.has(nodeId)) {
                 outlineCollapsedNodes.delete(nodeId);
@@ -2520,9 +2246,35 @@ const mainContainer = document.querySelector('.main-container');
 const workbenchTop = document.querySelector('.workbench-top') || document.querySelector('.main-container');
 const workbenchMain = document.querySelector('.workbench-main') || document.querySelector('.main-container');
 let isResizingSidebar = false;
-let isResizingSidebarSplit = false;
+let pendingSidebarResizeWidth = null;
+let sidebarResizeFrame = 0;
 const SIDEBAR_RESIZE_MIN_WIDTH = 180;
 const SIDEBAR_RESIZE_MAX_WIDTH = 480;
+
+function scheduleSidebarWidth(width) {
+    pendingSidebarResizeWidth = width;
+    if (sidebarResizeFrame) {
+        return;
+    }
+    sidebarResizeFrame = requestAnimationFrame(() => {
+        sidebarResizeFrame = 0;
+        if (workbenchSidebar && Number.isFinite(pendingSidebarResizeWidth)) {
+            workbenchSidebar.style.width = `${pendingSidebarResizeWidth}px`;
+        }
+        pendingSidebarResizeWidth = null;
+    });
+}
+
+function flushSidebarWidth() {
+    if (sidebarResizeFrame) {
+        cancelAnimationFrame(sidebarResizeFrame);
+        sidebarResizeFrame = 0;
+    }
+    if (workbenchSidebar && Number.isFinite(pendingSidebarResizeWidth)) {
+        workbenchSidebar.style.width = `${pendingSidebarResizeWidth}px`;
+    }
+    pendingSidebarResizeWidth = null;
+}
 
 function isNarrowLayout() {
     return window.innerWidth <= 980;
@@ -2553,13 +2305,11 @@ function syncResponsiveLayoutState() {
 }
 
 window.addEventListener('resize', syncResponsiveLayoutState);
-window.addEventListener('resize', updateSidebarSplitHandleVisibility);
 syncResponsiveLayoutState();
 setSidebarMode('explorer', { persist: false });
 setSidebarCollapsed(isNarrowLayout());
 setSidebarSectionCollapsed('explorer', false);
 setSidebarSectionCollapsed('outline', false);
-updateSidebarSplitHandleVisibility();
 
 for (const select of themeSelects) {
     select.addEventListener('change', (event) => {
@@ -2646,21 +2396,10 @@ outlineTreeToggleBtn?.addEventListener('click', () => {
     scheduleWorkspacePersistence();
 });
 
-function updateSidebarSplitHandleVisibility() {
-    if (!resizeHandleSidebarV) {
-        return;
-    }
-    const hidden = isNarrowLayout()
-        || workbenchSidepanel?.classList.contains('collapsed')
-        || currentSidebarMode() !== 'explorer'
-        || explorerSection?.classList.contains('collapsed')
-        || outlineSection?.classList.contains('collapsed');
-    resizeHandleSidebarV.style.display = hidden ? 'none' : '';
-}
-
 resizeHandleSidebar?.addEventListener('mousedown', (event) => {
     if (isNarrowLayout() || workbenchSidepanel?.classList.contains('collapsed')) return;
     isResizingSidebar = true;
+    document.body.classList.add('sidebar-resizing');
     document.body.style.cursor = 'ew-resize';
     document.body.style.userSelect = 'none';
     event.preventDefault();
@@ -2674,16 +2413,6 @@ resizeHandleSidebar?.addEventListener('dblclick', (event) => {
     workbenchSidebar.style.width = '';
     layoutAllEditors();
     scheduleWorkspacePersistence();
-});
-
-resizeHandleSidebarV?.addEventListener('mousedown', () => {
-    if (isNarrowLayout()) return;
-    if (workbenchSidepanel?.classList.contains('collapsed')) return;
-    if (currentSidebarMode() !== 'explorer') return;
-    if (explorerSection?.classList.contains('collapsed') || outlineSection?.classList.contains('collapsed')) return;
-    isResizingSidebarSplit = true;
-    document.body.style.cursor = 'ns-resize';
-    document.body.style.userSelect = 'none';
 });
 
 function setRuntimeStatusBar(message, tone = 'loading') {
@@ -3012,32 +2741,14 @@ document.addEventListener('mousemove', (e) => {
     if (isResizingSidebar) {
         if (isNarrowLayout()) {
             isResizingSidebar = false;
+            document.body.classList.remove('sidebar-resizing');
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
             return;
         }
         const panelRect = workbenchSidepanel.getBoundingClientRect();
         const newWidth = e.clientX - panelRect.left;
-        if (workbenchSidebar) {
-            workbenchSidebar.style.width =
-                `${Math.max(SIDEBAR_RESIZE_MIN_WIDTH, Math.min(newWidth, SIDEBAR_RESIZE_MAX_WIDTH))}px`;
-        }
-        layoutAllEditors();
-        return;
-    }
-    if (isResizingSidebarSplit) {
-        const sidebarRect = workbenchSidebar?.getBoundingClientRect();
-        if (!sidebarRect || !explorerSection || !outlineSection) {
-            return;
-        }
-        const explorerHeaderHeight = explorerSection.querySelector('.sidebar-section-header')?.getBoundingClientRect().height || 0;
-        const handleHeight = resizeHandleSidebarV?.getBoundingClientRect().height || 0;
-        const outlineHeaderHeight = outlineSection.querySelector('.sidebar-section-header')?.getBoundingClientRect().height || 0;
-        const outlineMinHeight = 90 + outlineHeaderHeight;
-        const nextHeight = e.clientY - sidebarRect.top - explorerHeaderHeight;
-        const maxHeight = Math.max(140, sidebarRect.height - handleHeight - outlineMinHeight);
-        explorerSection.style.flex = 'none';
-        explorerSection.style.height = `${Math.max(140, Math.min(nextHeight, maxHeight))}px`;
+        scheduleSidebarWidth(Math.max(SIDEBAR_RESIZE_MIN_WIDTH, Math.min(newWidth, SIDEBAR_RESIZE_MAX_WIDTH)));
         return;
     }
     if (isResizingV) {
@@ -3069,11 +2780,12 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mouseup', () => {
-    if (isResizingV || isResizingSidebar || isResizingSidebarSplit || isResizingEditorSplit) {
+    if (isResizingV || isResizingSidebar || isResizingEditorSplit) {
         isResizingV = false;
+        flushSidebarWidth();
         isResizingSidebar = false;
-        isResizingSidebarSplit = false;
         isResizingEditorSplit = false;
+        document.body.classList.remove('sidebar-resizing');
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         layoutAllEditors();
@@ -3160,6 +2872,25 @@ function normalizeScenarioPromptPath(path) {
     return nextPath.endsWith('.toml') ? nextPath : `${nextPath}.toml`;
 }
 
+function defaultScenarioPathForModel(modelPath, modelName, fallbackPath) {
+    const modelLeaf = trimMaybeString(modelName).split('.').filter(Boolean).pop()
+        || baseName(modelPath).replace(/\.mo$/i, '')
+        || 'model';
+    const slug = sanitizeGeneratedPathSegment(modelLeaf).toLowerCase();
+    const directory = parentDirectory(modelPath);
+    const preferred = `${directory ? `${directory}/` : ''}rumoca-scenario.${slug}.toml`;
+    return normalizePath(preferred || fallbackPath);
+}
+
+function promptForScenarioPath({ modelPath, modelName, defaultPath }) {
+    const message = [
+        `Create scenario for ${baseName(modelPath) || modelName || 'this model'}`,
+        '',
+        'Scenario file path:',
+    ].join('\n');
+    return normalizeScenarioPromptPath(window.prompt(message, defaultPath) || '');
+}
+
 async function modelNameForPane(pane) {
     const activePath = trimMaybeString(pane?.activePath);
     const source = typeof pane?.editor?.getValue === 'function'
@@ -3192,9 +2923,11 @@ async function openScenarioConfigForCurrentModel(task = 'simulate', { promptForP
         model,
         task: scenarioTask,
     });
-    const defaultPath = trimMaybeString(generated?.path);
+    const defaultPath = modelPath.endsWith('.mo')
+        ? defaultScenarioPathForModel(modelPath, model, trimMaybeString(generated?.path))
+        : trimMaybeString(generated?.path);
     const requestedPath = promptForPath
-        ? normalizeScenarioPromptPath(window.prompt('Scenario TOML path', defaultPath) || '')
+        ? promptForScenarioPath({ modelPath, modelName: model, defaultPath })
         : defaultPath;
     if (!requestedPath) {
         return;
@@ -3263,7 +2996,6 @@ function collectWorkspaceEditorState() {
         leftAreaWidth: String(leftArea?.style.width || existingState.leftAreaWidth || ''),
         sidebarWidth: String(workbenchSidebar?.style.width || existingState.sidebarWidth || ''),
         bottomPanelHeight: String(bottomPanel?.style.height || existingState.bottomPanelHeight || ''),
-        explorerSectionHeight: String(explorerSection?.style.height || existingState.explorerSectionHeight || ''),
         explorerCollapsedNodeIds: [...explorerCollapsedNodes],
         outlineCollapsedNodeIds: [...outlineCollapsedNodes],
         selectedExplorerPath: trimMaybeString(selectedExplorerPath),
@@ -3284,7 +3016,6 @@ function applyWorkspaceEditorState(editorState) {
         leftAreaWidth: '',
         sidebarWidth: '',
         bottomPanelHeight: '',
-        explorerSectionHeight: '',
         explorerCollapsedNodeIds: [],
         outlineCollapsedNodeIds: [],
         selectedExplorerPath: '',
@@ -3339,7 +3070,7 @@ function applyWorkspaceEditorState(editorState) {
     editorPaneVisible = nextState.editorPaneVisible !== false;
     setSidebarMode(sidebarMode, { persist: false });
     setBottomPanelCollapsed(Boolean(nextState.bottomPanelCollapsed));
-    setSidebarCollapsed(Boolean(nextState.sidebarCollapsed));
+    setSidebarCollapsed(isNarrowLayout() ? true : Boolean(nextState.sidebarCollapsed));
     setSidebarSectionCollapsed('project', Boolean(nextState.projectSectionCollapsed));
     setSidebarSectionCollapsed('explorer', Boolean(nextState.explorerSectionCollapsed));
     setSidebarSectionCollapsed('outline', Boolean(nextState.outlineSectionCollapsed));
@@ -3358,15 +3089,10 @@ function applyWorkspaceEditorState(editorState) {
     if (savedBottomPanelHeight && /^\d+px$/.test(savedBottomPanelHeight)) {
         bottomPanel.style.height = savedBottomPanelHeight;
     }
-    const savedExplorerHeight = trimMaybeString(nextState.explorerSectionHeight);
-    if (savedExplorerHeight && /^\d+px$/.test(savedExplorerHeight) && !isNarrowLayout() && explorerSection) {
-        explorerSection.style.flex = 'none';
-        explorerSection.style.height = savedExplorerHeight;
-    } else if (explorerSection) {
+    if (explorerSection) {
         explorerSection.style.flex = '';
         explorerSection.style.height = '';
     }
-    updateSidebarSplitHandleVisibility();
     window.switchBottomTab(bottomTab);
     refreshWorkbenchNavigation();
 }
@@ -3383,7 +3109,6 @@ function fallbackDefaultEditorState(activePath = workspaceFs.getActiveDocumentPa
         leftAreaWidth: '',
         sidebarWidth: '',
         bottomPanelHeight: '',
-        explorerSectionHeight: '',
         explorerCollapsedNodeIds: [],
         outlineCollapsedNodeIds: [],
         selectedExplorerPath: activePath,
@@ -3453,7 +3178,7 @@ function scenarioSimulationFallback(sourceRootPaths = []) {
         solver: 'auto',
         tEnd: 10.0,
         dt: null,
-        outputDir: '',
+        outputDir: DEFAULT_WEB_RESULTS_OUTPUT_DIR,
         sourceRootPaths,
     };
 }
@@ -3542,7 +3267,8 @@ function workspaceRelativeUrl(path) {
     if (!normalized) {
         return '';
     }
-    return new URL(`../../${normalized}`, window.location.href).href;
+    const assetBase = new URL(window.rumocaRepoAssetBase || '../../', window.location.href);
+    return new URL(normalized, assetBase).href;
 }
 
 function workspaceDirectoryUrl(path) {
@@ -5253,6 +4979,7 @@ function buildNestedDocumentSymbolTree(symbols, parentPath = '') {
             kind: children.length > 0 ? 'dir' : 'file',
             meta: String(symbol.detail || ''),
             sourceKind: 'workspace',
+            iconKind: 'outline-symbol',
             run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
             children,
         });
@@ -5279,6 +5006,8 @@ function buildFlatDocumentSymbolTree(symbols) {
                 prefix = prefix ? `${prefix}.${part}` : part;
                 const branch = ensureSidebarBranch(currentNodes, `outline:${prefix}`, part, {
                     sourceKind: 'workspace',
+                    iconKind: 'outline-symbol',
+                    run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
                 });
                 currentNodes = branch.children;
             }
@@ -5287,6 +5016,7 @@ function buildFlatDocumentSymbolTree(symbols) {
             kind: 'file',
             meta: 'Symbol',
             sourceKind: 'workspace',
+            iconKind: 'outline-symbol',
             run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
         }));
     }
@@ -5389,7 +5119,6 @@ require(['vs/editor/editor.main'], function() {
     editorPanes.primary.activePath = workspaceFs.getActiveDocumentPath();
     refreshWorkbenchNavigation();
     defaultWorkspaceSeed = fallbackDefaultWorkspaceSeed();
-    applyActiveEditorLockState();
     window.openWorkspaceDocument = (path) => {
         void openWorkspaceDocument(path);
     };

@@ -16,7 +16,7 @@ pub(crate) fn serve(
             explicit_port,
             editor_pkg_subdir,
             default_path: "packages/playground/index.html",
-            urls: &[("Editor", "/packages/playground/index.html")],
+            urls: &[("Editor", "/rumoca/")],
         },
     )
 }
@@ -119,7 +119,8 @@ fn handle_http_request(
     match resolve_static_path(root, url) {
         Some(path) if path.is_file() => {
             if is_wasm_editor_index(root, &path) {
-                let body = wasm_editor_index_body(&path, options.editor_pkg_subdir)?;
+                let body =
+                    wasm_editor_index_body(&path, options.editor_pkg_subdir, is_pages_url(url))?;
                 return write_http_response_with_body_policy(
                     stream,
                     200,
@@ -209,6 +210,11 @@ fn is_wasm_editor_index(root: &Path, path: &Path) -> bool {
     path == root.join("packages/playground/index.html")
 }
 
+fn is_pages_url(url: &str) -> bool {
+    let relative = url.trim_start_matches('/');
+    relative == "rumoca" || relative.starts_with("rumoca/")
+}
+
 fn default_url(options: &ServeOptions<'_>) -> String {
     options
         .urls
@@ -217,9 +223,25 @@ fn default_url(options: &ServeOptions<'_>) -> String {
         .unwrap_or_else(|| format!("/{}", options.default_path.trim_start_matches('/')))
 }
 
-fn wasm_editor_index_body(path: &Path, editor_pkg_subdir: Option<&str>) -> Result<String> {
+fn wasm_editor_index_body(
+    path: &Path,
+    editor_pkg_subdir: Option<&str>,
+    pages_layout: bool,
+) -> Result<String> {
     let mut body =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if pages_layout {
+        body = body
+            .replace(
+                "window.rumocaRepoAssetBase = '../../';",
+                "window.rumocaRepoAssetBase = './';",
+            )
+            .replace(
+                "window.rumocaWasmPkgBase = '../rumoca/dist';",
+                "window.rumocaWasmPkgBase = './pkg';",
+            )
+            .replace("../../assets/brand/rumoca.svg", "assets/brand/rumoca.svg");
+    }
     if let Some(pkg_subdir) = editor_pkg_subdir {
         let replacement = format!("window.rumocaWasmPkgSubdir = '{pkg_subdir}';");
         body = body
@@ -236,7 +258,39 @@ fn wasm_editor_index_body(path: &Path, editor_pkg_subdir: Option<&str>) -> Resul
 }
 
 fn resolve_static_path(root: &Path, url: &str) -> Option<PathBuf> {
-    let relative = url.trim_start_matches('/');
+    let url_relative = url.trim_start_matches('/');
+    if url_relative == "rumoca" {
+        return resolve_pages_static_path(root, "");
+    }
+    if let Some(relative) = url_relative.strip_prefix("rumoca/") {
+        return resolve_pages_static_path(root, relative);
+    }
+
+    safe_join(root, url_relative)
+}
+
+fn resolve_pages_static_path(root: &Path, relative: &str) -> Option<PathBuf> {
+    if relative.is_empty() || relative == "index.html" {
+        return Some(root.join("packages/playground/index.html"));
+    }
+
+    let (base, rest) = match relative.split_once('/') {
+        Some(("src", rest)) => (root.join("packages/playground/src"), rest),
+        Some(("vendor", rest)) => (root.join("packages/playground/vendor"), rest),
+        Some(("pkg", rest)) => (root.join("packages/rumoca/dist"), rest),
+        Some(("assets", rest)) => (root.join("assets"), rest),
+        Some(("examples", rest)) => (root.join("examples"), rest),
+        Some(("target", rest)) => (root.join("target"), rest),
+        Some((_, _)) => (root.to_path_buf(), relative),
+        None if relative == "coi-serviceworker.js" => {
+            return Some(root.join("packages/playground/coi-serviceworker.js"));
+        }
+        None => (root.to_path_buf(), relative),
+    };
+    safe_join(&base, rest)
+}
+
+fn safe_join(root: &Path, relative: &str) -> Option<PathBuf> {
     let mut safe = PathBuf::new();
     for component in Path::new(relative).components() {
         if let Component::Normal(segment) = component {
@@ -278,10 +332,10 @@ mod tests {
             explicit_port: None,
             editor_pkg_subdir: None,
             default_path: "packages/playground/index.html",
-            urls: &[("Editor", "/packages/playground/index.html")],
+            urls: &[("Editor", "/rumoca/")],
         };
 
-        assert_eq!(default_url(&options), "/packages/playground/index.html");
+        assert_eq!(default_url(&options), "/rumoca/");
     }
 
     #[test]
@@ -303,5 +357,89 @@ mod tests {
         let resolved = resolve_static_path(root, "/");
 
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn pages_route_resolves_playground_asset_layout() {
+        let root = Path::new("/tmp/rumoca");
+
+        assert_eq!(
+            resolve_static_path(root, "/rumoca/"),
+            Some(root.join("packages/playground/index.html"))
+        );
+        assert_eq!(
+            resolve_static_path(root, "/rumoca/src/main.js"),
+            Some(root.join("packages/playground/src/main.js"))
+        );
+        assert_eq!(
+            resolve_static_path(root, "/rumoca/pkg/release-full-web/rumoca_worker.js"),
+            Some(root.join("packages/rumoca/dist/release-full-web/rumoca_worker.js"))
+        );
+        assert_eq!(
+            resolve_static_path(root, "/rumoca/examples/models/Ball.mo"),
+            Some(root.join("examples/models/Ball.mo"))
+        );
+    }
+
+    #[test]
+    fn non_pages_rumoca_prefix_is_not_rewritten() {
+        let root = Path::new("/tmp/rumoca");
+
+        assert_eq!(
+            resolve_static_path(root, "/rumoca-other/index.html"),
+            Some(root.join("rumoca-other/index.html"))
+        );
+    }
+
+    #[test]
+    fn wasm_editor_index_body_rewrites_to_pages_asset_layout() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let index = temp.path().join("index.html");
+        fs::write(
+            &index,
+            r#"
+<link rel="icon" href="../../assets/brand/rumoca.svg">
+<script>
+window.rumocaRepoAssetBase = '../../';
+window.rumocaWasmPkgBase = '../rumoca/dist';
+window.rumocaWasmPkgSubdir = 'release-full-web';
+</script>
+"#,
+        )
+        .expect("write index");
+
+        let body = wasm_editor_index_body(&index, Some("release-full-web-rayon"), true)
+            .expect("rewrite index");
+
+        assert!(body.contains(r#"href="assets/brand/rumoca.svg""#));
+        assert!(body.contains("window.rumocaRepoAssetBase = './';"));
+        assert!(body.contains("window.rumocaWasmPkgBase = './pkg';"));
+        assert!(body.contains("window.rumocaWasmPkgSubdir = 'release-full-web-rayon';"));
+    }
+
+    #[test]
+    fn wasm_editor_index_body_keeps_source_layout_for_non_pages_url() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let index = temp.path().join("index.html");
+        fs::write(
+            &index,
+            r#"
+<link rel="icon" href="../../assets/brand/rumoca.svg">
+<script>
+window.rumocaRepoAssetBase = '../../';
+window.rumocaWasmPkgBase = '../rumoca/dist';
+window.rumocaWasmPkgSubdir = 'release-full-web';
+</script>
+"#,
+        )
+        .expect("write index");
+
+        let body = wasm_editor_index_body(&index, Some("release-full-web-rayon"), false)
+            .expect("rewrite index");
+
+        assert!(body.contains(r#"href="../../assets/brand/rumoca.svg""#));
+        assert!(body.contains("window.rumocaRepoAssetBase = '../../';"));
+        assert!(body.contains("window.rumocaWasmPkgBase = '../rumoca/dist';"));
+        assert!(body.contains("window.rumocaWasmPkgSubdir = 'release-full-web-rayon';"));
     }
 }

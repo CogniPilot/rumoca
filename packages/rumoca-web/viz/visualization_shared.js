@@ -1,3 +1,5 @@
+    const DEFAULT_RESULTS_OUTPUT_DIR = 'results';
+
     function trimMaybeString(value) {
         return typeof value === 'string' ? value.trim() : '';
     }
@@ -175,7 +177,7 @@
         return JSON.stringify(workspaceSourceRootSourceMap(entries, sourceRootPaths));
     }
 
-    function nextSimulationRunLocation(model, pathExists, resultDirectory = '') {
+    function nextSimulationRunLocation(model, pathExists, resultDirectory = DEFAULT_RESULTS_OUTPUT_DIR) {
         const date = new Date();
         const timestamp = resultTimestamp(date);
         const slug = stableResultStem(model);
@@ -457,7 +459,7 @@ ctx.onFrame = (api) => {
         return id;
     }
 
-    function simulationRunDocumentPath(runId, resultDirectory = '') {
+    function simulationRunDocumentPath(runId, resultDirectory = DEFAULT_RESULTS_OUTPUT_DIR) {
         const normalized = normalizeRunId(runId);
         if (!normalized) {
             return undefined;
@@ -1691,6 +1693,24 @@ ctx.onFrame = (api) => {
         return rows;
     }
 
+    function scenarioRunSummary(config, task, model, path) {
+        const modelConfig = config && typeof config.model === 'object' ? config.model : {};
+        const simConfig = config && typeof config.sim === 'object' ? config.sim : {};
+        const modelFile = trimMaybeString(modelConfig.file);
+        const modelName = trimMaybeString(modelConfig.name) || trimMaybeString(model);
+        const endTime = simConfig.t_end === undefined || simConfig.t_end === null || simConfig.t_end === ''
+            ? '10'
+            : String(simConfig.t_end);
+        return {
+            modelFile,
+            modelName,
+            scenarioPath: trimMaybeString(path),
+            task: task === 'codegen' ? 'Code generation' : 'Simulation',
+            solver: trimMaybeString(simConfig.solver) || 'auto',
+            tEnd: endTime,
+        };
+    }
+
     function sortedObjectEntries(value) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) {
             return [];
@@ -2159,8 +2179,14 @@ ctx.onFrame = (api) => {
       </section>`;
     }
 
-    function scenarioParameterSectionMarkup(parameters) {
-        const rows = Array.isArray(parameters) && parameters.length
+    function scenarioParameterSummary(parameters) {
+        return Array.isArray(parameters) && parameters.length
+            ? `${parameters.length} tunable`
+            : 'None discovered';
+    }
+
+    function scenarioParameterRowsMarkup(parameters) {
+        return Array.isArray(parameters) && parameters.length
             ? parameters.map((parameter) => {
                 const defaultValue = parameter.defaultValue === undefined || parameter.defaultValue === null || parameter.defaultValue === ''
                     ? ''
@@ -2197,17 +2223,19 @@ ctx.onFrame = (api) => {
           </div>`;
             }).join('')
             : '<div class="empty">Compile the selected model to discover tunable scalar parameters.</div>';
-        const meta = Array.isArray(parameters) && parameters.length
-            ? `${parameters.length} tunable`
-            : 'None discovered';
+    }
+
+    function scenarioParameterSectionMarkup(parameters) {
+        const rows = scenarioParameterRowsMarkup(parameters);
+        const meta = scenarioParameterSummary(parameters);
         return `
       <section class="card" id="parametersCard" data-scenario-section="parameters">
         <details>
           <summary>
             <span>Parameters</span>
-            <span class="summary-meta">${escapeHtml(meta)}</span>
+            <span class="summary-meta" id="parametersSummary">${escapeHtml(meta)}</span>
           </summary>
-          <div class="parameter-list">${rows}</div>
+          <div class="parameter-list" id="parametersList">${rows}</div>
         </details>
       </section>`;
     }
@@ -2258,7 +2286,8 @@ ctx.onFrame = (api) => {
         });
         const sectionMarkup = scenarioSectionsMarkup(fields, plotViews, inputMappings, parameters, [], effectiveSourceRootPaths);
         const taskLabel = scenarioOptionLabel(SCENARIO_TASK_OPTIONS, task);
-        const runLabel = task === 'codegen' ? 'Save & Generate Code' : 'Save & Simulate';
+        const runLabel = task === 'codegen' ? 'Generate Code' : 'Run Simulation';
+        const runSummary = scenarioRunSummary(config, task, model, path);
         const initialStateJson = escapeInlineScriptJson(JSON.stringify({
             path,
             fields,
@@ -2266,6 +2295,7 @@ ctx.onFrame = (api) => {
             inputMappings,
             parameters,
             runLabel,
+            runSummary,
         }));
         return `<!DOCTYPE html>
 <html lang="en">
@@ -2292,6 +2322,15 @@ ctx.onFrame = (api) => {
     .actions { display: flex; gap: 8px; }
     button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); cursor: pointer; }
     button.ghost { background: transparent; color: var(--vscode-foreground, #d4d4d4); border-color: var(--vscode-input-border, #3c3c3c); }
+    .run-overview { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 10px 12px; border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: var(--radius); background: var(--vscode-sideBar-background, #252526); }
+    .run-overview-item { display: grid; gap: 2px; min-width: 0; }
+    .run-overview-label { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .run-overview-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .run-state-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+    .run-state-step { min-width: 0; padding: 5px 8px; border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 999px; color: var(--muted); font-size: 11px; text-align: center; white-space: nowrap; }
+    .run-state-step.active { border-color: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); }
+    .run-state-step.done { border-color: color-mix(in srgb, var(--ok) 65%, var(--vscode-panel-border, #3c3c3c)); color: var(--ok); }
+    .run-state-step.failed { border-color: var(--error); color: var(--error); }
     .card { border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: var(--radius); padding: 12px; background: var(--vscode-sideBar-background, #252526); }
     .card details { display: grid; gap: 10px; }
     .card summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
@@ -2387,6 +2426,10 @@ ctx.onFrame = (api) => {
       .card {
         padding: 14px;
       }
+      .run-overview,
+      .run-state-strip {
+        grid-template-columns: 1fr;
+      }
       .grid,
       .path-row,
       .parameter-row,
@@ -2421,6 +2464,35 @@ ctx.onFrame = (api) => {
       </div>
     </div>
     <div id="status" class="status"></div>
+    <section class="run-overview" aria-label="Scenario summary">
+      <div class="run-overview-item">
+        <span class="run-overview-label">Model</span>
+        <span class="run-overview-value" id="summaryModel">${escapeHtml(runSummary.modelFile || 'No model file')}</span>
+      </div>
+      <div class="run-overview-item">
+        <span class="run-overview-label">Class</span>
+        <span class="run-overview-value" id="summaryClass">${escapeHtml(runSummary.modelName || 'No class')}</span>
+      </div>
+      <div class="run-overview-item">
+        <span class="run-overview-label">Solver</span>
+        <span class="run-overview-value" id="summarySolver">${escapeHtml(runSummary.solver)}</span>
+      </div>
+      <div class="run-overview-item">
+        <span class="run-overview-label">End time</span>
+        <span class="run-overview-value" id="summaryEndTime">${escapeHtml(runSummary.tEnd)} s</span>
+      </div>
+      <div class="run-overview-item">
+        <span class="run-overview-label">Status</span>
+        <span class="run-overview-value" id="summaryStatus">Ready</span>
+      </div>
+    </section>
+    <div class="run-state-strip" aria-label="Run progress">
+      <span class="run-state-step active" data-run-step="ready">Ready</span>
+      <span class="run-state-step" data-run-step="saving">Save</span>
+      <span class="run-state-step" data-run-step="running">Run</span>
+      <span class="run-state-step" data-run-step="completed">Complete</span>
+      <span class="run-state-step" data-run-step="failed">Failed</span>
+    </div>
     ${sectionMarkup || '<div class="empty">This scenario has no editable fields yet. Use the lightning-bolt action on a model, or switch to the raw TOML view.</div>'}
     <div class="hint">Advanced or host-specific sections are preserved. Switch to Raw TOML only when the typed controls do not expose a setting yet.</div>
   </div>
@@ -2431,6 +2503,7 @@ ctx.onFrame = (api) => {
     let parameters = Array.isArray(initialState.parameters) ? initialState.parameters.slice() : [];
     const path = String(initialState.path || 'rumoca-scenario.toml');
     let runLabel = String(initialState.runLabel || 'Run');
+    const runSummary = initialState.runSummary && typeof initialState.runSummary === 'object' ? initialState.runSummary : {};
     const statusEl = document.getElementById('status');
     const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
     const pendingRequests = new Map();
@@ -2472,6 +2545,47 @@ ctx.onFrame = (api) => {
       if (level) statusEl.classList.add(level);
     }
 
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function setRunStage(stage) {
+      const order = ['ready', 'saving', 'running', 'completed'];
+      const failed = stage === 'failed';
+      const activeIndex = order.indexOf(stage);
+      document.querySelectorAll('[data-run-step]').forEach((step) => {
+        const key = step.getAttribute('data-run-step');
+        const index = order.indexOf(key);
+        step.classList.toggle('active', !failed && key === stage);
+        step.classList.toggle('done', !failed && index >= 0 && activeIndex > index);
+        step.classList.toggle('failed', failed && key === 'failed');
+      });
+      const label = failed ? 'Failed'
+        : stage === 'saving' ? 'Saving'
+          : stage === 'running' ? runLabel
+            : stage === 'completed' ? 'Completed'
+              : 'Ready';
+      setText('summaryStatus', label);
+    }
+
+    function fieldValueForPath(pathText, fallback) {
+      const input = fieldInputForPath(pathText);
+      const value = input?.type === 'checkbox'
+        ? (input.checked ? 'true' : 'false')
+        : String(input?.value || '').trim();
+      return value === '' ? fallback : value;
+    }
+
+    function updateRunOverview() {
+      const task = selectedTask();
+      setText('summaryModel', fieldValueForPath('model.file', runSummary.modelFile || 'No model file'));
+      setText('summaryClass', fieldValueForPath('model.name', runSummary.modelName || 'No class'));
+      setText('summarySolver', task === 'codegen' ? 'n/a' : fieldValueForPath('sim.solver', runSummary.solver || 'auto'));
+      const end = fieldValueForPath('sim.t_end', runSummary.tEnd || '10');
+      setText('summaryEndTime', task === 'codegen' ? 'n/a' : (end ? end + ' s' : 'n/a'));
+    }
+
     function escapeText(value) {
       return String(value ?? '').replace(/[&<>"']/g, (char) => ({
         '&': '&amp;',
@@ -2480,6 +2594,140 @@ ctx.onFrame = (api) => {
         '"': '&quot;',
         "'": '&#39;',
       }[char]));
+    }
+
+    function currentParameterOverrideValues() {
+      const overrides = {};
+      const card = document.getElementById('parametersCard');
+      if (!card) return overrides;
+      for (const row of card.querySelectorAll('[data-parameter-row]')) {
+        const name = String(row.getAttribute('data-parameter-name') || '').trim();
+        const raw = String(row.querySelector('[data-parameter-field="override"]')?.value || '').trim();
+        if (!name || !raw) continue;
+        const value = Number(raw);
+        if (Number.isFinite(value)) overrides[name] = value;
+      }
+      return overrides;
+    }
+
+    function normalizeParameterMetadata(metadata, overrides) {
+      const overrideMap = overrides && typeof overrides === 'object' && !Array.isArray(overrides)
+        ? overrides : {};
+      return Array.isArray(metadata)
+        ? metadata
+          .filter((entry) => entry && typeof entry === 'object' && String(entry.name || '').trim())
+          .map((entry) => {
+            const name = String(entry.name || '').trim();
+            const hasOverride = Object.prototype.hasOwnProperty.call(overrideMap, name);
+            return {
+              name,
+              defaultValue: entry.defaultValue,
+              unit: String(entry.unit || '').trim(),
+              start: String(entry.start || '').trim(),
+              min: String(entry.min || '').trim(),
+              max: String(entry.max || '').trim(),
+              nominal: String(entry.nominal || '').trim(),
+              minValue: entry.minValue === null || entry.minValue === undefined ? NaN : Number(entry.minValue),
+              maxValue: entry.maxValue === null || entry.maxValue === undefined ? NaN : Number(entry.maxValue),
+              fixed: entry.fixed,
+              description: String(entry.description || '').trim(),
+              hasOverride,
+              overrideValue: hasOverride ? overrideMap[name] : undefined,
+            };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name))
+        : [];
+    }
+
+    function parameterSummaryText(rows) {
+      return Array.isArray(rows) && rows.length ? rows.length + ' tunable' : 'None discovered';
+    }
+
+    function parameterRowsMarkup(rows) {
+      return Array.isArray(rows) && rows.length
+        ? rows.map((parameter) => {
+          const defaultValue = parameter.defaultValue === undefined || parameter.defaultValue === null || parameter.defaultValue === ''
+            ? '' : String(parameter.defaultValue);
+          const overrideValue = parameter.hasOverride ? String(parameter.overrideValue) : '';
+          const rowMinAttr = Number.isFinite(parameter.minValue) ? ' data-parameter-min="' + escapeText(String(parameter.minValue)) + '"' : '';
+          const rowMaxAttr = Number.isFinite(parameter.maxValue) ? ' data-parameter-max="' + escapeText(String(parameter.maxValue)) + '"' : '';
+          const inputMinAttr = Number.isFinite(parameter.minValue) ? ' min="' + escapeText(String(parameter.minValue)) + '"' : '';
+          const inputMaxAttr = Number.isFinite(parameter.maxValue) ? ' max="' + escapeText(String(parameter.maxValue)) + '"' : '';
+          const unit = parameter.unit ? '<span>' + escapeText(parameter.unit) + '</span>' : '';
+          const bounds = [
+            parameter.min ? 'min ' + parameter.min : '',
+            parameter.max ? 'max ' + parameter.max : '',
+            parameter.nominal ? 'nominal ' + parameter.nominal : '',
+          ].filter(Boolean).join(' · ');
+          const meta = [
+            defaultValue ? 'default ' + defaultValue : '',
+            bounds,
+            parameter.fixed !== undefined ? 'fixed ' + (parameter.fixed ? 'true' : 'false') : '',
+          ].filter(Boolean).join(' · ');
+          return [
+            '<div class="parameter-row" data-parameter-row data-parameter-name="' + escapeText(parameter.name) + '"' + rowMinAttr + rowMaxAttr + '>',
+            '<div class="parameter-details"><strong>' + escapeText(parameter.name) + '</strong>',
+            unit,
+            parameter.description ? '<div class="hint">' + escapeText(parameter.description) + '</div>' : '',
+            meta ? '<div class="hint">' + escapeText(meta) + '</div>' : '',
+            '</div>',
+            '<div class="parameter-control"><label>Override</label>',
+            '<input type="number" step="any"' + inputMinAttr + inputMaxAttr + ' data-parameter-field="override" value="' + escapeText(overrideValue) + '" placeholder="' + escapeText(defaultValue) + '">',
+            '<button type="button" class="ghost icon-button" data-clear-parameter title="Clear override">-</button>',
+            '</div></div>',
+          ].join('');
+        }).join('')
+        : '<div class="empty">Compile the selected model to discover tunable scalar parameters.</div>';
+    }
+
+    function renderParameters(nextParameters, summaryText) {
+      parameters = Array.isArray(nextParameters) ? nextParameters.slice() : [];
+      const list = document.getElementById('parametersList');
+      const summary = document.getElementById('parametersSummary');
+      if (list) list.innerHTML = parameterRowsMarkup(parameters);
+      if (summary) summary.textContent = summaryText || parameterSummaryText(parameters);
+    }
+
+    function fieldInputForPath(pathText) {
+      const field = fields.find((item) => Array.isArray(item.path) && item.path.join('.') === pathText);
+      return field ? document.querySelector('[data-field="' + field.index + '"]') : null;
+    }
+
+    function currentModelSelection() {
+      return {
+        modelFile: String(fieldInputForPath('model.file')?.value || '').trim(),
+        modelName: String(fieldInputForPath('model.name')?.value || '').trim(),
+      };
+    }
+
+    let parameterRefreshToken = 0;
+
+    async function refreshParameterMetadata() {
+      const card = document.getElementById('parametersCard');
+      if (!card || card.hidden) return;
+      const selection = currentModelSelection();
+      if (!selection.modelFile || !selection.modelName) {
+        renderParameters([], 'None discovered');
+        return;
+      }
+      const token = ++parameterRefreshToken;
+      const summary = document.getElementById('parametersSummary');
+      if (summary) summary.textContent = 'Refreshing...';
+      try {
+        const response = await requestHost('parameterMetadata', {
+          path,
+          modelFile: selection.modelFile,
+          modelName: selection.modelName,
+        });
+        if (token !== parameterRefreshToken) return;
+        const metadata = Array.isArray(response)
+          ? response
+          : (Array.isArray(response?.parameters) ? response.parameters : []);
+        renderParameters(normalizeParameterMetadata(metadata, currentParameterOverrideValues()));
+      } catch (_error) {
+        if (token !== parameterRefreshToken) return;
+        if (summary) summary.textContent = 'Refresh failed';
+      }
     }
 
     function fail(message, el) {
@@ -3066,7 +3314,7 @@ ctx.onFrame = (api) => {
     }
 
     function runLabelForTask(task) {
-      return task === 'codegen' ? 'Save & Generate Code' : 'Save & Simulate';
+      return task === 'codegen' ? 'Generate Code' : 'Run Simulation';
     }
 
     function taskLabelForTask(task) {
@@ -3085,11 +3333,21 @@ ctx.onFrame = (api) => {
       document.querySelectorAll('[data-scenario-section="codegen"]')
         .forEach((section) => { section.hidden = task !== 'codegen'; });
       syncInputVisibility();
+      updateRunOverview();
     }
 
     for (const field of fields) {
       if (Array.isArray(field.path) && field.path.join('.') === 'rumoca.task') {
         document.querySelector('[data-field="' + field.index + '"]')?.addEventListener('change', syncTaskVisibility);
+      }
+      if (Array.isArray(field.path) && (field.path.join('.') === 'model.file' || field.path.join('.') === 'model.name')) {
+        document.querySelector('[data-field="' + field.index + '"]')?.addEventListener('change', () => {
+          updateRunOverview();
+          refreshParameterMetadata().catch(() => {});
+        });
+      }
+      if (Array.isArray(field.path) && (field.path.join('.') === 'sim.solver' || field.path.join('.') === 'sim.t_end')) {
+        document.querySelector('[data-field="' + field.index + '"]')?.addEventListener('change', updateRunOverview);
       }
     }
     document.getElementById('plotViewsList')?.addEventListener('change', (event) => {
@@ -3185,6 +3443,7 @@ ctx.onFrame = (api) => {
     syncTaskVisibility();
     syncPlotViewVisibility();
     syncInputVisibility();
+    refreshParameterMetadata().catch(() => {});
 
     document.getElementById('addPlotView')?.addEventListener('click', () => {
       plotViews = collectPlotViews();
@@ -3201,21 +3460,27 @@ ctx.onFrame = (api) => {
 
     document.getElementById('saveBtn').addEventListener('click', async () => {
       try {
+        setRunStage('saving');
         setStatus('Saving…');
         await requestHost('save', { path, edits: collectEdits() });
+        setRunStage('ready');
         setStatus('Saved', 'ok');
       } catch (error) {
+        setRunStage('failed');
         setStatus(String(error && error.message ? error.message : error), 'error');
       }
     });
     document.getElementById('runBtn').addEventListener('click', async () => {
       try {
+        setRunStage('running');
         setStatus(runLabel + '…');
         const response = await requestHost('run', { path, edits: collectEdits() });
         const message = response && typeof response.message === 'string'
           ? response.message : runLabel + ' requested';
+        setRunStage('completed');
         setStatus(message, 'ok');
       } catch (error) {
+        setRunStage('failed');
         setStatus(String(error && error.message ? error.message : error), 'error');
       }
     });

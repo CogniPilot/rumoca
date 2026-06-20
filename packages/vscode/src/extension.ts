@@ -26,6 +26,7 @@ import { buildNotebookPythonSnippet } from './notebook_python_snippets';
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
 const nodeRequire = createRequire(__filename);
+const DEFAULT_WEB_RESULTS_OUTPUT_DIR = 'results';
 const pendingSimulationJobs = new Map<string, {
     resolve: (response: {
         ok?: boolean;
@@ -907,7 +908,8 @@ function getSimulationSettings(config: vscode.WorkspaceConfiguration): Simulatio
         tEnd: config.get<number>('simulation.tEnd') ?? 10.0,
         dt,
         solver,
-        outputDir: (config.get<string>('simulation.outputDir') ?? '').trim(),
+        outputDir: (config.get<string>('simulation.outputDir') ?? DEFAULT_WEB_RESULTS_OUTPUT_DIR).trim()
+            || DEFAULT_WEB_RESULTS_OUTPUT_DIR,
         sourceRootPaths: sourceRootPaths.mergedPaths,
     };
 }
@@ -1463,11 +1465,9 @@ function scenarioResultDirectory(
     workspaceRoot: string | undefined,
     scenarioPath?: string,
 ): string {
-    const raw = trimMaybeString(configuredOutputDir);
+    const raw = trimMaybeString(configuredOutputDir) || DEFAULT_WEB_RESULTS_OUTPUT_DIR;
     const scenarioFsPath = resolveResultDocumentPath(workspaceRoot, scenarioPath) ?? document.uri.fsPath;
-    const absoluteDir = raw
-        ? (path.isAbsolute(raw) ? raw : path.resolve(path.dirname(scenarioFsPath), raw))
-        : path.dirname(scenarioFsPath);
+    const absoluteDir = path.isAbsolute(raw) ? raw : path.resolve(path.dirname(scenarioFsPath), raw);
     return workspaceRelativeTemplatePath(workspaceRoot, absoluteDir);
 }
 
@@ -3276,22 +3276,42 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    const scenarioModelPath = (
+        document: vscode.TextDocument,
+        modelFile: string,
+    ): string | undefined => {
+        const raw = trimMaybeString(modelFile);
+        if (!raw) {
+            return undefined;
+        }
+        return path.isAbsolute(raw)
+            ? raw
+            : path.resolve(path.dirname(document.uri.fsPath), raw);
+    };
+
     const loadScenarioParameterMetadata = async (
         document: vscode.TextDocument,
         response: ScenarioConfigFullResponse,
+        payload?: unknown,
     ): Promise<unknown[]> => {
         const config = response.config ?? {};
         const modelConfig = config.model && typeof config.model === 'object'
             ? config.model as Record<string, unknown>
             : {};
-        const modelName = typeof modelConfig.name === 'string' ? modelConfig.name.trim() : '';
-        if (!modelName) {
+        const payloadConfig = payload && typeof payload === 'object'
+            ? payload as Record<string, unknown>
+            : {};
+        const modelName = trimMaybeString(payloadConfig.modelName)
+            || (typeof modelConfig.name === 'string' ? modelConfig.name.trim() : '');
+        const modelFile = trimMaybeString(payloadConfig.modelFile)
+            || (typeof modelConfig.file === 'string' ? modelConfig.file.trim() : '');
+        const modelPath = scenarioModelPath(document, modelFile);
+        if (!modelName || !modelPath) {
             return [];
         }
         try {
             return await getModelParameterMetadata({
-                uri: document.uri.toString(),
-                source: document.getText(),
+                uri: vscode.Uri.file(modelPath).toString(),
                 modelName,
                 fallback: {
                     sourceRootPaths: Array.isArray(response.effectiveSourceRootPaths)
@@ -3312,10 +3332,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 response?.error ?? 'rumoca-lsp did not return a scenario config.',
             );
         }
-        const parameterMetadata = await loadScenarioParameterMetadata(document, response);
         return loadVisualizationShared().buildScenarioConfigDocument({
             ...response,
-            parameterMetadata,
             path: path.basename(document.uri.fsPath),
         });
     };
@@ -3374,6 +3392,14 @@ export async function activate(context: vscode.ExtensionContext) {
                 return { ok: true, message: 'Scenario run requested' };
             };
 
+            const handleParameterMetadata = async (payload: unknown): Promise<unknown[]> => {
+                const latest = await getScenarioConfigFull(document.uri.toString(), document.getText());
+                if (latest?.ok !== true || !latest.config) {
+                    return [];
+                }
+                return await loadScenarioParameterMetadata(document, latest, payload);
+            };
+
             const browseSourceRoot = async (): Promise<{ path: string } | null> => {
                 const selected = await vscode.window.showOpenDialog({
                     title: 'Select Modelica Source Root',
@@ -3417,11 +3443,15 @@ export async function activate(context: vscode.ExtensionContext) {
                         await respond(requestId, true, await browseSourceRoot());
                         return;
                     }
+                    if (method === 'parameterMetadata') {
+                        await respond(requestId, true, await handleParameterMetadata(message.payload));
+                        return;
+                    }
                     await respond(requestId, false, undefined, `Unknown scenario config request: ${method}`);
                 } catch (error) {
                     const detail = String(error instanceof Error ? error.message : error);
                     await respond(requestId, false, undefined, detail);
-                    void vscode.window.showErrorMessage(`Scenario config save failed: ${detail}`);
+                    void vscode.window.showErrorMessage(`Scenario config request failed: ${detail}`);
                 }
             });
 

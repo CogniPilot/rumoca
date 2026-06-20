@@ -27,6 +27,14 @@ function hasWorkspaceSources(workspaceSources) {
     return Boolean(trimmed && trimmed !== '{}');
 }
 
+function hasSourceRoots(sourceRoots) {
+    if (typeof sourceRoots !== 'string') {
+        return false;
+    }
+    const trimmed = sourceRoots.trim();
+    return Boolean(trimmed && trimmed !== '{}');
+}
+
 function syncWorkspaceSources(workspaceSources) {
     if (typeof sync_workspace_sources !== 'function') {
         throw new Error('Workspace-source simulation not available in this WASM build.');
@@ -468,16 +476,13 @@ self.onmessage = async (e) => {
                         }
                         break;
                     case 'rumoca.model.parameterMetadata':
-                        if (typeof payload.sourceRoots === 'string' && payload.sourceRoots.trim() && payload.sourceRoots.trim() !== '{}') {
-                            if (typeof model_parameter_metadata_with_source_roots !== 'function') {
+                        if (hasSourceRoots(payload.sourceRoots)) {
+                            if (typeof load_source_roots !== 'function') {
                                 throw new Error('Source-root parameter metadata is not available in this WASM build.');
                             }
-                            result = model_parameter_metadata_with_source_roots(
-                                payload.source || '',
-                                payload.modelName || 'Model',
-                                payload.sourceRoots,
-                            );
-                        } else if (hasWorkspaceSources(payload.workspaceSources)) {
+                            load_source_roots(payload.sourceRoots);
+                        }
+                        if (hasWorkspaceSources(payload.workspaceSources)) {
                             if (typeof model_parameter_metadata_with_workspace_sources !== 'function') {
                                 throw new Error('Workspace parameter metadata is not available in this WASM build.');
                             }
@@ -485,6 +490,15 @@ self.onmessage = async (e) => {
                                 payload.source || '',
                                 payload.modelName || 'Model',
                                 payload.workspaceSources,
+                            );
+                        } else if (hasSourceRoots(payload.sourceRoots)) {
+                            if (typeof model_parameter_metadata_with_source_roots !== 'function') {
+                                throw new Error('Source-root parameter metadata is not available in this WASM build.');
+                            }
+                            result = model_parameter_metadata_with_source_roots(
+                                payload.source || '',
+                                payload.modelName || 'Model',
+                                payload.sourceRoots,
                             );
                         } else {
                             if (typeof model_parameter_metadata !== 'function') {

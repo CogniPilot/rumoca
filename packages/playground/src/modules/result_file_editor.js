@@ -957,6 +957,7 @@ export function createResultFileEditorController({
         }
         disposePane(pane.id);
         view.innerHTML = '';
+        view.classList.remove('rumoca-results-root');
         renderedKeys.set(pane.id, renderKey);
         if (isInteractiveRunPath(path)) {
             const mounted = renderInteractiveRun(path);
@@ -986,8 +987,10 @@ export function createResultFileEditorController({
         const views = Array.isArray(run.views) && run.views.length > 0
             ? cloneJson(run.views)
             : shared.defaultVisualizationViews();
+        const resultsRoot = document.createElement('div');
+        view.appendChild(resultsRoot);
         const mounted = resultsAppFactory.createResultsApp({
-            root: view,
+            root: resultsRoot,
             model: run.model,
             modelRef: { model: run.model, path },
             payload: run.payload,

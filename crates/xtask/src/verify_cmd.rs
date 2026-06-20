@@ -330,7 +330,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     },
 ];
 
-const WASM_SMOKE_SERVER_READY_PATH: &str = "/packages/playground/index.html";
+const WASM_SMOKE_SERVER_READY_PATH: &str = "/rumoca/";
 const WASM_SMOKE_SERVER_START_ATTEMPTS: usize = 3;
 const WASM_SMOKE_SERVER_START_TIMEOUT: Duration = Duration::from_secs(20);
 const MSL_RESOURCE_CPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
@@ -908,7 +908,7 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
     let result_path = output_dir.join("wasm-browser-result.json");
     let smoke_model = "SmokeHarness";
     let smoke_url = format!(
-        "http://127.0.0.1:{port}/packages/playground/index.html?rumoca_smoke=1&smoke_model={smoke_model}&smoke_source_url=/target/editor-msl-smoke/SmokeHarness.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
+        "http://127.0.0.1:{port}/rumoca/?rumoca_smoke=1&smoke_model={smoke_model}&smoke_source_url=/target/editor-msl-smoke/SmokeHarness.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
     );
     let mut smoke = Command::new("node");
     smoke

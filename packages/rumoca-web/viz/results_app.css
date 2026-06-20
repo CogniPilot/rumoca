@@ -128,6 +128,36 @@
     background: rgba(178, 76, 76, 0.2);
 }
 
+.rumoca-results-run-summary {
+    display: grid;
+    gap: 3px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--rumoca-results-border);
+    background: var(--rumoca-results-panel);
+    min-width: 0;
+}
+
+.rumoca-results-run-summary[hidden] {
+    display: none;
+}
+
+.rumoca-results-run-summary-title {
+    color: var(--rumoca-results-fg);
+    font-size: 13px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rumoca-results-run-summary-details {
+    color: var(--rumoca-results-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .rumoca-results-tabs {
     display: flex;
     gap: 6px;

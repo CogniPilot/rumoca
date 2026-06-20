@@ -150,8 +150,8 @@
         },
         "rumoca.simulation.outputDir": {
           "type": "string",
-          "default": "",
-          "description": "Directory for generated simulation HTML reports. If empty, uses the system temp directory."
+          "default": "results",
+          "description": "Directory for persisted simulation result JSON files, relative to the scenario file unless absolute."
         }
       }
     },
@@ -333,5 +333,4 @@
     }
   }
 }
-
 

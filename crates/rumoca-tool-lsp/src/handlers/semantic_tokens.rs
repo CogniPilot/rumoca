@@ -284,8 +284,16 @@ impl ast::visitor::Visitor for SemanticTokenCollector {
         comp: &ComponentReference,
         args: &[Expression],
     ) -> ControlFlow<()> {
+        self.visit_expr_function_call_ctx(comp, args, ast::visitor::FunctionCallContext::Expression)
+    }
+
+    fn visit_expr_function_call_ctx(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        _ctx: ast::visitor::FunctionCallContext,
+    ) -> ControlFlow<()> {
         self.add_call_head_tokens(comp);
-        // Visit arguments
         self.visit_each(args, Self::visit_expression)
     }
 
@@ -354,6 +362,24 @@ mod tests {
             .collect()
     }
 
+    fn assert_no_overlaps(source: &str, decoded: &[(u32, u32, u32, u32)]) {
+        let mut previous: Option<(u32, u32, u32, u32)> = None;
+        for current in decoded {
+            if let Some(prev) = previous {
+                assert!(
+                    current.0 > prev.0 || current.1 >= prev.1 + prev.2,
+                    "semantic token overlap in `{}`: previous {:?} `{}`, current {:?} `{}`",
+                    source,
+                    prev,
+                    lexeme_at(source, prev.0, prev.1, prev.2),
+                    current,
+                    lexeme_at(source, current.0, current.1, current.2),
+                );
+            }
+            previous = Some(*current);
+        }
+    }
+
     fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
         let ast = parse_source_to_ast(source, "test.mo").expect("parse should succeed");
         let result = handle_semantic_tokens(&ast).expect("semantic tokens should be available");
@@ -404,5 +430,25 @@ end M;
             found_sin_function,
             "expected regular call head `sin` to remain a function token"
         );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_overlap_for_equation_calls() {
+        let source = r#"
+model Ball
+  Real x(start=10);
+  Real v(start=1);
+  parameter Real g = 9.81;
+equation
+  der(x) = v;
+  der(v) = -g;
+  when x < 0 then
+    // terminate("Ball has hit the ground");
+    reinit(v, -0.8*pre(v));
+  end when;
+end Ball;
+"#;
+        let decoded = decode_tokens(&semantic_tokens(source));
+        assert_no_overlaps(source, &decoded);
     }
 }

@@ -112,6 +112,13 @@ function documentRendersSectionsAndControls() {
   assert(html.includes('data-add-gamepad-axis'), "expected typed gamepad input mapping controls");
   assert(html.includes('data-add-gamepad-integrator'), "expected typed gamepad integrator controls");
   assert(html.includes('data-add-stepper-input'), "expected typed Modelica input routing controls");
+  assert(html.includes('id="parametersSummary"'), "expected parameter summary to be refreshable");
+  assert(html.includes('id="parametersList"'), "expected parameter list to be refreshable");
+  assert(html.includes("requestHost('parameterMetadata'"), "expected parameter metadata refresh from the shared form");
+  assert(html.includes('id="summaryModel"'), "expected runnable scenario summary model field");
+  assert(html.includes('id="summaryStatus"'), "expected runnable scenario status summary");
+  assert(html.includes('data-run-step="running"'), "expected visible run progress strip");
+  assert(html.includes(">Run Simulation</button>"), "expected primary action to be user-goal oriented");
   assert(!html.includes("initial_selection"), "expected plot defaults to stay out of the main GUI");
   assert(!html.includes("show_sidebar"), "expected plot sidebar defaults to stay out of the main GUI");
   assert(html.includes('id="saveBtn"'), "expected a Save button");

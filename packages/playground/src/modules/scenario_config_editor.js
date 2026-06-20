@@ -153,10 +153,14 @@ function resolveWorkspaceRelativePath(basePath, relativePath) {
     return stack.join('/');
 }
 
-async function loadParameterMetadata({ activePath, scenario, workspaceFs, scenarioInterface }) {
-    const config = scenario && typeof scenario === 'object' ? scenario.config || {} : {};
-    const modelName = trimMaybeString(config.model?.name);
-    const modelFile = trimMaybeString(config.model?.file);
+async function loadParameterMetadata({
+    activePath,
+    modelName,
+    modelFile,
+    sourceRootPaths,
+    workspaceFs,
+    scenarioInterface,
+}) {
     const modelPath = modelFile ? resolveWorkspaceRelativePath(activePath, modelFile) : '';
     const source = modelPath ? workspaceFs.getFileContent(modelPath) : null;
     if (!modelName || typeof source !== 'string') {
@@ -165,11 +169,12 @@ async function loadParameterMetadata({ activePath, scenario, workspaceFs, scenar
     try {
         const metadata = await scenarioInterface.execute('rumoca.model.parameterMetadata', {
             path: activePath,
+            sourcePath: modelPath,
             source,
             modelName,
             fallback: {
-                sourceRootPaths: Array.isArray(scenario?.effectiveSourceRootPaths)
-                    ? scenario.effectiveSourceRootPaths
+                sourceRootPaths: Array.isArray(sourceRootPaths)
+                    ? sourceRootPaths
                     : [],
             },
             timeoutMs: 8000,
@@ -251,19 +256,9 @@ export function createScenarioConfigEditorController({
             if (renderVersions.get(pane.id) !== renderVersion || pane.activePath !== activePath) {
                 return;
             }
-            const parameterMetadata = await loadParameterMetadata({
-                activePath,
-                scenario,
-                workspaceFs,
-                scenarioInterface,
-            });
-            if (renderVersions.get(pane.id) !== renderVersion || pane.activePath !== activePath) {
-                return;
-            }
             frame.srcdoc = shared.buildScenarioConfigDocument({
                 ...(scenario && typeof scenario === 'object' ? scenario : {}),
                 path: activePath,
-                parameterMetadata,
                 theme,
             });
         } catch (error) {
@@ -350,6 +345,28 @@ export function createScenarioConfigEditorController({
         return true;
     }
 
+    async function parameterMetadata(payload = {}) {
+        const scenarioPath = trimMaybeString(payload?.path);
+        if (!shared.isRumocaScenarioPath(scenarioPath)) {
+            return [];
+        }
+        const latest = await scenarioInterface.execute('rumoca.scenario.getScenarioConfigFull', {
+            path: scenarioPath,
+        });
+        const config = latest && typeof latest === 'object' ? latest.config || {} : {};
+        const modelConfig = config.model && typeof config.model === 'object' ? config.model : {};
+        const modelName = trimMaybeString(payload?.modelName) || trimMaybeString(modelConfig.name);
+        const modelFile = trimMaybeString(payload?.modelFile) || trimMaybeString(modelConfig.file);
+        return await loadParameterMetadata({
+            activePath: scenarioPath,
+            modelName,
+            modelFile,
+            sourceRootPaths: latest?.effectiveSourceRootPaths,
+            workspaceFs,
+            scenarioInterface,
+        });
+    }
+
     async function request(method, payload = {}) {
         if (method === 'save') {
             return await save(payload?.path, payload?.edits);
@@ -368,6 +385,9 @@ export function createScenarioConfigEditorController({
         }
         if (method === 'toggleRaw') {
             return toggleRaw(payload?.path);
+        }
+        if (method === 'parameterMetadata') {
+            return await parameterMetadata(payload);
         }
         throw new Error(`Unknown scenario config request: ${method}`);
     }
