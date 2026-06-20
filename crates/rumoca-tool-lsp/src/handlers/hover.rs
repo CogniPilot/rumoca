@@ -7,7 +7,7 @@ use rumoca_compile::parsing::{self, ast};
 use crate::helpers::{
     find_class_at_position, find_component_at_position, find_enclosing_class,
     get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
-    parsed_class_by_qualified_name, resolve_at_position,
+    is_position_in_comment, parsed_class_by_qualified_name, resolve_at_position,
 };
 
 /// Handle hover request - returns type/keyword/component info at position.
@@ -19,6 +19,10 @@ pub fn handle_hover(
     character: u32,
 ) -> Option<Hover> {
     let position = Position { line, character };
+    if is_position_in_comment(source, position) {
+        return None;
+    }
+
     let word = get_word_at_position(source, position)?;
 
     // Try component hover first (most specific)
@@ -390,6 +394,31 @@ end Modelica;
             contents.value.contains("block PID"),
             "expected imported class hover, got: {}",
             contents.value
+        );
+    }
+
+    #[test]
+    fn hover_ignores_words_inside_line_comments() {
+        let source = r#"model Ball
+  Real x;
+equation
+  // terminate("Ball has hit the ground");
+  x = 1;
+end Ball;
+"#;
+        let ast = rumoca_compile::parsing::parse_source_to_ast(source, "input.mo")
+            .expect("parse should succeed");
+        let comment_line = source.lines().nth(3).expect("comment line");
+        let terminate_pos = comment_line.find("terminate").expect("terminate token") as u32 + 1;
+        let ball_pos = comment_line.find("Ball").expect("Ball token") as u32 + 1;
+
+        assert!(
+            handle_hover(source, Some(&ast), None, 3, terminate_pos).is_none(),
+            "built-in hover should not activate inside a line comment"
+        );
+        assert!(
+            handle_hover(source, Some(&ast), None, 3, ball_pos).is_none(),
+            "class hover should not activate inside a line comment"
         );
     }
 

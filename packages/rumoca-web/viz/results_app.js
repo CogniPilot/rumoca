@@ -231,6 +231,75 @@ import * as shared from './visualization_shared.js';
         return summary;
     }
 
+    function resultPathFromModelRef(modelRef) {
+        if (modelRef && typeof modelRef === 'object') {
+            return trimMaybeString(modelRef.path) || trimMaybeString(modelRef.runPath);
+        }
+        return '';
+    }
+
+    function stateNamesForPayload(payload) {
+        const names = Array.isArray(payload?.names) ? payload.names.map(String) : [];
+        const stateCount = Number.isFinite(payload?.nStates) ? Math.max(0, payload.nStates) : 0;
+        return names.slice(0, stateCount);
+    }
+
+    function plottedSeriesSummary(payload, view) {
+        if (!view || typeof view !== 'object') {
+            return '';
+        }
+        if (view.type === '3d') {
+            return trimMaybeString(view.title) || '3D view';
+        }
+        if (view.type === 'scatter') {
+            const names = ensureArray(view.scatterSeries)
+                .map((entry) => trimMaybeString(entry?.name) || trimMaybeString(entry?.y))
+                .filter(Boolean);
+            return names.slice(0, 4).join(', ');
+        }
+        const requested = ensureArray(view.y).map(trimMaybeString).filter(Boolean);
+        const expanded = [];
+        for (const item of requested) {
+            if (item === '*states') {
+                expanded.push(...stateNamesForPayload(payload));
+            } else {
+                expanded.push(item);
+            }
+        }
+        return expanded.slice(0, 6).join(', ');
+    }
+
+    function createRunSummary(modelName, modelRef) {
+        const summary = document.createElement('div');
+        summary.className = 'rumoca-results-run-summary';
+        const title = document.createElement('div');
+        title.className = 'rumoca-results-run-summary-title';
+        const details = document.createElement('div');
+        details.className = 'rumoca-results-run-summary-details';
+        summary.appendChild(title);
+        summary.appendChild(details);
+
+        return {
+            element: summary,
+            update(payload, activeView, metrics, nextModelName) {
+                if (!payload) {
+                    summary.hidden = true;
+                    return;
+                }
+                summary.hidden = false;
+                const path = resultPathFromModelRef(modelRef);
+                const plotted = plottedSeriesSummary(payload, activeView);
+                const timing = buildResultsTimingSummary(metrics);
+                title.textContent = `Simulation completed: ${nextModelName || 'model'}`;
+                details.textContent = [
+                    path ? `Saved to ${path}` : '',
+                    plotted ? `Plotted ${plotted}` : '',
+                    timing.length ? timing.join(', ') : '',
+                ].filter(Boolean).join(' · ');
+            },
+        };
+    }
+
     function createNoopResultsHostBridge(bridge) {
         const overrides = bridge && typeof bridge === 'object' ? bridge : {};
         return {
@@ -273,7 +342,7 @@ import * as shared from './visualization_shared.js';
         }
     }
 
-    function buildDetailsText(metrics, payload, viewModel) {
+    function buildDetailsText(metrics, payload, viewModel, context = {}) {
         const lines = [];
         const simDetails = payload && payload.simDetails ? payload.simDetails : {};
         const actual = simDetails.actual || {};
@@ -285,6 +354,14 @@ import * as shared from './visualization_shared.js';
         const compilePhases = metrics && typeof metrics === 'object' && metrics.compilePhaseSeconds
             ? metrics.compilePhaseSeconds
             : null;
+        const model = trimMaybeString(context.modelName);
+        const resultPath = trimMaybeString(context.resultPath);
+        if (model || resultPath) {
+            lines.push('Result');
+            if (model) lines.push(`  model: ${model}`);
+            if (resultPath) lines.push(`  output: ${resultPath}`);
+            lines.push('');
+        }
         if (viewModel && viewModel.type === 'scatter') {
             lines.push(`Scatter series: ${viewModel.y.length}`);
         } else if (viewModel && viewModel.type === '3d') {
@@ -789,7 +866,7 @@ import * as shared from './visualization_shared.js';
         root.appendChild(controls);
 
         const details = createDetailsModal(function() {
-            return buildDetailsText(metrics, payload, viewModel);
+            return buildDetailsText(metrics, payload, viewModel, options.context);
         });
         root.appendChild(details.element);
         detailsBtn.addEventListener('click', function() {
@@ -937,7 +1014,7 @@ import * as shared from './visualization_shared.js';
         root.appendChild(controls);
 
         const details = createDetailsModal(function() {
-            return buildDetailsText(metrics, payload, viewModel);
+            return buildDetailsText(metrics, payload, viewModel, options.context);
         });
         root.appendChild(details.element);
         detailsBtn.addEventListener('click', function() {
@@ -1156,7 +1233,7 @@ import * as shared from './visualization_shared.js';
         root.appendChild(wrap);
 
         const details = createDetailsModal(function() {
-            return buildDetailsText(metrics, payload, viewModel);
+            return buildDetailsText(metrics, payload, viewModel, options.context);
         });
         root.appendChild(details.element);
         detailsBtn.addEventListener('click', function() {
@@ -2156,6 +2233,9 @@ import * as shared from './visualization_shared.js';
         const status = createStatusBanner();
         root.appendChild(status.element);
 
+        const runSummary = createRunSummary(modelName, modelRef);
+        root.appendChild(runSummary.element);
+
         const tabs = document.createElement('div');
         tabs.className = 'rumoca-results-tabs';
         root.appendChild(tabs);
@@ -2216,6 +2296,7 @@ import * as shared from './visualization_shared.js';
         function render() {
             renderTabs();
             if (!payload) {
+                runSummary.update(null, null, metrics, modelName);
                 renderEmpty('Run a simulation to view results.');
                 return;
             }
@@ -2224,10 +2305,15 @@ import * as shared from './visualization_shared.js';
                 activeViewId = chooseActiveViewId(views, activeViewId);
             }
             const activeView = views.find(function(view) { return view.id === activeViewId; }) || views[0];
+            runSummary.update(payload, activeView, metrics, modelName);
             disposeMountedView();
             const viewModel = shared.buildVisualizationModel(payload, activeView);
             mountedView = createViewElement({
                 bridge: bridge,
+                context: {
+                    modelName,
+                    resultPath: resultPathFromModelRef(modelRef),
+                },
                 metrics: metrics,
                 modelName,
                 payload: payload,

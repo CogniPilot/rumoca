@@ -79,6 +79,14 @@ const TEXT_EXTENSIONS = new Set([
     '.yml',
 ]);
 
+const DEFAULT_WORKSPACE_FOLDERS = [
+    'target',
+    'target/msl',
+    'target/msl/ModelicaStandardLibrary-4.1.0',
+    'target/cmm',
+    'target/cmm/CMM-v0.0.2',
+];
+
 function extensionOf(path) {
     const leaf = String(path || '').split('/').pop() || '';
     if (leaf === '.gitignore') {
@@ -94,7 +102,13 @@ function isTextPath(path) {
 
 function candidateUrlsFor(path) {
     const normalized = String(path || '').replace(/^\/+/, '');
+    const assetBase = String(globalThis.rumocaRepoAssetBase || '').trim();
+    const baseCandidates = assetBase ? [assetBase] : [];
     return [
+        ...baseCandidates.map((base) => {
+            const pageUrl = globalThis.location?.href || import.meta.url;
+            return new URL(normalized, new URL(base, pageUrl)).href;
+        }),
         `../../${normalized}`,
         `/${normalized}`,
     ];
@@ -122,6 +136,20 @@ async function fetchWorkspaceFile(path) {
     throw lastError || new Error(`Failed to fetch ${path}`);
 }
 
+function explorerBranchIdsForPaths(paths) {
+    const branchIds = new Set();
+    for (const path of paths) {
+        const parts = String(path || '').split('/').filter(Boolean);
+        const folderParts = parts.slice(0, -1);
+        let prefix = '';
+        for (const part of folderParts) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            branchIds.add(`explorer:${prefix}`);
+        }
+    }
+    return [...branchIds].sort((lhs, rhs) => lhs.localeCompare(rhs));
+}
+
 export async function loadDefaultWorkspaceEntries() {
     const entries = [];
     const missing = [];
@@ -145,13 +173,7 @@ export async function loadDefaultWorkspaceEntries() {
             schemaVersion: 1,
             activeDocument: DEFAULT_ACTIVE_DOCUMENT,
             packageArchives: [],
-            folders: [
-                'target',
-                'target/msl',
-                'target/msl/ModelicaStandardLibrary-4.1.0',
-                'target/cmm',
-                'target/cmm/CMM-v0.0.2',
-            ],
+            folders: DEFAULT_WORKSPACE_FOLDERS,
         }, null, 2)}\n`,
     });
     entries.push({
@@ -163,9 +185,10 @@ export async function loadDefaultWorkspaceEntries() {
                 'examples/simulation/rumoca-scenario.ball.toml',
             ],
             selectedExplorerPath: DEFAULT_ACTIVE_DOCUMENT,
-            explorerCollapsedNodeIds: [
-                'explorer:target',
-            ],
+            explorerCollapsedNodeIds: explorerBranchIdsForPaths([
+                ...DEFAULT_EXAMPLE_FILE_PATHS,
+                ...DEFAULT_WORKSPACE_FOLDERS.map((folder) => `${folder}/.folder`),
+            ]),
             projectSectionCollapsed: true,
             explorerSectionCollapsed: false,
             outlineSectionCollapsed: false,

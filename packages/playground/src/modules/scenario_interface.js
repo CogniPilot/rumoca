@@ -192,6 +192,7 @@ export function createScenarioInterface({ workspaceFs, runtimeBridge = null, onW
     async function getParameterMetadata({
         path,
         source,
+        sourcePath,
         modelName,
         fallback,
         timeoutMs,
@@ -221,7 +222,10 @@ export function createScenarioInterface({ workspaceFs, runtimeBridge = null, onW
         if (typeof workspaceSources === 'string') {
             requestPayload.workspaceSources = workspaceSources;
         } else {
-            requestPayload.workspaceSources = captureWorkspaceSourcesJson(workspaceFs);
+            requestPayload.workspaceSources = shared.workspaceModelicaSourcesJson(workspaceFs.listFiles(), {
+                excludePath: sourcePath,
+                excludeSourceRootPaths: effective?.sourceRootPaths,
+            });
         }
         const raw = await requestScenarioCommand(
             'rumoca.model.parameterMetadata',
@@ -229,7 +233,10 @@ export function createScenarioInterface({ workspaceFs, runtimeBridge = null, onW
             timeoutMs,
         );
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        return Array.isArray(parsed) ? parsed : [];
+        if (Array.isArray(parsed)) {
+            return parsed;
+        }
+        return Array.isArray(parsed?.parameters) ? parsed.parameters : [];
     }
 
     async function startSimulation({ source, model, fallback, timeoutMs, workspaceSources = null, scenarioPath = '' }) {

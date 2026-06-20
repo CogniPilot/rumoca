@@ -492,6 +492,85 @@ async function simulationCommandsUseRuntimeBridgeAndKeepSelectedModelInSession()
   );
 }
 
+async function parameterMetadataUsesWorkspaceSourcesWithEffectiveSourceRoots() {
+  const workspaceFs = createWorkspaceFilesystem();
+  workspaceFs.setActiveDocument(
+    "Ball.mo",
+    "model Ball\n  parameter Real g = 9.81;\nend Ball;\n",
+  );
+  workspaceFs.setFile(
+    "Other.mo",
+    "model Other\nend Other;\n",
+  );
+  workspaceFs.setFile(
+    "vendor/Modelica/package.mo",
+    "within ;\npackage Modelica\nend Modelica;\n",
+  );
+  const runtimeRequests = [];
+  const scenarioInterface = createScenarioInterface({
+    workspaceFs,
+    runtimeBridge: {
+      async request(action, payload) {
+        runtimeRequests.push({ action, payload });
+        if (
+          action === "scenarioCommand"
+          && payload?.command === "rumoca.scenario.getSimulationConfig"
+        ) {
+          return JSON.stringify({
+            preset: null,
+            defaults: { solver: "auto", tEnd: 5, dt: null, outputDir: "", sourceRootPaths: ["vendor/Modelica"] },
+            effective: { solver: "auto", tEnd: 5, dt: null, outputDir: "", sourceRootPaths: ["vendor/Modelica"] },
+            diagnostics: [],
+          });
+        }
+        if (
+          action === "scenarioCommand"
+          && payload?.command === "rumoca.model.parameterMetadata"
+        ) {
+          return JSON.stringify({
+            ok: true,
+            parameters: [{ name: "g", defaultValue: 9.81 }],
+          });
+        }
+        throw new Error(`unexpected runtime action: ${action}`);
+      },
+    },
+  });
+
+  const metadata = await scenarioInterface.execute("rumoca.model.parameterMetadata", {
+    path: "rumoca-scenario.ball.toml",
+    sourcePath: "Ball.mo",
+    source: workspaceFs.getFileContent("Ball.mo"),
+    modelName: "Ball",
+    fallback: { solver: "auto", tEnd: 5, dt: null, outputDir: "", sourceRootPaths: ["vendor/Modelica"] },
+  });
+
+  assert(metadata.length === 1 && metadata[0].name === "g", "expected normalized parameter metadata");
+  const metadataRequest = runtimeRequests.find(
+    (request) => request.payload?.command === "rumoca.model.parameterMetadata",
+  );
+  assert(metadataRequest, "expected parameter metadata runtime request");
+  const requestPayload = metadataRequest.payload.payload || {};
+  const workspaceSources = JSON.parse(requestPayload.workspaceSources || "{}");
+  const sourceRoots = JSON.parse(requestPayload.sourceRoots || "{}");
+  assert(
+    !Object.prototype.hasOwnProperty.call(workspaceSources, "Ball.mo"),
+    "expected parameter metadata workspace sources to exclude the primary model source",
+  );
+  assert(
+    Object.prototype.hasOwnProperty.call(workspaceSources, "Other.mo"),
+    "expected parameter metadata to keep other workspace model sources",
+  );
+  assert(
+    !Object.prototype.hasOwnProperty.call(workspaceSources, "vendor/Modelica/package.mo"),
+    "expected parameter metadata workspace sources to exclude effective source-root files",
+  );
+  assert(
+    Object.prototype.hasOwnProperty.call(sourceRoots, "vendor/Modelica/package.mo"),
+    "expected parameter metadata to include effective source-root file contents",
+  );
+}
+
 function unifiedSettingsSurfaceUsesScenarioConfigEditor() {
   const mainSource = readFileSync(
     path.join(repoRoot, "packages", "playground", "src", "main.js"),
@@ -512,9 +591,11 @@ function unifiedSettingsSurfaceUsesScenarioConfigEditor() {
     "expected playground codegen settings to use scenario commands",
   );
   assert(
-    mainSource.includes("const label = scenarioConfigEditorController.isScenarioPath")
-      && mainSource.includes("'Simulation and codegen settings'"),
-    "expected non-scenario editor settings button to use unified settings copy",
+    htmlSource.includes('data-editor-codegen-btn')
+      && htmlSource.includes('Create Scenario for This Model')
+      && mainSource.includes("openScenarioConfigForCurrentModel('simulate'")
+      && mainSource.includes("scenarioConfigEditorController.showGui(nextPath)"),
+    "expected non-scenario editor action to create/open the shared scenario settings view",
   );
   assert(
     mainSource.includes("createScenarioConfigEditorController"),
@@ -703,6 +784,7 @@ await scenarioReadsUseRuntimeBridgeWorkspaceSources();
 await fullScenarioConfigCommandsUseRuntimeBridgeAndApplyWrites();
 await codegenConfigCommandsUseRuntimeBridgeAndApplyWrites();
 await simulationCommandsUseRuntimeBridgeAndKeepSelectedModelInSession();
+await parameterMetadataUsesWorkspaceSourcesWithEffectiveSourceRoots();
 unifiedSettingsSurfaceUsesScenarioConfigEditor();
 browserSurfacesRejectLegacyScenarioStateSideChannels();
 languageWorkspaceSyncStaysOnDiagnostics();

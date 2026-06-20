@@ -22,6 +22,8 @@ function activeDocumentRoundTrip() {
     selectedSimulationModel: "Ball",
     codegenSettings: { target: "rust" },
     sourceRootPaths: ["vendor/Modelica"],
+    documentLockStates: { "Ball.mo": true },
+    folderLockStates: { examples: true },
   });
 
   const entries = workspaceFs.snapshotArchiveEntries();
@@ -59,6 +61,14 @@ function activeDocumentRoundTrip() {
   assert(
     workspaceState.editorState?.sourceRootPaths === undefined,
     "expected source-root settings to stay out of persisted editor state",
+  );
+  assert(
+    workspaceState.editorState?.documentLockStates === undefined,
+    "expected removed document lock state to stay out of persisted editor state",
+  );
+  assert(
+    workspaceState.editorState?.folderLockStates === undefined,
+    "expected removed folder lock state to stay out of persisted editor state",
   );
 }
 
@@ -156,6 +166,8 @@ function folderEntryImportRestoresWorkspaceState() {
         selectedSimulationModel: "Plant",
         codegenSettings: { target: "python" },
         sourceRootPaths: ["../MSL"],
+        documentLockStates: { "Demo/Plant.mo": true },
+        folderLockStates: { Demo: true },
       }),
     },
     {
@@ -187,6 +199,14 @@ function folderEntryImportRestoresWorkspaceState() {
   assert(
     workspaceState.editorState?.sourceRootPaths === undefined,
     "expected imported source-root settings to be ignored",
+  );
+  assert(
+    workspaceState.editorState?.documentLockStates === undefined,
+    "expected imported document lock state to be ignored",
+  );
+  assert(
+    workspaceState.editorState?.folderLockStates === undefined,
+    "expected imported folder lock state to be ignored",
   );
   assert(
     !workspaceFs.listFiles().some((file) => file.path.startsWith("rumoca-cache/")),

@@ -315,7 +315,10 @@ jobs:
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # This gate runs full-MSL LSP probes, VS Code smoke, and a WASM browser
+    # smoke. Hosted runners can exhaust 30 minutes before the browser smoke
+    # finishes its playground build on a cold wasm cache.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:
@@ -860,6 +863,7 @@ jobs:
               -e "s|window.rumocaWasmPkgBase = '../rumoca/dist';|window.rumocaWasmPkgBase = './pkg';|g" \
               -e "s|window.rumocaWasmPkgSubdir = 'release-full-web';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
               -e "s|window.rumocaWasmPkgSubdir = 'release-full-web-rayon';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
+              -e "s|window.rumocaRepoAssetBase = '../../';|window.rumocaRepoAssetBase = './';|g" \
               -e "s|../../assets/brand/rumoca.svg|assets/brand/rumoca.svg|g" \
               packages/playground/index.html > gh-pages/index.html
 

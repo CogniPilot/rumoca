@@ -247,6 +247,19 @@ export function setupCommandPalette(options = {}) {
             },
         },
         {
+            label: 'Scenario: New Scenario from Model',
+            description: 'Create a runnable scenario TOML for the active Modelica model',
+            tags: ['scenario', 'model', 'run', 'simulate'],
+            run: () => {
+                if (typeof window.createScenarioForModelPane === 'function') {
+                    const paneId = typeof window.getActiveEditorPaneId === 'function'
+                        ? window.getActiveEditorPaneId()
+                        : 'primary';
+                    void window.createScenarioForModelPane(paneId);
+                }
+            },
+        },
+        {
             label: 'Workspace: Import Package Archive',
             description: 'Open the file picker to import a Modelica package ZIP into the workspace',
             tags: ['package', 'archive', 'msl', 'zip'],

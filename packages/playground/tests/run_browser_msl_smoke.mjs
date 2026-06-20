@@ -157,7 +157,7 @@ async function main() {
     await page.waitForFunction(
       () =>
         Array.from(document.querySelectorAll("#primaryResultFileView, #secondaryResultFileView"))
-          .some((view) => !view.hidden && view.classList.contains("rumoca-results-root")),
+          .some((view) => !view.hidden && view.querySelector(".rumoca-results-root")),
       undefined,
       { timeout: timeoutMs },
     );
@@ -172,12 +172,18 @@ async function main() {
         }));
       const visibleResultViews = Array.from(
         document.querySelectorAll("#primaryResultFileView, #secondaryResultFileView"),
-      ).filter((view) => !view.hidden && view.classList.contains("rumoca-results-root"));
+      ).filter((view) => !view.hidden && view.querySelector(".rumoca-results-root"));
       return {
-        ok: resultTabs.length >= 1 && visibleResultViews.length >= 1,
+        ok:
+          resultTabs.length >= 1 &&
+          resultTabs.some((tab) => /^results\/rumoca-result\..*\.json$/.test(tab.path)) &&
+          visibleResultViews.length >= 1,
         count: resultTabs.length,
         labels: resultTabs.map((tab) => tab.label),
         paths: resultTabs.map((tab) => tab.path),
+        defaultResultsPaths: resultTabs
+          .map((tab) => tab.path)
+          .filter((tabPath) => /^results\/rumoca-result\..*\.json$/.test(tabPath)),
         activePaths: resultTabs.filter((tab) => tab.active).map((tab) => tab.path),
         visibleResultViews: visibleResultViews.length,
       };
@@ -185,7 +191,7 @@ async function main() {
     const resultLayout = await page.evaluate(() => {
       const visibleView = Array.from(
         document.querySelectorAll("#primaryResultFileView, #secondaryResultFileView"),
-      ).find((view) => !view.hidden && view.classList.contains("rumoca-results-root"));
+      ).find((view) => !view.hidden && view.querySelector(".rumoca-results-root"));
       const sidepanel = document.getElementById("workbenchSidepanel");
       const bottomPanel = document.getElementById("bottomPanel");
       if (!visibleView) {

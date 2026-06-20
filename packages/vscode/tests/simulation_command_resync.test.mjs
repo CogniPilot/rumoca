@@ -6,11 +6,16 @@ import { fileURLToPath } from "node:url";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const extensionSourcePath = path.join(testDir, "..", "src", "extension.ts");
+const packageJsonPath = path.join(testDir, "..", "package.json");
 const simulateCommandStartPattern =
   "const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async (resource?: vscode.Uri) => {";
 
 function readExtensionSource() {
   return fs.readFileSync(extensionSourcePath, "utf8");
+}
+
+function readPackageJson() {
+  return JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 }
 
 function sliceFrom(source, startPattern, endPattern) {
@@ -92,6 +97,42 @@ test("input-enabled results-panel scenarios stay on batch results path", () => {
     predicateBlock.includes("inputEnabled"),
     false,
     "input routing alone should not bypass the results-panel simulation path",
+  );
+});
+
+test("web simulation clients default persisted results to results directory", () => {
+  const source = readExtensionSource();
+  const packageJson = readPackageJson();
+  const settingsBlock = sliceFrom(
+    source,
+    "function getSimulationSettings(",
+    "function getConfiguredWorkspaceSourceRootPaths(",
+  );
+  const resultDirectoryBlock = sliceFrom(
+    source,
+    "function scenarioResultDirectory(",
+    "function resolveResultDocumentPath(",
+  );
+
+  assert.equal(
+    source.includes("const DEFAULT_WEB_RESULTS_OUTPUT_DIR = 'results';"),
+    true,
+    "extension should define the shared web results output directory default",
+  );
+  assert.equal(
+    settingsBlock.includes("config.get<string>('simulation.outputDir') ?? DEFAULT_WEB_RESULTS_OUTPUT_DIR"),
+    true,
+    "configured simulation settings should default blank output directories to results",
+  );
+  assert.equal(
+    resultDirectoryBlock.includes("trimMaybeString(configuredOutputDir) || DEFAULT_WEB_RESULTS_OUTPUT_DIR"),
+    true,
+    "persisted result path resolution should defensively fall back to results",
+  );
+  assert.equal(
+    packageJson.contributes.configuration.properties["rumoca.simulation.outputDir"].default,
+    "results",
+    "VS Code settings UI should advertise the same web-client output directory default",
   );
 });
 

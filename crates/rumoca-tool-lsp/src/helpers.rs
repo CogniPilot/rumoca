@@ -54,6 +54,96 @@ pub fn get_word_at_position(text: &str, position: Position) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
+/// Returns whether the position is inside a Modelica comment.
+pub fn is_position_in_comment(text: &str, position: Position) -> bool {
+    let Some(offset) = byte_offset_at_position(text, position) else {
+        return false;
+    };
+
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while i < offset && i < bytes.len() {
+        let byte = bytes[i];
+
+        if in_line_comment {
+            if byte == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if byte == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if byte == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+
+        if byte == b'/' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    in_line_comment || in_block_comment
+}
+
+fn byte_offset_at_position(text: &str, position: Position) -> Option<usize> {
+    let mut offset = 0usize;
+    for (line_index, line_with_newline) in text.split_inclusive('\n').enumerate() {
+        let line = line_with_newline
+            .strip_suffix('\n')
+            .unwrap_or(line_with_newline);
+        if line_index == position.line as usize {
+            return Some(offset + (position.character as usize).min(line.len()));
+        }
+        offset += line_with_newline.len();
+    }
+
+    if position.line == text.lines().count() as u32 {
+        return Some(text.len());
+    }
+
+    None
+}
+
 /// Get the dotted token at the given position in text.
 pub fn get_dotted_token_at_position(text: &str, position: Position) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();

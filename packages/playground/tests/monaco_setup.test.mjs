@@ -44,12 +44,14 @@ function createFakeMonaco() {
   const languageConfigurations = [];
   const registeredLanguages = [];
   const tokenProviders = [];
+  const semanticTokenProviders = [];
 
   return {
     captured: {
       languageConfigurations,
       registeredLanguages,
       tokenProviders,
+      semanticTokenProviders,
     },
     Emitter: FakeEmitter,
     MarkerSeverity: {
@@ -102,7 +104,8 @@ function createFakeMonaco() {
       registerCompletionItemProvider() {
         return { dispose() {} };
       },
-      registerDocumentSemanticTokensProvider() {
+      registerDocumentSemanticTokensProvider(languageId, provider) {
+        semanticTokenProviders.push([languageId, provider]);
         return { dispose() {} };
       },
       registerHoverProvider() {
@@ -180,6 +183,78 @@ test("setupMonacoWorkspace wires comment metadata for editable languages", async
     assert(
       fakeMonaco.captured.tokenProviders.some(([languageId]) => languageId === "toml"),
       "expected setup to register local TOML tokenization",
+    );
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+  }
+});
+
+test("modelica semantic token cache refreshes after model edits", async () => {
+  const fakeMonaco = createFakeMonaco();
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  let semanticTokenRequests = 0;
+
+  globalThis.window = {};
+  globalThis.document = {
+    getElementById() {
+      return {};
+    },
+  };
+
+  try {
+    setupMonacoWorkspace({
+      monaco: fakeMonaco,
+      async sendLanguageCommand(command) {
+        if (command === "rumoca.language.semanticTokenLegend") {
+          return JSON.stringify({ tokenTypes: ["function"], tokenModifiers: [] });
+        }
+        if (command === "rumoca.language.semanticTokens") {
+          semanticTokenRequests += 1;
+          return JSON.stringify({ data: [0, 2, 9, 0, 0] });
+        }
+        return JSON.stringify({});
+      },
+      layoutAllEditors() {},
+    });
+
+    const provider = fakeMonaco.captured.semanticTokenProviders
+      .find(([languageId]) => languageId === "modelica")?.[1];
+    assert(provider, "expected Modelica semantic token provider");
+
+    let version = 1;
+    const model = {
+      id: "semantic-cache-model",
+      uri: {
+        toString() {
+          return "inmemory://semantic-cache-model";
+        },
+      },
+      getVersionId() {
+        return version;
+      },
+      getValue() {
+        return version === 1
+          ? '  terminate("Ball has hit the ground");'
+          : '  // terminate("Ball has hit the ground");';
+      },
+    };
+
+    await provider.provideDocumentSemanticTokens(model);
+    await provider.provideDocumentSemanticTokens(model);
+    assert.equal(
+      semanticTokenRequests,
+      1,
+      "unchanged model version should reuse cached semantic tokens",
+    );
+
+    version = 2;
+    await provider.provideDocumentSemanticTokens(model);
+    assert.equal(
+      semanticTokenRequests,
+      2,
+      "changed model version must request fresh semantic tokens",
     );
   } finally {
     globalThis.window = originalWindow;

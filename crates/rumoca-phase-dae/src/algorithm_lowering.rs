@@ -173,11 +173,20 @@ pub(super) fn route_discrete_event_equations(
     dae: &mut Dae,
     when_clause: &rumoca_ir_dae::WhenClause,
 ) -> Result<(), ToDaeError> {
-    dae.events
-        .event_actions
-        .extend(when_clause.actions.iter().cloned());
     let when_condition = dae_to_flat_expression(&when_clause.condition);
     let guard = when_guard_activation_expr(dae, &when_condition, when_clause.span)?;
+    let actions = when_clause
+        .actions
+        .iter()
+        .cloned()
+        .map(|mut action| {
+            let condition = dae_to_flat_expression(&action.condition);
+            action.condition =
+                flat_to_dae_expression(&when_guard_activation_expr(dae, &condition, action.span)?);
+            Ok(action)
+        })
+        .collect::<Result<Vec<_>, ToDaeError>>()?;
+    dae.events.event_actions.extend(actions);
     if when_clause.equations.len() != when_clause.equation_inactive_rhs.len() {
         return Err(ToDaeError::internal(format!(
             "when-clause equation metadata must stay aligned: {} equations, {} inactive RHS entries",

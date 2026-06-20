@@ -472,9 +472,6 @@ async function requestSemanticTokens(model) {
         if (cached.tokens) return cached.tokens;
         if (cached.pending) return cached.pending;
     }
-    if (cached?.tokens && cached.epoch === epoch) {
-        return cached.tokens;
-    }
 
     const pending = (async () => {
         try {
@@ -487,7 +484,7 @@ async function requestSemanticTokens(model) {
         }
     })();
 
-    semanticTokenCache.set(key, { version, epoch, pending, tokens: cached?.tokens || null });
+    semanticTokenCache.set(key, { version, epoch, pending, tokens: null });
     const tokens = await pending;
     const latest = semanticTokenCache.get(key);
     if (latest && latest.version === version && latest.epoch === epoch && latest.pending === pending) {

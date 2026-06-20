@@ -53,7 +53,7 @@ test("shared visualization helpers expose stable viewer and run artifact paths",
   );
   assert.equal(
     shared.simulationRunDocumentPath("run_123"),
-    "rumoca-result.run_123.json",
+    "results/rumoca-result.run_123.json",
   );
   assert.equal(
     shared.simulationRunDocumentPath("run_123", "out/results"),
@@ -91,7 +91,7 @@ test("shared visualization helpers can persist and reload run documents", async 
   });
 
   assert.equal(loaded.runId, saved.runId);
-  assert.match(saved.runPath, /^rumoca-result\.\d{8}T\d{6}Z\.pkgball\.json$/);
+  assert.match(saved.runPath, /^results\/rumoca-result\.\d{8}T\d{6}Z\.pkgball\.json$/);
   assert.equal(loaded.model, "Pkg.Ball");
   assert.equal(loaded.metrics.simulateSeconds, 0.25);
 });
