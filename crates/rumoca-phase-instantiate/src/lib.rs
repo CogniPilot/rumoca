@@ -137,6 +137,7 @@ struct MissingInnerInfo {
     type_name: String,
     type_def_id: Option<DefId>,
     span: Span,
+    source_location: rumoca_core::Location,
     outer_path: ast::QualifiedName,
     is_inner_outer: bool,
 }
@@ -290,7 +291,11 @@ impl InstantiateContext {
             self.current_path().to_string(),
             depth,
             self.options.depth_limit,
-            location_to_span(&class.name.location, source_map),
+            location_to_span(
+                &class.name.location,
+                source_map,
+                "instantiation depth class name",
+            )?,
         )))
     }
 
@@ -352,7 +357,11 @@ impl InstantiateContext {
             cycle.push(format!("{class_name} ({current_path})"));
             return Err(Box::new(InstantiateError::instantiation_cycle(
                 cycle.join(" -> "),
-                location_to_span(&class.name.location, source_map),
+                location_to_span(
+                    &class.name.location,
+                    source_map,
+                    "instantiation cycle class name",
+                )?,
             )));
         }
 
@@ -486,28 +495,13 @@ impl InstantiateContext {
     }
 
     /// Record a missing inner declaration (outer without matching inner).
-    fn record_missing_inner(
-        &mut self,
-        name: &str,
-        type_name: &str,
-        type_def_id: Option<DefId>,
-        span: Span,
-        outer_path: ast::QualifiedName,
-        is_inner_outer: bool,
-    ) {
+    fn record_missing_inner(&mut self, missing: MissingInnerInfo) {
         let already_recorded = self
             .missing_inners
             .iter()
-            .any(|mi| mi.name == name && mi.outer_path == outer_path);
+            .any(|mi| mi.name == missing.name && mi.outer_path == missing.outer_path);
         if !already_recorded {
-            self.missing_inners.push(MissingInnerInfo {
-                name: name.to_string(),
-                type_name: type_name.to_string(),
-                type_def_id,
-                span,
-                outer_path,
-                is_inner_outer,
-            });
+            self.missing_inners.push(missing);
         }
     }
 
@@ -715,6 +709,8 @@ pub fn instantiate_with_options(
 enum SyntheticInnerError {
     /// Some missing inners could not be resolved (type not found or transitive outers).
     StillMissing { names: Vec<String> },
+    /// Synthetic declaration construction failed because required source context was missing.
+    SourceContext(Box<InstantiateError>),
     /// The retry instantiation itself failed.
     InstantiationFailed,
 }
@@ -726,19 +722,30 @@ enum SyntheticInnerError {
 fn create_synthetic_inner_component(
     mi: &MissingInnerInfo,
     class: &ast::ClassDef,
-) -> ast::Component {
-    ast::Component {
+    source_map: &rumoca_core::SourceMap,
+) -> InstantiateResult<ast::Component> {
+    let span = location_to_span(&mi.source_location, source_map, "synthetic inner component")?;
+    let name_token = rumoca_core::Token {
+        text: std::sync::Arc::from(mi.name.clone()),
+        location: mi.source_location.clone(),
+        ..rumoca_core::Token::default()
+    };
+    let mut type_name = rumoca_ir_ast::Name::from_string(&mi.type_name);
+    type_name.def_id = mi.type_def_id;
+    for part in &mut type_name.name {
+        part.location = mi.source_location.clone();
+    }
+    Ok(ast::Component {
         name: mi.name.clone(),
-        type_name: rumoca_ir_ast::Name {
-            def_id: mi.type_def_id,
-            ..rumoca_ir_ast::Name::from_string(&mi.type_name)
-        },
+        name_token,
+        type_name,
         type_def_id: mi.type_def_id,
         inner: true,
+        location: mi.source_location.clone(),
         // Use the class's own def_id if available
         def_id: class.def_id,
-        ..ast::Component::default()
-    }
+        ..ast::Component::empty_with_span(span)
+    })
 }
 
 fn description_tokens_to_string(tokens: &[rumoca_core::Token]) -> Option<String> {
@@ -775,7 +782,8 @@ fn retry_with_synthetic_inners(
             None => continue, // Skip if type not found; will remain missing
         };
 
-        let synthetic = create_synthetic_inner_component(mi, inner_class);
+        let synthetic = create_synthetic_inner_component(mi, inner_class, &tree.source_map)
+            .map_err(SyntheticInnerError::SourceContext)?;
 
         // Build the qualified name for the root-level synthetic inner
         let qn = ast::QualifiedName::from_ident(&mi.name);
@@ -905,6 +913,7 @@ pub fn instantiate_model_with_outcome_options(
                     partial_overlay: overlay,
                 }
             }
+            Err(SyntheticInnerError::SourceContext(error)) => InstantiationOutcome::Error(error),
         }
     } else {
         InstantiationOutcome::Success(overlay)
@@ -1035,21 +1044,21 @@ fn instantiate_class(
             all_equations,
             &qualified_name,
             source_map,
-        );
+        )?;
         let instance_initial_equations = equations_to_instance_cloned(
             ctx,
             &template.initial_equations,
             &qualified_name,
             source_map,
-        );
+        )?;
         let instance_algorithms =
-            algorithms_to_instance(ctx, &template.algorithms, &qualified_name, source_map);
+            algorithms_to_instance(ctx, &template.algorithms, &qualified_name, source_map)?;
         let instance_initial_algorithms = algorithms_to_instance(
             ctx,
             &template.initial_algorithms,
             &qualified_name,
             source_map,
-        );
+        )?;
 
         let class_data = ast::ClassInstanceData {
             instance_id,
@@ -1141,7 +1150,7 @@ fn handle_inner_outer(
         resolve_pending_outer_refs_for_inner(tree, ctx, overlay, &comp.name, &inner_decl);
     }
     if comp.outer {
-        let span = location_to_span(&comp.location, &tree.source_map);
+        let span = location_to_span(&comp.location, &tree.source_map, "outer component")?;
         // MLS §5.4: For `inner outer`, find the PARENT's inner (skip self).
         // For pure `outer`, find the nearest inner (may be self if inner outer).
         let inner_result = if comp.inner {
@@ -1179,14 +1188,15 @@ fn handle_inner_outer(
                 )));
             }
         } else {
-            ctx.record_missing_inner(
-                &comp.name,
-                &resolved_type_name,
-                resolved_type_def_id,
+            ctx.record_missing_inner(MissingInnerInfo {
+                name: comp.name.clone(),
+                type_name: resolved_type_name,
+                type_def_id: resolved_type_def_id,
                 span,
-                qualified_name.clone(),
-                comp.inner,
-            );
+                source_location: comp.location.clone(),
+                outer_path: qualified_name.clone(),
+                is_inner_outer: comp.inner,
+            });
         }
     }
     Ok(())
@@ -1318,6 +1328,7 @@ struct InstanceDataBuild<'a> {
     is_primitive: bool,
     is_discrete_type: bool,
     evaluate: bool,
+    source_map: &'a rumoca_core::SourceMap,
     ctx: &'a InstantiateContext,
     comp: &'a ast::Component,
     class_def: Option<&'a ast::ClassDef>,
@@ -1325,11 +1336,16 @@ struct InstanceDataBuild<'a> {
 
 fn build_instance_data(
     args: InstanceDataBuild<'_>,
-) -> (ast::InstanceData, Option<ast::Expression>) {
+) -> InstantiateResult<(ast::InstanceData, Option<ast::Expression>)> {
     let binding_for_record_expansion = args.binding.clone();
+    let component_span = location_to_span(
+        &args.comp.location,
+        args.source_map,
+        "instance component reference",
+    )?;
     let component_ref = ast::instance::component_reference_for_instance(
         &args.qualified_name,
-        rumoca_core::Span::DUMMY,
+        require_component_ref_provenance(component_span, "instance component reference")?,
         args.comp.def_id,
     );
     let instance_data = ast::InstanceData {
@@ -1388,7 +1404,16 @@ fn build_instance_data(
         oc_eq_constraint_size: args.ctx.overconstrained_eq_size(),
     };
 
-    (instance_data, binding_for_record_expansion)
+    Ok((instance_data, binding_for_record_expansion))
+}
+
+fn require_component_ref_provenance(
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> InstantiateResult<rumoca_core::ProvenanceSpan> {
+    span.require_provenance(context).map_err(|err| {
+        Box::new(InstantiateError::missing_source_context(err.to_string())) as Box<InstantiateError>
+    })
 }
 
 fn resolve_component_causality(
@@ -1445,7 +1470,7 @@ fn validate_partial_component_instantiation(
         return Ok(());
     }
 
-    let span = location_to_span(&comp.location, &tree.source_map);
+    let span = location_to_span(&comp.location, &tree.source_map, "partial component")?;
     Err(Box::new(InstantiateError::partial_class_instantiation(
         qualified_name.to_flat_string(),
         type_name.to_string(),
@@ -1550,10 +1575,11 @@ fn instantiate_component(
         is_primitive,
         is_discrete_type,
         evaluate,
+        source_map: &tree.source_map,
         ctx,
         comp,
         class_def,
-    });
+    })?;
 
     overlay.add_component(instance_data);
 

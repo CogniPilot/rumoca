@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
 use crate::{InteractiveStepper, SimOptions, SimSolverMode, SimulationDiagnosticError};
@@ -7,7 +6,7 @@ use crate::{InteractiveStepper, SimOptions, SimSolverMode, SimulationDiagnosticE
 #[derive(Debug, Clone)]
 pub struct StepperState {
     pub time: f64,
-    pub values: HashMap<String, f64>,
+    pub values: IndexMap<String, f64>,
 }
 
 pub struct SimStepper {
@@ -95,32 +94,40 @@ impl SimStepper {
         }
     }
 
-    pub fn get(&self, name: &str) -> Option<f64> {
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimulationDiagnosticError> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper.get(name),
+            SimStepperInner::Bdf(stepper) => stepper
+                .get(name)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper.get(name),
+            SimStepperInner::RkLike(stepper) => stepper
+                .get(name)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
     }
 
-    pub fn state(&self) -> StepperState {
+    pub fn state(&self) -> Result<StepperState, SimulationDiagnosticError> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
             SimStepperInner::Bdf(stepper) => {
-                let state = stepper.state();
-                StepperState {
+                let state = stepper
+                    .state()
+                    .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+                Ok(StepperState {
                     time: state.time,
                     values: state.values,
-                }
+                })
             }
             #[cfg(feature = "solver-rk45")]
             SimStepperInner::RkLike(stepper) => {
-                let state = stepper.state();
-                StepperState {
+                let state = stepper
+                    .state()
+                    .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+                Ok(StepperState {
                     time: state.time,
                     values: state.values,
-                }
+                })
             }
         }
     }
@@ -167,7 +174,7 @@ impl InteractiveStepper for SimStepper {
         Self::time(self)
     }
 
-    fn get(&self, name: &str) -> Option<f64> {
+    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
         Self::get(self, name)
     }
 
@@ -175,12 +182,18 @@ impl InteractiveStepper for SimStepper {
         Self::input_names(self)
     }
 
-    fn values_for(&self, names: &[String]) -> Option<HashMap<String, f64>> {
+    fn values_for(&self, names: &[String]) -> Result<Option<IndexMap<String, f64>>, Self::Error> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => Some(stepper.values_for(names)),
+            SimStepperInner::Bdf(stepper) => stepper
+                .values_for(names)
+                .map(Some)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => Some(stepper.values_for(names)),
+            SimStepperInner::RkLike(stepper) => stepper
+                .values_for(names)
+                .map(Some)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
     }
 

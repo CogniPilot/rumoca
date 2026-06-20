@@ -341,7 +341,9 @@ fn compile_inline_model(source: &str, model_name: &str) -> Result<CompilationRes
     let source_root =
         CompiledSourceRoot::from_parsed_batch_tolerant(vec![(format!("{model_name}.mo"), parsed)])
             .map_err(|e| format!("source_root: {e}"))?;
-    let report = source_root.compile_model_strict_reachable_with_recovery(model_name);
+    let report = source_root
+        .compile_model_strict_reachable_with_recovery(model_name)
+        .map_err(|error| format!("strict reachable compile: {error}"))?;
     match report.requested_result {
         Some(PhaseResult::Success(boxed)) => Ok(*boxed),
         Some(PhaseResult::Failed { error, .. }) => Err(error),
@@ -512,7 +514,9 @@ fn compile_to_dae(
     // scalarizes again internally — idempotent.
     let (mut dae, t_end) = match &model.source {
         ModelSource::Msl => {
-            let report = source_root.compile_model_strict_reachable_with_recovery(&model.name);
+            let report = source_root
+                .compile_model_strict_reachable_with_recovery(&model.name)
+                .map_err(|error| format!("strict reachable compile: {error}"))?;
             let result: CompilationResult = match report.requested_result {
                 Some(PhaseResult::Success(boxed)) => *boxed,
                 Some(PhaseResult::Failed { error, .. }) => return Err(error),

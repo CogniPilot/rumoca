@@ -174,15 +174,9 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
                     .unwrap_or_else(|| format!("z[{local_idx}]"))
             })
             .collect();
-        let unmatched_unknown_spans: Vec<rumoca_core::Span> = unmatched_unknown_indices
+        let unmatched_unknown_spans: Vec<Option<rumoca_core::Span>> = unmatched_unknown_indices
             .iter()
-            .map(|local_idx| {
-                incidence
-                    .unknown_spans
-                    .get(*local_idx)
-                    .copied()
-                    .unwrap_or(rumoca_core::Span::DUMMY)
-            })
+            .map(|local_idx| incidence.unknown_spans.get(*local_idx).copied().flatten())
             .collect();
         return Err(StructuralError::Singular {
             n_equations: incidence.n_eq,
@@ -1503,17 +1497,47 @@ mod tests {
 
         dae.variables.algebraics.insert(
             VarName::new("R_actual"),
-            dae::Variable::new(VarName::new("R_actual")),
+            dae::Variable::new(
+                VarName::new("R_actual"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
-        dae.variables
-            .algebraics
-            .insert(VarName::new("v"), dae::Variable::new(VarName::new("v")));
-        dae.variables
-            .parameters
-            .insert(VarName::new("R"), dae::Variable::new(VarName::new("R")));
+        dae.variables.algebraics.insert(
+            VarName::new("v"),
+            dae::Variable::new(
+                VarName::new("v"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.parameters.insert(
+            VarName::new("R"),
+            dae::Variable::new(
+                VarName::new("R"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         dae.variables.parameters.insert(
             VarName::new("factor"),
-            dae::Variable::new(VarName::new("factor")),
+            dae::Variable::new(
+                VarName::new("factor"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
 
         // 0 = R_actual - R * factor
@@ -1542,12 +1566,28 @@ mod tests {
         // Two coupled equations: 0 = y - 2*z, 0 = z - 3*y
         let mut dae = Dae::new();
 
-        dae.variables
-            .algebraics
-            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        dae.variables.algebraics.insert(
+            VarName::new("y"),
+            dae::Variable::new(
+                VarName::new("y"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("z"),
+            dae::Variable::new(
+                VarName::new("z"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         // 0 = y - 2*z
         dae.continuous
@@ -1588,12 +1628,23 @@ mod tests {
     fn test_build_ic_plan_handles_scalarized_array_reference_forms() {
         let mut dae = Dae::new();
 
-        let mut u = dae::Variable::new(VarName::new("u"));
+        let mut u = dae::Variable::new(
+            VarName::new("u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         u.dims = vec![2];
         dae.variables.algebraics.insert(VarName::new("u"), u);
-        dae.variables
-            .algebraics
-            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        dae.variables.algebraics.insert(
+            VarName::new("y"),
+            dae::Variable::new(
+                VarName::new("y"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         dae.continuous
             .equations
@@ -1644,7 +1695,10 @@ mod tests {
     fn test_ic_incidence_maps_matrix_subscripts_to_flat_slots() {
         let mut dae = Dae::new();
 
-        let mut m = dae::Variable::new(VarName::new("M"));
+        let mut m = dae::Variable::new(
+            VarName::new("M"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         m.dims = vec![3, 4];
         dae.variables.algebraics.insert(VarName::new("M"), m);
 
@@ -1685,7 +1739,10 @@ mod tests {
     fn test_ic_incidence_counts_explicit_lhs_unknowns() {
         let mut dae = Dae::new();
 
-        let mut m = dae::Variable::new(VarName::new("M"));
+        let mut m = dae::Variable::new(
+            VarName::new("M"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         m.dims = vec![3, 4];
         dae.variables.algebraics.insert(VarName::new("M"), m);
         dae.continuous.equations.push(dae::Equation {
@@ -1714,12 +1771,28 @@ mod tests {
     #[test]
     fn test_build_ic_plan_ignores_non_solver_backed_tail_unknowns() {
         let mut dae = Dae::new();
-        dae.variables
-            .algebraics
-            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        dae.variables.algebraics.insert(
+            VarName::new("y"),
+            dae::Variable::new(
+                VarName::new("y"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("z"),
+            dae::Variable::new(
+                VarName::new("z"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         dae.continuous
             .equations
             .push(eq_from(sub(var_ref("y"), lit(1.0))));
@@ -1753,15 +1826,39 @@ mod tests {
     #[test]
     fn test_build_ic_plan_relaxes_square_singular_subsystem() {
         let mut dae = Dae::new();
-        dae.variables
-            .algebraics
-            .insert(VarName::new("v1"), dae::Variable::new(VarName::new("v1")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("v2"), dae::Variable::new(VarName::new("v2")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("i"), dae::Variable::new(VarName::new("i")));
+        dae.variables.algebraics.insert(
+            VarName::new("v1"),
+            dae::Variable::new(
+                VarName::new("v1"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("v2"),
+            dae::Variable::new(
+                VarName::new("v2"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("i"),
+            dae::Variable::new(
+                VarName::new("i"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         // One voltage equality plus two conflicting current equations creates a
         // square but structurally deficient system (1 unmatched eq + 1 unmatched unknown).
@@ -1806,15 +1903,39 @@ mod tests {
     #[test]
     fn test_build_ic_relaxation_hint_reports_drop_set_for_square_singular_subsystem() {
         let mut dae = Dae::new();
-        dae.variables
-            .algebraics
-            .insert(VarName::new("v1"), dae::Variable::new(VarName::new("v1")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("v2"), dae::Variable::new(VarName::new("v2")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("i"), dae::Variable::new(VarName::new("i")));
+        dae.variables.algebraics.insert(
+            VarName::new("v1"),
+            dae::Variable::new(
+                VarName::new("v1"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("v2"),
+            dae::Variable::new(
+                VarName::new("v2"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("i"),
+            dae::Variable::new(
+                VarName::new("i"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         dae.continuous
             .equations
             .push(eq_from(sub(var_ref("v1"), var_ref("v2"))));

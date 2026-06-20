@@ -1,5 +1,6 @@
 use super::inheritance::{
-    find_class_in_tree, get_effective_components, resolve_effective_components_for_eval,
+    find_class_in_tree, get_effective_components, is_type_subtype,
+    resolve_effective_components_for_eval,
 };
 use super::nested_scope::remap_redeclare_class_modifier;
 use super::type_overrides::{TypeOverrideMap, find_nested_class_in_hierarchy};
@@ -9,7 +10,10 @@ use rumoca_eval_ast::eval_instantiate::{
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
-use std::sync::Arc;
+
+mod record_projection;
+
+pub(super) use record_projection::propagate_record_binding_to_fields;
 
 const MAX_MOD_RESOLVE_DEPTH: usize = 20;
 
@@ -244,9 +248,10 @@ fn apply_component_modifier(
         .as_ref()
         .is_some_and(|target_comp| target_comp.is_final)
     {
+        let span = required_modifier_expr_span(mod_expr, "final component modifier")?;
         return Err(Box::new(InstantiateError::redeclare_final(
             target_name,
-            rumoca_core::Span::DUMMY,
+            span,
         )));
     }
 
@@ -428,9 +433,10 @@ fn insert_scoped_modifier_binding(
         .get(&key)
         .is_some_and(|existing| existing.final_ && !replace_parent)
     {
+        let span = required_binding_source_span(source.as_ref(), &value, "final modifier binding")?;
         return Err(Box::new(InstantiateError::redeclare_final(
             key.to_flat_string(),
-            rumoca_core::Span::DUMMY,
+            span,
         )));
     }
     let mod_env = ctx.mod_env_mut();
@@ -448,6 +454,30 @@ fn insert_scoped_modifier_binding(
         ),
     );
     Ok(())
+}
+
+fn required_binding_source_span(
+    source: Option<&ast::Expression>,
+    value: &ast::Expression,
+    context: &'static str,
+) -> InstantiateResult<rumoca_core::Span> {
+    match source {
+        Some(expr) => required_modifier_expr_span(expr, context),
+        None => required_modifier_expr_span(value, context),
+    }
+}
+
+fn required_modifier_expr_span(
+    expr: &ast::Expression,
+    context: &'static str,
+) -> InstantiateResult<rumoca_core::Span> {
+    let span = expr.span();
+    if span.is_dummy() {
+        return Err(Box::new(InstantiateError::missing_source_context(format!(
+            "{context} is missing source provenance"
+        ))));
+    }
+    Ok(span)
 }
 
 fn enclosing_modifier_scope(ctx: &InstantiateContext) -> ast::QualifiedName {
@@ -509,253 +539,6 @@ fn component_type_is_record(comp: &ast::Component, tree: &ast::ClassTree) -> boo
         .and_then(|def_id| tree.get_class_by_def_id(def_id))
         .or_else(|| find_class_in_tree(tree, &comp.type_name.to_string()))
         .is_some_and(|class| class.class_type == rumoca_core::ClassType::Record)
-}
-
-/// Propagate a record binding to scalar field bindings.
-///
-/// MLS §7.2: a record binding like `Complex u = expr` projects bindings for fields
-/// (for example `re = expr.re`, `im = expr.im`).
-pub(super) fn propagate_record_binding_to_fields(
-    tree: &ast::ClassTree,
-    ctx: &mut InstantiateContext,
-    binding_expr: &ast::Expression,
-    binding_source_scope: Option<ast::QualifiedName>,
-    nested_class: &ast::ClassDef,
-    targeted_keys: &IndexMap<ast::QualifiedName, ()>,
-) -> InstantiateResult<()> {
-    // MLS §7.2 record binding projection applies only to record components.
-    // For non-record classes (model/block/connector), class modifications must
-    // remain component modifiers and must not synthesize per-field bindings.
-    if nested_class.class_type != rumoca_core::ClassType::Record {
-        return Ok(());
-    }
-
-    // Get effective components including inherited ones (MLS §7.2).
-    // For type aliases like `ComplexVoltage = Complex(...)`, direct components may
-    // be empty while fields come from a base class.
-    let effective = get_effective_components(tree, nested_class)?;
-    let components: &IndexMap<String, ast::Component> = if effective.is_empty() {
-        &nested_class.components
-    } else {
-        &effective
-    };
-    let preserve_declared_defaults = is_default_record_constructor_call(binding_expr, nested_class);
-
-    for (field_name, field_comp) in components {
-        let field_qn = ast::QualifiedName::from_ident(field_name);
-        // Preserve explicit field modifiers targeting this record component
-        // (either local `state(T=...)` or shifted parent `comp.state.T=...`).
-        if targeted_keys.contains_key(&field_qn) {
-            continue;
-        }
-        // MLS §12.6 (record constructors): `R()` without arguments uses the
-        // record's declared field defaults. Keep existing field defaults instead
-        // of replacing them with synthetic `R().field` bindings.
-        if preserve_declared_defaults && has_declared_field_default(field_comp) {
-            continue;
-        }
-        let field_binding = same_type_alias_explicit_field_binding(
-            binding_expr,
-            nested_class,
-            components,
-            ctx.mod_env(),
-            field_name,
-        );
-        if field_binding.is_none()
-            && should_preserve_same_type_alias_field_default(
-                binding_expr,
-                nested_class,
-                components,
-                ctx.mod_env(),
-                field_name,
-                field_comp,
-            )
-        {
-            continue;
-        }
-
-        let field_access =
-            field_binding.unwrap_or_else(|| project_record_field_binding(binding_expr, field_name));
-
-        ctx.mod_env_mut().active.insert(
-            field_qn,
-            ast::ModificationValue::with_source_scope(
-                field_access.clone(),
-                Some(field_access),
-                binding_source_scope.clone(),
-            ),
-        );
-    }
-    Ok(())
-}
-
-fn should_preserve_same_type_alias_field_default(
-    binding_expr: &ast::Expression,
-    target_record: &ast::ClassDef,
-    effective_components: &IndexMap<String, ast::Component>,
-    mod_env: &ast::ModificationEnvironment,
-    field_name: &str,
-    field_comp: &ast::Component,
-) -> bool {
-    if !has_declared_field_default(field_comp) {
-        return false;
-    }
-
-    let Some(source_name) = simple_record_alias_source_name(binding_expr) else {
-        return false;
-    };
-
-    let source_component =
-        same_type_record_alias_source(binding_expr, target_record, effective_components);
-    !record_alias_source_explicitly_binds_field(source_name, source_component, mod_env, field_name)
-}
-
-fn same_type_record_alias_source<'a>(
-    binding_expr: &ast::Expression,
-    target_record: &ast::ClassDef,
-    effective_components: &'a IndexMap<String, ast::Component>,
-) -> Option<&'a ast::Component> {
-    let ast::Expression::ComponentReference(comp_ref) = binding_expr else {
-        return None;
-    };
-    if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
-        return None;
-    }
-
-    let source_name = comp_ref.parts[0].ident.text.as_ref();
-    let source_component = effective_components.get(source_name)?;
-    if comp_ref.def_id.is_some() && source_component.def_id != comp_ref.def_id {
-        return None;
-    }
-    if source_component.type_def_id != target_record.def_id {
-        return None;
-    }
-    Some(source_component)
-}
-
-fn simple_record_alias_source_name(binding_expr: &ast::Expression) -> Option<&str> {
-    let ast::Expression::ComponentReference(comp_ref) = binding_expr else {
-        return None;
-    };
-    if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
-        return None;
-    }
-    Some(comp_ref.parts[0].ident.text.as_ref())
-}
-
-fn same_type_alias_explicit_field_binding(
-    binding_expr: &ast::Expression,
-    target_record: &ast::ClassDef,
-    effective_components: &IndexMap<String, ast::Component>,
-    mod_env: &ast::ModificationEnvironment,
-    field_name: &str,
-) -> Option<ast::Expression> {
-    let source_name = simple_record_alias_source_name(binding_expr)?;
-    if let Some(source_component) =
-        same_type_record_alias_source(binding_expr, target_record, effective_components)
-        && let Some((_, value)) = source_component
-            .modifications
-            .iter()
-            .find(|(name, _)| name.as_str() == field_name)
-    {
-        return Some(value.clone());
-    }
-
-    let source_field = ast::QualifiedName::from_ident(source_name).child(field_name);
-    mod_env
-        .active
-        .iter()
-        .find(|(key, _)| **key == source_field)
-        .map(|(_, value)| value.source.clone().unwrap_or_else(|| value.value.clone()))
-}
-
-fn record_alias_source_explicitly_binds_field(
-    source_name: &str,
-    source_component: Option<&ast::Component>,
-    mod_env: &ast::ModificationEnvironment,
-    field_name: &str,
-) -> bool {
-    if source_component.is_some_and(|source_component| {
-        source_component
-            .modifications
-            .iter()
-            .any(|(name, _)| name.as_str() == field_name)
-    }) {
-        return true;
-    }
-
-    let source_field = ast::QualifiedName::from_ident(source_name).child(field_name);
-    mod_env.active.keys().any(|key| *key == source_field)
-}
-
-fn project_record_field_binding(
-    binding_expr: &ast::Expression,
-    field_name: &str,
-) -> ast::Expression {
-    match binding_expr {
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => ast::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(cond, branch_expr)| {
-                    (
-                        cond.clone(),
-                        project_record_field_binding(branch_expr, field_name),
-                    )
-                })
-                .collect(),
-            else_branch: Arc::new(project_record_field_binding(else_branch, field_name)),
-            span: binding_expr.span(),
-        },
-        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
-            inner: Arc::new(project_record_field_binding(inner, field_name)),
-            span: *span,
-        },
-        _ => ast::Expression::FieldAccess {
-            base: Arc::new(binding_expr.clone()),
-            field: field_name.to_string(),
-            span: binding_expr.span(),
-        },
-    }
-}
-
-fn is_default_record_constructor_call(
-    expr: &ast::Expression,
-    nested_class: &ast::ClassDef,
-) -> bool {
-    match expr {
-        // MLS §12.6: only `R()` for the declared record `R` preserves the
-        // record's own field defaults. A different zero-argument record
-        // constructor (e.g. `BaseData x = Derived()`) must still project the
-        // bound record fields rather than freezing the declared base defaults.
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            args.is_empty() && record_constructor_matches_class(comp, nested_class)
-        }
-        ast::Expression::Parenthesized { inner, .. } => {
-            is_default_record_constructor_call(inner, nested_class)
-        }
-        _ => false,
-    }
-}
-
-fn record_constructor_matches_class(
-    comp: &ast::ComponentReference,
-    nested_class: &ast::ClassDef,
-) -> bool {
-    if let (Some(comp_def_id), Some(class_def_id)) = (comp.def_id, nested_class.def_id) {
-        return comp_def_id == class_def_id;
-    }
-
-    comp.parts
-        .last()
-        .is_some_and(|part| part.ident.text.as_ref() == nested_class.name.text.as_ref())
-}
-
-fn has_declared_field_default(comp: &ast::Component) -> bool {
-    comp.binding.is_some() || !matches!(comp.start, ast::Expression::Empty { .. })
 }
 
 /// Resolve a modification expression by evaluating component references in scope.
@@ -1030,6 +813,25 @@ mod mod_env_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    const TEST_FILE: &str = "mod_env.mo";
+
+    fn test_location() -> rumoca_core::Location {
+        rumoca_core::Location {
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 2,
+            start: 0,
+            end: 1,
+            file_name: TEST_FILE.to_string(),
+        }
+    }
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1)
+    }
 
     fn make_token(text: &str) -> rumoca_core::Token {
         rumoca_core::Token {
@@ -1040,12 +842,16 @@ mod tests {
         }
     }
 
-    fn make_int_expr(value: i64) -> ast::Expression {
+    fn make_int_expr_with_span(value: i64, span: rumoca_core::Span) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: make_token(&value.to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
+    }
+
+    fn make_int_expr(value: i64) -> ast::Expression {
+        make_int_expr_with_span(value, rumoca_core::Span::DUMMY)
     }
 
     fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
@@ -1100,7 +906,7 @@ mod tests {
         let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
         let mut data = ast::Component {
             name: "aimcData".to_string(),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         data.modifications.insert(
             "statorCoreParameters".to_string(),
@@ -1165,7 +971,7 @@ mod tests {
         let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
         let mut data = ast::Component {
             name: "stackData".to_string(),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         data.modifications
             .insert("mSystems".to_string(), make_int_expr(2));
@@ -1220,7 +1026,7 @@ mod tests {
         let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
         let mut data = ast::Component {
             name: "aimcData".to_string(),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         data.modifications.insert(
             "statorCoreParameters".to_string(),
@@ -1430,7 +1236,7 @@ mod tests {
                 name: "p".to_string(),
                 type_name: make_name("Real"),
                 is_final: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1441,10 +1247,12 @@ mod tests {
         derived.extends.push(ast::Extend {
             base_name: make_name("Base"),
             base_def_id: Some(base_id),
+            location: test_location(),
             ..Default::default()
         });
 
         let mut tree = ast::ClassTree::default();
+        tree.source_map.add(TEST_FILE, "extends Base;");
         tree.definitions.classes.insert("Base".to_string(), base);
         tree.definitions
             .classes
@@ -1471,7 +1279,7 @@ mod tests {
         let err = apply_component_modifier(
             &mut ctx,
             "p",
-            &make_int_expr(2),
+            &make_int_expr_with_span(2, test_span()),
             ModifierPrefixes::default(),
             &eval_ctx,
         )
@@ -1479,6 +1287,118 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("final"), "{message}");
+        assert!(matches!(*err, InstantiateError::RedeclareFinal { .. }));
+    }
+
+    #[test]
+    fn test_apply_component_modifier_requires_span_for_final_modifier_error() {
+        let mut class = ast::ClassDef {
+            name: make_token("C"),
+            ..Default::default()
+        };
+        class.components.insert(
+            "p".to_string(),
+            ast::Component {
+                name: "p".to_string(),
+                type_name: make_name("Real"),
+                is_final: true,
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+
+        let mut ctx = InstantiateContext::new();
+        let parent_snapshot = IndexMap::default();
+        let shifted_parent_keys = IndexMap::default();
+        let type_overrides = TypeOverrideMap::default();
+        let tree = ast::ClassTree::default();
+        let eval_ctx = ModifierEvalContext {
+            tree: &tree,
+            effective_components: &IndexMap::default(),
+            type_overrides: &type_overrides,
+            target_class: Some(&class),
+            insert_ctx: ScopedInsertContext {
+                parent_snapshot: &parent_snapshot,
+                shifted_parent_keys: &shifted_parent_keys,
+                source_scope: None,
+            },
+        };
+
+        let err = apply_component_modifier(
+            &mut ctx,
+            "p",
+            &make_int_expr(2),
+            ModifierPrefixes::default(),
+            &eval_ctx,
+        )
+        .expect_err("unspanned final modifier error should fail fast");
+
+        assert!(matches!(
+            *err,
+            InstantiateError::MissingSourceContext { .. }
+        ));
+    }
+
+    #[test]
+    fn test_insert_scoped_modifier_binding_reports_final_collision_at_source() {
+        let mut ctx = InstantiateContext::new();
+        let key = ast::QualifiedName::from_ident("k");
+        ctx.mod_env_mut().add(
+            key.clone(),
+            ast::ModificationValue::with_prefixes(
+                make_int_expr_with_span(1, test_span()),
+                false,
+                true,
+            ),
+        );
+
+        let err = insert_scoped_modifier_binding(
+            &mut ctx,
+            ScopedModifierBinding {
+                key,
+                value: make_int_expr_with_span(2, test_span()),
+                source: Some(make_int_expr_with_span(3, test_span())),
+                source_scope: None,
+                prefixes: ModifierPrefixes::default(),
+            },
+            &IndexMap::default(),
+            &IndexMap::default(),
+        )
+        .expect_err("local modification must not override final binding");
+
+        assert!(matches!(*err, InstantiateError::RedeclareFinal { .. }));
+    }
+
+    #[test]
+    fn test_insert_scoped_modifier_binding_requires_span_for_final_collision() {
+        let mut ctx = InstantiateContext::new();
+        let key = ast::QualifiedName::from_ident("k");
+        ctx.mod_env_mut().add(
+            key.clone(),
+            ast::ModificationValue::with_prefixes(
+                make_int_expr_with_span(1, test_span()),
+                false,
+                true,
+            ),
+        );
+
+        let err = insert_scoped_modifier_binding(
+            &mut ctx,
+            ScopedModifierBinding {
+                key,
+                value: make_int_expr(2),
+                source: None,
+                source_scope: None,
+                prefixes: ModifierPrefixes::default(),
+            },
+            &IndexMap::default(),
+            &IndexMap::default(),
+        )
+        .expect_err("unspanned final binding error should fail fast");
+
+        assert!(matches!(
+            *err,
+            InstantiateError::MissingSourceContext { .. }
+        ));
     }
 
     #[test]
@@ -1639,12 +1559,14 @@ mod tests {
             class_type: rumoca_core::ClassType::Record,
             ..Default::default()
         };
-        nested_record
-            .components
-            .insert("phase".to_string(), ast::Component::default());
-        nested_record
-            .components
-            .insert("p".to_string(), ast::Component::default());
+        nested_record.components.insert(
+            "phase".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+        nested_record.components.insert(
+            "p".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
 
         let mut ctx = InstantiateContext::new();
         ctx.mod_env_mut().add(
@@ -1691,9 +1613,10 @@ mod tests {
             class_type: rumoca_core::ClassType::Record,
             ..Default::default()
         };
-        nested_record
-            .components
-            .insert("phase".to_string(), ast::Component::default());
+        nested_record.components.insert(
+            "phase".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
 
         let mut ctx = InstantiateContext::new();
         let phase_qn = ast::QualifiedName::from_ident("phase");
@@ -1733,9 +1656,10 @@ mod tests {
             class_type: rumoca_core::ClassType::Record,
             ..Default::default()
         };
-        nested_record
-            .components
-            .insert("OCV_SOC".to_string(), ast::Component::default());
+        nested_record.components.insert(
+            "OCV_SOC".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
 
         let mut ctx = InstantiateContext::new();
         let binding_expr = ast::Expression::If {
@@ -1805,7 +1729,7 @@ mod tests {
             ast::Component {
                 binding: Some(make_int_expr(1)),
                 start: make_int_expr(1),
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1852,7 +1776,7 @@ mod tests {
             ast::Component {
                 binding: Some(make_int_expr(1)),
                 start: make_int_expr(1),
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1894,18 +1818,111 @@ mod tests {
     }
 
     #[test]
+    fn test_propagate_record_binding_projects_through_unique_constructor_record_field() {
+        let inner_def_id = rumoca_core::DefId::new(1001);
+        let outer_def_id = rumoca_core::DefId::new(1002);
+        let mut inner_record = ast::ClassDef {
+            name: make_token("Inner"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(inner_def_id),
+            ..Default::default()
+        };
+        inner_record.components.insert(
+            "x".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+
+        let mut outer_record = ast::ClassDef {
+            name: make_token("Outer"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(outer_def_id),
+            ..Default::default()
+        };
+        outer_record.components.insert(
+            "innerParams".to_string(),
+            ast::Component {
+                type_name: ast::Name {
+                    name: vec![make_token("Pkg"), make_token("Inner")],
+                    def_id: Some(inner_def_id),
+                },
+                type_def_id: Some(inner_def_id),
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("Pkg.Outer".to_string(), outer_record);
+        tree.def_map.insert(inner_def_id, "Pkg.Inner".to_string());
+        tree.def_map.insert(outer_def_id, "Pkg.Outer".to_string());
+
+        let mut ctx = InstantiateContext::new();
+        let binding_expr = ast::Expression::FunctionCall {
+            comp: ast::ComponentReference {
+                local: false,
+                parts: vec![ast::ComponentRefPart {
+                    ident: make_token("Outer"),
+                    subs: None,
+                }],
+                def_id: None,
+                span: rumoca_core::Span::DUMMY,
+            },
+            args: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        propagate_record_binding_to_fields(
+            &tree,
+            &mut ctx,
+            &binding_expr,
+            Some(ast::QualifiedName::from_ident("Pkg")),
+            &inner_record,
+            &IndexMap::default(),
+        )
+        .expect("record field projection should succeed");
+
+        let field_mod = ctx
+            .mod_env()
+            .active
+            .get(&ast::QualifiedName::from_ident("x"))
+            .expect("inner field binding should be present");
+        let ast::Expression::FieldAccess {
+            base,
+            field: inner_field,
+            ..
+        } = &field_mod.value
+        else {
+            panic!("inner field should be projected");
+        };
+        assert_eq!(inner_field, "x");
+        let ast::Expression::FieldAccess {
+            base: constructor,
+            field: outer_field,
+            ..
+        } = base.as_ref()
+        else {
+            panic!("projection should first select the unique compatible record field");
+        };
+        assert_eq!(outer_field, "innerParams");
+        assert_eq!(constructor.as_ref(), &binding_expr);
+    }
+
+    #[test]
     fn test_propagate_record_binding_skips_non_record_classes() {
         let mut nested_block = ast::ClassDef {
             name: make_token("UniformNoise"),
             class_type: rumoca_core::ClassType::Block,
             ..Default::default()
         };
-        nested_block
-            .components
-            .insert("y".to_string(), ast::Component::default());
-        nested_block
-            .components
-            .insert("seedState".to_string(), ast::Component::default());
+        nested_block.components.insert(
+            "y".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+        nested_block.components.insert(
+            "seedState".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
 
         let mut ctx = InstantiateContext::new();
         let binding_expr = make_comp_ref_expr(&["noise"]);

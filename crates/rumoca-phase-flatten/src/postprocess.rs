@@ -1,5 +1,7 @@
 use super::*;
-use rumoca_core::{ExpressionRewriter, StatementRewriter};
+use rumoca_core::{
+    ExpressionRewriter, FallibleExpressionRewriter, FallibleStatementRewriter, StatementRewriter,
+};
 
 #[path = "postprocess_record_alias.rs"]
 mod record_alias;
@@ -31,6 +33,11 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
 #[path = "postprocess_def_id.rs"]
 mod def_id;
 pub(crate) use def_id::canonicalize_varrefs_via_instantiated_def_ids;
+#[path = "postprocess_field_access.rs"]
+mod field_access;
+pub(super) use field_access::{
+    drop_invalid_field_access_bindings, resolve_nested_constructor_field_access_bindings,
+};
 
 fn record_alias_rewrite_name(
     name: &str,
@@ -799,7 +806,10 @@ fn subscript_suffix(subscripts: &[rumoca_core::Subscript]) -> Option<String> {
     Some(format!("[{}]", values.join(",")))
 }
 
-pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &Context) {
+pub(super) fn substitute_known_constants_in_flat(
+    flat: &mut flat::Model,
+    ctx: &Context,
+) -> Result<(), FlattenError> {
     let live_vars: rustc_hash::FxHashSet<String> = flat
         .variables
         .keys()
@@ -815,7 +825,7 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
             &live_vars,
             &no_locals,
             &scope,
-        );
+        )?;
     }
     for eq in &mut flat.initial_equations {
         let scope = equation_origin_scope(&eq.origin);
@@ -825,15 +835,15 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
             &live_vars,
             &no_locals,
             &scope,
-        );
+        )?;
     }
-    substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals);
+    substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals)?;
     substitute_assert_equations(
         &mut flat.initial_assert_equations,
         ctx,
         &live_vars,
         &no_locals,
-    );
+    )?;
     for when_clause in &mut flat.when_clauses {
         when_clause.condition = substitute_known_constants_expr(
             when_clause.condition.clone(),
@@ -841,16 +851,17 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
             &live_vars,
             &no_locals,
             "",
-        );
+        )?;
         for equation in &mut when_clause.equations {
-            substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals);
+            substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals)?;
         }
     }
-    substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals);
-    substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals);
-    substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals);
-    substitute_function_bodies(&mut flat.functions, ctx, &live_vars);
-    crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx);
+    substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;
+    substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals)?;
+    substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals)?;
+    substitute_function_bodies(&mut flat.functions, ctx, &live_vars)?;
+    crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
+    Ok(())
 }
 
 fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
@@ -879,7 +890,7 @@ fn substitute_assert_equations(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), FlattenError> {
     for assert_eq in equations {
         assert_eq.condition = substitute_known_constants_expr(
             assert_eq.condition.clone(),
@@ -887,11 +898,12 @@ fn substitute_assert_equations(
             live_vars,
             locals,
             "",
-        );
+        )?;
         assert_eq.message =
-            substitute_known_constants_expr(assert_eq.message.clone(), ctx, live_vars, locals, "");
-        substitute_opt_expr(&mut assert_eq.level, ctx, live_vars, locals, "");
+            substitute_known_constants_expr(assert_eq.message.clone(), ctx, live_vars, locals, "")?;
+        substitute_opt_expr(&mut assert_eq.level, ctx, live_vars, locals, "")?;
     }
+    Ok(())
 }
 
 fn substitute_algorithms(
@@ -899,12 +911,13 @@ fn substitute_algorithms(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), FlattenError> {
     for algorithm in algorithms {
         for statement in &mut algorithm.statements {
-            substitute_known_constants_statement(statement, ctx, live_vars, locals, "");
+            substitute_known_constants_statement(statement, ctx, live_vars, locals, "")?;
         }
     }
+    Ok(())
 }
 
 fn substitute_variable_annotations(
@@ -912,22 +925,23 @@ fn substitute_variable_annotations(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), FlattenError> {
     for var in variables.values_mut() {
         let scope = parent_component_scope(var.name.as_str());
-        substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope);
-        substitute_opt_expr(&mut var.start, ctx, live_vars, locals, &scope);
-        substitute_opt_expr(&mut var.min, ctx, live_vars, locals, &scope);
-        substitute_opt_expr(&mut var.max, ctx, live_vars, locals, &scope);
-        substitute_opt_expr(&mut var.nominal, ctx, live_vars, locals, &scope);
+        substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope)?;
+        substitute_opt_expr(&mut var.start, ctx, live_vars, locals, &scope)?;
+        substitute_opt_expr(&mut var.min, ctx, live_vars, locals, &scope)?;
+        substitute_opt_expr(&mut var.max, ctx, live_vars, locals, &scope)?;
+        substitute_opt_expr(&mut var.nominal, ctx, live_vars, locals, &scope)?;
     }
+    Ok(())
 }
 
 fn substitute_function_bodies(
     functions: &mut flat::VarNameIndexMap<rumoca_core::Function>,
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
-) {
+) -> Result<(), FlattenError> {
     for function in functions.values_mut() {
         let function_locals: HashSet<String> = function
             .inputs
@@ -951,7 +965,7 @@ fn substitute_function_bodies(
                 live_vars,
                 &function_locals,
                 function_scope,
-            );
+            )?;
         }
         for statement in &mut function.body {
             substitute_known_constants_statement(
@@ -960,9 +974,10 @@ fn substitute_function_bodies(
                 live_vars,
                 &function_locals,
                 function_scope,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 fn substitute_opt_expr(
@@ -971,10 +986,11 @@ fn substitute_opt_expr(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-) {
+) -> Result<(), FlattenError> {
     if let Some(expr) = expr {
-        *expr = substitute_known_constants_expr(expr.clone(), ctx, live_vars, locals, scope);
+        *expr = substitute_known_constants_expr(expr.clone(), ctx, live_vars, locals, scope)?;
     }
+    Ok(())
 }
 
 pub(crate) fn substitute_known_constants_expr(
@@ -983,7 +999,7 @@ pub(crate) fn substitute_known_constants_expr(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-) -> rumoca_core::Expression {
+) -> Result<rumoca_core::Expression, FlattenError> {
     KnownConstantSubstituter {
         ctx,
         live_vars,
@@ -1000,8 +1016,13 @@ struct KnownConstantSubstituter<'a> {
     scope: &'a str,
 }
 
-impl ExpressionRewriter for KnownConstantSubstituter<'_> {
-    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
+    type Error = FlattenError;
+
+    fn rewrite_expression(
+        &mut self,
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, Self::Error> {
         match expr {
             rumoca_core::Expression::VarRef {
                 name,
@@ -1015,13 +1036,16 @@ impl ExpressionRewriter for KnownConstantSubstituter<'_> {
         }
     }
 
-    fn rewrite_subscript(&mut self, subscript: &rumoca_core::Subscript) -> rumoca_core::Subscript {
+    fn rewrite_subscript(
+        &mut self,
+        subscript: &rumoca_core::Subscript,
+    ) -> Result<rumoca_core::Subscript, Self::Error> {
         match subscript {
-            rumoca_core::Subscript::Expr { expr, span } => rumoca_core::Subscript::Expr {
-                expr: Box::new(self.rewrite_expression(expr)),
+            rumoca_core::Subscript::Expr { expr, span } => Ok(rumoca_core::Subscript::Expr {
+                expr: Box::new(self.rewrite_expression(expr)?),
                 span: *span,
-            },
-            other => other.clone(),
+            }),
+            other => Ok(other.clone()),
         }
     }
 }
@@ -1032,7 +1056,7 @@ impl KnownConstantSubstituter<'_> {
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
-    ) -> rumoca_core::Expression {
+    ) -> Result<rumoca_core::Expression, FlattenError> {
         if subscripts.is_empty() {
             if let Some(replaced) = substitute_scalar_var_ref(
                 name,
@@ -1041,23 +1065,23 @@ impl KnownConstantSubstituter<'_> {
                 self.live_vars,
                 self.locals,
                 self.scope,
-            ) {
-                return replaced;
+            )? {
+                return Ok(replaced);
             }
-            return rumoca_core::Expression::VarRef {
+            return Ok(rumoca_core::Expression::VarRef {
                 name: name.clone(),
                 subscripts: vec![],
                 span,
-            };
+            });
         }
 
-        let rewritten_subscripts = self.rewrite_subscripts(subscripts);
+        let rewritten_subscripts = self.rewrite_subscripts(subscripts)?;
         if self.locals.contains(name.as_str()) {
-            return rumoca_core::Expression::VarRef {
+            return Ok(rumoca_core::Expression::VarRef {
                 name: name.clone(),
                 subscripts: rewritten_subscripts,
                 span,
-            };
+            });
         }
         if let Some(replaced) = substitute_indexed_constant_var_ref(
             name,
@@ -1066,14 +1090,14 @@ impl KnownConstantSubstituter<'_> {
             self.ctx,
             self.live_vars,
         ) {
-            return replaced;
+            return Ok(replaced);
         }
 
-        rumoca_core::Expression::VarRef {
+        Ok(rumoca_core::Expression::VarRef {
             name: name.clone(),
             subscripts: rewritten_subscripts,
             span,
-        }
+        })
     }
 
     fn rewrite_field_access(
@@ -1081,8 +1105,8 @@ impl KnownConstantSubstituter<'_> {
         base: &rumoca_core::Expression,
         field: &str,
         span: rumoca_core::Span,
-    ) -> rumoca_core::Expression {
-        let rewritten_base = self.rewrite_expression(base);
+    ) -> Result<rumoca_core::Expression, FlattenError> {
+        let rewritten_base = self.rewrite_expression(base)?;
         if let rumoca_core::Expression::FunctionCall {
             name,
             args,
@@ -1091,13 +1115,13 @@ impl KnownConstantSubstituter<'_> {
         } = &rewritten_base
         {
             if let Some(named_arg) = named_constructor_arg(args, field) {
-                return named_arg.clone().with_span(span);
+                return Ok(named_arg.clone().with_span(span));
             }
             if args.is_empty()
                 && let Some(resolved) =
                     resolve_constant_field_access(name.as_str(), field, span, self.ctx)
             {
-                return resolved;
+                return Ok(resolved);
             }
         }
         if let rumoca_core::Expression::Index {
@@ -1123,13 +1147,13 @@ impl KnownConstantSubstituter<'_> {
             && let Some(resolved) =
                 resolve_constant_field_access(name.as_str(), field, span, self.ctx)
         {
-            return resolved;
+            return Ok(resolved);
         }
-        rumoca_core::Expression::FieldAccess {
+        Ok(rumoca_core::Expression::FieldAccess {
             base: Box::new(rewritten_base),
             field: field.to_string(),
             span,
-        }
+        })
     }
 }
 
@@ -1264,7 +1288,7 @@ fn literal_integer(expr: &rumoca_core::Expression) -> Option<i64> {
     }
 }
 
-impl StatementRewriter for KnownConstantSubstituter<'_> {}
+impl FallibleStatementRewriter for KnownConstantSubstituter<'_> {}
 
 fn substitute_indexed_constant_var_ref(
     name: &rumoca_core::Reference,
@@ -1292,39 +1316,39 @@ fn substitute_scalar_var_ref(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-) -> Option<rumoca_core::Expression> {
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
     if live_vars.contains(key) || reference_root_is_local(name, locals) {
-        return None;
+        return Ok(None);
     }
     if inline_index_base_is_live_or_local(key, live_vars, locals) {
-        return None;
+        return Ok(None);
     }
     let has_array_shape = reference_has_array_shape(name, key, ctx, scope);
     if let Some(v) = resolve_constant_value_expr_for_ref(name, ctx) {
         if has_array_shape && !constant_expr_preserves_array_shape(v) {
-            return None;
+            return Ok(None);
         }
-        return Some(substitute_resolved_constant_expr(
+        return Ok(Some(substitute_resolved_constant_expr(
             key, v, span, ctx, live_vars, locals, scope,
-        ));
+        )?));
     }
     if !has_array_shape && let Some(literal) = scalar_parameter_literal(key, span, ctx) {
-        return Some(literal);
+        return Ok(Some(literal));
     }
-    if let Some(expr) = resolve_inline_indexed_constant(key, span, ctx) {
-        return Some(expr);
+    if let Some(expr) = resolve_inline_indexed_constant(key, span, ctx)? {
+        return Ok(Some(expr));
     }
     if let Some(expr) = resolve_projected_constant_path(key, span, ctx) {
-        return Some(substitute_known_constants_expr(
+        return Ok(Some(substitute_known_constants_expr(
             expr, ctx, live_vars, locals, scope,
-        ));
+        )?));
     }
     if !scope.is_empty()
         && let Some(expr) =
-            substitute_scoped_scalar_var_ref(key, span, ctx, live_vars, locals, scope)
+            substitute_scoped_scalar_var_ref(key, span, ctx, live_vars, locals, scope)?
     {
-        return Some(expr);
+        return Ok(Some(expr));
     }
 
     if let Some(resolved_key) = resolve_varref_through_constant_aliases(key, ctx, scope)
@@ -1334,9 +1358,9 @@ fn substitute_scalar_var_ref(
             if reference_key_has_array_shape(&resolved_key, ctx, scope)
                 && !constant_expr_preserves_array_shape(v)
             {
-                return None;
+                return Ok(None);
             }
-            return Some(substitute_resolved_constant_expr(
+            return Ok(Some(substitute_resolved_constant_expr(
                 &resolved_key,
                 v,
                 span,
@@ -1344,24 +1368,24 @@ fn substitute_scalar_var_ref(
                 live_vars,
                 locals,
                 scope,
-            ));
+            )?));
         }
         if !reference_key_has_array_shape(&resolved_key, ctx, scope)
             && let Some(literal) = scalar_parameter_literal(&resolved_key, span, ctx)
         {
-            return Some(literal);
+            return Ok(Some(literal));
         }
-        if let Some(expr) = resolve_inline_indexed_constant(&resolved_key, span, ctx) {
-            return Some(expr);
+        if let Some(expr) = resolve_inline_indexed_constant(&resolved_key, span, ctx)? {
+            return Ok(Some(expr));
         }
-        return Some(rumoca_core::Expression::VarRef {
+        return Ok(Some(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(resolved_key),
             subscripts: vec![],
             span,
-        });
+        }));
     }
 
-    None
+    Ok(None)
 }
 
 fn substitute_resolved_constant_expr(
@@ -1372,7 +1396,7 @@ fn substitute_resolved_constant_expr(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     fallback_scope: &str,
-) -> rumoca_core::Expression {
+) -> Result<rumoca_core::Expression, FlattenError> {
     let declaration_scope = parent_component_scope(key);
     let scope = if declaration_scope.is_empty() {
         fallback_scope
@@ -1464,7 +1488,7 @@ fn substitute_scoped_scalar_var_ref(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-) -> Option<rumoca_core::Expression> {
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     for (candidate, candidate_scope) in scoped_lookup_candidates_with_scope(key, scope) {
         if candidate == key {
             continue;
@@ -1475,7 +1499,7 @@ fn substitute_scoped_scalar_var_ref(
             {
                 continue;
             }
-            return Some(substitute_resolved_constant_expr(
+            return Ok(Some(substitute_resolved_constant_expr(
                 &candidate,
                 v,
                 span,
@@ -1483,18 +1507,18 @@ fn substitute_scoped_scalar_var_ref(
                 live_vars,
                 locals,
                 &candidate_scope,
-            ));
+            )?));
         }
         if !reference_key_has_array_shape(&candidate, ctx, &candidate_scope)
             && let Some(literal) = scalar_parameter_literal(&candidate, span, ctx)
         {
-            return Some(literal);
+            return Ok(Some(literal));
         }
-        if let Some(expr) = resolve_inline_indexed_constant(&candidate, span, ctx) {
-            return Some(expr);
+        if let Some(expr) = resolve_inline_indexed_constant(&candidate, span, ctx)? {
+            return Ok(Some(expr));
         }
     }
-    None
+    Ok(None)
 }
 
 fn resolve_projected_constant_path(
@@ -1692,22 +1716,32 @@ fn resolve_inline_indexed_constant(
     name: &str,
     span: rumoca_core::Span,
     ctx: &Context,
-) -> Option<rumoca_core::Expression> {
-    let (base, indices) = split_inline_indexed_name(name)?;
-    let base_expr = resolve_constant_value_expr(base, ctx)?.clone();
-    Some(rumoca_core::Expression::Index {
-        base: Box::new(base_expr),
-        subscripts: indices
-            .into_iter()
-            .map(|index| {
-                rumoca_core::Subscript::generated_expr(Box::new(rumoca_core::Expression::Literal {
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let Some((base, indices)) = split_inline_indexed_name(name) else {
+        return Ok(None);
+    };
+    let Some(base_expr) = resolve_constant_value_expr(base, ctx).cloned() else {
+        return Ok(None);
+    };
+    let subscripts = indices
+        .into_iter()
+        .map(|index| {
+            rumoca_core::Subscript::try_generated_expr(
+                Box::new(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(index),
                     span,
-                }))
-            })
-            .collect(),
+                }),
+                span,
+                "flatten inline indexed constant",
+            )
+            .map_err(|err| FlattenError::missing_source_context(err.to_string()))
+        })
+        .collect::<Result<Vec<_>, FlattenError>>()?;
+    Ok(Some(rumoca_core::Expression::Index {
+        base: Box::new(base_expr),
+        subscripts,
         span,
-    })
+    }))
 }
 
 fn split_inline_indexed_name(name: &str) -> Option<(&str, Vec<i64>)> {
@@ -1798,14 +1832,15 @@ fn substitute_known_constants_statement(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-) {
+) -> Result<(), FlattenError> {
     *statement = KnownConstantSubstituter {
         ctx,
         live_vars,
         locals,
         scope,
     }
-    .rewrite_statement(statement);
+    .rewrite_statement(statement)?;
+    Ok(())
 }
 
 fn substitute_known_constants_when_equation(
@@ -1813,20 +1848,22 @@ fn substitute_known_constants_when_equation(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), FlattenError> {
     match equation {
         flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
-            *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "");
+            *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Assert {
             condition, message, ..
         } => {
             *condition =
-                substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "");
-            *message = substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "");
+                substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "")?;
+            *message =
+                substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Terminate { message, .. } => {
-            *message = substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "");
+            *message =
+                substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Conditional {
             branches,
@@ -1835,141 +1872,21 @@ fn substitute_known_constants_when_equation(
         } => {
             for (condition, equations) in branches {
                 *condition =
-                    substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "");
+                    substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "")?;
                 for nested in equations {
-                    substitute_known_constants_when_equation(nested, ctx, live_vars, locals);
+                    substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
                 }
             }
             for nested in else_branch {
-                substitute_known_constants_when_equation(nested, ctx, live_vars, locals);
+                substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {
             *function =
-                substitute_known_constants_expr(function.clone(), ctx, live_vars, locals, "");
+                substitute_known_constants_expr(function.clone(), ctx, live_vars, locals, "")?;
         }
     }
-}
-
-/// Drop FieldAccess bindings whose targets don't exist in the flat model.
-/// During modifier propagation, record bindings like `x = someRecord.field` may reference
-/// internal component structure that was eliminated during flattening. These dangling
-/// FieldAccess bindings would cause incorrect equation generation in todae if kept.
-pub(super) fn drop_invalid_field_access_bindings(flat: &mut flat::Model) {
-    use std::collections::HashSet;
-
-    let all_names: HashSet<rumoca_core::VarName> = flat.variables.keys().cloned().collect();
-
-    let to_clear: Vec<rumoca_core::VarName> = flat
-        .variables
-        .iter()
-        .filter_map(|(name, var)| {
-            let binding = var.binding.as_ref()?;
-            let target_name = field_access_target_name(binding)?;
-            if all_names.contains(&target_name)
-                || !field_access_targets_flat_namespace(binding, &all_names)
-            {
-                None
-            } else {
-                Some(name.clone())
-            }
-        })
-        .collect();
-
-    for name in &to_clear {
-        if let Some(var) = flat.variables.get_mut(name) {
-            var.binding = None;
-        }
-    }
-}
-
-fn field_access_target_name(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName> {
-    let rumoca_core::Expression::FieldAccess { .. } = expr else {
-        return None;
-    };
-    rendered_component_target(expr).map(rumoca_core::VarName::new)
-}
-
-fn rendered_component_target(expr: &rumoca_core::Expression) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => {
-            let mut rendered = name.as_str().to_string();
-            append_flat_subscripts(&mut rendered, subscripts)?;
-            Some(rendered)
-        }
-        rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } => {
-            let mut rendered = rendered_component_target(base)?;
-            append_flat_subscripts(&mut rendered, subscripts)?;
-            Some(rendered)
-        }
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            Some(format!("{}.{}", rendered_component_target(base)?, field))
-        }
-        _ => None,
-    }
-}
-
-fn field_access_targets_flat_namespace(
-    expr: &rumoca_core::Expression,
-    all_names: &HashSet<rumoca_core::VarName>,
-) -> bool {
-    field_access_base_target(expr)
-        .into_iter()
-        .chain(leftmost_reference_target(expr))
-        .any(|target| flat_namespace_contains(all_names, &target))
-}
-
-fn field_access_base_target(expr: &rumoca_core::Expression) -> Option<String> {
-    let rumoca_core::Expression::FieldAccess { base, .. } = expr else {
-        return None;
-    };
-    rendered_component_target(base)
-}
-
-fn leftmost_reference_target(expr: &rumoca_core::Expression) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::VarRef { name, .. } => Some(name.as_str().to_string()),
-        rumoca_core::Expression::Index { base, .. }
-        | rumoca_core::Expression::FieldAccess { base, .. } => leftmost_reference_target(base),
-        _ => None,
-    }
-}
-
-fn flat_namespace_contains(all_names: &HashSet<rumoca_core::VarName>, target: &str) -> bool {
-    let exact = rumoca_core::VarName::new(target);
-    all_names.contains(&exact)
-        || all_names.iter().any(|name| {
-            let name = name.as_str();
-            name.strip_prefix(target)
-                .is_some_and(|suffix| suffix.starts_with('.') || suffix.starts_with('['))
-        })
-}
-
-fn append_flat_subscripts(
-    rendered: &mut String,
-    subscripts: &[rumoca_core::Subscript],
-) -> Option<()> {
-    for subscript in subscripts {
-        match subscript {
-            rumoca_core::Subscript::Index { value, .. } => {
-                rendered.push('[');
-                rendered.push_str(&value.to_string());
-                rendered.push(']');
-            }
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                let value = constant_integer_bound(expr)?;
-                rendered.push('[');
-                rendered.push_str(&value.to_string());
-                rendered.push(']');
-            }
-            rumoca_core::Subscript::Colon { .. } => return None,
-        }
-    }
-    Some(())
+    Ok(())
 }
 
 #[cfg(test)]

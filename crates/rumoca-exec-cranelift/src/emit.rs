@@ -1,6 +1,6 @@
-// SPEC_0021: the interpreter fallback (`execute_row` and helpers) has been
-// extracted into `emit/interpreter.rs`, bringing this file under the 2,000-line
-// limit. The emitter and ABI plumbing remain here.
+// SPEC_0021 file-size exception: Cranelift emission still keeps builder state,
+// intrinsic lowering, and ABI glue together. split plan: move intrinsic
+// lowering and memory/ABI helpers into focused emitter submodules.
 use super::CompileError;
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, types};
@@ -10,7 +10,11 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use rumoca_core::ExternalTableData;
-use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp};
+use rumoca_eval_solve::{
+    eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
+    eval_time_table_next_event_value_in,
+};
+use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp, resolve_indexed_slot};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -21,8 +25,9 @@ mod interpreter;
 use host_runtime::{register_math_symbols, with_active_external_tables};
 pub(crate) use input_validation::InputRequirements as EmitInputRequirements;
 use input_validation::{
-    InputRequirements, input_requirements_for_linear_ops, input_requirements_for_plans,
-    validate_input_requirements, validate_output_len,
+    InputRequirements, input_compile_error, input_requirements_for_linear_ops,
+    input_requirements_for_plans, row_input_requirements, validate_input_requirements,
+    validate_output_len,
 };
 use interpreter::execute_row;
 
@@ -344,11 +349,8 @@ pub(crate) fn compile_residual_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledResidualRows, CompileError> {
     let mut emitter = CraneliftEmitter::new()?;
-    let plans = rows
-        .iter()
-        .map(|row| plan_row(row))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut func_ids = Vec::with_capacity(rows.len());
+    let plans = plan_rows(rows)?;
+    let mut func_ids = checked_vec_with_capacity(rows.len(), "residual row function ids")?;
     for (index, row) in rows.iter().enumerate() {
         validate_row_supported_by_jit(row, RowKind::Residual)?;
         let func_id = emitter.compile_row(
@@ -363,22 +365,18 @@ pub(crate) fn compile_residual_rows(
         .finalize_definitions()
         .map_err(to_backend_err)?;
     let input_requirements = input_requirements_for_plans(&plans);
-    let rows = plans
-        .into_iter()
-        .zip(func_ids)
-        .enumerate()
-        .map(|(index, (plan, func_id))| {
-            let jit = finalized_residual_fn(&emitter.module, func_id)?;
-            Ok(CompiledResidualRow {
-                plan,
-                jit,
-                validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            })
-        })
-        .collect::<Result<Vec<_>, CompileError>>()?;
+    let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled residual rows")?;
+    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+        let jit = finalized_residual_fn(&emitter.module, func_id)?;
+        compiled_rows.push(CompiledResidualRow {
+            plan,
+            jit,
+            validate_with_interpreter: row_uses_table_ops(&rows[index]),
+        });
+    }
     Ok(CompiledResidualRows {
         _module: emitter.module,
-        rows,
+        rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
@@ -389,11 +387,8 @@ pub(crate) fn compile_jacobian_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledJacobianRows, CompileError> {
     let mut emitter = CraneliftEmitter::new()?;
-    let plans = rows
-        .iter()
-        .map(|row| plan_row(row))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut func_ids = Vec::with_capacity(rows.len());
+    let plans = plan_rows(rows)?;
+    let mut func_ids = checked_vec_with_capacity(rows.len(), "Jacobian row function ids")?;
     for (index, row) in rows.iter().enumerate() {
         validate_row_supported_by_jit(row, RowKind::JacobianV)?;
         let func_id = emitter.compile_row(
@@ -408,26 +403,41 @@ pub(crate) fn compile_jacobian_rows(
         .finalize_definitions()
         .map_err(to_backend_err)?;
     let input_requirements = input_requirements_for_plans(&plans);
-    let rows = plans
-        .into_iter()
-        .zip(func_ids)
-        .enumerate()
-        .map(|(index, (plan, func_id))| {
-            let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
-            Ok(CompiledJacobianRow {
-                plan,
-                jit,
-                validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            })
-        })
-        .collect::<Result<Vec<_>, CompileError>>()?;
+    let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
+    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+        let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
+        compiled_rows.push(CompiledJacobianRow {
+            plan,
+            jit,
+            validate_with_interpreter: row_uses_table_ops(&rows[index]),
+        });
+    }
     Ok(CompiledJacobianRows {
         _module: emitter.module,
-        rows,
+        rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
     })
+}
+
+fn plan_rows(rows: &[Vec<LinearOp>]) -> Result<Vec<RowPlan>, CompileError> {
+    let mut plans = checked_vec_with_capacity(rows.len(), "row plans")?;
+    for row in rows {
+        plans.push(plan_row(row)?);
+    }
+    Ok(plans)
+}
+
+fn checked_vec_with_capacity<T>(
+    capacity: usize,
+    kind: &'static str,
+) -> Result<Vec<T>, CompileError> {
+    let mut values = Vec::new();
+    values.try_reserve(capacity).map_err(|_| {
+        CompileError::Backend(format!("{kind} allocation overflow for {capacity} entries"))
+    })?;
+    Ok(values)
 }
 
 fn finalized_residual_fn(
@@ -783,14 +793,20 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let rounded = self.fb.ins().nearest(idx);
         let zero = self.fb.ins().f64const(0.0);
         let lo = self.fb.ins().fmax(rounded, zero);
-        let last = self.fb.ins().f64const(count.saturating_sub(1) as f64);
+        let last_index = if count == 0 { 0 } else { count - 1 };
+        let last = self.fb.ins().f64const(last_index as f64);
         let clamped = self.fb.ins().fmin(lo, last);
         let idx_i = self.fb.ins().fcvt_to_sint(types::I64, clamped);
         let byte_off = self
             .fb
             .ins()
             .imul_imm(idx_i, std::mem::size_of::<f64>() as i64);
-        let base_bytes = i64::try_from(base.saturating_mul(std::mem::size_of::<f64>()))
+        let base_bytes = base
+            .checked_mul(std::mem::size_of::<f64>())
+            .ok_or_else(|| {
+                CompileError::Backend("indexed load base byte offset overflow".to_string())
+            })?;
+        let base_bytes = i64::try_from(base_bytes)
             .map_err(|_| CompileError::Backend("indexed load base exceeds i64".to_string()))?;
         let abs_off = self.fb.ins().iadd_imm(byte_off, base_bytes);
         let addr = self.fb.ins().iadd(base_ptr, abs_off);
@@ -897,18 +913,18 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             CompileError::Backend("linear solve matrix size overflow".to_string())
         })?;
 
-        let mut matrix = Vec::with_capacity(matrix_len);
+        let mut matrix = checked_vec_with_capacity(matrix_len, "linear solve matrix values")?;
         for offset in 0..matrix_len {
             let reg = checked_reg_offset(matrix_start, offset, "matrix")?;
             matrix.push(lookup_reg(self.regs, reg)?);
         }
-        let mut rhs = Vec::with_capacity(n);
+        let mut rhs = checked_vec_with_capacity(n, "linear solve rhs values")?;
         for offset in 0..n {
             let reg = checked_reg_offset(rhs_start, offset, "rhs")?;
             rhs.push(lookup_reg(self.regs, reg)?);
         }
 
-        let solution = emit_dense_linear_solve(self.fb, &mut matrix, &mut rhs, n);
+        let solution = emit_dense_linear_solve(self.fb, &mut matrix, &mut rhs, n)?;
         self.insert(dst, solution[component])
     }
 
@@ -1128,7 +1144,7 @@ fn emit_dense_linear_solve(
     matrix: &mut [cranelift_codegen::ir::Value],
     rhs: &mut [cranelift_codegen::ir::Value],
     n: usize,
-) -> Vec<cranelift_codegen::ir::Value> {
+) -> Result<Vec<cranelift_codegen::ir::Value>, CompileError> {
     for col in 0..n {
         emit_partial_pivot(fb, matrix, rhs, n, col);
         let pivot = emit_nonzero_pivot(fb, matrix[dense_index(n, col, col)]);
@@ -1146,7 +1162,8 @@ fn emit_dense_linear_solve(
     }
 
     let zero = fb.ins().f64const(0.0);
-    let mut solution = vec![zero; n];
+    let mut solution = checked_vec_with_capacity(n, "linear solve solution values")?;
+    solution.resize(n, zero);
     for row in (0..n).rev() {
         let mut tail = zero;
         for col in row + 1..n {
@@ -1159,7 +1176,7 @@ fn emit_dense_linear_solve(
         let pivot = emit_nonzero_pivot(fb, matrix[dense_index(n, row, row)]);
         solution[row] = fb.ins().fdiv(numerator, pivot);
     }
-    solution
+    Ok(solution)
 }
 
 fn emit_partial_pivot(
@@ -1334,11 +1351,16 @@ fn checked_reg_offset(base: u32, offset: usize, kind: &str) -> Result<u32, Compi
 
 fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     let mut reg_count = 0usize;
-    let input_requirements = input_requirements_for_linear_ops(row);
+    let input_requirements = input_requirements_for_linear_ops(row)?;
     for op in row {
-        reg_count = reg_count.max(max_reg_index(*op).map_or(0, |index| index + 1));
+        if let Some(index) = max_reg_index(*op)? {
+            reg_count = reg_count.max(index.checked_add(1).ok_or_else(|| {
+                CompileError::Backend("compiled row register count overflow".to_string())
+            })?);
+        }
     }
-    let mut defined = vec![false; reg_count];
+    let mut defined = checked_vec_with_capacity(reg_count, "defined register flags")?;
+    defined.resize(reg_count, false);
     for op in row {
         validate_row_sources(&defined, *op)?;
         if let Some(dst) = dst_reg(*op) {
@@ -1364,11 +1386,10 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     let output_srcs = output_srcs.into_boxed_slice();
 
     if body.iter().copied().all(is_simple_linear_op) {
-        let ops = body
-            .iter()
-            .copied()
-            .map(lower_simple_op)
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut ops = checked_vec_with_capacity(body.len(), "simple runtime ops")?;
+        for op in body.iter().copied() {
+            ops.push(lower_simple_op(op)?);
+        }
         return Ok(RowPlan::Simple(SimpleRowPlan {
             ops: ops.into_boxed_slice(),
             reg_count,
@@ -1459,7 +1480,7 @@ fn lower_runtime_index(index: usize, kind: &str) -> Result<u32, CompileError> {
         .map_err(|_| CompileError::Backend(format!("{kind} index exceeds u32 runtime plan")))
 }
 
-fn max_reg_index(op: LinearOp) -> Option<usize> {
+fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
     match op {
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
@@ -1469,15 +1490,15 @@ fn max_reg_index(op: LinearOp) -> Option<usize> {
         | LinearOp::TableBounds { dst, .. }
         | LinearOp::TableLookup { dst, .. }
         | LinearOp::TableLookupSlope { dst, .. }
-        | LinearOp::TableNextEvent { dst, .. } => Some(dst as usize),
+        | LinearOp::TableNextEvent { dst, .. } => Ok(Some(dst as usize)),
         LinearOp::LoadIndexedP { dst, index, .. }
-        | LinearOp::LoadIndexedSeed { dst, index, .. } => Some(dst.max(index) as usize),
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(Some(dst.max(index) as usize)),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
             global_seed,
             ..
-        } => Some(dst.max(local_seed).max(global_seed) as usize),
+        } => Ok(Some(dst.max(local_seed).max(global_seed) as usize)),
         LinearOp::RandomResult {
             dst,
             state_start,
@@ -1489,39 +1510,59 @@ fn max_reg_index(op: LinearOp) -> Option<usize> {
             state_start,
             state_len,
             ..
-        } => Some(dst.max(state_start.saturating_add(state_len.saturating_sub(1) as u32)) as usize),
-        LinearOp::ImpureRandomInit { dst, seed } => Some(dst.max(seed) as usize),
-        LinearOp::ImpureRandom { dst, id, .. } => Some(dst.max(id) as usize),
+        } => Ok(Some(dst.max(checked_range_last_reg(
+            state_start,
+            state_len,
+            "random state",
+        )?) as usize)),
+        LinearOp::ImpureRandomInit { dst, seed } => Ok(Some(dst.max(seed) as usize)),
+        LinearOp::ImpureRandom { dst, id, .. } => Ok(Some(dst.max(id) as usize)),
         LinearOp::ImpureRandomInteger {
             dst,
             id,
             imin,
             imax,
             ..
-        } => Some(dst.max(id).max(imin).max(imax) as usize),
-        LinearOp::Move { dst, src } => Some(dst.max(src) as usize),
+        } => Ok(Some(dst.max(id).max(imin).max(imax) as usize)),
+        LinearOp::Move { dst, src } => Ok(Some(dst.max(src) as usize)),
         LinearOp::LinearSolveComponent {
             dst,
             matrix_start,
             rhs_start,
             n,
             ..
-        } => Some(
-            dst.max(matrix_start.saturating_add((n.saturating_mul(n)).saturating_sub(1) as u32))
-                .max(rhs_start.saturating_add(n.saturating_sub(1) as u32)) as usize,
-        ),
-        LinearOp::Unary { dst, arg, .. } => Some((dst.max(arg)) as usize),
+        } => Ok(Some(
+            dst.max(checked_range_last_reg(
+                matrix_start,
+                checked_square_len(n, "linear solve matrix")?,
+                "linear solve matrix",
+            )?)
+            .max(checked_range_last_reg(rhs_start, n, "linear solve rhs")?) as usize,
+        )),
+        LinearOp::Unary { dst, arg, .. } => Ok(Some((dst.max(arg)) as usize)),
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            Some(dst.max(lhs).max(rhs) as usize)
+            Ok(Some(dst.max(lhs).max(rhs) as usize))
         }
         LinearOp::Select {
             dst,
             cond,
             if_true,
             if_false,
-        } => Some(dst.max(cond).max(if_true).max(if_false) as usize),
-        LinearOp::StoreOutput { src } => Some(src as usize),
+        } => Ok(Some(dst.max(cond).max(if_true).max(if_false) as usize)),
+        LinearOp::StoreOutput { src } => Ok(Some(src as usize)),
     }
+}
+
+fn checked_square_len(n: usize, kind: &str) -> Result<usize, CompileError> {
+    n.checked_mul(n)
+        .ok_or_else(|| CompileError::Backend(format!("{kind} size overflow")))
+}
+
+fn checked_range_last_reg(base: u32, count: usize, kind: &str) -> Result<u32, CompileError> {
+    let Some(offset) = count.checked_sub(1) else {
+        return Ok(base);
+    };
+    checked_reg_offset(base, offset, kind)
 }
 
 fn dst_reg(op: LinearOp) -> Option<usize> {
@@ -1615,7 +1656,11 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
             n,
             ..
         } => {
-            validate_reg_range_defined(defined, matrix_start, n.saturating_mul(n))?;
+            validate_reg_range_defined(
+                defined,
+                matrix_start,
+                checked_square_len(n, "linear solve matrix")?,
+            )?;
             validate_reg_range_defined(defined, rhs_start, n)
         }
         LinearOp::Unary { arg, .. } => validate_reg_defined(defined, arg),
@@ -1657,15 +1702,9 @@ fn validate_reg_range_defined(
     count: usize,
 ) -> Result<(), CompileError> {
     for offset in 0..count {
-        validate_reg_defined(defined, start.saturating_add(offset as u32))?;
+        validate_reg_defined(defined, checked_reg_offset(start, offset, "source range")?)?;
     }
     Ok(())
-}
-
-fn input_compile_error(vector: &'static str, index: usize, len: usize) -> CompileError {
-    CompileError::Input(format!(
-        "missing {vector}[{index}] while evaluating Cranelift row; vector length is {len}"
-    ))
 }
 
 fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {

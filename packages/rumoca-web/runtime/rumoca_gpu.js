@@ -2,9 +2,10 @@
 //
 // Canonical, packaged runtime helper for the GPU simulation path. The
 // compiler emits per-state derivative kernels via the `wgsl-solve` target
-// (WASM `prepare_gpu_simulation`); this module wraps a fixed-step classic
-// RK4 integrator around them on the GPU. The RK4 stage/combine algebra runs
-// in the two small hand-written kernels below.
+// (WASM `prepare_gpu_simulation`); the target also exposes implicit residual
+// kernels in the layout for future implicit GPU solvers. This module wraps a
+// fixed-step classic RK4 integrator around the derivative kernels. The RK4
+// stage/combine algebra runs in the two small hand-written kernels below.
 //
 // v1 semantics: only the first `n_states` slots of y integrate; algebraic
 // slots and all parameters (including relation memory) stay frozen at their
@@ -49,6 +50,9 @@ fn combine(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+const GPU_STAGE_WORKGROUP_SIZE = 64;
+const UINT32_MAX = 0xFFFF_FFFF;
+
 async function compileGpuModule(device, code, label) {
     const module = device.createShaderModule({ code, label });
     const info = await module.getCompilationInfo();
@@ -57,6 +61,577 @@ async function compileGpuModule(device, code, label) {
         throw new Error(`${label} WGSL error: ${errors[0].message}`);
     }
     return module;
+}
+
+function integerField(value, field, label, minValue = 0) {
+    const parsed = value?.[field];
+    if (!Number.isSafeInteger(parsed) || parsed < minValue) {
+        throw new Error(
+            `${label} has invalid ${field} metadata (${value?.[field]}).`
+        );
+    }
+    return parsed;
+}
+
+function safePositiveInteger(value, label) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error(`${label} has invalid integer metadata (${value}).`);
+    }
+    return value;
+}
+
+function finiteNumberField(value, field, label) {
+    const parsed = value?.[field];
+    if (typeof parsed !== 'number' || !Number.isFinite(parsed)) {
+        throw new Error(`${label} has invalid ${field} metadata (${value?.[field]}).`);
+    }
+    return parsed;
+}
+
+function u32Value(value, label) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > UINT32_MAX) {
+        throw new Error(`${label}=${value} cannot be represented as a WGSL u32.`);
+    }
+    return value;
+}
+
+function hasOwn(value, field) {
+    return value !== null
+        && typeof value === 'object'
+        && Object.prototype.hasOwnProperty.call(value, field);
+}
+
+function signedIntegerField(value, field, label) {
+    const parsed = value?.[field];
+    if (!Number.isSafeInteger(parsed)) {
+        throw new Error(
+            `${label} has invalid ${field} metadata (${value?.[field]}).`
+        );
+    }
+    return parsed;
+}
+
+function checkedMetadataAdd(left, right, label) {
+    const value = left + right;
+    if (!Number.isSafeInteger(value)) {
+        throw new Error(`${label} overflows JavaScript safe integer metadata range.`);
+    }
+    return value;
+}
+
+function checkedMetadataMul(left, right, label) {
+    const value = left * right;
+    if (!Number.isSafeInteger(value)) {
+        throw new Error(`${label} overflows JavaScript safe integer metadata range.`);
+    }
+    return value;
+}
+
+function checkedWorkgroupCount(
+    rows,
+    workgroupSize,
+    label,
+    maxWorkgroups,
+    usage = 'dispatch',
+) {
+    const limit = safePositiveInteger(maxWorkgroups, `${label} workgroup limit`);
+    const groups = Math.floor((rows - 1) / workgroupSize) + 1;
+    if (!Number.isSafeInteger(groups) || groups < 1) {
+        throw new Error(`${label} ${usage} workgroup count is invalid.`);
+    }
+    if (groups > limit) {
+        throw new Error(
+            `${label} ${usage} needs ${groups} workgroups, exceeding `
+            + `device limit ${limit}.`
+        );
+    }
+    return groups;
+}
+
+function storageByteSize(elementCount, label) {
+    const bytes = checkedMetadataMul(elementCount, 4, `${label} byte size`);
+    return Math.max(16, bytes);
+}
+
+function deviceWorkgroupLimit(device) {
+    return safePositiveInteger(
+        device?.limits?.maxComputeWorkgroupsPerDimension,
+        'GPU device maxComputeWorkgroupsPerDimension',
+    );
+}
+
+function simulationStepCount(tStart, tEnd, dt) {
+    if (tEnd < tStart) {
+        throw new Error(`GPU simulation t_end=${tEnd} is before t_start=${tStart}.`);
+    }
+    if (dt <= 0) {
+        throw new Error(`GPU simulation dt=${dt} must be greater than zero.`);
+    }
+    const rawSteps = (tEnd - tStart) / dt;
+    if (!Number.isFinite(rawSteps)) {
+        throw new Error('GPU simulation step count is not finite.');
+    }
+    const steps = Math.max(1, Math.round(rawSteps));
+    if (!Number.isSafeInteger(steps)) {
+        throw new Error('GPU simulation step count exceeds JavaScript safe integer range.');
+    }
+    return steps;
+}
+
+function workgroupTotal(kernels, label) {
+    return kernels.reduce(
+        (total, kernel, index) => checkedMetadataAdd(
+            total,
+            kernel.workgroups,
+            `${label}[${index}] workgroup total`,
+        ),
+        0,
+    );
+}
+
+function markOutputSlot(covered, slot, label, rows, outputName) {
+    if (!Number.isSafeInteger(slot) || slot < 0 || slot >= rows) {
+        throw new Error(
+            `${label} writes ${outputName} output ${slot} outside layout.rows=${rows}.`
+        );
+    }
+    const previous = covered.get(slot);
+    if (previous !== undefined) {
+        throw new Error(
+            `${label} overlaps ${outputName} output ${slot} already written by `
+            + `${previous}.`
+        );
+    }
+    covered.set(slot, label);
+}
+
+function firstMissingOutputSlot(rows, covered) {
+    if (covered.size === rows) {
+        return -1;
+    }
+    for (let slot = 0; slot < rows; slot++) {
+        if (!covered.has(slot)) {
+            return slot;
+        }
+    }
+    return -1;
+}
+
+function outputMap(value, shape, label) {
+    if (typeof value.output_map !== 'object' || value.output_map === null) {
+        throw new Error(`${label} is missing native output_map metadata.`);
+    }
+    const start = integerField(value.output_map, 'start', `${label} output_map`);
+    if (!Array.isArray(value.output_map.strides)) {
+        throw new Error(`${label} output_map is missing strides metadata.`);
+    }
+    const strides = new Array(shape.length).fill(0);
+    const seen = new Array(shape.length).fill(false);
+    for (let termIndex = 0; termIndex < value.output_map.strides.length; termIndex++) {
+        const term = value.output_map.strides[termIndex];
+        const termLabel = `${label} output_map.strides[${termIndex}]`;
+        const dimension = integerField(term, 'dimension', termLabel);
+        const stride = signedIntegerField(term, 'stride', termLabel);
+        if (dimension >= shape.length) {
+            throw new Error(
+                `${termLabel} targets dimension ${dimension}, but domain rank is `
+                + `${shape.length}.`
+            );
+        }
+        if (seen[dimension]) {
+            throw new Error(`${termLabel} duplicates dimension ${dimension}.`);
+        }
+        seen[dimension] = true;
+        strides[dimension] = stride;
+    }
+    return { start, strides };
+}
+
+function visitNativeOutputSlots(kernel, family, label, rows, outputName, visitSlot) {
+    const kernelRows = integerField(kernel, 'rows', label);
+    const familyRows = integerField(family, 'rows', `${label} native family`);
+    if (familyRows !== kernelRows) {
+        throw new Error(
+            `${label} row count ${kernelRows} does not match native family rows `
+            + `${familyRows}.`
+        );
+    }
+    if (!Array.isArray(family.domain_shape) || family.domain_shape.length === 0) {
+        throw new Error(`${label} native family is missing domain_shape metadata.`);
+    }
+    const shape = family.domain_shape.map((_, dim) => (
+        integerField(family.domain_shape, dim, `${label} domain_shape`, 1)
+    ));
+    const domainRows = shape.reduce((product, dim, dimIndex) => (
+        checkedMetadataMul(product, dim, `${label} domain_shape[${dimIndex}] product`)
+    ), 1);
+    if (domainRows !== kernelRows) {
+        throw new Error(
+            `${label} rows=${kernelRows} does not match domain_shape product `
+            + `${domainRows}.`
+        );
+    }
+    const kernelOutputMap = outputMap(kernel, shape, label);
+    const familyOutputMap = outputMap(family, shape, `${label} native family`);
+    if (familyOutputMap.start !== kernelOutputMap.start) {
+        throw new Error(
+            `${label} output_map.start ${kernelOutputMap.start} does not match native family `
+            + `start ${familyOutputMap.start}.`
+        );
+    }
+    if (kernelOutputMap.strides.some((stride, dim) => stride !== familyOutputMap.strides[dim])) {
+        throw new Error(`${label} output_map.strides do not match native family metadata.`);
+    }
+
+    for (let row = 0; row < kernelRows; row++) {
+        let remainder = row;
+        let slot = kernelOutputMap.start;
+        for (let dim = shape.length - 1; dim >= 0; dim--) {
+            const index = remainder % shape[dim];
+            remainder = Math.floor(remainder / shape[dim]);
+            const term = checkedMetadataMul(
+                index,
+                kernelOutputMap.strides[dim],
+                `${label} output_map dimension ${dim}`,
+            );
+            slot = checkedMetadataAdd(slot, term, `${label} output_map slot`);
+        }
+        if (slot < 0 || slot >= rows) {
+            throw new Error(
+                `${label} writes ${outputName} output ${slot} outside layout.rows=${rows}.`
+            );
+        }
+        visitSlot(slot);
+    }
+}
+
+function scalarOutputSlots(kernel, label) {
+    const kernelRows = integerField(kernel, 'rows', label);
+    if (!Array.isArray(kernel.output_indices)) {
+        throw new Error(`${label} is missing scalar output_indices metadata.`);
+    }
+    if (kernel.output_indices.length !== kernelRows) {
+        throw new Error(
+            `${label} output_indices length ${kernel.output_indices.length} `
+            + `does not match rows=${kernelRows}.`
+        );
+    }
+    return kernel.output_indices.map((slot, slotIndex) => {
+        if (!Number.isSafeInteger(slot)) {
+            throw new Error(
+                `${label} output_indices[${slotIndex}] has invalid slot metadata (${slot}).`
+            );
+        }
+        return slot;
+    });
+}
+
+function stringField(value, field, label) {
+    const fieldValue = value?.[field];
+    if (typeof fieldValue !== 'string' || fieldValue.length === 0) {
+        throw new Error(`${label} has invalid ${field} metadata.`);
+    }
+    return fieldValue;
+}
+
+function stringArrayField(value, field, label) {
+    const fieldValue = value?.[field];
+    if (!Array.isArray(fieldValue) || fieldValue.length === 0) {
+        throw new Error(`${label} has invalid ${field} metadata.`);
+    }
+    return fieldValue.map((entry, index) => {
+        if (typeof entry !== 'string' || entry.length === 0) {
+            throw new Error(`${label}.${field}[${index}] has invalid prefix metadata.`);
+        }
+        return entry;
+    });
+}
+
+function sameStrings(left, right) {
+    return left.length === right.length
+        && left.every((entry, index) => entry === right[index]);
+}
+
+function validatedEntryPrefixes(block, options) {
+    const {
+        layoutLabel,
+        expectedNativeEntryPrefixes,
+        expectedScalarEntryPrefix,
+    } = options;
+    if (Object.prototype.hasOwnProperty.call(block ?? {}, 'kernel_prefix')) {
+        throw new Error(`${layoutLabel} has stale kernel_prefix metadata.`);
+    }
+    const prefixes = block?.entry_prefixes;
+    if (typeof prefixes !== 'object' || prefixes === null) {
+        throw new Error(`${layoutLabel} has invalid entry_prefixes metadata.`);
+    }
+    const nativeEntryPrefixes = stringArrayField(
+        prefixes, 'native', `${layoutLabel} entry_prefixes`);
+    const scalarEntryPrefix = stringField(
+        prefixes, 'scalar', `${layoutLabel} entry_prefixes`);
+    if (!sameStrings(nativeEntryPrefixes, expectedNativeEntryPrefixes)) {
+        throw new Error(
+            `${layoutLabel} native entry_prefixes must be `
+            + `${expectedNativeEntryPrefixes.join(', ')}; got `
+            + `${nativeEntryPrefixes.join(', ')}.`
+        );
+    }
+    if (scalarEntryPrefix !== expectedScalarEntryPrefix) {
+        throw new Error(
+            `${layoutLabel} scalar entry_prefix must be ${expectedScalarEntryPrefix}; `
+            + `got ${scalarEntryPrefix}.`
+        );
+    }
+    return { nativeEntryPrefixes, scalarEntryPrefix };
+}
+
+function validatedKernelSchedule(block, options) {
+    const {
+        layoutLabel,
+        kernelEntryLabel,
+        outputName,
+        nativeEntryPrefixes: expectedNativeEntryPrefixes,
+        scalarEntryPrefix: expectedScalarEntryPrefix,
+        denseOutputRequired,
+        allowEmptySchedule = false,
+        staleManifestHint = '',
+    } = options;
+    const { nativeEntryPrefixes, scalarEntryPrefix } = validatedEntryPrefixes(block, {
+        layoutLabel,
+        expectedNativeEntryPrefixes,
+        expectedScalarEntryPrefix,
+    });
+    const rows = integerField(block, 'rows', layoutLabel);
+    const layoutWorkgroupSize = integerField(block, 'workgroup_size', layoutLabel, 1);
+    const chunkSize = integerField(block, 'chunk_size', layoutLabel, 1);
+    if (chunkSize !== layoutWorkgroupSize) {
+        throw new Error(
+            `${layoutLabel} chunk_size=${chunkSize} does not match `
+            + `workgroup_size=${layoutWorkgroupSize}.`
+        );
+    }
+    if (!Array.isArray(block.kernels)) {
+        throw new Error(
+            `${layoutLabel} has invalid kernels metadata.${staleManifestHint}`
+        );
+    }
+    const kernelCount = integerField(block, 'kernel_count', layoutLabel);
+    if (kernelCount !== block.kernels.length) {
+        throw new Error(
+            `${layoutLabel} kernel_count=${kernelCount} does not match `
+            + `${block.kernels.length} ${outputName} kernel entries.`
+        );
+    }
+    const scalarChunkCount = integerField(block, 'chunks', layoutLabel);
+    if (hasOwn(block, 'native_families') && !Array.isArray(block.native_families)) {
+        throw new Error(`${layoutLabel} has invalid native_families metadata.`);
+    }
+    const nativeFamilies = Array.isArray(block.native_families) ? block.native_families : [];
+    if (block.kernels.length === 0) {
+        if (!allowEmptySchedule || rows !== 0) {
+            throw new Error(
+                `${layoutLabel} manifest has no kernel inventory.${staleManifestHint}`
+            );
+        }
+        if (scalarChunkCount !== 0 || nativeFamilies.length !== 0) {
+            throw new Error(
+                `${layoutLabel} empty ${outputName} inventory must not report `
+                + 'scalar chunks or native families.'
+            );
+        }
+        return [];
+    }
+    const covered = new Map();
+    const entries = new Set();
+    let nativeIndex = 0;
+    let scalarKernelCount = 0;
+    const schedule = block.kernels.map((kernel) => {
+        const entry = typeof kernel?.entry === 'string' ? kernel.entry : '';
+        const label = `${kernelEntryLabel} ${kernel?.entry}`;
+        const kernelRows = integerField(kernel, 'rows', label, 1);
+        const workgroupSize = integerField(kernel, 'workgroup_size', label, 1);
+        if (workgroupSize !== layoutWorkgroupSize) {
+            throw new Error(
+                `${label} workgroup_size=${workgroupSize} does not match `
+                + `${layoutLabel} workgroup_size=${layoutWorkgroupSize}.`
+            );
+        }
+        if (entry.length === 0) {
+            throw new Error(`${label} has invalid entry metadata.`);
+        }
+        if (entries.has(entry)) {
+            throw new Error(`${label} duplicates ${outputName} kernel entry ${entry}.`);
+        }
+        entries.add(entry);
+        const hasTensorOutput = hasOwn(kernel, 'output_map');
+        const hasScalarOutput = hasOwn(kernel, 'start_slot')
+            || hasOwn(kernel, 'output_indices');
+        if (hasTensorOutput && hasScalarOutput) {
+            throw new Error(
+                `${label} mixes native tensor output metadata with scalar chunk metadata.`
+            );
+        }
+        if (hasTensorOutput) {
+            if (!nativeEntryPrefixes.some((prefix) => entry.startsWith(prefix))) {
+                throw new Error(
+                    `${label} native entry must start with one of `
+                    + `${nativeEntryPrefixes.join(', ')}; got ${entry}.`
+                );
+            }
+            const family = nativeFamilies[nativeIndex];
+            if (!family) {
+                throw new Error(
+                    `${kernelEntryLabel} ${entry} has no matching native family metadata.`
+                );
+            }
+            visitNativeOutputSlots(
+                kernel,
+                family,
+                `${kernelEntryLabel} ${entry}`,
+                rows,
+                outputName,
+                (slot) => {
+                    markOutputSlot(
+                        covered, slot, `${kernelEntryLabel} ${entry}`, rows, outputName);
+                },
+            );
+            nativeIndex += 1;
+        } else {
+            if (!entry.startsWith(scalarEntryPrefix)) {
+                throw new Error(
+                    `${label} scalar chunk entry must start with ${scalarEntryPrefix}; `
+                    + `got ${entry}.`
+                );
+            }
+            integerField(kernel, 'start_slot', `${kernelEntryLabel} ${entry}`);
+            scalarKernelCount += 1;
+            for (const slot of scalarOutputSlots(kernel, `${kernelEntryLabel} ${entry}`)) {
+                markOutputSlot(
+                    covered, slot, `${kernelEntryLabel} ${entry}`, rows, outputName);
+            }
+        }
+        return { entry, rows: kernelRows, workgroupSize };
+    });
+    if (nativeIndex !== nativeFamilies.length) {
+        throw new Error(
+            `${layoutLabel} has ${nativeFamilies.length} native families but scheduled `
+            + `${nativeIndex} native ${outputName} kernels.`
+        );
+    }
+    if (scalarChunkCount !== scalarKernelCount) {
+        throw new Error(
+            `${layoutLabel} chunks=${scalarChunkCount} does not match `
+            + `${scalarKernelCount} scalar ${outputName} kernel entries.`
+        );
+    }
+    if (denseOutputRequired) {
+        const gap = firstMissingOutputSlot(rows, covered);
+        if (gap !== -1) {
+            throw new Error(
+                `${layoutLabel} schedule does not cover ${outputName} output ${gap}; `
+                + 'GPU RK4 requires a dense derivative vector.'
+            );
+        }
+    }
+    return schedule;
+}
+
+// Normalize and validate the derivative kernel schedule in the wgsl-solve
+// layout. Native kernels write through generated WGSL output maps, so the host
+// only dispatches them; it still validates the maps before building pipelines
+// because the RK4 path assumes a dense derivative vector matching state order.
+export function derivativeKernelSchedule(layout) {
+    return validatedKernelSchedule(layout, {
+        layoutLabel: 'GPU layout',
+        kernelEntryLabel: 'GPU kernel',
+        outputName: 'derivative',
+        nativeEntryPrefixes: ['derivative_rhs_map', 'derivative_rhs_stencil'],
+        scalarEntryPrefix: 'derivative_rhs_chunk',
+        denseOutputRequired: true,
+        staleManifestHint: ' The WASM package predates stencil emission. '
+            + 'Rebuild it from the wgsl-backend sources '
+            + '(wasm-pack build crates/rumoca-bind-wasm).',
+    });
+}
+
+// Validate the implicit RHS kernel inventory exposed by wgsl-solve. The
+// browser RK4 path does not dispatch these kernels yet; this keeps the manifest
+// contract executable for future implicit GPU solvers.
+export function implicitKernelSchedule(layout) {
+    if (layout === null || typeof layout !== 'object') {
+        throw new Error('GPU layout has invalid implicit_rhs metadata.');
+    }
+    return validatedKernelSchedule(layout.implicit_rhs, {
+        layoutLabel: 'GPU implicit_rhs layout',
+        kernelEntryLabel: 'GPU implicit kernel',
+        outputName: 'implicit RHS',
+        nativeEntryPrefixes: ['implicit_rhs_map', 'implicit_rhs_stencil'],
+        scalarEntryPrefix: 'implicit_rhs_chunk',
+        denseOutputRequired: false,
+        allowEmptySchedule: true,
+    });
+}
+
+export function gpuKernelSchedules(layout) {
+    return {
+        derivative: derivativeKernelSchedule(layout),
+        implicit: implicitKernelSchedule(layout),
+    };
+}
+
+export function gpuKernelDispatchPlan(
+    schedule,
+    label = 'GPU kernel schedule',
+    maxWorkgroups = Number.MAX_SAFE_INTEGER,
+) {
+    if (!Array.isArray(schedule) || schedule.length === 0) {
+        throw new Error(`${label} has no kernels to dispatch.`);
+    }
+    return schedule.map((kernel, index) => {
+        const entry = stringField(kernel, 'entry', `${label}[${index}]`);
+        const rows = integerField(kernel, 'rows', `${label}[${index}]`, 1);
+        const workgroupSize = integerField(
+            kernel, 'workgroupSize', `${label}[${index}]`, 1);
+        return {
+            entry,
+            rows,
+            workgroupSize,
+            workgroups: checkedWorkgroupCount(
+                rows,
+                workgroupSize,
+                `${label}[${index}] ${entry}`,
+                maxWorkgroups,
+            ),
+        };
+    });
+}
+
+export function gpuKernelWorkgroupBudget(
+    schedule,
+    label = 'GPU kernel schedule',
+    maxWorkgroups = Number.MAX_SAFE_INTEGER,
+) {
+    if (!Array.isArray(schedule)) {
+        throw new Error(`${label} metadata is invalid.`);
+    }
+    return schedule.reduce((total, kernel, index) => {
+        const entry = stringField(kernel, 'entry', `${label}[${index}]`);
+        const rows = integerField(kernel, 'rows', `${label}[${index}]`, 1);
+        const workgroupSize = integerField(
+            kernel, 'workgroupSize', `${label}[${index}]`, 1);
+        const workgroups = checkedWorkgroupCount(
+            rows,
+            workgroupSize,
+            `${label}[${index}] ${entry}`,
+            maxWorkgroups,
+            'budget',
+        );
+        return checkedMetadataAdd(
+            total,
+            workgroups,
+            `${label}[${index}] workgroup budget`,
+        );
+    }, 0);
 }
 
 // Acquire a WebGPU adapter, throwing actionable errors when WebGPU is
@@ -101,9 +676,12 @@ export async function probeGpu() {
 // RK4 loop and resolves to a result shaped like `simulate_model`.
 export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const layout = prep.layout || {};
-    const nStates = prep.n_states | 0;
-    const yLen = Math.max(layout.y_len | 0, 1);
-    const rows = Math.max(layout.rows | 0, 0);
+    const nStates = integerField(prep, 'n_states', 'GPU preparation');
+    const yLen = integerField(layout, 'y_len', 'GPU layout', 1);
+    const rows = integerField(layout, 'rows', 'GPU layout');
+    const pLen = integerField(layout, 'p_len', 'GPU layout');
+    const runtimeEventRoots = integerField(layout, 'runtime_event_roots', 'GPU layout');
+    u32Value(nStates, 'GPU preparation n_states');
     if (rows === 0 || nStates === 0) {
         throw new Error('Model has no continuous states to integrate on the GPU.');
     }
@@ -113,28 +691,23 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             + `states=${nStates}); this model is not supported yet.`
         );
     }
-    const tStart = Number(prep.t_start) || 0;
-    const tEnd = Number(prep.t_end) || 1;
-    const dt = Number(prep.dt) > 0
-        ? Number(prep.dt) : (tEnd - tStart) / 500;
-    const steps = Math.max(1, Math.round((tEnd - tStart) / dt));
+    const tStart = finiteNumberField(prep, 't_start', 'GPU preparation');
+    const tEnd = finiteNumberField(prep, 't_end', 'GPU preparation');
+    const dt = finiteNumberField(prep, 'dt', 'GPU preparation');
+    const steps = simulationStepCount(tStart, tEnd, dt);
+    const schedules = gpuKernelSchedules(layout);
 
     const device = await adapter.requestDevice();
+    const maxWorkgroups = deviceWorkgroupLimit(device);
+    const kernelList = gpuKernelDispatchPlan(
+        schedules.derivative, 'GPU derivative kernel schedule', maxWorkgroups);
+    const implicitWorkgroups = gpuKernelWorkgroupBudget(
+        schedules.implicit, 'GPU implicit kernel schedule', maxWorkgroups);
     onPhase('Parsing GPU kernels (WGSL)', null);
     const derModule = await compileGpuModule(device, prep.wgsl, 'wgsl-solve');
     const stageModule = await compileGpuModule(device, GPU_STAGE_WGSL, 'rk4-stage');
     const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
-    // Kernel inventory: stencil-family kernels + residual chunks from
-    // the layout manifest.
-    if (!Array.isArray(layout.kernels) || layout.kernels.length === 0) {
-        throw new Error(
-            'GPU layout manifest has no kernel inventory; the WASM package '
-            + 'predates stencil emission. Rebuild it from the wgsl-backend '
-            + 'sources (wasm-pack build crates/rumoca-bind-wasm).'
-        );
-    }
-    const kernelList = layout.kernels;
     let pipelinesBuilt = 0;
     onPhase(`Building GPU pipelines (0/${kernelList.length})`, 0);
     const derPipelines = await Promise.all(
@@ -150,8 +723,6 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             return pipeline;
         }))
     );
-    const kernelWorkgroups = kernelList.map(
-        (kernel) => Math.max(1, Math.ceil((kernel.rows | 0) / 64)));
     const axpyPipeline = await device.createComputePipelineAsync({
         layout: 'auto', compute: { module: stageModule, entryPoint: 'axpy' },
     });
@@ -161,12 +732,12 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
 
     const storage = (len, label) => device.createBuffer({
         label,
-        size: Math.max(16, len * 4),
+        size: storageByteSize(len, label),
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
     const yBuf = storage(yLen, 'y');
     const yStage = storage(yLen, 'y-stage');
-    const pBuf = storage(Math.max(layout.p_len | 0, 1), 'p');
+    const pBuf = storage(Math.max(pLen, 1), 'p');
     const kBufs = [0, 1, 2, 3].map((i) => storage(rows, `k${i + 1}`));
 
     const timeUniform = device.createBuffer({
@@ -233,13 +804,18 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         ],
     });
 
-    const stageGroups = Math.ceil(nStates / 64);
+    const stageGroups = checkedWorkgroupCount(
+        nStates,
+        GPU_STAGE_WORKGROUP_SIZE,
+        'GPU RK4 stage',
+        maxWorkgroups,
+    );
     const dispatchDer = (enc, stage) => {
         const pass = enc.beginComputePass();
         derPipelines.forEach((pipe, c) => {
             pass.setPipeline(pipe);
             pass.setBindGroup(0, derBinds[stage][c]);
-            pass.dispatchWorkgroups(kernelWorkgroups[c]);
+            pass.dispatchWorkgroups(kernelList[c].workgroups);
         });
         pass.end();
     };
@@ -251,8 +827,9 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         pass.end();
     };
 
+    const yReadBytes = checkedMetadataMul(yLen, 4, 'y readback byte size');
     const readback = device.createBuffer({
-        size: Math.max(16, yLen * 4),
+        size: Math.max(16, yReadBytes),
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     const writeTime = (t) => device.queue.writeBuffer(
@@ -293,7 +870,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             writeTime(t + dt);
             dispatchDer(enc4, 3);
             dispatchStage(enc4, combinePipeline, combineBind);
-            enc4.copyBufferToBuffer(yBuf, 0, readback, 0, yLen * 4);
+            enc4.copyBufferToBuffer(yBuf, 0, readback, 0, yReadBytes);
             device.queue.submit([enc4.finish()]);
             await readback.mapAsync(GPUMapMode.READ);
             samples.push(Array.from(new Float32Array(readback.getMappedRange())));
@@ -308,21 +885,10 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         }
         const gpuSeconds = (performance.now() - wallStart) / 1000;
 
-        // Shape the result like simulate_model so plots and viz scripts work
-        // unchanged. Names come from the layout bindings (y-kind slots).
-        // Bindings include bare base-name aliases ("u" -> 0) alongside the
-        // indexed names ("u[1,1]" -> 0); prefer indexed names so array
-        // models keep their element naming.
-        const names = new Array(yLen).fill(null);
-        for (const [name, slot] of Object.entries(layout.bindings || {})) {
-            if (!slot || slot.kind !== 'y' || slot.index >= yLen) {
-                continue;
-            }
-            const existing = names[slot.index];
-            if (!existing || (!existing.includes('[') && name.includes('['))) {
-                names[slot.index] = name;
-            }
-        }
+        // Shape the result like simulate_model so plots and viz scripts work unchanged.
+        const names = Array.isArray(prepNow.state_names)
+            ? prepNow.state_names.slice(0, yLen)
+            : [];
         for (let i = 0; i < yLen; i++) {
             if (!names[i]) names[i] = `y[${i}]`;
         }
@@ -330,7 +896,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         for (let i = 0; i < yLen; i++) {
             allData.push(samples.map((row) => row[i]));
         }
-        const eventNote = (layout.runtime_event_roots | 0) > 0
+        const eventNote = runtimeEventRoots > 0
             ? ' · events frozen (GPU v1)' : '';
         return {
             payload: {
@@ -342,7 +908,14 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                     requested: { solver: `wgsl-solve RK4 (f32)${eventNote}`, t_start: tStart, t_end: tEnd, dt },
                 },
             },
-            metrics: { simulateSeconds: gpuSeconds },
+            metrics: {
+                simulateSeconds: gpuSeconds,
+                derivativeKernels: kernelList.length,
+                derivativeWorkgroups: workgroupTotal(
+                    kernelList, 'GPU derivative kernel schedule'),
+                implicitKernels: schedules.implicit.length,
+                implicitWorkgroups,
+            },
         };
     }
 

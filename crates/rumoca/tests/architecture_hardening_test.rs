@@ -265,11 +265,7 @@ fn test_semantic_ir_has_direct_spans_not_spanned_wrappers() {
     let statement_content =
         fs::read_to_string(&statement_path).expect("read core component IR primitives");
     let expression_enum = semantic_enum_body(&content, "Expression", "impl Expression");
-    let statement_enum = semantic_enum_body(
-        &statement_content,
-        "Statement",
-        "impl Default for Statement",
-    );
+    let statement_enum = semantic_enum_body(&statement_content, "Statement", "impl Statement");
 
     assert!(
         !expression_enum.contains("Spanned"),

@@ -33,9 +33,11 @@ the source text is added to a `SourceMap`.
 
 `SourceMap` is a rendering/lookup table for diagnostics. It must not be relied
 on to repair parser spans after parse, merge, or source-root collection. Phase
-code may use `Span::DUMMY` only for compiler-generated constructs or genuinely
-source-free diagnostics; source-backed diagnostics must carry the original span
-through AST -> Flat -> DAE -> Solve.
+code may use `Span::DUMMY` only for genuinely source-free diagnostics or
+constructs. Compiler-generated IR that is derived from source must use the
+nearest honest owner span, such as the rewritten expression, owning equation,
+assignment, statement, declaration, or subscript span. Source-backed diagnostics
+must carry the original span through AST -> Flat -> DAE -> Solve.
 
 ### Fail-Fast Error Semantics
 
@@ -316,7 +318,9 @@ impl From<minijinja::Error> for CodegenError { ... }
 |---|---|---|
 | Preserve spans through AST → Flat → DAE → Solve | every transformation | Values originating in source must remain clickable in diagnostics |
 | Never silently drop spans | every transformation | Drop = lost user-facing location |
-| `Span::DUMMY` only for true compiler-generated constructs | synthetic equations / generated code | Source-free placeholders MUST be justified inline |
+| Generated source-derived IR uses owner/context spans | synthetic equations / generated code | Generated does not mean source-free |
+| `Span::DUMMY` only for genuinely source-free constructs | synthetic placeholders / global diagnostics | Absence must be intentional |
+| APIs for generated IR require explicit span context | core IR constructors | Callers must choose provenance |
 | Diagnostics include primary + secondary labels when useful | error sites | Primary points at the issue; secondary at the related context |
 | Source-free constructs explain why no span exists | comment near the synthesis site | Future contributors can't tell intent from absence |
 

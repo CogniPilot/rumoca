@@ -3,23 +3,40 @@ use super::*;
 #[test]
 fn refresh_env_solver_and_parameter_values_updates_runtime_slots_only() {
     let mut dae = dae::Dae::default();
-    dae.variables
-        .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
-    dae.variables
-        .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
-    dae.variables
-        .parameters
-        .insert(VarName::new("p"), dae::Variable::new(VarName::new("p")));
-    dae.variables
-        .discrete_reals
-        .insert(VarName::new("d"), dae::Variable::new(VarName::new("d")));
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae.variables.outputs.insert(
+        VarName::new("y"),
+        dae::Variable::new(
+            VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae.variables.parameters.insert(
+        VarName::new("p"),
+        dae::Variable::new(
+            VarName::new("p"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae.variables.discrete_reals.insert(
+        VarName::new("d"),
+        dae::Variable::new(
+            VarName::new("d"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
-    let mut env = build_env(&dae, &[1.0, 2.0], &[3.0], 0.25);
+    let mut env = build_env(&dae, &[1.0, 2.0], &[3.0], 0.25).expect("test env should build");
     env.set("d", 9.0);
 
-    refresh_env_solver_and_parameter_values(&mut env, &dae, &[4.0, 5.0], &[6.0], 0.75);
+    refresh_env_solver_and_parameter_values(&mut env, &dae, &[4.0, 5.0], &[6.0], 0.75)
+        .expect("refresh should succeed");
 
     assert_eq!(env_value(&env, "time"), 0.75);
     assert_eq!(env_value(&env, "x"), 4.0);
@@ -29,17 +46,25 @@ fn refresh_env_solver_and_parameter_values_updates_runtime_slots_only() {
 }
 
 #[test]
-fn try_build_env_rejects_short_solver_vector() {
+fn build_env_rejects_short_solver_vector() {
     let mut dae = dae::Dae::default();
-    dae.variables
-        .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
-    dae.variables
-        .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae.variables.outputs.insert(
+        VarName::new("y"),
+        dae::Variable::new(
+            VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
     assert_eq!(
-        try_build_env(&dae, &[1.0], &[], 0.0).expect_err("short y should fail"),
+        build_env(&dae, &[1.0], &[], 0.0).expect_err("short y should fail"),
         EvalError::ShortRuntimeVector {
             vector: "y",
             expected: 2,
@@ -49,14 +74,18 @@ fn try_build_env_rejects_short_solver_vector() {
 }
 
 #[test]
-fn try_build_env_rejects_short_parameter_vector() {
+fn build_env_rejects_short_parameter_vector() {
     let mut dae = dae::Dae::default();
-    dae.variables
-        .parameters
-        .insert(VarName::new("p"), dae::Variable::new(VarName::new("p")));
+    dae.variables.parameters.insert(
+        VarName::new("p"),
+        dae::Variable::new(
+            VarName::new("p"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
     assert_eq!(
-        try_build_env(&dae, &[], &[], 0.0).expect_err("short p should fail"),
+        build_env(&dae, &[], &[], 0.0).expect_err("short p should fail"),
         EvalError::ShortRuntimeVector {
             vector: "p",
             expected: 1,
@@ -66,17 +95,25 @@ fn try_build_env_rejects_short_parameter_vector() {
 }
 
 #[test]
-fn try_refresh_env_solver_and_parameter_values_rejects_short_vectors_before_mutation() {
+fn refresh_env_solver_and_parameter_values_rejects_short_vectors_before_mutation() {
     let mut dae = dae::Dae::default();
-    dae.variables
-        .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
-    dae.variables
-        .parameters
-        .insert(VarName::new("p"), dae::Variable::new(VarName::new("p")));
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae.variables.parameters.insert(
+        VarName::new("p"),
+        dae::Variable::new(
+            VarName::new("p"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
-    let mut env = try_build_env(&dae, &[1.0], &[2.0], 0.25).expect("initial env");
-    let err = try_refresh_env_solver_and_parameter_values(&mut env, &dae, &[], &[3.0], 0.5)
+    let mut env = build_env(&dae, &[1.0], &[2.0], 0.25).expect("initial env");
+    let err = refresh_env_solver_and_parameter_values(&mut env, &dae, &[], &[3.0], 0.5)
         .expect_err("short y should fail");
 
     assert_eq!(
@@ -95,18 +132,28 @@ fn try_refresh_env_solver_and_parameter_values_rejects_short_vectors_before_muta
 #[test]
 fn build_runtime_parameter_tail_env_populates_inputs_and_discretes_without_solver_slots() {
     let mut dae = dae::Dae::default();
-    dae.variables
-        .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
-    let mut p = dae::Variable::new(VarName::new("p"));
+    let mut p = dae::Variable::new(
+        VarName::new("p"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     p.start = Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(0.0),
         span: rumoca_core::Span::DUMMY,
     });
     dae.variables.parameters.insert(VarName::new("p"), p);
 
-    let mut u = dae::Variable::new(VarName::new("u"));
+    let mut u = dae::Variable::new(
+        VarName::new("u"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     u.start = Some(rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Add,
         lhs: Box::new(rumoca_core::Expression::VarRef {
@@ -122,7 +169,10 @@ fn build_runtime_parameter_tail_env_populates_inputs_and_discretes_without_solve
     });
     dae.variables.inputs.insert(VarName::new("u"), u);
 
-    let mut d = dae::Variable::new(VarName::new("d"));
+    let mut d = dae::Variable::new(
+        VarName::new("d"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     d.start = Some(rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Add,
         lhs: Box::new(rumoca_core::Expression::VarRef {
@@ -138,7 +188,7 @@ fn build_runtime_parameter_tail_env_populates_inputs_and_discretes_without_solve
     });
     dae.variables.discrete_reals.insert(VarName::new("d"), d);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[3.0], 0.25);
+    let env = build_runtime_parameter_tail_env(&dae, &[3.0], 0.25).expect("test env should build");
 
     assert_eq!(env_value(&env, "time"), 0.25);
     assert_eq!(env_value(&env, "p"), 3.0);
@@ -151,7 +201,10 @@ fn build_runtime_parameter_tail_env_populates_inputs_and_discretes_without_solve
 fn build_runtime_parameter_tail_env_skips_string_parameter_alias_chain() {
     let mut dae = dae::Dae::default();
 
-    let mut shape_type = dae::Variable::new(VarName::new("fixedTranslation.shapeType"));
+    let mut shape_type = dae::Variable::new(
+        VarName::new("fixedTranslation.shapeType"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     shape_type.start = Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::String("cylinder".to_string()),
         span: rumoca_core::Span::DUMMY,
@@ -160,7 +213,10 @@ fn build_runtime_parameter_tail_env_skips_string_parameter_alias_chain() {
         .parameters
         .insert(VarName::new("fixedTranslation.shapeType"), shape_type);
 
-    let mut shape_shape_type = dae::Variable::new(VarName::new("fixedTranslation.shape.shapeType"));
+    let mut shape_shape_type = dae::Variable::new(
+        VarName::new("fixedTranslation.shape.shapeType"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     shape_shape_type.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("fixedTranslation.shapeType"),
         subscripts: vec![],
@@ -171,7 +227,7 @@ fn build_runtime_parameter_tail_env_skips_string_parameter_alias_chain() {
         shape_shape_type,
     );
 
-    let env = try_build_runtime_parameter_tail_env(&dae, &[], 0.0)
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0)
         .expect("string parameter aliases should stay out of numeric env");
     assert!(!env.vars.contains_key("fixedTranslation.shapeType"));
     assert!(!env.vars.contains_key("fixedTranslation.shape.shapeType"));
@@ -181,7 +237,10 @@ fn build_runtime_parameter_tail_env_skips_string_parameter_alias_chain() {
 fn declared_slot_runtime_tail_env_advances_over_string_parameter_slots() {
     let mut dae = dae::Dae::default();
 
-    let mut shape_type = dae::Variable::new(VarName::new("body.shapeType"));
+    let mut shape_type = dae::Variable::new(
+        VarName::new("body.shapeType"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     shape_type.start = Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::String("cylinder".to_string()),
         span: rumoca_core::Span::DUMMY,
@@ -190,14 +249,17 @@ fn declared_slot_runtime_tail_env_advances_over_string_parameter_slots() {
         .parameters
         .insert(VarName::new("body.shapeType"), shape_type);
 
-    let mut q_start = dae::Variable::new(VarName::new("body.Q_start"));
+    let mut q_start = dae::Variable::new(
+        VarName::new("body.Q_start"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     q_start.dims = vec![4];
     q_start.start = Some(arr(vec![lit(0.0), lit(0.0), lit(0.0), lit(1.0)], false));
     dae.variables
         .parameters
         .insert(VarName::new("body.Q_start"), q_start);
 
-    let env = try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+    let env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         &dae,
         &[0.0, 0.0, 0.0, 0.0, 1.0],
         0.0,
@@ -213,14 +275,18 @@ fn declared_slot_runtime_tail_env_advances_over_string_parameter_slots() {
 }
 
 #[test]
-fn try_build_runtime_parameter_tail_env_rejects_short_parameter_vector() {
+fn build_runtime_parameter_tail_env_rejects_short_parameter_vector() {
     let mut dae = dae::Dae::default();
-    dae.variables
-        .parameters
-        .insert(VarName::new("p"), dae::Variable::new(VarName::new("p")));
+    dae.variables.parameters.insert(
+        VarName::new("p"),
+        dae::Variable::new(
+            VarName::new("p"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
     assert_eq!(
-        try_build_runtime_parameter_tail_env(&dae, &[], 0.0).expect_err("short p should fail"),
+        build_runtime_parameter_tail_env(&dae, &[], 0.0).expect_err("short p should fail"),
         EvalError::ShortRuntimeVector {
             vector: "p",
             expected: 1,
@@ -230,16 +296,19 @@ fn try_build_runtime_parameter_tail_env_rejects_short_parameter_vector() {
 }
 
 #[test]
-fn try_build_runtime_parameter_tail_env_rejects_bad_array_start_shape() {
+fn build_runtime_parameter_tail_env_rejects_bad_array_start_shape() {
     let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(17), 5, 13);
     let mut dae = dae::Dae::default();
-    let mut constant = dae::Variable::new(VarName::new("c"));
+    let mut constant = dae::Variable::new(
+        VarName::new("c"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     constant.source_span = span;
     constant.dims = vec![3];
     constant.start = Some(arr(vec![lit(1.0), lit(2.0)], false));
     dae.variables.constants.insert(VarName::new("c"), constant);
 
-    let err = try_build_runtime_parameter_tail_env(&dae, &[], 0.0)
+    let err = build_runtime_parameter_tail_env(&dae, &[], 0.0)
         .expect_err("array start shape mismatch should fail env construction");
     assert_eq!(err.source_span(), Some(span));
     assert_eq!(
@@ -256,7 +325,10 @@ fn try_build_runtime_parameter_tail_env_rejects_bad_array_start_shape() {
 #[test]
 fn build_runtime_parameter_tail_env_binds_vector_builtin_array_start() {
     let mut dae = dae::Dae::default();
-    let mut discrete = dae::Variable::new(VarName::new("buf"));
+    let mut discrete = dae::Variable::new(
+        VarName::new("buf"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     discrete.dims = vec![3];
     discrete.start = Some(builtin(
         BuiltinFunction::Vector,
@@ -275,7 +347,7 @@ fn build_runtime_parameter_tail_env_binds_vector_builtin_array_start() {
         .discrete_reals
         .insert(VarName::new("buf"), discrete);
 
-    let env = try_build_runtime_parameter_tail_env(&dae, &[], 0.0)
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0)
         .expect("vector(array) start should populate discrete array values");
 
     assert_eq!(env_value(&env, "buf[1]"), 6.5);
@@ -288,10 +360,16 @@ fn build_runtime_parameter_tail_env_uses_default_discrete_start_dependencies() {
     let mut dae = dae::Dae::default();
     dae.variables.discrete_valued.insert(
         VarName::new("condition"),
-        dae::Variable::new(VarName::new("condition")),
+        dae::Variable::new(
+            VarName::new("condition"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
-    let mut local_condition = dae::Variable::new(VarName::new("localCondition"));
+    let mut local_condition = dae::Variable::new(
+        VarName::new("localCondition"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     local_condition.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("condition"),
         subscripts: vec![],
@@ -301,7 +379,7 @@ fn build_runtime_parameter_tail_env_uses_default_discrete_start_dependencies() {
         .discrete_valued
         .insert(VarName::new("localCondition"), local_condition);
 
-    let env = try_build_runtime_parameter_tail_env(&dae, &[], 0.0)
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0)
         .expect("discrete defaults should be available to dependent starts");
 
     assert_eq!(env_value(&env, "condition"), 0.0);
@@ -312,7 +390,10 @@ fn build_runtime_parameter_tail_env_uses_default_discrete_start_dependencies() {
 fn build_runtime_parameter_tail_env_binds_constants_before_parameter_starts() {
     let mut dae = dae::Dae::default();
 
-    let mut table = dae::Variable::new(VarName::new("clock.conversionTable"));
+    let mut table = dae::Variable::new(
+        VarName::new("clock.conversionTable"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     table.dims = vec![8];
     table.start = Some(arr(
         vec![
@@ -331,13 +412,19 @@ fn build_runtime_parameter_tail_env_binds_constants_before_parameter_starts() {
         .constants
         .insert(VarName::new("clock.conversionTable"), table);
 
-    let mut resolution = dae::Variable::new(VarName::new("clock.resolution"));
+    let mut resolution = dae::Variable::new(
+        VarName::new("clock.resolution"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     resolution.start = Some(lit(6.0));
     dae.variables
         .parameters
         .insert(VarName::new("clock.resolution"), resolution);
 
-    let mut factor = dae::Variable::new(VarName::new("clock.resolutionFactor"));
+    let mut factor = dae::Variable::new(
+        VarName::new("clock.resolutionFactor"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     factor.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("clock.conversionTable"),
         subscripts: vec![rumoca_core::Subscript::Expr {
@@ -358,7 +445,7 @@ fn build_runtime_parameter_tail_env_binds_constants_before_parameter_starts() {
         .parameters
         .insert(VarName::new("clock.resolutionFactor"), factor);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "clock.conversionTable[6]"), 1_000.0);
     assert_eq!(env_value(&env, "clock.resolutionFactor"), 1_000.0);
@@ -368,13 +455,19 @@ fn build_runtime_parameter_tail_env_binds_constants_before_parameter_starts() {
 fn build_runtime_parameter_tail_env_resolves_forward_parameter_array_dependency() {
     let mut dae = dae::Dae::default();
 
-    let mut selected = dae::Variable::new(VarName::new("body.I_11"));
+    let mut selected = dae::Variable::new(
+        VarName::new("body.I_11"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     selected.start = Some(indexed_var("body.I", &[1, 1]));
     dae.variables
         .parameters
         .insert(VarName::new("body.I_11"), selected);
 
-    let mut inertia = dae::Variable::new(VarName::new("body.I"));
+    let mut inertia = dae::Variable::new(
+        VarName::new("body.I"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     inertia.dims = vec![2, 2];
     inertia.start = Some(arr(
         vec![
@@ -387,7 +480,7 @@ fn build_runtime_parameter_tail_env_resolves_forward_parameter_array_dependency(
         .parameters
         .insert(VarName::new("body.I"), inertia);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "body.I[1,1]"), 1.0);
     assert_eq!(env_value(&env, "body.I_11"), 1.0);
@@ -398,7 +491,10 @@ fn build_runtime_parameter_tail_env_prefers_pre_store_for_lowered_pre_parameters
     clear_pre_values();
 
     let mut dae = dae::Dae::default();
-    let mut pre = dae::Variable::new(VarName::new("__pre__.reset"));
+    let mut pre = dae::Variable::new(
+        VarName::new("__pre__.reset"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     pre.start = Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(0.0),
         span: rumoca_core::Span::DUMMY,
@@ -413,7 +509,8 @@ fn build_runtime_parameter_tail_env_prefers_pre_store_for_lowered_pre_parameters
         ..VarEnv::new()
     };
     set_pre_value_in_env(&seed_env, "reset", 1.0);
-    let env = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime);
+    let env = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime)
+        .expect("test env should build");
 
     assert_eq!(env_value(&env, "__pre__.reset"), 1.0);
 
@@ -427,7 +524,10 @@ fn build_runtime_parameter_tail_env_keeps_pre_store_runtime_local() {
     let mut dae = dae::Dae::default();
     dae.variables.parameters.insert(
         VarName::new("__pre__.reset"),
-        dae::Variable::new(VarName::new("__pre__.reset")),
+        dae::Variable::new(
+            VarName::new("__pre__.reset"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let runtime_a = std::sync::Arc::new(EvalRuntimeState::new());
@@ -443,8 +543,10 @@ fn build_runtime_parameter_tail_env_keeps_pre_store_runtime_local() {
     set_pre_value_in_env(&env_a, "reset", 1.0);
     set_pre_value_in_env(&env_b, "reset", 2.0);
 
-    let built_a = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime_a);
-    let built_b = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime_b);
+    let built_a = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime_a)
+        .expect("test env should build");
+    let built_b = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime_b)
+        .expect("test env should build");
 
     assert_eq!(env_value(&built_a, "__pre__.reset"), 1.0);
     assert_eq!(env_value(&built_b, "__pre__.reset"), 2.0);
@@ -493,17 +595,25 @@ fn refresh_env_solver_and_parameter_values_refreshes_lowered_pre_parameters_from
     clear_pre_values();
 
     let mut dae = dae::Dae::default();
-    dae.variables
-        .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
     dae.variables.parameters.insert(
         VarName::new("__pre__.reset"),
-        dae::Variable::new(VarName::new("__pre__.reset")),
+        dae::Variable::new(
+            VarName::new("__pre__.reset"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
-    let mut env = build_env(&dae, &[0.0], &[0.0], 0.0);
+    let mut env = build_env(&dae, &[0.0], &[0.0], 0.0).expect("test env should build");
     set_pre_value_in_env(&env, "reset", 2.0);
-    refresh_env_solver_and_parameter_values(&mut env, &dae, &[1.0], &[0.0], 0.5);
+    refresh_env_solver_and_parameter_values(&mut env, &dae, &[1.0], &[0.0], 0.5)
+        .expect("refresh should succeed");
 
     assert_eq!(env_value(&env, "x"), 1.0);
     assert_eq!(env_value(&env, "__pre__.reset"), 2.0);
@@ -515,7 +625,10 @@ fn refresh_env_solver_and_parameter_values_refreshes_lowered_pre_parameters_from
 fn build_runtime_parameter_tail_env_skips_zero_sized_parameter_slots() {
     let mut dae = dae::Dae::default();
 
-    let mut dyn_arr = dae::Variable::new(VarName::new("dyn_arr"));
+    let mut dyn_arr = dae::Variable::new(
+        VarName::new("dyn_arr"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     dyn_arr.dims = vec![0];
     dae.variables
         .parameters
@@ -523,10 +636,13 @@ fn build_runtime_parameter_tail_env_skips_zero_sized_parameter_slots() {
 
     dae.variables.parameters.insert(
         VarName::new("table_id"),
-        dae::Variable::new(VarName::new("table_id")),
+        dae::Variable::new(
+            VarName::new("table_id"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
-    let env = build_runtime_parameter_tail_env(&dae, &[4.0], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[4.0], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "table_id"), 4.0);
     assert!(!env.vars.contains_key("dyn_arr"));
@@ -544,7 +660,10 @@ fn build_runtime_parameter_tail_env_binds_enum_parameters_without_numeric_slots(
         3,
     );
 
-    let mut before = dae::Variable::new(VarName::new("before"));
+    let mut before = dae::Variable::new(
+        VarName::new("before"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     before.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'X'"),
         subscripts: vec![],
@@ -554,7 +673,10 @@ fn build_runtime_parameter_tail_env_binds_enum_parameters_without_numeric_slots(
         .parameters
         .insert(VarName::new("before"), before);
 
-    let mut after = dae::Variable::new(VarName::new("after"));
+    let mut after = dae::Variable::new(
+        VarName::new("after"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     after.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'0'"),
         subscripts: vec![],
@@ -564,7 +686,10 @@ fn build_runtime_parameter_tail_env_binds_enum_parameters_without_numeric_slots(
         .parameters
         .insert(VarName::new("after"), after);
 
-    let mut u = dae::Variable::new(VarName::new("u"));
+    let mut u = dae::Variable::new(
+        VarName::new("u"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     u.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("before"),
         subscripts: vec![],
@@ -572,7 +697,7 @@ fn build_runtime_parameter_tail_env_binds_enum_parameters_without_numeric_slots(
     });
     dae.variables.inputs.insert(VarName::new("u"), u);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "before"), 2.0);
     assert_eq!(env_value(&env, "after"), 3.0);
@@ -591,7 +716,10 @@ fn build_runtime_parameter_tail_env_binds_qualified_enum_parameters_without_nume
         4,
     );
 
-    let mut before = dae::Variable::new(VarName::new("Enable.before"));
+    let mut before = dae::Variable::new(
+        VarName::new("Enable.before"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     before.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'0'"),
         subscripts: vec![],
@@ -601,7 +729,10 @@ fn build_runtime_parameter_tail_env_binds_qualified_enum_parameters_without_nume
         .parameters
         .insert(VarName::new("Enable.before"), before);
 
-    let mut after = dae::Variable::new(VarName::new("Enable.after"));
+    let mut after = dae::Variable::new(
+        VarName::new("Enable.after"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     after.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'1'"),
         subscripts: vec![],
@@ -611,7 +742,10 @@ fn build_runtime_parameter_tail_env_binds_qualified_enum_parameters_without_nume
         .parameters
         .insert(VarName::new("Enable.after"), after);
 
-    let mut step_time = dae::Variable::new(VarName::new("Enable.stepTime"));
+    let mut step_time = dae::Variable::new(
+        VarName::new("Enable.stepTime"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     step_time.start = Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(1.0),
         span: rumoca_core::Span::DUMMY,
@@ -620,7 +754,7 @@ fn build_runtime_parameter_tail_env_binds_qualified_enum_parameters_without_nume
         .parameters
         .insert(VarName::new("Enable.stepTime"), step_time);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "Enable.before"), 3.0);
     assert_eq!(env_value(&env, "Enable.after"), 4.0);
@@ -635,7 +769,10 @@ fn build_runtime_parameter_tail_env_binds_counter_like_enum_parameter_chain() {
         3,
     );
 
-    let mut q0 = dae::Variable::new(VarName::new("Counter.q0"));
+    let mut q0 = dae::Variable::new(
+        VarName::new("Counter.q0"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     q0.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'0'"),
         subscripts: vec![],
@@ -645,7 +782,10 @@ fn build_runtime_parameter_tail_env_binds_counter_like_enum_parameter_chain() {
         .parameters
         .insert(VarName::new("Counter.q0"), q0);
 
-    let mut ff_q0 = dae::Variable::new(VarName::new("Counter.FF[1].q0"));
+    let mut ff_q0 = dae::Variable::new(
+        VarName::new("Counter.FF[1].q0"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     ff_q0.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Counter.q0"),
         subscripts: vec![],
@@ -655,7 +795,10 @@ fn build_runtime_parameter_tail_env_binds_counter_like_enum_parameter_chain() {
         .parameters
         .insert(VarName::new("Counter.FF[1].q0"), ff_q0);
 
-    let mut td_y0 = dae::Variable::new(VarName::new("Counter.FF[1].RS1.TD1.y0"));
+    let mut td_y0 = dae::Variable::new(
+        VarName::new("Counter.FF[1].RS1.TD1.y0"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     td_y0.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Counter.q0"),
         subscripts: vec![],
@@ -665,7 +808,7 @@ fn build_runtime_parameter_tail_env_binds_counter_like_enum_parameter_chain() {
         .parameters
         .insert(VarName::new("Counter.FF[1].RS1.TD1.y0"), td_y0);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "Counter.q0"), 3.0);
     assert_eq!(env_value(&env, "Counter.FF[1].q0"), 3.0);
@@ -680,7 +823,10 @@ fn build_runtime_parameter_tail_env_broadcasts_enum_literal_to_discrete_array_st
         1,
     );
 
-    let mut auxiliary = dae::Variable::new(VarName::new("auxiliary"));
+    let mut auxiliary = dae::Variable::new(
+        VarName::new("auxiliary"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     auxiliary.dims = vec![3];
     auxiliary.start = Some(rumoca_core::Expression::VarRef {
         name: Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'U'"),
@@ -691,7 +837,7 @@ fn build_runtime_parameter_tail_env_broadcasts_enum_literal_to_discrete_array_st
         .discrete_valued
         .insert(VarName::new("auxiliary"), auxiliary);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "auxiliary[1]"), 1.0);
     assert_eq!(env_value(&env, "auxiliary[2]"), 1.0);
@@ -702,7 +848,10 @@ fn build_runtime_parameter_tail_env_broadcasts_enum_literal_to_discrete_array_st
 fn build_runtime_parameter_tail_env_binds_singleton_parameter_array_index_entries() {
     let mut dae = dae::Dae::default();
 
-    let mut t_param = dae::Variable::new(VarName::new("a.t"));
+    let mut t_param = dae::Variable::new(
+        VarName::new("a.t"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     t_param.dims = vec![1];
     t_param.start = Some(rumoca_core::Expression::Array {
         elements: vec![rumoca_core::Expression::Literal {
@@ -716,7 +865,7 @@ fn build_runtime_parameter_tail_env_binds_singleton_parameter_array_index_entrie
         .parameters
         .insert(VarName::new("a.t"), t_param);
 
-    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "a.t"), 1.0);
     assert_eq!(env_value(&env, "a.t[1]"), 1.0);
@@ -726,16 +875,23 @@ fn build_runtime_parameter_tail_env_binds_singleton_parameter_array_index_entrie
 fn build_env_skips_zero_sized_solver_slots() {
     let mut dae = dae::Dae::default();
 
-    let mut dyn_out = dae::Variable::new(VarName::new("dyn_out"));
+    let mut dyn_out = dae::Variable::new(
+        VarName::new("dyn_out"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     dyn_out.dims = vec![0];
     dae.variables
         .outputs
         .insert(VarName::new("dyn_out"), dyn_out);
-    dae.variables
-        .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+    dae.variables.outputs.insert(
+        VarName::new("y"),
+        dae::Variable::new(
+            VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
 
-    let env = build_env(&dae, &[7.0], &[], 0.0);
+    let env = build_env(&dae, &[7.0], &[], 0.0).expect("test env should build");
 
     assert_eq!(env_value(&env, "y"), 7.0);
     assert!(!env.vars.contains_key("dyn_out"));

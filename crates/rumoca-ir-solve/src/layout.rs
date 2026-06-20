@@ -64,6 +64,24 @@ pub enum ComponentReferenceKeyErrorKind {
     DynamicSubscript,
 }
 
+impl std::fmt::Display for ComponentReferenceKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            ComponentReferenceKeyErrorKind::MissingDefId => {
+                write!(
+                    f,
+                    "component reference is missing resolved definition identity"
+                )
+            }
+            ComponentReferenceKeyErrorKind::DynamicSubscript => {
+                write!(f, "component reference contains a dynamic subscript")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ComponentReferenceKeyError {}
+
 impl ComponentReferenceKey {
     pub fn generated(name: impl Into<String>) -> Self {
         Self::Generated {
@@ -139,30 +157,86 @@ pub struct IndexedScalarSlot {
 pub enum VarLayoutShapeContractError {
     ShapeWithoutBinding {
         variable: String,
+        span: Option<Span>,
+    },
+    ShapeSpanMissing {
+        variable: String,
+    },
+    ShapeSpanWithoutShape {
+        variable: String,
         span: Span,
     },
     EmptyShape {
         variable: String,
-        span: Span,
+        span: Option<Span>,
     },
     ShapeOutOfBounds {
         variable: String,
         start: usize,
         count: usize,
         available: usize,
-        span: Span,
+        span: Option<Span>,
+    },
+    ShapeSizeOverflow {
+        variable: String,
+        span: Option<Span>,
     },
 }
 
 impl VarLayoutShapeContractError {
-    pub fn span(&self) -> Span {
+    pub fn source_span(&self) -> Option<Span> {
         match self {
             Self::ShapeWithoutBinding { span, .. }
             | Self::EmptyShape { span, .. }
-            | Self::ShapeOutOfBounds { span, .. } => *span,
+            | Self::ShapeOutOfBounds { span, .. }
+            | Self::ShapeSizeOverflow { span, .. } => *span,
+            Self::ShapeSpanWithoutShape { span, .. } => Some(*span),
+            Self::ShapeSpanMissing { .. } => None,
         }
     }
 }
+
+impl std::fmt::Display for VarLayoutShapeContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ShapeWithoutBinding { variable, .. } => {
+                write!(f, "shape metadata for `{variable}` has no scalar binding")
+            }
+            Self::ShapeSpanMissing { variable } => {
+                write!(f, "shape metadata for `{variable}` has no source span")
+            }
+            Self::ShapeSpanWithoutShape { variable, .. } => {
+                write!(f, "source span metadata for `{variable}` has no shape")
+            }
+            Self::EmptyShape { variable, .. } => {
+                write!(f, "shape metadata for `{variable}` has empty dimensions")
+            }
+            Self::ShapeOutOfBounds {
+                variable,
+                start,
+                count,
+                available,
+                ..
+            } => {
+                let end = start
+                    .checked_add(*count)
+                    .map_or_else(|| "overflow".to_string(), |end| end.to_string());
+                write!(
+                    f,
+                    "shape metadata for `{variable}` covers slots {start}..{end} but only {available} slots are available"
+                )
+            }
+            Self::ShapeSizeOverflow { variable, .. } => {
+                write!(
+                    f,
+                    "shape metadata for `{variable}` has too many scalar slots"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for VarLayoutShapeContractError {}
 
 impl VarLayout {
     pub fn from_parts(
@@ -186,18 +260,8 @@ impl VarLayout {
         shapes: IndexMap<String, Vec<usize>>,
         y_scalars: usize,
         p_scalars: usize,
-    ) -> Self {
-        Self::try_from_parts_with_shapes(bindings, shapes, y_scalars, p_scalars)
-            .expect("solve VarLayout shape metadata must match scalar bindings")
-    }
-
-    pub fn try_from_parts_with_shapes(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        y_scalars: usize,
-        p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
-        Self::try_from_parts_with_shapes_and_spans(
+        Self::from_parts_with_shapes_and_spans(
             bindings,
             shapes,
             IndexMap::new(),
@@ -212,25 +276,9 @@ impl VarLayout {
         shape_spans: IndexMap<String, Span>,
         y_scalars: usize,
         p_scalars: usize,
-    ) -> Self {
-        Self::try_from_parts_with_shapes_and_spans(
-            bindings,
-            shapes,
-            shape_spans,
-            y_scalars,
-            p_scalars,
-        )
-        .expect("solve VarLayout shape metadata must match scalar bindings")
-    }
-
-    pub fn try_from_parts_with_shapes_and_spans(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        shape_spans: IndexMap<String, Span>,
-        y_scalars: usize,
-        p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
-        let indexed_bindings = indexed_bindings_from_shapes(&bindings, &shapes);
+        let indexed_bindings =
+            indexed_bindings_from_shapes(&bindings, &shapes, &shape_spans, y_scalars, p_scalars)?;
         let shape_indexed_keys = generated_shape_indexed_keys(&shapes, &indexed_bindings);
         validate_shape_contract(
             &bindings,
@@ -258,26 +306,8 @@ impl VarLayout {
         indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
         y_scalars: usize,
         p_scalars: usize,
-    ) -> Self {
-        Self::try_from_parts_with_shapes_spans_and_indexed_bindings(
-            bindings,
-            shapes,
-            IndexMap::new(),
-            indexed_bindings,
-            y_scalars,
-            p_scalars,
-        )
-        .expect("solve VarLayout shape metadata must match scalar bindings")
-    }
-
-    pub fn try_from_parts_with_shapes_and_indexed_bindings(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-        y_scalars: usize,
-        p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
-        Self::try_from_parts_with_shapes_spans_and_indexed_bindings(
+        Self::from_parts_with_shapes_spans_and_indexed_bindings(
             bindings,
             shapes,
             IndexMap::new(),
@@ -294,27 +324,8 @@ impl VarLayout {
         indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
         y_scalars: usize,
         p_scalars: usize,
-    ) -> Self {
-        Self::try_from_parts_with_shapes_spans_and_indexed_bindings(
-            bindings,
-            shapes,
-            shape_spans,
-            indexed_bindings,
-            y_scalars,
-            p_scalars,
-        )
-        .expect("solve VarLayout shape metadata must match scalar bindings")
-    }
-
-    pub fn try_from_parts_with_shapes_spans_and_indexed_bindings(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        shape_spans: IndexMap<String, Span>,
-        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-        y_scalars: usize,
-        p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
-        Self::try_from_parts_with_shapes_spans_keys_and_indexed_bindings(
+        Self::from_parts_with_shapes_spans_keys_and_indexed_bindings(
             bindings,
             shapes,
             shape_spans,
@@ -325,7 +336,7 @@ impl VarLayout {
         )
     }
 
-    pub fn try_from_parts_with_shapes_spans_keys_and_indexed_bindings(
+    pub fn from_parts_with_shapes_spans_keys_and_indexed_bindings(
         bindings: IndexMap<String, ScalarSlot>,
         shapes: IndexMap<String, Vec<usize>>,
         shape_spans: IndexMap<String, Span>,
@@ -407,15 +418,16 @@ fn validate_shape_contract(
     y_scalars: usize,
     p_scalars: usize,
 ) -> Result<(), VarLayoutShapeContractError> {
+    validate_shape_span_metadata(shapes, shape_spans)?;
     for (name, shape) in shapes {
-        let span = shape_spans.get(name).copied().unwrap_or(Span::DUMMY);
+        let span = shape_span(name, shape_spans)?;
         if shape.is_empty() {
             return Err(VarLayoutShapeContractError::EmptyShape {
                 variable: name.clone(),
                 span,
             });
         }
-        let count = shape.iter().product::<usize>();
+        let count = shape_scalar_count(name, shape, span)?;
         if count == 0 {
             validate_zero_size_shape(name, bindings, shape_indexed_keys, indexed_bindings, span)?;
             continue;
@@ -446,7 +458,7 @@ fn validate_shape_contract(
                 });
             }
         };
-        if start.saturating_add(count) > available {
+        if slot_range_end(start, count).is_none_or(|end| end > available) {
             return Err(VarLayoutShapeContractError::ShapeOutOfBounds {
                 variable: name.clone(),
                 start,
@@ -459,12 +471,69 @@ fn validate_shape_contract(
     Ok(())
 }
 
+fn validate_shape_span_metadata(
+    shapes: &IndexMap<String, Vec<usize>>,
+    shape_spans: &IndexMap<String, Span>,
+) -> Result<(), VarLayoutShapeContractError> {
+    if shape_spans.is_empty() {
+        return Ok(());
+    }
+    for (name, span) in shape_spans {
+        if !shapes.contains_key(name) {
+            return Err(VarLayoutShapeContractError::ShapeSpanWithoutShape {
+                variable: name.clone(),
+                span: *span,
+            });
+        }
+    }
+    for name in shapes.keys() {
+        if !shape_spans.contains_key(name) {
+            return Err(VarLayoutShapeContractError::ShapeSpanMissing {
+                variable: name.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn shape_span(
+    name: &str,
+    shape_spans: &IndexMap<String, Span>,
+) -> Result<Option<Span>, VarLayoutShapeContractError> {
+    if shape_spans.is_empty() {
+        return Ok(None);
+    }
+    shape_spans.get(name).copied().map(Some).ok_or_else(|| {
+        VarLayoutShapeContractError::ShapeSpanMissing {
+            variable: name.to_string(),
+        }
+    })
+}
+
+fn shape_scalar_count(
+    name: &str,
+    shape: &[usize],
+    span: Option<Span>,
+) -> Result<usize, VarLayoutShapeContractError> {
+    shape
+        .iter()
+        .try_fold(1usize, |count, dim| count.checked_mul(*dim))
+        .ok_or_else(|| VarLayoutShapeContractError::ShapeSizeOverflow {
+            variable: name.to_string(),
+            span,
+        })
+}
+
+fn slot_range_end(start: usize, count: usize) -> Option<usize> {
+    start.checked_add(count)
+}
+
 fn validate_zero_size_shape(
     name: &str,
     bindings: &IndexMap<String, ScalarSlot>,
     shape_indexed_keys: &IndexMap<String, ComponentReferenceKey>,
     indexed_bindings: &IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-    span: Span,
+    span: Option<Span>,
 ) -> Result<(), VarLayoutShapeContractError> {
     if bindings.contains_key(name) {
         return Err(VarLayoutShapeContractError::ShapeOutOfBounds {
@@ -495,7 +564,7 @@ fn validate_indexed_constant_shape(
     count: usize,
     shape_indexed_keys: &IndexMap<String, ComponentReferenceKey>,
     indexed_bindings: &IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-    span: Span,
+    span: Option<Span>,
 ) -> Result<(), VarLayoutShapeContractError> {
     let entries = shape_indexed_keys
         .get(name)
@@ -536,67 +605,145 @@ fn generated_shape_indexed_keys(
 fn indexed_bindings_from_shapes(
     bindings: &IndexMap<String, ScalarSlot>,
     shapes: &IndexMap<String, Vec<usize>>,
-) -> IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>> {
-    let mut indexed_bindings = IndexMap::new();
+    shape_spans: &IndexMap<String, Span>,
+    y_scalars: usize,
+    p_scalars: usize,
+) -> Result<IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>, VarLayoutShapeContractError> {
+    let mut indexed_bindings =
+        indexed_binding_map_with_capacity(shapes.len(), "indexed binding map")?;
     for (name, shape) in shapes {
+        let span = shape_span(name, shape_spans)?;
         let Some(slot) = bindings.get(name).copied() else {
             continue;
         };
-        let Some(start) = slot_start(slot) else {
+        let Some((start, available)) = slot_start_and_available(slot, y_scalars, p_scalars) else {
             continue;
         };
-        let count = shape.iter().product::<usize>();
-        let entries = (0..count)
-            .filter_map(|flat_index| {
-                let indices = flat_index_to_subscripts(shape, flat_index)?;
-                Some(IndexedScalarSlot {
-                    indices,
-                    slot: slot.with_index(start + flat_index)?,
-                })
-            })
-            .collect::<Vec<_>>();
+        let count = shape_scalar_count(name, shape, span)?;
+        if slot_range_end(start, count).is_none_or(|end| end > available) {
+            return Err(VarLayoutShapeContractError::ShapeOutOfBounds {
+                variable: name.clone(),
+                start,
+                count,
+                available,
+                span,
+            });
+        }
+        let mut entries = shape_vec_with_capacity(count, name, span)?;
+        for flat_index in 0..count {
+            let Some(indices) = flat_index_to_subscripts(name, shape, flat_index, span)? else {
+                continue;
+            };
+            let offset = start.checked_add(flat_index).ok_or_else(|| {
+                VarLayoutShapeContractError::ShapeOutOfBounds {
+                    variable: name.clone(),
+                    start,
+                    count,
+                    available: start,
+                    span,
+                }
+            })?;
+            let Some(slot) = slot_with_checked_index(slot, offset, name, span)? else {
+                continue;
+            };
+            entries.push(IndexedScalarSlot { indices, slot });
+        }
         if !entries.is_empty() {
             indexed_bindings.insert(ComponentReferenceKey::generated(name), entries);
         }
     }
-    indexed_bindings
+    Ok(indexed_bindings)
 }
 
-fn slot_start(slot: ScalarSlot) -> Option<usize> {
+fn indexed_binding_map_with_capacity<K, V>(
+    capacity: usize,
+    variable: &str,
+) -> Result<IndexMap<K, V>, VarLayoutShapeContractError>
+where
+    K: std::hash::Hash + Eq,
+{
+    let mut values = IndexMap::new();
+    values
+        .try_reserve(capacity)
+        .map_err(|_| VarLayoutShapeContractError::ShapeSizeOverflow {
+            variable: variable.to_string(),
+            span: None,
+        })?;
+    Ok(values)
+}
+
+fn shape_vec_with_capacity<T>(
+    capacity: usize,
+    variable: &str,
+    span: Option<Span>,
+) -> Result<Vec<T>, VarLayoutShapeContractError> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|_| {
+        VarLayoutShapeContractError::ShapeSizeOverflow {
+            variable: variable.to_string(),
+            span,
+        }
+    })?;
+    Ok(values)
+}
+
+fn slot_with_checked_index(
+    slot: ScalarSlot,
+    index: usize,
+    name: &str,
+    span: Option<Span>,
+) -> Result<Option<ScalarSlot>, VarLayoutShapeContractError> {
+    let byte_offset = index.checked_mul(F64_BYTES).ok_or_else(|| {
+        VarLayoutShapeContractError::ShapeOutOfBounds {
+            variable: name.to_string(),
+            start: index,
+            count: 1,
+            available: usize::MAX / F64_BYTES,
+            span,
+        }
+    })?;
+    Ok(match slot {
+        ScalarSlot::Y { .. } => Some(ScalarSlot::Y { index, byte_offset }),
+        ScalarSlot::P { .. } => Some(ScalarSlot::P { index, byte_offset }),
+        ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+    })
+}
+
+fn slot_start_and_available(
+    slot: ScalarSlot,
+    y_scalars: usize,
+    p_scalars: usize,
+) -> Option<(usize, usize)> {
     match slot {
-        ScalarSlot::Y { index, .. } | ScalarSlot::P { index, .. } => Some(index),
+        ScalarSlot::Y { index, .. } => Some((index, y_scalars)),
+        ScalarSlot::P { index, .. } => Some((index, p_scalars)),
         ScalarSlot::Time | ScalarSlot::Constant(_) => None,
     }
 }
 
-fn flat_index_to_subscripts(shape: &[usize], flat_index: usize) -> Option<Vec<usize>> {
+fn flat_index_to_subscripts(
+    name: &str,
+    shape: &[usize],
+    flat_index: usize,
+    span: Option<Span>,
+) -> Result<Option<Vec<usize>>, VarLayoutShapeContractError> {
     if shape.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut remainder = flat_index;
-    let mut subscripts = Vec::with_capacity(shape.len());
+    let mut subscripts = shape_vec_with_capacity(shape.len(), name, span)?;
     for dim in shape.iter().rev().copied() {
         if dim == 0 {
-            return None;
+            return Ok(None);
         }
         subscripts.push((remainder % dim) + 1);
         remainder /= dim;
     }
     if remainder != 0 {
-        return None;
+        return Ok(None);
     }
     subscripts.reverse();
-    Some(subscripts)
-}
-
-impl ScalarSlot {
-    fn with_index(self, index: usize) -> Option<Self> {
-        match self {
-            ScalarSlot::Y { .. } => Some(scalar_slot_y(index)),
-            ScalarSlot::P { .. } => Some(scalar_slot_p(index)),
-            ScalarSlot::Time | ScalarSlot::Constant(_) => None,
-        }
-    }
+    Ok(Some(subscripts))
 }
 
 pub fn scalar_slot_y(index: usize) -> ScalarSlot {
@@ -618,10 +765,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn component_reference_key_error_displays_missing_def_id() {
+        let span = Span::from_offsets(rumoca_core::SourceId(21), 4, 9);
+        let reference = ComponentReference {
+            local: false,
+            span,
+            parts: vec![rumoca_core::ComponentRefPart {
+                ident: "x".to_string(),
+                span,
+                subs: Vec::new(),
+            }],
+            def_id: None,
+        };
+
+        let err = ComponentReferenceKey::from_component_reference(&reference)
+            .expect_err("source component reference without DefId should fail");
+
+        assert_eq!(err.span, span);
+        assert_eq!(
+            err.to_string(),
+            "component reference is missing resolved definition identity"
+        );
+    }
+
+    #[test]
+    fn component_reference_key_error_displays_dynamic_subscript() {
+        let span = Span::from_offsets(rumoca_core::SourceId(22), 12, 20);
+        let reference = ComponentReference {
+            local: false,
+            span,
+            parts: vec![rumoca_core::ComponentRefPart {
+                ident: "x".to_string(),
+                span,
+                subs: vec![Subscript::expr(
+                    Box::new(rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Real(1.0),
+                        span,
+                    }),
+                    span,
+                )],
+            }],
+            def_id: Some(rumoca_core::DefId(7)),
+        };
+
+        let err = ComponentReferenceKey::from_component_reference(&reference)
+            .expect_err("dynamic component reference subscript should fail");
+
+        assert_eq!(err.span, span);
+        assert_eq!(
+            err.to_string(),
+            "component reference contains a dynamic subscript"
+        );
+    }
+
+    #[test]
     fn layout_shape_contract_accepts_bound_array_shape() {
         let bindings = IndexMap::from([("x".to_string(), scalar_slot_y(0))]);
         let shapes = IndexMap::from([("x".to_string(), vec![2, 3])]);
-        let layout = VarLayout::try_from_parts_with_shapes(bindings, shapes, 6, 0)
+        let layout = VarLayout::from_parts_with_shapes(bindings, shapes, 6, 0)
             .expect("shape matches y scalar extent");
 
         assert_eq!(layout.validate_shape_contract(), Ok(()));
@@ -636,17 +837,24 @@ mod tests {
         let bindings = IndexMap::new();
         let shapes = IndexMap::from([("x".to_string(), vec![2])]);
 
+        let err = VarLayout::from_parts_with_shapes(bindings, shapes, 0, 0)
+            .expect_err("shape without scalar binding should fail");
         assert!(matches!(
-            VarLayout::try_from_parts_with_shapes(bindings, shapes, 0, 0),
-            Err(VarLayoutShapeContractError::ShapeWithoutBinding { variable, span }) if variable == "x" && span.is_dummy()
+            err,
+            VarLayoutShapeContractError::ShapeWithoutBinding { ref variable, span } if variable == "x" && span.is_none()
         ));
+        assert_eq!(err.source_span(), None);
+        assert_eq!(
+            err.to_string(),
+            "shape metadata for `x` has no scalar binding"
+        );
     }
 
     #[test]
     fn layout_shape_contract_accepts_zero_size_array_shape_without_scalar_binding() {
         let bindings = IndexMap::new();
         let shapes = IndexMap::from([("x".to_string(), vec![0])]);
-        let layout = VarLayout::try_from_parts_with_shapes(bindings, shapes, 0, 0)
+        let layout = VarLayout::from_parts_with_shapes(bindings, shapes, 0, 0)
             .expect("zero-size arrays carry shape metadata but no scalar slots");
 
         assert_eq!(layout.shape("x"), Some([0].as_slice()));
@@ -664,13 +872,13 @@ mod tests {
         let shapes = IndexMap::from([("x".to_string(), vec![0])]);
 
         assert!(matches!(
-            VarLayout::try_from_parts_with_shapes(bindings, shapes, 1, 0),
+            VarLayout::from_parts_with_shapes(bindings, shapes, 1, 0),
             Err(VarLayoutShapeContractError::ShapeOutOfBounds {
                 variable,
                 count: 0,
                 span,
                 ..
-            }) if variable == "x" && span.is_dummy()
+            }) if variable == "x" && span.is_none()
         ));
     }
 
@@ -680,14 +888,95 @@ mod tests {
         let shapes = IndexMap::from([("x".to_string(), vec![3])]);
 
         assert!(matches!(
-            VarLayout::try_from_parts_with_shapes(bindings, shapes, 3, 0),
+            VarLayout::from_parts_with_shapes(bindings, shapes, 3, 0),
             Err(VarLayoutShapeContractError::ShapeOutOfBounds {
                 variable,
                 start: 1,
                 count: 3,
                 available: 3,
                 span,
-            }) if variable == "x" && span.is_dummy()
+            }) if variable == "x" && span.is_none()
+        ));
+    }
+
+    #[test]
+    fn layout_shape_contract_rejects_shape_size_overflow_with_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(8), 2, 6);
+        let bindings = IndexMap::from([("x".to_string(), scalar_slot_y(0))]);
+        let shapes = IndexMap::from([("x".to_string(), vec![usize::MAX, 2])]);
+        let shape_spans = IndexMap::from([("x".to_string(), span)]);
+
+        let err = VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 0, 0)
+            .expect_err("shape scalar count overflow should fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(
+            err,
+            VarLayoutShapeContractError::ShapeSizeOverflow { variable, .. } if variable == "x"
+        ));
+    }
+
+    #[test]
+    fn layout_shape_contract_rejects_slot_range_overflow_before_indexing() {
+        let span = Span::from_offsets(rumoca_core::SourceId(9), 4, 11);
+        let start = usize::MAX;
+        let bindings = IndexMap::from([(
+            "x".to_string(),
+            ScalarSlot::Y {
+                index: start,
+                byte_offset: start,
+            },
+        )]);
+        let shapes = IndexMap::from([("x".to_string(), vec![2])]);
+        let shape_spans = IndexMap::from([("x".to_string(), span)]);
+
+        let err = VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 0, 0)
+            .expect_err("slot range overflow should fail before indexed binding generation");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(
+            err,
+            VarLayoutShapeContractError::ShapeOutOfBounds {
+                variable,
+                start: actual_start,
+                count: 2,
+                ..
+            } if variable == "x" && actual_start == start
+        ));
+    }
+
+    #[test]
+    fn layout_shape_contract_rejects_indexed_slot_byte_offset_overflow_with_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(10), 5, 12);
+        let start = usize::MAX / F64_BYTES + 1;
+        let bindings = IndexMap::from([(
+            "x".to_string(),
+            ScalarSlot::Y {
+                index: start,
+                byte_offset: start,
+            },
+        )]);
+        let shapes = IndexMap::from([("x".to_string(), vec![1])]);
+        let shape_spans = IndexMap::from([("x".to_string(), span)]);
+
+        let err = VarLayout::from_parts_with_shapes_and_spans(
+            bindings,
+            shapes,
+            shape_spans,
+            usize::MAX,
+            0,
+        )
+        .expect_err("indexed slot byte offset overflow should fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(
+            err,
+            VarLayoutShapeContractError::ShapeOutOfBounds {
+                variable,
+                start: actual_start,
+                count: 1,
+                ..
+            } if variable == "x" && actual_start == start
         ));
     }
 
@@ -699,9 +988,49 @@ mod tests {
         let shape_spans = IndexMap::from([("x".to_string(), span)]);
 
         assert!(matches!(
-            VarLayout::try_from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 0, 0),
+            VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 0, 0),
             Err(VarLayoutShapeContractError::ShapeWithoutBinding { variable, span: actual })
-                if variable == "x" && actual == span
+                if variable == "x" && actual == Some(span)
+        ));
+    }
+
+    #[test]
+    fn layout_shape_contract_rejects_partial_shape_span_metadata() {
+        let bindings = IndexMap::from([
+            ("x".to_string(), scalar_slot_y(0)),
+            ("y".to_string(), scalar_slot_y(1)),
+        ]);
+        let shapes = IndexMap::from([("x".to_string(), vec![1]), ("y".to_string(), vec![1])]);
+        let shape_spans = IndexMap::from([(
+            "x".to_string(),
+            Span::from_offsets(rumoca_core::SourceId(11), 1, 2),
+        )]);
+
+        let err = VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 2, 0)
+            .expect_err("explicit shape spans must cover every shape");
+
+        assert!(matches!(
+            err,
+            VarLayoutShapeContractError::ShapeSpanMissing { variable } if variable == "y"
+        ));
+    }
+
+    #[test]
+    fn layout_shape_contract_rejects_stale_shape_span_metadata() {
+        let span = Span::from_offsets(rumoca_core::SourceId(12), 4, 8);
+        let bindings = IndexMap::from([("x".to_string(), scalar_slot_y(0))]);
+        let shapes = IndexMap::from([("x".to_string(), vec![1])]);
+        let shape_spans = IndexMap::from([("x".to_string(), span), ("stale".to_string(), span)]);
+
+        let err = VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 1, 0)
+            .expect_err("explicit shape spans must not contain stale entries");
+
+        assert!(matches!(
+            err,
+            VarLayoutShapeContractError::ShapeSpanWithoutShape {
+                variable,
+                span: actual,
+            } if variable == "stale" && actual == span
         ));
     }
 
@@ -723,7 +1052,7 @@ mod tests {
             ],
         )]);
 
-        let layout = VarLayout::try_from_parts_with_shapes_and_indexed_bindings(
+        let layout = VarLayout::from_parts_with_shapes_and_indexed_bindings(
             bindings,
             shapes,
             indexed_bindings,

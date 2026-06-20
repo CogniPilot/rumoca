@@ -18,7 +18,7 @@ fn lower_discrete_rhs_skips_untargeted_condition_rows() {
     dae_model.conditions.relations.push(condition.clone());
     dae_model.conditions.equations.push(dae::Equation::residual(
         condition,
-        Default::default(),
+        rumoca_core::Span::DUMMY,
         // MLS Appendix B: a targetless f_c row is a relation/root condition,
         // not a condition-memory assignment row for discrete event updates.
         "targetless relation row",
@@ -34,6 +34,7 @@ fn lower_discrete_rhs_skips_untargeted_condition_rows() {
 #[test]
 fn lower_root_conditions_emit_unbiased_relation_surface() {
     let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
     dae_model
         .variables
         .states
@@ -47,15 +48,15 @@ fn lower_root_conditions_emit_unbiased_relation_surface() {
         lhs: Box::new(var("h")),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }),
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
     dae_model.conditions.relations.push(relation.clone());
     dae_model.conditions.equations.push(dae::Equation::explicit(
         rumoca_core::VarName::new("c[1]"),
         relation,
-        Default::default(),
+        rumoca_core::Span::DUMMY,
         "condition memory",
     ));
 
@@ -86,6 +87,7 @@ fn lower_root_conditions_emit_unbiased_relation_surface() {
 #[test]
 fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
     let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
     dae_model
         .variables
         .states
@@ -106,18 +108,18 @@ fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
         lhs: Box::new(var("h1")),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }),
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
     let second_relation = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Lt,
         lhs: Box::new(var("h2")),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }),
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
     dae_model.conditions.relations.push(first_relation.clone());
     dae_model.conditions.relations.push(second_relation.clone());
@@ -129,9 +131,9 @@ fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
             rumoca_core::Expression::Array {
                 elements: vec![first_relation, second_relation],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            Default::default(),
+            rumoca_core::Span::DUMMY,
             "MLS Appendix B aggregate condition memories",
             2,
         ));
@@ -173,6 +175,7 @@ fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
 #[test]
 fn lower_root_conditions_keep_enum_literal_relations_active() {
     let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
     dae_model.symbols.enum_literal_ordinals.extend([
         ("LimiterHomotopy.NoHomotopy".to_string(), 1),
         ("LimiterHomotopy.Linear".to_string(), 2),
@@ -186,11 +189,15 @@ fn lower_root_conditions_keep_enum_literal_relations_active() {
         .parameters
         .insert(rumoca_core::VarName::new("mode"), mode);
 
-    dae_model.conditions.relations.push(binary(
-        rumoca_core::OpBinary::Eq,
-        var("mode"),
-        var("LimiterHomotopy.LowerLimit"),
-    ));
+    dae_model
+        .conditions
+        .relations
+        .push(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Eq,
+            lhs: Box::new(var("mode")),
+            rhs: Box::new(var("LimiterHomotopy.LowerLimit")),
+            span,
+        });
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_root_conditions(&dae_model, &layout)

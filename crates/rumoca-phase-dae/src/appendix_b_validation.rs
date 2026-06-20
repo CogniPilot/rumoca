@@ -25,7 +25,7 @@ pub(super) fn validate_appendix_b_invariants(dae_model: &dae::Dae) -> Result<(),
 /// Appendix B variables, condition relations, schedules, and ordinary equations
 /// before solver-facing DAE leaves `phase-dae`.
 fn validate_no_source_temporal_operator_survives(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
-    for (context, expr, fallback_span) in solver_facing_dae_expressions(dae_model) {
+    for (context, expr, fallback_span) in solver_facing_dae_expressions(dae_model)? {
         if let Some(found) = find_source_temporal_operator(expr) {
             return Err(ToDaeError::source_temporal_operator_survived_dae_boundary(
                 format!(
@@ -45,7 +45,7 @@ fn validate_no_source_temporal_operator_survives(dae_model: &dae::Dae) -> Result
 /// calls. `reinit` is lowered into guarded discrete updates; `assert` and
 /// `terminate` remain event metadata. Guard/value expressions remain pure.
 fn validate_no_flow_action_expression_survives(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
-    for (context, expr, span) in solver_facing_dae_expressions(dae_model) {
+    for (context, expr, span) in solver_facing_dae_expressions(dae_model)? {
         if let Some(found) = find_flow_action_expression(expr) {
             return Err(ToDaeError::strict_solver_dae_violation(
                 format!(
@@ -64,7 +64,7 @@ fn validate_no_flow_action_expression_survives(dae_model: &dae::Dae) -> Result<(
 
 fn solver_facing_dae_expressions(
     dae_model: &dae::Dae,
-) -> Vec<(String, &rumoca_core::Expression, rumoca_core::Span)> {
+) -> Result<Vec<(String, &rumoca_core::Expression, rumoca_core::Span)>, ToDaeError> {
     let mut exprs = Vec::new();
     push_partition_exprs(&mut exprs, "f_x", &dae_model.continuous.equations);
     push_partition_exprs(
@@ -80,14 +80,9 @@ fn solver_facing_dae_expressions(
             .conditions
             .relations
             .iter()
+            .zip(dae_model.conditions.equations.iter())
             .enumerate()
-            .map(|(idx, expr)| {
-                (
-                    format!("relation[{idx}]"),
-                    expr,
-                    expr.span().unwrap_or(rumoca_core::Span::DUMMY),
-                )
-            }),
+            .map(|(idx, (expr, equation))| (format!("relation[{idx}]"), expr, equation.span)),
     );
     for (idx, action) in dae_model.events.event_actions.iter().enumerate() {
         exprs.push((
@@ -96,21 +91,15 @@ fn solver_facing_dae_expressions(
             action.span,
         ));
     }
-    exprs.extend(
-        dae_model
-            .clocks
-            .triggered_conditions
-            .iter()
-            .enumerate()
-            .map(|(idx, expr)| {
-                (
-                    format!("clocks.triggered_conditions[{idx}]"),
-                    expr,
-                    expr.span().unwrap_or(rumoca_core::Span::DUMMY),
-                )
-            }),
-    );
-    exprs
+    for (idx, expr) in dae_model.clocks.triggered_conditions.iter().enumerate() {
+        let Some(span) = expr.span() else {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "clocks.triggered_conditions[{idx}] is missing source provenance"
+            )));
+        };
+        exprs.push((format!("clocks.triggered_conditions[{idx}]"), expr, span));
+    }
+    Ok(exprs)
 }
 
 fn push_partition_exprs<'a>(
@@ -158,7 +147,7 @@ impl ExpressionVisitor for FlowActionExpressionChecker {
             } => {
                 self.found = Some(FlowActionExpressionOccurrence {
                     action: "reinit",
-                    span: Some(*span),
+                    span: real_span(*span),
                 });
                 return;
             }
@@ -168,7 +157,7 @@ impl ExpressionVisitor for FlowActionExpressionChecker {
                 {
                     self.found = Some(FlowActionExpressionOccurrence {
                         action,
-                        span: Some(*span),
+                        span: real_span(*span),
                     });
                     return;
                 }
@@ -207,7 +196,7 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
                 if let Some(operator) = rumoca_core::source_temporal_builtin_name(*function) {
                     self.found = Some(SourceTemporalOperatorOccurrence {
                         operator,
-                        span: Some(*span),
+                        span: real_span(*span),
                     });
                     return;
                 }
@@ -218,7 +207,7 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
                 {
                     self.found = Some(SourceTemporalOperatorOccurrence {
                         operator,
-                        span: Some(*span),
+                        span: real_span(*span),
                     });
                     return;
                 }
@@ -262,6 +251,10 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
     }
 }
 
+fn real_span(span: rumoca_core::Span) -> Option<rumoca_core::Span> {
+    (!span.is_dummy()).then_some(span)
+}
+
 fn validate_strict_solver_expression_invariants(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     for (index, equation) in dae_model.continuous.equations.iter().enumerate() {
         validate_solver_expression(
@@ -283,63 +276,79 @@ fn validate_strict_solver_expression_invariants(dae_model: &dae::Dae) -> Result<
 }
 
 fn validate_runtime_contract_invariants(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
-    let mut seen_partition_for_name: HashMap<&rumoca_core::VarName, &'static str> = HashMap::new();
+    let mut seen_partition_for_name: HashMap<
+        &rumoca_core::VarName,
+        (&'static str, rumoca_core::Span),
+    > = HashMap::new();
     register_partition_names(
         &mut seen_partition_for_name,
         "x",
-        dae_model.variables.states.keys(),
+        dae_model.variables.states.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "y",
-        dae_model.variables.algebraics.keys(),
+        dae_model.variables.algebraics.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "u",
-        dae_model.variables.inputs.keys(),
+        dae_model.variables.inputs.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "w",
-        dae_model.variables.outputs.keys(),
+        dae_model.variables.outputs.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "p",
-        dae_model.variables.parameters.keys(),
+        dae_model.variables.parameters.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "constants",
-        dae_model.variables.constants.keys(),
+        dae_model.variables.constants.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "z",
-        dae_model.variables.discrete_reals.keys(),
+        dae_model.variables.discrete_reals.iter(),
     )?;
     register_partition_names(
         &mut seen_partition_for_name,
         "m",
-        dae_model.variables.discrete_valued.keys(),
+        dae_model.variables.discrete_valued.iter(),
     )?;
     Ok(())
 }
 
 fn register_partition_names<'a, I>(
-    seen_partition_for_name: &mut HashMap<&'a rumoca_core::VarName, &'static str>,
+    seen_partition_for_name: &mut HashMap<
+        &'a rumoca_core::VarName,
+        (&'static str, rumoca_core::Span),
+    >,
     partition: &'static str,
-    names: I,
+    variables: I,
 ) -> Result<(), ToDaeError>
 where
-    I: Iterator<Item = &'a rumoca_core::VarName>,
+    I: Iterator<Item = (&'a rumoca_core::VarName, &'a dae::Variable)>,
 {
-    for name in names {
-        if let Some(previous_partition) = seen_partition_for_name.insert(name, partition) {
-            return Err(ToDaeError::runtime_contract_violation(format!(
-                "variable `{name}` appears in multiple partitions: `{previous_partition}` and `{partition}`"
-            )));
+    for (name, variable) in variables {
+        if let Some((previous_partition, previous_span)) =
+            seen_partition_for_name.insert(name, (partition, variable.source_span))
+        {
+            let span = if variable.source_span.is_dummy() {
+                previous_span
+            } else {
+                variable.source_span
+            };
+            return Err(ToDaeError::runtime_contract_violation_with_span(
+                format!(
+                    "variable `{name}` appears in multiple partitions: `{previous_partition}` and `{partition}`"
+                ),
+                span,
+            ));
         }
     }
     Ok(())
@@ -519,13 +528,15 @@ fn validate_discrete_valued_solved_form(dae_model: &dae::Dae) -> Result<(), ToDa
             .map(rumoca_core::VarName::as_str)
             .collect::<Vec<_>>()
             .join(" -> ");
-        let span = assignments
-            .get(&cycle[0])
-            .map(|equation| equation.span)
-            .unwrap_or(rumoca_core::Span::DUMMY);
+        let Some(equation) = assignments.get(&cycle[0]) else {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "f_m assignment cycle references unknown target `{}`",
+                cycle[0]
+            )));
+        };
         return Err(ToDaeError::discrete_solved_form_violation(
             format!("f_m assignments have cyclic dependency: {cycle_str}"),
-            span,
+            equation.span,
         ));
     }
 
@@ -542,16 +553,22 @@ fn validate_discrete_real_solved_form(dae_model: &dae::Dae) -> Result<(), ToDaeE
         };
 
         if !is_discrete_real_or_state_name(dae_model, lhs.var_name()) {
-            return Err(ToDaeError::runtime_contract_violation(format!(
-                "f_z lhs `{lhs}` is not an event-updated Real target (state or discrete Real)"
-            )));
+            return Err(ToDaeError::runtime_contract_violation_with_span(
+                format!(
+                    "f_z lhs `{lhs}` is not an event-updated Real target (state or discrete Real)"
+                ),
+                equation.span,
+            ));
         }
 
         if let Some(previous) = assignments.insert(lhs.var_name().clone(), equation) {
-            return Err(ToDaeError::runtime_contract_violation(format!(
-                "duplicate f_z assignment target `{lhs}` (new origin='{}', prior origin='{}')",
-                equation.origin, previous.origin
-            )));
+            return Err(ToDaeError::runtime_contract_violation_with_span(
+                format!(
+                    "duplicate f_z assignment target `{lhs}` (new origin='{}', prior origin='{}')",
+                    equation.origin, previous.origin
+                ),
+                equation.span,
+            ));
         }
     }
     Ok(())
@@ -808,8 +825,17 @@ mod tests {
     fn bool_var(name: &str) -> dae::Variable {
         dae::Variable {
             name: rumoca_core::VarName::new(name),
-            ..Default::default()
+            source_span: test_span(),
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }
+    }
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 23)
     }
 
     fn var_ref(name: &str) -> rumoca_core::Expression {
@@ -914,7 +940,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("a"),
                 lit(1.0),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "test explicit f_z non-discrete-real target",
             ));
 
@@ -1176,9 +1202,10 @@ mod tests {
                 rumoca_core::VarName::new("target"),
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("table").into(),
-                    subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(pre_call(
-                        "selector",
-                    )))],
+                    subscripts: vec![rumoca_core::Subscript::generated_expr(
+                        Box::new(pre_call("selector")),
+                        rumoca_core::Span::DUMMY,
+                    )],
                     span: rumoca_core::Span::DUMMY,
                 },
                 rumoca_core::Span::DUMMY,
@@ -1196,7 +1223,10 @@ mod tests {
     #[test]
     fn source_temporal_operator_surviving_triggered_clock_condition_is_rejected() {
         let mut dae_model = dae::Dae::default();
-        dae_model.clocks.triggered_conditions.push(pre_call("gate"));
+        dae_model
+            .clocks
+            .triggered_conditions
+            .push(pre_call("gate").with_span(test_span()));
 
         let err = validate_appendix_b_invariants(&dae_model)
             .expect_err("raw pre() in triggered clock condition must fail validation");
@@ -1204,6 +1234,16 @@ mod tests {
             err,
             ToDaeError::SourceTemporalOperatorSurvivedDaeBoundary { .. }
         ));
+    }
+
+    #[test]
+    fn unspanned_triggered_clock_condition_is_rejected() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.clocks.triggered_conditions.push(var_ref("gate"));
+
+        let err = validate_appendix_b_invariants(&dae_model)
+            .expect_err("triggered clock conditions must carry source provenance");
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
     }
 
     #[test]
@@ -1263,7 +1303,14 @@ mod tests {
         let mut dae_model = dae::Dae::default();
         dae_model.variables.algebraics.insert(
             rumoca_core::VarName::new("clockedAlg"),
-            dae::Variable::new(rumoca_core::VarName::new("clockedAlg")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("clockedAlg"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         dae_model
             .clocks

@@ -11,11 +11,12 @@ repository.workspace = true
 rumoca-solver = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+indexmap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-indexmap = { workspace = true }
+rumoca-core = { workspace = true }
 
 [lints]
 workspace = true

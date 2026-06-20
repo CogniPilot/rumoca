@@ -1,7 +1,7 @@
 version = 1
 ir = "solve"
 name = "wgsl-solve"
-description = "WGSL compute-shader derivative kernel for WebGPU execution (browser and native wgpu)"
+description = "WGSL compute-shader derivative and implicit residual kernels for WebGPU execution (browser and native wgpu)"
 execution_mode = "jit"
 deployment_class = "gpu"
 readiness_level = 0
@@ -20,7 +20,8 @@ host_callbacks = false
 
 [capabilities.tensor]
 matmul = "scalar"
-elementwise = "scalar"
+elementwise = "native"
+stencil = "native"
 reductions = "scalar"
 layout = "row-major"
 supports_dynamic_shapes = false

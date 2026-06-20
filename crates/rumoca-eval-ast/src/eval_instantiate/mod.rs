@@ -260,7 +260,10 @@ fn eval_param_ref(
 
     // MLS §5.3.2: qualified references to class-level constants
     // (`P.pT_explicit`) resolve through the class tree.
-    if let Some(binding) = resolve_class_constant_binding(comp_ref, tree) {
+    if let Some(binding) =
+        resolve_class_redeclare_field_expr(comp_ref, mod_env, tree, resolve_class_components)
+            .or_else(|| resolve_class_constant_binding(comp_ref, tree, resolve_class_components))
+    {
         if let Some(val) = expr_to_bool(&binding) {
             return Some(val);
         }
@@ -560,23 +563,26 @@ fn get_enum_value_with_depth(
             let s = token.text.trim_matches('"');
             Some(s.to_string())
         }
-        ast::Expression::ComponentReference(comp_ref) => {
-            resolve_component_ref_expr(comp_ref, mod_env, effective_components, tree, scope_prefix)
-                .and_then(|(resolved_expr, next_scope)| {
-                    get_enum_value_with_depth(
-                        &resolved_expr,
-                        mod_env,
-                        effective_components,
-                        tree,
-                        resolve_class_components,
-                        next_scope.as_deref(),
-                        depth + 1,
-                    )
-                })
-                .or_else(|| {
-                    component_ref_to_dotted_no_subscripts(comp_ref).map(|_| comp_ref.to_string())
-                })
-        }
+        ast::Expression::ComponentReference(comp_ref) => resolve_component_ref_expr(
+            comp_ref,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            scope_prefix,
+        )
+        .and_then(|(resolved_expr, next_scope)| {
+            get_enum_value_with_depth(
+                &resolved_expr,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                next_scope.as_deref(),
+                depth + 1,
+            )
+        })
+        .or_else(|| component_ref_to_dotted_no_subscripts(comp_ref).map(|_| comp_ref.to_string())),
         ast::Expression::Parenthesized { inner, .. } => get_enum_value_with_depth(
             inner,
             mod_env,
@@ -648,6 +654,10 @@ fn resolve_component_ref_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     scope_prefix: Option<&str>,
 ) -> Option<(ast::Expression, Option<String>)> {
     let dotted = component_ref_to_dotted_no_subscripts(comp_ref)?;
@@ -671,7 +681,14 @@ fn resolve_component_ref_expr(
             )?;
             Some((scoped_expr, Some(prefix.to_string())))
         })
-        .or_else(|| resolve_class_constant_binding(comp_ref, tree).map(|expr| (expr, None)))
+        .or_else(|| {
+            resolve_class_redeclare_field_expr(comp_ref, mod_env, tree, resolve_class_components)
+                .map(|expr| (expr, None))
+        })
+        .or_else(|| {
+            resolve_class_constant_binding(comp_ref, tree, resolve_class_components)
+                .map(|expr| (expr, None))
+        })
 }
 
 /// Resolve a qualified reference like `P.pT_explicit` to the binding of a
@@ -681,6 +698,10 @@ fn resolve_component_ref_expr(
 fn resolve_class_constant_binding(
     comp_ref: &ast::ComponentReference,
     tree: &ast::ClassTree,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
 ) -> Option<ast::Expression> {
     if comp_ref.parts.len() < 2
         || comp_ref
@@ -697,11 +718,52 @@ fn resolve_class_constant_binding(
         .collect::<Vec<_>>()
         .join(".");
     let class = tree.get_class_by_qualified_name(&class_path)?;
-    let component = class.components.get(member)?;
+    let effective_components = resolve_class_components(tree, class);
+    let component = effective_components.get(member)?;
     if !matches!(component.variability, rumoca_core::Variability::Constant(_)) {
         return None;
     }
     component.binding.clone()
+}
+
+fn resolve_class_redeclare_field_expr(
+    comp_ref: &ast::ComponentReference,
+    mod_env: &ast::ModificationEnvironment,
+    tree: &ast::ClassTree,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
+) -> Option<ast::Expression> {
+    if comp_ref.parts.len() != 2
+        || comp_ref
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return None;
+    }
+
+    let root_name = comp_ref.parts[0].ident.text.as_ref();
+    let field_name = comp_ref.parts[1].ident.text.as_ref();
+    let root_mod = mod_env.get(&ast::QualifiedName::from_ident(root_name))?;
+    let target_cref = match &root_mod.value {
+        ast::Expression::ClassModification { target, .. } => target,
+        ast::Expression::ComponentReference(cref) => cref,
+        _ => return None,
+    };
+
+    let forwarding_self_redeclare = target_cref.parts.len() == 1
+        && target_cref.parts[0].subs.is_none()
+        && target_cref.parts[0].ident.text.as_ref() == root_name;
+    if forwarding_self_redeclare {
+        return None;
+    }
+
+    let target_class = resolve_class_from_cref(tree, target_cref)?;
+    let effective_components = resolve_class_components(tree, target_class);
+    let field_component = effective_components.get(field_name)?;
+    component_expr_for_structural_eval(field_component).cloned()
 }
 
 fn candidate_paths_for_ref(
@@ -725,8 +787,17 @@ fn lookup_exact_component_ref(
     effective_components: &IndexMap<String, ast::Component>,
 ) -> Option<(ast::Expression, Option<String>)> {
     for candidate in candidate_paths {
-        if let Some(mod_value) = mod_env.get(&ast::QualifiedName::from_dotted(candidate)) {
-            return Some((mod_value.value.clone(), parent_dotted_scope(candidate)));
+        if let Some(mod_value) = mod_env.get(&ast::QualifiedName::from_dotted(candidate))
+            && !transparent_self_modifier(candidate, &mod_value.value)
+        {
+            return Some((
+                mod_value.value.clone(),
+                mod_value
+                    .source_scope
+                    .as_ref()
+                    .map(ast::QualifiedName::to_flat_string)
+                    .or_else(|| parent_dotted_scope(candidate)),
+            ));
         }
         if let Some(comp) = effective_components.get(candidate.as_str()) {
             let expr = component_expr_for_structural_eval(comp)?;
@@ -734,6 +805,23 @@ fn lookup_exact_component_ref(
         }
     }
     None
+}
+
+fn transparent_self_modifier(candidate: &str, value: &ast::Expression) -> bool {
+    let ast::Expression::ComponentReference(comp_ref) = value else {
+        return false;
+    };
+    if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
+        return false;
+    }
+    let Some(name) = rumoca_core::ComponentPath::from_flat_path(candidate)
+        .into_parts()
+        .last()
+        .cloned()
+    else {
+        return false;
+    };
+    comp_ref.parts[0].ident.text.as_ref() == name
 }
 
 fn eval_scoped_string_condition_with_depth(
@@ -1231,9 +1319,56 @@ fn eval_integer_component_ref(
         return Some(value);
     }
 
+    if let Some(value) = eval_integer_class_constant_ref(comp_ref, env, depth, local_ints) {
+        return Some(value);
+    }
+
     // Resolve record field references from defaults/modifications in the
     // component's declared type scope (e.g., `data.mSystems`, `data.mBasic`).
     eval_integer_record_field_ref(comp_ref, env, depth)
+}
+
+fn eval_integer_class_constant_ref(
+    comp_ref: &ast::ComponentReference,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    local_ints: Option<&FxHashMap<String, i64>>,
+) -> Option<i64> {
+    if comp_ref.parts.len() < 2
+        || comp_ref
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return None;
+    }
+
+    let field_name = comp_ref.parts.last()?.ident.text.as_ref();
+    let class_path = comp_ref.parts[..comp_ref.parts.len() - 1]
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    let class = env.tree.get_class_by_qualified_name(&class_path)?;
+    let effective_components = (env.resolve_class_components)(env.tree, class);
+    let field_component = effective_components.get(field_name)?;
+    if !matches!(
+        field_component.variability,
+        rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+    ) {
+        return None;
+    }
+    let value_expr = component_expr_for_structural_eval(field_component)?;
+
+    try_eval_integer_expr_with_depth_and_locals(
+        value_expr,
+        env.mod_env,
+        &effective_components,
+        env.tree,
+        env.resolve_class_components,
+        depth + 1,
+        local_ints,
+    )
 }
 
 /// Evaluate `Pkg.field` references when `Pkg` is a class/package redeclare in mod_env.
@@ -1341,8 +1476,7 @@ fn eval_integer_record_field_ref(
     }
 
     let root_comp = env.effective_components.get(root_name)?;
-    let type_def_id = root_comp.type_def_id?;
-    let record_class = env.tree.get_class_by_def_id(type_def_id)?;
+    let record_class = record_class_for_component(env.tree, root_comp)?;
     if record_class.class_type != rumoca_core::ClassType::Record {
         return None;
     }
@@ -1369,17 +1503,21 @@ fn eval_integer_record_field_ref(
     for (name, field_comp) in &record_class.components {
         let field_mod = root_comp.modifications.get(name);
         let extends_override = record_extends_field_override(record_class, name);
-        let field_expr = field_mod.or(extends_override).unwrap_or(&field_comp.start);
+        let field_expr = field_mod
+            .or(extends_override)
+            .or_else(|| component_expr_for_structural_eval(field_comp));
 
-        if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
-            field_expr,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-            Some(&local_values),
-        ) {
+        if let Some(expr) = field_expr
+            && let Some(value) = try_eval_integer_expr_with_depth_and_locals(
+                expr,
+                env.mod_env,
+                env.effective_components,
+                env.tree,
+                env.resolve_class_components,
+                depth + 1,
+                Some(&local_values),
+            )
+        {
             local_values.insert(name.clone(), value);
         }
 
@@ -1387,6 +1525,7 @@ fn eval_integer_record_field_ref(
             if let Some(value) = local_values.get(name) {
                 return Some(*value);
             }
+            let field_expr = field_expr?;
             return try_eval_integer_expr_with_depth_and_locals(
                 field_expr,
                 env.mod_env,
@@ -1400,6 +1539,34 @@ fn eval_integer_record_field_ref(
     }
 
     None
+}
+
+fn record_class_for_component<'a>(
+    tree: &'a ast::ClassTree,
+    component: &ast::Component,
+) -> Option<&'a ast::ClassDef> {
+    if let Some(type_def_id) = component.type_def_id
+        && let Some(class) = tree.get_class_by_def_id(type_def_id)
+    {
+        return Some(class);
+    }
+
+    let type_name = component.type_name.to_string();
+    find_class_in_tree(tree, &type_name).or_else(|| lookup_unique_class_suffix(tree, &type_name))
+}
+
+fn lookup_unique_class_suffix<'a>(
+    tree: &'a ast::ClassTree,
+    type_name: &str,
+) -> Option<&'a ast::ClassDef> {
+    let suffix = format!(".{type_name}");
+    let mut matches = tree
+        .name_map
+        .keys()
+        .filter(|qualified| qualified.as_str() == type_name || qualified.ends_with(&suffix))
+        .filter_map(|qualified| tree.get_class_by_qualified_name(qualified));
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 fn record_extends_field_override<'a>(
@@ -1707,7 +1874,30 @@ fn lookup_function_definition<'a>(
         return Some(class);
     }
 
-    None
+    lookup_unique_short_function_name(func_name, tree)
+}
+
+fn lookup_unique_short_function_name<'a>(
+    func_name: &str,
+    tree: &'a ast::ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if func_name.contains('.') {
+        return None;
+    }
+
+    let mut matches = tree
+        .def_map
+        .values()
+        .filter(|qualified| {
+            rumoca_core::ComponentPath::from_flat_path(qualified)
+                .parts()
+                .last()
+                .is_some_and(|leaf| leaf == func_name)
+        })
+        .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))
+        .filter(|class| class.class_type == rumoca_core::ClassType::Function);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 fn eval_user_defined_integer_function(

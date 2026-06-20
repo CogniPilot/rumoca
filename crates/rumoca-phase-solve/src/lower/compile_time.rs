@@ -1,15 +1,17 @@
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
-use super::size_binding_key;
+use super::{LowerError, helpers::variable_size, size_binding_key};
 
-pub(super) fn structural_bindings(dae_model: &dae::Dae) -> IndexMap<String, f64> {
+pub(super) fn structural_bindings(
+    dae_model: &dae::Dae,
+) -> Result<IndexMap<String, f64>, LowerError> {
     let mut bindings = enum_literal_bindings(&dae_model.symbols.enum_literal_ordinals);
     let shapes = variable_shapes(dae_model);
     insert_shape_bindings(&mut bindings, &shapes);
-    insert_constant_variables(&mut bindings, dae_model, &shapes);
-    insert_structural_parameters(&mut bindings, dae_model, &shapes);
-    bindings
+    insert_constant_variables(&mut bindings, dae_model, &shapes)?;
+    insert_structural_parameters(&mut bindings, dae_model, &shapes)?;
+    Ok(bindings)
 }
 
 fn enum_literal_bindings(ordinals: &IndexMap<String, i64>) -> IndexMap<String, f64> {
@@ -57,28 +59,30 @@ fn insert_constant_variables(
     bindings: &mut IndexMap<String, f64>,
     dae_model: &dae::Dae,
     shapes: &IndexMap<String, Vec<i64>>,
-) {
+) -> Result<(), LowerError> {
     for (name, var) in &dae_model.variables.constants {
-        insert_variable_start_bindings(bindings, shapes, name.as_str(), var);
+        insert_variable_start_bindings(bindings, shapes, name.as_str(), var)?;
     }
+    Ok(())
 }
 
 fn insert_structural_parameters(
     bindings: &mut IndexMap<String, f64>,
     dae_model: &dae::Dae,
     shapes: &IndexMap<String, Vec<i64>>,
-) {
+) -> Result<(), LowerError> {
     for _ in 0..dae_model.variables.parameters.len().max(1) {
         let before = bindings.len();
         for (name, var) in &dae_model.variables.parameters {
             if !var.is_tunable {
-                insert_variable_start_bindings(bindings, shapes, name.as_str(), var);
+                insert_variable_start_bindings(bindings, shapes, name.as_str(), var)?;
             }
         }
         if bindings.len() == before {
             break;
         }
     }
+    Ok(())
 }
 
 fn insert_variable_start_bindings(
@@ -86,15 +90,16 @@ fn insert_variable_start_bindings(
     shapes: &IndexMap<String, Vec<i64>>,
     name: &str,
     var: &dae::Variable,
-) {
+) -> Result<(), LowerError> {
     let Some(start) = var.start.as_ref() else {
-        return;
+        return Ok(());
     };
     let Some(raw_values) = eval_values(start, bindings, shapes) else {
-        return;
+        return Ok(());
     };
-    let values = expand_values_to_size(raw_values, var.size());
+    let values = expand_values_to_size(raw_values, variable_size(var)?, name, var.source_span)?;
     insert_scalarized_bindings(bindings, name, &var.dims, &values);
+    Ok(())
 }
 
 fn insert_scalarized_bindings(
@@ -206,7 +211,7 @@ fn eval_range(
     let step = step
         .map(|expr| eval_scalar(expr, bindings, shapes))
         .unwrap_or_else(|| Some(if end >= start { 1.0 } else { -1.0 }))?;
-    if step.abs() <= f64::EPSILON {
+    if !start.is_finite() || !end.is_finite() || !step.is_finite() || step.abs() <= f64::EPSILON {
         return None;
     }
     let mut values = Vec::new();
@@ -218,6 +223,9 @@ fn eval_range(
         }
         values.push(value);
         value += step;
+        if !value.is_finite() {
+            return None;
+        }
     }
     Some(values)
 }
@@ -266,7 +274,7 @@ fn eval_size(
     let Some(dim_expr) = args.get(1) else {
         return Some(dims.iter().map(|dim| *dim as f64).collect());
     };
-    let dim = eval_scalar(dim_expr, bindings, shapes)? as usize;
+    let dim = positive_usize_from_f64(eval_scalar(dim_expr, bindings, shapes)?)?;
     dims.get(dim.checked_sub(1)?)
         .map(|value| vec![*value as f64])
 }
@@ -306,9 +314,9 @@ fn var_key(
     let mut indices = Vec::with_capacity(subscripts.len());
     for subscript in subscripts {
         let index = match subscript {
-            rumoca_core::Subscript::Index { value: index, .. } => *index as usize,
+            rumoca_core::Subscript::Index { value: index, .. } => positive_i64_to_usize(*index)?,
             rumoca_core::Subscript::Expr { expr, .. } => {
-                eval_scalar(expr, bindings, &IndexMap::new())? as usize
+                positive_usize_from_f64(eval_scalar(expr, bindings, &IndexMap::new())?)?
             }
             rumoca_core::Subscript::Colon { .. } => return None,
         };
@@ -326,6 +334,27 @@ fn literal_to_f64(literal: &rumoca_core::Literal) -> Option<f64> {
     }
 }
 
+fn positive_i64_to_usize(value: i64) -> Option<usize> {
+    if value > 0 {
+        usize::try_from(value).ok()
+    } else {
+        None
+    }
+}
+
+fn positive_usize_from_f64(value: f64) -> Option<usize> {
+    let rounded = value.round();
+    if rounded.is_finite()
+        && rounded > 0.0
+        && (rounded - value).abs() < f64::EPSILON
+        && rounded < usize::MAX as f64
+    {
+        // Bounds and integrality are checked above; Rust has no TryFrom<f64>.
+        return Some(rounded as usize);
+    }
+    None
+}
+
 fn alternate_enum_literal_key(raw: &str) -> Option<String> {
     let (prefix, literal) = crate::path_utils::scope_split(raw)?;
     if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
@@ -334,12 +363,161 @@ fn alternate_enum_literal_key(raw: &str) -> Option<String> {
     Some(format!("{prefix}.'{literal}'"))
 }
 
-fn expand_values_to_size(raw_values: Vec<f64>, size: usize) -> Vec<f64> {
+fn expand_values_to_size(
+    raw_values: Vec<f64>,
+    size: usize,
+    name: &str,
+    span: rumoca_core::Span,
+) -> Result<Vec<f64>, LowerError> {
     if raw_values.len() == size {
-        return raw_values;
+        return Ok(raw_values);
     }
     if raw_values.len() == 1 {
-        return vec![raw_values[0]; size];
+        let mut values = Vec::new();
+        reserve_compile_time_start_capacity(&mut values, size, name, span)?;
+        values.resize(size, raw_values[0]);
+        return Ok(values);
     }
-    raw_values
+    Ok(raw_values)
+}
+
+fn reserve_compile_time_start_capacity(
+    values: &mut Vec<f64>,
+    capacity: usize,
+    name: &str,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    values.try_reserve_exact(capacity).map_err(|_| {
+        LowerError::contract_violation(
+            format!("compile-time start value capacity for `{name}` overflows"),
+            span,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn real(value: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn structural_bindings_report_invalid_variable_shape_span() {
+        let mut dae_model = dae::Dae::default();
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(45), 7, 19);
+        dae_model.variables.constants.insert(
+            rumoca_core::VarName::new("bad"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("bad"),
+                dims: vec![2, -1],
+                source_span: span,
+                start: Some(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span,
+                }),
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+
+        let err = structural_bindings(&dae_model)
+            .expect_err("invalid DAE variable shape should bubble from structural bindings");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("DAE variable `bad` has negative dimension -1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_values_to_size_reports_capacity_overflow_with_source_span() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 5, 12);
+        let err = expand_values_to_size(vec![1.0], usize::MAX, "huge_structural", span)
+            .expect_err("oversized structural start broadcast should fail before allocating");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("compile-time start value capacity for `huge_structural` overflows"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_values_to_size_reports_capacity_overflow_without_fabricating_span() {
+        let err = expand_values_to_size(
+            vec![1.0],
+            usize::MAX,
+            "huge_structural",
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("oversized structural start broadcast should fail before allocating");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("compile-time start value capacity for `huge_structural` overflows"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_values_to_size_preserves_scalar_broadcast_behavior() {
+        assert_eq!(
+            expand_values_to_size(vec![3.0], 4, "x", rumoca_core::Span::DUMMY)
+                .expect("scalar structural start should broadcast"),
+            vec![3.0, 3.0, 3.0, 3.0]
+        );
+        assert_eq!(
+            expand_values_to_size(vec![1.0, 2.0], 4, "x", rumoca_core::Span::DUMMY)
+                .expect("non-scalar structural starts are left unchanged"),
+            vec![1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn eval_size_declines_unrepresentable_dimension_index() {
+        let args = vec![var_ref("x"), real(usize::MAX as f64)];
+        let shapes = IndexMap::from([("x".to_string(), vec![2, 3])]);
+
+        assert_eq!(eval_size(&args, &IndexMap::new(), &shapes), None);
+    }
+
+    #[test]
+    fn var_key_declines_unrepresentable_expression_subscript() {
+        let subscript = rumoca_core::Subscript::expr(
+            Box::new(real(usize::MAX as f64)),
+            rumoca_core::Span::DUMMY,
+        );
+
+        assert_eq!(
+            var_key(
+                &rumoca_core::Reference::new("x"),
+                &[subscript],
+                &IndexMap::new()
+            ),
+            None
+        );
+    }
 }

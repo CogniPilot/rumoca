@@ -12,10 +12,13 @@
 use super::*;
 use rumoca_core::{ExpressionRewriter, StatementRewriter};
 
-pub(crate) fn attach_structured_references(flat: &mut flat::Model) {
+pub(crate) fn attach_structured_references(flat: &mut flat::Model) -> Result<(), FlattenError> {
     let index = StructuredRefIndex::build(flat);
 
-    let mut rewriter = StructuredRefRewriter { index: &index };
+    let mut rewriter = StructuredRefRewriter {
+        index: &index,
+        error: None,
+    };
     let mut variables = std::mem::take(&mut flat.variables);
     for var in variables.values_mut() {
         rewrite_opt_expr(&mut var.binding, &mut rewriter);
@@ -55,6 +58,10 @@ pub(crate) fn attach_structured_references(flat: &mut flat::Model) {
         for statement in &mut algorithm.statements {
             *statement = rewriter.rewrite_statement(statement);
         }
+    }
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -126,34 +133,47 @@ impl StructuredRefIndex {
     fn structured_for(
         &self,
         name: &rumoca_core::VarName,
-    ) -> Option<rumoca_core::ComponentReference> {
+    ) -> Result<Option<rumoca_core::ComponentReference>, FlattenError> {
         if let Some(reference) = self.by_name.get(&name.id()) {
-            return Some(reference.clone());
+            return Ok(Some(reference.clone()));
         }
         // Element of an array variable: recover `(base, indices)` once, here
         // at the producing boundary, and compose the element reference from
         // the base variable's structured reference.
-        let scalar = rumoca_core::parse_scalar_name(name.as_str())?;
+        let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) else {
+            return Ok(None);
+        };
         let base = rumoca_core::VarName::new(scalar.base);
-        let base_ref = self.by_name.get(&base.id())?;
+        let Some(base_ref) = self.by_name.get(&base.id()) else {
+            return Ok(None);
+        };
         let mut reference = base_ref.clone();
-        let part = reference.parts.last_mut()?;
-        part.subs.extend(
-            scalar
-                .indices
-                .iter()
-                .map(|index| rumoca_core::Subscript::generated_index(*index, reference.span)),
-        );
-        Some(reference)
+        let Some(part) = reference.parts.last_mut() else {
+            return Ok(None);
+        };
+        let mut subs = Vec::with_capacity(scalar.indices.len());
+        for index in scalar.indices {
+            subs.push(generated_index_subscript(
+                index,
+                reference.span,
+                "flat structured reference subscript",
+            )?);
+        }
+        part.subs.extend(subs);
+        Ok(Some(reference))
     }
 }
 
 struct StructuredRefRewriter<'a> {
     index: &'a StructuredRefIndex,
+    error: Option<FlattenError>,
 }
 
 impl ExpressionRewriter for StructuredRefRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         let rumoca_core::Expression::VarRef {
             name,
             subscripts,
@@ -165,8 +185,13 @@ impl ExpressionRewriter for StructuredRefRewriter<'_> {
         if name.has_structure() || name.is_generated() {
             return self.walk_expression(expr);
         }
-        let Some(reference) = self.index.structured_for(name.var_name()) else {
-            return self.walk_expression(expr);
+        let reference = match self.index.structured_for(name.var_name()) {
+            Ok(Some(reference)) => reference,
+            Ok(None) => return self.walk_expression(expr),
+            Err(error) => {
+                self.error = Some(error);
+                return expr.clone();
+            }
         };
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::with_component_reference(name.as_str(), reference),
@@ -180,3 +205,12 @@ impl ExpressionRewriter for StructuredRefRewriter<'_> {
 }
 
 impl StatementRewriter for StructuredRefRewriter<'_> {}
+
+fn generated_index_subscript(
+    index: i64,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Subscript, FlattenError> {
+    rumoca_core::Subscript::try_generated_index(index, span, context)
+        .map_err(|err| FlattenError::missing_source_context(err.to_string()))
+}

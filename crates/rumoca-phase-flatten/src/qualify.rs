@@ -609,28 +609,40 @@ pub fn qualify_expression_with_imports_and_locals(
 // ── Utility functions ───────────────────────────────────────────────────────
 
 /// Convert integer subscripts to Subscript expressions.
-pub fn subscripts_from_indices(indices: &[i64]) -> Option<Vec<Subscript>> {
+pub fn subscripts_from_indices(
+    indices: &[i64],
+    owner_span: rumoca_core::Span,
+) -> Option<Vec<Subscript>> {
     if indices.is_empty() {
         return None;
     }
     Some(
         indices
             .iter()
-            .map(|&i| Subscript::Expression(int_expr(i)))
+            .map(|&i| Subscript::Expression(int_expr_with_span(i, owner_span)))
             .collect(),
     )
 }
 
 /// Create an integer literal expression.
-pub fn int_expr(value: i64) -> Expression {
+fn int_expr_with_span(value: i64, span: rumoca_core::Span) -> Expression {
     Expression::Terminal {
         terminal_type: TerminalType::UnsignedInteger,
         token: Token {
             text: std::sync::Arc::from(value.to_string()),
             ..Default::default()
         },
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
+}
+
+/// Create an integer literal expression for tests.
+#[cfg(test)]
+pub fn int_expr(value: i64) -> Expression {
+    int_expr_with_span(
+        value,
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1),
+    )
 }
 
 // ── Internal implementation ─────────────────────────────────────────────────
@@ -686,23 +698,18 @@ fn is_builtin_enum_literal_ref(cr: &ComponentReference) -> bool {
     )
 }
 
-/// Build a `ComponentReference` from a dotted fully-qualified name.
-fn make_fqn_component_ref(fqn: &str) -> ComponentReference {
-    ComponentReference {
-        local: false,
-        parts: crate::path_utils::segments(fqn)
-            .into_iter()
-            .map(|seg| ComponentRefPart {
-                ident: Token {
-                    text: std::sync::Arc::from(seg),
-                    ..Default::default()
-                },
-                subs: None,
-            })
-            .collect(),
-        def_id: None,
-        span: rumoca_core::Span::DUMMY,
-    }
+/// Build component-reference parts from a dotted fully-qualified name.
+fn fqn_component_ref_parts(fqn: &str) -> Vec<ComponentRefPart> {
+    crate::path_utils::segments(fqn)
+        .into_iter()
+        .map(|seg| ComponentRefPart {
+            ident: Token {
+                text: std::sync::Arc::from(seg),
+                ..Default::default()
+            },
+            subs: None,
+        })
+        .collect()
 }
 
 fn qualify_component_part_subs(
@@ -736,7 +743,7 @@ fn resolve_import_alias_ref(
     }
     let fqn = imports.get(alias)?;
 
-    let mut imported_parts = make_fqn_component_ref(fqn).parts;
+    let mut imported_parts = fqn_component_ref_parts(fqn);
     let non_empty_subs = first_part.subs.as_ref().filter(|subs| !subs.is_empty());
     if let Some(subs) = non_empty_subs {
         let last_part = imported_parts.last_mut()?;
@@ -848,7 +855,7 @@ fn qualify_cr_inner(
                 text: std::sync::Arc::from(name.as_str()),
                 ..Default::default()
             },
-            subs: subscripts_from_indices(subs),
+            subs: subscripts_from_indices(subs, cr.span),
         });
     }
 

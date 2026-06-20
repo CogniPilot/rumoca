@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap};
-use rumoca_core::{Span, Token};
+use rumoca_core::{Location, Span, Token};
 use rumoca_ir_ast::{ClassDef, Name, StoredDefinition};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -66,37 +66,79 @@ fn build_package_layout_source_map(docs: &[(String, StoredDefinition)]) -> Resul
     Ok(source_map)
 }
 
-fn location_has_valid_span(location: &rumoca_core::Location) -> bool {
+fn location_has_valid_span(location: &Location) -> bool {
     !location.file_name.is_empty() && location.end > location.start
 }
 
-fn token_span(token: &Token, source_map: Option<&SourceMap>) -> Option<Span> {
-    let source_map = source_map?;
-    location_has_valid_span(&token.location).then(|| {
-        source_map.location_to_span(
-            &token.location.file_name,
-            token.location.start as usize,
-            token.location.end as usize,
-        )
-    })
-}
-
-fn name_span(name: &Name, source_map: Option<&SourceMap>) -> Option<Span> {
-    let source_map = source_map?;
-    let first = name.name.first()?;
-    let last = name.name.last()?;
-    if !location_has_valid_span(&first.location) || !location_has_valid_span(&last.location) {
-        return None;
+fn location_span(
+    location: &Location,
+    source_map: Option<&SourceMap>,
+    context: &str,
+) -> Result<Option<Span>> {
+    let Some(source_map) = source_map else {
+        return Ok(None);
+    };
+    if !location_has_valid_span(location) {
+        bail!("{context} is missing a non-empty source location");
     }
-    Some(source_map.location_to_span(
-        &first.location.file_name,
-        first.location.start as usize,
-        last.location.end as usize,
-    ))
+    let span = source_map
+        .try_location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        )
+        .with_context(|| {
+            format!(
+                "source file '{}' for {context} was not found",
+                location.file_name
+            )
+        })?;
+    Ok(Some(span))
 }
 
-fn class_name_span(class: &ClassDef, source_map: Option<&SourceMap>) -> Option<Span> {
-    token_span(&class.name, source_map)
+fn token_span(
+    token: &Token,
+    source_map: Option<&SourceMap>,
+    context: &str,
+) -> Result<Option<Span>> {
+    location_span(&token.location, source_map, context)
+}
+
+fn name_span(name: &Name, source_map: Option<&SourceMap>, context: &str) -> Result<Option<Span>> {
+    let Some(source_map) = source_map else {
+        return Ok(None);
+    };
+    let first = name
+        .name
+        .first()
+        .with_context(|| format!("{context} is missing name segments"))?;
+    let last = name
+        .name
+        .last()
+        .with_context(|| format!("{context} is missing name segments"))?;
+    if first.location.file_name != last.location.file_name {
+        bail!("{context} spans multiple source files");
+    }
+    if !location_has_valid_span(&first.location) || !location_has_valid_span(&last.location) {
+        bail!("{context} is missing a non-empty source location");
+    }
+    let span = source_map
+        .try_location_to_span(
+            &first.location.file_name,
+            first.location.start as usize,
+            last.location.end as usize,
+        )
+        .with_context(|| {
+            format!(
+                "source file '{}' for {context} was not found",
+                first.location.file_name
+            )
+        })?;
+    Ok(Some(span))
+}
+
+fn class_name_span(class: &ClassDef, source_map: Option<&SourceMap>) -> Result<Option<Span>> {
+    token_span(&class.name, source_map, "class name")
 }
 
 fn top_level_name_entries(
@@ -110,8 +152,8 @@ fn top_level_name_entries(
     let mut entries = definition
         .classes
         .iter()
-        .map(|(name, class)| (name.clone(), class_name_span(class, source_map)))
-        .collect::<Vec<_>>();
+        .map(|(name, class)| Ok((name.clone(), class_name_span(class, source_map)?)))
+        .collect::<Result<Vec<_>>>()?;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     entries.dedup_by(|a, b| a.0 == b.0);
     Ok(entries)
@@ -318,7 +360,7 @@ fn validate_directory(
         ));
     }
 
-    emit_child_name_conflicts(dir, &children, docs_by_path, source_map, violations);
+    emit_child_name_conflicts(dir, &children, docs_by_path, source_map, violations)?;
 
     let mut owners_by_name: BTreeMap<String, (String, Option<Span>)> = BTreeMap::new();
     register_file_children(
@@ -394,7 +436,7 @@ fn emit_child_name_conflicts(
     docs_by_path: &HashMap<PathBuf, &StoredDefinition>,
     source_map: Option<&SourceMap>,
     violations: &mut Vec<CommonDiagnostic>,
-) {
+) -> Result<()> {
     let child_dir_names: BTreeSet<String> = children
         .package_child_dirs
         .iter()
@@ -430,8 +472,9 @@ fn emit_child_name_conflicts(
             docs_by_path,
             source_map,
             violations,
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn emit_child_name_conflict_diagnostic(
@@ -442,23 +485,27 @@ fn emit_child_name_conflict_diagnostic(
     docs_by_path: &HashMap<PathBuf, &StoredDefinition>,
     source_map: Option<&SourceMap>,
     violations: &mut Vec<CommonDiagnostic>,
-) {
+) -> Result<()> {
     let file_path = dir.join(format!("{conflict}.mo"));
-    let file_span = top_level_name_entries(&file_path, docs_by_path, source_map)
-        .ok()
-        .and_then(|entries| entries.into_iter().find(|(name, _)| name == conflict))
+    let file_span = top_level_name_entries(&file_path, docs_by_path, source_map)?
+        .into_iter()
+        .find(|(name, _)| name == conflict)
         .and_then(|(_, span)| span);
     let dir_span = children
         .package_child_dirs
         .iter()
         .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(conflict))
-        .and_then(|child_dir| {
+        .map(|child_dir| {
             let package_mo = child_dir.join("package.mo");
-            top_level_name_entries(&package_mo, docs_by_path, source_map)
-                .ok()
-                .and_then(|entries| entries.into_iter().find(|(name, _)| name == conflict))
-                .and_then(|(_, span)| span)
-        });
+            top_level_name_entries(&package_mo, docs_by_path, source_map).map(|entries| {
+                entries
+                    .into_iter()
+                    .find(|(name, _)| name == conflict)
+                    .and_then(|(_, span)| span)
+            })
+        })
+        .transpose()?
+        .flatten();
 
     if let Some(primary_span) = file_span.or(dir_span) {
         let mut diagnostic = CommonDiagnostic::error(
@@ -474,13 +521,14 @@ fn emit_child_name_conflict_diagnostic(
             );
         }
         violations.push(diagnostic);
-        return;
+        return Ok(());
     }
 
     violations.push(CommonDiagnostic::global_error(
         "PKG-008",
         message.to_string(),
     ));
+    Ok(())
 }
 
 fn register_file_children(
@@ -501,7 +549,7 @@ fn register_file_children(
         for (top_level_name, span) in top_level_name_entries(child, docs_by_path, source_map)? {
             record_child_name(&top_level_name, &entity, span, owners_by_name, violations);
         }
-        validate_within_clause(root, root_name, child, docs_by_path, source_map, violations);
+        validate_within_clause(root, root_name, child, docs_by_path, source_map, violations)?;
     }
     Ok(())
 }
@@ -544,7 +592,7 @@ fn register_package_child_dirs(
             docs_by_path,
             source_map,
             violations,
-        );
+        )?;
     }
     Ok(())
 }
@@ -575,9 +623,9 @@ fn validate_within_clause(
     docs_by_path: &HashMap<PathBuf, &StoredDefinition>,
     source_map: Option<&SourceMap>,
     violations: &mut Vec<CommonDiagnostic>,
-) {
+) -> Result<()> {
     let Some(definition) = docs_by_path.get(file_path) else {
-        return;
+        return Ok(());
     };
 
     let expected = expected_within_clause(root, root_name, file_path);
@@ -585,12 +633,16 @@ fn validate_within_clause(
     let actual_span = definition
         .within
         .as_ref()
-        .and_then(|within| name_span(within, source_map));
+        .map(|within| name_span(within, source_map, "within-clause name"))
+        .transpose()?
+        .flatten();
     let fallback_span = definition
         .classes
         .values()
         .next()
-        .and_then(|class| class_name_span(class, source_map));
+        .map(|class| class_name_span(class, source_map))
+        .transpose()?
+        .flatten();
 
     match (expected, actual) {
         (None, _) => {}
@@ -629,6 +681,7 @@ fn validate_within_clause(
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn expected_within_clause(root: &Path, root_name: &str, file_path: &Path) -> Option<String> {
@@ -821,21 +874,22 @@ fn discover_package_roots(path: &Path) -> Result<Vec<PathBuf>> {
 mod tests {
     use super::*;
 
-    fn parse_docs(files: &[(&Path, &str)]) -> Vec<(String, StoredDefinition)> {
+    fn parse_doc(path: &Path, parse_uri: &str, source: &str) -> Result<(String, StoredDefinition)> {
+        Ok((
+            path.display().to_string(),
+            rumoca_phase_parse::parse_to_ast(source, parse_uri)?,
+        ))
+    }
+
+    fn parse_docs(files: &[(&Path, &str)]) -> Result<Vec<(String, StoredDefinition)>> {
         files
             .iter()
-            .map(|(path, source)| {
-                (
-                    path.display().to_string(),
-                    rumoca_phase_parse::parse_to_ast(source, &path.display().to_string())
-                        .expect("parse test document"),
-                )
-            })
+            .map(|(path, source)| parse_doc(path, &path.display().to_string(), source))
             .collect()
     }
 
     #[test]
-    fn package_layout_requires_within_for_child_file() {
+    fn package_layout_requires_within_for_child_file() -> Result<()> {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("Pkg");
         fs::create_dir_all(&root).expect("mkdir");
@@ -847,7 +901,7 @@ mod tests {
         let docs = parse_docs(&[
             (&package_mo, "package Pkg end Pkg;"),
             (&child_mo, "model A end A;"),
-        ]);
+        ])?;
 
         let err = validate_source_root_package_layout(&root, &docs)
             .expect_err("missing within must fail");
@@ -860,10 +914,46 @@ mod tests {
             "missing within should point at the class declaration"
         );
         assert!(err.to_string().contains("PKG-009"));
+        Ok(())
     }
 
     #[test]
-    fn package_layout_accepts_correct_within_for_child_file() {
+    fn package_layout_fails_fast_when_diagnostic_span_cannot_be_mapped() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("Pkg");
+        fs::create_dir_all(&root)?;
+        let package_mo = root.join("package.mo");
+        let child_mo = root.join("A.mo");
+        fs::write(&package_mo, "package Pkg end Pkg;")?;
+        fs::write(&child_mo, "model A end A;")?;
+
+        let stale_uri = root.join("stale/A.mo").display().to_string();
+        let docs = vec![
+            parse_doc(
+                &package_mo,
+                &package_mo.display().to_string(),
+                "package Pkg end Pkg;",
+            )?,
+            parse_doc(&child_mo, &stale_uri, "model A end A;")?,
+        ];
+
+        let Err(err) = validate_source_root_package_layout(&root, &docs) else {
+            bail!("stale AST source provenance must fail");
+        };
+        assert!(
+            err.downcast_ref::<PackageLayoutError>().is_none(),
+            "source provenance failures must not degrade into package-layout diagnostics"
+        );
+        assert!(
+            err.to_string().contains("source file")
+                && err.to_string().contains("class name was not found"),
+            "error should report missing source context: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_layout_accepts_correct_within_for_child_file() -> Result<()> {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("Pkg");
         fs::create_dir_all(&root).expect("mkdir");
@@ -875,13 +965,14 @@ mod tests {
         let docs = parse_docs(&[
             (&package_mo, "package Pkg end Pkg;"),
             (&child_mo, "within Pkg; model A end A;"),
-        ]);
+        ])?;
 
         validate_source_root_package_layout(&root, &docs).expect("valid within should pass");
+        Ok(())
     }
 
     #[test]
-    fn package_layout_valid_layout_does_not_require_reloading_sources() {
+    fn package_layout_valid_layout_does_not_require_reloading_sources() -> Result<()> {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("Pkg");
         fs::create_dir_all(&root).expect("mkdir");
@@ -893,15 +984,16 @@ mod tests {
         let docs = parse_docs(&[
             (&package_mo, "package Pkg end Pkg;"),
             (&child_mo, "model A end A;"),
-        ]);
+        ])?;
         fs::remove_file(&child_mo).expect("remove child after parse");
 
         validate_source_root_package_layout(&root, &docs)
             .expect("valid layout should not reread missing source files on the success path");
+        Ok(())
     }
 
     #[test]
-    fn package_layout_discovers_deep_package_roots_without_heuristics() {
+    fn package_layout_discovers_deep_package_roots_without_heuristics() -> Result<()> {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = temp.path().join("workspace");
         let root = source_root.join("nested/vendor/Pkg");
@@ -914,14 +1006,15 @@ mod tests {
         let docs = parse_docs(&[
             (&package_mo, "package Pkg end Pkg;"),
             (&child_mo, "within Pkg; model A end A;"),
-        ]);
+        ])?;
 
         validate_source_root_package_layout(&source_root, &docs)
             .expect("deep package root should be discovered");
+        Ok(())
     }
 
     #[test]
-    fn package_layout_ignores_non_package_resource_dirs() {
+    fn package_layout_ignores_non_package_resource_dirs() -> Result<()> {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("Pkg");
         fs::create_dir_all(root.join("Resources/Images/Docs")).expect("mkdir");
@@ -935,10 +1028,11 @@ mod tests {
         let docs = parse_docs(&[
             (&package_mo, "package Pkg end Pkg;"),
             (&child_mo, "within Pkg; model A end A;"),
-        ]);
+        ])?;
 
         validate_source_root_package_layout(&root, &docs)
             .expect("resource directories outside package tree should be ignored");
+        Ok(())
     }
 
     #[test]

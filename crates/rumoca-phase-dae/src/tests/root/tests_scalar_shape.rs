@@ -8,7 +8,11 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
         crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -17,7 +21,11 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
             name: VarName::new("a"),
             dims: vec![4],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -26,7 +34,11 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
             name: VarName::new("b"),
             dims: vec![4],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -52,15 +64,24 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("x"),
-        Variable::new(rumoca_core::VarName::new("x")),
+        Variable::new(
+            rumoca_core::VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("a"),
-        Variable::new(rumoca_core::VarName::new("a")),
+        Variable::new(
+            rumoca_core::VarName::new("a"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("b"),
-        Variable::new(rumoca_core::VarName::new("b")),
+        Variable::new(
+            rumoca_core::VarName::new("b"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);

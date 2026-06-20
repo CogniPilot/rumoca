@@ -168,12 +168,19 @@ mod tests {
     use super::*;
     use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(53), 0, 1)
+    }
+
     #[test]
     fn compiles_constant_scalar_program_block() {
-        let rows = ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value: 3.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
+        let rows = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 3.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span(),
+        );
         let compiled = compile_expression_scalar_program_block(&rows).expect("compile row");
         let mut out = [0.0];
 
@@ -184,17 +191,20 @@ mod tests {
 
     #[test]
     fn compiled_expression_reports_input_requirements() {
-        let rows = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadY { dst: 0, index: 2 },
-            LinearOp::LoadP { dst: 1, index: 1 },
-            LinearOp::Binary {
-                dst: 2,
-                op: rumoca_ir_solve::BinaryOp::Add,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]]);
+        let rows = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 2 },
+                LinearOp::LoadP { dst: 1, index: 1 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: rumoca_ir_solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ]],
+            fixture_span(),
+        );
         let compiled = compile_expression_scalar_program_block(&rows).expect("compile row");
 
         assert_eq!(
@@ -209,10 +219,13 @@ mod tests {
 
     #[test]
     fn compiled_jacobian_reports_seed_requirements() {
-        let rows = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadSeed { dst: 0, index: 2 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
+        let rows = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadSeed { dst: 0, index: 2 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span(),
+        );
         let compiled = compile_jacobian_scalar_program_block(&rows).expect("compile row");
 
         assert_eq!(

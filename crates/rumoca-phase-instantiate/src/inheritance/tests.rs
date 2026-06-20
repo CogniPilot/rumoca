@@ -2,13 +2,31 @@ use super::*;
 use rumoca_core::DefId;
 use std::sync::Arc;
 
+const TEST_FILE: &str = "inheritance.mo";
+
+fn test_location() -> rumoca_core::Location {
+    rumoca_core::Location {
+        start_line: 1,
+        start_column: 1,
+        end_line: 1,
+        end_column: 2,
+        start: 0,
+        end: 1,
+        file_name: TEST_FILE.to_string(),
+    }
+}
+
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(TEST_FILE), 1, 2)
+}
+
 /// Create a minimal component for testing.
 fn make_component(name: &str, is_replaceable: bool, is_final: bool) -> ast::Component {
     ast::Component {
         name: name.to_string(),
         is_replaceable,
         is_final,
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     }
 }
 
@@ -59,6 +77,47 @@ fn make_resolved_name(text: &str, def_id: DefId) -> rumoca_ir_ast::Name {
             .collect(),
         def_id: Some(def_id),
     }
+}
+
+fn make_int_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedInteger,
+        token: make_token(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+#[test]
+fn test_apply_extends_modifications_reports_final_override_at_extends_span() {
+    let mut tree = ast::ClassTree::default();
+    tree.source_map.add(TEST_FILE, "extends Base(x = 2);");
+    let mut target = InheritedContent::default();
+    target
+        .components
+        .insert("x".to_string(), make_component("x", false, true));
+    let base_class = ast::ClassDef {
+        name: make_token("Base"),
+        ..Default::default()
+    };
+    let extend = ast::Extend {
+        base_name: make_name("Base"),
+        location: test_location(),
+        modifications: vec![ast::ExtendModification {
+            expr: ast::Expression::Modification {
+                target: make_component_ref("x"),
+                value: Arc::new(make_int_expr("2")),
+                span: rumoca_core::Span::DUMMY,
+            },
+            each: false,
+            final_: false,
+            redeclare: false,
+        }],
+        ..Default::default()
+    };
+
+    let err = apply_extends_modifications(&tree, &mut target, &base_class, &extend)
+        .expect_err("extends modification must not override final inherited component");
+    assert!(matches!(*err, InstantiateError::RedeclareFinal { .. }));
 }
 
 #[test]
@@ -124,7 +183,7 @@ fn test_classes_are_compatible_for_equivalent_declarations() {
             token: make_token("1"),
             span: rumoca_core::Span::DUMMY,
         }),
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     };
 
     let helper_a = ast::ClassDef {
@@ -159,7 +218,7 @@ fn make_constrained_component(
         is_replaceable: true,
         is_final: false,
         constrainedby: constrainedby.map(make_name),
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     }
 }
 
@@ -534,6 +593,7 @@ fn test_class_redeclaration_default_constraint_uses_declared_base() {
 #[test]
 fn test_nested_class_redeclaration_replaces_inherited_replaceable_class() {
     let mut tree = ast::ClassTree::default();
+    tree.source_map.add(TEST_FILE, "extends Base;");
 
     let partial_id = DefId::new(10);
     let base_properties_id = DefId::new(11);
@@ -568,6 +628,7 @@ fn test_nested_class_redeclaration_replaces_inherited_replaceable_class() {
                 base_properties_id,
             ),
             base_def_id: Some(base_properties_id),
+            location: test_location(),
             ..Default::default()
         }],
         ..Default::default()
@@ -580,6 +641,7 @@ fn test_nested_class_redeclaration_replaces_inherited_replaceable_class() {
         extends: vec![ast::Extend {
             base_name: make_resolved_name("PartialPureSubstance", partial_id),
             base_def_id: Some(partial_id),
+            location: test_location(),
             ..Default::default()
         }],
         ..Default::default()
@@ -617,6 +679,7 @@ fn test_nested_class_redeclaration_replaces_inherited_replaceable_class() {
 #[test]
 fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() {
     let mut tree = ast::ClassTree::default();
+    tree.source_map.add(TEST_FILE, "extends Base;");
 
     let partial_medium_id = DefId::new(20);
     let partial_state_id = DefId::new(21);
@@ -648,6 +711,7 @@ fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() 
         extends: vec![ast::Extend {
             base_name: make_resolved_name("PartialMedium", partial_medium_id),
             base_def_id: Some(partial_medium_id),
+            location: test_location(),
             ..Default::default()
         }],
         ..Default::default()
@@ -670,6 +734,7 @@ fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() 
         extends: vec![ast::Extend {
             base_name: make_resolved_name("PartialSimpleMedium", simple_medium_id),
             base_def_id: Some(simple_medium_id),
+            location: test_location(),
             ..Default::default()
         }],
         ..Default::default()

@@ -1,33 +1,51 @@
 use super::*;
 use rumoca_core::{ClassType, Literal, Span, VarName};
 
-fn var_ref(name: &str) -> rumoca_core::Expression {
+fn test_span(start: usize) -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("record_lowering_test.mo"),
+        start,
+        start + 5,
+    )
+}
+
+fn var_ref(name: &str, span: Span) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: VarName::new(name).into(),
         subscripts: vec![],
-        span: Span::DUMMY,
+        span,
     }
 }
 
 fn record_constructor() -> rumoca_core::Function {
     let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
     constructor.is_constructor = true;
-    constructor.add_input(rumoca_core::FunctionParam::new("a", "Real"));
-    constructor.add_input(rumoca_core::FunctionParam::new("b", "Real"));
+    constructor.add_input(rumoca_core::FunctionParam::new("a", "Real", test_span(1)));
+    constructor.add_input(rumoca_core::FunctionParam::new("b", "Real", test_span(1)));
     constructor
 }
 
 fn function_with_record_input() -> rumoca_core::Function {
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("r", "Pkg.Record").with_type_class(ClassType::Record),
+        rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span(1))
+            .with_type_class(ClassType::Record),
     );
-    function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span(1)));
+    function
+}
+
+fn function_with_array_input() -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
+    function
+        .add_input(rumoca_core::FunctionParam::new("u", "Real", test_span(1)).with_dims(vec![-1]));
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span(1)));
     function
 }
 
 #[test]
 fn dae_record_param_lowering_uses_constructor_signature_metadata() {
+    let span = test_span(1);
     let mut dae = Dae::default();
     dae.symbols
         .functions
@@ -39,16 +57,16 @@ fn dae_record_param_lowering_uses_constructor_signature_metadata() {
         lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.f").into(),
-            args: vec![var_ref("rec")],
+            args: vec![var_ref("rec", span)],
             is_constructor: false,
-            span: Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
         origin: "test".to_string(),
         scalar_count: 1,
     });
 
-    lower_record_function_params_dae(&mut dae);
+    lower_record_function_params_dae(&mut dae).expect("record lowering should preserve spans");
 
     let function = dae
         .symbols
@@ -68,16 +86,18 @@ fn dae_record_param_lowering_uses_constructor_signature_metadata() {
     assert_eq!(args.len(), 2);
     assert!(matches!(
         &args[0],
-        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.a"
+        rumoca_core::Expression::VarRef { name, span: arg_span, .. }
+            if name.as_str() == "rec.a" && *arg_span == span
     ));
     assert!(matches!(
         &args[1],
-        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
+        rumoca_core::Expression::VarRef { name, span: arg_span, .. }
+            if name.as_str() == "rec.b" && *arg_span == span
     ));
 }
 
 #[test]
-fn prepare_dae_for_codegen_does_not_mutate_simulation_dae() {
+fn dae_record_param_lowering_rejects_unspanned_generated_fields() {
     let mut dae = Dae::default();
     dae.symbols
         .functions
@@ -89,7 +109,7 @@ fn prepare_dae_for_codegen_does_not_mutate_simulation_dae() {
         lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.f").into(),
-            args: vec![var_ref("rec")],
+            args: vec![var_ref("rec", Span::DUMMY)],
             is_constructor: false,
             span: Span::DUMMY,
         },
@@ -98,7 +118,42 @@ fn prepare_dae_for_codegen_does_not_mutate_simulation_dae() {
         scalar_count: 1,
     });
 
-    let prepared = prepare_dae_for_codegen(&dae);
+    let err = lower_record_function_params_dae(&mut dae)
+        .expect_err("unspanned record argument expansion should fail");
+
+    assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    assert!(
+        err.to_string()
+            .contains("missing source provenance for DAE record argument expansion"),
+        "error should explain missing record-argument provenance: {err}"
+    );
+}
+
+#[test]
+fn prepare_dae_for_codegen_does_not_mutate_simulation_dae() {
+    let span = test_span(11);
+    let mut dae = Dae::default();
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.Record"), record_constructor());
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.f"), function_with_record_input());
+    dae.continuous.equations.push(rumoca_ir_dae::Equation {
+        lhs: Some(VarName::new("x").into()),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: VarName::new("Pkg.f").into(),
+            args: vec![var_ref("rec", span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        origin: "test".to_string(),
+        scalar_count: 1,
+    });
+
+    let prepared =
+        prepare_dae_for_codegen(&dae).expect("codegen preparation should preserve spans");
 
     let original_function = dae
         .symbols
@@ -119,6 +174,36 @@ fn prepare_dae_for_codegen_does_not_mutate_simulation_dae() {
         .map(|input| input.name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(input_names, vec!["r_a", "r_b"]);
+}
+
+#[test]
+fn insert_array_size_args_rejects_unspanned_generated_size_call() {
+    let mut dae = Dae::default();
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.g"), function_with_array_input());
+    dae.continuous.equations.push(rumoca_ir_dae::Equation {
+        lhs: Some(VarName::new("x").into()),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: VarName::new("Pkg.g").into(),
+            args: vec![var_ref("u", Span::DUMMY)],
+            is_constructor: false,
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "test".to_string(),
+        scalar_count: 1,
+    });
+
+    let err = insert_array_size_args_dae(&mut dae)
+        .expect_err("unspanned array-size argument insertion should fail");
+
+    assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    assert!(
+        err.to_string()
+            .contains("missing source provenance for DAE array size argument"),
+        "error should explain missing array-size provenance: {err}"
+    );
 }
 
 #[test]
@@ -143,7 +228,7 @@ fn dae_record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
         scalar_count: 1,
     });
 
-    lower_record_function_params_dae(&mut dae);
+    lower_record_function_params_dae(&mut dae).expect("unknown metadata should not rewrite calls");
 
     let function = dae
         .symbols

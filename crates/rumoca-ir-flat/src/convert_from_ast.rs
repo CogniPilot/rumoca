@@ -27,7 +27,11 @@ pub(super) fn component_reference_from_ast_with_def_map(
                 subs: part
                     .subs
                     .as_ref()
-                    .map(|subs| subs.iter().map(subscript_from_ast).collect())
+                    .map(|subs| {
+                        subs.iter()
+                            .map(|sub| subscript_from_ast(sub, comp.span))
+                            .collect()
+                    })
                     .unwrap_or_default(),
             })
             .collect(),
@@ -123,7 +127,10 @@ pub(super) fn expression_from_ast_with_def_map(
             base, subscripts, ..
         } => Expression::Index {
             base: Box::new(expression_from_ast_with_def_map(base, def_map)),
-            subscripts: subscripts.iter().map(subscript_from_ast).collect(),
+            subscripts: subscripts
+                .iter()
+                .map(|sub| subscript_from_ast(sub, span))
+                .collect(),
             span,
         },
         ast::Expression::FieldAccess { base, field, .. } => Expression::FieldAccess {

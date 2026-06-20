@@ -1,3 +1,4 @@
+use crate::LowerError;
 use indexmap::IndexSet;
 use rumoca_core::ExpressionVisitor;
 use rumoca_core::OpBinary;
@@ -63,17 +64,23 @@ fn comparison_uses_time_and_event_var(
 fn collect_dynamic_time_event_exprs_from_expr(
     expr: &rumoca_core::Expression,
     exprs: &mut Vec<rumoca_core::Expression>,
-) {
+) -> Result<(), LowerError> {
     let mut collector = DynamicTimeEventExprCollector {
         exprs,
         no_event_depth: 0,
+        error: None,
     };
     collector.visit_expression(expr);
+    match collector.error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 struct DynamicTimeEventExprCollector<'a> {
     exprs: &'a mut Vec<rumoca_core::Expression>,
     no_event_depth: usize,
+    error: Option<LowerError>,
 }
 
 impl ExpressionVisitor for DynamicTimeEventExprCollector<'_> {
@@ -82,6 +89,9 @@ impl ExpressionVisitor for DynamicTimeEventExprCollector<'_> {
         function: &rumoca_core::BuiltinFunction,
         args: &[rumoca_core::Expression],
     ) {
+        if self.error.is_some() {
+            return;
+        }
         if matches!(function, rumoca_core::BuiltinFunction::NoEvent) {
             self.no_event_depth += 1;
             self.walk_builtin_call(function, args);
@@ -92,9 +102,15 @@ impl ExpressionVisitor for DynamicTimeEventExprCollector<'_> {
             function,
             rumoca_core::BuiltinFunction::Mod | rumoca_core::BuiltinFunction::Rem
         ) && self.no_event_depth == 0
-            && let Some(next_event) = next_period_event_expr(args)
         {
-            self.exprs.push(next_event);
+            match next_period_event_expr(args) {
+                Ok(Some(next_event)) => self.exprs.push(next_event),
+                Ok(None) => {}
+                Err(err) => {
+                    self.error = Some(err);
+                    return;
+                }
+            }
         }
         self.walk_builtin_call(function, args);
     }
@@ -105,6 +121,9 @@ impl ExpressionVisitor for DynamicTimeEventExprCollector<'_> {
         lhs: &rumoca_core::Expression,
         rhs: &rumoca_core::Expression,
     ) {
+        if self.error.is_some() {
+            return;
+        }
         if matches!(
             op,
             OpBinary::Ge | OpBinary::Gt | OpBinary::Le | OpBinary::Lt
@@ -121,92 +140,136 @@ impl ExpressionVisitor for DynamicTimeEventExprCollector<'_> {
     }
 }
 
-fn next_period_event_expr(args: &[rumoca_core::Expression]) -> Option<rumoca_core::Expression> {
+fn next_period_event_expr(
+    args: &[rumoca_core::Expression],
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
     let [time, period] = args else {
-        return None;
+        return Ok(None);
     };
     if !expr_is_time_var(time) {
-        return None;
+        return Ok(None);
     }
-    let period = abs_expr(period.clone());
-    let advance = sub_expr(period.clone(), mod_expr(time_ref_expr(), period.clone()));
-    Some(add_expr(
-        time_ref_expr(),
-        max_expr(advance, dynamic_time_event_min_advance_expr(period)),
-    ))
+    let Some(span) = period.span().or_else(|| time.span()) else {
+        return Err(LowerError::UnspannedContractViolation {
+            reason: "dynamic periodic time event is missing source provenance".to_string(),
+        });
+    };
+    let period = abs_expr(period.clone(), span);
+    let advance = sub_expr(
+        period.clone(),
+        mod_expr(time_ref_expr(span), period.clone(), span),
+        span,
+    );
+    Ok(Some(add_expr(
+        time_ref_expr(span),
+        max_expr(
+            advance,
+            dynamic_time_event_min_advance_expr(period, span),
+            span,
+        ),
+        span,
+    )))
 }
 
-fn dynamic_time_event_min_advance_expr(period: rumoca_core::Expression) -> rumoca_core::Expression {
+fn dynamic_time_event_min_advance_expr(
+    period: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     let scale = max_expr(
         period,
-        add_expr(literal_expr(1.0), abs_expr(time_ref_expr())),
+        add_expr(
+            literal_expr(1.0, span),
+            abs_expr(time_ref_expr(span), span),
+            span,
+        ),
+        span,
     );
-    mul_expr(scale, literal_expr(1.0e-12))
+    mul_expr(scale, literal_expr(1.0e-12, span), span)
 }
 
-fn time_ref_expr() -> rumoca_core::Expression {
+fn time_ref_expr(span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new("time").into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn abs_expr(expr: rumoca_core::Expression) -> rumoca_core::Expression {
+fn abs_expr(expr: rumoca_core::Expression, span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Abs,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn mod_expr(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+fn mod_expr(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Mod,
         args: vec![lhs, rhs],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn max_expr(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+fn max_expr(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Max,
         args: vec![lhs, rhs],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn literal_expr(value: f64) -> rumoca_core::Expression {
+fn literal_expr(value: f64, span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn add_expr(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+fn add_expr(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::Binary {
         op: OpBinary::Add,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn mul_expr(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+fn mul_expr(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::Binary {
         op: OpBinary::Mul,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn sub_expr(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+fn sub_expr(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::Binary {
         op: OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -266,7 +329,7 @@ pub(crate) fn collect_dynamic_time_event_names(dae_model: &dae::Dae) -> Vec<Stri
 
 pub(crate) fn collect_dynamic_time_event_exprs(
     dae_model: &dae::Dae,
-) -> Vec<rumoca_core::Expression> {
+) -> Result<Vec<rumoca_core::Expression>, LowerError> {
     let mut exprs = Vec::new();
     for expr in dae_model
         .discrete
@@ -277,9 +340,9 @@ pub(crate) fn collect_dynamic_time_event_exprs(
         .map(|eq| &eq.rhs)
         .chain(dae_model.events.synthetic_root_conditions.iter())
     {
-        collect_dynamic_time_event_exprs_from_expr(expr, &mut exprs);
+        collect_dynamic_time_event_exprs_from_expr(expr, &mut exprs)?;
     }
-    exprs
+    Ok(exprs)
 }
 
 #[cfg(test)]
@@ -287,14 +350,21 @@ mod tests {
     use super::*;
 
     fn scalar_var(name: &str) -> dae::Variable {
-        dae::Variable::new(rumoca_core::VarName::new(name))
+        dae::Variable::new(
+            rumoca_core::VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        )
+    }
+
+    fn test_span(start: usize, end: usize) -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(89), start, end)
     }
 
     fn time_ref() -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("time").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(1, 5),
         }
     }
 
@@ -302,7 +372,15 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(10, 10 + name.len()),
+        }
+    }
+
+    fn spanned_var_ref(name: &str, span: rumoca_core::Span) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new(name).into(),
+            subscripts: vec![],
+            span,
         }
     }
 
@@ -422,7 +500,12 @@ mod tests {
                 "pulse output",
             ));
 
-        assert_eq!(collect_dynamic_time_event_exprs(&dae_model).len(), 1);
+        assert_eq!(
+            collect_dynamic_time_event_exprs(&dae_model)
+                .expect("time threshold collection should succeed")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -448,12 +531,57 @@ mod tests {
                 ));
 
             assert_eq!(
-                collect_dynamic_time_event_exprs(&dae_model).len(),
+                collect_dynamic_time_event_exprs(&dae_model)
+                    .expect("mod/rem dynamic event collection should succeed")
+                    .len(),
                 1,
                 "{}(time, period) should expose its discontinuity as a dynamic time event",
                 function.name()
             );
         }
+    }
+
+    #[test]
+    fn next_period_event_expr_preserves_period_span() {
+        let period_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("periodic.mo"),
+            18,
+            24,
+        );
+
+        let expr = next_period_event_expr(&[time_ref(), spanned_var_ref("period", period_span)])
+            .expect("periodic next-event generation should succeed")
+            .expect("mod(time, period) should generate a next-event expression");
+
+        assert_eq!(expr.span(), Some(period_span));
+        let rumoca_core::Expression::Binary { lhs, rhs, span, .. } = expr else {
+            panic!("generated next-event expression should be an addition");
+        };
+        assert_eq!(span, period_span);
+        assert_eq!(lhs.span(), Some(period_span));
+        assert_eq!(rhs.span(), Some(period_span));
+    }
+
+    #[test]
+    fn next_period_event_expr_rejects_missing_source_span() {
+        let time = rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new("time").into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        };
+        let period = rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new("period").into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let err = next_period_event_expr(&[time, period])
+            .expect_err("source-free periodic time events must fail fast");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(err.reason().contains("dynamic periodic time event"));
+        assert!(err.reason().contains("source provenance"));
     }
 
     #[test]
@@ -480,7 +608,11 @@ mod tests {
                 "noEvent periodic guard",
             ));
 
-        assert!(collect_dynamic_time_event_exprs(&dae_model).is_empty());
+        assert!(
+            collect_dynamic_time_event_exprs(&dae_model)
+                .expect("noEvent dynamic event collection should succeed")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -512,12 +644,13 @@ mod tests {
                 "periodic turn guard",
             ));
 
-        let exprs = collect_dynamic_time_event_exprs(&dae_model);
+        let exprs = collect_dynamic_time_event_exprs(&dae_model)
+            .expect("mod dynamic event collection should succeed");
         let layout =
             crate::layout::build_var_layout(&dae_model).expect("test DAE layout should build");
         let rows = crate::lower::lower_dynamic_time_event_rhs(&dae_model, &layout, &exprs)
             .expect("dynamic modulo event row should lower");
-        let block = rumoca_ir_solve::ScalarProgramBlock::new(rows);
+        let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(rows, test_span(1, 5));
         let mut p = vec![0.0; layout.p_scalars()];
         let Some(rumoca_ir_solve::ScalarSlot::P { index, .. }) = layout.binding("period") else {
             panic!("period should be a parameter slot");

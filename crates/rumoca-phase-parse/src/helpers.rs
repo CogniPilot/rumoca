@@ -29,18 +29,23 @@ pub(crate) fn span_location(
     }
 }
 
-pub(crate) fn location_span(location: &rumoca_core::Location) -> Span {
+pub(crate) fn location_span(location: &rumoca_core::Location) -> anyhow::Result<Span> {
     let start = location.start as usize;
     let end = location.end as usize;
     if end > start && !location.file_name.is_empty() {
-        Span::from_offsets(SourceId::from_source_name(&location.file_name), start, end)
+        Ok(Span::from_offsets(
+            SourceId::from_source_name(&location.file_name),
+            start,
+            end,
+        ))
     } else {
-        Span::DUMMY
+        anyhow::bail!("missing parser source location at {location}")
     }
 }
 
-pub(crate) fn token_span(token: &rumoca_core::Token) -> Span {
+pub(crate) fn token_span(token: &rumoca_core::Token) -> anyhow::Result<Span> {
     location_span(&token.location)
+        .map_err(|err| anyhow::anyhow!("token '{}' has no source span: {err}", token.text))
 }
 
 pub(crate) fn merge_spans(start: Span, end: Span) -> Span {
@@ -53,11 +58,21 @@ pub(crate) fn merge_spans(start: Span, end: Span) -> Span {
     Span::from_offsets(start.source, start.start.0, end.end.0.max(start.start.0))
 }
 
-pub(crate) fn expression_list_span(elements: &[rumoca_ir_ast::Expression]) -> Span {
+pub(crate) fn expression_list_span(elements: &[rumoca_ir_ast::Expression]) -> Option<Span> {
     match (elements.first(), elements.last()) {
-        (Some(first), Some(last)) => merge_spans(first.span(), last.span()),
-        _ => Span::DUMMY,
+        (Some(first), Some(last)) => Some(merge_spans(first.span(), last.span())),
+        _ => None,
     }
+}
+
+pub(crate) fn required_expression_list_span(
+    elements: &[rumoca_ir_ast::Expression],
+    context: &'static str,
+) -> anyhow::Result<Span> {
+    let Some(span) = expression_list_span(elements) else {
+        anyhow::bail!("{context} has no source expression span");
+    };
+    Ok(span)
 }
 
 /// Helper to collect elements from array_arguments into an Expression
@@ -74,8 +89,9 @@ pub(crate) fn collect_array_elements(
                 // Simple array: collect all elements
                 let mut elements = vec![args.expression.clone()];
                 collect_array_non_first(&comma_args.array_arguments_non_first, &mut elements);
+                let span = required_expression_list_span(&elements, "array arguments")?;
                 Ok(rumoca_ir_ast::Expression::Array {
-                    span: expression_list_span(&elements),
+                    span,
                     elements,
                     is_matrix: false,
                 })
@@ -84,7 +100,7 @@ pub(crate) fn collect_array_elements(
                 for_group,
             ) => {
                 // Array comprehension: {expr for i in range, j in range2, ... [if filter]}
-                let indices = convert_for_indices(&for_group.for_indices);
+                let indices = convert_for_indices(&for_group.for_indices)?;
                 let filter = for_group
                     .array_arguments_opt0
                     .as_ref()
@@ -110,32 +126,35 @@ pub(crate) fn collect_array_elements(
 /// Convert grammar ForIndices to AST ForIndex vec
 pub(crate) fn convert_for_indices(
     indices: &modelica_grammar_trait::ForIndices,
-) -> Vec<rumoca_ir_ast::ForIndex> {
+) -> anyhow::Result<Vec<rumoca_ir_ast::ForIndex>> {
     let mut result = Vec::new();
 
     // First index
-    result.push(convert_for_index(&indices.for_index));
+    result.push(convert_for_index(&indices.for_index)?);
 
     // Additional indices
     for item in &indices.for_indices_list {
-        result.push(convert_for_index(&item.for_index));
+        result.push(convert_for_index(&item.for_index)?);
     }
 
-    result
+    Ok(result)
 }
 
 /// Convert a single grammar ForIndex to AST ForIndex
-fn convert_for_index(index: &modelica_grammar_trait::ForIndex) -> rumoca_ir_ast::ForIndex {
-    let range = index
-        .for_index_opt
-        .as_ref()
-        .map(|opt| opt.expression.clone())
-        .unwrap_or(rumoca_ir_ast::Expression::Empty { span: Span::DUMMY });
+fn convert_for_index(
+    index: &modelica_grammar_trait::ForIndex,
+) -> anyhow::Result<rumoca_ir_ast::ForIndex> {
+    let range = match &index.for_index_opt {
+        Some(opt) => opt.expression.clone(),
+        None => rumoca_ir_ast::Expression::Empty {
+            span: token_span(&index.ident)?,
+        },
+    };
 
-    rumoca_ir_ast::ForIndex {
+    Ok(rumoca_ir_ast::ForIndex {
         ident: index.ident.clone(),
         range,
-    }
+    })
 }
 
 /// Helper to recursively collect elements from array_arguments_non_first chain
@@ -149,5 +168,19 @@ pub(crate) fn collect_array_non_first(
     // Recursively collect remaining elements
     if let Some(opt) = &args.array_arguments_non_first_opt {
         collect_array_non_first(&opt.array_arguments_non_first, elements);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn location_span_rejects_missing_source_location() {
+        let err = location_span(&rumoca_core::Location::default()).unwrap_err();
+        assert!(
+            err.to_string().contains("missing parser source location"),
+            "unexpected error: {err}"
+        );
     }
 }

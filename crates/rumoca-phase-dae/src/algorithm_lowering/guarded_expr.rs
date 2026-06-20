@@ -4,6 +4,7 @@ pub(super) fn guarded_expr(
     guard: Expression,
     value: Expression,
     fallback: Expression,
+    span: Span,
 ) -> Expression {
     if is_bool_expr(&guard, true) {
         return value;
@@ -31,7 +32,7 @@ pub(super) fn guarded_expr(
     Expression::If {
         branches: vec![(guard, value)],
         else_branch: Box::new(fallback),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 

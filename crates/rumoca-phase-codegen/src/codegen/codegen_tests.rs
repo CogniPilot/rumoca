@@ -1,8 +1,14 @@
+// SPEC_0021 file-size exception: codegen regression coverage is still grouped
+// around template behavior. split plan: move target-specific regression suites
+// into focused test modules alongside their renderers.
+
 use super::*;
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
+
+mod backend_template_tests;
 
 fn normalize_newlines(input: &str) -> String {
     input.replace("\r\n", "\n")
@@ -12,6 +18,39 @@ pub(super) fn builtin_template(target: &str, template: &str) -> &'static str {
     crate::templates::builtin_target(target)
         .and_then(|target| target.template_source(template))
         .expect("built-in target template must exist")
+}
+
+fn fixture_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("codegen_solve_fixture.mo"),
+        1,
+        2,
+    )
+}
+
+#[test]
+fn condition_aliases_use_condition_equation_span() {
+    let span = fixture_span();
+    let mut dae = dae::Dae::new();
+    dae.conditions.equations.push(dae::Equation::explicit(
+        rumoca_core::Reference::new("__c0"),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(true),
+            span,
+        },
+        span,
+        "condition equation",
+    ));
+
+    let aliases = condition_aliases_from_dae(&dae).expect("condition aliases should serialize");
+    let condition = aliases[0]
+        .get("condition")
+        .cloned()
+        .expect("condition alias should include condition expression");
+    let condition: rumoca_core::Expression =
+        serde_json::from_value(condition).expect("condition alias should deserialize");
+
+    assert_eq!(condition.span(), Some(span));
 }
 
 fn solve_problem_with_one_by_one_matmul_derivative() -> solve::SolveProblem {
@@ -28,7 +67,7 @@ fn solve_problem_with_one_by_one_matmul_derivative() -> solve::SolveProblem {
             lhs_sparsity: Default::default(),
             rhs_sparsity: Default::default(),
             metadata: Default::default(),
-            span: Default::default(),
+            span: fixture_span(),
         }],
     };
     problem
@@ -54,7 +93,7 @@ pub(super) fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::Solv
             n: 2,
             next_reg: 6,
             metadata: Default::default(),
-            span: Default::default(),
+            span: fixture_span(),
         }],
     };
     problem
@@ -91,8 +130,8 @@ fn test_record_param_template_skip_uses_type_class_metadata() {
 #[test]
 fn test_simulation_template_rejects_external_function_with_stable_diagnostic() {
     let mut dae = dae::Dae::new();
-    let mut function = rumoca_core::Function::new("ExternalUser", Default::default());
-    function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    let mut function = rumoca_core::Function::new("ExternalUser", fixture_span());
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", fixture_span()));
     function.external = Some(rumoca_core::ExternalFunction::default());
     dae.symbols
         .functions
@@ -118,8 +157,8 @@ fn test_simulation_template_rejects_external_function_with_stable_diagnostic() {
 #[test]
 fn test_simulation_template_file_rejects_external_function_with_stable_diagnostic() {
     let mut dae = dae::Dae::new();
-    let mut function = rumoca_core::Function::new("ExternalFileUser", Default::default());
-    function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    let mut function = rumoca_core::Function::new("ExternalFileUser", fixture_span());
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", fixture_span()));
     function.external = Some(rumoca_core::ExternalFunction::default());
     dae.symbols
         .functions
@@ -174,10 +213,10 @@ fn test_render_template_for_input_supports_dae_flat_and_ast() {
             problem: &solve,
             artifacts: &solve_artifacts,
         },
-        "{{ ir_kind }} {{ solve.continuous.residual.programs | length }} {{ ir.continuous.residual.programs | length }}",
+        "{{ ir_kind }} {{ solve.continuous.residual.nodes | length }} {{ ir.continuous.residual.nodes | length }} {{ solve_blocks.continuous.residual.scalar_programs.programs | length }}",
     )
     .unwrap();
-    assert_eq!(solve_rendered, "solve 0 0");
+    assert_eq!(solve_rendered, "solve 0 0 0");
 
     let ast = ast::ClassTree::new();
     let ast_rendered = render_template_for_input(
@@ -399,7 +438,11 @@ fn test_dae_template_json_uses_canonical_keys_only() {
         "x".into(),
         rumoca_ir_dae::Variable {
             name: "x".into(),
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
     dae.events
@@ -443,10 +486,12 @@ fn test_dae_template_json_uses_canonical_keys_only() {
 #[test]
 fn test_dae_template_json_includes_projected_function_output_refs() {
     let mut dae = dae::Dae::new();
-    let mut function =
-        rumoca_core::Function::new("LieGroup.SO3.rotationMatrix", Default::default());
-    function.add_input(rumoca_core::FunctionParam::new("q", "Real").with_dims(vec![4]));
-    function.add_output(rumoca_core::FunctionParam::new("R", "Real").with_dims(vec![3, 3]));
+    let mut function = rumoca_core::Function::new("LieGroup.SO3.rotationMatrix", fixture_span());
+    function
+        .add_input(rumoca_core::FunctionParam::new("q", "Real", fixture_span()).with_dims(vec![4]));
+    function.add_output(
+        rumoca_core::FunctionParam::new("R", "Real", fixture_span()).with_dims(vec![3, 3]),
+    );
     dae.symbols
         .functions
         .insert("LieGroup.SO3.rotationMatrix".into(), function);
@@ -467,6 +512,75 @@ fn test_dae_template_json_includes_projected_function_output_refs() {
     assert!(
         refs.contains(&"LieGroup.SO3.rotationMatrix.R[9]"),
         "last projected array-output function symbol should be allocated: {refs:?}",
+    );
+}
+
+#[test]
+fn dae_template_json_rejects_source_ref_dimension_overflow() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        "huge".into(),
+        dae::Variable {
+            name: "huge".into(),
+            dims: vec![i64::MAX],
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+
+    let result = dae_template_json(&dae);
+
+    #[cfg(target_pointer_width = "32")]
+    {
+        let err = result.expect_err("oversized source-ref dimension should fail");
+        assert!(
+            err.to_string()
+                .contains("source ref dimension 9223372036854775807 for `huge`"),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    {
+        let err = result.expect_err("oversized source-ref enumeration should fail");
+        assert!(
+            err.to_string()
+                .contains("source ref scalar count for `huge`"),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("exceeds enumeration limit"),
+            "{err:?}"
+        );
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn dae_template_json_rejects_source_ref_scalar_count_overflow() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        "huge".into(),
+        dae::Variable {
+            name: "huge".into(),
+            dims: vec![i64::MAX, 3],
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+
+    let err = dae_template_json(&dae).expect_err("oversized source-ref shape should fail");
+
+    assert!(
+        err.to_string()
+            .contains("source ref scalar count for `huge` overflows host index range"),
+        "{err:?}"
     );
 }
 
@@ -763,7 +877,10 @@ fn test_fmi3_derivatives_do_not_treat_implicit_solver_residuals_as_xdot() {
     let mut dae = dae::Dae::new();
     dae.variables.states.insert(
         rumoca_core::VarName::new("x"),
-        dae::Variable::new(rumoca_core::VarName::new("x")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -789,7 +906,7 @@ fn test_fmi3_derivatives_do_not_treat_implicit_solver_residuals_as_xdot() {
             }),
             span: rumoca_core::Span::DUMMY,
         },
-        span: Default::default(),
+        span: rumoca_core::Span::DUMMY,
         origin: "test".into(),
         scalar_count: 1,
     });
@@ -809,7 +926,8 @@ fn test_fmi3_derivatives_do_not_treat_implicit_solver_residuals_as_xdot() {
                         {"LoadY": {"dst": 0, "index": 0}},
                         {"Unary": {"dst": 1, "op": "Neg", "arg": 0}},
                         {"StoreOutput": {"src": 1}}
-                    ]]
+                    ]],
+                    "output_indices": [0]
                 }
             },
             "events": {
@@ -832,6 +950,7 @@ fn test_fmi3_derivatives_do_not_treat_implicit_solver_residuals_as_xdot() {
         rendered.contains("(-(__rumoca_solve_y(m, 0)))") && rendered.contains("m->xdot[0] = __r"),
         "FMI3 derivatives should come from solve derivative rows, got:\n{rendered}"
     );
+    assert!(rendered.contains("memset(m->xdot, 0, sizeof(m->xdot));"));
     assert!(
         !rendered.contains("m->xdot[0] = 42.0;"),
         "implicit solve residual rows are not ordered xdot rows"
@@ -846,7 +965,11 @@ fn test_target_symbols_use_short_readable_names_without_collisions() {
             name.into(),
             dae::Variable {
                 name: name.into(),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
     }
@@ -867,14 +990,22 @@ fn test_target_symbols_scalarize_array_refs_readably_and_without_collision() {
         dae::Variable {
             name: "plant.leg_f_b".into(),
             dims: vec![4, 3],
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
     dae.variables.algebraics.insert(
         "leg_f_b_2_1".into(),
         dae::Variable {
             name: "leg_f_b_2_1".into(),
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
     let template = r#"
@@ -891,6 +1022,45 @@ fn test_source_ref_template_helper_preserves_scalar_names() {
     let dae = dae::Dae::new();
     let rendered = render_template(&dae, r#"{{ source_ref("x", [], 1) }}"#).unwrap();
     assert_eq!(rendered, "x");
+}
+
+#[test]
+fn test_source_ref_template_helper_rejects_nonnumeric_flat_index() {
+    let dae = dae::Dae::new();
+    let err = render_template(&dae, r#"{{ source_ref("x", [4], "bad") }}"#)
+        .expect_err("nonnumeric source_ref flat index should fail rendering");
+
+    assert!(
+        err.to_string()
+            .contains("source_ref flat index `bad` is not numeric"),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn test_source_ref_template_helper_rejects_zero_flat_index() {
+    let dae = dae::Dae::new();
+    let err = render_template(&dae, r#"{{ source_ref("x", [4], 0) }}"#)
+        .expect_err("zero source_ref flat index should fail rendering");
+
+    assert!(
+        err.to_string()
+            .contains("source_ref flat index must be one-based"),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn test_source_ref_template_helper_rejects_out_of_range_flat_index() {
+    let dae = dae::Dae::new();
+    let err = render_template(&dae, r#"{{ source_ref("x", [2], 3) }}"#)
+        .expect_err("out-of-range source_ref flat index should fail rendering");
+
+    assert!(
+        err.to_string()
+            .contains("source_ref flat index 3 exceeds dimensions [2]"),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -933,7 +1103,11 @@ fn test_fmi3_initialize_defaults_uses_allocated_symbols_for_start_aliases() {
                     value: rumoca_core::Literal::Real(start),
                     span: rumoca_core::Span::DUMMY,
                 }),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
     }
@@ -981,7 +1155,11 @@ fn test_fmi3_initialize_defaults_uses_allocated_symbols_for_start_aliases() {
                 is_matrix: false,
                 span: rumoca_core::Span::DUMMY,
             }),
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
 
@@ -1000,992 +1178,5 @@ fn test_fmi3_initialize_defaults_uses_allocated_symbols_for_start_aliases() {
     assert!(
         rendered.contains("m->x[2] = ((ground_z - leg_z) + initial_ground_clearance);"),
         "state start expression should compile against the local aliases:\n{rendered}"
-    );
-}
-
-#[test]
-fn test_embedded_c_alg_rhs_indexes_common_array_binary_rhs() {
-    let rhs = rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs: Box::new(rumoca_core::Expression::VarRef {
-            name: "error_dot".into(),
-            subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        rhs: Box::new(rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: "error".into(),
-                subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(rumoca_core::Expression::BuiltinCall {
-                function: rumoca_core::BuiltinFunction::Pre,
-                args: vec![rumoca_core::Expression::VarRef {
-                    name: "q".into(),
-                    subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
-                }],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let dae_json = serde_json::json!({
-        "f_x": [
-            {
-                "rhs": serde_json::to_value(rhs).unwrap()
-            }
-        ]
-    });
-    let template = r#"
-{% set cfg = {"prefix": "", "power": "powf", "float_literals": true, "subscript_underscore": true} %}
-{{ alg_rhs_for_var("error_dot[2]", dae.f_x, cfg) }}
-"#;
-    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
-
-    assert!(
-        rendered.contains("(error_2 + pre(q_2))"),
-        "expected indexed array algebraic RHS in generated C, got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("WARNING: no equation found for error_dot[2]"),
-        "codegen should not fall back to warning stub for indexed array algebraics:\n{rendered}"
-    );
-}
-
-#[test]
-fn test_c_alg_rhs_prefers_direct_array_connection_over_rearranged_equation() {
-    fn var(name: &str) -> rumoca_core::Expression {
-        rumoca_core::Expression::VarRef {
-            name: name.into(),
-            subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
-        rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    let indirect_motor_equation = sub(
-        var("motor_1_omega_error"),
-        sub(var("motor_1_omega_cmd"), var("motor_1_omega")),
-    );
-    let direct_array_connection = sub(
-        rumoca_core::Expression::Array {
-            elements: vec![
-                var("motor_1_omega_cmd"),
-                var("motor_2_omega_cmd"),
-                var("motor_3_omega_cmd"),
-                var("motor_4_omega_cmd"),
-            ],
-            is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
-        },
-        var("plant_omega_cmd"),
-    );
-    let dae_json = serde_json::json!({
-        "symbols": {
-            "plant_omega_cmd[1]": "plant_omega_cmd_1"
-        },
-        "f_x": [
-            {"rhs": serde_json::to_value(indirect_motor_equation).unwrap()},
-            {"rhs": serde_json::to_value(direct_array_connection).unwrap()}
-        ]
-    });
-    let template = r#"
-{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
-{{ alg_rhs_for_var("motor_1_omega_cmd", dae.f_x, cfg) }}
-"#;
-    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
-
-    assert_eq!(rendered.trim(), "plant_omega_cmd_1");
-}
-
-#[test]
-fn test_c_alg_rhs_prefers_direct_indexed_equation_for_array_element() {
-    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
-        rumoca_core::Expression::VarRef {
-            name: name.into(),
-            subscripts: subscripts
-                .into_iter()
-                .map(|index| {
-                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
-                })
-                .collect(),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
-        rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    let earlier_reverse_array_alias = sub(
-        rumoca_core::Expression::Array {
-            elements: vec![
-                var("motor_1_omega_cmd", vec![]),
-                var("motor_2_omega_cmd", vec![]),
-                var("motor_3_omega_cmd", vec![]),
-                var("motor_4_omega_cmd", vec![]),
-            ],
-            is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
-        },
-        var("plant_omega_cmd", vec![]),
-    );
-    let direct_indexed_equation = sub(var("plant_omega_cmd", vec![1]), var("motor_cmd", vec![1]));
-    let dae_json = serde_json::json!({
-        "symbols": {
-            "plant_omega_cmd[1]": "plant_omega_cmd_1",
-            "motor_cmd[1]": "motor_cmd_1"
-        },
-        "f_x": [
-            {"rhs": serde_json::to_value(earlier_reverse_array_alias).unwrap()},
-            {"rhs": serde_json::to_value(direct_indexed_equation).unwrap()}
-        ]
-    });
-    let template = r#"
-{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
-{{ alg_rhs_for_var("plant_omega_cmd[1]", dae.f_x, cfg) }}
-"#;
-    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
-
-    assert_eq!(rendered.trim(), "motor_cmd_1");
-}
-
-#[test]
-fn test_c_ode_rhs_solves_preserved_matrix_vector_derivative_equation() {
-    let residual = rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs: Box::new(rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: "J".into(),
-                subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(rumoca_core::Expression::BuiltinCall {
-                function: rumoca_core::BuiltinFunction::Der,
-                args: vec![rumoca_core::Expression::VarRef {
-                    name: "omega".into(),
-                    subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
-                }],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        rhs: Box::new(rumoca_core::Expression::VarRef {
-            name: "M_body".into(),
-            subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let residual_value = serde_json::to_value(residual).unwrap();
-    let dae_json = serde_json::json!({
-        "symbols": {
-            "J[1,1]": "J_1_1",
-            "J[1,2]": "J_1_2",
-            "J[1,3]": "J_1_3",
-            "J[2,1]": "J_2_1",
-            "J[2,2]": "J_2_2",
-            "J[2,3]": "J_2_3",
-            "J[3,1]": "J_3_1",
-            "J[3,2]": "J_3_2",
-            "J[3,3]": "J_3_3",
-            "M_body[1]": "M_body_1",
-            "M_body[2]": "M_body_2",
-            "M_body[3]": "M_body_3"
-        },
-        "f_x": [
-            {
-                "rhs": residual_value,
-                "scalar_count": 3
-            }
-        ]
-    });
-    let template = r#"
-{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
-{{ ode_rhs_for_state("omega[2]", dae.f_x, cfg) }}
-"#;
-    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
-
-    assert!(
-        rendered.contains("__rumoca_solve_linear_component((double[]){J_1_1, J_1_2, J_1_3, J_2_1, J_2_2, J_2_3, J_3_1, J_3_2, J_3_3}, (double[]){M_body_1, M_body_2, M_body_3}, 3, 1)"),
-        "expected a generated dense linear solve for the vector derivative equation, got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("WARNING: no ODE equation found"),
-        "matrix-vector derivative equation should not fall back to a zero derivative:\n{rendered}"
-    );
-}
-
-#[test]
-fn test_c_ode_rhs_solves_scalarized_coupled_derivative_rows() {
-    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
-        rumoca_core::Expression::VarRef {
-            name: name.into(),
-            subscripts: subscripts
-                .into_iter()
-                .map(|index| {
-                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
-                })
-                .collect(),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn der_omega(index: i64) -> rumoca_core::Expression {
-        rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Der,
-            args: vec![var("omega", vec![index])],
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn mul(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
-        rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn add(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
-        rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
-        rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-    fn row(row: i64) -> rumoca_core::Expression {
-        sub(
-            add(
-                add(
-                    mul(var("J", vec![row, 1]), der_omega(1)),
-                    mul(var("J", vec![row, 2]), der_omega(2)),
-                ),
-                mul(var("J", vec![row, 3]), der_omega(3)),
-            ),
-            var("M_body", vec![row]),
-        )
-    }
-
-    let row_1 = serde_json::to_value(row(1)).unwrap();
-    let row_2 = serde_json::to_value(row(2)).unwrap();
-    let row_3 = serde_json::to_value(row(3)).unwrap();
-    let dae_json = serde_json::json!({
-        "symbols": {
-            "J[1,1]": "J_1_1",
-            "J[1,2]": "J_1_2",
-            "J[1,3]": "J_1_3",
-            "J[2,1]": "J_2_1",
-            "J[2,2]": "J_2_2",
-            "J[2,3]": "J_2_3",
-            "J[3,1]": "J_3_1",
-            "J[3,2]": "J_3_2",
-            "J[3,3]": "J_3_3",
-            "M_body[1]": "M_body_1",
-            "M_body[2]": "M_body_2",
-            "M_body[3]": "M_body_3",
-            "omega[1]": "omega_1",
-            "omega[2]": "omega_2",
-            "omega[3]": "omega_3"
-        },
-        "f_x": [
-            {"rhs": row_1, "scalar_count": 1},
-            {"rhs": row_2, "scalar_count": 1},
-            {"rhs": row_3, "scalar_count": 1}
-        ]
-    });
-    let template = r#"
-{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
-{{ ode_rhs_for_state("omega[3]", dae.f_x, cfg) }}
-"#;
-    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
-
-    assert!(
-        rendered.contains("__rumoca_solve_linear_component((double[]){J_1_1, J_1_2, J_1_3, J_2_1, J_2_2, J_2_3, J_3_1, J_3_2, J_3_3}, (double[]){M_body_1, M_body_2, M_body_3}, 3, 2)"),
-        "expected scalarized derivative rows to become one dense solve, got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("WARNING: no ODE equation found"),
-        "coupled scalar derivative rows should not fall back to a zero derivative:\n{rendered}"
-    );
-}
-
-#[test]
-fn test_mul_elem_rendering_can_use_backend_function() {
-    let lhs = rumoca_core::Expression::VarRef {
-        name: "a".into(),
-        subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let rhs = rumoca_core::Expression::VarRef {
-        name: "b".into(),
-        subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let mul_expr = rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Mul,
-        lhs: Box::new(lhs.clone()),
-        rhs: Box::new(rhs.clone()),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let mul_elem_expr = rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::MulElem,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
-    };
-
-    let cfg = ExprConfig {
-        mul_elem_fn: Some("ca.times".to_string()),
-        ..ExprConfig::default()
-    };
-
-    let mul_rendered = render_expression(&Value::from_serialize(&mul_expr), &cfg).unwrap();
-    let mul_elem_rendered =
-        render_expression(&Value::from_serialize(&mul_elem_expr), &cfg).unwrap();
-
-    assert_eq!(mul_rendered, "(a * b)");
-    assert_eq!(mul_elem_rendered, "ca.times(a, b)");
-}
-
-#[test]
-fn test_render_array_comprehension_expression() {
-    let expr = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(rumoca_core::Expression::VarRef {
-            name: "i".into(),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        }),
-        indices: vec![rumoca_core::ComprehensionIndex {
-            name: "i".to_string(),
-            range: rumoca_core::Expression::Range {
-                start: Box::new(rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                step: None,
-                end: Box::new(rumoca_core::Expression::VarRef {
-                    name: "n".into(),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                span: rumoca_core::Span::DUMMY,
-            },
-        }],
-        filter: Some(Box::new(rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Gt,
-            lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: "i".into(),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        })),
-        span: rumoca_core::Span::DUMMY,
-    };
-
-    let rendered =
-        render_expression(&Value::from_serialize(&expr), &ExprConfig::default()).unwrap();
-    assert_eq!(rendered, "{i for i in 1:n if (i > 0)}");
-}
-
-#[test]
-fn test_render_integer_builtin_truncates_for_c_targets() {
-    let expr = rumoca_core::Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Integer,
-        args: vec![rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(-1.5),
-            span: rumoca_core::Span::DUMMY,
-        }],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let cfg = ExprConfig {
-        if_style: IfStyle::Ternary,
-        ..ExprConfig::default()
-    };
-
-    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
-    assert_eq!(rendered, "trunc(-1.5)");
-}
-
-#[test]
-fn test_c_array_comprehension_unroll_substitutes_only_var_refs() {
-    let expr = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: "i".into(),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(rumoca_core::Expression::VarRef {
-                name: "signal".into(),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        indices: vec![rumoca_core::ComprehensionIndex {
-            name: "i".to_string(),
-            range: rumoca_core::Expression::Range {
-                start: Box::new(rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                step: None,
-                end: Box::new(rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                span: rumoca_core::Span::DUMMY,
-            },
-        }],
-        filter: None,
-        span: rumoca_core::Span::DUMMY,
-    };
-    let cfg = ExprConfig {
-        if_style: IfStyle::Ternary,
-        ..ExprConfig::default()
-    };
-
-    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
-    assert_eq!(rendered, "[(1 + signal), (2 + signal)]");
-}
-
-#[test]
-fn test_product_filter() {
-    let dae = dae::Dae::new();
-    let template = "{{ [3, 4] | product }}";
-    let result = render_template(&dae, template).unwrap();
-    assert_eq!(result, "12");
-}
-
-#[test]
-fn test_product_filter_single() {
-    let dae = dae::Dae::new();
-    let template = "{{ [5] | product }}";
-    let result = render_template(&dae, template).unwrap();
-    assert_eq!(result, "5");
-}
-
-#[test]
-fn test_product_filter_empty() {
-    let dae = dae::Dae::new();
-    let template = "{{ [] | product }}";
-    let result = render_template(&dae, template).unwrap();
-    assert_eq!(result, "1");
-}
-
-#[test]
-fn test_casadi_mx_template_empty_dae() {
-    let dae = dae::Dae::new();
-    let result =
-        render_template(&dae, builtin_template("casadi-mx", "casadi_mx.py.jinja")).unwrap();
-    assert!(result.contains("import casadi as ca"));
-    assert!(result.contains("def create_model()"));
-    assert!(result.contains("n_x = 0"));
-    assert!(result.contains("n_z = 0"));
-    assert!(result.contains("dae_fn = ca.Function"));
-}
-
-#[test]
-fn test_casadi_mx_template_flattens_array_start_values_for_x0() {
-    let mut dae = dae::Dae::new();
-    dae.variables.states.insert(
-        "x".into(),
-        rumoca_ir_dae::Variable {
-            name: "x".into(),
-            dims: vec![2],
-            start: Some(rumoca_core::Expression::Array {
-                elements: vec![
-                    rumoca_core::Expression::Literal {
-                        value: rumoca_core::Literal::Real(1.0),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    rumoca_core::Expression::Literal {
-                        value: rumoca_core::Literal::Real(2.0),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                ],
-                is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            ..Default::default()
-        },
-    );
-    dae.variables.states.insert(
-        "y".into(),
-        rumoca_ir_dae::Variable {
-            name: "y".into(),
-            start: Some(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(3.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            ..Default::default()
-        },
-    );
-
-    let result = normalize_newlines(
-        &render_template(&dae, builtin_template("casadi-mx", "casadi_mx.py.jinja")).unwrap(),
-    );
-    assert!(result.contains("def _flat_start(value, expected_size, var_name):"));
-    assert!(result.contains("x0 = np.concatenate(_x0_parts) if _x0_parts else np.array([])"));
-    assert!(result.contains("p0 = np.concatenate(_p0_parts) if _p0_parts else np.array([])"));
-    assert!(result.contains("np.repeat(arr, expected_size)"));
-    assert!(result.contains("Start value size mismatch for"));
-    assert!(result.contains("2,\n        'x'"));
-    assert!(result.contains("1,\n        'y'"));
-    assert!(!result.contains("x0 = np.array(["));
-    assert!(!result.contains("p0 = np.array(["));
-}
-
-#[test]
-fn test_casadi_sx_template_uses_scalar_counts_and_defines_derivatives() {
-    let mut dae = dae::Dae::new();
-    dae.variables.states.insert(
-        "x".into(),
-        rumoca_ir_dae::Variable {
-            name: "x".into(),
-            dims: vec![3],
-            ..Default::default()
-        },
-    );
-    dae.variables.algebraics.insert(
-        "z".into(),
-        rumoca_ir_dae::Variable {
-            name: "z".into(),
-            dims: vec![2],
-            ..Default::default()
-        },
-    );
-    dae.variables.inputs.insert(
-        "u".into(),
-        rumoca_ir_dae::Variable {
-            name: "u".into(),
-            dims: vec![4],
-            ..Default::default()
-        },
-    );
-    dae.variables.parameters.insert(
-        "p".into(),
-        rumoca_ir_dae::Variable {
-            name: "p".into(),
-            dims: vec![5],
-            ..Default::default()
-        },
-    );
-
-    let result =
-        render_template(&dae, builtin_template("casadi-sx", "casadi_sx.py.jinja")).unwrap();
-    assert!(result.contains("n_x = 3"));
-    assert!(result.contains("n_z = 2"));
-    assert!(result.contains("n_u = 4"));
-    assert!(result.contains("n_p = 5"));
-    assert!(result.contains("def der(v):"));
-    assert!(result.contains("xdot = _xdot"));
-    assert!(result.contains("g = f_x"));
-    assert!(result.contains("'n_x': n_x"));
-    assert!(result.contains("'n_z': n_z"));
-    assert!(result.contains("'n_u': n_u"));
-    assert!(result.contains("'n_p': n_p"));
-}
-
-#[test]
-fn test_fmi3_model_description_uses_fmi3_schema_order() {
-    let mut dae = dae::Dae::new();
-    dae.variables.states.insert(
-        "x".into(),
-        rumoca_ir_dae::Variable {
-            name: "x".into(),
-            ..Default::default()
-        },
-    );
-
-    let xml = render_template_with_name(
-        &dae,
-        builtin_template("fmi3", "modelDescription.xml.jinja"),
-        "M",
-    )
-    .expect("render FMI3 modelDescription");
-    let model_variables = xml
-        .find("<ModelVariables>")
-        .expect("FMI3 XML should contain ModelVariables");
-    let model_structure = xml
-        .find("<ModelStructure>")
-        .expect("FMI3 XML should contain ModelStructure");
-
-    assert!(model_variables < model_structure, "{xml}");
-    assert!(
-        !xml.contains("<BuildConfiguration"),
-        "FMI 3 build configuration belongs in sources/buildDescription.xml:\n{xml}"
-    );
-    assert!(
-        !xml.contains("<Terminals"),
-        "FMI 3 terminals belong in terminalsAndIcons/terminalsAndIcons.xml, not modelDescription.xml:\n{xml}"
-    );
-}
-
-#[test]
-fn test_fmi3_build_description_declares_source_file_set() {
-    let dae = dae::Dae::new();
-
-    let xml = render_template_with_name(
-        &dae,
-        builtin_template("fmi3", "buildDescription.xml.jinja"),
-        "M",
-    )
-    .expect("render FMI3 buildDescription");
-
-    assert!(xml.contains(r#"<fmiBuildDescription fmiVersion="3.0">"#));
-    assert!(xml.contains(r#"<BuildConfiguration modelIdentifier="M">"#));
-    assert!(xml.contains(r#"<SourceFileSet language="C99">"#));
-    assert!(xml.contains(r#"<SourceFile name="M.c"/>"#));
-}
-
-#[test]
-fn test_fmi3_model_description_exports_dae_inputs_as_inputs() {
-    let mut dae = dae::Dae::new();
-    dae.variables.inputs.insert(
-        "u".into(),
-        rumoca_ir_dae::Variable {
-            name: "u".into(),
-            dims: vec![2],
-            start: Some(rumoca_core::Expression::Array {
-                elements: vec![
-                    rumoca_core::Expression::Literal {
-                        value: rumoca_core::Literal::Real(1.0),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    rumoca_core::Expression::Literal {
-                        value: rumoca_core::Literal::Real(2.0),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                ],
-                is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            ..Default::default()
-        },
-    );
-
-    let xml = render_template_with_name(
-        &dae,
-        builtin_template("fmi3", "modelDescription.xml.jinja"),
-        "M",
-    )
-    .expect("render FMI3 modelDescription");
-    assert!(
-        xml.contains(r#"<Float64 name="u" valueReference="0" causality="input" variability="continuous" start="1.0 2.0">"#),
-        "{xml}"
-    );
-}
-
-#[test]
-fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
-    assert!(
-        builtin_template("fmi3", "CMakeLists.txt.jinja")
-            .contains(r#"set(FMU_PLATFORM "x86_64-linux")"#),
-        "FMI 3 Linux binaries must use binaries/x86_64-linux"
-    );
-    assert!(
-        builtin_template("fmi3", "build.sh.jinja").contains("PLATFORM=x86_64-linux"),
-        "FMI 3 shell build must use binaries/x86_64-linux"
-    );
-    assert!(
-        !builtin_template("fmi3", "CMakeLists.txt.jinja").contains("linux64"),
-        "linux64 is the FMI 2 platform directory, not FMI 3"
-    );
-    assert!(
-        !builtin_template("fmi3", "build.sh.jinja").contains("linux64"),
-        "linux64 is the FMI 2 platform directory, not FMI 3"
-    );
-}
-
-#[test]
-fn test_fmi3_initial_builtin_tracks_initialization_mode() {
-    assert!(
-        builtin_template("fmi3", "model.c.jinja").contains("modelInitializationMode"),
-        "FMI 3 generated C must evaluate initial() from the FMI initialization state"
-    );
-    assert!(
-        !builtin_template("fmi3", "model.c.jinja").contains("#define initial() 0"),
-        "MLS initial() cannot be hard-coded false in FMI 3 initialization"
-    );
-}
-
-#[test]
-fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
-    let template = builtin_template("fmi3", "model.c.jinja");
-    let exit_initialization = template
-        .split("FMI3_EXPORT fmi3Status fmi3ExitInitializationMode")
-        .nth(1)
-        .expect("FMI 3 template should define exit initialization");
-
-    assert!(
-        exit_initialization.contains("memcpy(m->pre_z, m->z, sizeof(m->z));"),
-        "FMI 3 exit initialization should seed previous discrete Real slots"
-    );
-    assert!(
-        exit_initialization.contains("memcpy(m->pre_m, m->m, sizeof(m->m));"),
-        "FMI 3 exit initialization should seed previous discrete-valued slots"
-    );
-    assert!(
-        exit_initialization.contains("compute_discrete_updates(m);"),
-        "FMI 3 exit initialization should evaluate initial discrete updates"
-    );
-}
-
-#[test]
-fn test_render_dae_equation_via_template() {
-    // Test render_equation function via template with a simple DAE
-    // that has residual equations (the common case from todae)
-    let dae = dae::Dae::new();
-
-    // Test with an empty DAE - just verify the template compiles
-    let tmpl = builtin_template("dae-modelica", "dae_modelica.mo.jinja");
-    let result = render_template_with_name(&dae, tmpl, "TestModel").unwrap();
-    assert!(result.contains("class TestModel"));
-    assert!(result.contains("equation"));
-    assert!(result.contains("end TestModel"));
-}
-
-#[test]
-fn test_dae_template_includes_model_description() {
-    // Test that DAE template includes model description when present
-    let mut dae = dae::Dae::new();
-    dae.metadata.model_description = Some("Test model description".to_string());
-
-    // Render template
-    let tmpl = builtin_template("dae-modelica", "dae_modelica.mo.jinja");
-    let result = render_template_with_name(&dae, tmpl, "TestModel").unwrap();
-    assert!(result.contains(r#"class TestModel "Test model description""#));
-}
-
-#[test]
-fn test_render_flat_equation_via_template() {
-    // Test render_flat_equation function via template with an empty Model
-    let flat = flat::Model::new();
-
-    let tmpl = builtin_template("flat-modelica", "flat_modelica.mo.jinja");
-    let result = render_flat_template_with_name(&flat, tmpl, "TestModel").unwrap();
-    assert!(result.contains("class TestModel"));
-    assert!(result.contains("equation"));
-    assert!(result.contains("end TestModel"));
-}
-
-#[test]
-fn test_flat_template_uses_parameter_start_as_default_binding() {
-    let mut flat = flat::Model::new();
-    let mut var = rumoca_ir_flat::Variable {
-        name: "T".into(),
-        variability: rumoca_core::Variability::Parameter(Default::default()),
-        start: Some(rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        ..Default::default()
-    };
-    var.fixed = None; // Parameter default: fixed=true
-    flat.add_variable("T".into(), var);
-
-    let rendered = render_flat_template_with_name(
-        &flat,
-        builtin_template("flat-modelica", "flat_modelica.mo.jinja"),
-        "M",
-    )
-    .unwrap();
-    assert!(
-        rendered.contains("parameter Real T(start = 1) = 1;"),
-        "{rendered}"
-    );
-}
-
-#[test]
-fn test_flat_template_does_not_materialize_start_binding_when_fixed_false() {
-    let mut flat = flat::Model::new();
-    let var = rumoca_ir_flat::Variable {
-        name: "p".into(),
-        variability: rumoca_core::Variability::Parameter(Default::default()),
-        start: Some(rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        fixed: Some(false),
-        ..Default::default()
-    };
-    flat.add_variable("p".into(), var);
-
-    let rendered = render_flat_template_with_name(
-        &flat,
-        builtin_template("flat-modelica", "flat_modelica.mo.jinja"),
-        "M",
-    )
-    .unwrap();
-    assert!(
-        rendered.contains("parameter Real p(start = 1, fixed = false);"),
-        "{rendered}"
-    );
-    assert!(
-        !rendered.contains("parameter Real p(start = 1, fixed = false) = 1;"),
-        "{rendered}"
-    );
-}
-
-#[test]
-fn test_embedded_c_templates_render_solve_ir() {
-    let solve = solve::SolveProblem::with_derivative_rhs(
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadTime { dst: 0 },
-            solve::LinearOp::Const { dst: 1, value: 2.0 },
-            solve::LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Add,
-                lhs: 0,
-                rhs: 1,
-            },
-            solve::LinearOp::StoreOutput { src: 2 },
-        ]])),
-    );
-    let artifacts = solve::SolveArtifacts::default();
-
-    let header = render_solve_template_with_name(
-        &solve,
-        &artifacts,
-        builtin_template("embedded-c", "model.h.jinja"),
-        "EmbeddedDemo",
-    )
-    .unwrap();
-    let source = render_solve_template_with_name(
-        &solve,
-        &artifacts,
-        builtin_template("embedded-c", "model.c.jinja"),
-        "EmbeddedDemo",
-    )
-    .unwrap();
-
-    assert!(header.contains("EMBEDDEDDEMO_DERIVATIVE_LEN = 1"));
-    assert!(source.contains("out[0] ="));
-    assert!(source.contains("m->time"));
-    assert!(source.contains("2.0"));
-    assert!(source.contains("EmbeddedDemo_derivative_rhs(m, dx);"));
-}
-
-#[test]
-fn test_julia_mtk_template_empty_dae() {
-    let dae = dae::Dae::new();
-    let result =
-        render_template(&dae, builtin_template("julia-mtk", "julia_mtk.jl.jinja")).unwrap();
-    assert!(result.contains("using ModelingToolkit"));
-    assert!(result.contains("using DifferentialEquations"));
-    assert!(result.contains("@independent_variables t"));
-    assert!(result.contains("D = Differential(t)"));
-    assert!(result.contains("@named sys = ODESystem(eqs, t)"));
-    assert!(result.contains("structural_simplify(sys)"));
-}
-
-#[test]
-fn test_julia_mtk_template_with_state() {
-    let mut dae = dae::Dae::new();
-    dae.variables.states.insert(
-        "x".into(),
-        rumoca_ir_dae::Variable {
-            name: "x".into(),
-            start: Some(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            ..Default::default()
-        },
-    );
-    dae.continuous.equations.push(rumoca_ir_dae::Equation {
-        lhs: Some("x".into()),
-        rhs: rumoca_core::Expression::VarRef {
-            name: "x".into(),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: Default::default(),
-        origin: "test".into(),
-        scalar_count: 1,
-    });
-
-    let result =
-        render_template(&dae, builtin_template("julia-mtk", "julia_mtk.jl.jinja")).unwrap();
-    assert!(
-        result.contains("x(t)"),
-        "state should be time-dependent: {result}"
-    );
-    assert!(
-        result.contains("D(x) ~"),
-        "should generate derivative equation: {result}"
-    );
-}
-
-#[test]
-fn test_julia_mtk_template_with_params_and_constants() {
-    let mut dae = dae::Dae::new();
-    dae.variables.parameters.insert(
-        "k".into(),
-        rumoca_ir_dae::Variable {
-            name: "k".into(),
-            start: Some(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(2.5),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            ..Default::default()
-        },
-    );
-    dae.variables.constants.insert(
-        "g".into(),
-        rumoca_ir_dae::Variable {
-            name: "g".into(),
-            start: Some(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(9.81),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            ..Default::default()
-        },
-    );
-
-    let result =
-        render_template(&dae, builtin_template("julia-mtk", "julia_mtk.jl.jinja")).unwrap();
-    assert!(
-        result.contains("@parameters"),
-        "should have @parameters block: {result}"
-    );
-    assert!(
-        result.contains("k = 2.5"),
-        "parameter should have default: {result}"
-    );
-    assert!(
-        result.contains("g = 9.81"),
-        "constant should be assigned: {result}"
     );
 }

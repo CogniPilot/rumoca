@@ -386,14 +386,14 @@ pub(super) fn infer_clock_timing_from_reverse_alias_sources(
     visiting: &mut HashSet<String>,
 ) -> Option<(f64, f64)> {
     sources.reverse_targets_for(key)?.iter().find_map(|target| {
-        if !source_target_is_exact_component(target) {
+        if !source_target_is_exact_component(&target.name) {
             return None;
         }
         infer_clock_timing_next(
             &rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new(target.as_str()),
+                name: rumoca_core::Reference::new(target.name.as_str()),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: target.span,
             },
             constants,
             sources,

@@ -24,6 +24,8 @@ pub enum LinearOpSliceKind {
     MatMulRhs { node_index: usize, span: Span },
     /// The matrix/rhs setup stream for `ComputeNode::LinSolve`.
     LinSolveSetup { node_index: usize, span: Span },
+    /// The base row for `ComputeNode::Map`.
+    MapBase { node_index: usize, span: Span },
     /// The base row for `ComputeNode::AffineStencil`.
     AffineStencilBase { node_index: usize, span: Span },
 }
@@ -259,7 +261,7 @@ pub fn walk_continuous_system<V: SolveVisitor + ?Sized>(
     system: &ContinuousSolveSystem,
 ) -> Result<(), V::Error> {
     visitor.visit_compute_block(&system.implicit_rhs)?;
-    visitor.visit_scalar_program_block(&system.residual)?;
+    visitor.visit_compute_block(&system.residual)?;
     visitor.visit_compute_block(&system.derivative_rhs)
 }
 
@@ -348,6 +350,13 @@ pub fn walk_compute_node<V: SolveVisitor + ?Sized>(
                 span: *span,
             },
             setup_ops,
+        ),
+        ComputeNode::Map { base_ops, span, .. } => visitor.visit_linear_op_slice(
+            LinearOpSliceKind::MapBase {
+                node_index,
+                span: *span,
+            },
+            base_ops,
         ),
         ComputeNode::AffineStencil { base_ops, span, .. } => visitor.visit_linear_op_slice(
             LinearOpSliceKind::AffineStencilBase {
@@ -438,6 +447,99 @@ mod tests {
         vec![LinearOp::StoreOutput { src }]
     }
 
+    fn matmul_node(span: Span) -> ComputeNode {
+        ComputeNode::MatMul {
+            lhs_ops: vec![LinearOp::LoadY { dst: 0, index: 0 }],
+            lhs_start: 0,
+            rhs_ops: vec![LinearOp::LoadP { dst: 1, index: 0 }],
+            rhs_start: 1,
+            m: 1,
+            k: 1,
+            n: 1,
+            lhs_sparsity: crate::SparsityPattern::Dense,
+            rhs_sparsity: crate::SparsityPattern::Dense,
+            metadata: crate::TensorNodeMetadata::default(),
+            span,
+        }
+    }
+
+    fn linsolve_node(span: Span) -> ComputeNode {
+        ComputeNode::LinSolve {
+            setup_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::Const { dst: 1, value: 2.0 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+            ],
+            matrix_start: 0,
+            rhs_start: 1,
+            n: 1,
+            next_reg: 3,
+            metadata: crate::TensorNodeMetadata::default(),
+            span,
+        }
+    }
+
+    fn single_binder_domain() -> crate::StructuredIndexDomain {
+        crate::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        }
+    }
+
+    fn single_stride_output_map() -> crate::TensorOutputMap {
+        crate::TensorOutputMap {
+            start: 0,
+            strides: vec![crate::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            }],
+        }
+    }
+
+    fn single_load_stride() -> Vec<crate::AffineStencilLoadStride> {
+        vec![crate::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![crate::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            }],
+        }]
+    }
+
+    fn map_node(span: Span) -> ComputeNode {
+        ComputeNode::Map {
+            domain: single_binder_domain(),
+            output_map: single_stride_output_map(),
+            base_ops: vec![LinearOp::LoadY { dst: 0, index: 0 }],
+            load_strides: single_load_stride(),
+            const_strides: Vec::new(),
+            metadata: crate::TensorNodeMetadata::default(),
+            span,
+        }
+    }
+
+    fn affine_stencil_node(span: Span) -> ComputeNode {
+        ComputeNode::AffineStencil {
+            domain: single_binder_domain(),
+            output_map: single_stride_output_map(),
+            base_ops: vec![LinearOp::LoadP { dst: 0, index: 0 }],
+            load_strides: single_load_stride(),
+            const_strides: Vec::new(),
+            metadata: crate::TensorNodeMetadata::default(),
+            span,
+        }
+    }
+
     #[test]
     fn compute_block_visitor_walks_scalar_and_tensor_op_slices() {
         let span = Span::DUMMY;
@@ -447,46 +549,19 @@ mod tests {
                     vec![store_row(0)],
                     span,
                 )),
-                ComputeNode::MatMul {
-                    lhs_ops: vec![LinearOp::LoadY { dst: 0, index: 0 }],
-                    lhs_start: 0,
-                    rhs_ops: vec![LinearOp::LoadP { dst: 1, index: 0 }],
-                    rhs_start: 1,
-                    m: 1,
-                    k: 1,
-                    n: 1,
-                    lhs_sparsity: crate::SparsityPattern::Dense,
-                    rhs_sparsity: crate::SparsityPattern::Dense,
-                    metadata: crate::TensorNodeMetadata::default(),
-                    span,
-                },
-                ComputeNode::LinSolve {
-                    setup_ops: vec![
-                        LinearOp::Const { dst: 0, value: 1.0 },
-                        LinearOp::Const { dst: 1, value: 2.0 },
-                        LinearOp::Binary {
-                            dst: 2,
-                            op: BinaryOp::Add,
-                            lhs: 0,
-                            rhs: 1,
-                        },
-                    ],
-                    matrix_start: 0,
-                    rhs_start: 1,
-                    n: 1,
-                    next_reg: 3,
-                    metadata: crate::TensorNodeMetadata::default(),
-                    span,
-                },
+                matmul_node(span),
+                linsolve_node(span),
+                map_node(span),
+                affine_stencil_node(span),
             ],
         };
 
         let mut visitor = CountingVisitor::default();
         visitor.visit_compute_block(&block).unwrap();
 
-        assert_eq!(visitor.nodes, 3);
+        assert_eq!(visitor.nodes, 5);
         assert_eq!(visitor.rows, 1);
-        assert_eq!(visitor.ops, 6);
+        assert_eq!(visitor.ops, 8);
         assert!(visitor.kinds.contains(&LinearOpSliceKind::MatMulLhs {
             node_index: 1,
             span
@@ -499,5 +574,17 @@ mod tests {
             node_index: 2,
             span
         }));
+        assert!(visitor.kinds.contains(&LinearOpSliceKind::MapBase {
+            node_index: 3,
+            span
+        }));
+        assert!(
+            visitor
+                .kinds
+                .contains(&LinearOpSliceKind::AffineStencilBase {
+                    node_index: 4,
+                    span
+                })
+        );
     }
 }

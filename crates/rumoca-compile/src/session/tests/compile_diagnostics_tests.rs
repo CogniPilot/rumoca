@@ -618,7 +618,9 @@ fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_
         "Root must still be discoverable without a whole-source-root strict resolve"
     );
 
-    let report = source_root.compile_model_strict_reachable_with_recovery("Root");
+    let report = source_root
+        .compile_model_strict_reachable_with_recovery("Root")
+        .unwrap_or_else(|error| panic!("strict reachable compile failed: {error}"));
     assert!(
         report.requested_succeeded(),
         "strict closure compile must ignore unrelated source-root diagnostics"

@@ -20,11 +20,7 @@ pub(crate) fn fixture_key_for_component_ref(
 
 pub(crate) fn fixture_key_for_reference(
     reference: &rumoca_core::Reference,
-    span: rumoca_core::Span,
 ) -> Option<rumoca_ir_solve::ComponentReferenceKey> {
-    if !span.is_dummy() {
-        return None;
-    }
     match reference.component_ref() {
         Some(component_ref) => fixture_key_for_component_ref(component_ref, reference.as_str()),
         None => Some(rumoca_ir_solve::ComponentReferenceKey::generated(

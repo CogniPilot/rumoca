@@ -88,7 +88,8 @@ See [Formatter and Linter](./fmt-lint.md).
 
 Prints the built-in code generation targets with their consumed IR stage,
 generation mode, deployment class, readiness level, and per-feature support
-columns. See [Targets and Templates](../codegen/targets.md).
+columns, including native/scalar tensor support such as `matmul`, `linsolve`,
+`elem`, and `stencil`. See [Targets and Templates](../codegen/targets.md).
 
 ## `rumoca cache`
 

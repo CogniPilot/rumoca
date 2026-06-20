@@ -222,6 +222,10 @@ fn collect_vcg_from_for(
     ctx: &Context,
     data: &mut VcgPreScanData,
 ) -> Result<(), FlattenError> {
+    if !equations_contain_vcg_calls(equations) {
+        return Ok(());
+    }
+
     if indices.is_empty() {
         for eq in equations {
             collect_vcg_from_equation(eq, prefix, ctx, data)?;
@@ -232,11 +236,8 @@ fn collect_vcg_from_for(
     let first = &indices[0];
     let remaining = &indices[1..];
 
-    let Ok(index_values) =
-        crate::equations::expand_range_indices(ctx, &first.range, prefix, rumoca_core::Span::DUMMY)
-    else {
-        return Ok(());
-    };
+    let index_values =
+        crate::equations::expand_range_indices(ctx, &first.range, prefix, first.range.span())?;
 
     let index_name = &first.ident.text;
     for value in index_values {
@@ -247,6 +248,39 @@ fn collect_vcg_from_for(
         collect_vcg_from_for(remaining, &substituted, prefix, ctx, data)?;
     }
     Ok(())
+}
+
+fn equations_contain_vcg_calls(equations: &[ast::Equation]) -> bool {
+    equations.iter().any(equation_contains_vcg_call)
+}
+
+fn equation_contains_vcg_call(eq: &ast::Equation) -> bool {
+    match eq {
+        ast::Equation::FunctionCall { comp, .. } => is_vcg_function_call(comp),
+        ast::Equation::For { equations, .. } => equations_contain_vcg_calls(equations),
+        ast::Equation::When(blocks) => blocks
+            .iter()
+            .any(|block| equations_contain_vcg_calls(&block.eqs)),
+        ast::Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
+            cond_blocks
+                .iter()
+                .any(|block| equations_contain_vcg_calls(&block.eqs))
+                || else_block
+                    .as_deref()
+                    .is_some_and(equations_contain_vcg_calls)
+        }
+        _ => false,
+    }
+}
+
+fn is_vcg_function_call(comp: &ast::ComponentReference) -> bool {
+    matches!(
+        get_connections_func(comp),
+        Some(("Connections", "root" | "branch" | "potentialRoot"))
+    )
 }
 
 /// Get (parent, func) from a `Connections.<func>` component reference.
@@ -813,9 +847,126 @@ fn var_scalar_size(var: &rumoca_ir_flat::Variable) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::Span;
+    use rumoca_core::{SourceId, Span, Token};
     use rumoca_ir_ast as ast;
     use rumoca_ir_flat as flat;
+    use std::sync::Arc;
+
+    fn test_span(start: usize, end: usize) -> Span {
+        Span::from_offsets(SourceId::from_source_name("vcg_test.mo"), start, end)
+    }
+
+    fn token(text: &str) -> Token {
+        Token {
+            text: Arc::from(text),
+            ..Default::default()
+        }
+    }
+
+    fn component_ref(parts: &[&str], span: Span) -> ast::ComponentReference {
+        ast::ComponentReference {
+            local: false,
+            parts: parts
+                .iter()
+                .map(|part| ast::ComponentRefPart {
+                    ident: token(part),
+                    subs: None,
+                })
+                .collect(),
+            span,
+            def_id: None,
+        }
+    }
+
+    fn integer_literal(value: i64, span: Span) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token: token(&value.to_string()),
+            span,
+        }
+    }
+
+    fn bad_range(span: Span) -> ast::Expression {
+        ast::Expression::Range {
+            start: Arc::new(ast::Expression::ComponentReference(component_ref(
+                &["n"],
+                test_span(20, 21),
+            ))),
+            step: None,
+            end: Arc::new(integer_literal(3, test_span(24, 25))),
+            span,
+        }
+    }
+
+    fn for_equation_with_call(call: ast::ComponentReference, range_span: Span) -> ast::Equation {
+        ast::Equation::For {
+            indices: vec![ast::ForIndex {
+                ident: token("i"),
+                range: bad_range(range_span),
+            }],
+            equations: vec![ast::Equation::FunctionCall {
+                comp: call,
+                args: vec![ast::Expression::ComponentReference(component_ref(
+                    &["frame", "R"],
+                    test_span(40, 47),
+                ))],
+            }],
+        }
+    }
+
+    #[test]
+    fn vcg_for_prescan_bubbles_range_errors_with_range_span() {
+        let range_span = test_span(10, 15);
+        let equation = for_equation_with_call(
+            component_ref(&["Connections", "root"], test_span(30, 46)),
+            range_span,
+        );
+        let mut data = VcgPreScanData {
+            definite_roots: FxHashSet::default(),
+            branches: Vec::new(),
+            potential_roots: Vec::new(),
+        };
+
+        let err = collect_vcg_from_equation(
+            &equation,
+            &ast::QualifiedName::default(),
+            &Context::default(),
+            &mut data,
+        )
+        .expect_err("VCG pre-scan should reject unresolved source ranges");
+
+        match err {
+            FlattenError::UnsupportedEquation { span, .. } => {
+                assert_eq!(span, rumoca_core::span_to_source_span(range_span));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vcg_for_prescan_does_not_evaluate_non_vcg_loop_ranges() {
+        let equation = for_equation_with_call(
+            component_ref(&["Other", "root"], test_span(30, 40)),
+            test_span(10, 15),
+        );
+        let mut data = VcgPreScanData {
+            definite_roots: FxHashSet::default(),
+            branches: Vec::new(),
+            potential_roots: Vec::new(),
+        };
+
+        collect_vcg_from_equation(
+            &equation,
+            &ast::QualifiedName::default(),
+            &Context::default(),
+            &mut data,
+        )
+        .expect("non-VCG loops should not be range-expanded by VCG pre-scan");
+
+        assert!(data.definite_roots.is_empty());
+        assert!(data.branches.is_empty());
+        assert!(data.potential_roots.is_empty());
+    }
 
     fn add_orientation_record(flat: &mut flat::Model, base: &str) {
         for (suffix, dims) in [("T", vec![3, 3]), ("w", vec![3])] {
@@ -826,7 +977,7 @@ mod tests {
                     name,
                     dims,
                     is_primitive: true,
-                    ..Default::default()
+                    ..flat::Variable::empty_with_span(test_span(1, 2))
                 },
             );
         }
@@ -922,7 +1073,7 @@ mod tests {
                     name,
                     dims,
                     is_primitive: true,
-                    ..Default::default()
+                    ..flat::Variable::empty_with_span(test_span(1, 2))
                 },
             );
         }

@@ -171,22 +171,6 @@ impl Transition {
     }
 }
 
-impl Default for Transition {
-    fn default() -> Self {
-        Self {
-            from: String::new(),
-            to: String::new(),
-            condition: Expression::Empty {
-                span: rumoca_core::Span::DUMMY,
-            },
-            immediate: true,
-            reset: true,
-            synchronize: false,
-            priority: 1,
-        }
-    }
-}
-
 // =============================================================================
 // State Machine Runtime State (MLS §17.2)
 // =============================================================================

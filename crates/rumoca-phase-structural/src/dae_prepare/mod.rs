@@ -1,6 +1,12 @@
+// SPEC_0021 file-size exception: DAE preparation still coordinates alias
+// demotion, dummy-state reduction, and structural preprocessing in one module.
+// split plan: move direct state demotion and constrained dummy state reduction
+// into focused submodules with imports at the top of each file.
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
+use indexmap::{IndexMap, IndexSet};
+use rumoca_core::timing::{OptionalTimer, maybe_start_timer};
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{
@@ -17,10 +23,21 @@ type Expression = rumoca_core::Expression;
 type Literal = rumoca_core::Literal;
 type OpBinary = rumoca_core::OpBinary;
 type OpUnary = rumoca_core::OpUnary;
+type Span = rumoca_core::Span;
 type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
 type Variable = dae::Variable;
+type DefiningExprIndex = IndexMap<String, Vec<IndexedDefiningExpr>>;
+type AliasSafetyCache = IndexMap<(String, Option<usize>), bool>;
 
+#[derive(Clone)]
+struct IndexedDefiningExpr {
+    equation_index: usize,
+    expr: Expression,
+}
+
+mod connection_alias;
+use connection_alias::connection_component_fixed_defining_expr;
 mod symbolic;
 use symbolic::{
     build_der_value_map, expand_der_in_expr_full, symbolic_time_derivative, truncate_debug,
@@ -33,7 +50,14 @@ pub use dummy_state_metadata::{
     ConstrainedDummyDefinition, constrained_dummy_state_defining_exprs,
     constrained_dummy_state_names,
 };
+mod direct_demotion;
 mod state_row_reduction;
+pub use direct_demotion::demote_direct_assigned_states;
+use direct_demotion::{
+    collect_non_state_continuous_unknown_names, equation_defining_expr_for_unknown,
+    expr_refs_only_parameters_constants_or_time, expression_contains_any_der_call,
+    is_connection_equation_origin,
+};
 pub use state_row_reduction::{
     REGULARIZATION_LEVELS, demote_orphan_states_without_equation_refs,
     demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
@@ -46,41 +70,47 @@ fn sim_trace_enabled() -> bool {
     crate::structural_trace_enabled()
 }
 
+fn structural_timing_start(_label: &str) -> OptionalTimer {
+    maybe_start_timer()
+}
+
+fn structural_timing_done(_label: &str, _start: OptionalTimer) {}
+
 /// Try to extract the defining expression for an algebraic variable.
 ///
 /// Looks for equations of the form `0 = var - expr` or `0 = expr - var`
 /// and returns `expr` (the value that `var` equals).
-pub fn zero_expr() -> Expression {
+fn zero_expr(span: Span) -> Expression {
     Expression::Literal {
         value: Literal::Real(0.0),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-pub fn add_expr(lhs: Expression, rhs: Expression) -> Expression {
+fn add_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Add,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-pub fn sub_expr(lhs: Expression, rhs: Expression) -> Expression {
+fn sub_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn div_expr(lhs: Expression, rhs: Expression) -> Expression {
+fn div_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Div,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -104,9 +134,14 @@ fn extract_scaled_target(expr: &Expression, target: &VarName) -> Option<Expressi
 
 /// If `expr` is affine in `target` with coefficient ±1 and a target-free
 /// remainder, return `(coef, remainder)` where `expr = coef*target + remainder`.
-pub fn split_linear_target(expr: &Expression, target: &VarName) -> Option<(i32, Expression)> {
+fn split_linear_target(
+    expr: &Expression,
+    target: &VarName,
+    context_span: Span,
+) -> Option<(i32, Expression)> {
+    let span = expr.span().unwrap_or(context_span);
     if expr_refers_to_var(expr, target) {
-        return Some((1, zero_expr()));
+        return Some((1, zero_expr(span)));
     }
 
     let Expression::Binary { op, lhs, rhs, .. } = expr else {
@@ -114,28 +149,28 @@ pub fn split_linear_target(expr: &Expression, target: &VarName) -> Option<(i32, 
     };
     match op {
         OpBinary::Add | OpBinary::AddElem => {
-            if let Some((coef, rem)) = split_linear_target(lhs, target)
+            if let Some((coef, rem)) = split_linear_target(lhs, target, span)
                 && !expr_contains_var(rhs, target)
             {
-                return Some((coef, add_expr(rem, *rhs.clone())));
+                return Some((coef, add_expr(rem, *rhs.clone(), span)));
             }
-            if let Some((coef, rem)) = split_linear_target(rhs, target)
+            if let Some((coef, rem)) = split_linear_target(rhs, target, span)
                 && !expr_contains_var(lhs, target)
             {
-                return Some((coef, add_expr(*lhs.clone(), rem)));
+                return Some((coef, add_expr(*lhs.clone(), rem, span)));
             }
             None
         }
         OpBinary::Sub | OpBinary::SubElem => {
-            if let Some((coef, rem)) = split_linear_target(lhs, target)
+            if let Some((coef, rem)) = split_linear_target(lhs, target, span)
                 && !expr_contains_var(rhs, target)
             {
-                return Some((coef, sub_expr(rem, *rhs.clone())));
+                return Some((coef, sub_expr(rem, *rhs.clone(), span)));
             }
-            if let Some((coef, rem)) = split_linear_target(rhs, target)
+            if let Some((coef, rem)) = split_linear_target(rhs, target, span)
                 && !expr_contains_var(lhs, target)
             {
-                return Some((-coef, sub_expr(*lhs.clone(), rem)));
+                return Some((-coef, sub_expr(*lhs.clone(), rem, span)));
             }
             None
         }
@@ -172,25 +207,25 @@ fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression
     }
     if lhs_has && let Some(coeff) = extract_scaled_target(lhs, alg_name) {
         // (coeff*x) - rhs = 0  =>  x = rhs/coeff
-        return Some(div_expr(*rhs.clone(), coeff));
+        return Some(div_expr(*rhs.clone(), coeff, eq.span));
     }
     if rhs_has && let Some(coeff) = extract_scaled_target(rhs, alg_name) {
         // lhs - (coeff*x) = 0  =>  x = lhs/coeff
-        return Some(div_expr(*lhs.clone(), coeff));
+        return Some(div_expr(*lhs.clone(), coeff, eq.span));
     }
-    if lhs_has && let Some((coef, lhs_rem)) = split_linear_target(lhs, alg_name) {
+    if lhs_has && let Some((coef, lhs_rem)) = split_linear_target(lhs, alg_name, eq.span) {
         // (coef*x + lhs_rem) - rhs = 0  =>  x = (rhs - lhs_rem)/coef
         return Some(match coef {
-            1 => sub_expr(*rhs.clone(), lhs_rem),
-            -1 => sub_expr(lhs_rem, *rhs.clone()),
+            1 => sub_expr(*rhs.clone(), lhs_rem, eq.span),
+            -1 => sub_expr(lhs_rem, *rhs.clone(), eq.span),
             _ => return None,
         });
     }
-    if rhs_has && let Some((coef, rhs_rem)) = split_linear_target(rhs, alg_name) {
+    if rhs_has && let Some((coef, rhs_rem)) = split_linear_target(rhs, alg_name, eq.span) {
         // lhs - (coef*x + rhs_rem) = 0  =>  x = (lhs - rhs_rem)/coef
         return Some(match coef {
-            1 => sub_expr(*lhs.clone(), rhs_rem),
-            -1 => sub_expr(rhs_rem, *lhs.clone()),
+            1 => sub_expr(*lhs.clone(), rhs_rem, eq.span),
+            -1 => sub_expr(rhs_rem, *lhs.clone(), eq.span),
             _ => return None,
         });
     }
@@ -198,11 +233,174 @@ fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression
 }
 
 fn find_defining_expr_candidates(dae: &Dae, alg_name: &VarName) -> Vec<Expression> {
-    dae.continuous
-        .equations
-        .iter()
-        .filter_map(|eq| extract_defining_expr(eq, alg_name))
+    let candidates = collect_residual_defining_expr_index(dae);
+    defining_expr_candidates(&candidates, alg_name)
+        .cloned()
         .collect()
+}
+
+fn push_indexed_defining_expr(
+    index: &mut DefiningExprIndex,
+    name: &VarName,
+    equation_index: usize,
+    expr: Expression,
+) {
+    index
+        .entry(name.as_str().to_string())
+        .or_default()
+        .push(IndexedDefiningExpr {
+            equation_index,
+            expr,
+        });
+}
+
+fn collect_rhs_var_refs(expr: &Expression) -> IndexSet<VarName> {
+    let mut refs = IndexSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs
+}
+
+fn collect_residual_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
+    let mut index = DefiningExprIndex::new();
+    for (equation_index, eq) in dae.continuous.equations.iter().enumerate() {
+        for ref_name in collect_rhs_var_refs(&eq.rhs) {
+            if let Some(expr) = extract_defining_expr(eq, &ref_name) {
+                push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
+            }
+        }
+    }
+    index
+}
+
+fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
+    let mut index = DefiningExprIndex::new();
+    for (equation_index, eq) in dae.continuous.equations.iter().enumerate() {
+        let lhs_name = eq.lhs.as_ref().map(|lhs| lhs.var_name().clone());
+        if let Some(name) = &lhs_name
+            && !expression_contains_any_der_call(&eq.rhs)
+        {
+            push_indexed_defining_expr(&mut index, name, equation_index, eq.rhs.clone());
+        }
+
+        for ref_name in collect_rhs_var_refs(&eq.rhs) {
+            if lhs_name.as_ref().is_some_and(|lhs| lhs == &ref_name) {
+                continue;
+            }
+            if let Some(expr) = equation_defining_expr_for_unknown(eq, &ref_name) {
+                push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
+            }
+        }
+    }
+    index
+}
+
+fn defining_expr_candidates<'a>(
+    index: &'a DefiningExprIndex,
+    name: &VarName,
+) -> impl Iterator<Item = &'a Expression> {
+    index
+        .get(name.as_str())
+        .into_iter()
+        .flat_map(|candidates| candidates.iter().map(|candidate| &candidate.expr))
+}
+
+fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable> {
+    dae.variables
+        .states
+        .get(name)
+        .or_else(|| dae.variables.algebraics.get(name))
+        .or_else(|| dae.variables.outputs.get(name))
+        .or_else(|| dae.variables.inputs.get(name))
+}
+
+fn insert_symbolic_derivative_fallback(
+    dae: &Dae,
+    map: &mut HashMap<String, Expression>,
+    name: &VarName,
+) -> Result<(), StructuralError> {
+    let Some(variable) = continuous_variable(dae, name) else {
+        return Ok(());
+    };
+    match map.entry(name.as_str().to_string()) {
+        Entry::Occupied(_) => {}
+        Entry::Vacant(entry) => {
+            entry.insert(symbolic_der_var_ref_for_variable(variable)?);
+        }
+    }
+    Ok(())
+}
+
+fn resolve_derivatives_for_expr(
+    dae: &Dae,
+    defining_expr_index: &DefiningExprIndex,
+    map: &mut HashMap<String, Expression>,
+    expr: &Expression,
+    visiting: &mut HashSet<String>,
+) -> Result<(), StructuralError> {
+    for ref_name in collect_rhs_var_refs(expr) {
+        resolve_derivative_for_var(dae, defining_expr_index, map, &ref_name, visiting)?;
+    }
+    Ok(())
+}
+
+fn resolve_derivative_for_var(
+    dae: &Dae,
+    defining_expr_index: &DefiningExprIndex,
+    map: &mut HashMap<String, Expression>,
+    name: &VarName,
+    visiting: &mut HashSet<String>,
+) -> Result<(), StructuralError> {
+    if name.as_str() == "time"
+        || dae.variables.parameters.contains_key(name)
+        || dae.variables.constants.contains_key(name)
+        || map.contains_key(name.as_str())
+    {
+        return Ok(());
+    }
+
+    if dae.variables.states.contains_key(name) {
+        return insert_symbolic_derivative_fallback(dae, map, name);
+    }
+
+    if !visiting.insert(name.as_str().to_string()) {
+        return insert_symbolic_derivative_fallback(dae, map, name);
+    }
+
+    for defining_expr in defining_expr_candidates(defining_expr_index, name) {
+        resolve_derivatives_for_expr(dae, defining_expr_index, map, defining_expr, visiting)?;
+        let derivative = symbolic_time_derivative(defining_expr, dae, map);
+        if let Some(derivative) = derivative
+            && !expr_contains_der_of(&derivative, name)
+        {
+            map.insert(name.as_str().to_string(), derivative);
+            visiting.remove(name.as_str());
+            return Ok(());
+        }
+    }
+
+    visiting.remove(name.as_str());
+    insert_symbolic_derivative_fallback(dae, map, name)
+}
+
+fn build_relaxed_derivative_map_for_exprs(
+    dae: &Dae,
+    seed_exprs: &[Expression],
+) -> Result<HashMap<String, Expression>, StructuralError> {
+    let defining_expr_index = collect_residual_defining_expr_index(dae);
+    build_relaxed_derivative_map_for_exprs_with_index(dae, &defining_expr_index, seed_exprs)
+}
+
+fn build_relaxed_derivative_map_for_exprs_with_index(
+    dae: &Dae,
+    defining_expr_index: &DefiningExprIndex,
+    seed_exprs: &[Expression],
+) -> Result<HashMap<String, Expression>, StructuralError> {
+    let mut map = build_der_value_map(dae);
+    let mut visiting = HashSet::new();
+    for expr in seed_exprs {
+        resolve_derivatives_for_expr(dae, defining_expr_index, &mut map, expr, &mut visiting)?;
+    }
+    Ok(map)
 }
 
 /// Iteratively resolve time derivatives for algebraic variables.
@@ -217,6 +415,7 @@ fn find_defining_expr_candidates(dae: &Dae, alg_name: &VarName) -> Vec<Expressio
 /// redundant degrees of freedom and conflicting ODE/algebraic constraints.
 pub fn compute_full_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
     let mut der_map = build_der_value_map(dae);
+    let defining_expr_index = collect_residual_defining_expr_index(dae);
 
     // Iteratively resolve algebraic variable derivatives
     // Each pass may resolve new variables that enable further resolution
@@ -238,9 +437,8 @@ pub fn compute_full_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
             if der_map.contains_key(alg_name.as_str()) {
                 continue; // Already resolved
             }
-            let derivative = find_defining_expr_candidates(dae, alg_name)
-                .into_iter()
-                .find_map(|expr| symbolic_time_derivative(&expr, dae, &der_map));
+            let derivative = defining_expr_candidates(&defining_expr_index, alg_name)
+                .find_map(|expr| symbolic_time_derivative(expr, dae, &der_map));
             if let Some(d) = derivative {
                 new_entries.push((alg_name.as_str().to_string(), d));
             }
@@ -448,7 +646,7 @@ impl ExpressionRewriter for VarSubstitutionRewriter<'_> {
 /// 2. If there are exactly 2 and one is a simple alias, substitutes the alias
 ///    variable with `der(state)` in all other equations
 /// 3. Removes the alias equation and the alias variable from `algebraics`
-pub fn eliminate_derivative_aliases(dae: &mut Dae) {
+pub fn eliminate_derivative_aliases(dae: &mut Dae) -> Result<(), StructuralError> {
     let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
     let mut alias_eqs_to_remove: Vec<usize> = Vec::new();
     let mut alias_vars_to_remove: Vec<VarName> = Vec::new();
@@ -485,16 +683,15 @@ pub fn eliminate_derivative_aliases(dae: &mut Dae) {
             continue;
         }
 
-        // Build the replacement: der(state)
-        let der_expr = Expression::BuiltinCall {
-            function: BuiltinFunction::Der,
-            args: vec![Expression::VarRef {
-                name: rumoca_core::Reference::from_var_name(state_name.clone()),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }],
-            span: rumoca_core::Span::DUMMY,
-        };
+        let state_var = dae.variables.states.get(state_name).ok_or_else(|| {
+            StructuralError::UnspannedContractViolation {
+                reason: format!(
+                    "state metadata missing while eliminating derivative alias for `{}`",
+                    state_name.as_str()
+                ),
+            }
+        })?;
+        let der_expr = symbolic_der_var_ref_for_variable(state_var)?;
 
         for (alias_idx, alias_var) in alias_candidates {
             alias_eqs_to_remove.push(alias_idx);
@@ -542,35 +739,61 @@ pub fn eliminate_derivative_aliases(dae: &mut Dae) {
     for var_name in &alias_vars_to_remove {
         dae.variables.algebraics.shift_remove(var_name);
     }
+    Ok(())
 }
 
-pub fn symbolic_der_var_ref(name: &VarName) -> Expression {
+fn symbolic_der_var_ref(name: &VarName, span: Span) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
         args: vec![Expression::VarRef {
             name: rumoca_core::Reference::from_var_name(name.clone()),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span,
         }],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-pub fn build_relaxed_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
+fn symbolic_der_var_ref_for_variable(variable: &Variable) -> Result<Expression, StructuralError> {
+    let span = required_variable_span(variable, "symbolic derivative reference")?;
+    Ok(symbolic_der_var_ref(&variable.name, span))
+}
+
+fn required_variable_span(variable: &Variable, context: &str) -> Result<Span, StructuralError> {
+    let span = variable.source_span;
+    if span.is_dummy() {
+        return Err(StructuralError::UnspannedContractViolation {
+            reason: format!(
+                "{context} for `{}` is missing source provenance",
+                variable.name
+            ),
+        });
+    }
+    Ok(span)
+}
+
+pub fn build_relaxed_derivative_map(
+    dae: &Dae,
+) -> Result<HashMap<String, Expression>, StructuralError> {
     let mut map = build_der_value_map(dae);
+    let defining_expr_index = collect_residual_defining_expr_index(dae);
 
     // For index-reduction differentiation, keep unknown derivatives symbolic
     // instead of failing the whole derivative expansion.
-    for name in dae
+    for variable in dae
         .variables
         .states
-        .keys()
-        .chain(dae.variables.algebraics.keys())
-        .chain(dae.variables.outputs.keys())
-        .chain(dae.variables.inputs.keys())
+        .values()
+        .chain(dae.variables.algebraics.values())
+        .chain(dae.variables.outputs.values())
+        .chain(dae.variables.inputs.values())
     {
-        map.entry(name.as_str().to_string())
-            .or_insert_with(|| symbolic_der_var_ref(name));
+        match map.entry(variable.name.as_str().to_string()) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(entry) => {
+                entry.insert(symbolic_der_var_ref_for_variable(variable)?);
+            }
+        }
     }
 
     let resolvable = dae.variables.algebraics.len() + dae.variables.outputs.len();
@@ -585,9 +808,8 @@ pub fn build_relaxed_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
             .keys()
             .chain(dae.variables.outputs.keys())
         {
-            let derivative = find_defining_expr_candidates(dae, alg_name)
-                .into_iter()
-                .find_map(|expr| symbolic_time_derivative(&expr, dae, &map));
+            let derivative = defining_expr_candidates(&defining_expr_index, alg_name)
+                .find_map(|expr| symbolic_time_derivative(expr, dae, &map));
             let Some(derivative) = derivative else {
                 continue;
             };
@@ -604,7 +826,15 @@ pub fn build_relaxed_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
             break;
         }
     }
-    map
+    Ok(map)
+}
+
+pub fn symbolic_time_derivative_for_expr(
+    dae: &Dae,
+    expr: &Expression,
+) -> Result<Option<Expression>, StructuralError> {
+    let der_map = build_relaxed_derivative_map(dae)?;
+    Ok(symbolic_time_derivative(expr, dae, &der_map))
 }
 
 fn derivative_states_in_eq(rhs: &Expression, state_names: &[VarName]) -> Vec<VarName> {
@@ -835,22 +1065,20 @@ fn propagate_exact_alias_member_metadata_to_canonical_state(
 fn rewrite_component_member_derivatives_in_equations(
     equations: &mut [Equation],
     member_name: &VarName,
-    canonical_state: &VarName,
+    replacement: &Expression,
 ) {
-    let replacement = symbolic_der_var_ref(canonical_state);
     for eq in equations {
-        eq.rhs = substitute_der_of_state(&eq.rhs, member_name, &replacement);
+        eq.rhs = substitute_der_of_state(&eq.rhs, member_name, replacement);
     }
 }
 
 fn rewrite_component_member_derivatives_in_exprs(
     exprs: &mut [Expression],
     member_name: &VarName,
-    canonical_state: &VarName,
+    replacement: &Expression,
 ) {
-    let replacement = symbolic_der_var_ref(canonical_state);
     for expr in exprs {
-        *expr = substitute_der_of_state(expr, member_name, &replacement);
+        *expr = substitute_der_of_state(expr, member_name, replacement);
     }
 }
 
@@ -880,7 +1108,16 @@ fn rewrite_exact_alias_component_member_derivatives(
     dae: &mut Dae,
     component_members: &[VarName],
     canonical_state: &VarName,
-) {
+) -> Result<(), StructuralError> {
+    let canonical_var = dae.variables.states.get(canonical_state).ok_or_else(|| {
+        StructuralError::UnspannedContractViolation {
+            reason: format!(
+                "canonical state metadata missing while rewriting derivative aliases for `{}`",
+                canonical_state.as_str()
+            ),
+        }
+    })?;
+    let replacement = symbolic_der_var_ref_for_variable(canonical_var)?;
     for member_name in component_members {
         if *member_name == *canonical_state {
             continue;
@@ -888,47 +1125,48 @@ fn rewrite_exact_alias_component_member_derivatives(
         rewrite_component_member_derivatives_in_equations(
             &mut dae.continuous.equations,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_equations(
             &mut dae.discrete.real_updates,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_equations(
             &mut dae.discrete.valued_updates,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_equations(
             &mut dae.initialization.equations,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_exprs(
             &mut dae.conditions.relations,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_exprs(
             &mut dae.events.synthetic_root_conditions,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_exprs(
             &mut dae.clocks.triggered_conditions,
             member_name,
-            canonical_state,
+            &replacement,
         );
         rewrite_component_member_derivatives_in_exprs(
             &mut dae.clocks.constructor_exprs,
             member_name,
-            canonical_state,
+            &replacement,
         );
     }
+    Ok(())
 }
 
-pub fn demote_exact_alias_component_states(dae: &mut Dae) -> usize {
+pub fn demote_exact_alias_component_states(dae: &mut Dae) -> Result<usize, StructuralError> {
     let alias_pairs: Vec<(VarName, VarName)> = dae
         .continuous
         .equations
@@ -937,7 +1175,7 @@ pub fn demote_exact_alias_component_states(dae: &mut Dae) -> usize {
         .filter(|(a, b)| a != b)
         .collect();
     if alias_pairs.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1005,7 +1243,11 @@ pub fn demote_exact_alias_component_states(dae: &mut Dae) -> usize {
             &canonical_state,
         );
 
-        rewrite_exact_alias_component_member_derivatives(dae, &component_members, &canonical_state);
+        rewrite_exact_alias_component_member_derivatives(
+            dae,
+            &component_members,
+            &canonical_state,
+        )?;
 
         for state_name in component_states {
             if state_name != canonical_state {
@@ -1022,7 +1264,7 @@ pub fn demote_exact_alias_component_states(dae: &mut Dae) -> usize {
         }
     }
 
-    demoted
+    Ok(demoted)
 }
 
 /// Demote remaining no-der states that are still exact aliases of non-state
@@ -1119,9 +1361,8 @@ fn has_der_for_state_name(
     has_der
         .get(name)
         .copied()
-        .ok_or_else(|| StructuralError::ContractViolation {
+        .ok_or_else(|| StructuralError::UnspannedContractViolation {
             reason: format!("state derivative metadata missing for `{name}`"),
-            span: rumoca_core::Span::DUMMY,
         })
 }
 
@@ -1220,11 +1461,11 @@ fn extract_state_direct_assignment_equation(
         if expr_contains_der_of(&eq.rhs, state_name) {
             continue;
         }
-        let Some((coef, remainder)) = split_linear_target(&eq.rhs, state_name) else {
+        let Some((coef, remainder)) = split_linear_target(&eq.rhs, state_name, eq.span) else {
             continue;
         };
         let defining_expr = match coef {
-            1 => sub_expr(zero_expr(), remainder),
+            1 => sub_expr(zero_expr(eq.span), remainder, eq.span),
             -1 => remainder,
             _ => continue,
         };
@@ -1270,7 +1511,11 @@ fn mask_state_der_calls(expr: &Expression, state_name_set: &HashSet<String>) -> 
     }
     impl ExpressionRewriter for StateDerMasker<'_> {
         fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-            if let Expression::BuiltinCall { function, args, .. } = expr
+            if let Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } = expr
                 && *function == BuiltinFunction::Der
                 && args.len() == 1
                 && let Expression::VarRef {
@@ -1279,7 +1524,7 @@ fn mask_state_der_calls(expr: &Expression, state_name_set: &HashSet<String>) -> 
                 && subscripts.is_empty()
                 && self.state_name_set.contains(name.as_str())
             {
-                return zero_expr();
+                return zero_expr(*span);
             }
             self.walk_expression(expr)
         }
@@ -1312,7 +1557,6 @@ struct DirectStateDemotionPlan {
 struct DirectDemotionCounters {
     n_candidates: usize,
     n_skip_flow_sum_origin: usize,
-    n_skip_connection_origin: usize,
     n_skip_unsafe_non_state_alias: usize,
     n_skip_when_assigned: usize,
     n_skip_self_der: usize,
@@ -1330,23 +1574,38 @@ struct DirectDemotionRound<'a> {
     state_name_set: HashSet<String>,
     when_assigned_states: HashSet<String>,
     non_state_unknown_names: HashSet<String>,
+    non_state_defining_exprs: DefiningExprIndex,
     der_map: HashMap<String, Expression>,
     trace: bool,
 }
 
 impl<'a> DirectDemotionRound<'a> {
-    fn new(dae: &'a Dae, trace: bool) -> Option<Self> {
+    fn new(dae: &'a Dae, trace: bool) -> Result<Option<Self>, StructuralError> {
+        let timer = structural_timing_start("direct_demotion.round_context");
         let (state_names, state_name_set, when_assigned_states) =
-            direct_demotion_round_context(dae)?;
-        Some(Self {
+            match direct_demotion_round_context(dae) {
+                Some(context) => context,
+                None => return Ok(None),
+            };
+        structural_timing_done("direct_demotion.round_context", timer);
+        let timer = structural_timing_start("direct_demotion.non_state_unknown_names");
+        let non_state_unknown_names = collect_non_state_continuous_unknown_names(dae);
+        let non_state_defining_exprs = collect_non_derivative_defining_expr_index(dae);
+        structural_timing_done("direct_demotion.non_state_unknown_names", timer);
+        let timer = structural_timing_start("direct_demotion.build_relaxed_derivative_map");
+        let seed_exprs = direct_demotion_derivative_seed_exprs(dae, &state_names, &state_name_set);
+        let der_map = build_relaxed_derivative_map_for_exprs(dae, &seed_exprs)?;
+        structural_timing_done("direct_demotion.build_relaxed_derivative_map", timer);
+        Ok(Some(Self {
             dae,
             state_names,
             state_name_set,
             when_assigned_states,
-            non_state_unknown_names: collect_non_state_continuous_unknown_names(dae),
-            der_map: build_relaxed_derivative_map(dae),
+            non_state_unknown_names,
+            non_state_defining_exprs,
+            der_map,
             trace,
-        })
+        }))
     }
 
     fn state_count(&self) -> usize {
@@ -1425,6 +1684,26 @@ fn direct_demotion_round_context(
     Some((state_names, state_name_set, when_assigned_states))
 }
 
+fn direct_demotion_derivative_seed_exprs(
+    dae: &Dae,
+    state_names: &[VarName],
+    state_name_set: &HashSet<String>,
+) -> Vec<Expression> {
+    dae.continuous
+        .equations
+        .iter()
+        .filter_map(|eq| {
+            let (state_name, defining_expr) =
+                extract_state_direct_assignment_equation(eq, state_names, state_name_set)?;
+            if !is_connection_equation_origin(&eq.origin) {
+                return Some(defining_expr);
+            }
+            connection_component_fixed_defining_expr(dae, &state_name, state_name_set)
+                .or(Some(defining_expr))
+        })
+        .collect()
+}
+
 /// Apply structural dummy-derivative reduction for constrained states.
 ///
 /// The source DAE initially marks every variable that appears under `der()` as
@@ -1432,7 +1711,7 @@ fn direct_demotion_round_context(
 /// states. This pass selects states already identified by constrained-dummy
 /// analysis, differentiates the defining constraint, substitutes `der(dummy)`,
 /// and moves the dummy variable to the algebraic partition before BLT.
-pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
+pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> Result<usize, StructuralError> {
     let mut total_demoted = 0usize;
 
     loop {
@@ -1450,13 +1729,14 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
             let Some((_state_names, state_name_set, _when_assigned_states)) =
                 direct_demotion_round_context(dae)
             else {
-                return total_demoted;
+                return Ok(total_demoted);
             };
             let state_name = VarName::new(candidate);
             if !dae.variables.states.contains_key(&state_name) {
                 continue;
             }
-            let der_map = build_relaxed_derivative_map(dae);
+            let seed_exprs = vec![definition.defining_expr.clone()];
+            let der_map = build_relaxed_derivative_map_for_exprs(dae, &seed_exprs)?;
             let Some(plan) = constrained_dummy_derivative_plan(
                 dae,
                 &state_name,
@@ -1477,7 +1757,7 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
                 truncate_debug(&format!("{:?}", definition.defining_expr), 400),
                 truncate_debug(&format!("{:?}", plan.der_expr), 400)
             );
-            total_demoted += apply_direct_demotion_plan(dae, &plan);
+            total_demoted += direct_demotion::apply_direct_demotion_plan(dae, &plan);
             pin_structural_params(dae, &definition.structural_params);
             demoted_this_round = true;
             break;
@@ -1487,7 +1767,7 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> usize {
         }
     }
 
-    total_demoted
+    Ok(total_demoted)
 }
 
 fn constrained_dummy_derivative_plan(
@@ -1507,387 +1787,6 @@ fn constrained_dummy_derivative_plan(
         state_name: state_name.clone(),
         der_expr,
     })
-}
-
-fn log_direct_demotion_scan_summary(
-    trace: bool,
-    state_count: usize,
-    substitutions: &HashMap<String, DirectStateDemotionPlan>,
-    counters: &DirectDemotionCounters,
-) {
-    if !trace {
-        return;
-    }
-    crate::structural_trace!(
-        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_connection_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_self_der={} skip_der_in_defining_expr={} skip_unsliced_vector_ref={} skip_extra_state_refs={} skip_no_der={} skip_non_state_der={}",
-        state_count,
-        counters.n_candidates,
-        substitutions.len(),
-        counters.n_skip_flow_sum_origin,
-        counters.n_skip_connection_origin,
-        counters.n_skip_unsafe_non_state_alias,
-        counters.n_skip_when_assigned,
-        counters.n_skip_self_der,
-        counters.n_skip_der_in_defining_expr,
-        counters.n_skip_unsliced_vector_ref,
-        counters.n_skip_extra_state_refs,
-        counters.n_skip_no_der_expr,
-        counters.n_skip_non_state_der
-    );
-}
-
-fn is_connection_equation_origin(origin: &str) -> bool {
-    origin.starts_with("connection equation:")
-}
-
-fn collect_non_state_continuous_unknown_names(dae: &Dae) -> HashSet<String> {
-    dae.variables
-        .algebraics
-        .keys()
-        .chain(dae.variables.outputs.keys())
-        .map(|name| name.as_str().to_string())
-        .collect()
-}
-
-fn expression_contains_any_der_call(expr: &Expression) -> bool {
-    dae::ContainsDerChecker::check(expr)
-}
-
-fn equation_defining_expr_for_unknown(eq: &Equation, unknown_name: &VarName) -> Option<Expression> {
-    if let Some(lhs) = eq.lhs.as_ref()
-        && lhs.var_name() == unknown_name
-    {
-        if expression_contains_any_der_call(&eq.rhs) {
-            return None;
-        }
-        return Some(eq.rhs.clone());
-    }
-    if let Some((coef, remainder)) = split_linear_target(&eq.rhs, unknown_name) {
-        let defining_expr = match coef {
-            1 => sub_expr(zero_expr(), remainder),
-            -1 => remainder,
-            _ => return None,
-        };
-        if expression_contains_any_der_call(&defining_expr) {
-            return None;
-        }
-        return Some(defining_expr);
-    }
-    None
-}
-
-fn unique_non_state_defining_expr_excluding(
-    dae: &Dae,
-    unknown_name: &VarName,
-    excluded_eq: Option<&Equation>,
-) -> Option<Expression> {
-    let mut defining_exprs = dae
-        .continuous
-        .equations
-        .iter()
-        .filter(|eq| excluded_eq.is_none_or(|excluded| !std::ptr::eq(*eq, excluded)))
-        .filter_map(|eq| equation_defining_expr_for_unknown(eq, unknown_name));
-    let defining_expr = defining_exprs.next()?;
-    defining_exprs.next().is_none().then_some(defining_expr)
-}
-
-fn expr_depends_on_state_or_unsafe_non_state_alias(
-    dae: &Dae,
-    expr: &Expression,
-    state_name_set: &HashSet<String>,
-    non_state_unknown_names: &HashSet<String>,
-    excluded_eq: Option<&Equation>,
-    visiting: &mut HashSet<String>,
-    alias_safety_cache: &mut HashMap<String, bool>,
-) -> bool {
-    let mut refs = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.into_iter().any(|ref_name| {
-        if state_name_set.contains(ref_name.as_str()) {
-            return true;
-        }
-        if !non_state_unknown_names.contains(ref_name.as_str()) {
-            return false;
-        }
-        !non_state_alias_closure_is_state_free(
-            dae,
-            &ref_name,
-            state_name_set,
-            non_state_unknown_names,
-            excluded_eq,
-            visiting,
-            alias_safety_cache,
-        )
-    })
-}
-
-fn non_state_alias_closure_is_state_free(
-    dae: &Dae,
-    unknown_name: &VarName,
-    state_name_set: &HashSet<String>,
-    non_state_unknown_names: &HashSet<String>,
-    excluded_eq: Option<&Equation>,
-    visiting: &mut HashSet<String>,
-    alias_safety_cache: &mut HashMap<String, bool>,
-) -> bool {
-    if let Some(is_safe) = alias_safety_cache.get(unknown_name.as_str()) {
-        return *is_safe;
-    }
-    if !visiting.insert(unknown_name.as_str().to_string()) {
-        alias_safety_cache.insert(unknown_name.as_str().to_string(), false);
-        return false;
-    }
-
-    let is_safe = unique_non_state_defining_expr_excluding(dae, unknown_name, excluded_eq)
-        .is_some_and(|defining_expr| {
-            // MLS Appendix B / SPEC_0003: variables appearing differentiated remain
-            // states. Alias-driven direct demotion is only sound when every
-            // referenced non-state unknown resolves through a unique, state-free
-            // closure.
-            !expr_depends_on_state_or_unsafe_non_state_alias(
-                dae,
-                &defining_expr,
-                state_name_set,
-                non_state_unknown_names,
-                excluded_eq,
-                visiting,
-                alias_safety_cache,
-            )
-        });
-
-    visiting.remove(unknown_name.as_str());
-    alias_safety_cache.insert(unknown_name.as_str().to_string(), is_safe);
-    is_safe
-}
-
-fn defining_expr_references_unsafe_non_state_alias_closure(
-    dae: &Dae,
-    defining_expr: &Expression,
-    state_name_set: &HashSet<String>,
-    non_state_unknown_names: &HashSet<String>,
-    excluded_eq: &Equation,
-    alias_safety_cache: &mut HashMap<String, bool>,
-) -> bool {
-    let mut visiting = HashSet::new();
-    expr_depends_on_state_or_unsafe_non_state_alias(
-        dae,
-        defining_expr,
-        state_name_set,
-        non_state_unknown_names,
-        Some(excluded_eq),
-        &mut visiting,
-        alias_safety_cache,
-    )
-}
-
-fn apply_direct_demotion_plans(
-    dae: &mut Dae,
-    substitutions: &HashMap<String, DirectStateDemotionPlan>,
-) -> usize {
-    let mut demoted_this_round = 0usize;
-    let mut plans: Vec<&DirectStateDemotionPlan> = substitutions.values().collect();
-    plans.sort_by(|a, b| a.state_name.as_str().cmp(b.state_name.as_str()));
-    for plan in plans {
-        demoted_this_round += apply_direct_demotion_plan(dae, plan);
-    }
-    demoted_this_round
-}
-
-fn apply_direct_demotion_plan(dae: &mut Dae, plan: &DirectStateDemotionPlan) -> usize {
-    for eq in &mut dae.continuous.equations {
-        eq.rhs = substitute_der_of_state(&eq.rhs, &plan.state_name, &plan.der_expr);
-    }
-    if let Some(var) = dae.variables.states.shift_remove(&plan.state_name) {
-        dae.variables
-            .algebraics
-            .insert(plan.state_name.clone(), var);
-        return 1;
-    }
-    0
-}
-
-fn direct_demotion_plan_for_equation(
-    round: &DirectDemotionRound<'_>,
-    eq: &Equation,
-    counters: &mut DirectDemotionCounters,
-    alias_safety_cache: &mut HashMap<String, bool>,
-) -> Option<DirectStateDemotionPlan> {
-    let (state_name, defining_expr) =
-        extract_state_direct_assignment_equation(eq, &round.state_names, &round.state_name_set)?;
-    counters.n_candidates += 1;
-    if eq.origin.starts_with("flow sum equation:") {
-        counters.n_skip_flow_sum_origin += 1;
-        return None;
-    }
-    if is_connection_equation_origin(&eq.origin) {
-        counters.n_skip_connection_origin += 1;
-        return None;
-    }
-    log_direct_assignment_candidate(round.trace, counters, round.dae, eq, &state_name);
-    if round.when_assigned_states.contains(state_name.as_str()) {
-        counters.n_skip_when_assigned += 1;
-        return None;
-    }
-    if expr_contains_der_of(&defining_expr, &state_name) {
-        counters.n_skip_self_der += 1;
-        return None;
-    }
-    if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round) {
-        counters.n_skip_der_in_defining_expr += 1;
-        return None;
-    }
-    // `der(state)` links are substituted symbolically on demotion (gated by
-    // `state_ders_in_expr_independently_defined` above and validated again in
-    // `choose_derivative_replacement`), so mask them before scanning for value
-    // dependencies on states or unsafe alias closures.
-    let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
-    if defining_expr_references_unsafe_non_state_alias_closure(
-        round.dae,
-        &alias_scan_expr,
-        &round.state_name_set,
-        &round.non_state_unknown_names,
-        eq,
-        alias_safety_cache,
-    ) {
-        counters.n_skip_unsafe_non_state_alias += 1;
-        return None;
-    }
-    if round
-        .dae
-        .variables
-        .states
-        .get(&state_name)
-        .is_some_and(|state| state.size() > 1)
-        || expr_contains_unsliced_vector_ref(&defining_expr, round.dae)
-    {
-        // MLS §10.1: array state shape is semantic IR. This path substitutes
-        // whole `der(state)` calls, so unsliced compound states stay intact.
-        counters.n_skip_unsliced_vector_ref += 1;
-        return None;
-    }
-    let state_non_der_ref_rows = round
-        .dae
-        .continuous
-        .equations
-        .iter()
-        .filter(|row| {
-            expr_contains_var(&row.rhs, &state_name) && !expr_contains_der_of(&row.rhs, &state_name)
-        })
-        .count();
-    if state_non_der_ref_rows > 1 {
-        counters.n_skip_extra_state_refs += 1;
-        return None;
-    }
-    let der_expr = choose_derivative_replacement(
-        &defining_expr,
-        &round.state_name_set,
-        round.dae,
-        &round.der_map,
-        counters,
-    )?;
-    if expr_contains_der_of(&der_expr, &state_name) {
-        counters.n_skip_self_der += 1;
-        return None;
-    }
-    if expr_contains_der_of_non_state(&der_expr, &round.state_name_set) {
-        counters.n_skip_non_state_der += 1;
-        return None;
-    }
-    if round.trace && counters.n_trace_logged_candidates < 16 {
-        crate::structural_trace!(
-            "[sim-trace] direct-assignment accepted state={} der_expr={}",
-            state_name.as_str(),
-            truncate_debug(&format!("{:?}", der_expr), 1200)
-        );
-        counters.n_trace_logged_candidates += 1;
-    }
-    Some(DirectStateDemotionPlan {
-        state_name,
-        der_expr,
-    })
-}
-
-/// `der(z)` links inside a defining expression are demotable only when `z`'s
-/// own derivative definition is closed-form (not the symbolic `der(z)`
-/// fallback) and does not feed back through the candidate state. This admits
-/// differentiator chains (`y = der(x)` reading a state with its own ODE row)
-/// while keeping kinematic aliases as states: in `v = der(s)` the alias row
-/// itself defines `der(s) = v`, so `der(s)`'s value contains the candidate.
-fn state_ders_in_expr_independently_defined(
-    defining_expr: &Expression,
-    candidate: &VarName,
-    round: &DirectDemotionRound<'_>,
-) -> bool {
-    derivative_states_in_eq(defining_expr, &round.state_names)
-        .iter()
-        .all(|inner_state| {
-            round
-                .der_map
-                .get(inner_state.as_str())
-                .is_some_and(|value| {
-                    !expr_contains_der_of(value, inner_state)
-                        && !expr_contains_var(value, candidate)
-                })
-        })
-}
-
-fn collect_direct_demotion_plans(
-    dae: &Dae,
-    trace: bool,
-) -> HashMap<String, DirectStateDemotionPlan> {
-    let Some(round) = DirectDemotionRound::new(dae, trace) else {
-        return HashMap::new();
-    };
-    let mut alias_safety_cache = HashMap::new();
-    let mut substitutions = HashMap::new();
-    let mut counters = DirectDemotionCounters::default();
-
-    for eq in &round.dae.continuous.equations {
-        let Some(plan) =
-            direct_demotion_plan_for_equation(&round, eq, &mut counters, &mut alias_safety_cache)
-        else {
-            continue;
-        };
-        substitutions
-            .entry(plan.state_name.as_str().to_string())
-            .or_insert(plan);
-    }
-
-    log_direct_demotion_scan_summary(trace, round.state_count(), &substitutions, &counters);
-    substitutions
-}
-
-/// Demote states that are explicitly defined by direct assignment equations
-/// (`state = expr`) and substitute `der(state)` with `d/dt(expr)` throughout
-/// the system.
-///
-/// This removes structurally over-constrained "dummy/trajectory" states from
-/// the differential set and keeps derivative chains algebraically consistent.
-/// The defining expression need not reference `time` directly; if `d/dt(expr)`
-/// can be resolved without introducing derivatives of non-state variables, the
-/// state is demoted. States assigned in `when` clauses are preserved, since
-/// they participate in event/reinit updates and must remain in the state vector.
-pub fn demote_direct_assigned_states(dae: &mut Dae) -> usize {
-    let max_rounds = dae.variables.states.len().clamp(1, 8);
-    let mut total_demoted = 0usize;
-
-    for _ in 0..max_rounds {
-        let trace = sim_trace_enabled();
-        let substitutions = collect_direct_demotion_plans(dae, trace);
-
-        if substitutions.is_empty() {
-            break;
-        }
-
-        let demoted_this_round = apply_direct_demotion_plans(dae, &substitutions);
-
-        if demoted_this_round == 0 {
-            break;
-        }
-        total_demoted += demoted_this_round;
-    }
-
-    total_demoted
 }
 
 #[cfg(test)]

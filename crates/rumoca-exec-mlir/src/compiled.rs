@@ -90,11 +90,7 @@ impl CompiledMlirResidual {
 
     /// Evaluate the compiled derivative RHS: `out[i] = f_i(y, p, t)`.
     pub fn call(&self, y: &[f64], p: &[f64], t: f64, out: &mut [f64]) -> Result<(), MlirError> {
-        assert_eq!(
-            out.len(),
-            self.rows,
-            "output slice length must match row count"
-        );
+        validate_output_len("eval_derivative", self.rows, out.len())?;
         unsafe {
             (self.eval_fn)(
                 y.as_ptr(),
@@ -130,11 +126,9 @@ impl CompiledMlirResidual {
         out: &mut [f64],
     ) -> Option<Result<(), MlirError>> {
         let f = self.implicit_fn?;
-        assert_eq!(
-            out.len(),
-            self.implicit_rows,
-            "implicit output slice length mismatch"
-        );
+        if let Err(err) = validate_output_len("eval_implicit_rhs", self.implicit_rows, out.len()) {
+            return Some(Err(err));
+        }
         unsafe {
             f(
                 y.as_ptr(),
@@ -170,11 +164,9 @@ impl CompiledMlirResidual {
         out: &mut [f64],
     ) -> Option<Result<(), MlirError>> {
         let f = self.jvp_fn?;
-        assert_eq!(
-            out.len(),
-            self.implicit_rows,
-            "jvp output slice length mismatch"
-        );
+        if let Err(err) = validate_output_len("eval_jacobian_v", self.implicit_rows, out.len()) {
+            return Some(Err(err));
+        }
         unsafe {
             f(
                 y.as_ptr(),
@@ -218,4 +210,19 @@ impl CompiledMlirResidual {
     pub fn has_jacobian_v(&self) -> bool {
         self.jvp_fn.is_some()
     }
+}
+
+fn validate_output_len(
+    function: &'static str,
+    expected: usize,
+    actual: usize,
+) -> Result<(), MlirError> {
+    if actual != expected {
+        return Err(MlirError::OutputLength {
+            function,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
 }

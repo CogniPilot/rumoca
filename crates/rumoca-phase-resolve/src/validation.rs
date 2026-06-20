@@ -326,6 +326,7 @@ mod tests {
     fn resolve_for_validation(source: &str) -> ValidationResult {
         let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
         let mut tree = rumoca_ir_ast::ClassTree::from_parsed(def);
+        tree.source_map.add("test.mo", source);
         let mut resolver = Resolver::new();
         resolver.resolve(&mut tree);
         validate_resolution(&tree)

@@ -57,28 +57,35 @@ impl WasmStepper {
     }
 
     /// Read a single variable value by name.
-    pub fn get(&self, name: &str) -> Option<f64> {
-        self.stepper.get(name)
+    pub fn get(&self, name: &str) -> Result<Option<f64>, JsValue> {
+        self.stepper
+            .get(name)
+            .map_err(|e| JsValue::from_str(&format!("Stepper read error: {e}")))
     }
 
     /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
-    pub fn state_json(&self) -> String {
-        let state = self.stepper.state();
-        serde_json::json!({
+    pub fn state_json(&self) -> Result<String, JsValue> {
+        let state = self
+            .stepper
+            .state()
+            .map_err(|e| JsValue::from_str(&format!("Stepper state error: {e}")))?;
+        serde_json::to_string(&serde_json::json!({
             "time": state.time,
             "values": state.values,
-        })
-        .to_string()
+        }))
+        .map_err(|e| JsValue::from_str(&format!("Stepper state serialization error: {e}")))
     }
 
     /// Get available input names as a JSON array string.
-    pub fn input_names(&self) -> String {
-        serde_json::to_string(self.stepper.input_names()).unwrap_or_else(|_| "[]".to_string())
+    pub fn input_names(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self.stepper.input_names())
+            .map_err(|e| JsValue::from_str(&format!("Input name serialization error: {e}")))
     }
 
     /// Get all solver variable names as a JSON array string.
-    pub fn variable_names(&self) -> String {
-        serde_json::to_string(self.stepper.variable_names()).unwrap_or_else(|_| "[]".to_string())
+    pub fn variable_names(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self.stepper.variable_names())
+            .map_err(|e| JsValue::from_str(&format!("Variable name serialization error: {e}")))
     }
 
     /// Reset the simulation to initial conditions.

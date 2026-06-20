@@ -32,7 +32,8 @@
 {% set solve_discrete_rows = solve.discrete.rhs.programs if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined and solve.discrete.rhs.programs is defined else [] %}
 {% set solve_discrete_targets = solve.discrete.update_targets if solve is defined and solve.discrete is defined and solve.discrete.update_targets is defined else [] %}
 {% set solve_pre_param_bindings = solve.solve_layout.pre_param_bindings if solve is defined and solve.solve_layout is defined and solve.solve_layout.pre_param_bindings is defined else [] %}
-{% set solve_derivative_rows = solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else [] %}
+{% set solve_derivative_rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else (solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else []) %}
+{% set solve_derivative_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else (solve.continuous.derivative_rhs.output_indices if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.output_indices is defined else []) %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
 {% set solve_full_jacobian_rows = solve_full_jacobian_rows if solve_full_jacobian_rows is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else []) %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
@@ -946,6 +947,7 @@ static void compute_derivatives(ModelInstance* m) {
 
     /* Evaluate derivatives from solve IR. MLS Appendix B.1a keeps f_x
        implicit; phase-solve-lower owns the explicit xdot projection. */
+    memset(m->xdot, 0, sizeof(m->xdot));
 {% if solve_derivative_nodes | length > 0 %}
 {% set ns_xdot = namespace(offset=0) %}
 {% for node in solve_derivative_nodes %}
@@ -953,12 +955,12 @@ static void compute_derivatives(ModelInstance* m) {
 {{ render_matmul_c(node.MatMul, ns_xdot.offset, solve_row_c_cfg) }}
 {% set ns_xdot.offset = ns_xdot.offset + node.MatMul.m * node.MatMul.n %}
 {% elif node.ScalarPrograms is defined %}
-{{ render_solve_block_c(node.ScalarPrograms.programs, solve_row_c_cfg, "m->xdot[{}] = {}", ns_xdot.offset) }}
+{{ render_solve_block_c(node.ScalarPrograms.programs, solve_row_c_cfg, "m->xdot[{}] = {}", node.ScalarPrograms.output_indices) }}
 {% set ns_xdot.offset = ns_xdot.offset + store_output_count(node.ScalarPrograms.programs) %}
 {% endif %}
 {% endfor %}
 {% else %}
-{{ render_solve_block_c(solve_derivative_rows, solve_row_c_cfg, "m->xdot[{}] = {}") }}
+{{ render_solve_block_c(solve_derivative_rows, solve_row_c_cfg, "m->xdot[{}] = {}", solve_derivative_output_indices) }}
 {% endif %}
 
     /* Re-compute algebraics after derivatives (resolves derivative aliases) */

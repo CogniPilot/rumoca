@@ -602,7 +602,7 @@ modification_expression
 //✅ class-modification :
 //✅    "(" [ argument-list ] ")"
 class_modification
-    : '('^ [ argument_list ] ')'^
+    : '(' [ argument_list ] ')'
     ;
 
 //✅ argument-list :
@@ -966,7 +966,7 @@ component_primary
     ;
 
 output_primary
-    : '('^ output_expression_list ')'^ [ ( array_subscripts | '.'^ ident ) ]
+    : '(' output_expression_list ')' [ ( array_subscripts | '.'^ ident ) ]
     ;
 
 range_primary
@@ -974,7 +974,7 @@ range_primary
     ;
 
 array_primary
-    : '{'^ [ array_arguments ] '}'^
+    : '{' [ array_arguments ] '}'
     ;
 
 // Extended to support der(x)[i] syntax - subscripts after builtin function calls

@@ -174,7 +174,10 @@ impl CudaDriver {
 
     /// Resolve a kernel function by name within a loaded module.
     pub fn get_function(&self, module: CUmodule, name: &str) -> Result<CUfunction, MlirError> {
-        let cname = CString::new(name).unwrap();
+        let cname = CString::new(name).map_err(|err| MlirError::InvalidInput {
+            operation: "cuModuleGetFunction",
+            message: format!("kernel name contains an interior NUL byte: {err}"),
+        })?;
         let mut func: CUfunctionRaw = std::ptr::null_mut();
         cuda_check(
             unsafe { (self.cu_module_get_function)(&mut func, module.0, cname.as_ptr()) },
@@ -186,8 +189,14 @@ impl CudaDriver {
     /// Allocate `n` f64 values on the device and return the device pointer.
     pub fn alloc_f64(&self, n: usize) -> Result<CUdeviceptr, MlirError> {
         let mut ptr: CUdeviceptr = 0;
+        let bytes =
+            n.checked_mul(std::mem::size_of::<f64>())
+                .ok_or_else(|| MlirError::InvalidInput {
+                    operation: "cuMemAlloc",
+                    message: format!("allocation length {n} overflows byte count"),
+                })?;
         cuda_check(
-            unsafe { (self.cu_mem_alloc)(&mut ptr, n * 8) },
+            unsafe { (self.cu_mem_alloc)(&mut ptr, bytes) },
             "cuMemAlloc",
         )?;
         Ok(ptr)

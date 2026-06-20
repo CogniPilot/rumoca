@@ -21,11 +21,11 @@ pub fn eval_and_apply_update_rows(
     }
     validate_update_shape(application.block, application.targets)?;
 
-    let mut values = vec![0.0; application.block.len()];
+    let mut values = update_row_value_buffer(application.block.len())?;
     let mut changed_any = false;
     for _ in 0..application.max_iters {
-        let eval_y = application.y.to_vec();
-        let eval_p = application.p.to_vec();
+        let eval_y = update_row_snapshot(application.y, "update row y snapshot")?;
+        let eval_p = update_row_snapshot(application.p, "update row p snapshot")?;
         eval_scalar_program_block_with_context(
             application.block,
             eval_y.as_slice(),
@@ -107,14 +107,43 @@ fn update_indexed_slot(
     tol: f64,
 ) -> Result<bool, EvalSolveError> {
     let len = slots.len();
-    let slot = slots
-        .get_mut(index)
-        .ok_or(EvalSolveError::MissingInput { vector, index, len })?;
+    let slot = slots.get_mut(index).ok_or(EvalSolveError::MissingInput {
+        vector,
+        index,
+        len,
+        span: None,
+    })?;
     let changed = (*slot - value).abs() > tol;
     if changed {
         *slot = value;
     }
     Ok(changed)
+}
+
+fn update_row_value_buffer(len: usize) -> Result<Vec<f64>, EvalSolveError> {
+    let mut values = update_row_vec_with_capacity(len, "update row value count")?;
+    values.resize(len, 0.0);
+    Ok(values)
+}
+
+fn update_row_snapshot(values: &[f64], context: &'static str) -> Result<Vec<f64>, EvalSolveError> {
+    let mut snapshot = update_row_vec_with_capacity(values.len(), context)?;
+    snapshot.extend_from_slice(values);
+    Ok(snapshot)
+}
+
+fn update_row_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, EvalSolveError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| EvalSolveError::InvalidRow {
+            message: format!("{context} exceeds host memory limits"),
+            span: None,
+        })?;
+    Ok(values)
 }
 
 #[cfg(test)]
@@ -123,12 +152,19 @@ mod tests {
 
     use super::*;
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 0, 1)
+    }
+
     #[test]
     fn update_rows_apply_scalar_slot_targets_until_stable() {
-        let block = ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value: 2.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
+        let block = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span(),
+        );
         let mut y = vec![1.0];
         let mut p = vec![0.0];
         let changed = eval_and_apply_update_rows(UpdateRowApplication {
@@ -145,5 +181,17 @@ mod tests {
 
         assert!(changed);
         assert_eq!(p, vec![2.0]);
+    }
+
+    #[test]
+    fn update_row_vec_with_capacity_rejects_impossible_capacity() {
+        let err = update_row_vec_with_capacity::<u8>(usize::MAX, "update row test vector")
+            .expect_err("impossible update row capacity should fail");
+
+        assert!(matches!(err, EvalSolveError::InvalidRow { .. }));
+        assert!(
+            err.to_string()
+                .contains("update row test vector exceeds host memory limits")
+        );
     }
 }

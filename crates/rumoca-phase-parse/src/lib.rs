@@ -412,7 +412,7 @@ fn map_parse_error_to_original(error: &ParseError, inserted_positions: &[usize])
             message: message.clone(),
             expected: expected.clone(),
             unexpected: unexpected.clone(),
-            span: map_span_to_original(*span, inserted_positions),
+            span: span.map(|span| map_span_to_original(span, inserted_positions)),
         },
         ParseError::NoAstProduced => ParseError::NoAstProduced,
         ParseError::IoError { path, message } => ParseError::IoError {
@@ -461,6 +461,7 @@ fn semicolon_insertion_pos(error: &ParseError) -> Option<usize> {
     if !expected.iter().any(|e| e == ";") {
         return None;
     }
+    let span = (*span)?;
 
     let unexpected_lower = unexpected.as_ref().map(|u| u.to_ascii_lowercase());
     let insert_before_unexpected = unexpected_lower.as_deref().is_some_and(|u| {
@@ -529,7 +530,11 @@ fn parse_error_key(error: &ParseError) -> String {
             span,
         } => format!(
             "syntax:{}:{}:{}:{:?}:{:?}",
-            span.start.0, span.end.0, message, expected, unexpected
+            span.map(|span| span.start.0).unwrap_or(0),
+            span.map(|span| span.end.0).unwrap_or(0),
+            message,
+            expected,
+            unexpected
         ),
         ParseError::NoAstProduced => "no-ast".to_string(),
         ParseError::IoError { path, message } => format!("io:{}:{}", path, message),
@@ -691,6 +696,52 @@ end Ball;
 
         assert_eq!(source_slice(source, elements[0].span()), "-d");
         assert_eq!(source_slice(source, elements[1].span()), "not flag");
+    }
+
+    #[test]
+    fn test_parse_empty_array_literal_has_brace_span() {
+        let source = "model Test\n  parameter Real xs[:] = {};\nend Test;";
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let component = model.components.get("xs").expect("xs should exist");
+        let binding = component.binding.as_ref().expect("binding should exist");
+        let ast::Expression::Array { span, elements, .. } = binding else {
+            panic!("expected empty array binding");
+        };
+
+        assert!(elements.is_empty());
+        assert_eq!(source_slice(source, *span), "{}");
+    }
+
+    #[test]
+    fn test_parse_empty_parentheses_has_paren_span() {
+        let source = "model Test\n  parameter Real x = ();\nend Test;";
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let component = model.components.get("x").expect("x should exist");
+        let binding = component.binding.as_ref().expect("binding should exist");
+        let ast::Expression::Empty { span } = binding else {
+            panic!("expected empty expression binding");
+        };
+
+        assert_eq!(source_slice(source, *span), "()");
+    }
+
+    #[test]
+    fn test_parse_empty_class_modification_has_paren_span() {
+        let source = "model Test\n  Real x(foo());\nend Test;";
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let component = model.components.get("x").expect("x should exist");
+        let modification = component
+            .modifications
+            .get("foo")
+            .expect("foo modification should exist");
+        let ast::Expression::ClassModification { span, .. } = modification else {
+            panic!("expected empty class modification");
+        };
+
+        assert_eq!(source_slice(source, *span), "foo()");
     }
 
     #[test]
@@ -1380,6 +1431,7 @@ end Ball;
                 (message.contains("`end`") || message.contains("'end'")).then_some(*span)
             })
             .expect("expected reserved/end parse error");
+        let end_error = end_error.expect("expected spanned parse error");
         assert!(
             end_error.start.0 > 0 || end_error.end.0 > 1,
             "expected non-dummy span for missing semicolon before `end`, got {:?}",
@@ -1410,6 +1462,7 @@ end Ball;
                 (message.contains("`der`") || message.contains("'der'")).then_some(*span)
             })
             .expect("expected der-related parse error");
+        let der_error = der_error.expect("expected spanned parse error");
         assert!(
             der_error.start.0 > 1 || der_error.end.0 > 2,
             "expected non-origin span for missing semicolon before `der`, got {:?}",
@@ -1442,6 +1495,7 @@ end Ball;
                     .then_some(*span)
             })
             .expect("expected duplicate declaration error");
+        let duplicate_span = duplicate_span.expect("expected spanned duplicate declaration error");
         assert!(
             duplicate_span.start.0 > 0 && duplicate_span.end.0 > duplicate_span.start.0,
             "expected non-dummy duplicate declaration span, got {:?}",
@@ -1478,6 +1532,8 @@ end Real;
                     .then_some(*span)
             })
             .expect("expected predefined-type redeclaration error");
+        let redeclare_span =
+            redeclare_span.expect("expected spanned predefined-type redeclaration error");
         assert!(
             redeclare_span.start.0 > 0 && redeclare_span.end.0 > redeclare_span.start.0,
             "expected non-dummy redeclaration span, got {:?}",

@@ -47,7 +47,7 @@ pub use runtime::solve_ops::{
     row_reads_solver_or_time, update_relation_memory_slots,
 };
 pub use runtime::tensor_policy::{
-    LinearSolveKernel, MatMulKernel, matrix_is_diagonal, matrix_nonzeros,
+    LinearSolveKernel, MatMulKernel, TensorPolicyError, matrix_is_diagonal, matrix_nonzeros,
     select_linear_solve_kernel, select_matmul_kernel,
 };
 pub use runtime::time::{

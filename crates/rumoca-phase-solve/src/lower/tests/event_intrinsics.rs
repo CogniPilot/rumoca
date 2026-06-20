@@ -14,11 +14,11 @@ fn lower_discrete_rhs_keeps_edge_initial_as_runtime_event_flag() {
             args: vec![rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Initial,
                 args: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        span: Default::default(),
+        span: rumoca_core::Span::DUMMY,
         origin: "edge(initial()) event assignment".to_string(),
         scalar_count: 1,
     });
@@ -63,7 +63,7 @@ fn lower_discrete_rhs_uses_pre_relation_memory_for_edge_previous_value() {
         var("u"),
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     );
     dae_model.conditions.relations.push(relation.clone());
@@ -72,16 +72,16 @@ fn lower_discrete_rhs_uses_pre_relation_memory_for_edge_previous_value() {
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Edge,
             args: vec![relation.clone()],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        span: Default::default(),
+        span: rumoca_core::Span::DUMMY,
         origin: "edge relation memory update".to_string(),
         scalar_count: 1,
     });
     dae_model.conditions.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("c").into()),
         rhs: relation,
-        span: Default::default(),
+        span: rumoca_core::Span::DUMMY,
         origin: "relation memory update".to_string(),
         scalar_count: 1,
     });

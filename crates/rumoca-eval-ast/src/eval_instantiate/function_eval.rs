@@ -1064,6 +1064,14 @@ mod tests {
         }
     }
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("instantiate_function_eval_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn cref(path: &str) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
@@ -1158,7 +1166,7 @@ mod tests {
             name: name.to_string(),
             causality: rumoca_core::Causality::Input(token("input")),
             variability: rumoca_core::Variability::Parameter(token("parameter")),
-            ..ast::Component::default()
+            ..ast::Component::empty_with_span(test_span())
         }
     }
 
@@ -1167,7 +1175,7 @@ mod tests {
             name: name.to_string(),
             causality: rumoca_core::Causality::Output(token("output")),
             start: bool_expr(false),
-            ..ast::Component::default()
+            ..ast::Component::empty_with_span(test_span())
         }
     }
 
@@ -1176,7 +1184,7 @@ mod tests {
             name: name.to_string(),
             causality: rumoca_core::Causality::Output(token("output")),
             start: int_expr(0),
-            ..ast::Component::default()
+            ..ast::Component::empty_with_span(test_span())
         }
     }
 
@@ -1184,7 +1192,7 @@ mod tests {
         ast::Component {
             name: name.to_string(),
             start: int_expr(start),
-            ..ast::Component::default()
+            ..ast::Component::empty_with_span(test_span())
         }
     }
 
@@ -1351,6 +1359,30 @@ mod tests {
     }
 
     #[test]
+    fn unqualified_unique_function_call_evaluates_without_def_id() {
+        let tree = msl_math_tree();
+        let ctx = InstantiateEvalCtx {
+            tree: &tree,
+            mod_env: &ast::ModificationEnvironment::new(),
+            effective_components: &IndexMap::default(),
+            resolve_class_components: no_op_resolve_class_components,
+        };
+        let expr = if_expr(
+            vec![(
+                ast::Expression::FunctionCall {
+                    comp: cref("isPowerOf2"),
+                    args: vec![int_expr(8)],
+                    span: rumoca_core::Span::DUMMY,
+                },
+                int_expr(1),
+            )],
+            int_expr(0),
+        );
+
+        assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(1));
+    }
+
+    #[test]
     fn scalar_integer_eval_rejects_array_output_functions() {
         let function_id = rumoca_core::DefId::new(1);
         let mut function = ast::ClassDef {
@@ -1391,7 +1423,7 @@ mod tests {
         let mut components = IndexMap::default();
         let mut model_structure = ast::Component {
             name: "modelStructure".to_string(),
-            ..ast::Component::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         model_structure.start =
             ast::Expression::ComponentReference(cref("Types.ModelStructure.a_vb"));
@@ -1423,7 +1455,7 @@ mod tests {
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 binding: Some(bool_expr(true)),
                 has_explicit_binding: true,
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1443,7 +1475,7 @@ mod tests {
         let mut components = IndexMap::default();
         let model_structure = ast::Component {
             name: "modelStructure".to_string(),
-            ..ast::Component::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         components.insert("modelStructure".to_string(), model_structure);
 
@@ -1471,7 +1503,7 @@ mod tests {
                 name: "useLumpedPressure".to_string(),
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 start: bool_expr(false),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1480,7 +1512,7 @@ mod tests {
                 name: "nFMLumped".to_string(),
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 start: int_expr(2),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1489,7 +1521,7 @@ mod tests {
                 name: "nFMDistributed".to_string(),
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 start: int_expr(1),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1503,7 +1535,7 @@ mod tests {
                     )],
                     ast::Expression::ComponentReference(cref("nFMDistributed")),
                 ),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1530,7 +1562,7 @@ mod tests {
             ast::Component {
                 name: "runtimeSwitch".to_string(),
                 start: bool_expr(false),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1539,7 +1571,7 @@ mod tests {
                 name: "nA".to_string(),
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 start: int_expr(2),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1548,7 +1580,7 @@ mod tests {
                 name: "nB".to_string(),
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 start: int_expr(1),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1562,7 +1594,7 @@ mod tests {
                     )],
                     ast::Expression::ComponentReference(cref("nB")),
                 ),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1595,7 +1627,7 @@ mod tests {
                 start: ast::Expression::ComponentReference(cref("missing.scope.value")),
                 binding: Some(int_expr(1)),
                 has_explicit_binding: true,
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         let ctx = InstantiateEvalCtx {
@@ -1625,7 +1657,7 @@ mod tests {
                 start: ast::Expression::ComponentReference(cref("missing.scope.value")),
                 binding: Some(int_expr(1)),
                 has_explicit_binding: true,
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1652,7 +1684,7 @@ mod tests {
             ast::Component {
                 name: "stackData".to_string(),
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1714,7 +1746,7 @@ mod tests {
                 start: int_expr(1),
                 binding: Some(int_expr(1)),
                 has_explicit_binding: true,
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         let ctx = InstantiateEvalCtx {
@@ -1759,7 +1791,7 @@ mod tests {
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 binding: Some(int_expr(2)),
                 has_explicit_binding: true,
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         components.insert(
@@ -1769,7 +1801,7 @@ mod tests {
                 variability: rumoca_core::Variability::Parameter(token("parameter")),
                 binding: Some(int_expr(2)),
                 has_explicit_binding: true,
-                ..ast::Component::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         let expr = if_expr(

@@ -4,7 +4,7 @@
 //! `fmi2/model.c.jinja` and `embedded_c/model.c.jinja` templates to extract explicit
 //! ODE/algebraic RHS expressions from residual-form DAE equations.
 
-use super::{ExprConfig, RenderResult};
+use super::{ExprConfig, RenderResult, join_usize_values, render_vec_with_capacity};
 use crate::errors::render_err;
 use minijinja::Value;
 use render_expr::{
@@ -23,6 +23,14 @@ type MaybeLinearDerivativeRow = Result<Option<LinearDerivativeRow>, minijinja::E
 
 fn no_render_match<T>() -> Result<Option<T>, minijinja::Error> {
     Ok(Option::None)
+}
+
+fn dense_square_entry_count(n: usize, context: &'static str) -> Result<usize, minijinja::Error> {
+    n.checked_mul(n).ok_or_else(|| {
+        render_err(format!(
+            "{context} matrix entry count overflows host index range"
+        ))
+    })
 }
 
 fn equation_residual_or_rhs(eq: &Value) -> Result<Option<Value>, minijinja::Error> {
@@ -512,8 +520,11 @@ fn find_linear_derivative_system_rhs_in_equations(
         return no_render_match();
     }
 
-    let mut matrix_entries = Vec::with_capacity(n * n);
-    let mut rhs_entries = Vec::with_capacity(n);
+    let mut matrix_entries = render_vec_with_capacity(
+        dense_square_entry_count(n, "linear derivative system")?,
+        "linear derivative system matrix entry count",
+    )?;
+    let mut rhs_entries = render_vec_with_capacity(n, "linear derivative system rhs entry count")?;
     for (coefficients, rhs) in rows.iter().take(n) {
         for col in 1..=n {
             matrix_entries.push(
@@ -716,7 +727,10 @@ fn render_linear_solve_component(
         return no_render_match();
     }
 
-    let mut matrix_entries = Vec::with_capacity(n * n);
+    let mut matrix_entries = render_vec_with_capacity(
+        dense_square_entry_count(n, "linear solve component")?,
+        "linear solve component matrix entry count",
+    )?;
     for row in 1..=n {
         for col in 1..=n {
             let (source_row, source_col) = if product.transpose {
@@ -733,7 +747,7 @@ fn render_linear_solve_component(
         }
     }
 
-    let mut rhs_entries = Vec::with_capacity(n);
+    let mut rhs_entries = render_vec_with_capacity(n, "linear solve component rhs entry count")?;
     for idx in 1..=n {
         let Some(entry) = render_array_expr_at_index_or_scalar_checked(rhs, idx, cfg)? else {
             return no_render_match();
@@ -838,11 +852,7 @@ fn render_var_ref_with_indices(
         return no_render_match();
     }
 
-    let index_text = indices
-        .iter()
-        .map(|idx| idx.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+    let index_text = join_usize_values(indices, ",", "C indexed reference subscript count")?;
     let indexed_ref = format!("{raw_name}[{index_text}]");
     if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
         return Ok(Some(symbol));
@@ -853,11 +863,7 @@ fn render_var_ref_with_indices(
         return Ok(Some(format!(
             "{}_{}",
             name,
-            indices
-                .iter()
-                .map(|idx| idx.to_string())
-                .collect::<Vec<_>>()
-                .join("_")
+            join_usize_values(indices, "_", "C indexed symbol subscript count")?
         )));
     }
     if cfg.one_based_index {

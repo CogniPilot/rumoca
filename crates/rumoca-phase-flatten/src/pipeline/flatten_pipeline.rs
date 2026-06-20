@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_spans::required_location_span;
 
 pub(crate) struct FlattenGraphData {
     pub(crate) vcg_data: vcg::VcgPreScanData,
@@ -395,15 +396,14 @@ fn missing_source_scope_error(
     tree: &ast::ClassTree,
     context: &str,
 ) -> FlattenError {
-    FlattenError::missing_source_scope(
-        instance.qualified_name.to_flat_string(),
-        context,
-        tree.source_map.location_to_span(
-            &instance.source_location.file_name,
-            instance.source_location.start as usize,
-            instance.source_location.end as usize,
+    match required_location_span(&tree.source_map, &instance.source_location, context) {
+        Ok(span) => FlattenError::missing_source_scope(
+            instance.qualified_name.to_flat_string(),
+            context,
+            span,
         ),
-    )
+        Err(error) => error,
+    }
 }
 
 fn augment_imports_for_instance_exprs(
@@ -928,11 +928,11 @@ pub(crate) fn finalize_flat_model(
     connections_result?;
 
     seed_flat_functions_from_context(ctx, flat);
-    functions::collect_functions(flat, tree, class_index)?;
+    functions::collect_functions(flat, tree, class_index, Some(model_name))?;
     rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
-    functions::collect_functions(flat, tree, class_index)?;
+    functions::collect_functions(flat, tree, class_index, Some(model_name))?;
     mark_record_constructor_calls(flat, tree);
-    functions::lower_record_function_params(flat);
+    functions::lower_record_function_params(flat)?;
     functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
@@ -949,7 +949,7 @@ pub(crate) fn finalize_flat_model(
 
     collapse_index_refs_to_known_varrefs(flat);
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
-    substitute_known_constants_in_flat(flat, ctx);
+    substitute_known_constants_in_flat(flat, ctx)?;
     ctx.build_parameter_lookup(flat, tree);
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
         ctx.build_parameter_lookup(flat, tree);
@@ -960,6 +960,7 @@ pub(crate) fn finalize_flat_model(
         flat,
         tree,
         class_index,
+        model_name,
         component_override_map,
         &ctx.component_members,
     )?;
@@ -973,12 +974,13 @@ pub(crate) fn finalize_flat_model(
             overlay,
             ctx,
         )?;
-        substitute_known_constants_in_flat(flat, ctx);
+        substitute_known_constants_in_flat(flat, ctx)?;
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
     }
     canonicalize_varrefs_via_instantiated_def_ids(flat);
     functions::canonicalize_collected_function_calls(flat);
+    resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
     functions::validate_flat_function_call_args(flat)?;
@@ -993,7 +995,7 @@ pub(crate) fn finalize_flat_model(
     // Final boundary pass: every rendered variable reference leaves flatten
     // with its structured component reference attached, so downstream phases
     // never re-derive structure from names.
-    crate::structured_refs::attach_structured_references(flat);
+    crate::structured_refs::attach_structured_references(flat)?;
 
     Ok(())
 }
@@ -1016,8 +1018,12 @@ fn validate_overconstrained_roots(flat: &flat::Model) -> Result<(), FlattenError
                 var.name.as_str().starts_with(from.as_str())
                     || var.name.as_str().starts_with(to.as_str())
             })
-            .map(|var| var.source_span)
-            .unwrap_or(rumoca_core::Span::DUMMY);
+            .and_then(|var| (!var.source_span.is_dummy()).then_some(var.source_span))
+            .ok_or_else(|| {
+                FlattenError::missing_source_context(format!(
+                    "Connections.branch({from}, {to}) has no source span on either endpoint"
+                ))
+            })?;
         return Err(FlattenError::UnsupportedEquation {
             description: format!(
                 "Connections.branch({from}, {to}) is used but no Connections.root() or \
@@ -1033,6 +1039,7 @@ fn collect_rewritten_functions_to_fixed_point(
     flat: &mut flat::Model,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    model_name: &str,
     component_override_map: &ComponentOverrideMap,
     component_members: &component_member_scope::ComponentMemberScopes,
 ) -> Result<bool, FlattenError> {
@@ -1048,7 +1055,7 @@ fn collect_rewritten_functions_to_fixed_point(
             component_override_map,
             component_members,
         )?;
-        functions::collect_functions(flat, tree, class_index)?;
+        functions::collect_functions(flat, tree, class_index, Some(model_name))?;
         if flat.functions.len() == function_count_before {
             return Ok(flat.functions.len() != initial_function_count);
         }

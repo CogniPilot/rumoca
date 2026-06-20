@@ -1,5 +1,13 @@
 use super::*;
 
+fn projection_plan_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("projection_plan_more_fixture.mo"),
+        0,
+        1,
+    )
+}
+
 #[test]
 fn solve_problem_preserves_duplicate_target_residual_rows() {
     let mut dae_model = dae::Dae::default();
@@ -15,7 +23,7 @@ fn solve_problem_preserves_duplicate_target_residual_rows() {
     }
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, der(var("x")), var("u")),
-        Default::default(),
+        solve_test_span(),
         "state derivative",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
@@ -26,29 +34,29 @@ fn solve_problem_preserves_duplicate_target_residual_rows() {
                 rumoca_core::OpBinary::Sub,
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: solve_test_span(),
                 },
                 var("x"),
             ),
         ),
-        Default::default(),
+        solve_test_span(),
         "forcing equation for u",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, var("u"), var("v")),
-        Default::default(),
+        solve_test_span(),
         "alias with duplicate u target",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, var("w"), var("u")),
-        Default::default(),
+        solve_test_span(),
         "alias with separate target",
     ));
 
     let problem = lower_solve_problem(&dae_model).expect("duplicate targets should lower");
 
-    let rhs = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs);
-    assert_eq!(problem.continuous.residual.programs.len(), 3);
+    let rhs = scalar_program_block_fixture(&problem.continuous.implicit_rhs);
+    assert_eq!(problem.continuous.residual.len(), Ok(3));
     assert_eq!(rhs.programs.len(), 4);
     assert!(
         rhs.programs[1].iter().any(|op| matches!(
@@ -90,7 +98,7 @@ fn solve_problem_preserves_fallback_state_residual_targets() {
             der(var("state.p")),
             var("source.p"),
         ),
-        Default::default(),
+        solve_test_span(),
         "state.p derivative",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
@@ -99,13 +107,17 @@ fn solve_problem_preserves_fallback_state_residual_targets() {
             der(var("state.T")),
             var("source.T"),
         ),
-        Default::default(),
+        solve_test_span(),
         "state.T derivative",
     ));
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
-        rhs: binary(rumoca_core::OpBinary::Sub, var("state"), var("source")),
-        span: rumoca_core::Span::DUMMY,
+        rhs: binary(
+            rumoca_core::OpBinary::Sub,
+            source_var("state"),
+            source_var("source"),
+        ),
+        span: solve_test_span(),
         origin: "scalarized record consistency equation".to_string(),
         scalar_count: 2,
     });
@@ -148,7 +160,7 @@ fn solve_problem_records_continuous_row_targets_for_projectors() {
         // MLS Appendix B B.1a: continuous algebraic equations remain
         // simultaneous, but solve-IR preserves the explicit equation target
         // so runtime projectors do not infer pivots from expression strings.
-        Default::default(),
+        solve_test_span(),
         "force residual-form equation",
     ));
     dae_model.continuous.equations.push(dae::Equation {
@@ -158,10 +170,10 @@ fn solve_problem_records_continuous_row_targets_for_projectors() {
             var("height"),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
+                span: solve_test_span(),
             },
         ),
-        span: Default::default(),
+        span: solve_test_span(),
         origin: "height direct equation".to_string(),
         scalar_count: 1,
     });
@@ -193,12 +205,12 @@ fn initialization_projection_plan_includes_unfixed_states() {
         .insert("z".into(), scalar_var("z"));
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
-        Default::default(),
+        solve_test_span(),
         "derivative row for x",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, der(var("xf")), int_expr(0)),
-        Default::default(),
+        solve_test_span(),
         "derivative row for xf",
     ));
     dae_model
@@ -206,7 +218,7 @@ fn initialization_projection_plan_includes_unfixed_states() {
         .equations
         .push(dae::Equation::residual(
             binary(rumoca_core::OpBinary::Sub, var("x"), int_expr(1)),
-            Default::default(),
+            solve_test_span(),
             "unfixed state initialization",
         ));
     dae_model
@@ -214,7 +226,7 @@ fn initialization_projection_plan_includes_unfixed_states() {
         .equations
         .push(dae::Equation::residual(
             binary(rumoca_core::OpBinary::Sub, var("xf"), int_expr(2)),
-            Default::default(),
+            solve_test_span(),
             "fixed state initialization",
         ));
     dae_model
@@ -222,7 +234,7 @@ fn initialization_projection_plan_includes_unfixed_states() {
         .equations
         .push(dae::Equation::residual(
             binary(rumoca_core::OpBinary::Sub, var("z"), int_expr(3)),
-            Default::default(),
+            solve_test_span(),
             "algebraic initialization",
         ));
 
@@ -267,7 +279,7 @@ fn solve_problem_records_scaled_algebraic_residual_target() {
             unary(rumoca_core::OpUnary::Minus, var("f")),
             binary(rumoca_core::OpBinary::Mul, var("m"), var("a")),
         ),
-        rumoca_core::Span::DUMMY,
+        projection_plan_span(),
         "scaled force residual: -f + m*a = 0",
     ));
 
@@ -291,15 +303,15 @@ fn solve_problem_expands_scalarized_record_residual_targets() {
     }
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("state").into()),
-        rhs: var("source"),
-        span: Default::default(),
+        rhs: source_var("source"),
+        span: solve_test_span(),
         origin: "scalarized record assignment".to_string(),
         scalar_count: 2,
     });
 
     let problem = lower_solve_problem(&dae_model).expect("record target rows should lower");
 
-    assert_eq!(problem.continuous.residual.programs.len(), 2);
+    assert_eq!(problem.continuous.residual.len(), Ok(2));
     assert!(matches!(
         problem.continuous.implicit_row_targets[0],
         Some(solve::ScalarSlot::Y { index: 0, .. })
@@ -342,15 +354,19 @@ fn solve_problem_expands_scalarized_record_residual_form_targets() {
             .insert(rumoca_core::VarName::new(name), scalar_var(name));
     }
     dae_model.continuous.equations.push(dae::Equation::residual(
-        binary(rumoca_core::OpBinary::Sub, var("state"), var("source")),
-        Default::default(),
+        binary(
+            rumoca_core::OpBinary::Sub,
+            source_var("state"),
+            source_var("source"),
+        ),
+        solve_test_span(),
         "scalarized record residual form",
     ));
     dae_model.continuous.equations[0].scalar_count = 2;
 
     let problem = lower_solve_problem(&dae_model).expect("record residual targets should lower");
 
-    assert_eq!(problem.continuous.residual.programs.len(), 2);
+    assert_eq!(problem.continuous.residual.len(), Ok(2));
     assert!(matches!(
         problem.continuous.implicit_row_targets[0],
         Some(solve::ScalarSlot::Y { index: 0, .. })
@@ -364,25 +380,26 @@ fn solve_problem_expands_scalarized_record_residual_form_targets() {
 #[test]
 fn solve_problem_expands_array_explicit_residual_rows() {
     let mut dae_model = dae::Dae::default();
+    let span = solve_test_span();
     dae_model
         .variables
         .algebraics
-        .insert(rumoca_core::VarName::new("y"), array_var("y", &[2]));
+        .insert(rumoca_core::VarName::new("y"), source_array_var("y", &[2]));
     dae_model
         .variables
         .algebraics
-        .insert(rumoca_core::VarName::new("u"), array_var("u", &[2]));
+        .insert(rumoca_core::VarName::new("u"), source_array_var("u", &[2]));
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
-        rhs: var("u"),
-        span: rumoca_core::Span::DUMMY,
+        rhs: source_var("u"),
+        span,
         origin: "array explicit equation".to_string(),
         scalar_count: 2,
     });
 
     let problem = lower_solve_problem(&dae_model).expect("array residual rows should lower");
 
-    assert_eq!(problem.continuous.residual.programs.len(), 2);
+    assert_eq!(problem.continuous.residual.len(), Ok(2));
     assert!(matches!(
         problem.continuous.implicit_row_targets[0],
         Some(solve::ScalarSlot::Y { index: 0, .. })
@@ -396,6 +413,7 @@ fn solve_problem_expands_array_explicit_residual_rows() {
 #[test]
 fn solve_problem_expands_array_residual_form_rows() {
     let mut dae_model = dae::Dae::default();
+    let span = solve_test_span();
     dae_model
         .variables
         .algebraics
@@ -407,14 +425,14 @@ fn solve_problem_expands_array_residual_form_rows() {
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: binary(rumoca_core::OpBinary::Sub, var("y"), var("u")),
-        span: rumoca_core::Span::DUMMY,
+        span,
         origin: "array residual equation".to_string(),
         scalar_count: 2,
     });
 
     let problem = lower_solve_problem(&dae_model).expect("array residual form should lower");
 
-    assert_eq!(problem.continuous.residual.programs.len(), 2);
+    assert_eq!(problem.continuous.residual.len(), Ok(2));
     assert!(matches!(
         problem.continuous.implicit_row_targets[0],
         Some(solve::ScalarSlot::Y { index: 0, .. })
@@ -445,14 +463,14 @@ fn solve_problem_records_additive_flow_sum_row_targets() {
                 var("lineForce.frame_b.f"),
                 unary(rumoca_core::OpUnary::Minus, var("frame_b.f")),
             ),
-            rumoca_core::Span::DUMMY,
+            projection_plan_span(),
             "flow sum equation: lineForce.frame_b.f + -frame_b.f = 0",
             3,
         ));
 
     let problem = lower_solve_problem(&dae_model).expect("flow-sum targets should lower");
 
-    assert_eq!(problem.continuous.residual.programs.len(), 3);
+    assert_eq!(problem.continuous.residual.len(), Ok(3));
     assert!(matches!(
         problem.continuous.implicit_row_targets[0],
         Some(solve::ScalarSlot::Y { index: 0, .. })
@@ -484,7 +502,7 @@ fn solve_problem_skips_negated_additive_terms_when_recording_row_targets() {
             unary(rumoca_core::OpUnary::Minus, var("left")),
             var("right"),
         ),
-        rumoca_core::Span::DUMMY,
+        solve_test_span(),
         "flow sum equation: -left + right = 0",
     ));
 
@@ -509,37 +527,38 @@ fn solve_problem_skips_negated_additive_terms_when_recording_row_targets() {
 #[test]
 fn solve_problem_records_slice_assignment_row_targets() {
     let mut dae_model = dae::Dae::default();
+    let span = solve_test_span();
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("leg_v_b"),
-        array_var("leg_v_b", &[3, 4]),
+        source_array_var("leg_v_b", &[3, 4]),
     );
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("rhs"), array_var("rhs", &[3]));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("rhs"),
+        source_array_var("rhs", &[3]),
+    );
     dae_model
         .continuous
         .equations
         .push(dae::Equation::residual_array(
             binary(
                 rumoca_core::OpBinary::Sub,
-                indexed_var(
+                source_indexed_var(
                     "leg_v_b",
                     vec![
-                        rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                        rumoca_core::Subscript::generated_expr(Box::new(int_expr(2))),
+                        rumoca_core::Subscript::generated_colon(span),
+                        rumoca_core::Subscript::generated_expr(Box::new(int_expr(2)), span),
                     ],
                 ),
-                var("rhs"),
+                source_var("rhs"),
             ),
-            Default::default(),
+            solve_test_span(),
             "slice assignment target",
             3,
         ));
 
     let problem = lower_solve_problem(&dae_model).expect("slice targets should lower");
 
-    assert_eq!(problem.continuous.residual.programs.len(), 3);
+    assert_eq!(problem.continuous.residual.len(), Ok(3));
     for expected_index in [1, 5, 9] {
         assert!(matches!(
             problem.continuous.implicit_row_targets[expected_index],
@@ -561,7 +580,7 @@ fn solve_problem_reserves_late_direct_array_targets_before_fallback_rows() {
         .insert(rumoca_core::VarName::new("aux"), array_var("aux", &[3]));
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, var("h[1]"), int_expr(1)),
-        Default::default(),
+        projection_plan_span(),
         "first direct array row",
     ));
     for idx in 1..=3 {
@@ -575,7 +594,7 @@ fn solve_problem_reserves_late_direct_array_targets_before_fallback_rows() {
                 ),
                 int_expr(1),
             ),
-            Default::default(),
+            projection_plan_span(),
             "untargeted residual row",
         ));
     }
@@ -586,7 +605,7 @@ fn solve_problem_reserves_late_direct_array_targets_before_fallback_rows() {
                 var(&format!("h[{idx}]")),
                 int_expr(idx as i64),
             ),
-            Default::default(),
+            projection_plan_span(),
             "late direct array row",
         ));
     }
@@ -623,16 +642,16 @@ fn solve_problem_lowers_runtime_tail_alias_assignments_from_continuous_rows() {
         lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         },
-        span: Default::default(),
+        span: solve_test_span(),
         origin: "table output equation".to_string(),
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: var("u"),
-        span: Default::default(),
+        span: solve_test_span(),
         // MLS §8.3: connection aliases are equations. A runtime-tail
         // connector input constrained by a solver-backed output must be
         // carried as an explicit solve-IR assignment, not left stale.
@@ -671,16 +690,16 @@ fn solve_problem_excludes_runtime_tail_aliases_from_implicit_rows() {
         lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         },
-        span: Default::default(),
+        span: solve_test_span(),
         origin: "solver-backed table output".to_string(),
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: var("u"),
-        span: Default::default(),
+        span: solve_test_span(),
         // MLS Appendix B B.1: runtime-tail aliases constrain discrete/input
         // values at event/runtime boundaries; they must not replace a
         // continuous solver row when building the implicit row set.
@@ -691,9 +710,9 @@ fn solve_problem_excludes_runtime_tail_aliases_from_implicit_rows() {
         lhs: Some(rumoca_core::VarName::new("clock_y").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(2.0),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         },
-        span: Default::default(),
+        span: solve_test_span(),
         origin: "solver-backed clock output".to_string(),
         scalar_count: 1,
     });
@@ -727,7 +746,7 @@ fn solve_problem_keeps_discrete_update_aliases_in_implicit_rows() {
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("clock_y").into()),
         rhs: var("clock_c"),
-        span: Default::default(),
+        span: solve_test_span(),
         // MLS Appendix B B.1b: a discrete variable with its own event
         // assignment is known during the continuous solve. The continuous
         // alias must read it instead of overwriting the event assignment.
@@ -738,9 +757,9 @@ fn solve_problem_keeps_discrete_update_aliases_in_implicit_rows() {
         lhs: Some(rumoca_core::VarName::new("clock_c").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         },
-        span: Default::default(),
+        span: solve_test_span(),
         origin: "clock condition update".to_string(),
         scalar_count: 1,
     });
@@ -760,40 +779,41 @@ fn solve_problem_keeps_discrete_update_aliases_in_implicit_rows() {
 #[test]
 fn solve_problem_keeps_static_runtime_tail_color_aliases_out_of_refresh_rows() {
     let mut dae_model = dae::Dae::default();
+    let span = solve_test_span();
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("world.axisColor_x"),
-        array_var("world.axisColor_x", &[3]),
+        source_array_var("world.axisColor_x", &[3]),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("world.axisColor_y"),
-        array_var("world.axisColor_y", &[3]),
+        source_array_var("world.axisColor_y", &[3]),
     );
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("world.y_label.cylinders.color"),
-        array_var("world.y_label.cylinders.color", &[2, 3]),
+        source_array_var("world.y_label.cylinders.color", &[2, 3]),
     );
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("world.axisColor_x").into()),
         rhs: rumoca_core::Expression::Array {
             elements: vec![int_expr(0), int_expr(0), int_expr(255)],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: rumoca_core::Span::DUMMY,
+        span,
         origin: "static x axis color binding".to_string(),
         scalar_count: 3,
     });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("world.axisColor_y").into()),
-        rhs: var("world.axisColor_x"),
-        span: rumoca_core::Span::DUMMY,
+        rhs: source_var("world.axisColor_x"),
+        span,
         origin: "static axis color binding".to_string(),
         scalar_count: 3,
     });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("world.y_label.cylinders.color").into()),
-        rhs: var("world.axisColor_y"),
-        span: rumoca_core::Span::DUMMY,
+        rhs: source_var("world.axisColor_y"),
+        span,
         origin: "component array color binding".to_string(),
         scalar_count: 6,
     });
@@ -822,10 +842,10 @@ fn solve_problem_recovers_discrete_target_from_residual_update_row() {
                 var("z"),
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(2.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: solve_test_span(),
                 },
             ),
-            Default::default(),
+            solve_test_span(),
             // MLS §8.3.4: equation residual form `z - expr = 0` is
             // semantically equivalent to the explicit update `z = expr`.
             "residual discrete update",
@@ -858,7 +878,7 @@ fn solve_problem_accepts_lowered_pre_parameter_rows() {
     dae_model.discrete.valued_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: pre_var("aux"),
-        span: Default::default(),
+        span: solve_test_span(),
         // DAE lowering rewrites pre(aux) to a __pre__.aux parameter before
         // Solve-IR lowering. The first event-iteration pass reads the event
         // entry value; later passes read the previous fixed-point pass.
@@ -889,7 +909,7 @@ fn solve_problem_marks_clocked_target_pre_rows_as_event_entry() {
     dae_model.discrete.real_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: pre_var("u"),
-        span: Default::default(),
+        span: solve_test_span(),
         // Clocked rows read the previous clock tick value for the whole tick;
         // event iteration must not advance these pre slots within the tick.
         origin: "clocked sample hold".to_string(),
@@ -907,6 +927,7 @@ fn solve_problem_marks_clocked_target_pre_rows_as_event_entry() {
 
 #[test]
 fn solve_problem_marks_condition_memory_pre_rows_as_fixed_pre() {
+    let span = projection_plan_span();
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -924,7 +945,7 @@ fn solve_problem_marks_condition_memory_pre_rows_as_fixed_pre() {
     dae_model.conditions.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("c[1]").into()),
         rhs: var("u"),
-        span: Default::default(),
+        span,
         origin: "condition memory".to_string(),
         scalar_count: 1,
     });
@@ -935,16 +956,16 @@ fn solve_problem_marks_condition_memory_pre_rows_as_fixed_pre() {
                 pre_var("c[1]"),
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
+                    span: solve_test_span(),
                 },
             )],
             else_branch: Box::new(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(false),
-                span: rumoca_core::Span::DUMMY,
+                span: solve_test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Default::default(),
+        span,
         // MLS §8.6 / Appendix B: pre(c[i]) is relation memory from the
         // previous event-iteration pass, with the event-entry value on the
         // first pass.
@@ -983,14 +1004,14 @@ fn solve_problem_marks_sample_guarded_discrete_rows_as_fixed_pre() {
                     pre_var("z"),
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(1.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span: solve_test_span(),
                     },
                 ),
             )],
             else_branch: Box::new(pre_var("z")),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         },
-        span: Default::default(),
+        span: solve_test_span(),
         // MLS §16.5.1: sample-triggered when equations use the tick
         // left-limit value of pre(..), not an event-iteration feedback
         // value that would reapply the assignment indefinitely.
@@ -1009,6 +1030,7 @@ fn solve_problem_marks_sample_guarded_discrete_rows_as_fixed_pre() {
 
 #[test]
 fn solve_problem_marks_change_guarded_discrete_rows_as_fixed_pre() {
+    let span = projection_plan_span();
     let mut dae_model = dae::Dae::default();
     for name in ["x", "latched"] {
         dae_model
@@ -1023,9 +1045,9 @@ fn solve_problem_marks_change_guarded_discrete_rows_as_fixed_pre() {
         rhs: rumoca_core::Expression::If {
             branches: vec![(change_lowered_expr(var("x"), pre_var("x")), var("x"))],
             else_branch: Box::new(pre_var("latched")),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Default::default(),
+        span,
         // MLS §3.7.5 / §8.6: change/edge/pre in an event-triggered
         // discrete update read the event left-limit while the event
         // iteration solves current values to a fixed point.
@@ -1055,7 +1077,7 @@ fn solve_problem_lowers_change_against_left_limit_parameter() {
     dae_model.discrete.valued_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("flag").into()),
         rhs: change_lowered_expr(var("clock"), pre_var("clock")),
-        span: Default::default(),
+        span: solve_test_span(),
         // MLS §3.7.3: change(v) observes v <> pre(v), where pre(v) is the
         // event left-limit value, not the current discrete value reloaded
         // through the same slot.
@@ -1114,13 +1136,13 @@ fn solve_problem_lowers_indexed_change_against_left_limit_parameter() {
                 base: Box::new(var("clock")),
                 subscripts: vec![rumoca_core::Subscript::generated_index(
                     2,
-                    rumoca_core::Span::DUMMY,
+                    projection_plan_span(),
                 )],
-                span: rumoca_core::Span::DUMMY,
+                span: projection_plan_span(),
             },
             pre_var("clock[2]"),
         ),
-        span: Default::default(),
+        span: projection_plan_span(),
         origin: "flag = change(clock[2])".to_string(),
         scalar_count: 1,
     });
@@ -1147,6 +1169,11 @@ fn solve_problem_lowers_indexed_change_against_left_limit_parameter() {
 
 #[test]
 fn solve_problem_preserves_runtime_event_actions() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("event_action_fixture.mo"),
+        7,
+        19,
+    );
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -1154,23 +1181,23 @@ fn solve_problem_preserves_runtime_event_actions() {
         .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
     dae_model.continuous.equations.push(dae::Equation::residual(
         binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
-        rumoca_core::Span::DUMMY,
+        solve_test_span(),
         "state derivative",
     ));
 
     let true_expr = rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Boolean(true),
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
     dae_model.events.event_actions.push(dae::DaeEventAction {
         condition: true_expr.clone(),
         kind: dae::DaeEventActionKind::Assert {
             message: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::String("assert failed".to_string()),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
         },
-        span: rumoca_core::Span::DUMMY,
+        span,
         origin: "assert action".to_string(),
     });
     dae_model.events.event_actions.push(dae::DaeEventAction {
@@ -1178,10 +1205,10 @@ fn solve_problem_preserves_runtime_event_actions() {
         kind: dae::DaeEventActionKind::Terminate {
             message: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::String("finished".to_string()),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
         },
-        span: rumoca_core::Span::DUMMY,
+        span,
         origin: "terminate action".to_string(),
     });
 

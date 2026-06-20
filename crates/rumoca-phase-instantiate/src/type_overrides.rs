@@ -545,17 +545,29 @@ fn validate_component_class_redeclare_target(
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
             "redeclare target is missing source span",
-            location_to_span(&nested_class.location, &tree.source_map),
+            location_to_span(
+                &nested_class.location,
+                &tree.source_map,
+                "component class redeclare target",
+            )?,
         )));
     };
     let Some(part) = target_ref.parts.first() else {
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
             "redeclare target is missing source span",
-            location_to_span(&nested_class.location, &tree.source_map),
+            location_to_span(
+                &nested_class.location,
+                &tree.source_map,
+                "component class redeclare target",
+            )?,
         )));
     };
-    let span = location_to_span(&part.ident.location, &tree.source_map);
+    let span = location_to_span(
+        &part.ident.location,
+        &tree.source_map,
+        "component class redeclare name",
+    )?;
 
     if nested_class.is_final {
         return Err(Box::new(InstantiateError::redeclare_final(
@@ -601,7 +613,11 @@ pub(super) fn extract_component_class_overrides(
             return Err(Box::new(InstantiateError::redeclare_error(
                 target_name,
                 "resolved redeclare target has no DefId",
-                location_to_span(&nested_class.location, &tree.source_map),
+                location_to_span(
+                    &nested_class.location,
+                    &tree.source_map,
+                    "resolved component class redeclare target",
+                )?,
             )));
         };
         let resolved_def_id =
@@ -668,6 +684,14 @@ mod tests {
 
     fn make_name(text: &str) -> ast::Name {
         ast::Name::from_string(text)
+    }
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("type_overrides_test.mo"),
+            1,
+            2,
+        )
     }
 
     #[test]
@@ -768,7 +792,7 @@ mod tests {
             name: "state".to_string(),
             type_name: make_name("ThermodynamicState"),
             type_def_id: Some(base_state_id),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
 
         let overridden =
@@ -915,7 +939,7 @@ mod tests {
             name: "state".to_string(),
             type_name: make_name("Medium.BaseProperties"),
             type_def_id: None,
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
 
         let mut mod_env = ast::ModificationEnvironment::new();
@@ -989,7 +1013,7 @@ mod tests {
             name: "medium".to_string(),
             type_name,
             type_def_id: None,
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         let mut type_overrides = TypeOverrideMap::new();
         type_overrides.insert_alias(

@@ -146,7 +146,10 @@ fn eval_expr_rejects_placeholder_binary_operators() {
 fn eval_expr_rejects_missing_index_expression_in_var_ref() {
     let indexed = rumoca_core::Expression::VarRef {
         name: Reference::new("x"),
-        subscripts: vec![Subscript::generated_expr(Box::new(var("missing")))],
+        subscripts: vec![Subscript::generated_expr(
+            Box::new(var("missing")),
+            rumoca_core::Span::DUMMY,
+        )],
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -287,7 +290,10 @@ fn eval_expr_accepts_checked_index_on_matrix_literal() {
 fn eval_expr_rejects_missing_index_expression_in_index() {
     let indexed = rumoca_core::Expression::Index {
         base: Box::new(var("x")),
-        subscripts: vec![Subscript::generated_expr(Box::new(var("missing")))],
+        subscripts: vec![Subscript::generated_expr(
+            Box::new(var("missing")),
+            rumoca_core::Span::DUMMY,
+        )],
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -512,9 +518,16 @@ fn eval_expr_rejects_out_of_range_external_table_column() {
 #[test]
 fn eval_expr_rejects_missing_required_user_function_input() {
     let mut env = VarEnv::<f64>::new();
-    let mut function = Function::new("Pkg.required", Default::default());
-    function.add_input(FunctionParam::new("u", "Real"));
-    function.add_output(FunctionParam::new("y", "Real").with_default(var("u")));
+    let mut function = Function::new("Pkg.required", rumoca_core::Span::DUMMY);
+    function.add_input(FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("u")),
+    );
     function.body = vec![Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -533,9 +546,16 @@ fn eval_expr_rejects_missing_required_user_function_input() {
 #[test]
 fn eval_expr_accepts_supplied_required_user_function_input() {
     let mut env = VarEnv::<f64>::new();
-    let mut function = Function::new("Pkg.required", Default::default());
-    function.add_input(FunctionParam::new("u", "Real"));
-    function.add_output(FunctionParam::new("y", "Real").with_default(var("u")));
+    let mut function = Function::new("Pkg.required", rumoca_core::Span::DUMMY);
+    function.add_input(FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("u")),
+    );
     function.body = vec![Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -549,9 +569,16 @@ fn eval_expr_accepts_supplied_required_user_function_input() {
 #[test]
 fn eval_expr_rejects_unknown_named_user_function_input() {
     let mut env = VarEnv::<f64>::new();
-    let mut function = Function::new("Pkg.required", Default::default());
-    function.add_input(FunctionParam::new("u", "Real"));
-    function.add_output(FunctionParam::new("y", "Real").with_default(var("u")));
+    let mut function = Function::new("Pkg.required", rumoca_core::Span::DUMMY);
+    function.add_input(FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("u")),
+    );
     function.body = vec![Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -570,10 +597,20 @@ fn eval_expr_rejects_unknown_named_user_function_input() {
 #[test]
 fn eval_expr_rejects_missing_binding_in_user_function_default_input() {
     let mut env = VarEnv::<f64>::new();
-    let mut function = Function::new("Pkg.defaults", Default::default());
-    function.add_input(FunctionParam::new("a", "Real"));
-    function.add_input(FunctionParam::new("b", "Real").with_default(var("missing")));
-    function.add_output(FunctionParam::new("y", "Real").with_default(var("b")));
+    let mut function = Function::new("Pkg.defaults", rumoca_core::Span::DUMMY);
+    function.add_input(FunctionParam::new(
+        "a",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.add_input(
+        FunctionParam::new("b", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("missing")),
+    );
+    function.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("b")),
+    );
     function.body = vec![Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -592,14 +629,20 @@ fn eval_expr_rejects_missing_binding_in_user_function_default_input() {
 #[test]
 fn eval_expr_accepts_user_function_default_input_referencing_prior_input() {
     let mut env = VarEnv::<f64>::new();
-    let mut function = Function::new("Pkg.defaults", Default::default());
-    function.add_input(FunctionParam::new("a", "Real"));
-    function.add_input(FunctionParam::new("b", "Real").with_default(binop(
-        OpBinary::Add,
-        var("a"),
-        lit(1.5),
-    )));
-    function.add_output(FunctionParam::new("y", "Real").with_default(var("b")));
+    let mut function = Function::new("Pkg.defaults", rumoca_core::Span::DUMMY);
+    function.add_input(FunctionParam::new(
+        "a",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.add_input(
+        FunctionParam::new("b", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(binop(OpBinary::Add, var("a"), lit(1.5))),
+    );
+    function.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("b")),
+    );
     function.body = vec![Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -924,14 +967,14 @@ fn eval_expr_accepts_valid_external_table_lookup_column() {
 
 #[test]
 fn fallible_external_table_helpers_reject_missing_table() {
-    assert_eq!(try_eval_table_bound_value_in(42.0, true, &[]), None);
-    assert_eq!(try_eval_table_lookup_value_in(42.0, 1.0, 1.0, &[]), None);
+    assert_eq!(eval_table_bound_value_opt_in(42.0, true, &[]), None);
+    assert_eq!(eval_table_lookup_value_opt_in(42.0, 1.0, 1.0, &[]), None);
     assert_eq!(
-        try_eval_table_lookup_slope_value_in(42.0, 1.0, 1.0, &[]),
+        eval_table_lookup_slope_value_opt_in(42.0, 1.0, 1.0, &[]),
         None
     );
     assert_eq!(
-        try_eval_time_table_next_event_value_in(42.0, 0.0, &[]),
+        eval_time_table_next_event_value_opt_in(42.0, 0.0, &[]),
         None
     );
 }
@@ -954,11 +997,11 @@ fn fallible_external_table_helpers_reject_invalid_lookup_column() {
     let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
 
     assert_eq!(
-        try_eval_table_lookup_value_in(table_id, 2.0, 1.0, &tables),
+        eval_table_lookup_value_opt_in(table_id, 2.0, 1.0, &tables),
         None
     );
     assert_eq!(
-        try_eval_table_lookup_slope_value_in(table_id, 1.5, 1.0, &tables),
+        eval_table_lookup_slope_value_opt_in(table_id, 1.5, 1.0, &tables),
         None
     );
 }
@@ -981,15 +1024,15 @@ fn fallible_external_table_helpers_accept_valid_registered_table() {
     let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
 
     assert_eq!(
-        try_eval_table_bound_value_in(table_id, false, &tables),
+        eval_table_bound_value_opt_in(table_id, false, &tables),
         Some(0.0)
     );
     assert_eq!(
-        try_eval_table_lookup_value_in(table_id, 1.0, 1.0, &tables),
+        eval_table_lookup_value_opt_in(table_id, 1.0, 1.0, &tables),
         Some(12.0)
     );
     assert_eq!(
-        try_eval_table_lookup_slope_value_in(table_id, 1.0, 1.0, &tables),
+        eval_table_lookup_slope_value_opt_in(table_id, 1.0, 1.0, &tables),
         Some(2.0)
     );
 }
@@ -1011,7 +1054,7 @@ fn external_table_constructor_accepts_named_table_arguments() {
     let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
 
     assert_eq!(
-        try_eval_table_lookup_value_in(table_id, 1.0, 2.0, &tables),
+        eval_table_lookup_value_opt_in(table_id, 1.0, 2.0, &tables),
         Some(14.0)
     );
 }

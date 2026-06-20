@@ -218,19 +218,68 @@ pub(super) fn matrix_linear_index(row: usize, col: usize, cols: usize) -> usize 
     (row - 1) * cols + col
 }
 
-pub(super) fn linear_subscripts_for_dims(dims: &[i64], linear_index: usize) -> Vec<Subscript> {
+pub(super) fn linear_subscripts_for_dims_with_span(
+    dims: &[i64],
+    linear_index: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<Subscript>, StructuralError> {
     if dims.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut remainder = linear_index.saturating_sub(1);
     let mut indices = vec![1usize; dims.len()];
     for dim_idx in (0..dims.len()).rev() {
-        let dim = dims[dim_idx].max(1) as usize;
+        let dim = usize::try_from(dims[dim_idx].max(1)).map_err(|_| {
+            structural_contract_violation(
+                format!(
+                    "structural dimension {} exceeds platform index range",
+                    dims[dim_idx]
+                ),
+                span,
+            )
+        })?;
         indices[dim_idx] = remainder % dim + 1;
         remainder /= dim;
     }
     indices
         .into_iter()
-        .map(|idx| Subscript::generated_index(idx as i64, rumoca_core::Span::DUMMY))
+        .map(|idx| generated_index_subscript(idx, span, "structural linear subscript"))
         .collect()
+}
+
+pub(super) fn generated_index_subscript(
+    index: usize,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<Subscript, StructuralError> {
+    let index = i64::try_from(index).map_err(|_| {
+        structural_contract_violation(format!("{context} {index} exceeds i64 range"), span)
+    })?;
+    Subscript::try_generated_index(index, span, context)
+        .map_err(|err| structural_contract_violation(err.to_string(), span))
+}
+
+pub(super) fn positive_generated_index_subscript(
+    value: i64,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<Subscript, StructuralError> {
+    let Some(index) = usize::try_from(value).ok().filter(|index| *index > 0) else {
+        return Err(structural_contract_violation(
+            format!("{context} {value} is not a positive index"),
+            span,
+        ));
+    };
+    generated_index_subscript(index, span, context)
+}
+
+pub(super) fn structural_contract_violation(
+    reason: String,
+    span: rumoca_core::Span,
+) -> StructuralError {
+    if span.is_dummy() {
+        StructuralError::UnspannedContractViolation { reason }
+    } else {
+        StructuralError::ContractViolation { reason, span }
+    }
 }

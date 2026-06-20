@@ -77,7 +77,10 @@ pub fn link_libdevice(
     libdevice_bc: &Path,
     entry_name: &str,
 ) -> Result<PathBuf, MlirError> {
-    let dir = ll_path.parent().unwrap();
+    let dir = ll_path.parent().ok_or_else(|| MlirError::InvalidInput {
+        operation: "link_libdevice",
+        message: format!("LLVM IR path has no parent: {}", ll_path.display()),
+    })?;
     let linked_bc = dir.join("model_ld.bc");
     let opt_bc = dir.join("model_opt.bc");
 

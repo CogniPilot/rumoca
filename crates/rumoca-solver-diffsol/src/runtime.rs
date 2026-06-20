@@ -432,7 +432,7 @@ fn initialize_no_state_runtime(
     let mut current_y = model.initial_y.clone();
     let current_t = opts.t_start;
     let tol = opts.atol.max(1.0e-10);
-    let runtime = SolveRuntime::new(model);
+    let runtime = SolveRuntime::new(model)?;
     let equilibrium_model = OdeModel::new(model)?;
     set_initial_event_flag(model, &mut params, true);
     settle_algebraics_and_relation_memory(

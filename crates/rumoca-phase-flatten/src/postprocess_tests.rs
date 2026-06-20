@@ -1,6 +1,14 @@
 use super::*;
 use rumoca_core::Span;
 
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("postprocess_tests.mo"),
+        1,
+        2,
+    )
+}
+
 fn simple_assignment(value: flat::Expression) -> flat::Statement {
     flat::Statement::Assignment {
         comp: flat::ComponentReference {
@@ -55,7 +63,7 @@ fn canonicalize_varrefs_rewrites_alias_paths_to_existing_flat_vars() {
 fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.f", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("u", "Real").with_default(
+    function.add_input(flat::FunctionParam::new("u", "Real", test_span()).with_default(
         flat::Expression::VarRef {
             name: flat::VarName::new("Pkg.Constants.k"),
             subscripts: vec![],
@@ -75,7 +83,7 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
         flat::Expression::Literal(flat::Literal::Real(42.0)),
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -98,7 +106,7 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.g", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("k", "Real"));
+    function.add_input(flat::FunctionParam::new("k", "Real", test_span()));
     function
         .body
         .push(simple_assignment(flat::Expression::VarRef {
@@ -113,7 +121,7 @@ fn does_not_substitute_function_local_names() {
         flat::Expression::Literal(flat::Literal::Real(7.0)),
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -132,7 +140,7 @@ fn does_not_substitute_function_local_names() {
 fn does_not_substitute_indexed_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.g_indexed", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("table", "Real").with_dims(vec![7, 2]));
+    function.add_input(flat::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]));
     function
         .body
         .push(simple_assignment(flat::Expression::VarRef {
@@ -160,7 +168,7 @@ fn does_not_substitute_indexed_function_local_names() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -202,7 +210,7 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -238,7 +246,7 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
 fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.inline_local", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("table", "Real").with_dims(vec![7, 2]));
+    function.add_input(flat::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]));
     function
         .body
         .push(simple_assignment(flat::Expression::VarRef {
@@ -260,7 +268,7 @@ fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -299,7 +307,7 @@ fn substitutes_unqualified_symbol_from_unique_scoped_constant_suffix() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
     assert!(matches!(
         model.equations[0].residual,
         flat::Expression::Array { ref elements, is_matrix }
@@ -339,7 +347,7 @@ fn does_not_substitute_unqualified_symbol_when_scoped_suffix_is_ambiguous() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
     assert!(matches!(
         model.equations[0].residual,
         flat::Expression::VarRef { ref name, ref subscripts }
@@ -365,7 +373,7 @@ fn substitutes_case_variant_symbol_when_unique_context_key_exists() {
     ctx.real_parameter_values
         .insert("tank.Medium.cv_const".to_string(), 4184.0);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
     assert!(matches!(
         model.equations[0].residual,
         flat::Expression::Literal(flat::Literal::Real(v)) if (v - 4184.0).abs() < f64::EPSILON
@@ -392,7 +400,7 @@ fn does_not_substitute_case_variant_symbol_when_ambiguous() {
     ctx.real_parameter_values
         .insert("tank.medium.Cv_const".to_string(), 1234.0);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
     assert!(matches!(
         model.equations[0].residual,
         flat::Expression::VarRef { ref name, ref subscripts }
@@ -425,7 +433,7 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
         false,
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions

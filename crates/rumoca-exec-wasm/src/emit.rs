@@ -78,8 +78,8 @@ struct ImportCatalog {
 }
 
 pub(super) fn emit_residual_module(rows: &[Vec<LinearOp>]) -> Result<Vec<u8>, String> {
-    let imports = collect_imports(rows);
-    let max_registers = max_registers(rows);
+    let imports = collect_imports(rows)?;
+    let max_registers = max_registers(rows)?;
 
     let mut module = Module::new();
     let type_ids = add_type_section(&mut module);
@@ -179,7 +179,7 @@ fn add_code_section(
     imports: &ImportCatalog,
 ) -> Result<(), String> {
     let mut code = CodeSection::new();
-    let mut function = Function::new(locals_for_register_count(max_registers));
+    let mut function = Function::new(locals_for_register_count(max_registers)?);
     let mut emitter = BodyEmitter::new(imports, &mut function);
     emitter.emit_rows(rows)?;
     function.instruction(&Instruction::End);
@@ -188,15 +188,25 @@ fn add_code_section(
     Ok(())
 }
 
-fn locals_for_register_count(max_registers: usize) -> Vec<(u32, ValType)> {
+fn locals_for_register_count(max_registers: usize) -> Result<Vec<(u32, ValType)>, String> {
     if max_registers == 0 {
-        Vec::new()
-    } else {
-        vec![(max_registers as u32, ValType::F64)]
+        return Ok(Vec::new());
     }
+    let local_count = u32::try_from(max_registers)
+        .map_err(|_| "WASM local register count exceeds u32".to_string())?;
+    local_count
+        .checked_sub(1)
+        .and_then(|last_reg| LOCAL_BASE.checked_add(last_reg))
+        .ok_or_else(|| "WASM local register index overflow".to_string())?;
+    let mut locals = Vec::new();
+    locals
+        .try_reserve(1)
+        .map_err(|_| "WASM local declaration allocation overflow".to_string())?;
+    locals.push((local_count, ValType::F64));
+    Ok(locals)
 }
 
-fn collect_imports(rows: &[Vec<LinearOp>]) -> Vec<MathImport> {
+fn collect_imports(rows: &[Vec<LinearOp>]) -> Result<Vec<MathImport>, String> {
     let mut imports = BTreeSet::new();
     for row in rows {
         for op in row {
@@ -208,7 +218,14 @@ fn collect_imports(rows: &[Vec<LinearOp>]) -> Vec<MathImport> {
             }
         }
     }
-    imports.into_iter().collect()
+    let mut ordered = Vec::new();
+    ordered
+        .try_reserve(imports.len())
+        .map_err(|_| "WASM import list allocation overflow".to_string())?;
+    for import in imports {
+        ordered.push(import);
+    }
+    Ok(ordered)
 }
 
 fn unary_import(op: &LinearOp) -> Option<MathImport> {
@@ -272,30 +289,36 @@ fn binary_import(op: &LinearOp) -> Option<MathImport> {
     }
 }
 
-fn max_registers(rows: &[Vec<LinearOp>]) -> usize {
-    rows.iter()
-        .flat_map(|row| row.iter())
-        .map(max_register_for_op)
-        .max()
-        .map_or(0, |reg| reg.saturating_add(1))
+fn max_registers(rows: &[Vec<LinearOp>]) -> Result<usize, String> {
+    let mut max_reg = None;
+    for op in rows.iter().flat_map(|row| row.iter()) {
+        let op_max = max_register_for_op(op)?;
+        max_reg = Some(max_reg.map_or(op_max, |reg: usize| reg.max(op_max)));
+    }
+    max_reg
+        .map(|reg| {
+            reg.checked_add(1)
+                .ok_or_else(|| "WASM register count overflow".to_string())
+        })
+        .unwrap_or(Ok(0))
 }
 
-fn max_register_for_op(op: &LinearOp) -> usize {
+fn max_register_for_op(op: &LinearOp) -> Result<usize, String> {
     match *op {
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
         | LinearOp::LoadY { dst, .. }
         | LinearOp::LoadP { dst, .. }
         | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::TableBounds { dst, .. } => dst as usize,
+        | LinearOp::TableBounds { dst, .. } => Ok(dst as usize),
         LinearOp::LoadIndexedP { dst, index, .. }
-        | LinearOp::LoadIndexedSeed { dst, index, .. } => dst.max(index) as usize,
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(dst.max(index) as usize),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
             global_seed,
             ..
-        } => dst.max(local_seed).max(global_seed) as usize,
+        } => Ok(dst.max(local_seed).max(global_seed) as usize),
         LinearOp::RandomResult {
             dst,
             state_start,
@@ -307,55 +330,77 @@ fn max_register_for_op(op: &LinearOp) -> usize {
             state_start,
             state_len,
             ..
-        } => dst.max(state_start.saturating_add(state_len.saturating_sub(1) as u32)) as usize,
-        LinearOp::ImpureRandomInit { dst, seed } => dst.max(seed) as usize,
-        LinearOp::ImpureRandom { dst, id, .. } => dst.max(id) as usize,
+        } => Ok(dst.max(checked_range_last_reg(
+            state_start,
+            state_len,
+            "random state",
+        )?) as usize),
+        LinearOp::ImpureRandomInit { dst, seed } => Ok(dst.max(seed) as usize),
+        LinearOp::ImpureRandom { dst, id, .. } => Ok(dst.max(id) as usize),
         LinearOp::ImpureRandomInteger {
             dst,
             id,
             imin,
             imax,
             ..
-        } => dst.max(id).max(imin).max(imax) as usize,
-        LinearOp::Move { dst, src } => dst.max(src) as usize,
+        } => Ok(dst.max(id).max(imin).max(imax) as usize),
+        LinearOp::Move { dst, src } => Ok(dst.max(src) as usize),
         LinearOp::LinearSolveComponent {
             dst,
             matrix_start,
             rhs_start,
             n,
             ..
-        } => dst
-            .max(matrix_start.saturating_add((n.saturating_mul(n)).saturating_sub(1) as u32))
-            .max(rhs_start.saturating_add(n.saturating_sub(1) as u32)) as usize,
+        } => Ok(dst
+            .max(checked_range_last_reg(
+                matrix_start,
+                checked_square_len(n, "linear solve matrix")?,
+                "linear solve matrix",
+            )?)
+            .max(checked_range_last_reg(rhs_start, n, "linear solve rhs")?)
+            as usize),
         LinearOp::TableLookup {
             dst,
             table_id,
             column,
             input,
-        } => dst.max(table_id).max(column).max(input) as usize,
+        } => Ok(dst.max(table_id).max(column).max(input) as usize),
         LinearOp::TableLookupSlope {
             dst,
             table_id,
             column,
             input,
-        } => dst.max(table_id).max(column).max(input) as usize,
+        } => Ok(dst.max(table_id).max(column).max(input) as usize),
         LinearOp::TableNextEvent {
             dst,
             table_id,
             time,
-        } => dst.max(table_id).max(time) as usize,
-        LinearOp::Unary { dst, arg, .. } => (dst.max(arg)) as usize,
+        } => Ok(dst.max(table_id).max(time) as usize),
+        LinearOp::Unary { dst, arg, .. } => Ok((dst.max(arg)) as usize),
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            dst.max(lhs).max(rhs) as usize
+            Ok(dst.max(lhs).max(rhs) as usize)
         }
         LinearOp::Select {
             dst,
             cond,
             if_true,
             if_false,
-        } => dst.max(cond).max(if_true).max(if_false) as usize,
-        LinearOp::StoreOutput { src } => src as usize,
+        } => Ok(dst.max(cond).max(if_true).max(if_false) as usize),
+        LinearOp::StoreOutput { src } => Ok(src as usize),
     }
+}
+
+fn checked_square_len(n: usize, kind: &str) -> Result<usize, String> {
+    n.checked_mul(n)
+        .ok_or_else(|| format!("{kind} size overflow"))
+}
+
+fn checked_range_last_reg(start: Reg, count: usize, kind: &str) -> Result<Reg, String> {
+    let offset = if count == 0 { 0 } else { count - 1 };
+    let offset = Reg::try_from(offset).map_err(|_| format!("{kind} register range overflow"))?;
+    start
+        .checked_add(offset)
+        .ok_or_else(|| format!("{kind} register range overflow"))
 }
 
 struct BodyEmitter<'a> {
@@ -386,26 +431,26 @@ impl<'a> BodyEmitter<'a> {
         match op {
             LinearOp::Const { dst, value } => {
                 self.push(Instruction::F64Const(value.into()));
-                self.set_reg(dst);
+                self.set_reg(dst)?;
             }
             LinearOp::LoadTime { dst } => {
                 self.push(Instruction::LocalGet(TIME_PARAM));
-                self.set_reg(dst);
+                self.set_reg(dst)?;
             }
             LinearOp::LoadY { dst, index } => {
                 self.push(Instruction::LocalGet(Y_PTR_PARAM));
                 self.push(Instruction::F64Load(memarg_for_index(index)?));
-                self.set_reg(dst);
+                self.set_reg(dst)?;
             }
             LinearOp::LoadP { dst, index } => {
                 self.push(Instruction::LocalGet(P_PTR_PARAM));
                 self.push(Instruction::F64Load(memarg_for_index(index)?));
-                self.set_reg(dst);
+                self.set_reg(dst)?;
             }
             LinearOp::LoadSeed { dst, index } => {
                 self.push(Instruction::LocalGet(SEED_PTR_PARAM));
                 self.push(Instruction::F64Load(memarg_for_index(index)?));
-                self.set_reg(dst);
+                self.set_reg(dst)?;
             }
             LinearOp::LoadIndexedP {
                 dst,
@@ -420,8 +465,8 @@ impl<'a> BodyEmitter<'a> {
                 index,
             } => self.emit_indexed_load(dst, base, count, index, SEED_PTR_PARAM)?,
             LinearOp::Move { dst, src } => {
-                self.push_reg(src);
-                self.set_reg(dst);
+                self.push_reg(src)?;
+                self.set_reg(dst)?;
             }
             LinearOp::LinearSolveComponent { .. } => {
                 return Err("WASM backend does not yet support dense linear solve ops".to_string());
@@ -444,13 +489,13 @@ impl<'a> BodyEmitter<'a> {
             }
             LinearOp::Unary { dst, op, arg } => self.emit_unary(dst, op, arg)?,
             LinearOp::Binary { dst, op, lhs, rhs } => self.emit_binary(dst, op, lhs, rhs)?,
-            LinearOp::Compare { dst, op, lhs, rhs } => self.emit_compare(dst, op, lhs, rhs),
+            LinearOp::Compare { dst, op, lhs, rhs } => self.emit_compare(dst, op, lhs, rhs)?,
             LinearOp::Select {
                 dst,
                 cond,
                 if_true,
                 if_false,
-            } => self.emit_select(dst, cond, if_true, if_false),
+            } => self.emit_select(dst, cond, if_true, if_false)?,
             LinearOp::StoreOutput { src } => self.emit_store_output(src)?,
         }
         Ok(())
@@ -468,8 +513,8 @@ impl<'a> BodyEmitter<'a> {
         index: Reg,
         ptr_param: u32,
     ) -> Result<(), String> {
-        let last = count.saturating_sub(1) as f64;
-        self.push_reg(index);
+        let last = if count == 0 { 0.0 } else { (count - 1) as f64 };
+        self.push_reg(index)?;
         self.push(Instruction::F64Nearest);
         self.push(Instruction::F64Const(0.0f64.into()));
         self.push(Instruction::F64Max);
@@ -481,36 +526,36 @@ impl<'a> BodyEmitter<'a> {
         self.push(Instruction::LocalGet(ptr_param));
         self.push(Instruction::I32Add);
         self.push(Instruction::F64Load(memarg_for_index(base)?));
-        self.set_reg(dst);
+        self.set_reg(dst)?;
         Ok(())
     }
 
     fn emit_unary(&mut self, dst: Reg, op: UnaryOp, arg: Reg) -> Result<(), String> {
         match op {
             UnaryOp::Not => {
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.push(Instruction::F64Const(0.0f64.into()));
                 self.push(Instruction::F64Eq);
                 self.push(Instruction::F64ConvertI32S);
             }
             UnaryOp::Neg => {
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.push(Instruction::F64Neg);
             }
             UnaryOp::Sqrt => {
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.push(Instruction::F64Sqrt);
             }
             UnaryOp::Floor => {
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.push(Instruction::F64Floor);
             }
             UnaryOp::Ceil => {
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.push(Instruction::F64Ceil);
             }
             UnaryOp::Trunc => {
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.push(Instruction::F64Trunc);
             }
             UnaryOp::Abs
@@ -529,47 +574,48 @@ impl<'a> BodyEmitter<'a> {
             | UnaryOp::Log10 => {
                 let import = unary_import(&LinearOp::Unary { dst, op, arg })
                     .ok_or_else(|| format!("unsupported unary op import mapping: {op:?}"))?;
-                self.push_reg(arg);
+                self.push_reg(arg)?;
                 self.call_import(import)?;
             }
         }
-        self.set_reg(dst);
+        self.set_reg(dst)?;
         Ok(())
     }
 
     fn emit_binary(&mut self, dst: Reg, op: BinaryOp, lhs: Reg, rhs: Reg) -> Result<(), String> {
         match op {
-            BinaryOp::Add => self.emit_arith2(lhs, rhs, Instruction::F64Add),
-            BinaryOp::Sub => self.emit_arith2(lhs, rhs, Instruction::F64Sub),
-            BinaryOp::Mul => self.emit_arith2(lhs, rhs, Instruction::F64Mul),
-            BinaryOp::Div => self.emit_arith2(lhs, rhs, Instruction::F64Div),
-            BinaryOp::Min => self.emit_arith2(lhs, rhs, Instruction::F64Min),
-            BinaryOp::Max => self.emit_arith2(lhs, rhs, Instruction::F64Max),
-            BinaryOp::And => self.emit_logic2(lhs, rhs, true),
-            BinaryOp::Or => self.emit_logic2(lhs, rhs, false),
+            BinaryOp::Add => self.emit_arith2(lhs, rhs, Instruction::F64Add)?,
+            BinaryOp::Sub => self.emit_arith2(lhs, rhs, Instruction::F64Sub)?,
+            BinaryOp::Mul => self.emit_arith2(lhs, rhs, Instruction::F64Mul)?,
+            BinaryOp::Div => self.emit_arith2(lhs, rhs, Instruction::F64Div)?,
+            BinaryOp::Min => self.emit_arith2(lhs, rhs, Instruction::F64Min)?,
+            BinaryOp::Max => self.emit_arith2(lhs, rhs, Instruction::F64Max)?,
+            BinaryOp::And => self.emit_logic2(lhs, rhs, true)?,
+            BinaryOp::Or => self.emit_logic2(lhs, rhs, false)?,
             BinaryOp::Pow | BinaryOp::Atan2 => {
                 let import = binary_import(&LinearOp::Binary { dst, op, lhs, rhs })
                     .ok_or_else(|| format!("unsupported binary op import mapping: {op:?}"))?;
-                self.push_reg(lhs);
-                self.push_reg(rhs);
+                self.push_reg(lhs)?;
+                self.push_reg(rhs)?;
                 self.call_import(import)?;
             }
         }
-        self.set_reg(dst);
+        self.set_reg(dst)?;
         Ok(())
     }
 
-    fn emit_arith2(&mut self, lhs: Reg, rhs: Reg, op: Instruction<'static>) {
-        self.push_reg(lhs);
-        self.push_reg(rhs);
+    fn emit_arith2(&mut self, lhs: Reg, rhs: Reg, op: Instruction<'static>) -> Result<(), String> {
+        self.push_reg(lhs)?;
+        self.push_reg(rhs)?;
         self.push(op);
+        Ok(())
     }
 
-    fn emit_logic2(&mut self, lhs: Reg, rhs: Reg, is_and: bool) {
-        self.push_reg(lhs);
+    fn emit_logic2(&mut self, lhs: Reg, rhs: Reg, is_and: bool) -> Result<(), String> {
+        self.push_reg(lhs)?;
         self.push(Instruction::F64Const(0.0f64.into()));
         self.push(Instruction::F64Ne);
-        self.push_reg(rhs);
+        self.push_reg(rhs)?;
         self.push(Instruction::F64Const(0.0f64.into()));
         self.push(Instruction::F64Ne);
         if is_and {
@@ -578,11 +624,12 @@ impl<'a> BodyEmitter<'a> {
             self.push(Instruction::I32Or);
         }
         self.push(Instruction::F64ConvertI32S);
+        Ok(())
     }
 
-    fn emit_compare(&mut self, dst: Reg, op: CompareOp, lhs: Reg, rhs: Reg) {
-        self.push_reg(lhs);
-        self.push_reg(rhs);
+    fn emit_compare(&mut self, dst: Reg, op: CompareOp, lhs: Reg, rhs: Reg) -> Result<(), String> {
+        self.push_reg(lhs)?;
+        self.push_reg(rhs)?;
         self.push(match op {
             CompareOp::Lt => Instruction::F64Lt,
             CompareOp::Le => Instruction::F64Le,
@@ -592,33 +639,45 @@ impl<'a> BodyEmitter<'a> {
             CompareOp::Ne => Instruction::F64Ne,
         });
         self.push(Instruction::F64ConvertI32S);
-        self.set_reg(dst);
+        self.set_reg(dst)?;
+        Ok(())
     }
 
-    fn emit_select(&mut self, dst: Reg, cond: Reg, if_true: Reg, if_false: Reg) {
-        self.push_reg(cond);
+    fn emit_select(
+        &mut self,
+        dst: Reg,
+        cond: Reg,
+        if_true: Reg,
+        if_false: Reg,
+    ) -> Result<(), String> {
+        self.push_reg(cond)?;
         self.push(Instruction::F64Const(0.0f64.into()));
         self.push(Instruction::F64Ne);
         self.push(Instruction::If(BlockType::Result(ValType::F64)));
-        self.push_reg(if_true);
+        self.push_reg(if_true)?;
         self.push(Instruction::Else);
-        self.push_reg(if_false);
+        self.push_reg(if_false)?;
         self.push(Instruction::End);
-        self.set_reg(dst);
+        self.set_reg(dst)?;
+        Ok(())
     }
 
     fn emit_store_output(&mut self, src: Reg) -> Result<(), String> {
+        let offset = self
+            .next_output_slot
+            .checked_mul(8)
+            .ok_or_else(|| "output slot byte offset overflow".to_string())?;
         self.push(Instruction::LocalGet(OUT_PTR_PARAM));
-        self.push_reg(src);
+        self.push_reg(src)?;
         self.push(Instruction::F64Store(MemArg {
-            offset: self.next_output_slot.saturating_mul(8),
+            offset,
             align: 3,
             memory_index: 0,
         }));
-        self.next_output_slot = self.next_output_slot.saturating_add(1);
-        if self.next_output_slot == u64::MAX {
-            return Err("output slot overflow".to_string());
-        }
+        self.next_output_slot = self
+            .next_output_slot
+            .checked_add(1)
+            .ok_or_else(|| "output slot overflow".to_string())?;
         Ok(())
     }
 
@@ -637,12 +696,14 @@ impl<'a> BodyEmitter<'a> {
         self.function.instruction(&instruction);
     }
 
-    fn push_reg(&mut self, reg: Reg) {
-        self.push(Instruction::LocalGet(local_for_reg(reg)));
+    fn push_reg(&mut self, reg: Reg) -> Result<(), String> {
+        self.push(Instruction::LocalGet(local_for_reg(reg)?));
+        Ok(())
     }
 
-    fn set_reg(&mut self, reg: Reg) {
-        self.push(Instruction::LocalSet(local_for_reg(reg)));
+    fn set_reg(&mut self, reg: Reg) -> Result<(), String> {
+        self.push(Instruction::LocalSet(local_for_reg(reg)?));
+        Ok(())
     }
 }
 
@@ -657,6 +718,8 @@ fn memarg_for_index(index: usize) -> Result<MemArg, String> {
     })
 }
 
-fn local_for_reg(reg: Reg) -> u32 {
-    LOCAL_BASE.saturating_add(reg)
+fn local_for_reg(reg: Reg) -> Result<u32, String> {
+    LOCAL_BASE
+        .checked_add(reg)
+        .ok_or_else(|| format!("WASM local register index overflow for r{reg}"))
 }

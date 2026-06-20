@@ -1,5 +1,10 @@
-use std::{cell::RefCell, collections::HashMap, time::Instant};
+// SPEC_0021 file-size exception: RK45 currently combines stepping, event
+// boundary handling, and output sampling. split plan: move event handling and
+// dense-output/sample scheduling into focused solver modules.
 
+use std::{cell::RefCell, time::Instant};
+
+use indexmap::IndexMap;
 use rumoca_eval_solve::{EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
@@ -45,6 +50,15 @@ pub enum SimError {
     #[error("solve-IR evaluation failed: {0}")]
     SolveIr(String),
 
+    #[error("rk45 runtime contract violation: {reason}")]
+    RuntimeContract { reason: String },
+
+    #[error("{context} allocation failed for {entries} entries")]
+    Allocation {
+        context: &'static str,
+        entries: usize,
+    },
+
     #[error("Modelica assert failed at t={time:.9}: {message}")]
     AssertionFailed { time: f64, message: String },
 
@@ -60,17 +74,23 @@ impl From<TimeoutExceeded> for SimError {
     }
 }
 
+impl From<rumoca_eval_solve::EvalSolveError> for SimError {
+    fn from(value: rumoca_eval_solve::EvalSolveError) -> Self {
+        Self::SolveIr(value.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StepperState {
     pub time: f64,
-    pub values: HashMap<String, f64>,
+    pub values: IndexMap<String, f64>,
 }
 
 pub struct SimStepper {
     runtime: &'static SolveRuntime,
     backend: Rk45Backend<'static>,
     reset_snapshot: Rk45ResetSnapshot,
-    input_values: HashMap<String, f64>,
+    input_values: IndexMap<String, f64>,
 }
 
 impl SimStepper {
@@ -80,7 +100,7 @@ impl SimStepper {
             requested => return Err(SimError::UnsupportedSolverMode { requested }),
         }
         validate_explicit_solve_model(model)?;
-        let runtime = Box::leak(Box::new(SolveRuntime::new(model)));
+        let runtime = Box::leak(Box::new(SolveRuntime::new(model)?));
         let mut backend = Rk45Backend::new(runtime, &opts)?;
         backend.init()?;
         let reset_snapshot = backend.reset_snapshot();
@@ -88,7 +108,7 @@ impl SimStepper {
             runtime,
             backend,
             reset_snapshot,
-            input_values: HashMap::new(),
+            input_values: IndexMap::new(),
         })
     }
 
@@ -136,54 +156,49 @@ impl SimStepper {
         self.backend.time
     }
 
-    pub fn get(&self, name: &str) -> Option<f64> {
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
-            return Some(value);
+            return Ok(Some(value));
         }
-        let solver_y = self.backend.current_solver_y().ok()?;
-        self.runtime
-            .visible_values(&solver_y, &self.backend.params, self.backend.time)
-            .ok()
-            .and_then(|values| {
-                self.runtime
-                    .model
-                    .visible_names
-                    .iter()
-                    .position(|visible| visible == name)
-                    .and_then(|idx| values.get(idx).copied())
-            })
+        let solver_y = self.backend.current_solver_y()?;
+        let Some(idx) = self
+            .runtime
+            .model
+            .visible_names
+            .iter()
+            .position(|visible| visible == name)
+        else {
+            return Ok(None);
+        };
+        let values =
+            self.runtime
+                .visible_values(&solver_y, &self.backend.params, self.backend.time)?;
+        values.get(idx).copied().map(Some).ok_or_else(|| {
+            SimError::RuntimeContract {
+                reason: format!(
+                    "visible value '{name}' resolved to index {idx}, but runtime returned {} values",
+                    values.len()
+                ),
+            }
+        })
     }
 
-    pub fn state(&self) -> StepperState {
-        let values = self.stepper_visible_values();
-        StepperState {
+    pub fn state(&self) -> Result<StepperState, SimError> {
+        Ok(StepperState {
             time: self.time(),
-            values,
-        }
+            values: self.stepper_visible_values()?,
+        })
     }
 
-    pub fn values_for(&self, names: &[String]) -> HashMap<String, f64> {
-        let mut values = self
-            .backend
-            .current_solver_y()
-            .ok()
-            .and_then(|solver_y| {
-                self.runtime
-                    .visible_values_for_names(
-                        &solver_y,
-                        &self.backend.params,
-                        self.backend.time,
-                        names,
-                    )
-                    .ok()
-            })
-            .unwrap_or_default();
+    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        let visible_values = self.stepper_visible_values()?;
+        let mut values = IndexMap::with_capacity(names.len());
         for name in names {
-            if let Some(value) = self.input_values.get(name).copied() {
+            if let Some(value) = visible_values.get(name).copied() {
                 values.insert(name.clone(), value);
             }
         }
-        values
+        Ok(values)
     }
 
     pub fn input_names(&self) -> &[String] {
@@ -194,39 +209,47 @@ impl SimStepper {
         &self.runtime.model.visible_names
     }
 
-    fn stepper_visible_values(&self) -> HashMap<String, f64> {
-        let mut values: HashMap<String, f64> = self
-            .backend
-            .current_solver_y()
-            .ok()
-            .and_then(|solver_y| {
-                self.runtime
-                    .visible_values(&solver_y, &self.backend.params, self.backend.time)
-                    .ok()
-            })
-            .map(|visible_values| {
-                self.runtime
-                    .model
-                    .visible_names
-                    .iter()
-                    .cloned()
-                    .zip(visible_values)
-                    .collect()
-            })
-            .unwrap_or_default();
+    fn stepper_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
+        let solver_y = self.backend.current_solver_y()?;
+        let visible_values =
+            self.runtime
+                .visible_values(&solver_y, &self.backend.params, self.backend.time)?;
+        let mut values = collect_visible_values(&self.runtime.model.visible_names, visible_values)?;
         values.extend(
             self.input_values
                 .iter()
                 .map(|(name, value)| (name.clone(), *value)),
         );
-        values
+        Ok(values)
     }
+}
+
+fn collect_visible_values(
+    names: &[String],
+    values: Vec<f64>,
+) -> Result<IndexMap<String, f64>, SimError> {
+    if names.len() != values.len() {
+        return Err(SimError::RuntimeContract {
+            reason: format!(
+                "runtime returned {} visible values for {} visible names",
+                values.len(),
+                names.len()
+            ),
+        });
+    }
+    Ok(names.iter().cloned().zip(values).collect())
 }
 
 impl From<RuntimeSolveError> for SimError {
     fn from(value: RuntimeSolveError) -> Self {
         match value {
-            RuntimeSolveError::SolveIr(message) => Self::SolveIr(message),
+            RuntimeSolveError::SolveIr { message, span } => {
+                let message = match span {
+                    Some(span) => format!("{message} @ {span:?}"),
+                    None => message,
+                };
+                Self::SolveIr(message)
+            }
             RuntimeSolveError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
             RuntimeSolveError::NonFiniteDerivative { state_name } => {
                 Self::NonFiniteDerivative { state_name }
@@ -305,13 +328,20 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
     }
 
     validate_explicit_solve_model(model)?;
-    let model = SolveRuntime::new(model);
+    let model = SolveRuntime::new(model)?;
     let sample_dt = default_output_dt(opts);
     let sample_times = timeline::build_output_times(opts.t_start, opts.t_end, sample_dt);
-    let mut times = Vec::with_capacity(sample_times.len());
+    let mut times = checked_vec_with_capacity(sample_times.len(), "RK45 output times")?;
     let mut backend = Rk45Backend::new(&model, opts)?;
     backend.init()?;
-    let mut data = vec![Vec::with_capacity(sample_times.len()); model.model.visible_names.len()];
+    let mut data =
+        checked_vec_with_capacity(model.model.visible_names.len(), "RK45 output series")?;
+    for _ in &model.model.visible_names {
+        data.push(checked_vec_with_capacity(
+            sample_times.len(),
+            "RK45 output samples",
+        )?);
+    }
     let solver_y = backend.current_solver_y()?;
     model.record_visible_sample(&mut data, &solver_y, &backend.params, opts.t_start)?;
     times.push(opts.t_start);
@@ -357,14 +387,57 @@ fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result<(), SimErr
             model.solver_scalar_count()
         )));
     }
-    if model.problem.continuous.implicit_rhs.len() < layout.state_scalar_count {
+    let implicit_rhs_len = model
+        .problem
+        .continuous
+        .implicit_rhs
+        .len()
+        .map_err(|err| SimError::SolveIr(err.to_string()))?;
+    if implicit_rhs_len < layout.state_scalar_count {
         return Err(SimError::SolveIr(format!(
             "implicit RHS has {} rows for {} states",
-            model.problem.continuous.implicit_rhs.len(),
-            layout.state_scalar_count
+            implicit_rhs_len, layout.state_scalar_count
         )));
     }
     Ok(())
+}
+
+fn checked_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, SimError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve(capacity)
+        .map_err(|_| SimError::Allocation {
+            context,
+            entries: capacity,
+        })?;
+    Ok(values)
+}
+
+fn runtime_contract_violation(reason: impl Into<String>) -> SimError {
+    SimError::RuntimeContract {
+        reason: reason.into(),
+    }
+}
+
+fn ensure_len(actual: usize, expected: usize, label: &str) -> Result<(), SimError> {
+    if actual != expected {
+        return Err(runtime_contract_violation(format!(
+            "{label} {actual} does not match expected length {expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn root_value_at(values: &[f64], index: usize, label: &str) -> Result<f64, SimError> {
+    values.get(index).copied().ok_or_else(|| {
+        runtime_contract_violation(format!(
+            "{label} root index {index} is outside {} root condition values",
+            values.len()
+        ))
+    })
 }
 
 impl<'a> Rk45Backend<'a> {
@@ -482,13 +555,13 @@ impl<'a> Rk45Backend<'a> {
         event_boundary: Option<f64>,
     ) -> Result<TrialStep, SimError> {
         let k1 = self.derivatives_at(self.continuous_eval_time(time, event_boundary), state)?;
-        let y2 = combine_stage(state, h, &[(&k1, 1.0 / 5.0)]);
+        let y2 = combine_stage(state, h, &[(&k1, 1.0 / 5.0)])?;
         let k2 = self.derivatives_at(
             self.continuous_eval_time(time + h * (1.0 / 5.0), event_boundary),
             &y2,
         )?;
 
-        let y3 = combine_stage(state, h, &[(&k1, 3.0 / 40.0), (&k2, 9.0 / 40.0)]);
+        let y3 = combine_stage(state, h, &[(&k1, 3.0 / 40.0), (&k2, 9.0 / 40.0)])?;
         let k3 = self.derivatives_at(
             self.continuous_eval_time(time + h * (3.0 / 10.0), event_boundary),
             &y3,
@@ -498,7 +571,7 @@ impl<'a> Rk45Backend<'a> {
             state,
             h,
             &[(&k1, 44.0 / 45.0), (&k2, -56.0 / 15.0), (&k3, 32.0 / 9.0)],
-        );
+        )?;
         let k4 = self.derivatives_at(
             self.continuous_eval_time(time + h * (4.0 / 5.0), event_boundary),
             &y4,
@@ -513,7 +586,7 @@ impl<'a> Rk45Backend<'a> {
                 (&k3, 64448.0 / 6561.0),
                 (&k4, -212.0 / 729.0),
             ],
-        );
+        )?;
         let k5 = self.derivatives_at(
             self.continuous_eval_time(time + h * (8.0 / 9.0), event_boundary),
             &y5,
@@ -529,7 +602,7 @@ impl<'a> Rk45Backend<'a> {
                 (&k4, 49.0 / 176.0),
                 (&k5, -5103.0 / 18656.0),
             ],
-        );
+        )?;
         let k6 = self.derivatives_at(self.continuous_eval_time(time + h, event_boundary), &y6)?;
 
         let y5th = combine_stage(
@@ -542,7 +615,7 @@ impl<'a> Rk45Backend<'a> {
                 (&k5, -2187.0 / 6784.0),
                 (&k6, 11.0 / 84.0),
             ],
-        );
+        )?;
 
         let y7 = y5th.clone();
         let k7 = self.derivatives_at(self.continuous_eval_time(time + h, event_boundary), &y7)?;
@@ -557,9 +630,9 @@ impl<'a> Rk45Backend<'a> {
                 (&k6, 187.0 / 2100.0),
                 (&k7, 1.0 / 40.0),
             ],
-        );
+        )?;
 
-        let error_norm = error_norm(state, &y5th, &y4th, self.atol, self.rtol);
+        let error_norm = error_norm(state, &y5th, &y4th, self.atol, self.rtol)?;
         Ok(TrialStep {
             y_next: y5th,
             next_derivative: Some(k7),
@@ -738,8 +811,8 @@ impl<'a> Rk45Backend<'a> {
                 self.continuous_eval_time(mid_t, event_boundary),
                 &mid_state,
             )?;
-            let old = lo_roots.get(crossing.index).copied().unwrap_or(0.0);
-            let new = mid_roots.get(crossing.index).copied().unwrap_or(0.0);
+            let old = root_value_at(&lo_roots, crossing.index, "left bisection")?;
+            let new = root_value_at(&mid_roots, crossing.index, "midpoint bisection")?;
             if root_value_crossed(old, new, self.atol) {
                 hi_t = mid_t;
                 hi_state = mid_state;
@@ -1149,28 +1222,42 @@ fn state_values_match(a: &[f64], b: &[f64]) -> bool {
             .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits())
 }
 
-fn combine_stage(y: &[f64], h: f64, stages: &[(&[f64], f64)]) -> Vec<f64> {
-    y.iter()
-        .enumerate()
-        .map(|(idx, value)| {
-            value
-                + h * stages
-                    .iter()
-                    .map(|(k, coeff)| coeff * k.get(idx).copied().unwrap_or(0.0))
-                    .sum::<f64>()
-        })
-        .collect()
+fn combine_stage(y: &[f64], h: f64, stages: &[(&[f64], f64)]) -> Result<Vec<f64>, SimError> {
+    for (stage_index, (stage, _)) in stages.iter().enumerate() {
+        ensure_len(
+            stage.len(),
+            y.len(),
+            &format!("RK45 stage {stage_index} length"),
+        )?;
+    }
+    let mut combined = checked_vec_with_capacity(y.len(), "RK45 combined stage")?;
+    for (idx, value) in y.iter().copied().enumerate() {
+        let mut delta = 0.0;
+        for (stage, coeff) in stages {
+            delta += coeff * stage[idx];
+        }
+        combined.push(value + h * delta);
+    }
+    Ok(combined)
 }
 
-fn error_norm(y: &[f64], y_high: &[f64], y_low: &[f64], atol: f64, rtol: f64) -> f64 {
+fn error_norm(
+    y: &[f64],
+    y_high: &[f64],
+    y_low: &[f64],
+    atol: f64,
+    rtol: f64,
+) -> Result<f64, SimError> {
+    ensure_len(y_high.len(), y.len(), "RK45 high-order estimate length")?;
+    ensure_len(y_low.len(), y.len(), "RK45 low-order estimate length")?;
     let mut max_norm = 0.0_f64;
     for (idx, value) in y.iter().enumerate() {
-        let high = y_high.get(idx).copied().unwrap_or(0.0);
-        let low = y_low.get(idx).copied().unwrap_or(0.0);
+        let high = y_high[idx];
+        let low = y_low[idx];
         let scale = atol + rtol * value.abs().max(high.abs());
         max_norm = max_norm.max((high - low).abs() / scale.max(1.0e-30));
     }
-    max_norm
+    Ok(max_norm)
 }
 
 fn adapt_step(h: f64, error_norm: f64) -> f64 {
@@ -1182,784 +1269,4 @@ fn adapt_step(h: f64, error_norm: f64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use indexmap::IndexMap;
-    use rumoca_ir_solve::{
-        ComputeBlock, LinearOp, ScalarProgramBlock, SolveLayout, SolveProblem, SolverNameIndexMaps,
-    };
-
-    use super::*;
-
-    #[test]
-    fn rk45_simulates_solve_ir_integrator() {
-        let model = single_state_model(vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        let result = simulate(
-            &model,
-            &SimOptions {
-                t_end: 0.2,
-                dt: Some(0.01),
-                solver_mode: SimSolverMode::RkLike,
-                ..Default::default()
-            },
-        )
-        .expect("rk45 simulation should succeed");
-
-        let final_x = result.data[0][result.data[0].len() - 1];
-        assert!((final_x - 0.2_f64.exp()).abs() <= 1.0e-4);
-    }
-
-    #[test]
-    fn rk45_emits_one_series_per_visible_name() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.problem.solve_layout.discrete_valued_scalar_names = vec!["c[1]".to_string()];
-        model.parameters = vec![1.0];
-        model.visible_names = vec!["x".to_string(), "c[1]".to_string()];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                t_end: 0.1,
-                dt: Some(0.05),
-                solver_mode: SimSolverMode::RkLike,
-                ..Default::default()
-            },
-        )
-        .expect("rk45 simulation should succeed");
-
-        assert_eq!(result.names, ["x", "c[1]"]);
-        assert_eq!(
-            result.data.len(),
-            result.names.len(),
-            "simulation payload requires one data series per visible name"
-        );
-        assert!(
-            result.data[1]
-                .iter()
-                .all(|value| (*value - 1.0).abs() <= f64::EPSILON)
-        );
-    }
-
-    #[test]
-    fn rk45_refreshes_algebraic_solve_ir_layout() {
-        let mut model = single_state_model(vec![
-            vec![
-                LinearOp::LoadY { dst: 0, index: 1 },
-                LinearOp::StoreOutput { src: 0 },
-            ],
-            vec![
-                LinearOp::LoadY { dst: 0, index: 0 },
-                LinearOp::Const { dst: 1, value: 2.0 },
-                LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                LinearOp::StoreOutput { src: 2 },
-            ],
-        ]);
-        model.problem.solve_layout.algebraic_scalar_count = 1;
-        model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "a".to_string()];
-        model.problem.solve_layout.solver_maps.name_to_idx =
-            IndexMap::from([("x".to_string(), 0), ("a".to_string(), 1)]);
-        model.problem.solve_layout.solver_maps.base_to_indices =
-            IndexMap::from([("x".to_string(), vec![0]), ("a".to_string(), vec![1])]);
-        model.problem.continuous.implicit_row_targets =
-            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
-        model.initial_y = vec![1.0, 2.0];
-        model.visible_names = vec!["x".to_string(), "a".to_string()];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                t_end: 0.1,
-                dt: Some(0.01),
-                solver_mode: SimSolverMode::RkLike,
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should refresh explicit algebraic slots");
-
-        let final_x = result.data[0][result.data[0].len() - 1];
-        let final_a = result.data[1][result.data[1].len() - 1];
-        assert!((final_x - 0.2_f64.exp()).abs() <= 1.0e-4);
-        assert!((final_a - 2.0 * final_x).abs() <= 1.0e-8);
-    }
-
-    #[test]
-    fn rk45_snapshots_pre_params_before_event_updates() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.initial_y = vec![10.0];
-        model.parameters = vec![0.0];
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.pre_param_bindings = vec![solve::PreParamBinding {
-            dest_p_index: 0,
-            source: solve::PreParamSource::Y { index: 0 },
-        }];
-        model.problem.events.scheduled_time_events = vec![0.05];
-        model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
-        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
-        model.problem.discrete.rhs = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::Const {
-                dst: 1,
-                value: -0.8,
-            },
-            LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Mul,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]]);
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.05),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should snapshot pre(v) before applying event updates");
-
-        assert_eq!(result.times, vec![0.0, 0.05, 0.1]);
-        assert_eq!(result.data[0], vec![10.0, -8.0, -8.0]);
-    }
-
-    #[test]
-    fn rk45_terminate_returns_partial_success() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.initial_y = vec![0.0];
-        model.problem.events.root_conditions = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::Const {
-                dst: 1,
-                value: 0.05,
-            },
-            LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Sub,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]]);
-        model.problem.discrete.rhs = ScalarProgramBlock::default();
-        model.problem.events.action_conditions = const_scalar_program_block(1.0);
-        model.problem.events.actions = vec![solve::SolveEventAction {
-            kind: solve::SolveEventActionKind::Terminate,
-            message: solve::SolveEventMessage {
-                parts: vec![solve::SolveEventMessagePart::Text("finished".to_string())],
-            },
-            span: Default::default(),
-            origin: "terminate(\"finished\")".to_string(),
-        }];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.1),
-                ..Default::default()
-            },
-        )
-        .expect("Modelica terminate should return partial simulation data");
-
-        let termination = result.termination.expect("termination metadata");
-        assert_eq!(termination.message, "finished");
-        assert!((termination.time - 0.05).abs() <= 1.0e-6);
-        assert!((result.times[result.times.len() - 1] - 0.05).abs() <= 1.0e-6);
-        assert_eq!(result.data[0].len(), result.times.len());
-    }
-
-    #[test]
-    fn rk45_applies_scheduled_time_event_update() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-        model.problem.events.scheduled_time_events = vec![0.05];
-        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-        model.problem.discrete.rhs = const_scalar_program_block(2.0);
-        model.parameters = vec![0.0];
-        model.visible_names = vec!["x".to_string(), "m".to_string()];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.05),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should handle scheduled Solve-IR events");
-
-        assert_eq!(result.times, vec![0.0, 0.05, 0.1]);
-        assert_eq!(result.data[1], vec![0.0, 2.0, 2.0]);
-    }
-
-    #[test]
-    fn rk45_simulate_records_initialization_updates_at_start_sample() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.initial_y = vec![1.0];
-        model.problem.initialization.update_targets = vec![solve::scalar_slot_y(0)];
-        model.problem.initialization.update_rhs = const_scalar_program_block(4.0);
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.1),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 simulate should apply initialization before first sample");
-
-        assert_eq!(result.data[0], vec![4.0, 4.0]);
-    }
-
-    #[test]
-    fn rk45_applies_root_event_update() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.initial_y = vec![0.0];
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-        model.problem.events.root_conditions = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::Const {
-                dst: 1,
-                value: 0.05,
-            },
-            LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Sub,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]]);
-        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-        model.problem.discrete.rhs = const_scalar_program_block(2.0);
-        model.parameters = vec![0.0];
-        model.visible_names = vec!["x".to_string(), "m".to_string()];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.1),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should locate root events with Solve-IR residual rows");
-
-        assert!((result.data[0][1] - 0.1).abs() <= 1.0e-6);
-        assert_eq!(result.data[1], vec![0.0, 2.0]);
-    }
-
-    #[test]
-    fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::Const { dst: 1, value: 0.5 },
-            LinearOp::Compare {
-                dst: 2,
-                op: solve::CompareOp::Gt,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::Const { dst: 3, value: 1.0 },
-            LinearOp::Const {
-                dst: 4,
-                value: -1.0,
-            },
-            LinearOp::Select {
-                dst: 5,
-                cond: 2,
-                if_true: 3,
-                if_false: 4,
-            },
-            LinearOp::StoreOutput { src: 5 },
-        ]]);
-        model.initial_y = vec![0.1];
-        model.parameters = vec![0.0];
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-        model.problem.discrete.rhs = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::Const { dst: 1, value: 0.0 },
-            LinearOp::Compare {
-                dst: 2,
-                op: solve::CompareOp::Lt,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]]);
-        model.problem.events.root_conditions = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.2,
-                dt: Some(0.2),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should update relation memory after root events");
-
-        let final_x = result.data[0][result.data[0].len() - 1];
-        assert!(
-            final_x > 0.05,
-            "relation memory should flip the continuous branch after root crossing; x={final_x}"
-        );
-    }
-
-    #[test]
-    fn rk45_applies_periodic_event_update() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-        model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-            period_seconds: 0.05,
-            phase_seconds: 0.05,
-        }];
-        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-        model.problem.discrete.rhs = const_scalar_program_block(3.0);
-        model.parameters = vec![0.0];
-        model.visible_names = vec!["x".to_string(), "m".to_string()];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.1),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should handle periodic Solve-IR events");
-
-        assert_eq!(result.data[1], vec![0.0, 3.0]);
-    }
-
-    #[test]
-    fn rk45_applies_dynamic_time_event_update() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.problem.solve_layout.compiled_parameter_len = 2;
-        model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
-        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-        model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
-        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
-        model.problem.discrete.rhs = const_scalar_program_block(4.0);
-        model.parameters = vec![0.05, 0.0];
-        model.visible_names = vec!["x".to_string(), "next".to_string(), "m".to_string()];
-
-        let result = simulate(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                t_end: 0.1,
-                dt: Some(0.1),
-                ..Default::default()
-            },
-        )
-        .expect("rk45 should handle named dynamic Solve-IR time events");
-
-        assert_eq!(result.data[2], vec![0.0, 4.0]);
-    }
-
-    #[test]
-    fn runtime_contract_step_until_advances_rk45_backend() {
-        let prepared = single_state_model(vec![vec![
-            LinearOp::Const { dst: 0, value: 2.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        let model = SolveRuntime::new(&prepared);
-        let mut backend = Rk45Backend::new(
-            &model,
-            &SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                dt: Some(0.01),
-                ..Default::default()
-            },
-        )
-        .expect("backend should build");
-
-        backend.init().expect("init should succeed");
-        let outcome = backend.step_until(0.1).expect("backend should step");
-
-        assert_eq!(outcome, StepUntilOutcome::StopReached);
-        assert!((backend.read_state().t - 0.1).abs() <= 1.0e-12);
-        assert!((backend.state[0] - 1.2).abs() <= 1.0e-6);
-    }
-
-    #[test]
-    fn rk45_stepper_reset_restores_cached_initial_state() {
-        let mut model = single_state_model(vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-        model.parameters = vec![0.0];
-        let mut stepper = SimStepper::new(
-            &model,
-            SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                dt: Some(0.01),
-                ..Default::default()
-            },
-        )
-        .expect("stepper should build");
-
-        stepper.set_input("u", 4.0).expect("input should exist");
-        stepper.step(0.1).expect("stepper should advance");
-        assert!(stepper.get("x").unwrap_or_default() > 1.1);
-
-        stepper
-            .reset(12.5)
-            .expect("reset should restore cached initial state");
-
-        assert!((stepper.time() - 12.5).abs() <= 1.0e-12);
-        assert!((stepper.get("x").unwrap_or_default() - 1.0).abs() <= 1.0e-12);
-        assert_eq!(
-            stepper.get("u"),
-            None,
-            "reset should clear stale input overrides"
-        );
-    }
-
-    #[test]
-    fn rk45_stepper_uses_adaptive_event_integration_for_stiff_contact() {
-        let model = stiff_contact_model();
-        let mut stepper = SimStepper::new(
-            &model,
-            SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                dt: Some(0.02),
-                ..Default::default()
-            },
-        )
-        .expect("stiff contact stepper should initialize");
-
-        for _ in 0..50 {
-            stepper.step(0.02).expect("stepper should advance");
-        }
-
-        let x = stepper.get("x").expect("x should be visible");
-        let contact = stepper.get("contact").expect("contact should be visible");
-        assert!(
-            x > -0.01 && x < 0.03,
-            "adaptive stepper should settle near the contact surface without frame-step penetration; x={x}"
-        );
-        assert_eq!(contact, 1.0);
-    }
-
-    #[test]
-    fn rk45_stepper_redetects_contact_after_thrust_liftoff() {
-        let model = stiff_contact_model();
-        let mut stepper = SimStepper::new(
-            &model,
-            SimOptions {
-                solver_mode: SimSolverMode::RkLike,
-                dt: Some(0.02),
-                ..Default::default()
-            },
-        )
-        .expect("stiff contact stepper should initialize");
-
-        for _ in 0..50 {
-            stepper.step(0.02).expect("initial settle should advance");
-        }
-        stepper
-            .set_input("thrust", 40.0)
-            .expect("thrust input should exist");
-        for _ in 0..10 {
-            stepper.step(0.02).expect("liftoff should advance");
-        }
-        let lifted_x = stepper.get("x").unwrap_or_default();
-        assert!(
-            lifted_x > 0.05,
-            "thrust phase should lift the mass above the contact surface; x={lifted_x}"
-        );
-
-        stepper
-            .set_input("thrust", 0.0)
-            .expect("thrust input should update");
-        for _ in 0..180 {
-            stepper.step(0.02).expect("descent should advance");
-        }
-
-        let x = stepper.get("x").expect("x should be visible");
-        let contact = stepper.get("contact").expect("contact should be visible");
-        assert!(
-            x > -0.02 && x < 0.04,
-            "re-contact after liftoff should not miss the ground event; x={x}"
-        );
-        assert_eq!(contact, 1.0);
-    }
-
-    // SPEC_0021: Exception - test fixture declares the full Solve-IR model
-    // inline so contact/event semantics stay visible in one place.
-    #[allow(clippy::too_many_lines)]
-    fn stiff_contact_model() -> solve::SolveModel {
-        let dx = vec![
-            LinearOp::LoadY { dst: 0, index: 1 },
-            LinearOp::StoreOutput { src: 0 },
-        ];
-        let dv = vec![
-            LinearOp::LoadP { dst: 0, index: 2 },
-            LinearOp::Const { dst: 1, value: 0.5 },
-            LinearOp::Compare {
-                dst: 2,
-                op: solve::CompareOp::Gt,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::Const {
-                dst: 3,
-                value: -9.81,
-            },
-            LinearOp::LoadP { dst: 4, index: 1 },
-            LinearOp::Binary {
-                dst: 5,
-                op: solve::BinaryOp::Add,
-                lhs: 3,
-                rhs: 4,
-            },
-            LinearOp::LoadY { dst: 6, index: 0 },
-            LinearOp::Const {
-                dst: 7,
-                value: -30000.0,
-            },
-            LinearOp::Binary {
-                dst: 8,
-                op: solve::BinaryOp::Mul,
-                lhs: 6,
-                rhs: 7,
-            },
-            LinearOp::LoadY { dst: 9, index: 1 },
-            LinearOp::Const {
-                dst: 10,
-                value: -200.0,
-            },
-            LinearOp::Binary {
-                dst: 11,
-                op: solve::BinaryOp::Mul,
-                lhs: 9,
-                rhs: 10,
-            },
-            LinearOp::Binary {
-                dst: 12,
-                op: solve::BinaryOp::Add,
-                lhs: 5,
-                rhs: 8,
-            },
-            LinearOp::Binary {
-                dst: 13,
-                op: solve::BinaryOp::Add,
-                lhs: 12,
-                rhs: 11,
-            },
-            LinearOp::Select {
-                dst: 14,
-                cond: 2,
-                if_true: 13,
-                if_false: 5,
-            },
-            LinearOp::StoreOutput { src: 14 },
-        ];
-        solve::SolveModel {
-            problem: SolveProblem {
-                schema_version: solve::SOLVE_SCHEMA_VERSION,
-                layout: solve::VarLayout::from_parts(Default::default(), 2, 1),
-                continuous: solve::ContinuousSolveSystem {
-                    implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(
-                        vec![dx.clone(), dv.clone()],
-                    )),
-                    implicit_row_targets: vec![
-                        Some(solve::scalar_slot_y(0)),
-                        Some(solve::scalar_slot_y(1)),
-                    ],
-                    residual: ScalarProgramBlock::new(vec![dx.clone(), dv.clone()]),
-                    derivative_rhs: ComputeBlock::from_scalar_program_block(
-                        ScalarProgramBlock::new(vec![dx, dv]),
-                    ),
-                    algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
-                },
-                initialization: solve::InitializationSolveSystem::default(),
-                discrete: solve::DiscreteSolveSystem {
-                    rhs: ScalarProgramBlock::new(vec![vec![
-                        LinearOp::LoadY { dst: 0, index: 0 },
-                        LinearOp::Const { dst: 1, value: 0.0 },
-                        LinearOp::Compare {
-                            dst: 2,
-                            op: solve::CompareOp::Lt,
-                            lhs: 0,
-                            rhs: 1,
-                        },
-                        LinearOp::StoreOutput { src: 2 },
-                    ]]),
-                    update_targets: vec![solve::scalar_slot_p(2)],
-                    ..Default::default()
-                },
-                events: solve::SolveEventPartition {
-                    root_conditions: ScalarProgramBlock::new(vec![vec![
-                        LinearOp::LoadY { dst: 0, index: 0 },
-                        LinearOp::StoreOutput { src: 0 },
-                    ]]),
-                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(2))],
-                    ..Default::default()
-                },
-                clocks: solve::SolveClockPartition::default(),
-                solve_layout: SolveLayout {
-                    solver_maps: SolverNameIndexMaps {
-                        names: vec!["x".to_string(), "v".to_string()],
-                        name_to_idx: IndexMap::from([("x".to_string(), 0), ("v".to_string(), 1)]),
-                        base_to_indices: IndexMap::from([
-                            ("x".to_string(), vec![0]),
-                            ("v".to_string(), vec![1]),
-                        ]),
-                    },
-                    state_scalar_count: 2,
-                    algebraic_scalar_count: 0,
-                    output_scalar_count: 0,
-                    parameter_count: 1,
-                    compiled_parameter_len: 3,
-                    input_scalar_names: vec!["thrust".to_string()],
-                    discrete_real_scalar_names: Vec::new(),
-                    discrete_valued_scalar_names: vec!["contact".to_string()],
-                    relation_memory_parameter_indices: Vec::new(),
-                    initial_event_parameter_index: None,
-                    pre_param_bindings: Vec::new(),
-                },
-            },
-            artifacts: solve::SolveArtifacts {
-                continuous: solve::ContinuousSolveArtifacts::default(),
-            },
-            initial_y: vec![0.02, 0.0],
-            parameters: vec![0.0, 0.0, 0.0],
-            external_tables: solve::ExternalTables::default(),
-            visible_names: vec!["x".to_string(), "v".to_string(), "contact".to_string()],
-            visible_value_rows: solve::ScalarProgramBlock::default(),
-            variable_meta: Vec::new(),
-        }
-    }
-
-    fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
-        let derivative_rows = rhs_rows.iter().take(1).cloned().collect::<Vec<_>>();
-        let zero = ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        solve::SolveModel {
-            problem: SolveProblem {
-                schema_version: solve::SOLVE_SCHEMA_VERSION,
-                layout: solve::VarLayout::from_parts(Default::default(), 1, 1),
-                continuous: solve::ContinuousSolveSystem {
-                    implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(
-                        rhs_rows.clone(),
-                    )),
-                    implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                    residual: ScalarProgramBlock::new(rhs_rows.clone()),
-                    derivative_rhs: ComputeBlock::from_scalar_program_block(
-                        ScalarProgramBlock::new(derivative_rows),
-                    ),
-                    algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
-                },
-                initialization: solve::InitializationSolveSystem {
-                    residual: zero.clone(),
-                    row_targets: Vec::new(),
-                    projection_indices: Vec::new(),
-                    projection_plan: solve::AlgebraicProjectionPlan::default(),
-                    update_rhs: solve::ScalarProgramBlock::default(),
-                    update_targets: Vec::new(),
-                },
-                discrete: solve::DiscreteSolveSystem {
-                    rhs: zero.clone(),
-                    ..Default::default()
-                },
-                events: solve::SolveEventPartition::default(),
-                clocks: solve::SolveClockPartition::default(),
-                solve_layout: SolveLayout {
-                    solver_maps: SolverNameIndexMaps {
-                        names: vec!["x".to_string()],
-                        name_to_idx: IndexMap::from([("x".to_string(), 0)]),
-                        base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
-                    },
-                    state_scalar_count: 1,
-                    algebraic_scalar_count: 0,
-                    output_scalar_count: 0,
-                    parameter_count: 0,
-                    compiled_parameter_len: 0,
-                    input_scalar_names: Vec::new(),
-                    discrete_real_scalar_names: Vec::new(),
-                    discrete_valued_scalar_names: Vec::new(),
-                    relation_memory_parameter_indices: Vec::new(),
-                    initial_event_parameter_index: None,
-                    pre_param_bindings: Vec::new(),
-                },
-            },
-            artifacts: solve::SolveArtifacts {
-                continuous: solve::ContinuousSolveArtifacts {
-                    mass_matrix: vec![vec![1.0]],
-                    implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
-                    implicit_jacobian_v_scalar: zero.clone(),
-                    full_jacobian_v: zero.clone(),
-                },
-            },
-            initial_y: vec![1.0],
-            parameters: Vec::new(),
-            external_tables: solve::ExternalTables::default(),
-            visible_names: vec!["x".to_string()],
-            visible_value_rows: solve::ScalarProgramBlock::default(),
-            variable_meta: Vec::new(),
-        }
-    }
-
-    fn const_scalar_program_block(value: f64) -> ScalarProgramBlock {
-        ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value },
-            LinearOp::StoreOutput { src: 0 },
-        ]])
-    }
-}
+mod tests;

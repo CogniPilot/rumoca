@@ -24,13 +24,20 @@ impl DynamicBindingTarget {
         }
     }
 
-    pub(super) fn source_reference(reference: &rumoca_core::Reference) -> Result<Self, LowerError> {
+    pub(super) fn source_reference(
+        reference: &rumoca_core::Reference,
+        fallback_span: rumoca_core::Span,
+    ) -> Result<Self, LowerError> {
+        let source_span = reference_context_span(reference, fallback_span);
+        let source_span = (!source_span.is_dummy()).then_some(source_span);
         if reference.is_generated() {
-            return Ok(Self::generated(reference.as_str()));
+            return Ok(Self {
+                display_key: reference.as_str().to_string(),
+                source_key: None,
+                source_span,
+                generated: true,
+            });
         }
-        let source_span = reference
-            .component_ref()
-            .map(|component_ref| component_ref.span);
         Ok(Self {
             display_key: reference.as_str().to_string(),
             source_key: reference
@@ -46,13 +53,29 @@ impl DynamicBindingTarget {
     pub(super) fn field(
         display_key: impl Into<String>,
         source_key: Option<ComponentReferenceKey>,
+        source_span: Option<rumoca_core::Span>,
     ) -> Self {
         Self {
             display_key: display_key.into(),
             source_key,
-            source_span: None,
+            source_span,
             generated: false,
         }
+    }
+
+    pub(super) fn emit_span(
+        &self,
+        fallback_span: Option<rumoca_core::Span>,
+    ) -> Result<rumoca_core::Span, LowerError> {
+        if let Some(span) = fallback_span.or(self.source_span) {
+            return Ok(span);
+        }
+        Err(LowerError::UnspannedContractViolation {
+            reason: format!(
+                "dynamic indexed binding for `{}` requires source span metadata",
+                self.display_key
+            ),
+        })
     }
 }
 
@@ -64,26 +87,26 @@ pub(super) fn scope_key_from_reference(
         return Ok(ComponentReferenceKey::generated(name.as_str()));
     }
     #[cfg(test)]
-    if let Some(key) = crate::test_support::fixture_key_for_reference(name, span) {
+    if let Some(key) = crate::test_support::fixture_key_for_reference(name) {
         return Ok(key);
     }
     let Some(component_ref) = name.component_ref() else {
-        return Err(LowerError::ContractViolation {
-            reason: format!(
+        return Err(LowerError::contract_violation(
+            format!(
                 "Solve lowering requires structured component reference metadata for `{}`",
                 name.as_str()
             ),
             span,
-        });
+        ));
     };
     ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
-        LowerError::ContractViolation {
-            reason: format!(
-                "Solve lowering requires static component-reference metadata for `{}`",
-                name.as_str()
+        LowerError::contract_violation(
+            format!(
+                "Solve lowering requires static component-reference metadata for `{}`: {err}",
+                name.as_str(),
             ),
-            span: err.span,
-        }
+            err.span,
+        )
     })
 }
 
@@ -119,6 +142,16 @@ pub(super) fn subscript_fallback_span(
         .iter()
         .map(rumoca_core::Subscript::span)
         .find(|span| !span.is_dummy())
+}
+
+pub(super) fn reference_context_span(
+    reference: &rumoca_core::Reference,
+    fallback: rumoca_core::Span,
+) -> rumoca_core::Span {
+    reference
+        .span()
+        .or_else(|| (!fallback.is_dummy()).then_some(fallback))
+        .unwrap_or(fallback)
 }
 
 pub(super) fn dae_variable<'a>(
@@ -215,10 +248,10 @@ fn append_component_reference_subscripts(
         return Ok(());
     }
     let Some(last) = component_ref.parts.last_mut() else {
-        return Err(LowerError::ContractViolation {
-            reason: "component reference has no parts for subscripted access".to_string(),
-            span: component_ref.span,
-        });
+        return Err(LowerError::contract_violation(
+            "component reference has no parts for subscripted access",
+            component_ref.span,
+        ));
     };
     last.subs.extend(subscripts.iter().cloned());
     Ok(())
@@ -238,9 +271,9 @@ pub(super) fn component_reference_key(
         }
     }
     ComponentReferenceKey::from_component_reference(&component_ref).map_err(|err| {
-        LowerError::ContractViolation {
-            reason: "indexed solve-layout lookup has non-static component reference".to_string(),
-            span: err.span,
-        }
+        LowerError::contract_violation(
+            format!("indexed solve-layout lookup has non-static component reference: {err}"),
+            err.span,
+        )
     })
 }

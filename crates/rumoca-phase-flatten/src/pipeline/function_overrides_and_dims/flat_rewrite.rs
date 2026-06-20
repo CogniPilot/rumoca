@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_spans::required_location_span;
 
 pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
     eq: &mut rumoca_ir_flat::WhenEquation,
@@ -567,10 +568,11 @@ pub(super) fn function_lexical_package_def_id(
         return Ok(None);
     };
     class_def.def_id.map(Some).ok_or_else(|| {
-        FlattenError::missing_resolved_class_metadata(
-            package_name.to_string(),
+        missing_resolved_class_metadata_for_class(
+            package_name,
             "function lexical package lookup",
-            class_def_span(tree, class_def),
+            tree,
+            class_def,
         )
     })
 }
@@ -587,17 +589,19 @@ pub(super) fn function_package_override_chain(
         return Ok(Vec::new());
     };
     let def_id = class_def.def_id.ok_or_else(|| {
-        FlattenError::missing_resolved_class_metadata(
-            package_name.to_string(),
+        missing_resolved_class_metadata_for_class(
+            package_name,
             "function package override lookup",
-            class_def_span(tree, class_def),
+            tree,
+            class_def,
         )
     })?;
     let name = class_index.qualified_name(def_id).ok_or_else(|| {
-        FlattenError::missing_resolved_class_metadata(
-            package_name.to_string(),
+        missing_resolved_class_metadata_for_class(
+            package_name,
             "function package override lookup",
-            class_def_span(tree, class_def),
+            tree,
+            class_def,
         )
     })?;
     Ok(vec![OverrideTarget {
@@ -610,14 +614,14 @@ pub(super) fn function_package_override_chain(
     }])
 }
 
-fn class_def_span(tree: &ClassTree, class_def: &rumoca_ir_ast::ClassDef) -> rumoca_core::Span {
-    if class_def.location.file_name.is_empty() || class_def.location.start >= class_def.location.end
-    {
-        return rumoca_core::Span::DUMMY;
+fn missing_resolved_class_metadata_for_class(
+    name: &str,
+    context: &str,
+    tree: &ClassTree,
+    class_def: &rumoca_ir_ast::ClassDef,
+) -> FlattenError {
+    match required_location_span(&tree.source_map, &class_def.location, context) {
+        Ok(span) => FlattenError::missing_resolved_class_metadata(name.to_string(), context, span),
+        Err(error) => error,
     }
-    tree.source_map.location_to_span(
-        &class_def.location.file_name,
-        class_def.location.start as usize,
-        class_def.location.end as usize,
-    )
 }

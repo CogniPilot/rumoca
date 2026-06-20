@@ -4,10 +4,10 @@ use super::*;
 fn test_boundary_keeps_state_only_algebraic_constraint() {
     let mut dae = Dae::new();
 
-    let mut x = dae::Variable::new(VarName::new("x"));
+    let mut x = test_dae_variable("x");
     x.start = Some(lit(0.0));
     dae.variables.states.insert(VarName::new("x"), x);
-    let mut y = dae::Variable::new(VarName::new("y"));
+    let mut y = test_dae_variable("y");
     y.start = Some(lit(0.0));
     dae.variables.states.insert(VarName::new("y"), y);
 
@@ -182,7 +182,7 @@ fn test_boundary_keeps_internal_discrete_connection_chain_for_runtime_alias_path
     ] {
         dae.variables
             .discrete_valued
-            .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_dae_variable(name));
     }
 
     dae.continuous.equations.push(dae::Equation {

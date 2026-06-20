@@ -21,6 +21,35 @@ fn class(
     }
 }
 
+fn test_source_map() -> rumoca_core::SourceMap {
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add(
+        "function_param_fixture.mo",
+        "record C\n  Real orientation;\n  Real N;\nend C;\n",
+    );
+    source_map
+}
+
+fn test_location(start: u32, end: u32) -> rumoca_core::Location {
+    rumoca_core::Location {
+        start_line: 1,
+        start_column: start + 1,
+        end_line: 1,
+        end_column: end + 1,
+        start,
+        end,
+        file_name: "function_param_fixture.mo".to_string(),
+    }
+}
+
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("function_param_fixture.mo"),
+        1,
+        2,
+    )
+}
+
 fn core_comp_ref(parts: &[&str]) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
@@ -56,7 +85,7 @@ fn ast_comp_ref(parts: &[&str]) -> ast::ComponentReference {
                 subs: None,
             })
             .collect(),
-        span: Span::DUMMY,
+        span: test_span(),
         def_id: None,
     }
 }
@@ -88,6 +117,119 @@ fn canonicalize_collected_function_calls_uses_unique_suffix_match() {
         panic!("expected function call residual");
     };
     assert_eq!(name.as_str(), "Modelica.Math.Polynomials.fitting");
+}
+
+#[test]
+fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
+    let constructor_def_id = rumoca_core::DefId::new(42);
+    let mut flat = flat::Model::new();
+    let mut constructor = rumoca_core::Function::new(
+        "Modelica.Electrical.Machines.Utilities.ParameterRecords.SM_PermanentMagnetData",
+        Span::DUMMY,
+    );
+    constructor.def_id = Some(constructor_def_id);
+    constructor.is_constructor = true;
+    constructor.add_input(rumoca_core::FunctionParam::new("PRef", "Real", test_span()));
+    flat.add_function(constructor);
+    let component_ref = core_comp_ref_with_def_id(
+        &["Utilities", "ParameterRecords", "SM_PermanentMagnetData"],
+        constructor_def_id,
+    );
+    let variable_name = rumoca_core::VarName::new("x");
+    flat.add_variable(
+        variable_name.clone(),
+        flat::Variable {
+            name: variable_name.clone(),
+            binding: Some(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::with_component_reference(
+                    "Utilities.ParameterRecords.SM_PermanentMagnetData",
+                    component_ref.clone(),
+                ),
+                args: vec![],
+                is_constructor: true,
+                span: Span::DUMMY,
+            }),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_collected_function_calls(&mut flat);
+
+    let Some(rumoca_core::Expression::FunctionCall { name, .. }) = flat
+        .variables
+        .get(&variable_name)
+        .and_then(|var| var.binding.as_ref())
+    else {
+        panic!("expected constructor binding");
+    };
+    assert_eq!(
+        name.as_str(),
+        "Modelica.Electrical.Machines.Utilities.ParameterRecords.SM_PermanentMagnetData"
+    );
+    assert_eq!(name.target_def_id(), Some(constructor_def_id));
+    assert_eq!(name.component_ref(), Some(&component_ref));
+}
+
+#[test]
+fn canonicalize_collected_function_calls_prefers_structured_exposed_function_name() {
+    let function_def_id = rumoca_core::DefId::new(43);
+    let mut flat = flat::Model::new();
+    let mut partial = rumoca_core::Function::new(
+        "Modelica.Media.Interfaces.PartialMedium.setState_pTX",
+        Span::DUMMY,
+    );
+    partial.def_id = Some(function_def_id);
+    partial
+        .body
+        .push(rumoca_core::Statement::Return { span: Span::DUMMY });
+    flat.add_function(partial);
+    let mut concrete = rumoca_core::Function::new(
+        "Modelica.Media.Air.ReferenceMoistAir.setState_pTX",
+        Span::DUMMY,
+    );
+    concrete.def_id = Some(function_def_id);
+    concrete
+        .body
+        .push(rumoca_core::Statement::Return { span: Span::DUMMY });
+    flat.add_function(concrete);
+
+    let component_ref = core_comp_ref_with_def_id(
+        &[
+            "Modelica",
+            "Media",
+            "Air",
+            "ReferenceMoistAir",
+            "setState_pTX",
+        ],
+        function_def_id,
+    );
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::with_component_reference(
+                "Modelica.Media.Interfaces.PartialMedium.setState_pTX",
+                component_ref.clone(),
+            ),
+            args: vec![],
+            is_constructor: false,
+            span: Span::DUMMY,
+        },
+        Span::DUMMY,
+        rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    canonicalize_collected_function_calls(&mut flat);
+
+    let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
+        panic!("expected function call residual");
+    };
+    assert_eq!(
+        name.as_str(),
+        "Modelica.Media.Air.ReferenceMoistAir.setState_pTX"
+    );
+    assert_eq!(name.target_def_id(), Some(function_def_id));
+    assert_eq!(name.component_ref(), Some(&component_ref));
 }
 
 #[test]
@@ -211,7 +353,7 @@ fn canonicalize_collected_function_calls_leaves_ambiguous_suffix() {
 #[test]
 fn validates_function_output_assignment_before_return() {
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
-    function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
     function.body.push(rumoca_core::Statement::Assignment {
         comp: core_comp_ref(&["y"]),
         value: rumoca_core::Expression::Literal {
@@ -227,7 +369,7 @@ fn validates_function_output_assignment_before_return() {
 #[test]
 fn rejects_function_output_only_assigned_after_return() {
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
-    function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
     function
         .body
         .push(rumoca_core::Statement::Return { span: Span::DUMMY });
@@ -344,8 +486,11 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
         rumoca_core::ClassType::Function,
         inherited_fn_def,
     );
+    inherited_fn.location = test_location(9, 27);
+    let mut return_token = token("return");
+    return_token.location = test_location(28, 34);
     inherited_fn.algorithms.push(vec![ast::Statement::Return {
-        token: token("return"),
+        token: return_token,
     }]);
 
     let mut partial_pkg = class(
@@ -372,6 +517,7 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
     });
 
     let mut tree = ast::ClassTree::new();
+    tree.source_map = test_source_map();
     tree.definitions
         .classes
         .insert("PartialMedium".to_string(), partial_pkg);
@@ -603,7 +749,7 @@ fn validates_flat_boundary_allows_output_binding_functions() {
     let mut function =
         rumoca_core::Function::new("Modelica.Math.BooleanVectors.anyTrue", Span::DUMMY);
     function.add_output(
-        rumoca_core::FunctionParam::new("result", "Boolean").with_default(
+        rumoca_core::FunctionParam::new("result", "Boolean", test_span()).with_default(
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(true),
                 span: Span::DUMMY,
@@ -620,6 +766,7 @@ fn validates_flat_boundary_allows_output_binding_functions() {
 fn test_convert_component_to_param_prefers_binding_over_start_default() {
     let component = ast::Component {
         type_name: ast::Name::from_string("Real"),
+        location: test_location(9, 15),
         has_explicit_binding: true,
         start: ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
@@ -637,11 +784,11 @@ fn test_convert_component_to_param_prefers_binding_over_start_default() {
             },
             span: rumoca_core::Span::DUMMY,
         }),
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     };
 
     let def_map = crate::ResolveDefMap::default();
-    let source_map = rumoca_core::SourceMap::new();
+    let source_map = test_source_map();
     let tree = ast::ClassTree::new();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
@@ -696,13 +843,14 @@ fn size_subscript(reference: &str, dimension: i64) -> ast::Subscript {
 fn test_convert_component_to_param_preserves_mixed_dynamic_rank() {
     let component = ast::Component {
         type_name: ast::Name::from_string("Real"),
+        location: test_location(9, 15),
         shape: vec![2],
         shape_expr: vec![size_subscript("c0", 1), integer_subscript(2)],
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     };
 
     let def_map = crate::ResolveDefMap::default();
-    let source_map = rumoca_core::SourceMap::new();
+    let source_map = test_source_map();
     let tree = ast::ClassTree::new();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
@@ -741,7 +889,7 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
                 token: token("2"),
                 span: Span::DUMMY,
             }),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         },
     );
 
@@ -754,17 +902,18 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
     n_state_ref.def_id = Some(n_state_def);
     let component = ast::Component {
         type_name: ast::Name::from_string("Integer"),
+        location: test_location(9, 15),
         shape_expr: vec![ast::Subscript::Expression(
             ast::Expression::ComponentReference(n_state_ref),
         )],
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     };
 
     let param = convert_component_to_param(
         &class_index,
         "state",
         &component,
-        &rumoca_core::SourceMap::new(),
+        &test_source_map(),
         &crate::ResolveDefMap::default(),
         &qualify::ImportMap::default(),
         &HashSet::new(),
@@ -848,9 +997,10 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
     type_name.def_id = Some(orientation_id);
     let component = ast::Component {
         type_name,
-        ..Default::default()
+        location: test_location(9, 15),
+        ..ast::Component::empty_with_span(test_span())
     };
-    let source_map = rumoca_core::SourceMap::new();
+    let source_map = test_source_map();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
         &class_index,
@@ -875,6 +1025,7 @@ fn test_constructor_signature_preserves_local_default_references() {
             text: "C".into(),
             ..Default::default()
         },
+        location: test_location(0, 8),
         class_type: rumoca_core::ClassType::Record,
         components: ast::AstIndexMap::from_iter([
             (
@@ -883,7 +1034,8 @@ fn test_constructor_signature_preserves_local_default_references() {
                     name: "orientation".to_string(),
                     def_id: Some(orientation_def),
                     type_name: ast::Name::from_string("Real"),
-                    ..Default::default()
+                    location: test_location(11, 27),
+                    ..ast::Component::empty_with_span(test_span())
                 },
             ),
             (
@@ -892,16 +1044,17 @@ fn test_constructor_signature_preserves_local_default_references() {
                     name: "N".to_string(),
                     def_id: Some(n_def),
                     type_name: ast::Name::from_string("Real"),
+                    location: test_location(30, 37),
                     has_explicit_binding: true,
                     binding: Some(ast::Expression::ComponentReference(
                         ast::ComponentReference {
                             local: false,
                             parts: vec![],
                             def_id: Some(orientation_def),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     )),
-                    ..Default::default()
+                    ..ast::Component::empty_with_span(test_span())
                 },
             ),
         ]),
@@ -911,7 +1064,7 @@ fn test_constructor_signature_preserves_local_default_references() {
     tree.def_map
         .insert(orientation_def, "Pkg.C.orientation".to_string());
     tree.def_map.insert(n_def, "Pkg.C.N".to_string());
-    let source_map = rumoca_core::SourceMap::new();
+    let source_map = test_source_map();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
 
     let constructor = convert_constructor_signature(
@@ -937,14 +1090,20 @@ fn test_constructor_signature_preserves_local_default_references() {
 #[test]
 fn test_function_local_normalization_rewrites_self_qualified_default() {
     let mut function = rumoca_core::Function::new("Pkg.C", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("orientation", "Real"));
-    function.add_input(rumoca_core::FunctionParam::new("N", "Real").with_default(
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("Pkg.C.orientation"),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        },
+    function.add_input(rumoca_core::FunctionParam::new(
+        "orientation",
+        "Real",
+        test_span(),
     ));
+    function.add_input(
+        rumoca_core::FunctionParam::new("N", "Real", test_span()).with_default(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("Pkg.C.orientation"),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+    );
 
     normalize_function_local_references(&mut function);
 
@@ -1081,7 +1240,7 @@ fn pi_component() -> ast::Component {
                 span: rumoca_core::Span::DUMMY,
             },
         )),
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     }
 }
 

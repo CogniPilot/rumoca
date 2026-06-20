@@ -32,7 +32,7 @@ pub(super) fn tear_and_eliminate_loop_block(
         return Ok(());
     }
 
-    let local_eq_unknowns = loop_local_incidence(dae, &eq_indices, &var_names, substitutions);
+    let local_eq_unknowns = loop_local_incidence(dae, &eq_indices, &var_names, substitutions)?;
     let Some(tearing) = tear_algebraic_loop(var_names.len(), &local_eq_unknowns) else {
         return Ok(());
     };
@@ -53,7 +53,7 @@ pub(super) fn tear_and_eliminate_loop_block(
         let eq_rhs = apply_substitutions_in_order(
             &dae.continuous.equations[eq_idx].rhs,
             &trial_substitutions,
-        );
+        )?;
         let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
             return Ok(());
         };
@@ -111,17 +111,17 @@ fn loop_local_incidence(
     eq_indices: &[usize],
     var_names: &[VarName],
     substitutions: &[Substitution],
-) -> Vec<HashSet<usize>> {
+) -> Result<Vec<HashSet<usize>>, StructuralError> {
     eq_indices
         .iter()
         .map(|&eq_idx| {
             let rhs =
-                apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions);
-            var_names
+                apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions)?;
+            Ok(var_names
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, name)| expr_contains_var(&rhs, name).then_some(idx))
-                .collect()
+                .collect())
         })
         .collect()
 }

@@ -11,7 +11,7 @@ fn lower_derivative_rhs_extracts_explicit_state_derivative_rows() {
         .variables
         .parameters
         .insert(rumoca_core::VarName::new("k"), scalar_var("k"));
-    dae_model.continuous.equations.push(residual(sub(
+    let mut equation = residual(sub(
         der(var("x")),
         mul(
             rumoca_core::Expression::Unary {
@@ -21,10 +21,12 @@ fn lower_derivative_rhs_extracts_explicit_state_derivative_rows() {
             },
             var("x"),
         ),
-    )));
+    ));
+    equation.span = lower_test_span();
+    dae_model.continuous.equations.push(equation);
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout).expect("explicit xdot should lower"),
     );
     let (_, output) = eval_block_output(&rows, 0, &[2.0], &[3.0], 0.0);
@@ -57,7 +59,7 @@ fn lower_derivative_rhs_extracts_additive_zero_residual_rows() {
         .push(residual(add(der(var("qd")), mul(var("wq"), var("q")))));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("additive zero residual derivative rows should lower"),
     );
@@ -93,7 +95,7 @@ fn lower_derivative_rhs_extracts_piecewise_state_derivative_rows() {
         }));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("piecewise derivative equation should lower"),
     );
@@ -138,7 +140,7 @@ fn lower_derivative_rhs_extracts_nested_piecewise_inductor_row() {
     )));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("nested piecewise derivative equation should lower"),
     );
@@ -192,7 +194,7 @@ fn lower_derivative_rhs_extracts_whole_if_with_derivative_free_branch() {
         }));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("whole-if derivative equation should lower"),
     );
@@ -211,14 +213,10 @@ fn lower_derivative_rhs_extracts_whole_if_with_derivative_free_branch() {
 #[test]
 fn lower_derivative_rhs_preserves_one_element_array_state_index() {
     let mut dae_model = dae::Dae::default();
-    dae_model.variables.states.insert(
-        rumoca_core::VarName::new("x"),
-        dae::Variable {
-            name: rumoca_core::VarName::new("x"),
-            dims: vec![1],
-            ..Default::default()
-        },
-    );
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), source_array_var("x", &[1]));
     dae_model
         .variables
         .algebraics
@@ -229,7 +227,7 @@ fn lower_derivative_rhs_preserves_one_element_array_state_index() {
         .push(residual(sub(der(indexed_var("x", 1)), var("u"))));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout)
             .expect("one-element array-state derivative should lower"),
     );
@@ -243,11 +241,7 @@ fn lower_derivative_rhs_lowers_coupled_array_state_solve_to_solver_ir() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
         rumoca_core::VarName::new("omega"),
-        dae::Variable {
-            name: rumoca_core::VarName::new("omega"),
-            dims: vec![2],
-            ..Default::default()
-        },
+        source_array_var("omega", &[2]),
     );
     for name in ["J[1,1]", "J[1,2]", "J[2,1]", "J[2,2]", "tau[1]", "tau[2]"] {
         dae_model
@@ -271,7 +265,7 @@ fn lower_derivative_rhs_lowers_coupled_array_state_solve_to_solver_ir() {
     )));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let rows = rumoca_eval_solve::to_scalar_program_block(
+    let rows = scalar_program_block_fixture(
         &lower_derivative_rhs(&dae_model, &layout).expect("coupled xdot should lower"),
     );
     assert!(rows.programs[0].iter().any(|op| {

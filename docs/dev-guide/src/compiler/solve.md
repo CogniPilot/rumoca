@@ -56,8 +56,9 @@ backend would take):
    kernels, like `cuda-c`) or an execution *adapter* (an API wrapper, like
    `rumoca-exec-cranelift`) — or both, like the NVRTC JIT.
 2. Consume Solve IR. If the backend needs tensor structure, use the tensor
-   program nodes; every node guarantees a scalar fallback, so a backend can
-   start scalar-only and specialize incrementally.
+   program nodes; every valid node has a fallible scalar fallback, so a backend
+   can start scalar-only, propagate malformed tensor metadata, and specialize
+   incrementally.
 3. Declare capabilities honestly in the target manifest — readiness level
    and per-feature support columns are what `rumoca targets` reports.
 4. Keep language/toolchain specifics in the target's `target.toml` and

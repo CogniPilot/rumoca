@@ -1358,13 +1358,8 @@ fn infer_model_name_from_session(
         return Ok(candidates[0].clone());
     }
 
-    let file_stem = Path::new(uri)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    if !file_stem.is_empty()
-        && let Some(model) = choose_single_candidate_by_suffix(&candidates, file_stem)
-    {
+    let file_stem = model_inference_file_stem(uri)?;
+    if let Some(model) = choose_single_candidate_by_suffix(&candidates, file_stem) {
         return Ok(model);
     }
 
@@ -1379,6 +1374,17 @@ fn infer_model_name_from_session(
         preview,
         if candidates.len() > 15 { ", ..." } else { "" }
     )))
+}
+
+fn model_inference_file_stem(uri: &str) -> Result<&str, PyRuntimeStringError> {
+    Path::new(uri)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| {
+            PyRuntimeStringError(format!(
+                "Unable to infer model from '{uri}': document path has no valid UTF-8 file stem"
+            ))
+        })
 }
 
 fn choose_single_candidate_by_suffix(candidates: &[String], suffix: &str) -> Option<String> {

@@ -1,5 +1,5 @@
 use crate::{TypeCheckError, TypeCheckResult};
-use rumoca_core::{DefId, SourceMap, Span, TypeId};
+use rumoca_core::{DefId, SourceMap, TypeId};
 use rumoca_ir_ast::{ClassTree, Component, TypeTable};
 use std::collections::{HashMap, HashSet};
 
@@ -172,20 +172,21 @@ fn resolve_component_type_for_modifier_members(
     }
 
     let type_name = component.type_name.to_string();
+    let span = name_span(source_map, &component.type_name)?;
     type_table
         .lookup(&type_name)
         .or_else(|| type_suffix_index.get(&type_name).copied().flatten())
-        .ok_or_else(|| {
-            Box::new(TypeCheckError::undefined_type(
-                type_name,
-                name_span(source_map, &component.type_name),
-            ))
-        })
+        .ok_or_else(|| Box::new(TypeCheckError::undefined_type(type_name, span)))
 }
 
-fn name_span(source_map: &SourceMap, name: &rumoca_ir_ast::Name) -> Span {
+fn name_span(
+    source_map: &SourceMap,
+    name: &rumoca_ir_ast::Name,
+) -> TypeCheckResult<rumoca_core::Span> {
     let Some(first) = name.name.first() else {
-        return Span::DUMMY;
+        return Err(Box::new(TypeCheckError::missing_source_context(
+            "component modifier member type name has no source path segments",
+        )));
     };
     let last = name.name.last().unwrap_or(first);
     let file_name = if !first.location.file_name.is_empty() {
@@ -193,9 +194,15 @@ fn name_span(source_map: &SourceMap, name: &rumoca_ir_ast::Name) -> Span {
     } else {
         last.location.file_name.as_str()
     };
-    source_map.location_to_span(
-        file_name,
-        first.location.start as usize,
-        last.location.end as usize,
-    )
+    source_map
+        .try_location_to_span(
+            file_name,
+            first.location.start as usize,
+            last.location.end as usize,
+        )
+        .ok_or_else(|| {
+            Box::new(TypeCheckError::missing_source_context(format!(
+                "source file `{file_name}` for component modifier member type name was not found"
+            )))
+        })
 }

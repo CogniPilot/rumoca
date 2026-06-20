@@ -6,8 +6,14 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeSolveError {
-    #[error("solve-IR evaluation failed: {0}")]
-    SolveIr(String),
+    #[error(
+        "solve-IR evaluation failed: {message}{}",
+        span_suffix(*.span)
+    )]
+    SolveIr {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
 
     #[error("unsupported solve-IR runtime model: {reason}")]
     UnsupportedModel { reason: String },
@@ -17,13 +23,40 @@ pub enum RuntimeSolveError {
 
     #[error(
         "non-finite ({kind}) value computed for `{name}`{}",
-        .span.map(|span| format!(" @ {span:?}")).unwrap_or_default()
+        span_suffix(*.span)
     )]
     NonFiniteValue {
         name: String,
         kind: &'static str,
         span: Option<rumoca_core::Span>,
     },
+}
+
+fn span_suffix(span: Option<rumoca_core::Span>) -> String {
+    match span {
+        Some(span) => format!(" @ {span:?}"),
+        None => String::new(),
+    }
+}
+
+impl RuntimeSolveError {
+    pub fn solve_ir(message: impl Into<String>) -> Self {
+        Self::solve_ir_with_span(message, None)
+    }
+
+    pub fn solve_ir_with_span(message: impl Into<String>, span: Option<rumoca_core::Span>) -> Self {
+        Self::SolveIr {
+            message: message.into(),
+            span,
+        }
+    }
+
+    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+        match self {
+            Self::SolveIr { span, .. } | Self::NonFiniteValue { span, .. } => *span,
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,8 +104,8 @@ impl From<solve::DiscreteEventPreMode> for EventPreMode {
 
 pub fn push_visible_values(data: &mut [Vec<f64>], values: &[f64]) -> Result<(), RuntimeSolveError> {
     if data.len() != values.len() {
-        return Err(RuntimeSolveError::SolveIr(
-            "visible trace storage does not match solve layout".to_string(),
+        return Err(RuntimeSolveError::solve_ir(
+            "visible trace storage does not match solve layout",
         ));
     }
     for (series, value) in data.iter_mut().zip(values.iter().copied()) {
@@ -86,14 +119,14 @@ pub fn replace_last_visible_values(
     values: &[f64],
 ) -> Result<(), RuntimeSolveError> {
     if data.len() != values.len() {
-        return Err(RuntimeSolveError::SolveIr(
-            "visible trace storage does not match solve layout".to_string(),
+        return Err(RuntimeSolveError::solve_ir(
+            "visible trace storage does not match solve layout",
         ));
     }
     for (series, value) in data.iter_mut().zip(values.iter().copied()) {
         let Some(slot) = series.last_mut() else {
-            return Err(RuntimeSolveError::SolveIr(
-                "visible trace value replacement requires an existing sample".to_string(),
+            return Err(RuntimeSolveError::solve_ir(
+                "visible trace value replacement requires an existing sample",
             ));
         };
         *slot = value;

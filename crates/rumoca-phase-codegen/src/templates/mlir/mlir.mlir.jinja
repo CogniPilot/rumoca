@@ -26,6 +26,15 @@
          if solve is defined and solve.continuous is defined
             and solve.continuous.derivative_rhs is defined
             and solve.continuous.derivative_rhs.programs is defined else []) %}
+{%- set drv_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices
+      if solve_blocks is defined and solve_blocks.continuous is defined
+         and solve_blocks.continuous.derivative_rhs is defined
+         and solve_blocks.continuous.derivative_rhs.scalar_programs is defined
+         and solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices is defined else [] %}
+{%- set drv_output_count = solve_blocks.continuous.derivative_rhs.output_count
+      if solve_blocks is defined and solve_blocks.continuous is defined
+         and solve_blocks.continuous.derivative_rhs is defined
+         and solve_blocks.continuous.derivative_rhs.output_count is defined else (drv_rows | length) %}
 {%- set impl_rows = solve_implicit_rows
       if solve_implicit_rows is defined else (
          solve_blocks.continuous.implicit_rhs.scalar_programs.programs
@@ -93,8 +102,9 @@
 
 {#- ── Macro: emit MLIR SSA instructions for one LinearOp ─────────────────────
     r — row index (unique across all rows in the enclosing function)
-    i — output index written by StoreOutput -#}
-{%- macro emit_op(op, r, i) %}
+    i — output index written by StoreOutput
+    name_i — ordinal used only for SSA value naming -#}
+{%- macro emit_op(op, r, i, name_i) %}
 {%- if op.Const is defined %}
     %r{{ r }}_{{ op.Const.dst }} = arith.constant {{ op.Const.value }} : f64
 {%- elif op.LoadTime is defined %}
@@ -201,8 +211,8 @@
     %{{ pfx }}_comp = arith.constant {{ comp }} : i64
     %r{{ r }}_{{ dst }} = func.call @rumoca_solve_linear_component(%{{ pfx }}_Ai64, %{{ pfx }}_bi64, %{{ pfx }}_n, %{{ pfx }}_comp) : (i64, i64, i64, i64) -> f64
 {%- elif op.StoreOutput is defined %}
-    %outi_{{ i }} = arith.constant {{ i }} : index
-    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi_{{ i }}] : memref<?xf64>
+    %outi{{ name_i }} = arith.constant {{ i }} : index
+    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi{{ name_i }}] : memref<?xf64>
 {%- endif %}
 {%- endmacro %}
 
@@ -225,9 +235,14 @@ module @{{ name }} {
       %p    : memref<?xf64>,
       %t    : f64,
       %out  : memref<?xf64>) {
+    %drv_zero = arith.constant 0.0 : f64
+{% for output_index in range(0, drv_output_count) %}
+    %drv_zero_i{{ output_index }} = arith.constant {{ output_index }} : index
+    memref.store %drv_zero, %out[%drv_zero_i{{ output_index }}] : memref<?xf64>
+{% endfor %}
 {%- set ns = namespace(out=0) %}
 {% for row in drv_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{%- set out_i = drv_output_indices[ns.out] if drv_output_indices | length > ns.out else ns.out %}{{ emit_op(op, r, out_i, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -241,7 +256,7 @@ module @{{ name }} {
       %out  : memref<?xf64>) {
 {%- set ns = namespace(out=0) %}
 {% for row in impl_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -258,7 +273,7 @@ module @{{ name }} {
       %out  : memref<?xf64>) {
 {%- set ns = namespace(out=0) %}
 {% for row in jac_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -273,7 +288,7 @@ module @{{ name }} {
       %out  : memref<?xf64>) {
 {%- set ns = namespace(out=0) %}
 {% for row in root_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }

@@ -273,7 +273,8 @@ fn summary_from_payload(
     if payload.manifest.schema_version != SEMANTIC_SUMMARY_CACHE_SCHEMA_VERSION {
         return None;
     }
-    if payload.manifest.compiler_version != source_root_cache_compiler_version() {
+    let compiler_version = source_root_cache_compiler_version().ok()?;
+    if payload.manifest.compiler_version != compiler_version {
         return None;
     }
     if payload.manifest.source_root_id != source_root_id {
@@ -366,10 +367,11 @@ fn write_summary_cache_with_manifest_fingerprint(
             },
         )
         .collect();
+    let files = cached_source_root_semantic_files(summary)?;
     let payload = CachedSourceRootSemanticSummaryPayload {
         manifest: SourceRootSemanticCacheManifest {
             schema_version: SEMANTIC_SUMMARY_CACHE_SCHEMA_VERSION,
-            compiler_version: source_root_cache_compiler_version(),
+            compiler_version: source_root_cache_compiler_version()?,
             source_root_id: source_root_id.to_string(),
             cache_key: cache_key.to_string(),
             source_root_path: source_root_path.to_string_lossy().to_string(),
@@ -388,24 +390,7 @@ fn write_summary_cache_with_manifest_fingerprint(
             },
         },
         package_def_map: summary.package_def_map.clone(),
-        files: summary
-            .declarations_by_uri
-            .iter()
-            .map(|(uri, declaration_index)| CachedSourceRootSemanticFile {
-                uri: uri.clone(),
-                summary_fingerprint: summary
-                    .summary_fingerprints_by_uri
-                    .get(uri)
-                    .copied()
-                    .expect("summary fingerprint should exist for persisted declaration"),
-                file_summary: summary
-                    .file_summaries_by_uri
-                    .get(uri)
-                    .cloned()
-                    .expect("file summary should exist for persisted declaration"),
-                declaration_index: declaration_index.clone(),
-            })
-            .collect(),
+        files,
         resolved_aggregate: summary.resolved_aggregate.clone(),
     };
     let tmp_path = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -429,6 +414,33 @@ fn write_summary_cache_with_manifest_fingerprint(
         }
     }
     Ok(())
+}
+
+fn cached_source_root_semantic_files(
+    summary: &SourceRootSemanticSummary,
+) -> Result<Vec<CachedSourceRootSemanticFile>> {
+    summary
+        .declarations_by_uri
+        .iter()
+        .map(|(uri, declaration_index)| {
+            let summary_fingerprint = summary
+                .summary_fingerprints_by_uri
+                .get(uri)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("missing summary fingerprint for `{uri}`"))?;
+            let file_summary = summary
+                .file_summaries_by_uri
+                .get(uri)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing file summary for `{uri}`"))?;
+            Ok(CachedSourceRootSemanticFile {
+                uri: uri.clone(),
+                summary_fingerprint,
+                file_summary,
+                declaration_index: declaration_index.clone(),
+            })
+        })
+        .collect()
 }
 
 fn source_root_fingerprint(summary_fingerprints: &IndexMap<String, Fingerprint>) -> Fingerprint {

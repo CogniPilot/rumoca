@@ -8,7 +8,10 @@
 //! pivots (`∂der(x)/∂x = 0`). This complements the reactive `--inspect eval` NaN
 //! trace with a proactive view of the linearization the solver sees.
 
-use crate::{AlgebraicSettle, SolveRuntime};
+use crate::{
+    AlgebraicSettle, SolveRuntime,
+    inspect_alloc::{filled_f64_values, vec_with_capacity},
+};
 
 /// Write `column[row]` into `matrix[row][col]` for every row.
 fn write_column(matrix: &mut [Vec<f64>], col: usize, column: &[f64]) {
@@ -56,6 +59,9 @@ impl JacobianReport {
     /// in the linearization.
     #[must_use]
     pub fn singular_columns(&self) -> Vec<usize> {
+        if !self.has_square_matrix() {
+            return Vec::new();
+        }
         // `matrix` is a dense square `dim x dim`, so every `row[col]` is in range.
         (0..self.dim())
             .filter(|&col| {
@@ -69,6 +75,9 @@ impl JacobianReport {
     /// Diagonal indices whose pivot `∂der(x)/∂x` is (near) zero.
     #[must_use]
     pub fn zero_pivots(&self) -> Vec<usize> {
+        if !self.has_square_matrix() {
+            return Vec::new();
+        }
         (0..self.dim())
             .filter(|&i| self.matrix[i][i].abs() <= STRUCTURAL_ZERO)
             .collect()
@@ -84,6 +93,10 @@ impl JacobianReport {
                 .filter(|(_, value)| value.abs() > STRUCTURAL_ZERO)
                 .map(move |(col, value)| (row, col, value))
         })
+    }
+
+    fn has_square_matrix(&self) -> bool {
+        self.matrix.len() == self.dim() && self.matrix.iter().all(|row| row.len() == self.dim())
     }
 }
 
@@ -103,10 +116,18 @@ impl SolveRuntime {
         let n = self.state_count;
         let state_labels = (0..n).map(|index| self.state_label(index)).collect();
 
-        let mut matrix = vec![vec![0.0; n]; n];
+        let (mut matrix, mut seed, mut column) = match jacobian_work_buffers(n) {
+            Ok(buffers) => buffers,
+            Err(error) => {
+                return JacobianReport {
+                    t,
+                    state_labels,
+                    matrix: Vec::new(),
+                    error: Some(error),
+                };
+            }
+        };
         let mut error = None;
-        let mut seed = vec![0.0; n];
-        let mut column = vec![0.0; n];
         for col in 0..n {
             seed[col] = 1.0;
             let result =
@@ -140,5 +161,51 @@ impl SolveRuntime {
             Some(name) => name.clone(),
             None => format!("y[{index}]"),
         }
+    }
+}
+
+type JacobianWorkBuffers = (Vec<Vec<f64>>, Vec<f64>, Vec<f64>);
+
+fn jacobian_work_buffers(n: usize) -> Result<JacobianWorkBuffers, String> {
+    Ok((
+        zero_jacobian_matrix(n)?,
+        filled_f64_values(n, 0.0, "jacobian seed values")?,
+        filled_f64_values(n, 0.0, "jacobian column values")?,
+    ))
+}
+
+fn zero_jacobian_matrix(n: usize) -> Result<Vec<Vec<f64>>, String> {
+    let mut matrix = vec_with_capacity(n, "jacobian matrix row count")?;
+    for _ in 0..n {
+        matrix.push(filled_f64_values(n, 0.0, "jacobian matrix row values")?);
+    }
+    Ok(matrix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jacobian_matrix_rejects_impossible_dimension() {
+        let err = zero_jacobian_matrix(usize::MAX)
+            .expect_err("impossible jacobian matrix row count should fail");
+
+        assert!(err.contains("jacobian matrix row count capacity overflows"));
+    }
+
+    #[test]
+    fn jacobian_report_handles_missing_matrix_defensively() {
+        let report = JacobianReport {
+            t: 0.0,
+            state_labels: vec!["x".to_string(), "y".to_string()],
+            matrix: Vec::new(),
+            error: Some("jacobian matrix row count capacity overflows".to_string()),
+        };
+
+        assert_eq!(report.dim(), 2);
+        assert!(report.singular_columns().is_empty());
+        assert!(report.zero_pivots().is_empty());
+        assert_eq!(report.nonzero_entries().count(), 0);
     }
 }

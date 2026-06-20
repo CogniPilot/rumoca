@@ -145,7 +145,10 @@ impl EvalLookup for EvalContext {
 /// Returns an error if the expression cannot be evaluated at compile time
 /// (e.g., references time-varying variables, uses unsupported operations).
 pub fn eval_expr(expr: &Expression, ctx: &EvalContext) -> Result<Value, EvalError> {
-    eval_expr_with_span(expr, ctx, Span::DUMMY)
+    let span = expr.span().ok_or_else(|| {
+        EvalError::missing_source_context("constant expression is missing source provenance")
+    })?;
+    eval_expr_with_span(expr, ctx, span)
 }
 
 /// Evaluate with a span for error reporting.
@@ -1259,24 +1262,28 @@ pub fn try_eval_bool(expr: &Expression, ctx: &EvalContext) -> Option<bool> {
 mod tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1)
+    }
+
     fn make_int(v: i64) -> Expression {
         Expression::Literal {
             value: Literal::Integer(v),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
     fn make_real(v: f64) -> Expression {
         Expression::Literal {
             value: Literal::Real(v),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
     fn make_bool(v: bool) -> Expression {
         Expression::Literal {
             value: Literal::Boolean(v),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -1284,7 +1291,7 @@ mod tests {
         Expression::Array {
             elements: values.iter().map(|v| make_int(*v)).collect(),
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -1295,11 +1302,11 @@ mod tests {
                 .map(|row| Expression::Array {
                     elements: row.iter().map(|v| make_int(*v)).collect(),
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 })
                 .collect(),
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -1321,6 +1328,18 @@ mod tests {
     }
 
     #[test]
+    fn test_eval_expr_requires_source_provenance() {
+        let ctx = EvalContext::new();
+        let expr = Expression::Literal {
+            value: Literal::Integer(42),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let err = eval_expr(&expr, &ctx).expect_err("unspanned constants should fail fast");
+        assert!(matches!(err, EvalError::MissingSourceContext { .. }));
+    }
+
+    #[test]
     fn test_eval_binary() {
         let ctx = EvalContext::new();
 
@@ -1329,7 +1348,7 @@ mod tests {
             op: OpBinary::Add,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(4)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(7));
@@ -1339,7 +1358,7 @@ mod tests {
             op: OpBinary::Sub,
             lhs: Box::new(make_int(10)),
             rhs: Box::new(make_int(3)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(7));
@@ -1349,7 +1368,7 @@ mod tests {
             op: OpBinary::Mul,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(4)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(12));
@@ -1359,7 +1378,7 @@ mod tests {
             op: OpBinary::Div,
             lhs: Box::new(make_int(10)),
             rhs: Box::new(make_int(4)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.5).abs() < 1e-10);
@@ -1372,7 +1391,7 @@ mod tests {
             op: OpBinary::Add,
             lhs: Box::new(make_int(i64::MAX)),
             rhs: Box::new(make_int(1)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let err = eval_expr(&expr, &ctx).unwrap_err();
         assert!(
@@ -1392,7 +1411,7 @@ mod tests {
             op: OpBinary::Mul,
             lhs: Box::new(lhs.clone()),
             rhs: Box::new(rhs.clone()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let mul_result = eval_expr(&mul_expr, &ctx).unwrap();
         assert_eq!(mul_result, Value::Integer(32));
@@ -1402,7 +1421,7 @@ mod tests {
             op: OpBinary::MulElem,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let mul_elem_result = eval_expr(&mul_elem_expr, &ctx).unwrap();
         assert_eq!(
@@ -1426,7 +1445,7 @@ mod tests {
             op: OpBinary::Mul,
             lhs: Box::new(lhs_matrix.clone()),
             rhs: Box::new(rhs_matrix.clone()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let matrix_mul_result = eval_expr(&matrix_mul_expr, &ctx).unwrap();
         assert_eq!(
@@ -1442,7 +1461,7 @@ mod tests {
             op: OpBinary::MulElem,
             lhs: Box::new(lhs_matrix),
             rhs: Box::new(rhs_matrix),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let matrix_mul_elem_result = eval_expr(&matrix_mul_elem_expr, &ctx).unwrap();
         assert_eq!(
@@ -1463,7 +1482,7 @@ mod tests {
             op: OpBinary::Lt,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(4)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_bool(), Some(true));
@@ -1473,7 +1492,7 @@ mod tests {
             op: OpBinary::Eq,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(3)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_bool(), Some(true));
@@ -1487,7 +1506,7 @@ mod tests {
         let expr = Expression::Unary {
             op: OpUnary::Minus,
             rhs: Box::new(make_int(5)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(-5));
@@ -1496,7 +1515,7 @@ mod tests {
         let expr = Expression::Unary {
             op: OpUnary::Not,
             rhs: Box::new(make_bool(true)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_bool(), Some(false));
@@ -1509,7 +1528,7 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![make_int(1), make_int(2), make_int(3)],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         let arr = result.as_array().unwrap();
@@ -1527,7 +1546,7 @@ mod tests {
             start: Box::new(make_int(1)),
             step: None,
             end: Box::new(make_int(5)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         let arr = result.as_array().unwrap();
@@ -1540,7 +1559,7 @@ mod tests {
             start: Box::new(make_int(1)),
             step: Some(Box::new(make_int(2))),
             end: Box::new(make_int(5)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         let arr = result.as_array().unwrap();
@@ -1558,7 +1577,7 @@ mod tests {
         let expr = Expression::If {
             branches: vec![(make_bool(true), make_int(1))],
             else_branch: Box::new(make_int(2)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(1));
@@ -1567,7 +1586,7 @@ mod tests {
         let expr = Expression::If {
             branches: vec![(make_bool(false), make_int(1))],
             else_branch: Box::new(make_int(2)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(2));
@@ -1582,7 +1601,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: "n".into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(10));
@@ -1590,7 +1609,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: "x".into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.5).abs() < 1e-10);
@@ -1604,7 +1623,7 @@ mod tests {
         let expr = Expression::BuiltinCall {
             function: BuiltinFunction::Abs,
             args: vec![make_int(-5)],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(5));
@@ -1613,7 +1632,7 @@ mod tests {
         let expr = Expression::BuiltinCall {
             function: BuiltinFunction::Sqrt,
             args: vec![make_real(4.0)],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.0).abs() < 1e-10);
@@ -1625,7 +1644,7 @@ mod tests {
         let expr = Expression::BuiltinCall {
             function: BuiltinFunction::Integer,
             args: vec![make_real(-1e40)],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let err = eval_expr(&expr, &ctx).unwrap_err();
         assert!(
@@ -1642,7 +1661,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: "n".into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
 
         assert_eq!(try_eval_integer(&expr, &ctx), Some(5));

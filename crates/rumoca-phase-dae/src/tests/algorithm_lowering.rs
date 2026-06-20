@@ -1,12 +1,21 @@
 use super::*;
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("algorithm_lowering_test.mo"),
+        1,
+        2,
+    )
+}
+
 fn make_comp_ref(name: &str) -> rumoca_core::ComponentReference {
+    let span = test_span();
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span,
             subs: vec![],
         }],
         def_id: None,
@@ -17,13 +26,17 @@ fn make_subscripted_comp_ref(
     name: &str,
     index_expr: rumoca_core::Expression,
 ) -> rumoca_core::ComponentReference {
+    let span = test_span();
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
-            subs: vec![rumoca_core::Subscript::generated_expr(Box::new(index_expr))],
+            span,
+            subs: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(index_expr),
+                span,
+            )],
         }],
         def_id: None,
     }
@@ -33,12 +46,13 @@ fn make_multi_subscripted_comp_ref(
     name: &str,
     subs: Vec<rumoca_core::Subscript>,
 ) -> rumoca_core::ComponentReference {
+    let span = test_span();
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span,
             subs,
         }],
         def_id: None,
@@ -49,7 +63,7 @@ fn make_var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: VarName::new(name).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -144,7 +158,7 @@ fn add_primitive_real(flat: &mut Model, name: &str) {
         crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new(name),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 }
@@ -161,7 +175,7 @@ fn add_parameter_with_fixed(flat: &mut Model, name: &str, fixed: Option<bool>) {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             fixed,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 }
@@ -174,7 +188,7 @@ fn add_discrete_valued(flat: &mut Model, name: &str) {
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 }
@@ -187,7 +201,7 @@ fn add_tick_z_y_discrete_fixture(flat: &mut Model) {
             name: VarName::new("z"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -197,7 +211,7 @@ fn add_tick_z_y_discrete_fixture(flat: &mut Model) {
             dims: vec![2],
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 }
@@ -208,14 +222,14 @@ fn two_iteration_for_index() -> rumoca_core::ForIndex {
         range: rumoca_core::Expression::Range {
             start: Box::new(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             step: None,
             end: Box::new(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
     }
 }
@@ -228,11 +242,11 @@ fn z_increment_assignment() -> rumoca_core::Statement {
             lhs: Box::new(make_var_ref("z")),
             rhs: Box::new(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -241,7 +255,7 @@ fn y_loop_assignment_then_z_increment() -> Vec<rumoca_core::Statement> {
         rumoca_core::Statement::Assignment {
             comp: make_subscripted_comp_ref("y", make_var_ref("i")),
             value: make_var_ref("z"),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         z_increment_assignment(),
     ]
@@ -254,17 +268,17 @@ fn add_scalar_ode_with_rhs_call(flat: &mut Model, state_name: &str, call_name: &
             lhs: Box::new(rumoca_core::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref(state_name)],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             rhs: Box::new(rumoca_core::Expression::FunctionCall {
                 name: VarName::new(call_name).into(),
                 args: vec![make_var_ref(state_name)],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Span::DUMMY,
+        span: test_span(),
         origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
             component: "probe".to_string(),
         },
@@ -283,7 +297,7 @@ fn build_top_level_assignment_before_loop_model() -> Model {
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -293,7 +307,7 @@ fn build_top_level_assignment_before_loop_model() -> Model {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -304,7 +318,7 @@ fn build_top_level_assignment_before_loop_model() -> Model {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -314,7 +328,7 @@ fn build_top_level_assignment_before_loop_model() -> Model {
             dims: vec![2],
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.algorithms.push(flat::Algorithm::new(
@@ -323,7 +337,7 @@ fn build_top_level_assignment_before_loop_model() -> Model {
                 comp: make_comp_ref("y"),
                 value: make_var_ref("y0"),
 
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             rumoca_core::Statement::For {
                 indices: vec![rumoca_core::ForIndex {
@@ -331,14 +345,14 @@ fn build_top_level_assignment_before_loop_model() -> Model {
                     range: rumoca_core::Expression::Range {
                         start: Box::new(rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         }),
                         step: None,
                         end: Box::new(rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                 }],
                 equations: vec![rumoca_core::Statement::If {
@@ -348,33 +362,35 @@ fn build_top_level_assignment_before_loop_model() -> Model {
                             lhs: Box::new(make_var_ref("time")),
                             rhs: Box::new(rumoca_core::Expression::Index {
                                 base: Box::new(make_var_ref("t")),
-                                subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                                    make_var_ref("i"),
-                                ))],
-                                span: rumoca_core::Span::DUMMY,
+                                subscripts: vec![rumoca_core::Subscript::generated_expr(
+                                    Box::new(make_var_ref("i")),
+                                    test_span(),
+                                )],
+                                span: test_span(),
                             }),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         stmts: vec![rumoca_core::Statement::Assignment {
                             comp: make_comp_ref("y"),
                             value: rumoca_core::Expression::Index {
                                 base: Box::new(make_var_ref("x")),
-                                subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                                    make_var_ref("i"),
-                                ))],
-                                span: rumoca_core::Span::DUMMY,
+                                subscripts: vec![rumoca_core::Subscript::generated_expr(
+                                    Box::new(make_var_ref("i")),
+                                    test_span(),
+                                )],
+                                span: test_span(),
                             },
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         }],
                     }],
                     else_block: None,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
 
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ],
-        Span::DUMMY,
+        test_span(),
         "top-level assignment before for loop".to_string(),
     ));
     flat
@@ -486,6 +502,7 @@ fn contains_initial_call(expr: &rumoca_core::Expression) -> bool {
 
 fn build_supported_algorithm_slice_row_model() -> Model {
     let mut flat = Model::new();
+    let span = test_span();
     flat.add_variable(
         VarName::new("int_addr"),
         crate::test_support::with_component_ref(flat::Variable {
@@ -493,11 +510,11 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -507,11 +524,11 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(3),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -520,7 +537,7 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             name: VarName::new("mem"),
             dims: vec![2, 3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -529,7 +546,7 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             name: VarName::new("mem_word"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -538,20 +555,20 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             name: VarName::new("nextstate"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 
-    let full_row =
-        rumoca_core::Subscript::generated_expr(Box::new(rumoca_core::Expression::Range {
-            start: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            step: None,
-            end: Box::new(make_var_ref("n_data")),
-            span: rumoca_core::Span::DUMMY,
-        }));
+    let generated_subscript = |expr| rumoca_core::Subscript::generated_expr(Box::new(expr), span);
+    let full_row = generated_subscript(rumoca_core::Expression::Range {
+        start: Box::new(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            span,
+        }),
+        step: None,
+        end: Box::new(make_var_ref("n_data")),
+        span,
+    });
 
     flat.algorithms.push(flat::Algorithm::new(
         vec![
@@ -559,29 +576,26 @@ fn build_supported_algorithm_slice_row_model() -> Model {
                 comp: make_multi_subscripted_comp_ref(
                     "mem",
                     vec![
-                        rumoca_core::Subscript::generated_expr(Box::new(make_var_ref("int_addr"))),
+                        generated_subscript(make_var_ref("int_addr")),
                         full_row.clone(),
                     ],
                 ),
                 value: make_var_ref("mem_word"),
 
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
             rumoca_core::Statement::Assignment {
                 comp: make_comp_ref("nextstate"),
                 value: rumoca_core::Expression::Index {
                     base: Box::new(make_var_ref("mem")),
-                    subscripts: vec![
-                        rumoca_core::Subscript::generated_expr(Box::new(make_var_ref("int_addr"))),
-                        full_row,
-                    ],
-                    span: rumoca_core::Span::DUMMY,
+                    subscripts: vec![generated_subscript(make_var_ref("int_addr")), full_row],
+                    span,
                 },
 
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
         ],
-        Span::DUMMY,
+        span,
         "algorithm slice row".to_string(),
     ));
 
@@ -631,9 +645,17 @@ fn test_todae_preserves_function_algorithm_bodies_for_codegen_readability() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
 
-    let mut fn_def = rumoca_core::Function::new("f", Span::DUMMY);
-    fn_def.add_input(rumoca_core::FunctionParam::new("u", "Real"));
-    fn_def.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    let mut fn_def = rumoca_core::Function::new("f", test_span());
+    fn_def.add_input(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        crate::test_support::test_span(),
+    ));
+    fn_def.add_output(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        crate::test_support::test_span(),
+    ));
     fn_def.body.push(rumoca_core::Statement::Assignment {
         comp: make_comp_ref("y"),
         value: rumoca_core::Expression::Binary {
@@ -641,12 +663,12 @@ fn test_todae_preserves_function_algorithm_bodies_for_codegen_readability() {
             lhs: Box::new(make_var_ref("u")),
             rhs: Box::new(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
 
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     });
     flat.add_function(fn_def);
 
@@ -683,9 +705,9 @@ fn test_todae_lowers_supported_model_algorithms_to_equations() {
             comp: make_comp_ref("y"),
             value: make_var_ref("x"),
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "model algorithm".to_string(),
     ));
 
@@ -717,9 +739,9 @@ fn test_todae_routes_discrete_valued_algorithm_assignment_to_f_m() {
             comp: make_comp_ref("y"),
             value: make_var_ref("x"),
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "discrete model algorithm".to_string(),
     ));
 
@@ -760,25 +782,25 @@ fn test_todae_lowers_model_algorithm_for_loop_with_static_range() {
                 range: rumoca_core::Expression::Range {
                     start: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }),
                     step: None,
                     end: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(3),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             }],
             equations: vec![rumoca_core::Statement::Assignment {
                 comp: make_comp_ref("y"),
                 value: make_var_ref("i"),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "model for".to_string(),
     ));
 
@@ -808,7 +830,7 @@ fn test_todae_lowers_model_algorithm_for_loop_with_subscripted_targets() {
             name: VarName::new("y"),
             dims: vec![2],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 
@@ -819,25 +841,25 @@ fn test_todae_lowers_model_algorithm_for_loop_with_subscripted_targets() {
                 range: rumoca_core::Expression::Range {
                     start: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }),
                     step: None,
                     end: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(2),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             }],
             equations: vec![rumoca_core::Statement::Assignment {
                 comp: make_subscripted_comp_ref("y", make_var_ref("i")),
                 value: make_var_ref("i"),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "model for indexed target".to_string(),
     ));
 
@@ -886,7 +908,7 @@ fn test_todae_lowers_model_algorithm_dynamic_scalar_index_assignment() {
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -895,7 +917,7 @@ fn test_todae_lowers_model_algorithm_dynamic_scalar_index_assignment() {
             name: VarName::new("buf"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 
@@ -903,9 +925,9 @@ fn test_todae_lowers_model_algorithm_dynamic_scalar_index_assignment() {
         vec![rumoca_core::Statement::Assignment {
             comp: make_subscripted_comp_ref("buf", make_var_ref("iTick")),
             value: make_var_ref("u"),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "dynamic scalar index assignment".to_string(),
     ));
 
@@ -950,7 +972,7 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
             name: VarName::new("tick"),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -960,7 +982,7 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
             dims: vec![2],
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 
@@ -974,27 +996,27 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
                         range: rumoca_core::Expression::Range {
                             start: Box::new(rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(1),
-                                span: rumoca_core::Span::DUMMY,
+                                span: test_span(),
                             }),
                             step: None,
                             end: Box::new(rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(2),
-                                span: rumoca_core::Span::DUMMY,
+                                span: test_span(),
                             }),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     }],
                     equations: vec![rumoca_core::Statement::Assignment {
                         comp: make_subscripted_comp_ref("y", make_var_ref("i")),
                         value: make_var_ref("tick"),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "when for indexed target".to_string(),
     ));
 
@@ -1039,12 +1061,12 @@ fn test_todae_lowers_when_algorithm_for_loop_with_sequential_cross_target_update
                 stmts: vec![rumoca_core::Statement::For {
                     indices: vec![two_iteration_for_index()],
                     equations: y_loop_assignment_then_z_increment(),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "when for sequential indexed target".to_string(),
     ));
 
@@ -1106,20 +1128,20 @@ fn test_todae_lowers_when_algorithm_preceding_assignment_visible_inside_for_loop
                         comp: make_comp_ref("z"),
                         value: rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Integer(5),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                     rumoca_core::Statement::For {
                         indices: vec![two_iteration_for_index()],
                         equations: y_loop_assignment_then_z_increment(),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                 ],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "when assignment before for loop".to_string(),
     ));
 
@@ -1183,11 +1205,11 @@ fn test_todae_lowers_initial_algorithm_assignment_to_fixed_false_parameter() {
             comp: make_comp_ref("k"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "initial algorithm from SimpleFriction".to_string(),
     ));
 
@@ -1222,11 +1244,11 @@ fn test_todae_rejects_initial_algorithm_assignment_to_default_fixed_parameter() 
             comp: make_comp_ref("k"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "initial fixed parameter assignment".to_string(),
     ));
 
@@ -1254,11 +1276,11 @@ fn test_todae_rejects_initial_algorithm_assignment_to_explicit_fixed_parameter()
             comp: make_comp_ref("k"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "initial fixed parameter assignment".to_string(),
     ));
 
@@ -1286,11 +1308,11 @@ fn test_todae_rejects_runtime_algorithm_assignment_to_parameter() {
             comp: make_comp_ref("k"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "runtime parameter assignment".to_string(),
     ));
 
@@ -1319,20 +1341,20 @@ fn test_todae_lowers_initial_when_algorithm_discrete_assignment_to_initial_equat
                 cond: rumoca_core::Expression::BuiltinCall {
                     function: BuiltinFunction::Initial,
                     args: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: make_comp_ref("armed"),
                     value: rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Boolean(true),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "initial when algorithm".to_string(),
     ));
 
@@ -1372,20 +1394,20 @@ fn test_todae_lowers_vector_when_algorithm_condition_to_scalar_event_guard() {
                 cond: rumoca_core::Expression::Array {
                     elements: vec![make_var_ref("tick_a"), make_var_ref("tick_b")],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: make_comp_ref("y"),
                     value: rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Boolean(true),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "vector when algorithm".to_string(),
     ));
 
@@ -1439,25 +1461,25 @@ fn test_todae_lowers_vector_when_algorithm_initial_condition_directly() {
                         rumoca_core::Expression::BuiltinCall {
                             function: rumoca_core::BuiltinFunction::Initial,
                             args: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         make_var_ref("tick"),
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: make_comp_ref("y"),
                     value: rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Boolean(true),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "vector initial when algorithm".to_string(),
     ));
 
@@ -1505,28 +1527,30 @@ fn test_todae_rewrites_current_algorithm_value_inside_index_subscript() {
                 comp: make_comp_ref("nextstate"),
                 value: rumoca_core::Expression::Index {
                     base: Box::new(make_var_ref("table")),
-                    subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                        make_var_ref("x"),
-                    ))],
-                    span: rumoca_core::Span::DUMMY,
+                    subscripts: vec![rumoca_core::Subscript::generated_expr(
+                        Box::new(make_var_ref("x")),
+                        test_span(),
+                    )],
+                    span: test_span(),
                 },
 
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             rumoca_core::Statement::Assignment {
                 comp: make_comp_ref("nextstate"),
                 value: rumoca_core::Expression::Index {
                     base: Box::new(make_var_ref("strength")),
-                    subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                        make_var_ref("nextstate"),
-                    ))],
-                    span: rumoca_core::Span::DUMMY,
+                    subscripts: vec![rumoca_core::Subscript::generated_expr(
+                        Box::new(make_var_ref("nextstate")),
+                        test_span(),
+                    )],
+                    span: test_span(),
                 },
 
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ],
-        Span::DUMMY,
+        test_span(),
         "sequential index subscript algorithm".to_string(),
     ));
 
@@ -1573,22 +1597,22 @@ fn test_todae_rejects_model_algorithm_for_loop_with_non_constant_range() {
                 range: rumoca_core::Expression::Range {
                     start: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }),
                     step: None,
                     end: Box::new(make_var_ref("n")),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             }],
             equations: vec![rumoca_core::Statement::Assignment {
                 comp: make_comp_ref("y"),
                 value: make_var_ref("i"),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "model for dynamic range".to_string(),
     ));
 
@@ -1628,19 +1652,19 @@ fn test_todae_accepts_model_algorithm_for_loop_with_constant_array_binding_range
                 elements: vec![
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(3),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 
@@ -1653,11 +1677,11 @@ fn test_todae_accepts_model_algorithm_for_loop_with_constant_array_binding_range
             equations: vec![rumoca_core::Statement::Assignment {
                 comp: make_comp_ref("y"),
                 value: make_var_ref("i"),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "model for constant array binding range".to_string(),
     ));
 
@@ -1686,6 +1710,7 @@ fn test_todae_lowers_supported_algorithm_slice_row_write_and_read() {
 #[test]
 fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
     let mut flat = Model::new();
+    let span = test_span();
     flat.add_variable(
         VarName::new("int_addr"),
         crate::test_support::with_component_ref(flat::Variable {
@@ -1693,11 +1718,11 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -1707,11 +1732,11 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(3),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -1720,7 +1745,7 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             name: VarName::new("mem"),
             dims: vec![2, 3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
     flat.add_variable(
@@ -1729,7 +1754,7 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             name: VarName::new("nextstate"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
     );
 
@@ -1739,25 +1764,29 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             value: rumoca_core::Expression::Index {
                 base: Box::new(make_var_ref("mem")),
                 subscripts: vec![
-                    rumoca_core::Subscript::generated_expr(Box::new(make_var_ref("int_addr"))),
-                    rumoca_core::Subscript::generated_expr(Box::new(
-                        rumoca_core::Expression::Range {
+                    rumoca_core::Subscript::generated_expr(
+                        Box::new(make_var_ref("int_addr")),
+                        span,
+                    ),
+                    rumoca_core::Subscript::generated_expr(
+                        Box::new(rumoca_core::Expression::Range {
                             start: Box::new(rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(1),
-                                span: rumoca_core::Span::DUMMY,
+                                span,
                             }),
                             step: None,
                             end: Box::new(make_var_ref("n_data")),
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                    )),
+                            span,
+                        }),
+                        span,
+                    ),
                 ],
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span,
         }],
-        Span::DUMMY,
+        span,
         "algorithm slice row read".to_string(),
     ));
 
@@ -1794,24 +1823,36 @@ fn test_todae_lowers_multi_output_algorithm_function_call_to_output_selections()
     add_primitive_real(&mut flat, "y1");
     add_primitive_real(&mut flat, "y2");
 
-    let mut f = rumoca_core::Function::new("Pkg.multi", Span::DUMMY);
-    f.add_input(rumoca_core::FunctionParam::new("u", "Real"));
-    f.add_output(rumoca_core::FunctionParam::new("y1", "Real"));
-    f.add_output(rumoca_core::FunctionParam::new("y2", "Real"));
+    let mut f = rumoca_core::Function::new("Pkg.multi", test_span());
+    f.add_input(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        crate::test_support::test_span(),
+    ));
+    f.add_output(rumoca_core::FunctionParam::new(
+        "y1",
+        "Real",
+        crate::test_support::test_span(),
+    ));
+    f.add_output(rumoca_core::FunctionParam::new(
+        "y2",
+        "Real",
+        crate::test_support::test_span(),
+    ));
     f.body.push(rumoca_core::Statement::Assignment {
         comp: make_comp_ref("y1"),
         value: make_var_ref("u"),
 
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     });
     f.body.push(rumoca_core::Statement::Assignment {
         comp: make_comp_ref("y2"),
         value: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
 
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     });
     flat.add_function(f);
 
@@ -1821,9 +1862,9 @@ fn test_todae_lowers_multi_output_algorithm_function_call_to_output_selections()
             args: vec![make_var_ref("u")],
             outputs: vec![make_comp_ref("y1"), make_comp_ref("y2")],
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "model multi-output call".to_string(),
     ));
 

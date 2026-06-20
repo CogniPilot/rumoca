@@ -14,15 +14,23 @@ fn test_todae_accepts_function_typed_parameter_calls_in_function_body() {
         Span::DUMMY,
     );
     nonlinear.inputs.push(
-        rumoca_core::FunctionParam::new("f", "Modelica.Math.Nonlinear.partialScalarFunction")
-            .with_type_class(rumoca_core::ClassType::Function),
+        rumoca_core::FunctionParam::new(
+            "f",
+            "Modelica.Math.Nonlinear.partialScalarFunction",
+            crate::test_support::test_span(),
+        )
+        .with_type_class(rumoca_core::ClassType::Function),
     );
-    nonlinear
-        .inputs
-        .push(rumoca_core::FunctionParam::new("u", "Real"));
-    nonlinear
-        .outputs
-        .push(rumoca_core::FunctionParam::new("y", "Real"));
+    nonlinear.inputs.push(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        crate::test_support::test_span(),
+    ));
+    nonlinear.outputs.push(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        crate::test_support::test_span(),
+    ));
     nonlinear.body.push(rumoca_core::Statement::Assignment {
         comp: make_comp_ref("y"),
         value: rumoca_core::Expression::FunctionCall {
@@ -63,15 +71,20 @@ fn test_todae_accepts_function_typed_parameter_without_flat_function_entry() {
         rumoca_core::FunctionParam::new(
             "f",
             "Modelica.Math.Nonlinear.Interfaces.partialScalarFunction",
+            crate::test_support::test_span(),
         )
         .with_type_class(rumoca_core::ClassType::Function),
     );
-    nonlinear
-        .inputs
-        .push(rumoca_core::FunctionParam::new("u", "Real"));
-    nonlinear
-        .outputs
-        .push(rumoca_core::FunctionParam::new("y", "Real"));
+    nonlinear.inputs.push(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        crate::test_support::test_span(),
+    ));
+    nonlinear.outputs.push(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        crate::test_support::test_span(),
+    ));
     nonlinear.body.push(rumoca_core::Statement::Assignment {
         comp: make_comp_ref("y"),
         value: rumoca_core::Expression::FunctionCall {

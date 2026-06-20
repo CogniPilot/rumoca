@@ -30,7 +30,7 @@ const MINI_DRUM_BOILER_SOURCE_ROOTS: &str = r#"{
 #[test]
 fn test_get_class_info_sine_voltage_roundtrip_characterization() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source_roots = MINI_RESISTOR_EXAMPLE_SOURCE_ROOTS.to_string();
     load_source_roots(&source_roots).expect("load_source_roots should succeed");
@@ -108,13 +108,13 @@ fn test_get_class_info_sine_voltage_roundtrip_characterization() {
         "expected class_info source_modelica to round-trip parse for SineVoltage"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_get_class_info_package_redeclare_roundtrip_characterization() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source_roots = MINI_DRUM_BOILER_SOURCE_ROOTS.to_string();
     load_source_roots(&source_roots).expect("load_source_roots should succeed");
@@ -144,5 +144,5 @@ fn test_get_class_info_package_redeclare_roundtrip_characterization() {
         "expected class_info source_modelica to round-trip parse for DrumBoiler"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }

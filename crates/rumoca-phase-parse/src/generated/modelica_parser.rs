@@ -7780,7 +7780,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 226,
         production: &[ParseType::N(32)],
     },
-    // 253 - class_modification: '('^ /* Clipped */ class_modificationOpt /* Option */ ')'^ /* Clipped */;
+    // 253 - class_modification: '(' class_modificationOpt /* Option */ ')';
     Production {
         lhs: 36,
         production: &[ParseType::T(75), ParseType::N(37), ParseType::T(74)],
@@ -8720,7 +8720,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 58,
         production: &[],
     },
-    // 425 - output_primary: '('^ /* Clipped */ output_expression_list : crate::ExpressionList  ')'^ /* Clipped */ output_primaryOpt /* Option */;
+    // 425 - output_primary: '(' output_expression_list : crate::ExpressionList  ')' output_primaryOpt /* Option */;
     Production {
         lhs: 242,
         production: &[
@@ -8770,7 +8770,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 253,
         production: &[],
     },
-    // 433 - array_primary: '{'^ /* Clipped */ array_primaryOpt /* Option */ '}'^ /* Clipped */;
+    // 433 - array_primary: '{' array_primaryOpt /* Option */ '}';
     Production {
         lhs: 24,
         production: &[ParseType::T(82), ParseType::N(25), ParseType::T(81)],

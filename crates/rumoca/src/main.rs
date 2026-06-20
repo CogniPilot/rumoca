@@ -27,6 +27,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod cache_cmd;
 mod fmt_cli;
 mod fmu;
+mod main_helpers;
 mod sim_bench;
 mod sim_inspect;
 mod target_manifest;
@@ -44,6 +45,7 @@ use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use fmt_cli::FmtArgs;
+use main_helpers::{completion_script, discover_workspace_root_for_model_file};
 use miette::{
     GraphicalTheme, LabeledSpan, MietteDiagnostic, MietteHandlerOpts, NamedSource, Report, Severity,
 };
@@ -55,7 +57,7 @@ use rumoca_compile::{
 };
 use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
-use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
+use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};
 use walkdir::WalkDir;
 
 /// Git version string
@@ -496,11 +498,11 @@ struct SimCheckArgs {
 impl SimCheckArgs {
     /// The scenario path from whichever form was supplied (clap's ArgGroup
     /// guarantees exactly one is set).
-    fn config_path(&self) -> &str {
+    fn config_path(&self) -> Result<&str> {
         self.config_positional
             .as_deref()
             .or(self.config.as_deref())
-            .expect("clap ArgGroup requires a config")
+            .ok_or_else(|| anyhow::anyhow!("rumoca sim check requires CONFIG or --config"))
     }
 }
 
@@ -642,7 +644,7 @@ fn try_main() -> Result<()> {
         Commands::Fmt(args) => fmt_cli::run_fmt(args),
         Commands::Lint(args) => run_lint(args),
         Commands::Completions { shell } => {
-            print!("{}", completion_script(shell));
+            print!("{}", completion_script(shell)?);
             Ok(())
         }
         Commands::Targets(args) => targets_cmd::run(args.json),
@@ -877,7 +879,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
     let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
 
-    let config_dir = Path::new(config_path).parent().unwrap_or(Path::new("."));
+    let config_dir = parent_dir_or_current(Path::new(config_path));
 
     // Resolve model file: positional override > config [model].file.
     let model_path_str = args
@@ -903,11 +905,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         .iter()
         .map(|source_root| resolve_path(config_dir, source_root))
         .collect::<Vec<_>>();
-    let solver_label = args
-        .solver
-        .map(|solver| solver.as_label().to_string())
-        .or_else(|| config.sim.solver.clone())
-        .unwrap_or_else(|| "auto".to_string());
+    let solver_label = configured_solver_label(args.solver, config.sim.solver.as_ref());
     let solver_mode = SimSolverMode::from_external_name(&solver_label);
 
     if !config.is_interactive_runner() {
@@ -928,8 +926,8 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         return run_simulation(SimulationRun {
             dae: result.dae.as_ref(),
             model: &compiled_model,
-            t_end: args.t_end.unwrap_or(config.sim.t_end),
-            dt: args.dt.or(Some(config.sim.dt)),
+            t_end: configured_sim_t_end(args.t_end, config.sim.t_end),
+            dt: Some(configured_sim_dt(args.dt, config.sim.dt)),
             atol: args.atol,
             rtol: args.rtol,
             solver_mode,
@@ -956,9 +954,36 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
     })?)
 }
 
+fn configured_solver_label(
+    cli_solver: Option<SimulateSolverMode>,
+    config_solver: Option<&String>,
+) -> String {
+    match cli_solver {
+        Some(solver) => solver.as_label().to_string(),
+        None => match config_solver {
+            Some(solver) => solver.clone(),
+            None => "auto".to_string(),
+        },
+    }
+}
+
+fn configured_sim_t_end(cli_t_end: Option<f64>, config_t_end: f64) -> f64 {
+    match cli_t_end {
+        Some(t_end) => t_end,
+        None => config_t_end,
+    }
+}
+
+fn configured_sim_dt(cli_dt: Option<f64>, config_dt: f64) -> f64 {
+    match cli_dt {
+        Some(dt) => dt,
+        None => config_dt,
+    }
+}
+
 #[cfg(feature = "runner")]
 fn run_config_check(args: SimCheckArgs) -> Result<()> {
-    let config_path = args.config_path();
+    let config_path = args.config_path()?;
     let _config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
     println!("{config_path}: config OK");
@@ -991,7 +1016,7 @@ fn run_compile(args: CompileArgs) -> Result<()> {
     // on `compile` too; eval/jacobian take a point via `--at`.
     if let Some(kind) = args.inspect {
         let dae = &result.dae;
-        let at = args.at.as_deref().unwrap_or("");
+        let at = inspect_at_spec(args.at.as_deref());
         let solver = SimulateSolverMode::Auto;
         return match kind {
             InspectKind::Structure => sim_inspect::run_structure_dump(dae, &model, solver.into()),
@@ -1192,9 +1217,9 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
     let (result, model) = compile_dae_with_inferred_model(&input, args.diagnostics.verbose)?;
     if let Some(kind) = args.inspect {
-        let solver = args.solver.unwrap_or(SimulateSolverMode::Auto);
+        let solver = simulate_solver_or_auto(args.solver);
         let dae = result.dae.as_ref();
-        let at = args.at.as_deref().unwrap_or("");
+        let at = inspect_at_spec(args.at.as_deref());
         return match kind {
             InspectKind::Structure => sim_inspect::run_structure_dump(dae, &model, solver.into()),
             InspectKind::Eval => sim_inspect::run_eval_at(dae, &model, at, solver.into()),
@@ -1202,11 +1227,11 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
         };
     }
     let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
-    let solver = args.solver.unwrap_or(SimulateSolverMode::Auto);
+    let solver = simulate_solver_or_auto(args.solver);
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
-        t_end: args.t_end.unwrap_or(1.0),
+        t_end: direct_sim_t_end(args.t_end),
         dt: args.dt,
         atol: args.atol,
         rtol: args.rtol,
@@ -1217,13 +1242,26 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     })
 }
 
+fn inspect_at_spec(at: Option<&str>) -> &str {
+    at.unwrap_or_default()
+}
+
+fn simulate_solver_or_auto(solver: Option<SimulateSolverMode>) -> SimulateSolverMode {
+    match solver {
+        Some(solver) => solver,
+        None => SimulateSolverMode::Auto,
+    }
+}
+
+fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
+    t_end.unwrap_or(1.0)
+}
+
 fn run_lint(args: LintArgs) -> Result<()> {
     validate_explicit_target_paths(&args.paths)?;
     let paths = normalize_target_paths(&args.paths);
     let config_dir = first_path_config_dir(&paths);
-    let base_options = rumoca_tool_lint::load_config_from_dir(&config_dir)
-        .map_err(|e| anyhow::anyhow!("Failed to load lint config: {e}"))?
-        .unwrap_or_default();
+    let base_options = lint_options_from_config(&config_dir)?;
     let cli_overrides = PartialLintOptions {
         min_level: args.min_level.map(Into::into),
         disabled_rules: (!args.disable_rules.is_empty()).then_some(args.disable_rules.clone()),
@@ -1260,11 +1298,7 @@ fn run_lint(args: LintArgs) -> Result<()> {
         limited.truncate(options.max_messages);
     }
     for message in &limited {
-        let suggestion = message
-            .suggestion
-            .as_ref()
-            .map(|s| format!(" | suggestion: {s}"))
-            .unwrap_or_default();
+        let suggestion = lint_suggestion_suffix(message.suggestion.as_deref());
         println!(
             "{}:{}:{} [{}] {} ({}){}",
             message.file,
@@ -1301,6 +1335,22 @@ fn run_lint(args: LintArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn lint_options_from_config(config_dir: &Path) -> Result<LintOptions> {
+    match rumoca_tool_lint::load_config_from_dir(config_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to load lint config: {e}"))?
+    {
+        Some(options) => Ok(options),
+        None => Ok(LintOptions::default()),
+    }
+}
+
+fn lint_suggestion_suffix(suggestion: Option<&str>) -> String {
+    match suggestion {
+        Some(suggestion) => format!(" | suggestion: {suggestion}"),
+        None => String::new(),
+    }
 }
 
 pub(crate) fn init_debug_tracing(diagnostics: &DiagnosticsArgs) -> Result<()> {
@@ -1613,11 +1663,7 @@ fn infer_model_name(model_file: &str) -> Result<String> {
         return Ok(candidates[0].clone());
     }
 
-    let file_stem = Path::new(model_file)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    if !file_stem.is_empty()
+    if let Some(file_stem) = model_file_stem(model_file)
         && let Some(model) = choose_single_candidate_by_suffix(&candidates, file_stem)
     {
         return Ok(model);
@@ -1646,6 +1692,12 @@ fn infer_model_name(model_file: &str) -> Result<String> {
         preview,
         if candidates.len() > 15 { ", ..." } else { "" }
     );
+}
+
+fn model_file_stem(model_file: &str) -> Option<&str> {
+    let stem = Path::new(model_file).file_stem()?;
+    let stem = stem.to_str()?;
+    (!stem.is_empty()).then_some(stem)
 }
 
 fn normalize_target_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -1677,16 +1729,23 @@ fn validate_explicit_target_paths(paths: &[PathBuf]) -> Result<()> {
 }
 
 fn first_path_config_dir(paths: &[PathBuf]) -> PathBuf {
-    paths
-        .first()
-        .map(|p| {
+    match paths.first() {
+        Some(p) => {
             if p.is_dir() {
                 p.clone()
             } else {
-                p.parent().unwrap_or(Path::new(".")).to_path_buf()
+                parent_dir_or_current(p).to_path_buf()
             }
-        })
-        .unwrap_or_else(|| PathBuf::from("."))
+        }
+        None => PathBuf::from("."),
+    }
+}
+
+fn parent_dir_or_current(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) => parent,
+        None => Path::new("."),
+    }
 }
 
 /// Directories never worth walking for source `.mo` files (build output, VCS,
@@ -1830,7 +1889,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         solver_mode: run.solver_mode,
         // `--solver esdirk34` / `trbdf2` selects an implicit SDIRK tableau on
         // the diffsol path; other names leave the BDF default.
-        diffsol_method: DiffsolMethod::from_external_name(run.solver_label).unwrap_or_default(),
+        diffsol_method: diffsol_method_for_solver_label(run.solver_label),
         ..SimOptions::default()
     };
     // Explicit --atol/--rtol override the backend default so a host's tolerance
@@ -1903,8 +1962,9 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     Ok(())
 }
 
-mod main_helpers;
-use main_helpers::{completion_script, discover_workspace_root_for_model_file};
+fn diffsol_method_for_solver_label(solver_label: &str) -> DiffsolMethod {
+    DiffsolMethod::from_external_name(solver_label).unwrap_or_default()
+}
 
 #[cfg(test)]
 mod main_tests;

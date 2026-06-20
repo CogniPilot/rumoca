@@ -164,15 +164,7 @@ impl Resolver {
                 // Check if this base class is part of an inheritance chain being resolved.
                 // This catches indirect cycles like: model A extends B; model B extends A;
                 if self.resolving_extends.contains(&base_def_id) {
-                    let span = crate::location_to_span(&extend.location, &self.source_map);
-                    self.diagnostics.emit(Diagnostic::error(
-                        "ER004",
-                        format!(
-                            "circular inheritance: `{}` extends `{}` which creates a cycle",
-                            class_name, base_name
-                        ),
-                        PrimaryLabel::new(span).with_message("circular extends chain detected"),
-                    ));
+                    self.emit_circular_extends(&extend.location, class_name, base_name);
                     self.stats.extends_unresolved += 1;
                 } else {
                     extend.base_def_id = Some(base_def_id);
@@ -201,12 +193,7 @@ impl Resolver {
                 }
 
                 // Base class not found - emit diagnostic
-                let span = crate::location_to_span(&extend.location, &self.source_map);
-                self.diagnostics.emit(Diagnostic::error(
-                    "ER003",
-                    format!("base class not found: `{}` does not exist", base_name),
-                    PrimaryLabel::new(span).with_message("base class not found"),
-                ));
+                self.emit_base_class_not_found(&extend.location, base_name);
                 self.stats.extends_unresolved += 1;
             }
         }
@@ -254,19 +241,55 @@ impl Resolver {
         base_def_id: DefId,
     ) {
         if self.resolving_extends.contains(&base_def_id) {
-            let span = crate::location_to_span(&extend.location, &self.source_map);
-            self.diagnostics.emit(Diagnostic::error(
-                "ER004",
-                format!(
-                    "circular inheritance: `{}` extends `{}` which creates a cycle",
-                    class_name, extend.base_name
-                ),
-                PrimaryLabel::new(span).with_message("circular extends chain detected"),
-            ));
+            self.emit_circular_extends(&extend.location, class_name, &extend.base_name);
         } else {
             extend.base_def_id = Some(base_def_id);
             self.add_inheritance_edge(current_class_def_id, base_def_id, extend.location.clone());
         }
+    }
+
+    fn emit_circular_extends(
+        &mut self,
+        location: &rumoca_core::Location,
+        class_name: &str,
+        base_name: impl std::fmt::Display,
+    ) {
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            location,
+            &self.source_map,
+            "extends clause",
+        ) else {
+            return;
+        };
+        self.diagnostics.emit(Diagnostic::error(
+            "ER004",
+            format!(
+                "circular inheritance: `{}` extends `{}` which creates a cycle",
+                class_name, base_name
+            ),
+            PrimaryLabel::new(span).with_message("circular extends chain detected"),
+        ));
+    }
+
+    fn emit_base_class_not_found(
+        &mut self,
+        location: &rumoca_core::Location,
+        base_name: impl std::fmt::Display,
+    ) {
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            location,
+            &self.source_map,
+            "extends clause",
+        ) else {
+            return;
+        };
+        self.diagnostics.emit(Diagnostic::error(
+            "ER003",
+            format!("base class not found: `{}` does not exist", base_name),
+            PrimaryLabel::new(span).with_message("base class not found"),
+        ));
     }
 
     /// Resolve an import clause (MLS §13.2).
@@ -418,7 +441,9 @@ impl Resolver {
     }
 
     fn emit_unresolved_import(&mut self, import: &ast::Import) {
-        let span = self.import_span(import);
+        let Some(span) = self.import_span(import, "import clause") else {
+            return;
+        };
         self.diagnostics.emit(Diagnostic::error(
             "ER002",
             format!(
@@ -430,7 +455,9 @@ impl Resolver {
     }
 
     fn emit_invalid_import_target(&mut self, import: &ast::Import) {
-        let span = self.import_span(import);
+        let Some(span) = self.import_span(import, "import clause") else {
+            return;
+        };
         self.diagnostics.emit(Diagnostic::error(
             "ER002",
             format!(
@@ -446,7 +473,14 @@ impl Resolver {
         import: &ast::Import,
         name_token: &rumoca_core::Token,
     ) {
-        let span = crate::location_to_span(&name_token.location, &self.source_map);
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            &name_token.location,
+            &self.source_map,
+            "selective import member",
+        ) else {
+            return;
+        };
         self.diagnostics.emit(Diagnostic::error(
             "ER002",
             format!(
@@ -482,8 +516,13 @@ impl Resolver {
         }
     }
 
-    fn import_span(&self, import: &ast::Import) -> rumoca_core::Span {
-        crate::location_to_span(import.location(), &self.source_map)
+    fn import_span(&mut self, import: &ast::Import, context: &str) -> Option<rumoca_core::Span> {
+        crate::location_span_or_emit(
+            &mut self.diagnostics,
+            import.location(),
+            &self.source_map,
+            context,
+        )
     }
 
     fn format_import_clause(import: &ast::Import) -> String {

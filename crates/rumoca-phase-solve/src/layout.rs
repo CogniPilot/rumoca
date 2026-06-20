@@ -3,11 +3,10 @@ use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 
 use crate::lower::LowerError;
-use rumoca_ir_solve::{
-    ComponentReferenceKey, IndexedScalarSlot, ScalarSlot, VarLayout, scalar_slot_p, scalar_slot_y,
-};
+use rumoca_ir_solve::{ComponentReferenceKey, IndexedScalarSlot, ScalarSlot, VarLayout};
 
 pub(crate) const INITIAL_EVENT_PARAMETER_NAME: &str = "__rumoca.initial_event";
+const F64_BYTES: usize = std::mem::size_of::<f64>();
 
 #[derive(Debug, Clone, Copy)]
 enum SlotStorage {
@@ -51,9 +50,9 @@ pub fn build_var_layout_with_solver_len(
     )?;
     bindings.insert(
         INITIAL_EVENT_PARAMETER_NAME.to_string(),
-        scalar_slot_p(p_scalars),
+        synthetic_scalar_slot(SlotStorage::P, p_scalars, INITIAL_EVENT_PARAMETER_NAME)?,
     );
-    p_scalars += 1;
+    p_scalars = add_synthetic_slot_count(p_scalars, 1, INITIAL_EVENT_PARAMETER_NAME)?;
     map_enum_literal_bindings(dae_model, &mut bindings);
     map_constant_bindings(
         dae_model,
@@ -66,7 +65,7 @@ pub fn build_var_layout_with_solver_len(
         },
     )?;
 
-    VarLayout::try_from_parts_with_shapes_spans_keys_and_indexed_bindings(
+    VarLayout::from_parts_with_shapes_spans_keys_and_indexed_bindings(
         bindings,
         shapes,
         shape_spans,
@@ -75,10 +74,29 @@ pub fn build_var_layout_with_solver_len(
         y_scalars,
         p_scalars,
     )
-    .map_err(|err| LowerError::ContractViolation {
-        reason: format!("invalid solve variable layout contract: {err:?}"),
-        span: err.span(),
+    .map_err(|err| {
+        layout_optional_contract_violation(
+            format!("invalid solve variable layout contract: {err}"),
+            err.source_span(),
+        )
     })
+}
+
+fn layout_contract_violation(reason: impl Into<String>, span: Span) -> LowerError {
+    let reason = reason.into();
+    if span.is_dummy() {
+        LowerError::UnspannedContractViolation { reason }
+    } else {
+        LowerError::ContractViolation { reason, span }
+    }
+}
+
+fn layout_optional_contract_violation(reason: impl Into<String>, span: Option<Span>) -> LowerError {
+    let reason = reason.into();
+    match span.filter(|span| !span.is_dummy()) {
+        Some(span) => LowerError::ContractViolation { reason, span },
+        None => LowerError::UnspannedContractViolation { reason },
+    }
 }
 
 fn map_y_bindings(
@@ -106,7 +124,7 @@ fn map_y_bindings(
         }
         let size = variable_size(name.as_str(), var)?;
         let visible_size = size.min(solver_len - offset);
-        offset += insert_var_bindings_limited(
+        let consumed = insert_var_bindings_limited(
             LayoutBindingMaps {
                 bindings: &mut *bindings,
                 shapes: &mut *shapes,
@@ -120,6 +138,7 @@ fn map_y_bindings(
             offset,
             visible_size,
         )?;
+        offset = add_slot_count(offset, consumed, name.as_str(), var.source_span)?;
         if visible_size < size {
             break;
         }
@@ -150,7 +169,9 @@ fn map_p_bindings(
         .chain(dae_model.variables.discrete_reals.iter())
         .chain(dae_model.variables.discrete_valued.iter())
     {
-        offset += insert_var_bindings(maps.reborrow(), name.as_str(), var, SlotStorage::P, offset)?;
+        let consumed =
+            insert_var_bindings(maps.reborrow(), name.as_str(), var, SlotStorage::P, offset)?;
+        offset = add_slot_count(offset, consumed, name.as_str(), var.source_span)?;
     }
     Ok(offset)
 }
@@ -170,6 +191,7 @@ struct ArraySlotBinding<'a> {
     size: usize,
     storage: SlotStorage,
     start_index: usize,
+    span: Span,
 }
 
 impl<'a> LayoutBindingMaps<'a> {
@@ -219,7 +241,7 @@ fn insert_var_bindings(
     }
 
     if size <= 1 && var.dims.is_empty() {
-        let slot = scalar_slot(storage, start_index);
+        let slot = scalar_slot(storage, start_index, name, var.source_span)?;
         maps.bindings.insert(name.to_string(), slot);
         return Ok(1);
     }
@@ -234,8 +256,9 @@ fn insert_var_bindings(
             size,
             storage,
             start_index,
+            span: var.source_span,
         },
-    );
+    )?;
     Ok(size)
 }
 
@@ -256,7 +279,7 @@ fn insert_var_bindings_limited(
     }
 
     if size <= 1 && var.dims.is_empty() {
-        let slot = scalar_slot(storage, start_index);
+        let slot = scalar_slot(storage, start_index, name, var.source_span)?;
         maps.bindings.insert(name.to_string(), slot);
         return Ok(1);
     }
@@ -271,8 +294,9 @@ fn insert_var_bindings_limited(
             size: visible_size,
             storage,
             start_index,
+            span: var.source_span,
         },
-    );
+    )?;
     Ok(visible_size)
 }
 
@@ -294,7 +318,7 @@ fn insert_constant_bindings(
     if size == 0 {
         return Ok(());
     }
-    let values = expand_values_to_size(raw_values, size);
+    let values = expand_values_to_size(raw_values, size, name, var.source_span)?;
 
     if size <= 1 && var.dims.is_empty() {
         let slot = ScalarSlot::Constant(values[0]);
@@ -312,32 +336,45 @@ fn insert_constant_bindings(
         component_key,
         &var.dims,
         &values,
-    );
+        var.source_span,
+    )?;
     Ok(())
 }
 
-fn insert_array_slot_bindings(maps: LayoutBindingMaps<'_>, binding: ArraySlotBinding<'_>) {
-    maps.bindings.insert(
-        binding.name.to_string(),
-        scalar_slot(binding.storage, binding.start_index),
-    );
-    let mut indexed = Vec::with_capacity(binding.size);
+fn insert_array_slot_bindings(
+    maps: LayoutBindingMaps<'_>,
+    binding: ArraySlotBinding<'_>,
+) -> Result<(), LowerError> {
+    let root_slot = scalar_slot(
+        binding.storage,
+        binding.start_index,
+        binding.name,
+        binding.span,
+    )?;
+    let mut indexed = Vec::new();
+    reserve_indexed_slot_capacity(&mut indexed, binding.size, binding.name, binding.span)?;
+    maps.bindings.insert(binding.name.to_string(), root_slot);
     for flat_index in 0..binding.size {
-        let scalar_index = binding.start_index + flat_index;
+        let scalar_index =
+            add_slot_count(binding.start_index, flat_index, binding.name, binding.span)?;
+        let slot = scalar_slot(binding.storage, scalar_index, binding.name, binding.span)?;
         if let Some(indices) = dae::flat_index_to_subscripts(binding.dims, flat_index) {
             indexed.push(IndexedScalarSlot {
                 indices: indices.clone(),
-                slot: scalar_slot(binding.storage, scalar_index),
+                slot,
             });
         }
         maps.bindings.insert(
             dae::scalar_name_text_for_flat_index(binding.name, binding.dims, flat_index),
-            scalar_slot(binding.storage, scalar_index),
+            slot,
         );
     }
     if !indexed.is_empty() {
+        maps.shape_indexed_keys
+            .insert(binding.name.to_string(), binding.component_key.clone());
         maps.indexed_bindings.insert(binding.component_key, indexed);
     }
+    Ok(())
 }
 
 fn insert_array_constant_bindings(
@@ -347,12 +384,14 @@ fn insert_array_constant_bindings(
     component_key: ComponentReferenceKey,
     dims: &[i64],
     values: &[f64],
-) {
+    span: Span,
+) -> Result<(), LowerError> {
     let Some(first) = values.first().copied() else {
-        return;
+        return Ok(());
     };
+    let mut indexed = Vec::new();
+    reserve_indexed_slot_capacity(&mut indexed, values.len(), name, span)?;
     bindings.insert(name.to_string(), ScalarSlot::Constant(first));
-    let mut indexed = Vec::with_capacity(values.len());
     for (flat_index, value) in values.iter().copied().enumerate() {
         if let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) {
             indexed.push(IndexedScalarSlot {
@@ -368,6 +407,7 @@ fn insert_array_constant_bindings(
     if !indexed.is_empty() {
         indexed_bindings.insert(component_key, indexed);
     }
+    Ok(())
 }
 
 fn variable_component_key(
@@ -386,22 +426,22 @@ fn variable_component_key(
             return Ok(key);
         }
         return ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
-            LowerError::ContractViolation {
-                reason: format!(
-                    "array variable `{name}` has non-static structured component reference"
+            layout_contract_violation(
+                format!(
+                    "array variable `{name}` has non-static structured component reference: {err}"
                 ),
-                span: err.span,
-            }
+                err.span,
+            )
         });
     }
     #[cfg(test)]
     if let Some(key) = crate::test_support::fixture_key_for_variable(name, var) {
         return Ok(key);
     }
-    Err(LowerError::ContractViolation {
-        reason: format!("array variable `{name}` is missing structured component reference"),
-        span: var.source_span,
-    })
+    Err(layout_contract_violation(
+        format!("array variable `{name}` is missing structured component reference"),
+        var.source_span,
+    ))
 }
 
 fn source_free_layout_name(_name: &str, var: &dae::Variable) -> bool {
@@ -438,17 +478,126 @@ fn variable_size(name: &str, var: &dae::Variable) -> Result<usize, LowerError> {
 }
 
 fn invalid_variable_shape(name: &str, var: &dae::Variable) -> LowerError {
-    LowerError::ContractViolation {
-        reason: format!("invalid DAE dimensions {:?} for `{}`", var.dims, name),
-        span: var.source_span,
+    layout_contract_violation(
+        format!(
+            "invalid DAE dimensions {} for `{}`",
+            format_i64_dims(&var.dims),
+            name
+        ),
+        var.source_span,
+    )
+}
+
+fn format_i64_dims(dims: &[i64]) -> String {
+    let dims = dims
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{dims}]")
+}
+
+fn scalar_slot(
+    storage: SlotStorage,
+    index: usize,
+    name: &str,
+    span: Span,
+) -> Result<ScalarSlot, LowerError> {
+    let byte_offset = index
+        .checked_mul(F64_BYTES)
+        .ok_or_else(|| slot_byte_offset_overflow(name, span))?;
+    Ok(match storage {
+        SlotStorage::Y => ScalarSlot::Y { index, byte_offset },
+        SlotStorage::P => ScalarSlot::P { index, byte_offset },
+    })
+}
+
+fn synthetic_scalar_slot(
+    storage: SlotStorage,
+    index: usize,
+    name: &str,
+) -> Result<ScalarSlot, LowerError> {
+    let byte_offset = index
+        .checked_mul(F64_BYTES)
+        .ok_or_else(|| unspanned_slot_byte_offset_overflow(name))?;
+    Ok(match storage {
+        SlotStorage::Y => ScalarSlot::Y { index, byte_offset },
+        SlotStorage::P => ScalarSlot::P { index, byte_offset },
+    })
+}
+
+fn add_slot_count(start: usize, count: usize, name: &str, span: Span) -> Result<usize, LowerError> {
+    start
+        .checked_add(count)
+        .ok_or_else(|| slot_index_overflow(name, span))
+}
+
+fn add_synthetic_slot_count(start: usize, count: usize, name: &str) -> Result<usize, LowerError> {
+    start
+        .checked_add(count)
+        .ok_or_else(|| unspanned_slot_index_overflow(name))
+}
+
+fn slot_index_overflow(name: &str, span: Span) -> LowerError {
+    layout_contract_violation(
+        format!("solve layout scalar slot index for `{name}` overflows"),
+        span,
+    )
+}
+
+fn slot_byte_offset_overflow(name: &str, span: Span) -> LowerError {
+    layout_contract_violation(
+        format!("solve layout scalar slot byte offset for `{name}` overflows"),
+        span,
+    )
+}
+
+fn unspanned_slot_index_overflow(name: &str) -> LowerError {
+    LowerError::UnspannedContractViolation {
+        reason: format!("solve layout scalar slot index for `{name}` overflows"),
     }
 }
 
-fn scalar_slot(storage: SlotStorage, index: usize) -> ScalarSlot {
-    match storage {
-        SlotStorage::Y => scalar_slot_y(index),
-        SlotStorage::P => scalar_slot_p(index),
+fn unspanned_slot_byte_offset_overflow(name: &str) -> LowerError {
+    LowerError::UnspannedContractViolation {
+        reason: format!("solve layout scalar slot byte offset for `{name}` overflows"),
     }
+}
+
+fn reserve_indexed_slot_capacity(
+    slots: &mut Vec<IndexedScalarSlot>,
+    capacity: usize,
+    name: &str,
+    span: Span,
+) -> Result<(), LowerError> {
+    slots
+        .try_reserve_exact(capacity)
+        .map_err(|_| indexed_slot_capacity_overflow(name, span))
+}
+
+fn indexed_slot_capacity_overflow(name: &str, span: Span) -> LowerError {
+    layout_contract_violation(
+        format!("solve layout indexed slot capacity for `{name}` overflows"),
+        span,
+    )
+}
+
+fn reserve_constant_value_capacity(
+    values: &mut Vec<f64>,
+    capacity: usize,
+    name: &str,
+    span: Span,
+) -> Result<(), LowerError> {
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| constant_value_capacity_overflow(name, span))
+}
+
+fn constant_value_capacity_overflow(name: &str, span: Span) -> LowerError {
+    layout_contract_violation(
+        format!("solve layout constant value capacity for `{name}` overflows"),
+        span,
+    )
 }
 
 fn literal_to_f64(literal: &rumoca_core::Literal) -> Option<f64> {
@@ -554,7 +703,11 @@ fn eval_const_values(
             } else {
                 -1.0
             };
-            if step.abs() <= f64::EPSILON {
+            if !start.is_finite()
+                || !end.is_finite()
+                || !step.is_finite()
+                || step.abs() <= f64::EPSILON
+            {
                 return None;
             }
 
@@ -569,6 +722,9 @@ fn eval_const_values(
                 }
                 values.push(value);
                 value += step;
+                if !value.is_finite() {
+                    return None;
+                }
             }
             Some(values)
         }
@@ -646,26 +802,44 @@ fn alternate_enum_literal_key(raw: &str) -> Option<String> {
     Some(format!("{prefix}.'{literal}'"))
 }
 
-fn expand_values_to_size(raw_values: Vec<f64>, size: usize) -> Vec<f64> {
+fn expand_values_to_size(
+    raw_values: Vec<f64>,
+    size: usize,
+    name: &str,
+    span: Span,
+) -> Result<Vec<f64>, LowerError> {
     if size == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if raw_values.len() == size {
-        return raw_values;
-    }
-    if raw_values.is_empty() {
-        return vec![0.0; size];
-    }
-    if raw_values.len() == 1 {
-        return vec![raw_values[0]; size];
+        return Ok(raw_values);
     }
 
-    let last = *raw_values.last().unwrap_or(&0.0);
-    let mut expanded = Vec::with_capacity(size);
-    for idx in 0..size {
-        expanded.push(raw_values.get(idx).copied().unwrap_or(last));
+    let mut expanded = Vec::new();
+    reserve_constant_value_capacity(&mut expanded, size, name, span)?;
+    if raw_values.is_empty() {
+        expanded.resize(size, 0.0);
+        return Ok(expanded);
     }
-    expanded
+    if raw_values.len() == 1 {
+        expanded.resize(size, raw_values[0]);
+        return Ok(expanded);
+    }
+
+    let Some(last) = raw_values.last().copied() else {
+        return Err(layout_contract_violation(
+            format!("constant `{name}` expansion missing tail value"),
+            span,
+        ));
+    };
+    for idx in 0..size {
+        if idx < raw_values.len() {
+            expanded.push(raw_values[idx]);
+        } else {
+            expanded.push(last);
+        }
+    }
+    Ok(expanded)
 }
 
 #[cfg(test)]
@@ -735,7 +909,11 @@ mod tests {
                 name: rumoca_core::VarName::new("flat_display_is_not_authoritative"),
                 component_ref: Some(component_ref.clone()),
                 dims: vec![2],
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -758,7 +936,11 @@ mod tests {
                 name: rumoca_core::VarName::new("a"),
                 source_span: span,
                 dims: vec![2],
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -783,7 +965,11 @@ mod tests {
                 name: rumoca_core::VarName::new("empty"),
                 source_span: span,
                 dims: vec![0],
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -794,5 +980,259 @@ mod tests {
         assert_eq!(layout.binding("empty"), None);
         assert!(layout.indexed_bindings().is_empty());
         assert_eq!(layout.y_scalars(), 0);
+    }
+
+    #[test]
+    fn insert_var_bindings_reports_slot_byte_offset_overflow_with_source_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(19), 7, 14);
+        let var = dae::Variable {
+            name: rumoca_core::VarName::new("huge"),
+            source_span: span,
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        };
+        let mut bindings = IndexMap::new();
+        let mut shapes = IndexMap::new();
+        let mut shape_spans = IndexMap::new();
+        let mut shape_indexed_keys = IndexMap::new();
+        let mut indexed_bindings = IndexMap::new();
+
+        let err = insert_var_bindings(
+            LayoutBindingMaps {
+                bindings: &mut bindings,
+                shapes: &mut shapes,
+                shape_spans: &mut shape_spans,
+                shape_indexed_keys: &mut shape_indexed_keys,
+                indexed_bindings: &mut indexed_bindings,
+            },
+            "huge",
+            &var,
+            SlotStorage::Y,
+            usize::MAX / F64_BYTES + 1,
+        )
+        .expect_err("oversized scalar slot byte offset must fail layout construction");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout scalar slot byte offset for `huge` overflows"
+        );
+    }
+
+    #[test]
+    fn add_slot_count_reports_overflow_with_source_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(20), 11, 19);
+
+        let err = add_slot_count(usize::MAX, 1, "tail", span)
+            .expect_err("slot count overflow must fail layout construction");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout scalar slot index for `tail` overflows"
+        );
+    }
+
+    #[test]
+    fn scalar_slot_reports_byte_offset_overflow_without_dummy_span() {
+        let err = scalar_slot(
+            SlotStorage::Y,
+            usize::MAX / F64_BYTES + 1,
+            "dummy_source",
+            Span::DUMMY,
+        )
+        .expect_err("dummy-span scalar slot byte offset overflow must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout scalar slot byte offset for `dummy_source` overflows"
+        );
+    }
+
+    #[test]
+    fn synthetic_scalar_slot_reports_byte_offset_overflow_without_source_span() {
+        let err = synthetic_scalar_slot(
+            SlotStorage::P,
+            usize::MAX / F64_BYTES + 1,
+            INITIAL_EVENT_PARAMETER_NAME,
+        )
+        .expect_err("synthetic slot byte offset overflow must fail layout construction");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout scalar slot byte offset for `__rumoca.initial_event` overflows"
+        );
+    }
+
+    #[test]
+    fn add_synthetic_slot_count_reports_overflow_without_source_span() {
+        let err = add_synthetic_slot_count(usize::MAX, 1, INITIAL_EVENT_PARAMETER_NAME)
+            .expect_err("synthetic slot count overflow must fail layout construction");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout scalar slot index for `__rumoca.initial_event` overflows"
+        );
+    }
+
+    #[test]
+    fn insert_array_slot_bindings_reports_capacity_overflow_with_source_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(21), 2, 9);
+        let mut bindings = IndexMap::new();
+        let mut shapes = IndexMap::new();
+        let mut shape_spans = IndexMap::new();
+        let mut shape_indexed_keys = IndexMap::new();
+        let mut indexed_bindings = IndexMap::new();
+
+        let err = insert_array_slot_bindings(
+            LayoutBindingMaps {
+                bindings: &mut bindings,
+                shapes: &mut shapes,
+                shape_spans: &mut shape_spans,
+                shape_indexed_keys: &mut shape_indexed_keys,
+                indexed_bindings: &mut indexed_bindings,
+            },
+            ArraySlotBinding {
+                name: "huge_array",
+                component_key: ComponentReferenceKey::generated("huge_array"),
+                dims: &[1],
+                size: usize::MAX,
+                storage: SlotStorage::Y,
+                start_index: 0,
+                span,
+            },
+        )
+        .expect_err("oversized indexed slot capacity must fail layout construction");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout indexed slot capacity for `huge_array` overflows"
+        );
+        assert!(bindings.is_empty());
+        assert!(indexed_bindings.is_empty());
+    }
+
+    #[test]
+    fn reserve_indexed_slot_capacity_reports_overflow_without_dummy_span() {
+        let mut slots = Vec::new();
+
+        let err =
+            reserve_indexed_slot_capacity(&mut slots, usize::MAX, "dummy_indexed", Span::DUMMY)
+                .expect_err("dummy-span indexed slot capacity overflow must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout indexed slot capacity for `dummy_indexed` overflows"
+        );
+    }
+
+    #[test]
+    fn expand_values_to_size_reports_capacity_overflow_with_source_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(22), 4, 13);
+
+        let err = expand_values_to_size(vec![1.0], usize::MAX, "huge_constant", span)
+            .expect_err("oversized constant value expansion must fail layout construction");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout constant value capacity for `huge_constant` overflows"
+        );
+    }
+
+    #[test]
+    fn expand_values_to_size_reports_capacity_overflow_without_dummy_span() {
+        let err = expand_values_to_size(vec![1.0], usize::MAX, "dummy_constant", Span::DUMMY)
+            .expect_err("dummy-span constant value expansion must fail layout construction");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: solve layout constant value capacity for `dummy_constant` overflows"
+        );
+    }
+
+    #[test]
+    fn expand_values_to_size_preserves_broadcast_and_padding_behavior() {
+        let broadcast = expand_values_to_size(vec![2.5], 3, "constant", Span::DUMMY);
+        let Ok(broadcast) = broadcast else {
+            panic!("scalar constant should broadcast");
+        };
+        assert_eq!(broadcast, vec![2.5, 2.5, 2.5]);
+        let padded = expand_values_to_size(vec![1.0, 2.0], 4, "constant", Span::DUMMY);
+        let Ok(padded) = padded else {
+            panic!("short explicit constant should pad with the last value");
+        };
+        assert_eq!(padded, vec![1.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn build_var_layout_reports_invalid_dims_with_source_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(23), 7, 14);
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("bad"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("bad"),
+                source_span: span,
+                dims: vec![2, -1],
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+
+        let err = build_var_layout(&dae_model)
+            .expect_err("negative DAE dimensions must fail layout construction");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: invalid DAE dimensions [2, -1] for `bad`"
+        );
+    }
+
+    #[test]
+    fn build_var_layout_reports_invalid_dims_without_dummy_span() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("bad"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("bad"),
+                source_span: Span::DUMMY,
+                dims: vec![2, -1],
+                component_ref: Some(crate::test_support::component_ref_from_name("bad")),
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+
+        let err = build_var_layout(&dae_model)
+            .expect_err("negative DAE dimensions must fail layout construction");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: invalid DAE dimensions [2, -1] for `bad`"
+        );
     }
 }

@@ -158,7 +158,7 @@ fn validate_solve_target_capabilities(
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
     let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
-    if capabilities.tensor.is_none() && scalar_fallback {
+    if scalar_fallback {
         return Ok(());
     }
     let tensor = capabilities.tensor.as_ref();
@@ -231,30 +231,41 @@ fn write_manifest_file(
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let rendered_rel_path = result
-        .render_template_str_with_name_and_ir(
-            &file.path,
-            model_identifier,
-            template_ir_to_cli(manifest.ir),
-        )
-        .with_context(|| format!("Render target output path '{}'", file.path))?;
+    let rendered_rel_path =
+        render_manifest_template(result, manifest, &file.path, model_identifier)
+            .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = result
-        .render_template_str_with_name_and_ir(
-            template.as_ref(),
-            model_identifier,
-            template_ir_to_cli(manifest.ir),
-        )
+    let rendered = render_manifest_template(result, manifest, template.as_ref(), model_identifier)
         .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
     eprintln!("  wrote {}", output_path.display());
     Ok(())
+}
+
+fn render_manifest_template(
+    result: &CompilationResult,
+    manifest: &TargetManifest,
+    template: &str,
+    model_identifier: &str,
+) -> Result<String> {
+    if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
+        return result
+            .render_solve_template_str_without_dae(template, model_identifier)
+            .map_err(Into::into);
+    }
+    result
+        .render_template_str_with_name_and_ir(
+            template,
+            model_identifier,
+            template_ir_to_cli(manifest.ir),
+        )
+        .map_err(Into::into)
 }
 
 fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {

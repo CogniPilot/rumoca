@@ -1,31 +1,28 @@
 use super::*;
 
-pub(super) fn project_reference_indices(
-    name: &rumoca_core::Reference,
-    indices: &[usize],
-    span: rumoca_core::Span,
-) -> Result<rumoca_core::Reference, LowerError> {
-    project_reference_field_path_and_indices(name, &[], indices, span)
-}
-
 pub(super) fn project_reference_field_path_and_indices(
     name: &rumoca_core::Reference,
     field_path: &[String],
     indices: &[usize],
     span: rumoca_core::Span,
 ) -> Result<rumoca_core::Reference, LowerError> {
+    let span = if span.is_dummy() {
+        name.span().unwrap_or(span)
+    } else {
+        span
+    };
     if field_path.is_empty() && indices.is_empty() {
         return Ok(name.clone());
     }
-    let component_ref = name
-        .component_ref()
-        .ok_or_else(|| LowerError::ContractViolation {
-            reason: format!(
+    let component_ref = name.component_ref().ok_or_else(|| {
+        LowerError::contract_violation(
+            format!(
                 "array projection for `{}` lost structured component-reference metadata",
                 name.as_str()
             ),
             span,
-        })?;
+        )
+    })?;
     let mut component_ref = component_ref.clone();
     for field in field_path {
         component_ref.parts.push(rumoca_core::ComponentRefPart {
@@ -34,25 +31,31 @@ pub(super) fn project_reference_field_path_and_indices(
             subs: Vec::new(),
         });
     }
-    let last = component_ref
-        .parts
-        .last_mut()
-        .ok_or_else(|| LowerError::ContractViolation {
-            reason: format!(
+    let last = component_ref.parts.last_mut().ok_or_else(|| {
+        LowerError::contract_violation(
+            format!(
                 "array projection for `{}` has an empty component reference",
                 name.as_str()
             ),
             span,
-        })?;
-    last.subs.extend(
-        indices
-            .iter()
-            .copied()
-            .map(|index| rumoca_core::Subscript::generated_index(index as i64, span)),
-    );
+        )
+    })?;
+    let mut subscripts =
+        projection_vec_with_capacity(indices.len(), "projected reference subscript count", span)?;
+    for index in indices {
+        subscripts.push(projected_reference_subscript(*index, span)?);
+    }
+    last.subs.extend(subscripts);
     Ok(rumoca_core::Reference::from_component_reference(
         component_ref,
     ))
+}
+
+fn projected_reference_subscript(
+    index: usize,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Subscript, LowerError> {
+    checked_generated_subscript_from_usize(index, span, "projected target reference subscript")
 }
 
 pub(super) fn projected_target_binding_key(

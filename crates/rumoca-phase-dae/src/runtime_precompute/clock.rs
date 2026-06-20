@@ -16,9 +16,15 @@ mod timing_inference;
 
 use timing_inference::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReverseAliasTarget {
+    name: String,
+    span: rumoca_core::Span,
+}
+
 struct SourceMap<'a> {
     forward: HashMap<String, Vec<&'a rumoca_core::Expression>>,
-    reverse_alias: HashMap<String, Vec<String>>,
+    reverse_alias: HashMap<String, Vec<ReverseAliasTarget>>,
     timing_cache: RefCell<HashMap<String, Option<(f64, f64)>>>,
     scalar_cache: RefCell<HashMap<String, Option<f64>>>,
 }
@@ -37,7 +43,7 @@ impl<'a> SourceMap<'a> {
         self.forward.get(key)
     }
 
-    fn reverse_targets_for(&self, key: &str) -> Option<&Vec<String>> {
+    fn reverse_targets_for(&self, key: &str) -> Option<&Vec<ReverseAliasTarget>> {
         self.reverse_alias.get(key)
     }
 }
@@ -113,10 +119,15 @@ pub(super) fn compute_clock_runtime_metadata(
             )?);
             continue;
         };
+        let Some(source_span) = clock_constructor_source_span(expr) else {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "clock constructor is missing source provenance",
+            ));
+        };
         clock_schedules.push(dae::ClockSchedule {
             period_seconds: period,
             phase_seconds: phase,
-            source_span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            source_span,
         });
     }
     clock_schedules.sort_by(|lhs, rhs| {
@@ -148,7 +159,7 @@ pub(super) fn compute_clock_runtime_metadata(
     let event_clock_variables =
         event_clock::event_clock_variable_names(dae_model, compile_time_scalars, &clock_sources);
     let mut clock_timings =
-        infer_clock_timings_by_variable(dae_model, compile_time_scalars, &clock_schedules);
+        infer_clock_timings_by_variable(dae_model, compile_time_scalars, &clock_schedules)?;
     clock_timings.retain(|name, _| !event_clock_variables.contains(name));
     let clock_intervals = clock_timings
         .iter()
@@ -236,6 +247,11 @@ fn summarize_unresolved_clock_context(
     if refs.is_empty() {
         return Ok("no_var_refs".to_string());
     }
+    let expr_span = expr.span().ok_or_else(|| {
+        ToDaeError::runtime_metadata_violation(
+            "unresolved clock expression is missing source provenance",
+        )
+    })?;
     refs.into_iter()
         .take(6)
         .map(|(name, subscripts, key)| {
@@ -252,7 +268,7 @@ fn summarize_unresolved_clock_context(
                 &rumoca_core::Expression::VarRef {
                     name: name.clone().into(),
                     subscripts: subscripts.clone(),
-                    span: rumoca_core::Span::DUMMY,
+                    span: expr_span,
                 },
                 constants,
                 sources,
@@ -266,7 +282,7 @@ fn summarize_unresolved_clock_context(
                             "clock expression references missing DAE variable `{}`",
                             name.as_str()
                         ),
-                        expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                        expr_span,
                     )
                 })?;
             Ok(format!(
@@ -488,11 +504,83 @@ pub(super) fn relation_root_expression(
     ) {
         return None;
     }
+    let span = expr.span().or_else(|| lhs.span()).or_else(|| rhs.span())?;
     Some(rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: lhs.clone(),
         rhs: rhs.clone(),
-        span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        span,
+    })
+}
+
+fn clock_constructor_source_span(expr: &rumoca_core::Expression) -> Option<rumoca_core::Span> {
+    expr.span().or_else(|| first_expression_source_span(expr))
+}
+
+fn first_expression_source_span(expr: &rumoca_core::Expression) -> Option<rumoca_core::Span> {
+    if let Some(span) = expr.span() {
+        return Some(span);
+    }
+    match expr {
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            first_expression_source_span(lhs).or_else(|| first_expression_source_span(rhs))
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => first_expression_source_span(rhs),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            args.iter().find_map(first_expression_source_span)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => branches
+            .iter()
+            .find_map(|(condition, value)| {
+                first_expression_source_span(condition)
+                    .or_else(|| first_expression_source_span(value))
+            })
+            .or_else(|| first_expression_source_span(else_branch)),
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => first_expression_source_span(start)
+            .or_else(|| step.as_deref().and_then(first_expression_source_span))
+            .or_else(|| first_expression_source_span(end)),
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => first_expression_source_span(expr)
+            .or_else(|| {
+                indices
+                    .iter()
+                    .find_map(|index| first_expression_source_span(&index.range))
+            })
+            .or_else(|| filter.as_deref().and_then(first_expression_source_span)),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => first_expression_source_span(base).or_else(|| first_subscript_source_span(subscripts)),
+        rumoca_core::Expression::FieldAccess { base, .. } => first_expression_source_span(base),
+        rumoca_core::Expression::VarRef { subscripts, .. } => {
+            first_subscript_source_span(subscripts)
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => None,
+    }
+}
+
+fn first_subscript_source_span(subscripts: &[rumoca_core::Subscript]) -> Option<rumoca_core::Span> {
+    subscripts.iter().find_map(|subscript| {
+        let span = subscript.span();
+        if !span.is_dummy() {
+            return Some(span);
+        }
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            return first_expression_source_span(expr);
+        }
+        None
     })
 }
 
@@ -818,8 +906,8 @@ fn build_clock_source_map<'a>(
 fn build_reverse_alias_index(
     forward: &HashMap<String, Vec<&rumoca_core::Expression>>,
     constants: &HashMap<String, f64>,
-) -> HashMap<String, Vec<String>> {
-    let mut reverse = HashMap::new();
+) -> HashMap<String, Vec<ReverseAliasTarget>> {
+    let mut reverse: HashMap<String, Vec<ReverseAliasTarget>> = HashMap::new();
     for (target, source_exprs) in forward {
         if rumoca_core::has_top_level_subscript(target) {
             continue;
@@ -834,9 +922,15 @@ fn build_reverse_alias_index(
             let Some(source_key) = canonical_var_ref_key(name, subscripts, constants) else {
                 continue;
             };
-            let targets = reverse.entry(source_key).or_insert_with(Vec::new);
-            if !targets.iter().any(|existing| existing == target) {
-                targets.push(target.clone());
+            let Some(source_span) = expr.span().filter(|span| !span.is_dummy()) else {
+                continue;
+            };
+            let targets = reverse.entry(source_key).or_default();
+            if !targets.iter().any(|existing| existing.name == *target) {
+                targets.push(ReverseAliasTarget {
+                    name: target.clone(),
+                    span: source_span,
+                });
             }
         }
     }
@@ -980,12 +1074,12 @@ impl ExpressionVisitor for NoArgumentClockGuardCollector {
             && name.last_segment() == "Clock"
             && args.is_empty()
         {
-            let clock_span = if *span != rumoca_core::Span::DUMMY {
+            let clock_span = if !span.is_dummy() {
                 Some(*span)
             } else {
                 name.component_ref()
                     .map(|component_ref| component_ref.span)
-                    .filter(|span| *span != rumoca_core::Span::DUMMY)
+                    .filter(|span| !span.is_dummy())
             };
             if let Some(span) = clock_span
                 && !self.spans.contains(&span)
@@ -1200,7 +1294,7 @@ fn infer_clock_timings_by_variable(
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
     clock_schedules: &[dae::ClockSchedule],
-) -> IndexMap<String, dae::ClockSchedule> {
+) -> Result<IndexMap<String, dae::ClockSchedule>, ToDaeError> {
     let sources = build_clock_source_map(dae_model, constants);
     let mut timings = IndexMap::new();
     let mut visiting = HashSet::new();
@@ -1212,15 +1306,13 @@ fn infer_clock_timings_by_variable(
             && period.is_finite()
             && period > 0.0
         {
+            let source_span = clock_timing_source_span(&sources, name.as_str())?;
             timings.insert(
                 name.as_str().to_string(),
                 dae::ClockSchedule {
                     period_seconds: period,
                     phase_seconds: phase,
-                    source_span: sources
-                        .get(name.as_str())
-                        .and_then(|exprs| exprs.first().and_then(|expr| expr.span()))
-                        .unwrap_or(rumoca_core::Span::DUMMY),
+                    source_span,
                 },
             );
         }
@@ -1228,26 +1320,28 @@ fn infer_clock_timings_by_variable(
 
     propagate_clock_timings_across_equations(dae_model, constants, &mut timings);
 
-    if let Some(fallback_period) = unique_static_clock_period(clock_schedules) {
+    if let Some(fallback_schedule) = unique_static_clock_schedule(clock_schedules) {
         add_implicit_sample_fallback_timings(
             dae_model,
             constants,
             &sources,
-            fallback_period,
+            fallback_schedule,
             &mut timings,
-        );
+        )?;
         propagate_clock_timings_across_equations(dae_model, constants, &mut timings);
     }
 
-    timings
+    Ok(timings)
 }
 
-fn unique_static_clock_period(clock_schedules: &[dae::ClockSchedule]) -> Option<f64> {
+fn unique_static_clock_schedule(
+    clock_schedules: &[dae::ClockSchedule],
+) -> Option<&dae::ClockSchedule> {
     let [schedule] = clock_schedules else {
         return None;
     };
     if schedule.period_seconds.is_finite() && schedule.period_seconds > 0.0 {
-        Some(schedule.period_seconds)
+        Some(schedule)
     } else {
         None
     }
@@ -1257,9 +1351,9 @@ fn add_implicit_sample_fallback_timings(
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
-    fallback_period: f64,
+    fallback_schedule: &dae::ClockSchedule,
     timings: &mut IndexMap<String, dae::ClockSchedule>,
-) {
+) -> Result<(), ToDaeError> {
     // MLS §16 (synchronous language elements): sample(u) may use an implicit
     // clock. If a model has one unique static periodic schedule, apply that
     // period only for unresolved variables whose defining expression contains
@@ -1271,18 +1365,38 @@ fn add_implicit_sample_fallback_timings(
         if !variable_has_unique_static_clock_fallback_source(name, constants, sources) {
             continue;
         }
+        let source_span = match clock_timing_source_span(sources, name.as_str()) {
+            Ok(span) => span,
+            Err(_) => fallback_schedule.source_span,
+        };
         timings.insert(
             name.as_str().to_string(),
             dae::ClockSchedule {
-                period_seconds: fallback_period,
+                period_seconds: fallback_schedule.period_seconds,
                 phase_seconds: 0.0,
-                source_span: sources
-                    .get(name.as_str())
-                    .and_then(|exprs| exprs.first().and_then(|expr| expr.span()))
-                    .unwrap_or(rumoca_core::Span::DUMMY),
+                source_span,
             },
         );
     }
+    Ok(())
+}
+
+fn clock_timing_source_span(
+    sources: &SourceMap<'_>,
+    name: &str,
+) -> Result<rumoca_core::Span, ToDaeError> {
+    sources
+        .get(name)
+        .and_then(|exprs| {
+            exprs
+                .iter()
+                .find_map(|expr| clock_constructor_source_span(expr))
+        })
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "clock timing for `{name}` is missing source provenance"
+            ))
+        })
 }
 
 fn variable_has_unique_static_clock_fallback_source(
@@ -1364,4 +1478,60 @@ fn expression_uses_no_argument_clock(expr: &rumoca_core::Expression) -> bool {
     let mut checker = Checker { found: false };
     checker.visit_expression(expr);
     checker.found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_span(start: usize, end: usize) -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), start, end)
+    }
+
+    fn reverse_alias_model(source_span: rumoca_core::Span) -> dae::Dae {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .discrete
+            .real_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new("periodicClock.y"),
+                rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new("periodicClock.c").into(),
+                    subscripts: vec![],
+                    span: source_span,
+                },
+                test_span(60, 90),
+                "periodic_clock_output",
+            ));
+        dae_model
+    }
+
+    #[test]
+    fn reverse_alias_index_preserves_alias_expression_span() {
+        let alias_span = test_span(70, 85);
+        let dae_model = reverse_alias_model(alias_span);
+        let sources = build_clock_source_map(&dae_model, &HashMap::new());
+        let targets = sources
+            .reverse_targets_for("periodicClock.c")
+            .expect("alias source should be indexed");
+
+        assert_eq!(
+            targets,
+            &[ReverseAliasTarget {
+                name: "periodicClock.y".to_string(),
+                span: alias_span,
+            }]
+        );
+    }
+
+    #[test]
+    fn reverse_alias_index_skips_ownerless_alias_expression() {
+        let dae_model = reverse_alias_model(rumoca_core::Span::DUMMY);
+        let sources = build_clock_source_map(&dae_model, &HashMap::new());
+
+        assert!(
+            sources.reverse_targets_for("periodicClock.c").is_none(),
+            "ownerless reverse aliases must not manufacture timing inference provenance"
+        );
+    }
 }

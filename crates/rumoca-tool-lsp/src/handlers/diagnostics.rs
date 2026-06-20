@@ -167,27 +167,34 @@ fn parse_error_to_diagnostic(error: &ParseError, source: &str) -> Diagnostic {
             } else {
                 format!("{normalized} ({expected_msg})")
             };
-            let span_range = span_to_range(source, span.start.0, span.end.0);
             let message_range = range_from_message_location(message, source)
                 .or_else(|| range_from_textual_line_hint(message, source));
-            let (range, precise_range) = if is_placeholder_parse_span(span.start.0, span.end.0) {
-                match message_range {
+            let top_left_range = || Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 1),
+            };
+            let (range, precise_range) = match span {
+                None => match message_range {
                     Some(range) => (range, true),
-                    None => (
-                        Range {
-                            start: Position::new(0, 0),
-                            end: Position::new(0, 1),
-                        },
-                        false,
-                    ),
+                    None => (top_left_range(), false),
+                },
+                Some(span) if is_placeholder_parse_span(span.start.0, span.end.0) => {
+                    match message_range {
+                        Some(range) => (range, true),
+                        None => (top_left_range(), false),
+                    }
                 }
-            } else if range_is_top_left(&span_range) {
-                match message_range {
-                    Some(range) => (range, true),
-                    None => (span_range, true),
+                Some(span) => {
+                    let span_range = span_to_range(source, span.start.0, span.end.0);
+                    if range_is_top_left(&span_range) {
+                        match message_range {
+                            Some(range) => (range, true),
+                            None => (span_range, true),
+                        }
+                    } else {
+                        (span_range, true)
+                    }
                 }
-            } else {
-                (span_range, true)
             };
             (range, "EP001".to_string(), msg, precise_range)
         }

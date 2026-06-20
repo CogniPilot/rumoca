@@ -224,7 +224,7 @@ pub(super) fn lookup_type_info<'a>(
     if class_def.is_none() && predefined_type_id.is_none() {
         return Err(InstantiateError::type_not_found(
             type_name,
-            location_to_span(&comp.location, &tree.source_map),
+            location_to_span(&comp.location, &tree.source_map, "component type name")?,
         )
         .into());
     }

@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
 use crate::InteractiveStepper;
@@ -74,15 +73,15 @@ impl SimStepper {
         self.inner.time()
     }
 
-    pub fn get(&self, name: &str) -> Option<f64> {
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         self.inner.get(name)
     }
 
-    pub fn state(&self) -> StepperState {
+    pub fn state(&self) -> Result<StepperState, SimError> {
         self.inner.state()
     }
 
-    pub fn values_for(&self, names: &[String]) -> HashMap<String, f64> {
+    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
         self.inner.values_for(names)
     }
 
@@ -121,7 +120,7 @@ impl InteractiveStepper for SimStepper {
         Self::time(self)
     }
 
-    fn get(&self, name: &str) -> Option<f64> {
+    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
         Self::get(self, name)
     }
 

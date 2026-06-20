@@ -4,6 +4,12 @@ use rumoca_solver::SimOptions;
 
 use crate::simulate;
 
+macro_rules! fixture_span {
+    () => {
+        solve::source_span_from_offsets(48, 0, 1)
+    };
+}
+
 #[test]
 fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
     let mut model = rising_state_with_root_reinit();
@@ -72,14 +78,20 @@ fn strict_post_crossing_reinit_evaluates_on_event_right_limit() {
 }
 
 fn rising_state_with_root_reinit() -> solve::SolveModel {
-    let rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::Const { dst: 0, value: 1.0 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
-    let zero = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::Const { dst: 0, value: 0.0 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
+    let rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    let zero = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
 
     let mut model = solve::SolveModel::default();
     model.problem.continuous.implicit_rhs =
@@ -93,42 +105,48 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
     model.problem.solve_layout.solver_maps.name_to_idx = IndexMap::from([("x".to_string(), 0)]);
     model.problem.solve_layout.solver_maps.base_to_indices =
         IndexMap::from([("x".to_string(), vec![0])]);
-    model.problem.events.root_conditions = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 0 },
-        solve::LinearOp::Const {
-            dst: 1,
-            value: 0.05,
-        },
-        solve::LinearOp::Binary {
-            dst: 2,
-            op: solve::BinaryOp::Sub,
-            lhs: 0,
-            rhs: 1,
-        },
-        solve::LinearOp::StoreOutput { src: 2 },
-    ]]);
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 0 },
-        solve::LinearOp::Const {
-            dst: 1,
-            value: 0.05,
-        },
-        solve::LinearOp::Compare {
-            dst: 2,
-            op: solve::CompareOp::Ge,
-            lhs: 0,
-            rhs: 1,
-        },
-        solve::LinearOp::Const { dst: 3, value: 2.0 },
-        solve::LinearOp::Select {
-            dst: 4,
-            cond: 2,
-            if_true: 3,
-            if_false: 0,
-        },
-        solve::LinearOp::StoreOutput { src: 4 },
-    ]]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 2.0 },
+            solve::LinearOp::Select {
+                dst: 4,
+                cond: 2,
+                if_true: 3,
+                if_false: 0,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ]],
+        fixture_span!(),
+    );
     model.initial_y = vec![0.0];
     model.visible_names = vec!["x".to_string()];
     model
@@ -162,10 +180,13 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
             source: solve::PreParamSource::Y { index: 1 },
         },
     ];
-    model.problem.events.root_conditions = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 0 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(1)];
     model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::Fixed];
     model.problem.discrete.rhs = falling_ball_strict_reinit_rhs();
@@ -176,78 +197,87 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
 }
 
 fn falling_ball_continuous_blocks() -> (solve::ScalarProgramBlock, solve::ScalarProgramBlock) {
-    let rhs = solve::ScalarProgramBlock::new(vec![
+    let rhs = solve::ScalarProgramBlock::with_source_span(
         vec![
-            solve::LinearOp::LoadY { dst: 0, index: 1 },
-            solve::LinearOp::StoreOutput { src: 0 },
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const {
+                    dst: 0,
+                    value: -9.81,
+                },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
         ],
+        fixture_span!(),
+    );
+    let zero = solve::ScalarProgramBlock::with_source_span(
         vec![
-            solve::LinearOp::Const {
-                dst: 0,
-                value: -9.81,
-            },
-            solve::LinearOp::StoreOutput { src: 0 },
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
         ],
-    ]);
-    let zero = solve::ScalarProgramBlock::new(vec![
-        vec![
-            solve::LinearOp::Const { dst: 0, value: 0.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-        vec![
-            solve::LinearOp::Const { dst: 0, value: 0.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-    ]);
+        fixture_span!(),
+    );
     (rhs, zero)
 }
 
 fn falling_ball_strict_reinit_rhs() -> solve::ScalarProgramBlock {
-    solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 0 },
-        solve::LinearOp::Const { dst: 1, value: 0.0 },
-        solve::LinearOp::Compare {
-            dst: 2,
-            op: solve::CompareOp::Lt,
-            lhs: 0,
-            rhs: 1,
-        },
-        solve::LinearOp::LoadP { dst: 3, index: 0 },
-        solve::LinearOp::Compare {
-            dst: 4,
-            op: solve::CompareOp::Lt,
-            lhs: 3,
-            rhs: 1,
-        },
-        solve::LinearOp::Unary {
-            dst: 5,
-            op: solve::UnaryOp::Not,
-            arg: 4,
-        },
-        solve::LinearOp::Binary {
-            dst: 6,
-            op: solve::BinaryOp::And,
-            lhs: 2,
-            rhs: 5,
-        },
-        solve::LinearOp::LoadP { dst: 7, index: 1 },
-        solve::LinearOp::Const {
-            dst: 8,
-            value: -0.8,
-        },
-        solve::LinearOp::Binary {
-            dst: 9,
-            op: solve::BinaryOp::Mul,
-            lhs: 8,
-            rhs: 7,
-        },
-        solve::LinearOp::LoadY { dst: 10, index: 1 },
-        solve::LinearOp::Select {
-            dst: 11,
-            cond: 6,
-            if_true: 9,
-            if_false: 10,
-        },
-        solve::LinearOp::StoreOutput { src: 11 },
-    ]])
+    solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Lt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::LoadP { dst: 3, index: 0 },
+            solve::LinearOp::Compare {
+                dst: 4,
+                op: solve::CompareOp::Lt,
+                lhs: 3,
+                rhs: 1,
+            },
+            solve::LinearOp::Unary {
+                dst: 5,
+                op: solve::UnaryOp::Not,
+                arg: 4,
+            },
+            solve::LinearOp::Binary {
+                dst: 6,
+                op: solve::BinaryOp::And,
+                lhs: 2,
+                rhs: 5,
+            },
+            solve::LinearOp::LoadP { dst: 7, index: 1 },
+            solve::LinearOp::Const {
+                dst: 8,
+                value: -0.8,
+            },
+            solve::LinearOp::Binary {
+                dst: 9,
+                op: solve::BinaryOp::Mul,
+                lhs: 8,
+                rhs: 7,
+            },
+            solve::LinearOp::LoadY { dst: 10, index: 1 },
+            solve::LinearOp::Select {
+                dst: 11,
+                cond: 6,
+                if_true: 9,
+                if_false: 10,
+            },
+            solve::LinearOp::StoreOutput { src: 11 },
+        ]],
+        fixture_span!(),
+    )
 }

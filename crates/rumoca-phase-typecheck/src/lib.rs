@@ -83,6 +83,10 @@ pub enum TypeCheckError {
     #[error("unevaluable array dimensions for '{name}': {reason}")]
     UnevaluableDimensions { name: String, reason: String },
 
+    /// Required source provenance was missing from type-check metadata.
+    #[error("missing source context: {reason}")]
+    MissingSourceContext { reason: String },
+
     /// Phase-local diagnostic emitted during recoverable type checking.
     #[error("{message}")]
     PhaseDiagnostic {
@@ -128,6 +132,12 @@ impl TypeCheckError {
     pub fn unevaluable_dimensions(name: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::UnevaluableDimensions {
             name: name.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn missing_source_context(reason: impl Into<String>) -> Self {
+        Self::MissingSourceContext {
             reason: reason.into(),
         }
     }
@@ -198,6 +208,13 @@ impl PhaseError for TypeCheckError {
             )
             .with_note(
                 "MLS §10.1: array dimensions must be parameter expressions evaluable at translation time",
+            ),
+            Self::MissingSourceContext { reason } => CommonDiagnostic::global_error(
+                "ET000",
+                format!("missing source context: {reason}"),
+            )
+            .with_note(
+                "internal type-check metadata must preserve source provenance for diagnostics",
             ),
             Self::PhaseDiagnostic {
                 code,
@@ -296,6 +313,27 @@ impl TypeChecker {
 
     pub(crate) fn emit_typecheck_error(&mut self, error: TypeCheckError) {
         self.diagnostics.emit(error.to_diagnostic());
+    }
+
+    pub(crate) fn diagnostic_location_span(
+        &mut self,
+        location: &rumoca_core::Location,
+        context: &str,
+    ) -> Option<Span> {
+        match self.source_map.try_location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        ) {
+            Some(span) => Some(span),
+            None => {
+                self.emit_typecheck_error(TypeCheckError::missing_source_context(format!(
+                    "source file `{}` for {context} was not found",
+                    location.file_name
+                )));
+                None
+            }
+        }
     }
 
     /// Type check a ClassTree.
@@ -835,7 +873,7 @@ impl TypeChecker {
                     class.name.text
                 ),
                 "type alias declaration here",
-                self.location_span(&class.location),
+                self.location_span(&class.location)?,
             )));
         };
 
@@ -846,14 +884,9 @@ impl TypeChecker {
         }
 
         let base_name = ext.base_name.to_string();
-        Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id).ok_or_else(
-            || {
-                Box::new(TypeCheckError::undefined_type(
-                    base_name,
-                    self.name_span(&ext.base_name),
-                ))
-            },
-        )
+        let base_span = self.name_span(&ext.base_name)?;
+        Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
+            .ok_or_else(|| Box::new(TypeCheckError::undefined_type(base_name, base_span)))
     }
 
     fn try_resolve_alias_target_type_id(
@@ -874,9 +907,11 @@ impl TypeChecker {
             .or_else(|| type_table.lookup(path_utils::class_name_leaf(&base_name)))
     }
 
-    fn name_span(&self, name: &rumoca_ir_ast::Name) -> Span {
+    fn name_span(&self, name: &rumoca_ir_ast::Name) -> TypeCheckResult<Span> {
         let Some(first) = name.name.first() else {
-            return Span::DUMMY;
+            return Err(Box::new(TypeCheckError::missing_source_context(
+                "type alias target name has no source path segments",
+            )));
         };
         let last = name.name.last().unwrap_or(first);
         let file_name = if !first.location.file_name.is_empty() {
@@ -884,19 +919,32 @@ impl TypeChecker {
         } else {
             last.location.file_name.as_str()
         };
-        self.source_map.location_to_span(
-            file_name,
-            first.location.start as usize,
-            last.location.end as usize,
-        )
+        self.source_map
+            .try_location_to_span(
+                file_name,
+                first.location.start as usize,
+                last.location.end as usize,
+            )
+            .ok_or_else(|| {
+                Box::new(TypeCheckError::missing_source_context(format!(
+                    "source file `{file_name}` for type alias target name was not found"
+                )))
+            })
     }
 
-    fn location_span(&self, location: &rumoca_core::Location) -> Span {
-        self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        )
+    fn location_span(&self, location: &rumoca_core::Location) -> TypeCheckResult<Span> {
+        self.source_map
+            .try_location_to_span(
+                &location.file_name,
+                location.start as usize,
+                location.end as usize,
+            )
+            .ok_or_else(|| {
+                Box::new(TypeCheckError::missing_source_context(format!(
+                    "source file `{}` for typecheck location was not found",
+                    location.file_name
+                )))
+            })
     }
 
     /// Resolve and populate component type ids in the instance overlay.
@@ -913,23 +961,30 @@ impl TypeChecker {
                 let error = TypeCheckError::undefined_type(missing.clone(), *span);
                 self.emit_typecheck_error(error);
             }
-            if resolved.is_unknown() {
-                let instance_name = data.qualified_name.to_flat_string();
-                let span = self.source_map.location_to_span(
-                    &data.source_location.file_name,
-                    data.source_location.start as usize,
-                    data.source_location.end as usize,
-                );
-                self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
-                    "ET001",
-                    format!(
-                        "undefined type '{}' for instance '{}'",
-                        data.type_name, instance_name
-                    ),
-                    "type declaration here",
-                    span,
-                ));
+            if !resolved.is_unknown() {
+                data.type_id = resolved;
+                continue;
             }
+
+            let instance_name = data.qualified_name.to_flat_string();
+            let span = match self
+                .diagnostic_location_span(&data.source_location, "overlay component type")
+            {
+                Some(span) => span,
+                None => {
+                    data.type_id = resolved;
+                    continue;
+                }
+            };
+            self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+                "ET001",
+                format!(
+                    "undefined type '{}' for instance '{}'",
+                    data.type_name, instance_name
+                ),
+                "type declaration here",
+                span,
+            ));
             data.type_id = resolved;
         }
     }

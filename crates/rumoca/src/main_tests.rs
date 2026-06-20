@@ -203,6 +203,43 @@ fn cli_parses_sim_init_command() {
 }
 
 #[test]
+fn cli_parses_sim_check_config_forms() {
+    let cli = Cli::try_parse_from(["rumoca", "sim", "check", "rum.toml"])
+        .expect("parse sim check positional config");
+    match cli.command {
+        Commands::Sim(args) => match args.command {
+            Some(SimSubcommand::Check(check)) => {
+                assert_eq!(
+                    check
+                        .config_path()
+                        .expect("positional sim check config should resolve"),
+                    "rum.toml"
+                );
+            }
+            other => panic!("expected sim check, got {other:?}"),
+        },
+        other => panic!("expected sim command, got {other:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["rumoca", "sim", "check", "--config", "alt.toml"])
+        .expect("parse sim check flag config");
+    match cli.command {
+        Commands::Sim(args) => match args.command {
+            Some(SimSubcommand::Check(check)) => {
+                assert_eq!(
+                    check
+                        .config_path()
+                        .expect("flag sim check config should resolve"),
+                    "alt.toml"
+                );
+            }
+            other => panic!("expected sim check, got {other:?}"),
+        },
+        other => panic!("expected sim command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_sim_bench_command() {
     let cli = Cli::try_parse_from([
         "rumoca",
@@ -237,7 +274,8 @@ fn completions_are_generated_from_clap_and_cover_all_subcommands() {
     // clap_complete generates from the live command tree, so every subcommand —
     // including ones the old hand-maintained spec dropped (`targets`, `cache`) —
     // must appear, and stay in sync automatically.
-    let fish = completion_script(CompletionShell::Fish);
+    let fish = completion_script(CompletionShell::Fish)
+        .unwrap_or_else(|err| panic!("fish completions should generate: {err}"));
     for subcommand in ["compile", "sim", "fmt", "lint", "targets", "cache"] {
         assert!(
             fish.contains(subcommand),
@@ -253,7 +291,9 @@ fn completions_are_generated_from_clap_and_cover_all_subcommands() {
         CompletionShell::Zsh,
         CompletionShell::PowerShell,
     ] {
-        assert!(!completion_script(shell).is_empty());
+        let script = completion_script(shell)
+            .unwrap_or_else(|err| panic!("{shell:?} completions should generate: {err}"));
+        assert!(!script.is_empty());
     }
 }
 

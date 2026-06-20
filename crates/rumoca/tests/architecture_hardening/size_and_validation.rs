@@ -37,6 +37,590 @@ fn is_line_count_checked_source_file(path: &Path) -> bool {
 }
 
 #[test]
+fn test_production_dummy_span_fallbacks_do_not_increase() {
+    const MAX_DUMMY_SPAN_FALLBACKS: usize = 0;
+
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_dummy_span_fallback_counted_file(path))
+        .flat_map(|path| dummy_span_fallback_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production Span::DUMMY fallback expressions increased from the \
+baseline of {MAX_DUMMY_SPAN_FALLBACKS} to {}. SPEC_0008 requires preserving \
+real provenance or bubbling an explicit unspanned error instead of falling \
+back to Span::DUMMY. New code must remove at least as many fallback sites as \
+it adds. Offenders: {offenders:#?}",
+        offenders.len()
+    );
+}
+
+#[test]
+fn test_production_expression_span_dummy_fallbacks_do_not_increase() {
+    const MAX_EXPRESSION_SPAN_DUMMY_FALLBACKS: usize = 0;
+
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| expression_span_dummy_fallback_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production expression/reference span fallbacks to Span::DUMMY increased from \
+the baseline of {MAX_EXPRESSION_SPAN_DUMMY_FALLBACKS} to {}. Source-derived IR \
+must use a required owner span and bubble a typed unspanned contract error when \
+provenance is missing; new code must remove at least as many fallback sites as \
+it adds. Offenders: {offenders:#?}",
+        offenders.len()
+    );
+}
+
+fn expression_span_dummy_fallback_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_expression_span_dummy_fallback(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn line_has_expression_span_dummy_fallback(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//")
+        && line.contains(".span().unwrap_or(")
+        && (line.contains("Span::DUMMY") || line.contains("rumoca_core::Span::DUMMY"))
+}
+
+#[test]
+fn test_production_source_map_dummy_span_fallbacks_do_not_increase() {
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_dummy_span_fallback_counted_file(path))
+        .flat_map(|path| source_map_location_to_span_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production SourceMap::location_to_span calls are forbidden because \
+that API falls back to Span::DUMMY when source lookup fails. New code must use \
+try_location_to_span and bubble missing source context explicitly instead of \
+silently manufacturing dummy provenance. Offenders: {offenders:#?}",
+    );
+}
+
+fn is_dummy_span_fallback_counted_file(path: &Path) -> bool {
+    is_production_span_debt_counted_file(path)
+}
+
+#[test]
+fn test_span_type_does_not_implement_default() {
+    let path = workspace_root().join("crates/rumoca-core/src/ir_primitives.rs");
+    let content = fs::read_to_string(&path).expect("read rumoca-core ir primitives");
+    let span_struct = content
+        .find("pub struct Span")
+        .expect("Span struct declaration should exist");
+    let prefix = &content[..span_struct];
+    let derive_start = prefix.rfind("#[derive(");
+    let derive_default = derive_start
+        .and_then(|start| {
+            prefix[start..]
+                .find(")]")
+                .map(|end| &prefix[start..start + end])
+        })
+        .is_some_and(|derive| derive.contains("Default"));
+
+    assert!(
+        !derive_default && !content.contains("impl Default for Span"),
+        "Span must not implement Default; use Span::DUMMY only at explicit \
+source-free boundaries or Span::source_free_serde_default for serde absent-span \
+compatibility"
+    );
+}
+
+#[test]
+fn test_production_span_defaults_are_forbidden() {
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| default_span_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production span fields must not be default-constructed because \
+Span::default() creates the dummy sentinel and hides provenance loss. Use a real owner \
+span, bubble a provenance error, or route explicitly source-free constructs \
+through a named helper. Offenders: {offenders:#?}"
+    );
+}
+
+#[test]
+fn test_production_dummy_span_uses_do_not_increase() {
+    const MAX_DUMMY_SPAN_USES: usize = 0;
+
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| dummy_span_use_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production Span::DUMMY uses increased from the baseline of \
+{MAX_DUMMY_SPAN_USES} to {}. SPEC_0008 requires preserving real provenance \
+where possible; new source-free IR must use an explicit generated/unspanned \
+path instead of adding direct dummy-span construction. Offenders: {offenders:#?}",
+        offenders.len()
+    );
+}
+
+#[test]
+fn test_production_source_free_span_escape_hatches_do_not_increase() {
+    const MAX_SOURCE_FREE_SPAN_ESCAPE_HATCHES: usize = 0;
+
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| source_free_span_escape_hatch_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production source-free span escape-hatch uses increased from the \
+baseline of {MAX_SOURCE_FREE_SPAN_ESCAPE_HATCHES} to {}. Source-free spans are \
+only valid at explicit serde/default or source-free IR boundaries; source-derived \
+lowering must preserve an owner span or bubble an unspanned contract error. \
+Offenders: {offenders:#?}",
+        offenders.len()
+    );
+}
+
+#[test]
+fn test_generated_subscripts_do_not_use_dummy_span_in_new_production_code() {
+    const MAX_GENERATED_SUBSCRIPT_DUMMY_SPANS: usize = 0;
+
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| generated_dummy_subscript_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production generated subscripts using Span::DUMMY increased from the \
+baseline of {MAX_GENERATED_SUBSCRIPT_DUMMY_SPANS} to {}. Generated subscripts \
+must inherit an owner span from the source expression, equation, or declaration \
+that caused them. Offenders: {offenders:#?}",
+        offenders.len()
+    );
+}
+
+#[test]
+fn test_generated_span_helpers_are_forbidden() {
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| generated_span_helper_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production generated span helpers are forbidden because generated \
+source-derived IR should inherit a real owner span. Truly source-free \
+boundaries must be named explicitly as source-free/unspanned instead of \
+        `generated_*_span`. Offenders: {offenders:#?}"
+    );
+}
+
+#[test]
+fn test_raw_generated_subscript_constructors_do_not_increase() {
+    const MAX_RAW_GENERATED_SUBSCRIPT_CONSTRUCTORS: usize = 0;
+
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let offenders = rs_files
+        .into_iter()
+        .filter(|path| is_production_span_debt_counted_file(path))
+        .flat_map(|path| raw_generated_subscript_locations(&path))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "production raw generated-subscript constructors increased from the \
+baseline of {MAX_RAW_GENERATED_SUBSCRIPT_CONSTRUCTORS} to {}. Fallible \
+production code should prefer `try_generated_*` or `generated_*_with_provenance` \
+so dummy spans cannot silently enter generated IR. Offenders: {offenders:#?}",
+        offenders.len()
+    );
+}
+
+fn is_production_span_debt_counted_file(path: &Path) -> bool {
+    let rel = path
+        .strip_prefix(workspace_root())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    !rel.contains("/generated/")
+        && !rel.contains("/tests/")
+        && !rel.ends_with("/tests.rs")
+        && !rel.ends_with("_tests.rs")
+        && !rel.ends_with("/test_support.rs")
+        && !rel.ends_with("architecture_hardening_test.rs")
+        && !rel.contains("/architecture_hardening/")
+}
+
+fn dummy_span_fallback_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_dummy_span_fallback(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn source_map_location_to_span_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_source_map_location_to_span_call(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn line_has_source_map_location_to_span_call(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//")
+        && (line.contains(".location_to_span(") || line.contains("fn location_to_span(&self"))
+}
+
+fn line_has_dummy_span_fallback(line: &str) -> bool {
+    let code = line_without_literals_or_line_comment(line);
+    code.contains("Span::DUMMY")
+        && (code.contains("unwrap_or(")
+            || code.contains("unwrap_or_else(")
+            || code.contains("map_or("))
+}
+
+fn default_span_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_default_span_construction(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn line_has_default_span_construction(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//")
+        && (line.contains("Span::default()")
+            || line.contains("span: Default::default()")
+            || line.contains("span: std::default::Default::default()")
+            || line.contains("span: core::default::Default::default()"))
+}
+
+fn dummy_span_use_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_dummy_span_use(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn source_free_span_escape_hatch_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_source_free_span_escape_hatch(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn generated_dummy_subscript_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_generated_dummy_subscript(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn generated_span_helper_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_generated_span_helper(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn raw_generated_subscript_locations(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    production_source_lines(&content)
+        .filter(|(_, line)| line_has_raw_generated_subscript_constructor(line))
+        .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
+        .collect()
+}
+
+fn line_has_generated_span_helper(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//") && trimmed.contains("fn generated_") && trimmed.contains("_span")
+}
+
+fn line_has_raw_generated_subscript_constructor(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//")
+        && (line.contains("Subscript::generated_index(")
+            || line.contains("Subscript::generated_colon(")
+            || line.contains("Subscript::generated_expr("))
+}
+
+fn line_has_generated_dummy_subscript(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//")
+        && line.contains("Span::DUMMY")
+        && (line.contains("Subscript::generated_index(")
+            || line.contains("Subscript::generated_colon(")
+            || line.contains("Subscript::generated_expr(")
+            || line.contains("Subscript::colon("))
+}
+
+fn line_has_dummy_span_use(line: &str) -> bool {
+    let code = line_without_literals_or_line_comment(line);
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("//")
+        && (code.contains("Span::DUMMY") || code.contains("rumoca_core::Span::DUMMY"))
+}
+
+fn line_has_source_free_span_escape_hatch(line: &str) -> bool {
+    let code = line_without_literals_or_line_comment(line);
+    code.contains("Span::source_free_serde_default(")
+        || code.contains("source_free_span()")
+        || code.contains("ScalarProgramBlock::source_free(")
+        || code.contains("source_free_generated_index(")
+}
+
+fn line_without_literals_or_line_comment(line: &str) -> String {
+    let mut code = String::with_capacity(line.len());
+    let mut idx = 0;
+    while idx < line.len() {
+        if line[idx..].starts_with("//") {
+            break;
+        }
+
+        if let Some(end) = raw_string_literal_end(line, idx) {
+            code.push('"');
+            idx = end;
+            continue;
+        }
+
+        let Some(ch) = line[idx..].chars().next() else {
+            break;
+        };
+        if ch == '"' {
+            code.push('"');
+            idx = cooked_string_literal_end(line, idx + ch.len_utf8());
+            continue;
+        }
+
+        code.push(ch);
+        idx += ch.len_utf8();
+    }
+    code
+}
+
+fn cooked_string_literal_end(line: &str, mut idx: usize) -> usize {
+    let mut escaped = false;
+    while idx < line.len() {
+        let Some(ch) = line[idx..].chars().next() else {
+            break;
+        };
+        idx += ch.len_utf8();
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => break,
+            _ => {}
+        }
+    }
+    idx
+}
+
+fn raw_string_literal_end(line: &str, start: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut idx = match bytes.get(start..) {
+        Some([b'r', ..]) => start + 1,
+        Some([b'b', b'r', ..]) => start + 2,
+        _ => return None,
+    };
+
+    let mut hashes = 0;
+    while bytes.get(idx) == Some(&b'#') {
+        idx += 1;
+        hashes += 1;
+    }
+    if bytes.get(idx) != Some(&b'"') {
+        return None;
+    }
+
+    let mut search = idx + 1;
+    while search < bytes.len() {
+        if raw_string_closes_at(bytes, search, hashes) {
+            return Some(search + 1 + hashes);
+        }
+        search += 1;
+    }
+    Some(bytes.len())
+}
+
+fn raw_string_closes_at(bytes: &[u8], quote_idx: usize, hashes: usize) -> bool {
+    if bytes.get(quote_idx) != Some(&b'"') {
+        return false;
+    }
+    let close_end = quote_idx + 1 + hashes;
+    close_end <= bytes.len()
+        && bytes[quote_idx + 1..close_end]
+            .iter()
+            .all(|byte| *byte == b'#')
+}
+
+fn production_source_lines(content: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut pending_cfg_test = false;
+    let mut skipped_cfg_test_depth = 0i32;
+    content.lines().enumerate().filter(move |(_, line)| {
+        if skipped_cfg_test_depth > 0 {
+            skipped_cfg_test_depth += brace_delta(line);
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if pending_cfg_test {
+            if trimmed.starts_with("#[") {
+                return false;
+            }
+            pending_cfg_test = false;
+            if starts_cfg_test_item(trimmed) {
+                skipped_cfg_test_depth = brace_delta(line).max(0);
+                return false;
+            }
+        }
+
+        if trimmed.starts_with("#[cfg(test)]") {
+            pending_cfg_test = true;
+            return false;
+        }
+        true
+    })
+}
+
+fn starts_cfg_test_item(trimmed: &str) -> bool {
+    trimmed.starts_with("mod ")
+        || trimmed.starts_with("pub mod ")
+        || trimmed.starts_with("fn ")
+        || trimmed.starts_with("pub fn ")
+        || trimmed.starts_with("use ")
+}
+
+fn brace_delta(line: &str) -> i32 {
+    line.chars().fold(0, |delta, ch| match ch {
+        '{' => delta + 1,
+        '}' => delta - 1,
+        _ => delta,
+    })
+}
+
+#[test]
+fn test_production_source_lines_skip_inline_cfg_test_modules() {
+    let content = r#"
+fn production() {
+    let _span = Span::DUMMY;
+}
+
+#[cfg(test)]
+mod tests {
+    fn fixture() {
+        let _span = Span::DUMMY;
+    }
+}
+
+fn production_after_tests() {
+    let _span = rumoca_core::Span::DUMMY;
+}
+"#;
+
+    let direct_uses = production_source_lines(content)
+        .filter(|(_, line)| line_has_dummy_span_use(line))
+        .count();
+
+    assert_eq!(direct_uses, 2);
+}
+
+#[test]
+fn test_dummy_span_scan_ignores_string_literals() {
+    assert!(!line_has_dummy_span_use(
+        r#"let needles = ["SourceId(0)", "Span::DUMMY"];"#
+    ));
+    assert!(!line_has_dummy_span_use(
+        r##"let snippet = r#"let span = Span::DUMMY;"#;"##
+    ));
+    assert!(!line_has_dummy_span_use(
+        "let span = real_span; // Span::DUMMY"
+    ));
+    assert!(line_has_dummy_span_use("let span = Span::DUMMY;"));
+}
+
+#[test]
 fn test_ir_crates_have_no_public_scalarize_functions() {
     // SPEC_0007 keeps scalarization out of IR crates; backend/evaluator
     // fallback helpers live in rumoca-eval-solve.
@@ -327,6 +911,9 @@ the validated SolveArtifacts lowering path"
         fs::read_to_string(&solve_model_path).expect("read phase-solve solve_model.rs");
     let problem_lowering = solve_model_content
         .find("crate::lower_solve_problem_with_solver_len(&dae_model, solver_len)?")
+        .or_else(|| {
+            solve_model_content.find("crate::lower_solve_problem_with_solver_len_and_model_span(")
+        })
         .expect(
             "lower_dae_to_solve_model_inner must lower through the validated SolveProblem path",
         );

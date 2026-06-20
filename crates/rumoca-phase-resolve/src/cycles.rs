@@ -110,7 +110,14 @@ impl Resolver {
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
-        let span = crate::location_to_span(location, &self.source_map);
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            location,
+            &self.source_map,
+            "inheritance cycle edge",
+        ) else {
+            return;
+        };
         self.diagnostics.emit(Diagnostic::error(
             "ER004",
             format!(

@@ -94,12 +94,12 @@ fn try_eval_binary<T: SimFloat>(
             kind: "placeholder binary operator",
         });
     }
-    if matches!(op, rumoca_core::OpBinary::Mul)
-        && let Some(dot) = try_eval_vector_dot_product(lhs, rhs, env)?
-    {
+    let may_be_array_product = matches!(op, rumoca_core::OpBinary::Mul)
+        && (expression_is_array_like(lhs, env)? || expression_is_array_like(rhs, env)?);
+    if may_be_array_product && let Some(dot) = try_eval_vector_dot_product(lhs, rhs, env)? {
         return Ok(dot);
     }
-    if matches!(op, rumoca_core::OpBinary::Mul)
+    if may_be_array_product
         && let Some(values) = eval_binary_array_values(op, lhs, rhs, env)?
         && let Some(first) = values.first().copied()
     {

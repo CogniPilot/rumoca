@@ -1,4 +1,9 @@
 //! AD lowering from primal linear ops to forward-mode J·v ops.
+//!
+//! SPEC_0021 file-size exception: AD lowering still keeps scalar row AD,
+//! tensor-node JVP lowering, and regression tests together while Solve IR
+//! multi-output programs are being stabilized. split plan: move tensor-node JVP
+//! lowering and indexed-load AD helpers into sibling modules behind this facade.
 
 use crate::lower::{LowerError, lower_initial_residual, lower_residual};
 use rumoca_ir_solve::{
@@ -56,20 +61,25 @@ pub fn lower_initial_residual_full_ad(
 /// For `LinSolve` nodes: emits another `LinSolve` using
 /// `dx = A^{-1}(db - dA * x)` so coupled systems keep tensor solve structure.
 pub fn lower_compute_block_jvp(block: &ComputeBlock) -> Result<ComputeBlock, LowerError> {
-    let nodes = block
-        .nodes
-        .iter()
-        .map(lower_compute_node_jvp)
-        .collect::<Result<Vec<_>, _>>()?;
+    let span = compute_block_context_span(block);
+    let mut nodes = ad_vec_with_capacity(block.nodes.len(), "compute block JVP node count", span)?;
+    for node in &block.nodes {
+        nodes.push(lower_compute_node_jvp(node)?);
+    }
     Ok(ComputeBlock { nodes })
 }
 
 fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
     match node {
         ComputeNode::ScalarPrograms(rows) => {
-            let jvp_rows = lower_scalar_program_block_ad(&rows.programs)?;
+            let jvp_rows =
+                lower_scalar_program_block_ad_with_spans(&rows.programs, &rows.program_spans)?;
             Ok(ComputeNode::ScalarPrograms(
-                ScalarProgramBlock::with_program_spans(jvp_rows, rows.program_spans.clone()),
+                ScalarProgramBlock::with_output_indices(
+                    jvp_rows,
+                    rows.program_spans.clone(),
+                    rows.output_indices.clone(),
+                )?,
             ))
         }
         ComputeNode::MatMul { .. } => lower_matmul_jvp_node(node),
@@ -89,7 +99,7 @@ fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError>
             metadata.clone(),
             *span,
         ),
-        ComputeNode::AffineStencil { .. } => scalarized_node_jvp(node),
+        ComputeNode::Map { .. } | ComputeNode::AffineStencil { .. } => scalarized_node_jvp(node),
     }
 }
 
@@ -108,14 +118,21 @@ fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> 
         span,
     } = node
     else {
-        unreachable!("lower_matmul_jvp_node only accepts MatMul nodes");
+        let span = compute_node_span(node)?;
+        return Err(ad_contract_violation(
+            format!(
+                "MatMul JVP lowering received {} node",
+                compute_node_kind(node)
+            ),
+            span,
+        ));
     };
 
     match (ops_reference_y(lhs_ops), ops_reference_y(rhs_ops)) {
         (false, true) => Ok(ComputeNode::MatMul {
             lhs_ops: lhs_ops.clone(),
             lhs_start: *lhs_start,
-            rhs_ops: substitute_load_y_with_seed(rhs_ops),
+            rhs_ops: substitute_load_y_with_seed(rhs_ops, *span, "MatMul JVP RHS op count")?,
             rhs_start: *rhs_start,
             m: *m,
             k: *k,
@@ -126,7 +143,7 @@ fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> 
             span: *span,
         }),
         (true, false) => Ok(ComputeNode::MatMul {
-            lhs_ops: substitute_load_y_with_seed(lhs_ops),
+            lhs_ops: substitute_load_y_with_seed(lhs_ops, *span, "MatMul JVP LHS op count")?,
             lhs_start: *lhs_start,
             rhs_ops: rhs_ops.clone(),
             rhs_start: *rhs_start,
@@ -139,21 +156,73 @@ fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> 
             span: *span,
         }),
         (false, false) => Ok(ComputeNode::ScalarPrograms(zero_scalar_program_block(
-            *m * *n,
+            checked_ad_product(*m, *n, *span, "constant MatMul JVP output count")?,
             *span,
-        ))),
+        )?)),
         (true, true) => scalarized_node_jvp(node),
     }
 }
 
+fn compute_node_kind(node: &ComputeNode) -> &'static str {
+    match node {
+        ComputeNode::ScalarPrograms(_) => "ScalarPrograms",
+        ComputeNode::MatMul { .. } => "MatMul",
+        ComputeNode::LinSolve { .. } => "LinSolve",
+        ComputeNode::Map { .. } => "Map",
+        ComputeNode::AffineStencil { .. } => "AffineStencil",
+    }
+}
+
+fn compute_node_span(node: &ComputeNode) -> Result<rumoca_core::Span, LowerError> {
+    match node {
+        ComputeNode::ScalarPrograms(block) => block.program_span(0).ok_or_else(|| {
+            ad_optional_contract_violation(
+                "ScalarPrograms node has no program span for AD error context".to_string(),
+                first_non_dummy_span(&block.program_spans),
+            )
+        }),
+        ComputeNode::MatMul { span, .. }
+        | ComputeNode::LinSolve { span, .. }
+        | ComputeNode::Map { span, .. }
+        | ComputeNode::AffineStencil { span, .. } => Ok(*span),
+    }
+}
+
+fn compute_block_context_span(block: &ComputeBlock) -> Option<rumoca_core::Span> {
+    for node in &block.nodes {
+        if let Some(span) = compute_node_context_span(node) {
+            return Some(span);
+        }
+    }
+    None
+}
+
+fn compute_node_context_span(node: &ComputeNode) -> Option<rumoca_core::Span> {
+    match node {
+        ComputeNode::ScalarPrograms(block) => first_non_dummy_span(&block.program_spans),
+        ComputeNode::MatMul { span, .. }
+        | ComputeNode::LinSolve { span, .. }
+        | ComputeNode::Map { span, .. }
+        | ComputeNode::AffineStencil { span, .. } => (!span.is_dummy()).then_some(*span),
+    }
+}
+
 fn scalarized_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
-    let scalar = ComputeBlock {
-        nodes: vec![node.clone()],
-    };
-    let scalar_programs = rumoca_eval_solve::to_scalar_program_block(&scalar);
-    let jvp_rows = lower_scalar_program_block_ad(&scalar_programs.programs)?;
+    let span = compute_node_context_span(node);
+    let mut nodes = ad_vec_with_capacity(1, "scalarized JVP node count", span)?;
+    nodes.push(node.clone());
+    let scalar = ComputeBlock { nodes };
+    let scalar_programs = rumoca_eval_solve::to_scalar_program_block(&scalar)?;
+    let jvp_rows = lower_scalar_program_block_ad_with_spans(
+        &scalar_programs.programs,
+        &scalar_programs.program_spans,
+    )?;
     Ok(ComputeNode::ScalarPrograms(
-        ScalarProgramBlock::with_program_spans(jvp_rows, scalar_programs.program_spans),
+        ScalarProgramBlock::with_output_indices(
+            jvp_rows,
+            scalar_programs.program_spans,
+            scalar_programs.output_indices,
+        )?,
     ))
 }
 
@@ -164,25 +233,43 @@ fn ops_reference_y(ops: &[LinearOp]) -> bool {
 
 /// Replace every `LoadY { dst, index }` with `LoadSeed { dst, index }`.
 /// All other ops are passed through unchanged.
-fn substitute_load_y_with_seed(ops: &[LinearOp]) -> Vec<LinearOp> {
-    ops.iter()
-        .map(|op| match *op {
+fn substitute_load_y_with_seed(
+    ops: &[LinearOp],
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<Vec<LinearOp>, LowerError> {
+    let mut substituted = ad_vec_with_capacity(ops.len(), context, span)?;
+    for op in ops {
+        substituted.push(match *op {
             LinearOp::LoadY { dst, index } => LinearOp::LoadSeed { dst, index },
             other => other,
-        })
-        .collect()
+        });
+    }
+    Ok(substituted)
 }
 
-fn zero_scalar_program_block(row_count: usize, span: rumoca_core::Span) -> ScalarProgramBlock {
-    let rows = (0..row_count)
-        .map(|_| {
-            vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                LinearOp::StoreOutput { src: 0 },
-            ]
-        })
-        .collect();
-    ScalarProgramBlock::with_source_span(rows, span)
+fn zero_scalar_program_block(
+    row_count: usize,
+    span: rumoca_core::Span,
+) -> Result<ScalarProgramBlock, LowerError> {
+    let mut rows = ad_vec_with_capacity(row_count, "zero scalar program row count", span)?;
+    let mut program_spans =
+        ad_vec_with_capacity(row_count, "zero scalar program span count", span)?;
+    let mut output_indices =
+        ad_vec_with_capacity(row_count, "zero scalar program output count", span)?;
+    for output_index in 0..row_count {
+        let mut row = ad_vec_with_capacity(2, "zero scalar program op count", span)?;
+        row.push(LinearOp::Const { dst: 0, value: 0.0 });
+        row.push(LinearOp::StoreOutput { src: 0 });
+        rows.push(row);
+        program_spans.push(span);
+        output_indices.push(output_index);
+    }
+    Ok(ScalarProgramBlock::with_output_indices(
+        rows,
+        program_spans,
+        output_indices,
+    )?)
 }
 
 fn lower_linsolve_jvp_node(
@@ -197,26 +284,37 @@ fn lower_linsolve_jvp_node(
         return Err(unsupported("invalid zero-sized LinSolve in JVP"));
     }
 
-    let mut builder = AdBuilder::new(SeedMode::SolverYOnly);
+    let mut builder = AdBuilder::new_with_span(SeedMode::SolverYOnly, span);
     for op in setup_ops {
         builder.lower_op(*op)?;
     }
 
-    let matrix = (0..n * n)
-        .map(|idx| builder.lookup(matrix_start + idx as Reg))
-        .collect::<Result<Vec<_>, _>>()?;
-    let rhs = (0..n)
-        .map(|idx| builder.lookup(rhs_start + idx as Reg))
-        .collect::<Result<Vec<_>, _>>()?;
+    let matrix_len = checked_ad_product(n, n, span, "LinSolve JVP matrix range")?;
+    let matrix = collect_dual_range(
+        &builder,
+        matrix_start,
+        matrix_len,
+        span,
+        "LinSolve JVP matrix value count",
+        "matrix range",
+    )?;
+    let rhs = collect_dual_range(
+        &builder,
+        rhs_start,
+        n,
+        span,
+        "LinSolve JVP RHS value count",
+        "rhs range",
+    )?;
 
-    let matrix_re = matrix.iter().map(|entry| entry.re).collect::<Vec<_>>();
-    let rhs_re = rhs.iter().map(|entry| entry.re).collect::<Vec<_>>();
-    let matrix_re_start = builder.pack_registers(&matrix_re);
-    let rhs_re_start = builder.pack_registers(&rhs_re);
+    let matrix_re = real_regs_from_duals(&matrix, "LinSolve JVP matrix real value count", span)?;
+    let rhs_re = real_regs_from_duals(&rhs, "LinSolve JVP RHS real value count", span)?;
+    let matrix_re_start = builder.pack_registers(&matrix_re)?;
+    let rhs_re_start = builder.pack_registers(&rhs_re)?;
 
-    let mut solution = Vec::with_capacity(n);
+    let mut solution = ad_vec_with_capacity(n, "LinSolve JVP solution value count", span)?;
     for component in 0..n {
-        let dst = builder.alloc_reg();
+        let dst = builder.alloc_reg()?;
         builder.ops.push(LinearOp::LinearSolveComponent {
             dst,
             matrix_start: matrix_re_start,
@@ -227,17 +325,17 @@ fn lower_linsolve_jvp_node(
         solution.push(dst);
     }
 
-    let mut tangent_rhs = Vec::with_capacity(n);
+    let mut tangent_rhs = ad_vec_with_capacity(n, "LinSolve JVP tangent RHS value count", span)?;
     for row in 0..n {
         let mut acc = rhs[row].du;
         for col in 0..n {
             let matrix_du = matrix[row * n + col].du;
-            let product = builder.emit_binary(BinaryOp::Mul, matrix_du, solution[col]);
-            acc = builder.emit_binary(BinaryOp::Sub, acc, product);
+            let product = builder.emit_binary(BinaryOp::Mul, matrix_du, solution[col])?;
+            acc = builder.emit_binary(BinaryOp::Sub, acc, product)?;
         }
         tangent_rhs.push(acc);
     }
-    let tangent_rhs_start = builder.pack_registers(&tangent_rhs);
+    let tangent_rhs_start = builder.pack_registers(&tangent_rhs)?;
     let next_reg = builder.next_reg;
 
     Ok(ComputeNode::LinSolve {
@@ -254,31 +352,108 @@ fn lower_linsolve_jvp_node(
 pub fn lower_scalar_program_block_ad(
     primal_rows: &[Vec<LinearOp>],
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    primal_rows
-        .iter()
-        .map(|row| lower_row_ad(row, SeedMode::SolverYOnly))
-        .collect()
+    lower_scalar_program_rows_ad(
+        primal_rows,
+        &[],
+        SeedMode::SolverYOnly,
+        "scalar program AD row count",
+    )
 }
 
 pub fn lower_scalar_program_block_full_ad(
     primal_rows: &[Vec<LinearOp>],
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    primal_rows
-        .iter()
-        .map(|row| {
-            lower_row_ad(
-                row,
-                SeedMode::SolverYAndP {
-                    p_seed_offset: layout.y_scalars(),
-                },
-            )
-        })
-        .collect()
+    lower_scalar_program_block_full_ad_with_spans(primal_rows, &[], layout)
 }
 
-fn lower_row_ad(primal_ops: &[LinearOp], seed_mode: SeedMode) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = AdBuilder::new(seed_mode);
+pub fn lower_scalar_program_block_full_ad_with_spans(
+    primal_rows: &[Vec<LinearOp>],
+    row_spans: &[rumoca_core::Span],
+    layout: &VarLayout,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    lower_scalar_program_rows_ad(
+        primal_rows,
+        row_spans,
+        SeedMode::SolverYAndP {
+            p_seed_offset: layout.y_scalars(),
+        },
+        "full scalar program AD row count",
+    )
+}
+
+fn lower_scalar_program_block_ad_with_spans(
+    primal_rows: &[Vec<LinearOp>],
+    row_spans: &[rumoca_core::Span],
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    lower_scalar_program_rows_ad(
+        primal_rows,
+        row_spans,
+        SeedMode::SolverYOnly,
+        "spanned scalar program AD row count",
+    )
+}
+
+fn lower_scalar_program_rows_ad(
+    primal_rows: &[Vec<LinearOp>],
+    row_spans: &[rumoca_core::Span],
+    seed_mode: SeedMode,
+    context: &'static str,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    let span = first_non_dummy_span(row_spans);
+    if !row_spans.is_empty() && row_spans.len() != primal_rows.len() {
+        return Err(ad_optional_contract_violation(
+            format!(
+                "AD scalar row span count {} does not match row count {}",
+                row_spans.len(),
+                primal_rows.len()
+            ),
+            span,
+        ));
+    }
+
+    let mut rows = ad_vec_with_capacity(primal_rows.len(), context, span)?;
+    for (row_index, row) in primal_rows.iter().enumerate() {
+        let row_span = row_span(row_spans, row_index)?;
+        rows.push(lower_row_ad_with_span(row, seed_mode, row_span)?);
+    }
+    Ok(rows)
+}
+
+fn row_span(
+    row_spans: &[rumoca_core::Span],
+    row_index: usize,
+) -> Result<Option<rumoca_core::Span>, LowerError> {
+    if row_spans.is_empty() {
+        return Ok(None);
+    }
+    row_spans
+        .get(row_index)
+        .copied()
+        .map(|span| (!span.is_dummy()).then_some(span))
+        .ok_or_else(|| {
+            ad_optional_contract_violation(
+                format!("AD scalar row {row_index} has no source span"),
+                first_non_dummy_span(row_spans),
+            )
+        })
+}
+
+fn first_non_dummy_span(spans: &[rumoca_core::Span]) -> Option<rumoca_core::Span> {
+    for span in spans {
+        if !span.is_dummy() {
+            return Some(*span);
+        }
+    }
+    None
+}
+
+fn lower_row_ad_with_span(
+    primal_ops: &[LinearOp],
+    seed_mode: SeedMode,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<LinearOp>, LowerError> {
+    let mut builder = AdBuilder::new_with_optional_span(seed_mode, span);
     for op in primal_ops {
         builder.lower_op(*op)?;
     }
@@ -304,12 +479,18 @@ struct AdBuilder {
     cached_ln10: Option<Reg>,
     cached_two: Option<Reg>,
     seed_mode: SeedMode,
+    span: Option<rumoca_core::Span>,
 }
 
 impl AdBuilder {
-    fn new(seed_mode: SeedMode) -> Self {
+    fn new_with_span(seed_mode: SeedMode, span: rumoca_core::Span) -> Self {
+        Self::new_with_optional_span(seed_mode, Some(span))
+    }
+
+    fn new_with_optional_span(seed_mode: SeedMode, span: Option<rumoca_core::Span>) -> Self {
         Self {
             seed_mode,
+            span,
             ..Self::default()
         }
     }
@@ -377,14 +558,14 @@ impl AdBuilder {
     }
 
     fn lower_const(&mut self, dst: Reg, value: f64) -> Result<(), LowerError> {
-        let re = self.emit_const(value);
-        let du = self.zero_reg();
+        let re = self.emit_const(value)?;
+        let du = self.zero_reg()?;
         self.bind(dst, DualReg { re, du })
     }
 
     fn lower_load_time(&mut self, dst: Reg) -> Result<(), LowerError> {
-        let re = self.emit_load_time();
-        let du = self.zero_reg();
+        let re = self.emit_load_time()?;
+        let du = self.zero_reg()?;
         self.bind(dst, DualReg { re, du })
     }
 
@@ -405,21 +586,39 @@ impl AdBuilder {
             return Err(unsupported("invalid LinearSolveComponent shape in AD row"));
         }
 
-        let matrix = (0..n * n)
-            .map(|idx| self.lookup(matrix_start + idx as Reg))
-            .collect::<Result<Vec<_>, _>>()?;
-        let rhs = (0..n)
-            .map(|idx| self.lookup(rhs_start + idx as Reg))
-            .collect::<Result<Vec<_>, _>>()?;
+        let span = self.span;
+        let matrix_len = checked_ad_product(n, n, span, "LinearSolveComponent AD matrix range")?;
+        let matrix = collect_dual_range(
+            self,
+            matrix_start,
+            matrix_len,
+            span,
+            "LinearSolveComponent AD matrix value count",
+            "matrix range",
+        )?;
+        let rhs = collect_dual_range(
+            self,
+            rhs_start,
+            n,
+            span,
+            "LinearSolveComponent AD RHS value count",
+            "rhs range",
+        )?;
 
-        let matrix_re = matrix.iter().map(|entry| entry.re).collect::<Vec<_>>();
-        let rhs_re = rhs.iter().map(|entry| entry.re).collect::<Vec<_>>();
-        let matrix_start_re = self.pack_registers(&matrix_re);
-        let rhs_start_re = self.pack_registers(&rhs_re);
+        let matrix_re = real_regs_from_duals(
+            &matrix,
+            "LinearSolveComponent AD matrix real value count",
+            span,
+        )?;
+        let rhs_re =
+            real_regs_from_duals(&rhs, "LinearSolveComponent AD RHS real value count", span)?;
+        let matrix_start_re = self.pack_registers(&matrix_re)?;
+        let rhs_start_re = self.pack_registers(&rhs_re)?;
 
-        let mut solution_regs = Vec::with_capacity(n);
+        let mut solution_regs =
+            ad_vec_with_capacity(n, "LinearSolveComponent AD solution value count", span)?;
         for solution_component in 0..n {
-            let solution = self.alloc_reg();
+            let solution = self.alloc_reg()?;
             self.ops.push(LinearOp::LinearSolveComponent {
                 dst: solution,
                 matrix_start: matrix_start_re,
@@ -430,19 +629,20 @@ impl AdBuilder {
             solution_regs.push(solution);
         }
 
-        let mut tangent_rhs = Vec::with_capacity(n);
+        let mut tangent_rhs =
+            ad_vec_with_capacity(n, "LinearSolveComponent AD tangent RHS value count", span)?;
         for row in 0..n {
             let mut acc = rhs[row].du;
             for col in 0..n {
                 let matrix_du = matrix[row * n + col].du;
-                let product = self.emit_binary(BinaryOp::Mul, matrix_du, solution_regs[col]);
-                acc = self.emit_binary(BinaryOp::Sub, acc, product);
+                let product = self.emit_binary(BinaryOp::Mul, matrix_du, solution_regs[col])?;
+                acc = self.emit_binary(BinaryOp::Sub, acc, product)?;
             }
             tangent_rhs.push(acc);
         }
 
-        let tangent_rhs_start = self.pack_registers(&tangent_rhs);
-        let du = self.alloc_reg();
+        let tangent_rhs_start = self.pack_registers(&tangent_rhs)?;
+        let du = self.alloc_reg()?;
         self.ops.push(LinearOp::LinearSolveComponent {
             dst: du,
             matrix_start: matrix_start_re,
@@ -461,16 +661,16 @@ impl AdBuilder {
     }
 
     fn lower_load_y(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
-        let re = self.emit_load_y(index);
-        let du = self.emit_load_seed(index);
+        let re = self.emit_load_y(index)?;
+        let du = self.emit_load_seed(index)?;
         self.bind(dst, DualReg { re, du })
     }
 
     fn lower_load_p(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
-        let re = self.emit_load_p(index);
+        let re = self.emit_load_p(index)?;
         let du = match self.seed_mode {
-            SeedMode::SolverYOnly => self.zero_reg(),
-            SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)),
+            SeedMode::SolverYOnly => self.zero_reg()?,
+            SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)?)?,
         };
         self.bind(dst, DualReg { re, du })
     }
@@ -488,11 +688,11 @@ impl AdBuilder {
         index: Reg,
     ) -> Result<(), LowerError> {
         let idx = self.lookup(index)?;
-        let re = self.emit_load_indexed_p(base, count, idx.re);
+        let re = self.emit_load_indexed_p(base, count, idx.re)?;
         let du = match self.seed_mode {
-            SeedMode::SolverYOnly => self.zero_reg(),
+            SeedMode::SolverYOnly => self.zero_reg()?,
             SeedMode::SolverYAndP { .. } => {
-                self.emit_load_indexed_seed(self.p_seed_index(base), count, idx.re)
+                self.emit_load_indexed_seed(self.p_seed_index(base)?, count, idx.re)?
             }
         };
         self.bind(dst, DualReg { re, du })
@@ -500,8 +700,8 @@ impl AdBuilder {
 
     fn lower_table_bounds(&mut self, dst: Reg, table_id: Reg, max: bool) -> Result<(), LowerError> {
         let table = self.lookup(table_id)?;
-        let re = self.emit_table_bounds(table.re, max);
-        let du = self.zero_reg();
+        let re = self.emit_table_bounds(table.re, max)?;
+        let du = self.zero_reg()?;
         self.bind(dst, DualReg { re, du })
     }
 
@@ -515,9 +715,9 @@ impl AdBuilder {
         let table = self.lookup(table_id)?;
         let column = self.lookup(column)?;
         let input = self.lookup(input)?;
-        let re = self.emit_table_lookup(table.re, column.re, input.re);
-        let slope = self.emit_table_lookup_slope(table.re, column.re, input.re);
-        let du = self.emit_binary(BinaryOp::Mul, slope, input.du);
+        let re = self.emit_table_lookup(table.re, column.re, input.re)?;
+        let slope = self.emit_table_lookup_slope(table.re, column.re, input.re)?;
+        let du = self.emit_binary(BinaryOp::Mul, slope, input.du)?;
         self.bind(dst, DualReg { re, du })
     }
 
@@ -529,8 +729,8 @@ impl AdBuilder {
     ) -> Result<(), LowerError> {
         let table = self.lookup(table_id)?;
         let time = self.lookup(time)?;
-        let re = self.emit_table_next_event(table.re, time.re);
-        let du = self.zero_reg();
+        let re = self.emit_table_next_event(table.re, time.re)?;
+        let du = self.zero_reg()?;
         self.bind(dst, DualReg { re, du })
     }
 
@@ -562,8 +762,8 @@ impl AdBuilder {
     ) -> Result<(), LowerError> {
         let l = self.lookup(lhs)?;
         let r = self.lookup(rhs)?;
-        let re = self.emit_compare(op, l.re, r.re);
-        let du = self.zero_reg();
+        let re = self.emit_compare(op, l.re, r.re)?;
+        let du = self.zero_reg()?;
         self.bind(dst, DualReg { re, du })
     }
 
@@ -577,8 +777,8 @@ impl AdBuilder {
         let c = self.lookup(cond)?;
         let t = self.lookup(if_true)?;
         let f = self.lookup(if_false)?;
-        let re = self.emit_select(c.re, t.re, f.re);
-        let du = self.emit_select(c.re, t.du, f.du);
+        let re = self.emit_select(c.re, t.re, f.re)?;
+        let du = self.emit_select(c.re, t.du, f.du)?;
         self.bind(dst, DualReg { re, du })
     }
 
@@ -589,82 +789,87 @@ impl AdBuilder {
     }
 
     fn unary_dual(&mut self, op: UnaryOp, x: DualReg) -> Result<DualReg, LowerError> {
-        let zero = self.zero_reg();
+        let zero = self.zero_reg()?;
         let out = match op {
             UnaryOp::Neg => {
-                let re = self.emit_unary(UnaryOp::Neg, x.re);
-                let du = self.emit_unary(UnaryOp::Neg, x.du);
+                let re = self.emit_unary(UnaryOp::Neg, x.re)?;
+                let du = self.emit_unary(UnaryOp::Neg, x.du)?;
                 DualReg { re, du }
             }
             UnaryOp::Not => {
-                let re = self.emit_unary(UnaryOp::Not, x.re);
+                let re = self.emit_unary(UnaryOp::Not, x.re)?;
                 DualReg { re, du: zero }
             }
             UnaryOp::Abs => {
-                let re = self.emit_unary(UnaryOp::Abs, x.re);
-                let neg_du = self.emit_unary(UnaryOp::Neg, x.du);
-                let cond = self.emit_compare(CompareOp::Ge, x.re, zero);
-                let du = self.emit_select(cond, x.du, neg_du);
+                let re = self.emit_unary(UnaryOp::Abs, x.re)?;
+                let neg_du = self.emit_unary(UnaryOp::Neg, x.du)?;
+                let cond = self.emit_compare(CompareOp::Ge, x.re, zero)?;
+                let du = self.emit_select(cond, x.du, neg_du)?;
                 DualReg { re, du }
             }
             UnaryOp::Sign | UnaryOp::Floor | UnaryOp::Ceil | UnaryOp::Trunc => {
-                let re = self.emit_unary(op, x.re);
+                let re = self.emit_unary(op, x.re)?;
                 DualReg { re, du: zero }
             }
-            UnaryOp::Sin => self.unary_mul_chain(UnaryOp::Sin, UnaryOp::Cos, x),
+            UnaryOp::Sin => self.unary_mul_chain(UnaryOp::Sin, UnaryOp::Cos, x)?,
             UnaryOp::Cos => {
-                let re = self.emit_unary(UnaryOp::Cos, x.re);
-                let sinx = self.emit_unary(UnaryOp::Sin, x.re);
-                let neg_sinx = self.emit_unary(UnaryOp::Neg, sinx);
-                let du = self.emit_binary(BinaryOp::Mul, x.du, neg_sinx);
+                let re = self.emit_unary(UnaryOp::Cos, x.re)?;
+                let sinx = self.emit_unary(UnaryOp::Sin, x.re)?;
+                let neg_sinx = self.emit_unary(UnaryOp::Neg, sinx)?;
+                let du = self.emit_binary(BinaryOp::Mul, x.du, neg_sinx)?;
                 DualReg { re, du }
             }
             UnaryOp::Tan => {
-                let re = self.emit_unary(UnaryOp::Tan, x.re);
-                let cosx = self.emit_unary(UnaryOp::Cos, x.re);
-                let cos_sq = self.emit_binary(BinaryOp::Mul, cosx, cosx);
-                let du = self.emit_binary(BinaryOp::Div, x.du, cos_sq);
+                let re = self.emit_unary(UnaryOp::Tan, x.re)?;
+                let cosx = self.emit_unary(UnaryOp::Cos, x.re)?;
+                let cos_sq = self.emit_binary(BinaryOp::Mul, cosx, cosx)?;
+                let du = self.emit_binary(BinaryOp::Div, x.du, cos_sq)?;
                 DualReg { re, du }
             }
-            UnaryOp::Asin => self.lower_asin_or_acos(x, false),
-            UnaryOp::Acos => self.lower_asin_or_acos(x, true),
+            UnaryOp::Asin => self.lower_asin_or_acos(x, false)?,
+            UnaryOp::Acos => self.lower_asin_or_acos(x, true)?,
             UnaryOp::Atan => {
-                let re = self.emit_unary(UnaryOp::Atan, x.re);
-                let one = self.one_reg();
-                let x_sq = self.emit_binary(BinaryOp::Mul, x.re, x.re);
-                let denom = self.emit_binary(BinaryOp::Add, one, x_sq);
-                let du = self.emit_binary(BinaryOp::Div, x.du, denom);
+                let re = self.emit_unary(UnaryOp::Atan, x.re)?;
+                let one = self.one_reg()?;
+                let x_sq = self.emit_binary(BinaryOp::Mul, x.re, x.re)?;
+                let denom = self.emit_binary(BinaryOp::Add, one, x_sq)?;
+                let du = self.emit_binary(BinaryOp::Div, x.du, denom)?;
                 DualReg { re, du }
             }
-            UnaryOp::Sinh => self.unary_mul_chain(UnaryOp::Sinh, UnaryOp::Cosh, x),
-            UnaryOp::Cosh => self.unary_mul_chain(UnaryOp::Cosh, UnaryOp::Sinh, x),
+            UnaryOp::Sinh => self.unary_mul_chain(UnaryOp::Sinh, UnaryOp::Cosh, x)?,
+            UnaryOp::Cosh => self.unary_mul_chain(UnaryOp::Cosh, UnaryOp::Sinh, x)?,
             UnaryOp::Tanh => {
-                let re = self.emit_unary(UnaryOp::Tanh, x.re);
-                let cosh = self.emit_unary(UnaryOp::Cosh, x.re);
-                let cosh_sq = self.emit_binary(BinaryOp::Mul, cosh, cosh);
-                let du = self.emit_binary(BinaryOp::Div, x.du, cosh_sq);
+                let re = self.emit_unary(UnaryOp::Tanh, x.re)?;
+                let cosh = self.emit_unary(UnaryOp::Cosh, x.re)?;
+                let cosh_sq = self.emit_binary(BinaryOp::Mul, cosh, cosh)?;
+                let du = self.emit_binary(BinaryOp::Div, x.du, cosh_sq)?;
                 DualReg { re, du }
             }
             UnaryOp::Exp => {
-                let re = self.emit_unary(UnaryOp::Exp, x.re);
-                let du = self.emit_binary(BinaryOp::Mul, x.du, re);
+                let re = self.emit_unary(UnaryOp::Exp, x.re)?;
+                let du = self.emit_binary(BinaryOp::Mul, x.du, re)?;
                 DualReg { re, du }
             }
-            UnaryOp::Log => self.lower_log_like(x, false),
-            UnaryOp::Log10 => self.lower_log_like(x, true),
-            UnaryOp::Sqrt => self.lower_sqrt(x),
+            UnaryOp::Log => self.lower_log_like(x, false)?,
+            UnaryOp::Log10 => self.lower_log_like(x, true)?,
+            UnaryOp::Sqrt => self.lower_sqrt(x)?,
         };
         Ok(out)
     }
 
-    fn unary_mul_chain(&mut self, re_op: UnaryOp, deriv_op: UnaryOp, x: DualReg) -> DualReg {
-        let re = self.emit_unary(re_op, x.re);
-        let deriv_term = self.emit_unary(deriv_op, x.re);
-        let du = self.emit_binary(BinaryOp::Mul, x.du, deriv_term);
-        DualReg { re, du }
+    fn unary_mul_chain(
+        &mut self,
+        re_op: UnaryOp,
+        deriv_op: UnaryOp,
+        x: DualReg,
+    ) -> Result<DualReg, LowerError> {
+        let re = self.emit_unary(re_op, x.re)?;
+        let deriv_term = self.emit_unary(deriv_op, x.re)?;
+        let du = self.emit_binary(BinaryOp::Mul, x.du, deriv_term)?;
+        Ok(DualReg { re, du })
     }
 
-    fn lower_asin_or_acos(&mut self, x: DualReg, is_acos: bool) -> DualReg {
+    fn lower_asin_or_acos(&mut self, x: DualReg, is_acos: bool) -> Result<DualReg, LowerError> {
         let re = self.emit_unary(
             if is_acos {
                 UnaryOp::Acos
@@ -672,52 +877,52 @@ impl AdBuilder {
                 UnaryOp::Asin
             },
             x.re,
-        );
-        let one = self.one_reg();
-        let x_sq = self.emit_binary(BinaryOp::Mul, x.re, x.re);
-        let denom_sq = self.emit_binary(BinaryOp::Sub, one, x_sq);
-        let denom = self.emit_unary(UnaryOp::Sqrt, denom_sq);
-        let safe = self.emit_binary(BinaryOp::Div, x.du, denom);
+        )?;
+        let one = self.one_reg()?;
+        let x_sq = self.emit_binary(BinaryOp::Mul, x.re, x.re)?;
+        let denom_sq = self.emit_binary(BinaryOp::Sub, one, x_sq)?;
+        let denom = self.emit_unary(UnaryOp::Sqrt, denom_sq)?;
+        let safe = self.emit_binary(BinaryOp::Div, x.du, denom)?;
         let signed = if is_acos {
-            self.emit_unary(UnaryOp::Neg, safe)
+            self.emit_unary(UnaryOp::Neg, safe)?
         } else {
             safe
         };
-        let zero = self.zero_reg();
-        let du_zero = self.emit_compare(CompareOp::Eq, x.du, zero);
-        let du = self.emit_select(du_zero, zero, signed);
-        DualReg { re, du }
+        let zero = self.zero_reg()?;
+        let du_zero = self.emit_compare(CompareOp::Eq, x.du, zero)?;
+        let du = self.emit_select(du_zero, zero, signed)?;
+        Ok(DualReg { re, du })
     }
 
-    fn lower_log_like(&mut self, x: DualReg, is_log10: bool) -> DualReg {
+    fn lower_log_like(&mut self, x: DualReg, is_log10: bool) -> Result<DualReg, LowerError> {
         let op = if is_log10 {
             UnaryOp::Log10
         } else {
             UnaryOp::Log
         };
-        let re = self.emit_unary(op, x.re);
-        let zero = self.zero_reg();
-        let nonzero = self.emit_compare(CompareOp::Ne, x.re, zero);
+        let re = self.emit_unary(op, x.re)?;
+        let zero = self.zero_reg()?;
+        let nonzero = self.emit_compare(CompareOp::Ne, x.re, zero)?;
         let denom = if is_log10 {
-            let ln10 = self.ln10_reg();
-            self.emit_binary(BinaryOp::Mul, x.re, ln10)
+            let ln10 = self.ln10_reg()?;
+            self.emit_binary(BinaryOp::Mul, x.re, ln10)?
         } else {
             x.re
         };
-        let safe = self.emit_binary(BinaryOp::Div, x.du, denom);
-        let du = self.emit_select(nonzero, safe, zero);
-        DualReg { re, du }
+        let safe = self.emit_binary(BinaryOp::Div, x.du, denom)?;
+        let du = self.emit_select(nonzero, safe, zero)?;
+        Ok(DualReg { re, du })
     }
 
-    fn lower_sqrt(&mut self, x: DualReg) -> DualReg {
-        let re = self.emit_unary(UnaryOp::Sqrt, x.re);
-        let zero = self.zero_reg();
-        let nonzero = self.emit_compare(CompareOp::Ne, x.re, zero);
-        let two = self.two_reg();
-        let denom = self.emit_binary(BinaryOp::Mul, two, re);
-        let safe = self.emit_binary(BinaryOp::Div, x.du, denom);
-        let du = self.emit_select(nonzero, safe, zero);
-        DualReg { re, du }
+    fn lower_sqrt(&mut self, x: DualReg) -> Result<DualReg, LowerError> {
+        let re = self.emit_unary(UnaryOp::Sqrt, x.re)?;
+        let zero = self.zero_reg()?;
+        let nonzero = self.emit_compare(CompareOp::Ne, x.re, zero)?;
+        let two = self.two_reg()?;
+        let denom = self.emit_binary(BinaryOp::Mul, two, re)?;
+        let safe = self.emit_binary(BinaryOp::Div, x.du, denom)?;
+        let du = self.emit_select(nonzero, safe, zero)?;
+        Ok(DualReg { re, du })
     }
 
     fn binary_dual(
@@ -727,114 +932,124 @@ impl AdBuilder {
         rhs: DualReg,
     ) -> Result<DualReg, LowerError> {
         let out = match op {
-            BinaryOp::Add => self.binary_add(lhs, rhs),
-            BinaryOp::Sub => self.binary_sub(lhs, rhs),
-            BinaryOp::Mul => self.binary_mul(lhs, rhs),
-            BinaryOp::Div => self.binary_div(lhs, rhs),
-            BinaryOp::Pow => self.binary_pow(lhs, rhs),
-            BinaryOp::And | BinaryOp::Or => self.binary_bool(op, lhs, rhs),
-            BinaryOp::Atan2 => self.binary_atan2(lhs, rhs),
-            BinaryOp::Min => self.binary_minmax(lhs, rhs, false),
-            BinaryOp::Max => self.binary_minmax(lhs, rhs, true),
+            BinaryOp::Add => self.binary_add(lhs, rhs)?,
+            BinaryOp::Sub => self.binary_sub(lhs, rhs)?,
+            BinaryOp::Mul => self.binary_mul(lhs, rhs)?,
+            BinaryOp::Div => self.binary_div(lhs, rhs)?,
+            BinaryOp::Pow => self.binary_pow(lhs, rhs)?,
+            BinaryOp::And | BinaryOp::Or => self.binary_bool(op, lhs, rhs)?,
+            BinaryOp::Atan2 => self.binary_atan2(lhs, rhs)?,
+            BinaryOp::Min => self.binary_minmax(lhs, rhs, false)?,
+            BinaryOp::Max => self.binary_minmax(lhs, rhs, true)?,
         };
         Ok(out)
     }
 
-    fn binary_add(&mut self, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let re = self.emit_binary(BinaryOp::Add, lhs.re, rhs.re);
-        let du = self.emit_binary(BinaryOp::Add, lhs.du, rhs.du);
-        DualReg { re, du }
+    fn binary_add(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
+        let re = self.emit_binary(BinaryOp::Add, lhs.re, rhs.re)?;
+        let du = self.emit_binary(BinaryOp::Add, lhs.du, rhs.du)?;
+        Ok(DualReg { re, du })
     }
 
-    fn binary_sub(&mut self, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let re = self.emit_binary(BinaryOp::Sub, lhs.re, rhs.re);
-        let du = self.emit_binary(BinaryOp::Sub, lhs.du, rhs.du);
-        DualReg { re, du }
+    fn binary_sub(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
+        let re = self.emit_binary(BinaryOp::Sub, lhs.re, rhs.re)?;
+        let du = self.emit_binary(BinaryOp::Sub, lhs.du, rhs.du)?;
+        Ok(DualReg { re, du })
     }
 
-    fn binary_mul(&mut self, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let re = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.re);
-        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re);
-        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du);
-        let du = self.emit_binary(BinaryOp::Add, term1, term2);
-        DualReg { re, du }
+    fn binary_mul(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
+        let re = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.re)?;
+        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
+        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
+        let du = self.emit_binary(BinaryOp::Add, term1, term2)?;
+        Ok(DualReg { re, du })
     }
 
-    fn binary_div(&mut self, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let zero = self.zero_reg();
-        let denom_zero = self.emit_compare(CompareOp::Eq, rhs.re, zero);
-        let numer_zero = self.emit_compare(CompareOp::Eq, lhs.re, zero);
+    fn binary_div(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
+        let zero = self.zero_reg()?;
+        let denom_zero = self.emit_compare(CompareOp::Eq, rhs.re, zero)?;
+        let numer_zero = self.emit_compare(CompareOp::Eq, lhs.re, zero)?;
 
-        let safe_re = self.emit_binary(BinaryOp::Div, lhs.re, rhs.re);
-        let denom_zero_re = self.emit_select(numer_zero, zero, safe_re);
-        let re = self.emit_select(denom_zero, denom_zero_re, safe_re);
+        let safe_re = self.emit_binary(BinaryOp::Div, lhs.re, rhs.re)?;
+        let denom_zero_re = self.emit_select(numer_zero, zero, safe_re)?;
+        let re = self.emit_select(denom_zero, denom_zero_re, safe_re)?;
 
-        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re);
-        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du);
-        let numer_du = self.emit_binary(BinaryOp::Sub, term1, term2);
-        let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re);
-        let safe_du = self.emit_binary(BinaryOp::Div, numer_du, rhs_sq);
-        let du = self.emit_select(denom_zero, zero, safe_du);
+        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
+        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
+        let numer_du = self.emit_binary(BinaryOp::Sub, term1, term2)?;
+        let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re)?;
+        let safe_du = self.emit_binary(BinaryOp::Div, numer_du, rhs_sq)?;
+        let du = self.emit_select(denom_zero, zero, safe_du)?;
 
-        DualReg { re, du }
+        Ok(DualReg { re, du })
     }
 
-    fn binary_pow(&mut self, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let re = self.emit_binary(BinaryOp::Pow, lhs.re, rhs.re);
-        let du = self.lower_pow_du(lhs, rhs, re);
-        DualReg { re, du }
+    fn binary_pow(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
+        let re = self.emit_binary(BinaryOp::Pow, lhs.re, rhs.re)?;
+        let du = self.lower_pow_du(lhs, rhs, re)?;
+        Ok(DualReg { re, du })
     }
 
-    fn lower_pow_du(&mut self, lhs: DualReg, rhs: DualReg, re: Reg) -> Reg {
-        let zero = self.zero_reg();
-        let one = self.one_reg();
-        let rhs_du_zero = self.emit_compare(CompareOp::Eq, rhs.du, zero);
+    fn lower_pow_du(&mut self, lhs: DualReg, rhs: DualReg, re: Reg) -> Result<Reg, LowerError> {
+        let zero = self.zero_reg()?;
+        let one = self.one_reg()?;
+        let rhs_du_zero = self.emit_compare(CompareOp::Eq, rhs.du, zero)?;
 
-        let lhs_re_zero = self.emit_compare(CompareOp::Eq, lhs.re, zero);
-        let rhs_re_one = self.emit_compare(CompareOp::Eq, rhs.re, one);
-        let rhs_minus_one = self.emit_binary(BinaryOp::Sub, rhs.re, one);
-        let x_pow_n_minus_1 = self.emit_binary(BinaryOp::Pow, lhs.re, rhs_minus_one);
-        let n_times = self.emit_binary(BinaryOp::Mul, rhs.re, x_pow_n_minus_1);
-        let const_exp_safe = self.emit_binary(BinaryOp::Mul, n_times, lhs.du);
-        let lhs_zero_branch = self.emit_select(rhs_re_one, lhs.du, zero);
-        let const_exp_du = self.emit_select(lhs_re_zero, lhs_zero_branch, const_exp_safe);
+        let lhs_re_zero = self.emit_compare(CompareOp::Eq, lhs.re, zero)?;
+        let rhs_re_one = self.emit_compare(CompareOp::Eq, rhs.re, one)?;
+        let rhs_minus_one = self.emit_binary(BinaryOp::Sub, rhs.re, one)?;
+        let x_pow_n_minus_1 = self.emit_binary(BinaryOp::Pow, lhs.re, rhs_minus_one)?;
+        let n_times = self.emit_binary(BinaryOp::Mul, rhs.re, x_pow_n_minus_1)?;
+        let const_exp_safe = self.emit_binary(BinaryOp::Mul, n_times, lhs.du)?;
+        let lhs_zero_branch = self.emit_select(rhs_re_one, lhs.du, zero)?;
+        let const_exp_du = self.emit_select(lhs_re_zero, lhs_zero_branch, const_exp_safe)?;
 
-        let lhs_positive = self.emit_compare(CompareOp::Gt, lhs.re, zero);
-        let ln_x = self.emit_unary(UnaryOp::Log, lhs.re);
-        let term1 = self.emit_binary(BinaryOp::Mul, rhs.du, ln_x);
-        let xprime_over_x = self.emit_binary(BinaryOp::Div, lhs.du, lhs.re);
-        let term2 = self.emit_binary(BinaryOp::Mul, rhs.re, xprime_over_x);
-        let sum = self.emit_binary(BinaryOp::Add, term1, term2);
-        let var_exp_safe = self.emit_binary(BinaryOp::Mul, re, sum);
-        let var_exp_du = self.emit_select(lhs_positive, var_exp_safe, zero);
+        let lhs_positive = self.emit_compare(CompareOp::Gt, lhs.re, zero)?;
+        let ln_x = self.emit_unary(UnaryOp::Log, lhs.re)?;
+        let term1 = self.emit_binary(BinaryOp::Mul, rhs.du, ln_x)?;
+        let xprime_over_x = self.emit_binary(BinaryOp::Div, lhs.du, lhs.re)?;
+        let term2 = self.emit_binary(BinaryOp::Mul, rhs.re, xprime_over_x)?;
+        let sum = self.emit_binary(BinaryOp::Add, term1, term2)?;
+        let var_exp_safe = self.emit_binary(BinaryOp::Mul, re, sum)?;
+        let var_exp_du = self.emit_select(lhs_positive, var_exp_safe, zero)?;
 
         self.emit_select(rhs_du_zero, const_exp_du, var_exp_du)
     }
 
-    fn binary_bool(&mut self, op: BinaryOp, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let re = self.emit_binary(op, lhs.re, rhs.re);
-        let du = self.zero_reg();
-        DualReg { re, du }
+    fn binary_bool(
+        &mut self,
+        op: BinaryOp,
+        lhs: DualReg,
+        rhs: DualReg,
+    ) -> Result<DualReg, LowerError> {
+        let re = self.emit_binary(op, lhs.re, rhs.re)?;
+        let du = self.zero_reg()?;
+        Ok(DualReg { re, du })
     }
 
-    fn binary_atan2(&mut self, lhs: DualReg, rhs: DualReg) -> DualReg {
-        let re = self.emit_binary(BinaryOp::Atan2, lhs.re, rhs.re);
-        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re);
-        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du);
-        let numer = self.emit_binary(BinaryOp::Sub, term1, term2);
-        let lhs_sq = self.emit_binary(BinaryOp::Mul, lhs.re, lhs.re);
-        let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re);
-        let denom = self.emit_binary(BinaryOp::Add, lhs_sq, rhs_sq);
-        let du = self.emit_binary(BinaryOp::Div, numer, denom);
-        DualReg { re, du }
+    fn binary_atan2(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
+        let re = self.emit_binary(BinaryOp::Atan2, lhs.re, rhs.re)?;
+        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
+        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
+        let numer = self.emit_binary(BinaryOp::Sub, term1, term2)?;
+        let lhs_sq = self.emit_binary(BinaryOp::Mul, lhs.re, lhs.re)?;
+        let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re)?;
+        let denom = self.emit_binary(BinaryOp::Add, lhs_sq, rhs_sq)?;
+        let du = self.emit_binary(BinaryOp::Div, numer, denom)?;
+        Ok(DualReg { re, du })
     }
 
-    fn binary_minmax(&mut self, lhs: DualReg, rhs: DualReg, is_max: bool) -> DualReg {
+    fn binary_minmax(
+        &mut self,
+        lhs: DualReg,
+        rhs: DualReg,
+        is_max: bool,
+    ) -> Result<DualReg, LowerError> {
         let cmp = if is_max { CompareOp::Ge } else { CompareOp::Le };
-        let cond = self.emit_compare(cmp, lhs.re, rhs.re);
-        let re = self.emit_select(cond, lhs.re, rhs.re);
-        let du = self.emit_select(cond, lhs.du, rhs.du);
-        DualReg { re, du }
+        let cond = self.emit_compare(cmp, lhs.re, rhs.re)?;
+        let re = self.emit_select(cond, lhs.re, rhs.re)?;
+        let du = self.emit_select(cond, lhs.du, rhs.du)?;
+        Ok(DualReg { re, du })
     }
 
     fn bind(&mut self, src: Reg, dual: DualReg) -> Result<(), LowerError> {
@@ -851,181 +1066,215 @@ impl AdBuilder {
             .ok_or_else(|| unsupported("missing source register in primal row"))
     }
 
-    fn alloc_reg(&mut self) -> Reg {
+    fn alloc_reg(&mut self) -> Result<Reg, LowerError> {
         let reg = self.next_reg;
-        self.next_reg = self.next_reg.saturating_add(1);
-        reg
+        self.next_reg = self.next_reg.checked_add(1).ok_or_else(|| {
+            ad_optional_contract_violation(
+                format!("AD register allocation overflow after r{reg}"),
+                self.span,
+            )
+        })?;
+        Ok(reg)
     }
 
-    fn emit_const(&mut self, value: f64) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_const(&mut self, value: f64) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::Const { dst, value });
-        dst
+        Ok(dst)
     }
 
-    fn pack_registers(&mut self, regs: &[Reg]) -> Reg {
+    fn pack_registers(&mut self, regs: &[Reg]) -> Result<Reg, LowerError> {
         let start = self.next_reg;
         for &src in regs {
-            let dst = self.alloc_reg();
+            let dst = self.alloc_reg()?;
             self.ops.push(LinearOp::Move { dst, src });
         }
-        start
+        Ok(start)
     }
 
-    fn emit_load_time(&mut self) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_load_time(&mut self) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadTime { dst });
-        dst
+        Ok(dst)
     }
 
-    fn emit_load_y(&mut self, index: usize) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_load_y(&mut self, index: usize) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadY { dst, index });
-        dst
+        Ok(dst)
     }
 
-    fn emit_load_p(&mut self, index: usize) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_load_p(&mut self, index: usize) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadP { dst, index });
-        dst
+        Ok(dst)
     }
 
-    fn emit_load_seed(&mut self, index: usize) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_load_seed(&mut self, index: usize) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadSeed { dst, index });
-        dst
+        Ok(dst)
     }
 
-    fn emit_load_indexed_p(&mut self, base: usize, count: usize, index: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_load_indexed_p(
+        &mut self,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadIndexedP {
             dst,
             base,
             count,
             index,
         });
-        dst
+        Ok(dst)
     }
 
-    fn emit_load_indexed_seed(&mut self, base: usize, count: usize, index: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_load_indexed_seed(
+        &mut self,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadIndexedSeed {
             dst,
             base,
             count,
             index,
         });
-        dst
+        Ok(dst)
     }
 
-    fn p_seed_index(&self, index: usize) -> usize {
+    fn p_seed_index(&self, index: usize) -> Result<usize, LowerError> {
         match self.seed_mode {
-            SeedMode::SolverYOnly => index,
-            SeedMode::SolverYAndP { p_seed_offset } => p_seed_offset + index,
+            SeedMode::SolverYOnly => Ok(index),
+            SeedMode::SolverYAndP { p_seed_offset } => {
+                p_seed_offset.checked_add(index).ok_or_else(|| {
+                    ad_optional_contract_violation(
+                        format!(
+                        "parameter seed index offset {p_seed_offset} plus index {index} overflows"
+                    ),
+                        self.span,
+                    )
+                })
+            }
         }
     }
 
-    fn emit_table_bounds(&mut self, table_id: Reg, max: bool) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_table_bounds(&mut self, table_id: Reg, max: bool) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::TableBounds { dst, table_id, max });
-        dst
+        Ok(dst)
     }
 
-    fn emit_table_lookup(&mut self, table_id: Reg, column: Reg, input: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_table_lookup(
+        &mut self,
+        table_id: Reg,
+        column: Reg,
+        input: Reg,
+    ) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::TableLookup {
             dst,
             table_id,
             column,
             input,
         });
-        dst
+        Ok(dst)
     }
 
-    fn emit_table_lookup_slope(&mut self, table_id: Reg, column: Reg, input: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_table_lookup_slope(
+        &mut self,
+        table_id: Reg,
+        column: Reg,
+        input: Reg,
+    ) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::TableLookupSlope {
             dst,
             table_id,
             column,
             input,
         });
-        dst
+        Ok(dst)
     }
 
-    fn emit_table_next_event(&mut self, table_id: Reg, time: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_table_next_event(&mut self, table_id: Reg, time: Reg) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::TableNextEvent {
             dst,
             table_id,
             time,
         });
-        dst
+        Ok(dst)
     }
 
-    fn emit_unary(&mut self, op: UnaryOp, arg: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_unary(&mut self, op: UnaryOp, arg: Reg) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::Unary { dst, op, arg });
-        dst
+        Ok(dst)
     }
 
-    fn emit_binary(&mut self, op: BinaryOp, lhs: Reg, rhs: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_binary(&mut self, op: BinaryOp, lhs: Reg, rhs: Reg) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::Binary { dst, op, lhs, rhs });
-        dst
+        Ok(dst)
     }
 
-    fn emit_compare(&mut self, op: CompareOp, lhs: Reg, rhs: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_compare(&mut self, op: CompareOp, lhs: Reg, rhs: Reg) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::Compare { dst, op, lhs, rhs });
-        dst
+        Ok(dst)
     }
 
-    fn emit_select(&mut self, cond: Reg, if_true: Reg, if_false: Reg) -> Reg {
-        let dst = self.alloc_reg();
+    fn emit_select(&mut self, cond: Reg, if_true: Reg, if_false: Reg) -> Result<Reg, LowerError> {
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::Select {
             dst,
             cond,
             if_true,
             if_false,
         });
-        dst
+        Ok(dst)
     }
 
-    fn zero_reg(&mut self) -> Reg {
+    fn zero_reg(&mut self) -> Result<Reg, LowerError> {
         if let Some(reg) = self.cached_zero {
-            return reg;
+            return Ok(reg);
         }
-        let reg = self.emit_const(0.0);
+        let reg = self.emit_const(0.0)?;
         self.cached_zero = Some(reg);
-        reg
+        Ok(reg)
     }
 
-    fn one_reg(&mut self) -> Reg {
+    fn one_reg(&mut self) -> Result<Reg, LowerError> {
         if let Some(reg) = self.cached_one {
-            return reg;
+            return Ok(reg);
         }
-        let reg = self.emit_const(1.0);
+        let reg = self.emit_const(1.0)?;
         self.cached_one = Some(reg);
-        reg
+        Ok(reg)
     }
 
-    fn ln10_reg(&mut self) -> Reg {
+    fn ln10_reg(&mut self) -> Result<Reg, LowerError> {
         if let Some(reg) = self.cached_ln10 {
-            return reg;
+            return Ok(reg);
         }
-        let reg = self.emit_const(std::f64::consts::LN_10);
+        let reg = self.emit_const(std::f64::consts::LN_10)?;
         self.cached_ln10 = Some(reg);
-        reg
+        Ok(reg)
     }
 
-    fn two_reg(&mut self) -> Reg {
+    fn two_reg(&mut self) -> Result<Reg, LowerError> {
         if let Some(reg) = self.cached_two {
-            return reg;
+            return Ok(reg);
         }
-        let reg = self.emit_const(2.0);
+        let reg = self.emit_const(2.0)?;
         self.cached_two = Some(reg);
-        reg
+        Ok(reg)
     }
 }
 
@@ -1035,442 +1284,103 @@ fn unsupported(reason: &str) -> LowerError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::layout::build_var_layout;
-    use rumoca_core::OpBinary;
-    use rumoca_ir_dae as dae;
+fn ad_contract_violation(reason: String, span: rumoca_core::Span) -> LowerError {
+    ad_optional_contract_violation(reason, Some(span))
+}
 
-    fn scalar_var(name: &str) -> dae::Variable {
-        dae::Variable::new(rumoca_core::VarName::new(name))
-    }
-
-    fn decay_dae() -> dae::Dae {
-        let mut dae = dae::Dae::new();
-        dae.variables.states.insert("x".into(), scalar_var("x"));
-        dae.variables.parameters.insert("k".into(), scalar_var("k"));
-        dae.continuous.equations.push(dae::Equation {
-            lhs: None,
-            rhs: rumoca_core::Expression::Binary {
-                op: OpBinary::Mul,
-                lhs: Box::new(rumoca_core::Expression::VarRef {
-                    name: "k".into(),
-                    subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                rhs: Box::new(rumoca_core::Expression::VarRef {
-                    name: "x".into(),
-                    subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                span: rumoca_core::Span::DUMMY,
-            },
-            span: Default::default(),
-            origin: "test".into(),
-            scalar_count: 1,
-        });
-        dae
-    }
-
-    #[test]
-    fn full_ad_seeds_parameter_slots_after_solver_y_slots() {
-        let dae = decay_dae();
-        let layout = build_var_layout(&dae).expect("test DAE layout should build");
-        let rows = lower_residual_full_ad(&dae, &layout).expect("lower full AD");
-
-        assert!(
-            rows[0]
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadSeed { index: 1, .. })),
-            "parameter k should use seed index after the single solver-y state: {:?}",
-            rows[0]
-        );
-    }
-
-    #[test]
-    fn solver_ad_keeps_parameters_unseeded_for_diffsol_jacobian() {
-        let dae = decay_dae();
-        let layout = build_var_layout(&dae).expect("test DAE layout should build");
-        let rows = lower_residual_ad(&dae, &layout).expect("lower solver AD");
-
-        assert!(
-            !rows[0]
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadSeed { index: 1, .. })),
-            "solver Jacobian should remain with respect to solver-y slots only: {:?}",
-            rows[0]
-        );
-    }
-
-    /// Forward-AD of a runtime-indexed parameter load: under solver-y-only AD
-    /// the tangent is zero (parameters are constant w.r.t. y, and the index is
-    /// discrete), and under parameter-seed AD it becomes a `LoadIndexedSeed`
-    /// over the same run shifted into the seed region by `p_seed_offset`, reusing
-    /// the same runtime index register.
-    #[test]
-    fn full_ad_of_indexed_param_load_emits_shifted_indexed_seed() {
-        let primal = vec![
-            LinearOp::Const { dst: 0, value: 2.0 }, // 0-based flat offset
-            LinearOp::LoadIndexedP {
-                dst: 1,
-                base: 3,
-                count: 5,
-                index: 0,
-            },
-            LinearOp::StoreOutput { src: 1 },
-        ];
-
-        // Solver-y-only: zero tangent, no indexed-seed load.
-        let solver = lower_row_ad(&primal, SeedMode::SolverYOnly).expect("solver AD");
-        assert!(
-            !solver
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadIndexedSeed { .. })),
-            "solver-y AD of an indexed parameter load must have a zero tangent: {solver:?}"
-        );
-
-        // Parameter-seed AD: the real part keeps the `LoadIndexedP`; the tangent
-        // is a `LoadIndexedSeed` over the same run shifted by `p_seed_offset`.
-        let full = lower_row_ad(&primal, SeedMode::SolverYAndP { p_seed_offset: 2 })
-            .expect("parameter-seed AD");
-        assert!(
-            full.iter().any(|op| matches!(
-                op,
-                LinearOp::LoadIndexedP {
-                    base: 3,
-                    count: 5,
-                    ..
-                }
-            )),
-            "parameter-seed AD must keep the real indexed parameter load: {full:?}"
-        );
-        assert!(
-            full.iter().any(|op| matches!(
-                op,
-                LinearOp::LoadIndexedSeed {
-                    base: 5, // p_seed_offset (2) + base (3)
-                    count: 5,
-                    ..
-                }
-            )),
-            "parameter-seed AD tangent must be a LoadIndexedSeed shifted by p_seed_offset: {full:?}"
-        );
-    }
-
-    /// Numeric parity: evaluating the parameter-seed AD of an indexed parameter
-    /// load yields the seed at exactly the selected slot, matching the analytic
-    /// tangent d(p[base + clamp(round(idx))])/d(seed) = seed[p_seed_index(slot)].
-    #[test]
-    fn indexed_param_load_ad_tangent_reads_seed_at_selected_slot() {
-        use rumoca_ir_solve::ScalarProgramBlock;
-
-        let p_seed_offset = 2usize;
-        let base = 3usize;
-        let count = 5usize;
-        let offset = 2usize; // clamp(round(2.0))
-        let primal = vec![
-            LinearOp::Const {
-                dst: 0,
-                value: offset as f64,
-            },
-            LinearOp::LoadIndexedP {
-                dst: 1,
-                base,
-                count,
-                index: 0,
-            },
-            LinearOp::StoreOutput { src: 1 },
-        ];
-        let ad_row = lower_row_ad(&primal, SeedMode::SolverYAndP { p_seed_offset })
-            .expect("parameter-seed AD");
-        let block = ScalarProgramBlock::new(vec![ad_row]);
-
-        // Seed a single 1.0 at the slot the tangent should select; the stored
-        // output (the dual) must read exactly that value.
-        let selected = p_seed_offset + base + offset; // 7
-        let mut seed = vec![0.0; 16];
-        seed[selected] = 4.0;
-        let p = vec![0.0; 16];
-        let mut out = [0.0];
-        rumoca_eval_solve::eval_scalar_program_block(&block, &[], &p, 0.0, Some(&seed), &mut out)
-            .expect("evaluate parameter-seed AD row");
-        assert!(
-            (out[0] - 4.0).abs() < 1e-12,
-            "indexed-load tangent must read seed[{selected}] = 4.0, got {}",
-            out[0]
-        );
-
-        // Seeding a neighbouring slot must NOT leak into the tangent.
-        let mut seed2 = vec![0.0; 16];
-        seed2[selected + 1] = 9.0;
-        let mut out2 = [0.0];
-        rumoca_eval_solve::eval_scalar_program_block(&block, &[], &p, 0.0, Some(&seed2), &mut out2)
-            .expect("evaluate parameter-seed AD row");
-        assert!(
-            out2[0].abs() < 1e-12,
-            "tangent must isolate the selected slot, got {}",
-            out2[0]
-        );
-    }
-
-    #[test]
-    fn compute_block_jvp_scalar_programs_applies_standard_ad() {
-        // A ComputeBlock with only ScalarPrograms should produce the same result as
-        // the existing scalar AD pass.
-        use rumoca_ir_solve::ScalarProgramBlock;
-        let row = vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::StoreOutput { src: 0 },
-        ];
-        let block = ComputeBlock {
-            nodes: vec![ComputeNode::ScalarPrograms(ScalarProgramBlock::new(vec![
-                row,
-            ]))],
-        };
-        let jvp = lower_compute_block_jvp(&block).expect("JVP of scalar row");
-        assert_eq!(jvp.nodes.len(), 1);
-        let jvp_rows = rumoca_eval_solve::to_scalar_program_block(&jvp);
-        assert_eq!(jvp_rows.programs.len(), 1, "one JVP row for one primal row");
-        assert!(
-            jvp_rows.programs[0]
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadSeed { index: 0, .. })),
-            "JVP row should load seed[0] for LoadY[0]: {:?}",
-            jvp_rows.programs[0]
-        );
-    }
-
-    #[test]
-    fn compute_block_jvp_matmul_constant_lhs_emits_matmul_jvp() {
-        // For MatMul(A_param, x_state) where A has only LoadP ops,
-        // the JVP node should also be MatMul with rhs_ops using LoadSeed.
-        let lhs_ops = vec![
-            LinearOp::LoadP { dst: 0, index: 0 }, // A[0,0]
-            LinearOp::LoadP { dst: 1, index: 1 }, // A[0,1]
-            LinearOp::Move { dst: 2, src: 0 },
-            LinearOp::Move { dst: 3, src: 1 },
-        ];
-        let rhs_ops = vec![
-            LinearOp::LoadY { dst: 4, index: 0 }, // x[0]
-            LinearOp::LoadY { dst: 5, index: 1 }, // x[1]
-            LinearOp::Move { dst: 6, src: 4 },
-            LinearOp::Move { dst: 7, src: 5 },
-        ];
-        let block = ComputeBlock {
-            nodes: vec![ComputeNode::MatMul {
-                lhs_ops,
-                lhs_start: 2,
-                rhs_ops,
-                rhs_start: 6,
-                m: 1,
-                k: 2,
-                n: 1,
-                lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-                rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-                metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-                span: rumoca_core::Span::DUMMY,
-            }],
-        };
-
-        let jvp = lower_compute_block_jvp(&block).expect("JVP of MatMul with P-lhs");
-
-        // The JVP node should also be a MatMul (not ScalarPrograms).
-        assert_eq!(jvp.nodes.len(), 1, "one JVP node for one primal node");
-        assert!(
-            matches!(
-                jvp.nodes[0],
-                ComputeNode::MatMul {
-                    m: 1,
-                    k: 2,
-                    n: 1,
-                    ..
-                }
-            ),
-            "JVP of MatMul(P-lhs, Y-rhs) should be MatMul, got {:?}",
-            jvp.nodes[0]
-        );
-
-        // The JVP rhs_ops should use LoadSeed instead of LoadY.
-        if let ComputeNode::MatMul { rhs_ops, .. } = &jvp.nodes[0] {
-            assert!(
-                rhs_ops
-                    .iter()
-                    .any(|op| matches!(op, LinearOp::LoadSeed { .. })),
-                "JVP rhs_ops should contain LoadSeed: {:?}",
-                rhs_ops
-            );
-            assert!(
-                !rhs_ops
-                    .iter()
-                    .any(|op| matches!(op, LinearOp::LoadY { .. })),
-                "JVP rhs_ops must not contain LoadY: {:?}",
-                rhs_ops
-            );
-        }
-    }
-
-    #[test]
-    fn compute_block_jvp_matmul_variable_lhs_emits_matmul_jvp() {
-        // For MatMul(A_state, x_param), the JVP should also be MatMul with
-        // lhs_ops using LoadSeed.
-        let lhs_ops = vec![
-            LinearOp::LoadY { dst: 0, index: 0 }, // A depends on states
-            LinearOp::Move { dst: 1, src: 0 },
-        ];
-        let rhs_ops = vec![
-            LinearOp::LoadP { dst: 2, index: 0 },
-            LinearOp::Move { dst: 3, src: 2 },
-        ];
-        let block = ComputeBlock {
-            nodes: vec![ComputeNode::MatMul {
-                lhs_ops,
-                lhs_start: 1,
-                rhs_ops,
-                rhs_start: 3,
-                m: 1,
-                k: 1,
-                n: 1,
-                lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-                rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-                metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-                span: rumoca_core::Span::DUMMY,
-            }],
-        };
-
-        let jvp = lower_compute_block_jvp(&block).expect("JVP of MatMul with Y-lhs");
-
-        assert!(
-            matches!(
-                jvp.nodes[0],
-                ComputeNode::MatMul {
-                    m: 1,
-                    k: 1,
-                    n: 1,
-                    ..
-                }
-            ),
-            "JVP of MatMul(Y-lhs, P-rhs) should remain MatMul: {:?}",
-            jvp.nodes[0]
-        );
-        if let ComputeNode::MatMul {
-            lhs_ops, rhs_ops, ..
-        } = &jvp.nodes[0]
-        {
-            assert!(
-                lhs_ops
-                    .iter()
-                    .any(|op| matches!(op, LinearOp::LoadSeed { .. })),
-                "JVP lhs_ops should contain LoadSeed: {:?}",
-                lhs_ops
-            );
-            assert!(
-                !rhs_ops
-                    .iter()
-                    .any(|op| matches!(op, LinearOp::LoadSeed { .. })),
-                "constant rhs_ops should not contain LoadSeed: {:?}",
-                rhs_ops
-            );
-        }
-    }
-
-    #[test]
-    fn compute_block_jvp_matmul_constant_operands_emit_zero_rows() {
-        let block = ComputeBlock {
-            nodes: vec![ComputeNode::MatMul {
-                lhs_ops: vec![
-                    LinearOp::LoadP { dst: 0, index: 0 },
-                    LinearOp::Move { dst: 1, src: 0 },
-                ],
-                lhs_start: 1,
-                rhs_ops: vec![
-                    LinearOp::LoadP { dst: 2, index: 1 },
-                    LinearOp::Move { dst: 3, src: 2 },
-                ],
-                rhs_start: 3,
-                m: 1,
-                k: 1,
-                n: 1,
-                lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-                rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-                metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-                span: rumoca_core::Span::DUMMY,
-            }],
-        };
-
-        let jvp = lower_compute_block_jvp(&block).expect("constant MatMul JVP should lower");
-        let ComputeNode::ScalarPrograms(rows) = &jvp.nodes[0] else {
-            panic!("constant MatMul JVP should lower to zero scalar rows");
-        };
-        assert_eq!(rows.programs.len(), 1);
-        assert_eq!(
-            rows.programs[0],
-            vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                LinearOp::StoreOutput { src: 0 },
-            ]
-        );
-    }
-
-    #[test]
-    fn compute_block_jvp_linsolve_preserves_tensor_node_and_matches_scalar_fallback() {
-        let block = ComputeBlock {
-            nodes: vec![ComputeNode::LinSolve {
-                setup_ops: vec![
-                    LinearOp::LoadY { dst: 0, index: 0 },
-                    LinearOp::Const { dst: 1, value: 0.0 },
-                    LinearOp::Const { dst: 2, value: 0.0 },
-                    LinearOp::Const { dst: 3, value: 2.0 },
-                    LinearOp::LoadP { dst: 4, index: 0 },
-                    LinearOp::LoadY { dst: 5, index: 1 },
-                ],
-                matrix_start: 0,
-                rhs_start: 4,
-                n: 2,
-                next_reg: 6,
-                metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-                span: rumoca_core::Span::DUMMY,
-            }],
-        };
-
-        let tensor_jvp = lower_compute_block_jvp(&block).expect("tensor LinSolve JVP should lower");
-        assert!(
-            matches!(tensor_jvp.nodes[0], ComputeNode::LinSolve { n: 2, .. }),
-            "LinSolve JVP should remain a tensor LinSolve node: {:?}",
-            tensor_jvp.nodes[0]
-        );
-
-        let scalar_programs = rumoca_eval_solve::to_scalar_program_block(&block);
-        let scalar_jvp = ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(
-            lower_scalar_program_block_ad(&scalar_programs.programs)
-                .expect("scalar LinSolve JVP should lower"),
-        ));
-
-        let y = [3.0, 8.0];
-        let p = [6.0];
-        let seed = [0.5, 1.0];
-        let mut tensor_out = vec![0.0; tensor_jvp.len()];
-        let mut scalar_out = vec![0.0; scalar_jvp.len()];
-        let context = rumoca_eval_solve::RowEvalContext {
-            seed: Some(&seed),
-            ..Default::default()
-        };
-
-        rumoca_eval_solve::PreparedComputeBlock::new(&tensor_jvp)
-            .eval_with_context(&y, &p, 0.0, context, &mut tensor_out)
-            .expect("tensor JVP should evaluate");
-        rumoca_eval_solve::PreparedComputeBlock::new(&scalar_jvp)
-            .eval_with_context(&y, &p, 0.0, context, &mut scalar_out)
-            .expect("scalar fallback JVP should evaluate");
-
-        assert_eq!(tensor_out.len(), scalar_out.len());
-        for (tensor, scalar) in tensor_out.iter().zip(scalar_out.iter()) {
-            assert!(
-                (tensor - scalar).abs() <= 1.0e-12,
-                "tensor LinSolve JVP {tensor} should match scalar fallback {scalar}"
-            );
-        }
-        assert!((tensor_out[0] + 1.0 / 3.0).abs() <= 1.0e-12);
-        assert!((tensor_out[1] - 0.5).abs() <= 1.0e-12);
+fn ad_optional_contract_violation(reason: String, span: Option<rumoca_core::Span>) -> LowerError {
+    match span.filter(|span| !span.is_dummy()) {
+        Some(span) => LowerError::ContractViolation { reason, span },
+        None => LowerError::UnspannedContractViolation { reason },
     }
 }
+
+fn checked_ad_product(
+    lhs: usize,
+    rhs: usize,
+    span: impl Into<Option<rumoca_core::Span>>,
+    context: &'static str,
+) -> Result<usize, LowerError> {
+    let span = span.into();
+    lhs.checked_mul(rhs).ok_or_else(|| {
+        ad_optional_contract_violation(format!("{context} overflow for {lhs} * {rhs}"), span)
+    })
+}
+
+fn reserve_ad_capacity<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    context: &'static str,
+    span: impl Into<Option<rumoca_core::Span>>,
+) -> Result<(), LowerError> {
+    let span = span.into();
+    values.try_reserve_exact(capacity).map_err(|_| {
+        ad_optional_contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })
+}
+
+fn ad_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+    span: impl Into<Option<rumoca_core::Span>>,
+) -> Result<Vec<T>, LowerError> {
+    let mut values = Vec::new();
+    reserve_ad_capacity(&mut values, capacity, context, span)?;
+    Ok(values)
+}
+
+fn collect_dual_range(
+    builder: &AdBuilder,
+    start: Reg,
+    len: usize,
+    span: impl Into<Option<rumoca_core::Span>>,
+    capacity_context: &'static str,
+    offset_context: &'static str,
+) -> Result<Vec<DualReg>, LowerError> {
+    let span = span.into();
+    let mut values = ad_vec_with_capacity(len, capacity_context, span)?;
+    for idx in 0..len {
+        values.push(builder.lookup(checked_ad_reg_offset(start, idx, span, offset_context)?)?);
+    }
+    Ok(values)
+}
+
+fn real_regs_from_duals(
+    duals: &[DualReg],
+    context: &'static str,
+    span: impl Into<Option<rumoca_core::Span>>,
+) -> Result<Vec<Reg>, LowerError> {
+    let span = span.into();
+    let mut regs = ad_vec_with_capacity(duals.len(), context, span)?;
+    for dual in duals {
+        regs.push(dual.re);
+    }
+    Ok(regs)
+}
+
+fn checked_ad_reg_offset(
+    start: Reg,
+    offset: usize,
+    span: impl Into<Option<rumoca_core::Span>>,
+    context: &'static str,
+) -> Result<Reg, LowerError> {
+    let span = span.into();
+    let offset = Reg::try_from(offset).map_err(|_| {
+        ad_optional_contract_violation(
+            format!("{context} offset {offset} exceeds register index type"),
+            span,
+        )
+    })?;
+    start.checked_add(offset).ok_or_else(|| {
+        ad_optional_contract_violation(
+            format!("{context} starting at {start} overflows at offset {offset}"),
+            span,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests;

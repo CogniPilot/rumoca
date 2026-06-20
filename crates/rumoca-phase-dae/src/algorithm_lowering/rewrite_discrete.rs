@@ -11,19 +11,43 @@ pub(super) fn discrete_assignment_rhs_var_name(expr: &Expression) -> Option<VarN
     Some(varref_with_subscripts(name, subscripts))
 }
 
-pub(super) fn rewrite_discrete_self_refs_to_pre(expr: &Expression, target: &VarName) -> Expression {
-    DiscreteSelfRefRewriter { target }.rewrite_expression(expr)
+pub(super) fn rewrite_discrete_self_refs_to_pre(
+    expr: &Expression,
+    target: &VarName,
+    owner_span: Span,
+) -> Result<Expression, ToDaeError> {
+    let mut rewriter = DiscreteSelfRefRewriter {
+        target,
+        owner_span,
+        error: None,
+    };
+    let rewritten = rewriter.rewrite_expression(expr);
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(rewritten),
+    }
 }
 
 struct DiscreteSelfRefRewriter<'a> {
     target: &'a VarName,
+    owner_span: Span,
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for DiscreteSelfRefRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         match expr {
-            Expression::VarRef { name, .. } if name.var_name() == self.target => {
-                pre_target_expr(self.target)
+            Expression::VarRef { name, span, .. } if name.var_name() == self.target => {
+                match pre_target_expr(self.target, self.self_ref_provenance_span(*span)) {
+                    Ok(expr) => expr,
+                    Err(error) => {
+                        self.error = Some(error);
+                        expr.clone()
+                    }
+                }
             }
             Expression::BuiltinCall {
                 function: BuiltinFunction::Pre,
@@ -49,6 +73,14 @@ impl ExpressionRewriter for DiscreteSelfRefRewriter<'_> {
 }
 
 impl DiscreteSelfRefRewriter<'_> {
+    fn self_ref_provenance_span(&self, span: Span) -> Span {
+        if span.is_dummy() {
+            self.owner_span
+        } else {
+            span
+        }
+    }
+
     fn rewrite_if(
         &mut self,
         branches: &[(Expression, Expression)],

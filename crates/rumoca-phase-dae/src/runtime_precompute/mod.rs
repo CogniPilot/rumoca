@@ -102,9 +102,9 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     log_runtime_precompute_profile("clock_metadata", clock_metadata_start);
 
     let prune_start = maybe_start_timer_if(profile);
-    prune_time_only_relation_roots(dae_model, &compile_time_scalars)?;
+    prune_unreferenced_condition_memory(dae_model, &compile_time_scalars)?;
     remove_relation_duplicate_synthetic_roots(dae_model, &mut synthetic_roots);
-    log_runtime_precompute_profile("prune_time_only_relations", prune_start);
+    log_runtime_precompute_profile("prune_condition_memory", prune_start);
     dae_model.events.synthetic_root_conditions = synthetic_roots;
     dae_model.events.scheduled_time_events = scheduled_time_events;
     dae_model.clocks.constructor_exprs = clock_constructor_exprs;
@@ -136,7 +136,7 @@ fn remove_relation_duplicate_synthetic_roots(
     });
 }
 
-fn prune_time_only_relation_roots(
+fn prune_unreferenced_condition_memory(
     dae_model: &mut dae::Dae,
     constants: &HashMap<String, f64>,
 ) -> Result<(), ToDaeError> {
@@ -158,8 +158,8 @@ fn prune_time_only_relation_roots(
     for (old_index, (relation, equation)) in
         old_relations.into_iter().zip(old_conditions).enumerate()
     {
-        if extract_time_event_instant(&relation, constants).is_some()
-            && !condition_memory_is_referenced(dae_model, &condition_name, old_index + 1)
+        if !condition_memory_is_referenced(dae_model, &condition_name, old_index + 1)
+            && condition_memory_can_be_direct(&relation, constants)
         {
             replacements.push(ConditionMemoryReplacement::Direct(relation));
             continue;
@@ -167,7 +167,7 @@ fn prune_time_only_relation_roots(
 
         let condition_index = kept_relations.len() + 1;
         kept_conditions.push(dae::Equation::explicit(
-            generated_condition_reference(&condition_name, condition_index, equation.span),
+            generated_condition_reference(&condition_name, condition_index, equation.span)?,
             relation.clone(),
             equation.span,
             equation.origin,
@@ -178,8 +178,29 @@ fn prune_time_only_relation_roots(
 
     dae_model.conditions.relations = kept_relations;
     dae_model.conditions.equations = kept_conditions;
-    rewrite_condition_memory_references(dae_model, &condition_name, &replacements);
+    rewrite_condition_memory_references(dae_model, &condition_name, &replacements)?;
     Ok(())
+}
+
+fn condition_memory_can_be_direct(
+    relation: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+) -> bool {
+    extract_time_event_instant(relation, constants).is_some()
+        || is_logical_condition_memory(relation)
+}
+
+fn is_logical_condition_memory(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::And | rumoca_core::OpBinary::Or,
+            ..
+        } | rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            ..
+        }
+    )
 }
 
 fn condition_variable_name_from_equation(equation: &dae::Equation) -> Result<String, ToDaeError> {
@@ -214,15 +235,20 @@ fn generated_condition_reference(
     condition_name: &str,
     condition_index: usize,
     span: rumoca_core::Span,
-) -> rumoca_core::Reference {
-    rumoca_core::Reference::generated_component(
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    Ok(rumoca_core::Reference::generated_component(
         condition_name,
-        vec![rumoca_core::Subscript::generated_index(
-            condition_index as i64,
+        vec![generated_index_subscript(
+            condition_index_i64(
+                condition_index,
+                span,
+                "runtime condition equation memory subscript",
+            )?,
             span,
-        )],
+            "runtime condition equation memory subscript",
+        )?],
         span,
-    )
+    ))
 }
 
 fn runtime_contract(detail: impl Into<String>, span: Option<rumoca_core::Span>) -> ToDaeError {
@@ -300,14 +326,15 @@ fn rewrite_condition_memory_references(
     dae_model: &mut dae::Dae,
     condition_name: &str,
     replacements: &[ConditionMemoryReplacement],
-) {
+) -> Result<(), ToDaeError> {
     if replacements.is_empty() {
-        return;
+        return Ok(());
     }
 
     let mut rewriter = ConditionMemoryReindexer {
         condition_name,
         replacements,
+        error: None,
     };
     rewrite_equation_rhs(&mut dae_model.continuous.equations, &mut rewriter);
     rewrite_equation_rhs(&mut dae_model.discrete.real_updates, &mut rewriter);
@@ -319,6 +346,10 @@ fn rewrite_condition_memory_references(
     }
     for action in &mut dae_model.events.event_actions {
         action.condition = rewriter.rewrite_expression(&action.condition);
+    }
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -334,10 +365,14 @@ fn rewrite_equation_rhs(
 struct ConditionMemoryReindexer<'a> {
     condition_name: &'a str,
     replacements: &'a [ConditionMemoryReplacement],
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for ConditionMemoryReindexer<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         if let rumoca_core::Expression::VarRef {
             name,
             subscripts,
@@ -349,7 +384,13 @@ impl ExpressionRewriter for ConditionMemoryReindexer<'_> {
                 .checked_sub(1)
                 .and_then(|index| self.replacements.get(index))
         {
-            return replacement_expr(replacement, self.condition_name, is_pre, *span);
+            match replacement_expr(replacement, self.condition_name, is_pre, *span) {
+                Ok(expr) => return expr,
+                Err(error) => {
+                    self.error = Some(error);
+                    return expr.clone();
+                }
+            }
         }
         self.walk_expression(expr)
     }
@@ -360,7 +401,7 @@ fn replacement_expr(
     condition_name: &str,
     is_pre: bool,
     span: rumoca_core::Span,
-) -> rumoca_core::Expression {
+) -> Result<rumoca_core::Expression, ToDaeError> {
     match replacement {
         ConditionMemoryReplacement::Memory(index) => condition_memory_ref(
             if is_pre {
@@ -371,7 +412,7 @@ fn replacement_expr(
             *index,
             span,
         ),
-        ConditionMemoryReplacement::Direct(expr) => expr.clone(),
+        ConditionMemoryReplacement::Direct(expr) => Ok(expr.clone()),
     }
 }
 
@@ -379,12 +420,43 @@ fn condition_memory_ref(
     name: String,
     index: usize,
     span: rumoca_core::Span,
-) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    Ok(rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::generated(name),
-        subscripts: vec![rumoca_core::Subscript::generated_index(index as i64, span)],
+        subscripts: vec![generated_index_subscript(
+            condition_index_i64(
+                index,
+                span,
+                "runtime condition memory replacement subscript",
+            )?,
+            span,
+            "runtime condition memory replacement subscript",
+        )?],
         span,
-    }
+    })
+}
+
+fn condition_index_i64(
+    index: usize,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<i64, ToDaeError> {
+    i64::try_from(index)
+        .map_err(|_| runtime_contract(format!("{context} {index} exceeds i64 range"), Some(span)))
+}
+
+fn generated_index_subscript(
+    index: i64,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Subscript, ToDaeError> {
+    rumoca_core::Subscript::try_generated_index(index, span, context).map_err(|err| {
+        if span.is_dummy() {
+            ToDaeError::runtime_metadata_violation(err.to_string())
+        } else {
+            ToDaeError::runtime_metadata_violation_at(err.to_string(), span)
+        }
+    })
 }
 
 fn condition_memory_index(

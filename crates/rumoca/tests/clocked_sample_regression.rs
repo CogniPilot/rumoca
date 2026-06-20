@@ -105,7 +105,8 @@ end SampleTime;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "sample_time.mo").unwrap();
-    let tree = rumoca_ir_ast::ClassTree::from_parsed(def);
+    let mut tree = rumoca_ir_ast::ClassTree::from_parsed(def);
+    tree.source_map.add("sample_time.mo", source);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let model = "SampleTime";

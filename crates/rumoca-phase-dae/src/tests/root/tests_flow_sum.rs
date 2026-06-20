@@ -10,7 +10,11 @@ fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connecto
             name: VarName::new("pin.i"),
             flow: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -33,7 +37,10 @@ fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connecto
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("pin.i"),
-        Variable::new(rumoca_core::VarName::new("pin.i")),
+        Variable::new(
+            rumoca_core::VarName::new("pin.i"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -56,7 +63,11 @@ fn test_count_interface_flows_requires_top_level_connector_membership() {
             variability: rumoca_core::Variability::Empty,
             flow: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -84,7 +95,11 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
             flow: true,
             dims: vec![2],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -93,7 +108,11 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
             name: VarName::new("s.i"),
             flow: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -121,11 +140,17 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("arr.i"),
-        Variable::new(rumoca_core::VarName::new("arr.i")),
+        Variable::new(
+            rumoca_core::VarName::new("arr.i"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("s.i"),
-        Variable::new(rumoca_core::VarName::new("s.i")),
+        Variable::new(
+            rumoca_core::VarName::new("s.i"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -149,7 +174,11 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
                 flow: true,
                 dims: vec![2],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -159,7 +188,11 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
             name: VarName::new("s.i"),
             flow: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -193,7 +226,14 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
     for name in ["arr1.i", "arr2.i", "s.i"] {
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(name),
-            Variable::new(rumoca_core::VarName::new(name)),
+            Variable::new(
+                rumoca_core::VarName::new(name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 

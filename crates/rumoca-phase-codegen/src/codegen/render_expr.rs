@@ -4,7 +4,7 @@
 //! (Binary, Unary, VarRef, BuiltinCall, FunctionCall, Literal, If,
 //! Array, Tuple, Range, ArrayComprehension, Index, FieldAccess).
 
-use super::{ExprConfig, IfStyle, RenderResult};
+use super::{ExprConfig, IfStyle, RenderResult, render_vec_with_capacity};
 use crate::errors::render_err;
 use minijinja::Value;
 
@@ -272,7 +272,7 @@ fn render_source_subscripts(var_ref: &Value) -> RenderResult {
         one_based_index: true,
         ..Default::default()
     };
-    let mut sub_strs = Vec::with_capacity(len);
+    let mut sub_strs = render_vec_with_capacity(len, "VarRef rendered subscript count")?;
     for i in 0..len {
         let sub = subs
             .get_item(&Value::from(i))

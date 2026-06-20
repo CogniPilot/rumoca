@@ -78,7 +78,7 @@ fn compile_cuda(
     chip: &str,
     opts: &MlirBackendOptions,
 ) -> Result<GpuCompiledBlob, MlirError> {
-    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template(), model_name)
+    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template()?, model_name)
         .map_err(|e| MlirError::Template(e.to_string()))?;
 
     let tmpdir = TempDir::new()?;
@@ -159,7 +159,7 @@ fn compile_rocm(
     model_name: &str,
     chip: &str,
 ) -> Result<GpuCompiledBlob, MlirError> {
-    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template(), model_name)
+    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template()?, model_name)
         .map_err(|e| MlirError::Template(e.to_string()))?;
 
     let tmpdir = TempDir::new()?;
@@ -220,10 +220,13 @@ fn compile_rocm(
     })
 }
 
-fn mlir_template() -> &'static str {
+fn mlir_template() -> Result<&'static str, MlirError> {
     templates::builtin_target("mlir")
         .and_then(|target| target.template_source("mlir.mlir.jinja"))
-        .expect("built-in mlir target must provide mlir.mlir.jinja")
+        .ok_or(MlirError::MissingBuiltinTemplate {
+            target: "mlir",
+            template: "mlir.mlir.jinja",
+        })
 }
 
 /// Append the NVVM metadata that marks `fn_name` as a CUDA kernel.

@@ -6,7 +6,7 @@ fn test_eliminate_trivial_tears_symbolic_algebraic_loop() {
     for name in ["a", "b", "c"] {
         dae.variables
             .algebraics
-            .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_dae_variable(name));
     }
     dae.continuous.equations.push(dae::Equation {
         lhs: None,

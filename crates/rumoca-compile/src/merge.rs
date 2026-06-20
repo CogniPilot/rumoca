@@ -110,17 +110,21 @@ fn merge_single_definition(
     def: ast::StoredDefinition,
     file_path: &str,
 ) -> Result<()> {
+    let ast::StoredDefinition { classes, within } = def;
     // Get the package prefix from the within clause
-    let prefix = def
-        .within
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let prefix = within.as_ref().map(|n| n.to_string()).unwrap_or_default();
 
-    for (class_name, class_def) in def.classes {
+    for (class_name, class_def) in classes {
         if !prefix.is_empty() {
             // Has within clause - place in package hierarchy
-            place_class_in_hierarchy(merged, &prefix, class_name, class_def, file_path)?;
+            place_class_in_hierarchy(
+                merged,
+                within.as_ref(),
+                &prefix,
+                class_name,
+                class_def,
+                file_path,
+            )?;
             continue;
         }
         // No within clause - add at top level
@@ -166,6 +170,7 @@ fn merge_class_at_top_level(
 /// Place a class in the correct position in the package hierarchy
 fn place_class_in_hierarchy(
     merged: &mut ast::StoredDefinition,
+    within: Option<&ast::Name>,
     prefix: &str,
     class_name: String,
     class_def: ast::ClassDef,
@@ -187,14 +192,8 @@ fn place_class_in_hierarchy(
             // Top-level package
             if !current_map.contains_key(*part) {
                 // Create the package
-                let pkg = ast::ClassDef {
-                    name: rumoca_core::Token {
-                        text: std::sync::Arc::from(*part),
-                        ..Default::default()
-                    },
-                    class_type: rumoca_core::ClassType::Package,
-                    ..Default::default()
-                };
+                let location = package_placeholder_location(within, i, part, &class_def)?;
+                let pkg = package_placeholder(part, location);
                 current_map.insert(part.to_string(), pkg);
             }
 
@@ -209,14 +208,8 @@ fn place_class_in_hierarchy(
         } else {
             // Nested package
             if !current_map.contains_key(*part) {
-                let pkg = ast::ClassDef {
-                    name: rumoca_core::Token {
-                        text: std::sync::Arc::from(*part),
-                        ..Default::default()
-                    },
-                    class_type: rumoca_core::ClassType::Package,
-                    ..Default::default()
-                };
+                let location = package_placeholder_location(within, i, part, &class_def)?;
+                let pkg = package_placeholder(part, location);
                 current_map.insert(part.to_string(), pkg);
             }
 
@@ -258,6 +251,58 @@ fn place_class_in_hierarchy(
     Ok(())
 }
 
+fn package_placeholder(part: &str, location: rumoca_core::Location) -> ast::ClassDef {
+    ast::ClassDef {
+        name: rumoca_core::Token {
+            text: std::sync::Arc::from(part),
+            location: location.clone(),
+            ..Default::default()
+        },
+        class_type: rumoca_core::ClassType::Package,
+        class_type_token: rumoca_core::Token {
+            text: std::sync::Arc::from("package"),
+            location: location.clone(),
+            ..Default::default()
+        },
+        location,
+        ..Default::default()
+    }
+}
+
+fn package_placeholder_location(
+    within: Option<&ast::Name>,
+    index: usize,
+    part: &str,
+    owner: &ast::ClassDef,
+) -> Result<rumoca_core::Location> {
+    if let Some(location) = within
+        .and_then(|name| name.name.get(index))
+        .map(|token| token.location.clone())
+        .filter(source_location_is_nonempty)
+        .or_else(|| source_location_for_class(owner))
+    {
+        return Ok(location);
+    }
+    let within_name = match within {
+        Some(name) => name.to_string(),
+        None => "<none>".to_string(),
+    };
+    anyhow::bail!(
+        "missing source location for synthesized package placeholder `{part}` in within `{within_name}`"
+    );
+}
+
+fn source_location_for_class(class: &ast::ClassDef) -> Option<rumoca_core::Location> {
+    [
+        &class.location,
+        &class.name.location,
+        &class.class_type_token.location,
+    ]
+    .into_iter()
+    .find(|location| source_location_is_nonempty(location))
+    .cloned()
+}
+
 /// Merge contents of two packages
 fn merge_package_contents(
     existing: &mut ast::ClassDef,
@@ -265,46 +310,19 @@ fn merge_package_contents(
     package_name: &str,
     file_path: &str,
 ) -> Result<()> {
+    if is_synthetic_package_placeholder(existing) && class_has_source_location(&new) {
+        promote_package_placeholder(existing, new, package_name, file_path)?;
+        return Ok(());
+    }
+
     // Merge nested classes
     for (name, class) in new.classes {
-        if let Some(existing_class) = existing.classes.get_mut(&name) {
-            if matches!(existing_class.class_type, rumoca_core::ClassType::Package)
-                && matches!(class.class_type, rumoca_core::ClassType::Package)
-            {
-                // Recursively merge packages
-                let nested_name = format!("{}.{}", package_name, name);
-                merge_package_contents(existing_class, class, &nested_name, file_path)?;
-            } else if !classes_semantically_identical(existing_class, &class) {
-                return Err(merge_error_from_primary_with_related(
-                    format!(
-                        "Duplicate class '{}.{}' found in '{}' with non-identical definition",
-                        package_name, name, file_path
-                    ),
-                    &class.name,
-                    &existing_class.name,
-                ));
-            }
-        } else {
-            existing.classes.insert(name, class);
-        }
+        merge_package_child_class(existing, name, class, package_name, file_path)?;
     }
 
     // Merge components, rejecting conflicting duplicates.
     for (name, comp) in new.components {
-        if let Some(existing_comp) = existing.components.get(&name) {
-            if !components_semantically_identical(existing_comp, &comp) {
-                return Err(merge_error_from_primary_with_related(
-                    format!(
-                        "Duplicate component '{}.{}' found in '{}' with non-identical definition",
-                        package_name, name, file_path
-                    ),
-                    &comp.name_token,
-                    &existing_comp.name_token,
-                ));
-            }
-        } else {
-            existing.components.insert(name, comp);
-        }
+        merge_package_component(existing, name, comp, package_name, file_path)?;
     }
 
     // Merge imports
@@ -313,6 +331,115 @@ fn merge_package_contents(
     }
 
     Ok(())
+}
+
+fn promote_package_placeholder(
+    placeholder: &mut ast::ClassDef,
+    mut declared: ast::ClassDef,
+    package_name: &str,
+    file_path: &str,
+) -> Result<()> {
+    let placeholder_classes = std::mem::take(&mut placeholder.classes);
+    let placeholder_components = std::mem::take(&mut placeholder.components);
+    let mut placeholder_imports = std::mem::take(&mut placeholder.imports);
+
+    for (name, class) in placeholder_classes {
+        merge_package_child_class(&mut declared, name, class, package_name, file_path)?;
+    }
+    for (name, component) in placeholder_components {
+        merge_package_component(&mut declared, name, component, package_name, file_path)?;
+    }
+    placeholder_imports.append(&mut declared.imports);
+    declared.imports = placeholder_imports;
+
+    *placeholder = declared;
+    Ok(())
+}
+
+fn merge_package_child_class(
+    package: &mut ast::ClassDef,
+    name: String,
+    class: ast::ClassDef,
+    package_name: &str,
+    file_path: &str,
+) -> Result<()> {
+    let Some(existing_class) = package.classes.get_mut(&name) else {
+        package.classes.insert(name, class);
+        return Ok(());
+    };
+
+    if matches!(existing_class.class_type, rumoca_core::ClassType::Package)
+        && matches!(class.class_type, rumoca_core::ClassType::Package)
+    {
+        let nested_name = format!("{}.{}", package_name, name);
+        return merge_package_contents(existing_class, class, &nested_name, file_path);
+    }
+    if classes_semantically_identical(existing_class, &class) {
+        return Ok(());
+    }
+    Err(merge_error_from_primary_with_related(
+        format!(
+            "Duplicate class '{}.{}' found in '{}' with non-identical definition",
+            package_name, name, file_path
+        ),
+        &class.name,
+        &existing_class.name,
+    ))
+}
+
+fn merge_package_component(
+    package: &mut ast::ClassDef,
+    name: String,
+    component: ast::Component,
+    package_name: &str,
+    file_path: &str,
+) -> Result<()> {
+    let Some(existing_component) = package.components.get(&name) else {
+        package.components.insert(name, component);
+        return Ok(());
+    };
+
+    if components_semantically_identical(existing_component, &component) {
+        return Ok(());
+    }
+    Err(merge_error_from_primary_with_related(
+        format!(
+            "Duplicate component '{}.{}' found in '{}' with non-identical definition",
+            package_name, name, file_path
+        ),
+        &component.name_token,
+        &existing_component.name_token,
+    ))
+}
+
+fn is_synthetic_package_placeholder(class: &ast::ClassDef) -> bool {
+    matches!(class.class_type, rumoca_core::ClassType::Package)
+        && class.description.is_empty()
+        && class.extends.is_empty()
+        && class.imports.is_empty()
+        && class.components.is_empty()
+        && class.equations.is_empty()
+        && class.initial_equations.is_empty()
+        && class.algorithms.is_empty()
+        && class.initial_algorithms.is_empty()
+        && class.equation_keyword.is_none()
+        && class.initial_equation_keyword.is_none()
+        && class.algorithm_keyword.is_none()
+        && class.initial_algorithm_keyword.is_none()
+        && class.end_name_token.is_none()
+        && class.enum_literals.is_empty()
+        && class.annotation.is_empty()
+        && class.external.is_none()
+}
+
+fn class_has_source_location(class: &ast::ClassDef) -> bool {
+    source_location_is_nonempty(&class.location)
+        || source_location_is_nonempty(&class.name.location)
+        || source_location_is_nonempty(&class.class_type_token.location)
+}
+
+fn source_location_is_nonempty(location: &rumoca_core::Location) -> bool {
+    !location.file_name.is_empty() && location.start < location.end
 }
 
 fn classes_semantically_identical(existing: &ast::ClassDef, new: &ast::ClassDef) -> bool {
@@ -475,6 +602,10 @@ mod tests {
         }
     }
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+    }
+
     fn model_with_real(name: &str, component: &str) -> ast::ClassDef {
         let mut class = ast::ClassDef {
             name: token(name),
@@ -487,10 +618,14 @@ mod tests {
                 name: component.to_string(),
                 name_token: token(component),
                 type_name: ast::Name::from_string("Real"),
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         class
+    }
+
+    fn parse_definition(source: &str, file_name: &str) -> ast::StoredDefinition {
+        rumoca_phase_parse::parse_to_ast(source, file_name).expect("parse test definition")
     }
 
     #[test]
@@ -516,13 +651,10 @@ mod tests {
 
     #[test]
     fn test_merge_with_within() {
-        let mut def = ast::StoredDefinition {
-            within: Some(ast::Name::from_string("MyPackage.SubPackage")),
-            ..Default::default()
-        };
-        def.classes
-            .insert("MyModel".to_string(), model_with_real("MyModel", "x"));
-
+        let def = parse_definition(
+            "within MyPackage.SubPackage;\nmodel MyModel\n  Real x;\nend MyModel;",
+            "file.mo",
+        );
         let merged = merge_stored_definitions(vec![("file.mo".to_string(), def)]).unwrap();
 
         // Should have created MyPackage at top level
@@ -536,6 +668,54 @@ mod tests {
 
         // Should have MyModel inside SubPackage
         assert!(subpkg.classes.contains_key("MyModel"));
+    }
+
+    #[test]
+    fn package_declaration_promotes_source_free_within_placeholder() {
+        let merged = merge_stored_definitions(vec![
+            (
+                "workspace/Pkg/Sub/A.mo".to_string(),
+                parse_definition("within Pkg.Sub; model A end A;", "workspace/Pkg/Sub/A.mo"),
+            ),
+            (
+                "workspace/Pkg/Sub/package.mo".to_string(),
+                parse_definition(
+                    "within Pkg; package Sub end Sub;",
+                    "workspace/Pkg/Sub/package.mo",
+                ),
+            ),
+            (
+                "workspace/Pkg/package.mo".to_string(),
+                parse_definition("package Pkg end Pkg;", "workspace/Pkg/package.mo"),
+            ),
+        ])
+        .expect("merge package tree");
+
+        let pkg = merged.classes.get("Pkg").expect("Pkg package");
+        assert_eq!(pkg.location.file_name, "workspace/Pkg/package.mo");
+        assert!(pkg.location.start < pkg.location.end);
+
+        let sub = pkg.classes.get("Sub").expect("Sub package");
+        assert_eq!(sub.location.file_name, "workspace/Pkg/Sub/package.mo");
+        assert!(sub.location.start < sub.location.end);
+        assert!(sub.classes.contains_key("A"));
+    }
+
+    #[test]
+    fn within_placeholder_inherits_source_location_from_child_source() {
+        let merged = merge_stored_definitions(vec![(
+            "workspace/Examples/Ball.mo".to_string(),
+            parse_definition(
+                "within Examples;\nmodel Ball\n  Real x;\nend Ball;",
+                "workspace/Examples/Ball.mo",
+            ),
+        )])
+        .expect("merge within-qualified model");
+
+        let examples = merged.classes.get("Examples").expect("Examples package");
+        assert_eq!(examples.location.file_name, "workspace/Examples/Ball.mo");
+        assert!(examples.location.start < examples.location.end);
+        assert!(examples.classes.contains_key("Ball"));
     }
 
     #[test]
@@ -593,19 +773,8 @@ mod tests {
 
     #[test]
     fn test_non_identical_duplicate_within_class_is_rejected() {
-        let mut def1 = ast::StoredDefinition {
-            within: Some(ast::Name::from_string("Pkg")),
-            ..Default::default()
-        };
-        def1.classes
-            .insert("M".to_string(), model_with_real("M", "x"));
-
-        let mut def2 = ast::StoredDefinition {
-            within: Some(ast::Name::from_string("Pkg")),
-            ..Default::default()
-        };
-        def2.classes
-            .insert("M".to_string(), model_with_real("M", "y"));
+        let def1 = parse_definition("within Pkg;\nmodel M\n  Real x;\nend M;", "a.mo");
+        let def2 = parse_definition("within Pkg;\nmodel M\n  Real y;\nend M;", "b.mo");
 
         let err =
             merge_stored_definitions(vec![("a.mo".to_string(), def1), ("b.mo".to_string(), def2)])

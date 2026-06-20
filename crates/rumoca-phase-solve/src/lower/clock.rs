@@ -8,44 +8,67 @@ impl<'a> LowerBuilder<'a> {
     pub(super) fn lower_interval_intrinsic(
         &mut self,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         let Some(clock_expr) = args.first() else {
-            return Ok(self.emit_const(1.0));
+            return self.emit_const_at(1.0, required_context_span(call_span, "interval() call")?);
         };
         if let Some(reg) = self.lower_clock_interval_expr(clock_expr, scope, call_depth)? {
             return Ok(reg);
         }
-        Ok(self.emit_const(1.0))
+        self.emit_const_at(1.0, required_context_span(call_span, "interval() call")?)
     }
 
     pub(super) fn lower_clock_constructor_tick(
         &mut self,
         short_name: &str,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
         if self.clock_constructor_is_triggered_event(short_name, args) {
             let Some(condition) = args.first() else {
-                return Ok(Some(self.emit_const(0.0)));
+                return self
+                    .emit_const_at(
+                        0.0,
+                        required_context_span(call_span, "triggered Clock() call")?,
+                    )
+                    .map(Some);
             };
             if self.value_mode == ValueMode::Pre {
-                return Ok(Some(self.emit_const(0.0)));
+                return self
+                    .emit_const_at(
+                        0.0,
+                        source_span_or_context(condition, call_span, "clock condition")?,
+                    )
+                    .map(Some);
             }
             return self.lower_expr(condition, scope, call_depth).map(Some);
         }
         let Some(period) =
-            self.lower_clock_constructor_period(short_name, args, scope, call_depth)?
+            self.lower_clock_constructor_period(short_name, args, call_span, scope, call_depth)?
         else {
             return Ok(None);
         };
         if self.value_mode == ValueMode::Pre {
-            return Ok(Some(self.emit_const(0.0)));
+            return self
+                .emit_const_at(
+                    0.0,
+                    required_context_span(call_span, "clock constructor call")?,
+                )
+                .map(Some);
         }
-        let phase = self.lower_clock_constructor_phase(short_name, args, scope, call_depth)?;
-        Ok(Some(self.emit_periodic_tick(phase, period)))
+        let phase =
+            self.lower_clock_constructor_phase(short_name, args, call_span, scope, call_depth)?;
+        self.emit_periodic_tick(
+            phase,
+            period,
+            required_context_span(call_span, "clock constructor call")?,
+        )
+        .map(Some)
     }
 
     fn clock_constructor_is_triggered_event(
@@ -69,28 +92,32 @@ impl<'a> LowerBuilder<'a> {
         let Some(period) = self.lower_clock_interval_expr(expr, scope, call_depth)? else {
             return Ok(None);
         };
+        let span = required_source_span(expr, "clock tick expression")?;
         if self.value_mode == ValueMode::Pre {
-            return Ok(Some(self.emit_const(0.0)));
+            return self.emit_const_at(0.0, span).map(Some);
         }
         let phase = self.lower_clock_phase_expr(expr, scope, call_depth)?;
-        Ok(Some(self.emit_periodic_tick(phase, period)))
+        self.emit_periodic_tick(phase, period, span).map(Some)
     }
 
     pub(super) fn lower_clock_constructor_period(
         &mut self,
         short_name: &str,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
         match short_name {
-            "Clock" => self.lower_clock_interval_clock_call(args, scope, call_depth),
-            "subSample" => self.lower_scaled_clock_interval(args, scope, call_depth, BinaryOp::Mul),
+            "Clock" => self.lower_clock_interval_clock_call(args, call_span, scope, call_depth),
+            "subSample" => {
+                self.lower_scaled_clock_interval(args, call_span, scope, call_depth, BinaryOp::Mul)
+            }
             "superSample" => {
-                self.lower_scaled_clock_interval(args, scope, call_depth, BinaryOp::Div)
+                self.lower_scaled_clock_interval(args, call_span, scope, call_depth, BinaryOp::Div)
             }
             "shiftSample" | "backSample" => {
-                self.lower_passthrough_clock_interval(args, scope, call_depth)
+                self.lower_passthrough_clock_interval(args, call_span, scope, call_depth)
             }
             _ => Ok(None),
         }
@@ -100,27 +127,37 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         short_name: &str,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         match short_name {
-            "Clock" => self.lower_clock_call_phase(args, scope, call_depth),
+            "Clock" => self.lower_clock_call_phase(args, call_span),
             "subSample" | "superSample" => {
                 if args.len() == 1
                     && let Some(phase) = self
                         .current_update_target_clock_timing()
                         .map(|timing| timing.phase_seconds)
                 {
-                    return Ok(self.emit_const(phase));
+                    return self.emit_const_at(
+                        phase,
+                        required_context_span(call_span, "subSample/superSample call")?,
+                    );
                 }
                 let Some(base_expr) = args.first() else {
-                    return Ok(self.emit_const(0.0));
+                    return self.emit_const_at(
+                        0.0,
+                        required_context_span(call_span, "subSample/superSample call")?,
+                    );
                 };
                 self.lower_clock_phase_expr(base_expr, scope, call_depth)
             }
             "shiftSample" | "backSample" => {
                 let Some(base_expr) = args.first() else {
-                    return Ok(self.emit_const(0.0));
+                    return self.emit_const_at(
+                        0.0,
+                        required_context_span(call_span, "shiftSample/backSample call")?,
+                    );
                 };
                 let Some(base_period) =
                     self.lower_clock_interval_expr(base_expr, scope, call_depth)?
@@ -128,68 +165,81 @@ impl<'a> LowerBuilder<'a> {
                     return self.lower_clock_phase_expr(base_expr, scope, call_depth);
                 };
                 let base_phase = self.lower_clock_phase_expr(base_expr, scope, call_depth)?;
-                let shift = self.lower_optional_clock_factor(args.get(1), scope, call_depth)?;
+                let shift =
+                    self.lower_optional_clock_factor(args.get(1), call_span, scope, call_depth)?;
                 let resolution =
-                    self.lower_optional_clock_factor(args.get(2), scope, call_depth)?;
-                let fraction = self.emit_binary(BinaryOp::Div, shift, resolution);
-                let offset = self.emit_binary(BinaryOp::Mul, base_period, fraction);
+                    self.lower_optional_clock_factor(args.get(2), call_span, scope, call_depth)?;
+                let span = source_span_or_context(base_expr, call_span, "clock base expression")?;
+                let fraction = self.emit_binary_at(BinaryOp::Div, shift, resolution, span)?;
+                let offset = self.emit_binary_at(BinaryOp::Mul, base_period, fraction, span)?;
                 if short_name == "backSample" {
-                    Ok(self.emit_binary(BinaryOp::Sub, base_phase, offset))
+                    self.emit_binary_at(BinaryOp::Sub, base_phase, offset, span)
                 } else {
-                    Ok(self.emit_binary(BinaryOp::Add, base_phase, offset))
+                    self.emit_binary_at(BinaryOp::Add, base_phase, offset, span)
                 }
             }
-            _ => Ok(self.emit_const(0.0)),
+            _ => self.emit_const_at(
+                0.0,
+                required_context_span(call_span, "clock constructor call")?,
+            ),
         }
     }
 
     fn lower_clock_call_phase(
         &mut self,
         args: &[rumoca_core::Expression],
-        _scope: &Scope,
-        _call_depth: usize,
+        call_span: rumoca_core::Span,
     ) -> Result<Reg, LowerError> {
         if args.is_empty()
             && let Some(phase) = self
                 .current_update_target_clock_timing()
                 .map(|timing| timing.phase_seconds)
         {
-            return Ok(self.emit_const(phase));
+            return self.emit_const_at(phase, required_context_span(call_span, "Clock() call")?);
         }
-        Ok(self.emit_const(0.0))
+        self.emit_const_at(0.0, required_context_span(call_span, "Clock() call")?)
     }
 
     pub(super) fn lower_optional_clock_factor(
         &mut self,
         expr: Option<&rumoca_core::Expression>,
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         match expr {
             Some(expr) => self.lower_expr(expr, scope, call_depth),
-            None => Ok(self.emit_const(1.0)),
+            None => self.emit_const_at(
+                1.0,
+                required_context_span(call_span, "clock factor default")?,
+            ),
         }
     }
 
-    pub(super) fn emit_periodic_tick(&mut self, phase: Reg, period: Reg) -> Reg {
-        let time = self.emit_load_time();
-        let delta = self.emit_binary(BinaryOp::Sub, time, phase);
-        let one = self.emit_const(1.0);
-        let max_period = self.emit_binary(BinaryOp::Max, period, one);
-        let tol_scale = self.emit_const(1.0e-9);
-        let tol = self.emit_binary(BinaryOp::Mul, tol_scale, max_period);
-        let neg_tol = self.emit_unary(UnaryOp::Neg, tol);
-        let after_start = self.emit_compare(CompareOp::Ge, delta, neg_tol);
+    pub(super) fn emit_periodic_tick(
+        &mut self,
+        phase: Reg,
+        period: Reg,
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        let time = self.emit_load_time_at(span)?;
+        let delta = self.emit_binary_at(BinaryOp::Sub, time, phase, span)?;
+        let one = self.emit_const_at(1.0, span)?;
+        let max_period = self.emit_binary_at(BinaryOp::Max, period, one, span)?;
+        let tol_scale = self.emit_const_at(1.0e-9, span)?;
+        let tol = self.emit_binary_at(BinaryOp::Mul, tol_scale, max_period, span)?;
+        let neg_tol = self.emit_unary_at(UnaryOp::Neg, tol, span)?;
+        let after_start = self.emit_compare_at(CompareOp::Ge, delta, neg_tol, span)?;
 
-        let quotient = self.emit_binary(BinaryOp::Div, delta, period);
-        let half = self.emit_const(0.5);
-        let shifted = self.emit_binary(BinaryOp::Add, quotient, half);
-        let tick_index = self.emit_unary(UnaryOp::Floor, shifted);
-        let nearest = self.emit_binary(BinaryOp::Mul, tick_index, period);
-        let diff = self.emit_binary(BinaryOp::Sub, delta, nearest);
-        let abs_diff = self.emit_unary(UnaryOp::Abs, diff);
-        let at_tick = self.emit_compare(CompareOp::Le, abs_diff, tol);
-        self.emit_binary(BinaryOp::And, after_start, at_tick)
+        let quotient = self.emit_binary_at(BinaryOp::Div, delta, period, span)?;
+        let half = self.emit_const_at(0.5, span)?;
+        let shifted = self.emit_binary_at(BinaryOp::Add, quotient, half, span)?;
+        let tick_index = self.emit_unary_at(UnaryOp::Floor, shifted, span)?;
+        let nearest = self.emit_binary_at(BinaryOp::Mul, tick_index, period, span)?;
+        let diff = self.emit_binary_at(BinaryOp::Sub, delta, nearest, span)?;
+        let abs_diff = self.emit_unary_at(UnaryOp::Abs, diff, span)?;
+        let at_tick = self.emit_compare_at(CompareOp::Le, abs_diff, tol, span)?;
+        self.emit_binary_at(BinaryOp::And, after_start, at_tick, span)
     }
 
     pub(super) fn lower_clock_interval_expr(
@@ -203,21 +253,38 @@ impl<'a> LowerBuilder<'a> {
             // the clocked variable v when that metadata is known at runtime.
             rumoca_core::Expression::VarRef { .. }
             | rumoca_core::Expression::Index { .. }
-            | rumoca_core::Expression::FieldAccess { .. } => Ok(self
+            | rumoca_core::Expression::FieldAccess { .. } => self
                 .clock_interval_metadata(expr)
-                .map(|value| self.emit_const(value))),
-            rumoca_core::Expression::FunctionCall { name, args, .. } => {
+                .map(|value| {
+                    self.emit_const_at(
+                        value,
+                        required_source_span(expr, "clock interval expression")?,
+                    )
+                    .map(Some)
+                })
+                .unwrap_or(Ok(None)),
+            rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } => {
                 let short = intrinsic_short_name(name.as_str());
                 match short {
-                    "Clock" => self.lower_clock_interval_clock_call(args, scope, call_depth),
-                    "subSample" => {
-                        self.lower_scaled_clock_interval(args, scope, call_depth, BinaryOp::Mul)
-                    }
-                    "superSample" => {
-                        self.lower_scaled_clock_interval(args, scope, call_depth, BinaryOp::Div)
-                    }
+                    "Clock" => self.lower_clock_interval_clock_call(args, *span, scope, call_depth),
+                    "subSample" => self.lower_scaled_clock_interval(
+                        args,
+                        *span,
+                        scope,
+                        call_depth,
+                        BinaryOp::Mul,
+                    ),
+                    "superSample" => self.lower_scaled_clock_interval(
+                        args,
+                        *span,
+                        scope,
+                        call_depth,
+                        BinaryOp::Div,
+                    ),
                     "shiftSample" | "backSample" => {
-                        self.lower_passthrough_clock_interval(args, scope, call_depth)
+                        self.lower_passthrough_clock_interval(args, *span, scope, call_depth)
                     }
                     _ => Ok(None),
                 }
@@ -239,19 +306,22 @@ impl<'a> LowerBuilder<'a> {
                 let phase = self
                     .clock_timing_metadata(expr)
                     .map_or(0.0, |timing| timing.phase_seconds);
-                Ok(self.emit_const(phase))
+                self.emit_const_at(phase, required_source_span(expr, "clock phase expression")?)
             }
-            rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } => {
                 let short = intrinsic_short_name(name.as_str());
-                self.lower_clock_constructor_phase(short, args, scope, call_depth)
+                self.lower_clock_constructor_phase(short, args, *span, scope, call_depth)
             }
-            _ => Ok(self.emit_const(0.0)),
+            _ => self.emit_const_at(0.0, required_source_span(expr, "clock phase expression")?),
         }
     }
 
     pub(super) fn lower_clock_interval_clock_call(
         &mut self,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -260,17 +330,24 @@ impl<'a> LowerBuilder<'a> {
                 let period = self
                     .current_update_target_clock_timing()
                     .map_or(1.0, |timing| timing.period_seconds);
-                Ok(Some(self.emit_const(period)))
+                self.emit_const_at(period, required_context_span(call_span, "Clock() call")?)
+                    .map(Some)
             }
             [interval] => self.lower_expr(interval, scope, call_depth).map(Some),
             [numerator_expr, denominator_expr, ..] => {
                 let numerator = self.lower_expr(numerator_expr, scope, call_depth)?;
                 let denominator = self.lower_expr(denominator_expr, scope, call_depth)?;
-                Ok(Some(self.emit_binary(
+                self.emit_binary_at(
                     BinaryOp::Div,
                     numerator,
                     denominator,
-                )))
+                    denominator_expr
+                        .span()
+                        .or_else(|| numerator_expr.span())
+                        .or_else(|| (!call_span.is_dummy()).then_some(call_span))
+                        .ok_or_else(|| missing_clock_source_span("Clock() ratio"))?,
+                )
+                .map(Some)
             }
         }
     }
@@ -298,6 +375,7 @@ impl<'a> LowerBuilder<'a> {
     pub(super) fn lower_scaled_clock_interval(
         &mut self,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
         op: BinaryOp,
@@ -310,21 +388,31 @@ impl<'a> LowerBuilder<'a> {
                 .current_update_target_clock_timing()
                 .map(|timing| timing.period_seconds)
         {
-            return Ok(Some(self.emit_const(period)));
+            return self
+                .emit_const_at(
+                    period,
+                    source_span_or_context(base_expr, call_span, "scaled clock base expression")?,
+                )
+                .map(Some);
         }
         let Some(base) = self.lower_clock_interval_expr(base_expr, scope, call_depth)? else {
             return Ok(None);
         };
         let factor = match args.get(1) {
             Some(factor_expr) => self.lower_expr(factor_expr, scope, call_depth)?,
-            None => self.emit_const(1.0),
+            None => self.emit_const_at(
+                1.0,
+                source_span_or_context(base_expr, call_span, "scaled clock base expression")?,
+            )?,
         };
-        Ok(Some(self.emit_binary(op, base, factor)))
+        let span = source_span_or_context(base_expr, call_span, "scaled clock base expression")?;
+        self.emit_binary_at(op, base, factor, span).map(Some)
     }
 
     pub(super) fn lower_passthrough_clock_interval(
         &mut self,
         args: &[rumoca_core::Expression],
+        _call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -355,4 +443,37 @@ fn clock_component_metadata<'m, T>(
     }
     let key = clock_base_metadata_key(expr)?;
     metadata.get(key.as_str())
+}
+
+fn source_span_or_context(
+    expr: &rumoca_core::Expression,
+    context_span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Span, LowerError> {
+    expr.span()
+        .or_else(|| (!context_span.is_dummy()).then_some(context_span))
+        .ok_or_else(|| missing_clock_source_span(context))
+}
+
+fn required_context_span(
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Span, LowerError> {
+    (!span.is_dummy())
+        .then_some(span)
+        .ok_or_else(|| missing_clock_source_span(context))
+}
+
+fn required_source_span(
+    expr: &rumoca_core::Expression,
+    context: &'static str,
+) -> Result<rumoca_core::Span, LowerError> {
+    expr.span()
+        .ok_or_else(|| missing_clock_source_span(context))
+}
+
+fn missing_clock_source_span(context: &'static str) -> LowerError {
+    LowerError::UnspannedContractViolation {
+        reason: format!("{context} requires source span"),
+    }
 }

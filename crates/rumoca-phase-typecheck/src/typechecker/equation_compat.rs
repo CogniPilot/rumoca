@@ -1,6 +1,7 @@
 //! Equation and reference type/shape compatibility checks (MLS §6.7, §10.5).
 
 use super::*;
+use crate::typechecker::late_methods::ComponentReferenceTypeError;
 
 impl TypeChecker {
     /// Check assignment compatibility for a simple equation.
@@ -47,9 +48,9 @@ impl TypeChecker {
         let Some(loc) = lhs.get_location().or_else(|| rhs.get_location()) else {
             return;
         };
-        let span =
-            self.source_map
-                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
+        let Some(span) = self.diagnostic_location_span(loc, "equation type compatibility") else {
+            return;
+        };
         let expected = Self::format_type_name(type_table, lhs_ty);
         let found = Self::format_type_name(type_table, rhs_ty);
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
@@ -67,7 +68,12 @@ impl TypeChecker {
     ) {
         match self.resolve_component_reference_type(comp, type_table) {
             Ok(_) => self.validate_component_subscripts(comp),
-            Err(missing) => self.emit_unknown_component_member(missing, type_table),
+            Err(ComponentReferenceTypeError::MissingMember(missing)) => {
+                self.emit_unknown_component_member(missing, type_table);
+            }
+            Err(ComponentReferenceTypeError::MissingSourceContext(error)) => {
+                self.emit_typecheck_error(error);
+            }
         }
     }
 
@@ -87,11 +93,10 @@ impl TypeChecker {
             return;
         }
         let location = &comp.parts[0].ident.location;
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "component subscript validation")
+        else {
+            return;
+        };
         if subscripts.len() > declared.len() {
             self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                 "ET009",

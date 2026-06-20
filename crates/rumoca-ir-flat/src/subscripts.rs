@@ -39,7 +39,7 @@ fn try_constant_integer(expr: &ast::Expression) -> Option<i64> {
 }
 
 /// Convert from AST Subscript.
-pub(super) fn subscript_from_ast(sub: &ast::Subscript) -> Subscript {
+pub(super) fn subscript_from_ast(sub: &ast::Subscript, owner_span: rumoca_core::Span) -> Subscript {
     match sub {
         ast::Subscript::Expression(expr) => {
             let span = expr.span();
@@ -48,8 +48,6 @@ pub(super) fn subscript_from_ast(sub: &ast::Subscript) -> Subscript {
             }
             Subscript::expr(Box::new(expression_from_ast(expr)), span)
         }
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => {
-            Subscript::generated_colon(rumoca_core::Span::DUMMY)
-        }
+        ast::Subscript::Range { .. } | ast::Subscript::Empty => Subscript::colon(owner_span),
     }
 }

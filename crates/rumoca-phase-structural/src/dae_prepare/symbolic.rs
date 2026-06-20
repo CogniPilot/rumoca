@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::ExpressionRewriter;
+use rumoca_core::{ExpressionRewriter, Span};
 
 use rumoca_core::NAMED_FUNCTION_ARG_PREFIX;
 
@@ -11,27 +11,27 @@ fn is_der_of_state(expr: &Expression, state_name: &VarName) -> bool {
     )
 }
 
-fn make_binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+fn make_binary(op: OpBinary, lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn make_unary(op: OpUnary, rhs: Expression) -> Expression {
+fn make_unary(op: OpUnary, rhs: Expression, span: Span) -> Expression {
     Expression::Unary {
         op,
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn zero_literal() -> Expression {
+fn real_literal(value: f64, span: Span) -> Expression {
     Expression::Literal {
-        value: Literal::Real(0.0),
-        span: rumoca_core::Span::DUMMY,
+        value: Literal::Real(value),
+        span,
     }
 }
 
@@ -39,14 +39,9 @@ fn split_linear_der_target(
     expr: &Expression,
     state_name: &VarName,
 ) -> Option<(Expression, Expression)> {
+    let span = expr.span()?;
     if is_der_of_state(expr, state_name) {
-        return Some((
-            Expression::Literal {
-                value: Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            },
-            zero_literal(),
-        ));
+        return Some((real_literal(1.0, span), real_literal(0.0, span)));
     }
 
     let is_target = |e: &Expression| is_der_of_state(e, state_name);
@@ -58,8 +53,8 @@ fn split_linear_der_target(
         } => {
             let (coef, rem) = split_linear_der_target(rhs, state_name)?;
             Some((
-                make_unary(OpUnary::Minus, coef),
-                make_unary(OpUnary::Minus, rem),
+                make_unary(OpUnary::Minus, coef, span),
+                make_unary(OpUnary::Minus, rem, span),
             ))
         }
         Expression::Binary { op, lhs, rhs, .. } => match op {
@@ -67,12 +62,12 @@ fn split_linear_der_target(
                 if let Some((coef, rem)) = split_linear_der_target(lhs, state_name)
                     && !expr_contains_der_of(rhs, state_name)
                 {
-                    return Some((coef, make_binary(OpBinary::Add, rem, *rhs.clone())));
+                    return Some((coef, make_binary(OpBinary::Add, rem, *rhs.clone(), span)));
                 }
                 if let Some((coef, rem)) = split_linear_der_target(rhs, state_name)
                     && !expr_contains_der_of(lhs, state_name)
                 {
-                    return Some((coef, make_binary(OpBinary::Add, *lhs.clone(), rem)));
+                    return Some((coef, make_binary(OpBinary::Add, *lhs.clone(), rem, span)));
                 }
                 None
             }
@@ -80,24 +75,24 @@ fn split_linear_der_target(
                 if let Some((coef, rem)) = split_linear_der_target(lhs, state_name)
                     && !expr_contains_der_of(rhs, state_name)
                 {
-                    return Some((coef, make_binary(OpBinary::Sub, rem, *rhs.clone())));
+                    return Some((coef, make_binary(OpBinary::Sub, rem, *rhs.clone(), span)));
                 }
                 if let Some((coef, rem)) = split_linear_der_target(rhs, state_name)
                     && !expr_contains_der_of(lhs, state_name)
                 {
                     return Some((
-                        make_unary(OpUnary::Minus, coef),
-                        make_binary(OpBinary::Sub, *lhs.clone(), rem),
+                        make_unary(OpUnary::Minus, coef, span),
+                        make_binary(OpBinary::Sub, *lhs.clone(), rem, span),
                     ));
                 }
                 None
             }
             OpBinary::Mul | OpBinary::MulElem => {
                 if is_target(lhs) && !expr_contains_der_of(rhs, state_name) {
-                    return Some((*rhs.clone(), zero_literal()));
+                    return Some((*rhs.clone(), real_literal(0.0, span)));
                 }
                 if is_target(rhs) && !expr_contains_der_of(lhs, state_name) {
-                    return Some((*lhs.clone(), zero_literal()));
+                    return Some((*lhs.clone(), real_literal(0.0, span)));
                 }
                 None
             }
@@ -112,7 +107,7 @@ pub(super) fn try_extract_der_value(rhs: &Expression, state_name: &VarName) -> O
         op: OpBinary::Sub,
         lhs,
         rhs: row_rhs,
-        span: rumoca_core::Span::DUMMY,
+        ..
     } = rhs
     {
         if is_der_of_state(row_rhs, state_name) {
@@ -123,11 +118,13 @@ pub(super) fn try_extract_der_value(rhs: &Expression, state_name: &VarName) -> O
         }
     }
 
+    let span = rhs.span()?;
     let (coef, remainder) = split_linear_der_target(rhs, state_name)?;
     Some(make_binary(
         OpBinary::Div,
-        make_unary(OpUnary::Minus, remainder),
+        make_unary(OpUnary::Minus, remainder, span),
         coef,
+        span,
     ))
 }
 
@@ -175,9 +172,9 @@ fn build_array_der_value(dae: &Dae, state_name: &VarName, dims: &[i64]) -> Optio
 fn array_expr_from_flat_values(values: Vec<Expression>, dims: &[i64]) -> Option<Expression> {
     match dims {
         [n] if *n >= 0 && *n as usize == values.len() => Some(Expression::Array {
+            span: expression_sequence_span(&values)?,
             elements: values,
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
         }),
         [rows, cols] if *rows >= 0 && *cols >= 0 => {
             let rows = *rows as usize;
@@ -187,23 +184,39 @@ fn array_expr_from_flat_values(values: Vec<Expression>, dims: &[i64]) -> Option<
             }
             let elements = values
                 .chunks(cols)
-                .map(|row| Expression::Array {
-                    elements: row.to_vec(),
-                    is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                .map(|row| {
+                    Some(Expression::Array {
+                        span: expression_sequence_span(row)?,
+                        elements: row.to_vec(),
+                        is_matrix: false,
+                    })
                 })
-                .collect();
+                .collect::<Option<Vec<_>>>()?;
             Some(Expression::Array {
+                span: expression_sequence_span(&elements)?,
                 elements,
                 is_matrix: true,
-                span: rumoca_core::Span::DUMMY,
             })
         }
         _ => Some(Expression::Array {
+            span: expression_sequence_span(&values)?,
             elements: values,
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
         }),
+    }
+}
+
+fn expression_sequence_span(elements: &[Expression]) -> Option<Span> {
+    let first = elements.first()?.span()?;
+    let last = elements.last()?.span()?;
+    if first.source == last.source {
+        Some(Span::from_offsets(
+            first.source,
+            first.start.0,
+            last.end.0.max(first.start.0),
+        ))
+    } else {
+        Some(first)
     }
 }
 
@@ -226,17 +239,15 @@ impl<'a> SymbolicDerivativeContext<'a> {
         &self,
         name: &VarName,
         subscripts: &[Subscript],
+        span: Span,
     ) -> Option<Expression> {
         if name.as_str() == "time" {
-            return Some(Expression::Literal {
-                value: Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            });
+            return Some(real_literal(1.0, span));
         }
         if self.dae.variables.parameters.contains_key(name)
             || self.dae.variables.constants.contains_key(name)
         {
-            return Some(zero_literal());
+            return Some(real_literal(0.0, span));
         }
         if !subscripts.is_empty()
             && !self.dae.variables.states.contains_key(name)
@@ -244,11 +255,18 @@ impl<'a> SymbolicDerivativeContext<'a> {
             && let Some(dims) = variable_dims_for_name(self.dae, name)
             && let Some(indices) = static_subscript_indices(subscripts)
             && let Some(flat_index) = flat_index_from_indices(&dims, &indices)
+            && let Some(first_subscript) = subscripts.first()
         {
-            return project_flat_index(derivative, &dims, flat_index);
+            return project_flat_index_with_span(
+                derivative,
+                &dims,
+                flat_index,
+                Some(first_subscript.span()),
+            );
         }
         if !subscripts.is_empty() && variable_dims_for_name(self.dae, name).is_some() {
-            let span = subscripts.first().map(Subscript::span).unwrap_or_default();
+            let first_subscript = subscripts.first()?;
+            let span = first_subscript.span();
             return Some(Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![Expression::VarRef {
@@ -267,6 +285,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         op: &OpBinary,
         lhs: &Expression,
         rhs: &Expression,
+        span: Span,
         active_functions: &mut Vec<VarName>,
     ) -> Option<Expression> {
         match op {
@@ -274,42 +293,48 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 OpBinary::Add,
                 self.differentiate(lhs, active_functions)?,
                 self.differentiate(rhs, active_functions)?,
+                span,
             )),
             OpBinary::Sub | OpBinary::SubElem => Some(make_binary(
                 OpBinary::Sub,
                 self.differentiate(lhs, active_functions)?,
                 self.differentiate(rhs, active_functions)?,
+                span,
             )),
             OpBinary::Mul | OpBinary::MulElem => {
-                if let Some(dot) = self.differentiate_vector_dot(lhs, rhs, active_functions) {
+                if let Some(dot) = self.differentiate_vector_dot(lhs, rhs, span, active_functions) {
                     return Some(dot);
                 }
                 let da_b = make_binary(
                     OpBinary::Mul,
                     self.differentiate(lhs, active_functions)?,
                     rhs.clone(),
+                    span,
                 );
                 let a_db = make_binary(
                     OpBinary::Mul,
                     lhs.clone(),
                     self.differentiate(rhs, active_functions)?,
+                    span,
                 );
-                Some(make_binary(OpBinary::Add, da_b, a_db))
+                Some(make_binary(OpBinary::Add, da_b, a_db, span))
             }
             OpBinary::Div | OpBinary::DivElem => {
                 let da_b = make_binary(
                     OpBinary::Mul,
                     self.differentiate(lhs, active_functions)?,
                     rhs.clone(),
+                    span,
                 );
                 let a_db = make_binary(
                     OpBinary::Mul,
                     lhs.clone(),
                     self.differentiate(rhs, active_functions)?,
+                    span,
                 );
-                let numer = make_binary(OpBinary::Sub, da_b, a_db);
-                let denom = make_binary(OpBinary::Mul, rhs.clone(), rhs.clone());
-                Some(make_binary(OpBinary::Div, numer, denom))
+                let numer = make_binary(OpBinary::Sub, da_b, a_db, span);
+                let denom = make_binary(OpBinary::Mul, rhs.clone(), rhs.clone(), span);
+                Some(make_binary(OpBinary::Div, numer, denom, span))
             }
             _ => None,
         }
@@ -319,6 +344,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         &self,
         lhs: &Expression,
         rhs: &Expression,
+        span: Span,
         active_functions: &mut Vec<VarName>,
     ) -> Option<Expression> {
         let lhs_dims = expression_dims(lhs, self.dae)?;
@@ -339,28 +365,32 @@ impl<'a> SymbolicDerivativeContext<'a> {
                     OpBinary::Mul,
                     self.differentiate(&lhs_i, active_functions)?,
                     rhs_i.clone(),
+                    span,
                 );
                 let a_db = make_binary(
                     OpBinary::Mul,
                     lhs_i,
                     self.differentiate(&rhs_i, active_functions)?,
+                    span,
                 );
-                Some(make_binary(OpBinary::Add, da_b, a_db))
+                Some(make_binary(OpBinary::Add, da_b, a_db, span))
             })
             .collect::<Option<Vec<_>>>()?;
-        Some(sum_terms(terms))
+        Some(sum_terms(terms, span))
     }
 
     fn differentiate_unary(
         &self,
         op: &OpUnary,
         rhs: &Expression,
+        span: Span,
         active_functions: &mut Vec<VarName>,
     ) -> Option<Expression> {
         match op {
             OpUnary::Minus | OpUnary::DotMinus => Some(make_unary(
                 OpUnary::Minus,
                 self.differentiate(rhs, active_functions)?,
+                span,
             )),
             OpUnary::Plus | OpUnary::DotPlus => self.differentiate(rhs, active_functions),
             _ => None,
@@ -371,6 +401,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         &self,
         branches: &[(Expression, Expression)],
         else_branch: &Expression,
+        span: Span,
         active_functions: &mut Vec<VarName>,
     ) -> Option<Expression> {
         let mut differentiated_branches = Vec::with_capacity(branches.len());
@@ -381,7 +412,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         Some(Expression::If {
             branches: differentiated_branches,
             else_branch: Box::new(self.differentiate(else_branch, active_functions)?),
-            span: rumoca_core::Span::DUMMY,
+            span,
         })
     }
 
@@ -418,21 +449,23 @@ impl<'a> SymbolicDerivativeContext<'a> {
         active_functions: &mut Vec<VarName>,
     ) -> Option<Expression> {
         match expr {
-            Expression::Literal { value: _, .. } => Some(zero_literal()),
+            Expression::Literal { value: _, span } => Some(real_literal(0.0, *span)),
             Expression::VarRef {
-                name, subscripts, ..
-            } => self.differentiate_variable(name.var_name(), subscripts),
-            Expression::Binary { op, lhs, rhs, .. } => {
-                self.differentiate_binary(op, lhs, rhs, active_functions)
+                name,
+                subscripts,
+                span,
+            } => self.differentiate_variable(name.var_name(), subscripts, *span),
+            Expression::Binary { op, lhs, rhs, span } => {
+                self.differentiate_binary(op, lhs, rhs, *span, active_functions)
             }
-            Expression::Unary { op, rhs, .. } => {
-                self.differentiate_unary(op, rhs, active_functions)
+            Expression::Unary { op, rhs, span } => {
+                self.differentiate_unary(op, rhs, *span, active_functions)
             }
             Expression::If {
                 branches,
                 else_branch,
-                ..
-            } => self.differentiate_if(branches, else_branch, active_functions),
+                span,
+            } => self.differentiate_if(branches, else_branch, *span, active_functions),
             Expression::Array {
                 elements,
                 is_matrix,
@@ -676,6 +709,20 @@ fn array_expression_dims(elements: &[Expression], is_matrix: bool) -> Option<Vec
 }
 
 fn project_flat_index(expr: &Expression, dims: &[i64], flat_index: usize) -> Option<Expression> {
+    project_flat_index_with_span(expr, dims, flat_index, None)
+}
+
+fn projection_span(expr: &Expression, fallback_span: Option<Span>) -> Option<Span> {
+    expr.span()
+        .or_else(|| fallback_span.filter(|span| !span.is_dummy()))
+}
+
+fn project_flat_index_with_span(
+    expr: &Expression,
+    dims: &[i64],
+    flat_index: usize,
+    fallback_span: Option<Span>,
+) -> Option<Expression> {
     match expr {
         Expression::VarRef {
             name,
@@ -683,13 +730,19 @@ fn project_flat_index(expr: &Expression, dims: &[i64], flat_index: usize) -> Opt
             span,
         } if subscripts.is_empty() => {
             let indices = dae::flat_index_to_subscripts(dims, flat_index)?;
+            let projection_span = projection_span(expr, fallback_span)?;
             Some(Expression::VarRef {
                 name: name.clone(),
-                subscripts: indices
-                    .into_iter()
-                    .map(|idx| Subscript::generated_index(idx as i64, *span))
-                    .collect(),
-                span: *span,
+                subscripts: generated_index_subscripts(
+                    indices,
+                    projection_span,
+                    "flat-index projected variable reference",
+                )?,
+                span: if span.is_dummy() {
+                    projection_span
+                } else {
+                    *span
+                },
             })
         }
         Expression::Array { elements, .. } => {
@@ -700,43 +753,81 @@ fn project_flat_index(expr: &Expression, dims: &[i64], flat_index: usize) -> Opt
             args,
             ..
         } if args.len() == 1 => {
-            let span = expr.span().unwrap_or(rumoca_core::Span::DUMMY);
+            let span = projection_span(expr, fallback_span)?;
             Some(Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
-                args: vec![project_flat_index(&args[0], dims, flat_index)?],
+                args: vec![project_flat_index_with_span(
+                    &args[0],
+                    dims,
+                    flat_index,
+                    Some(span),
+                )?],
                 span,
             })
         }
         Expression::Binary { op, lhs, rhs, .. } => {
-            let span = expr.span().unwrap_or(rumoca_core::Span::DUMMY);
+            let span = projection_span(expr, fallback_span)?;
             Some(Expression::Binary {
                 op: op.clone(),
-                lhs: Box::new(project_flat_index(lhs, dims, flat_index)?),
-                rhs: Box::new(project_flat_index(rhs, dims, flat_index)?),
+                lhs: Box::new(project_flat_index_with_span(
+                    lhs,
+                    dims,
+                    flat_index,
+                    Some(span),
+                )?),
+                rhs: Box::new(project_flat_index_with_span(
+                    rhs,
+                    dims,
+                    flat_index,
+                    Some(span),
+                )?),
                 span,
             })
         }
         Expression::Unary { op, rhs, .. } => {
-            let span = expr.span().unwrap_or(rumoca_core::Span::DUMMY);
+            let span = projection_span(expr, fallback_span)?;
             Some(Expression::Unary {
                 op: op.clone(),
-                rhs: Box::new(project_flat_index(rhs, dims, flat_index)?),
+                rhs: Box::new(project_flat_index_with_span(
+                    rhs,
+                    dims,
+                    flat_index,
+                    Some(span),
+                )?),
                 span,
             })
         }
         _ => {
             let indices = dae::flat_index_to_subscripts(dims, flat_index)?;
-            let span = expr.span()?;
+            let span = projection_span(expr, fallback_span)?;
             Some(Expression::Index {
                 base: Box::new(expr.clone()),
-                subscripts: indices
-                    .into_iter()
-                    .map(|idx| Subscript::generated_index(idx as i64, span))
-                    .collect(),
+                subscripts: generated_index_subscripts(
+                    indices,
+                    span,
+                    "flat-index projected expression",
+                )?,
                 span,
             })
         }
     }
+}
+
+fn generated_index_subscripts(
+    indices: Vec<usize>,
+    span: Span,
+    context: &'static str,
+) -> Option<Vec<Subscript>> {
+    let provenance = span.require_provenance(context).ok()?;
+    indices
+        .into_iter()
+        .map(|idx| {
+            Some(Subscript::generated_index_with_provenance(
+                i64::try_from(idx).ok()?,
+                provenance,
+            ))
+        })
+        .collect()
 }
 
 fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
@@ -787,14 +878,14 @@ fn flatten_array_elements(elements: &[Expression]) -> Vec<Expression> {
     flattened
 }
 
-fn sum_terms(mut terms: Vec<Expression>) -> Expression {
+fn sum_terms(mut terms: Vec<Expression>, span: Span) -> Expression {
     if terms.is_empty() {
-        return zero_literal();
+        return real_literal(0.0, span);
     }
     let first = terms.remove(0);
     terms
         .into_iter()
-        .fold(first, |lhs, rhs| make_binary(OpBinary::Add, lhs, rhs))
+        .fold(first, |lhs, rhs| make_binary(OpBinary::Add, lhs, rhs, span))
 }
 
 // SPEC_0021: Exception - exhaustive symbolic derivative expansion over Expression variants.
@@ -833,30 +924,34 @@ pub(super) fn expand_der_in_expr_full(
                 }
             }
         }
-        Expression::Binary { op, lhs, rhs, .. } => Expression::Binary {
+        Expression::Binary { op, lhs, rhs, span } => Expression::Binary {
             op: op.clone(),
             lhs: Box::new(expand_der_in_expr_full(lhs, dae, der_map, state_names)),
             rhs: Box::new(expand_der_in_expr_full(rhs, dae, der_map, state_names)),
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
-        Expression::Unary { op, rhs, .. } => Expression::Unary {
+        Expression::Unary { op, rhs, span } => Expression::Unary {
             op: op.clone(),
             rhs: Box::new(expand_der_in_expr_full(rhs, dae, der_map, state_names)),
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
-        Expression::BuiltinCall { function, args, .. } => Expression::BuiltinCall {
+        Expression::BuiltinCall {
+            function,
+            args,
+            span,
+        } => Expression::BuiltinCall {
             function: *function,
             args: args
                 .iter()
                 .map(|a| expand_der_in_expr_full(a, dae, der_map, state_names))
                 .collect(),
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
         Expression::FunctionCall {
             name,
             args,
             is_constructor,
-            ..
+            span,
         } => Expression::FunctionCall {
             name: name.clone(),
             args: args
@@ -864,12 +959,12 @@ pub(super) fn expand_der_in_expr_full(
                 .map(|a| expand_der_in_expr_full(a, dae, der_map, state_names))
                 .collect(),
             is_constructor: *is_constructor,
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
         Expression::If {
             branches,
             else_branch,
-            ..
+            span,
         } => Expression::If {
             branches: branches
                 .iter()
@@ -886,26 +981,28 @@ pub(super) fn expand_der_in_expr_full(
                 der_map,
                 state_names,
             )),
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
         Expression::Array {
             elements,
             is_matrix,
-            ..
+            span,
         } => Expression::Array {
             elements: elements
                 .iter()
                 .map(|e| expand_der_in_expr_full(e, dae, der_map, state_names))
                 .collect(),
             is_matrix: *is_matrix,
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
         Expression::Index {
-            base, subscripts, ..
+            base,
+            subscripts,
+            span,
         } => Expression::Index {
             base: Box::new(expand_der_in_expr_full(base, dae, der_map, state_names)),
             subscripts: subscripts.clone(),
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         },
         _ => expr.clone(),
     }
@@ -924,4 +1021,73 @@ pub(super) fn truncate_debug(s: &str, max_chars: usize) -> String {
     }
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("symbolic_project.mo"),
+            4,
+            12,
+        )
+    }
+
+    fn var_ref(name: &str, span: Span) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span,
+        }
+    }
+
+    fn has_single_index_with_span(expr: &Expression, expected_span: Span) -> bool {
+        let Expression::VarRef { subscripts, .. } = expr else {
+            return false;
+        };
+        let [Subscript::Index { value, span }] = subscripts.as_slice() else {
+            return false;
+        };
+        *value == 1 && *span == expected_span
+    }
+
+    #[test]
+    fn project_flat_index_declines_unspanned_binary_projection() {
+        let child_span = test_span();
+        let expr = Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var_ref("x", child_span)),
+            rhs: Box::new(var_ref("y", child_span)),
+            span: Span::DUMMY,
+        };
+
+        assert_eq!(project_flat_index(&expr, &[2], 0), None);
+    }
+
+    #[test]
+    fn project_flat_index_preserves_binary_projection_span() {
+        let span = test_span();
+        let expr = Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var_ref("x", span)),
+            rhs: Box::new(var_ref("y", span)),
+            span,
+        };
+
+        let projected = project_flat_index(&expr, &[2], 0).expect("spanned binary should project");
+
+        assert_eq!(projected.span(), Some(span));
+        assert!(
+            matches!(
+                projected,
+                Expression::Binary { lhs, rhs, span: actual, .. }
+                    if actual == span
+                        && has_single_index_with_span(lhs.as_ref(), span)
+                        && has_single_index_with_span(rhs.as_ref(), span)
+            ),
+            "projected binary should index both operands with the source span"
+        );
+    }
 }

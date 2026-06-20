@@ -2,14 +2,36 @@ use super::*;
 
 #[test]
 fn test_todae_splits_mixed_clocked_tuple_assignment_by_dae_partition() {
+    let flat = mixed_clocked_tuple_model();
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("clocked tuple assignment should convert");
+
+    assert_mixed_clocked_tuple_dae(&dae);
+}
+
+fn mixed_clocked_tuple_model() -> Model {
     let mut flat = Model::new();
+    let span = crate::test_support::test_span();
+    add_clocked_tuple_variables(&mut flat, span);
+    add_hold_function(&mut flat, span);
+    add_clocked_tuple_equation(&mut flat, span);
+    flat
+}
+
+fn add_clocked_tuple_variables(flat: &mut Model, span: Span) {
     flat.add_variable(
         VarName::new("noise"),
         flat::Variable {
             name: VarName::new("noise"),
             component_ref: Some(make_comp_ref("noise")),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
         },
     );
     flat.add_variable(
@@ -20,23 +42,27 @@ fn test_todae_splits_mixed_clocked_tuple_assignment_by_dae_partition() {
             dims: vec![3],
             is_discrete_type: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
         },
     );
+}
 
-    let mut hold = rumoca_core::Function::new("hold", Default::default());
+fn add_hold_function(flat: &mut Model, span: Span) {
+    let mut hold = rumoca_core::Function::new("hold", span);
     hold.outputs
-        .push(rumoca_core::FunctionParam::new("x", "Real"));
+        .push(rumoca_core::FunctionParam::new("x", "Real", span));
     hold.outputs
-        .push(rumoca_core::FunctionParam::new("seedOut", "Integer").with_dims(vec![3]));
+        .push(rumoca_core::FunctionParam::new("seedOut", "Integer", span).with_dims(vec![3]));
     flat.functions.insert(hold.name.clone(), hold);
+}
 
+fn add_clocked_tuple_equation(flat: &mut Model, span: Span) {
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(Expression::Tuple {
                 elements: vec![make_var_ref("noise"), make_var_ref("seedState")],
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             rhs: Box::new(Expression::FunctionCall {
                 name: VarName::new("hold").into(),
@@ -44,28 +70,22 @@ fn test_todae_splits_mixed_clocked_tuple_assignment_by_dae_partition() {
                     name: VarName::new("previous").into(),
                     args: vec![make_var_ref("seedState")],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
         origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
             component: "clocked".to_string(),
         },
         scalar_count: 4,
     });
+}
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("clocked tuple assignment should convert");
-
+fn assert_mixed_clocked_tuple_dae(dae: &rumoca_ir_dae::Dae) {
     assert!(
         dae.variables
             .discrete_reals

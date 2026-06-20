@@ -73,8 +73,9 @@ impl FunctionProjectionAnalysis<'_> {
     pub(super) fn top_level_function_call_outputs(
         &self,
         expr: &rumoca_core::Expression,
+        owner_span: rumoca_core::Span,
     ) -> Result<Option<Vec<ProjectedFunctionOutput>>, LowerError> {
-        match self.function_call_outputs(expr, 0) {
+        match self.function_call_outputs_with_owner(expr, 0, owner_span) {
             Err(err) if err.is_projection_budget_exceeded() => Ok(None),
             other => other,
         }

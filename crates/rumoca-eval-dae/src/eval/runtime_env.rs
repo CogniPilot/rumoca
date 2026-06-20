@@ -168,13 +168,13 @@ pub fn set_pre_value_in_env<T: SimFloat>(env: &VarEnv<T>, name: &str, value: f64
     set_pre_value_in_runtime(&env.runtime, name, value);
 }
 
-pub fn try_build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> Result<VarEnv<f64>, EvalError> {
+pub fn build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> Result<VarEnv<f64>, EvalError> {
     let mut env = VarEnv::new();
-    try_populate_env(dae, y, p, t, &mut env)?;
+    populate_env(dae, y, p, t, &mut env)?;
     Ok(env)
 }
 
-pub fn try_build_env_with_runtime(
+pub fn build_env_with_runtime(
     dae: &Dae,
     y: &[f64],
     p: &[f64],
@@ -183,11 +183,11 @@ pub fn try_build_env_with_runtime(
 ) -> Result<VarEnv<f64>, EvalError> {
     let mut env = VarEnv::new();
     env.runtime = runtime;
-    try_populate_env(dae, y, p, t, &mut env)?;
+    populate_env(dae, y, p, t, &mut env)?;
     Ok(env)
 }
 
-fn try_populate_env(
+fn populate_env(
     dae: &Dae,
     y: &[f64],
     p: &[f64],
@@ -199,17 +199,17 @@ fn try_populate_env(
     try_populate_env_values(dae, y, p, t, env)
 }
 
-pub fn try_build_runtime_parameter_tail_env(
+pub fn build_runtime_parameter_tail_env(
     dae: &Dae,
     p: &[f64],
     t: f64,
 ) -> Result<VarEnv<f64>, EvalError> {
     let mut env = VarEnv::new();
-    try_populate_runtime_parameter_tail_env(dae, p, t, &mut env)?;
+    populate_runtime_parameter_tail_env(dae, p, t, &mut env)?;
     Ok(env)
 }
 
-pub fn try_build_runtime_parameter_tail_env_with_runtime(
+pub fn build_runtime_parameter_tail_env_with_runtime(
     dae: &Dae,
     p: &[f64],
     t: f64,
@@ -217,11 +217,11 @@ pub fn try_build_runtime_parameter_tail_env_with_runtime(
 ) -> Result<VarEnv<f64>, EvalError> {
     let mut env = VarEnv::new();
     env.runtime = runtime;
-    try_populate_runtime_parameter_tail_env(dae, p, t, &mut env)?;
+    populate_runtime_parameter_tail_env(dae, p, t, &mut env)?;
     Ok(env)
 }
 
-pub fn try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+pub fn build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
     dae: &Dae,
     p: &[f64],
     t: f64,
@@ -240,17 +240,64 @@ pub fn try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
     Ok(env)
 }
 
-fn try_populate_runtime_parameter_tail_env(
+fn populate_runtime_parameter_tail_env(
     dae: &Dae,
     p: &[f64],
     t: f64,
     env: &mut VarEnv<f64>,
 ) -> Result<(), EvalError> {
-    check_runtime_vector_len("p", p.len(), parameter_vector_len(dae))?;
-    try_populate_runtime_parameter_tail_env_values(dae, p, t, env)
+    try_populate_runtime_parameter_tail_env_values(dae, p, t, env)?;
+    check_parameter_tail_bindings(dae, p.len(), env)
 }
 
-pub fn try_refresh_env_solver_and_parameter_values(
+fn check_parameter_tail_bindings(
+    dae: &Dae,
+    actual_len: usize,
+    env: &VarEnv<f64>,
+) -> Result<(), EvalError> {
+    let mut expected_len = 0usize;
+    for (name, var) in &dae.variables.parameters {
+        if !parameter_has_numeric_slot(var, env) {
+            continue;
+        }
+        expected_len =
+            expected_len
+                .checked_add(var.size())
+                .ok_or(EvalError::ShortRuntimeVector {
+                    vector: "p",
+                    expected: usize::MAX,
+                    actual: actual_len,
+                })?;
+        if actual_len < expected_len && !var_binding_present(env, name.as_str(), var) {
+            return Err(EvalError::ShortRuntimeVector {
+                vector: "p",
+                expected: expected_len,
+                actual: actual_len,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn var_binding_present(env: &VarEnv<f64>, name: &str, var: &dae::Variable) -> bool {
+    let size = var.size();
+    if size == 0 {
+        return true;
+    }
+    if var.dims.is_empty() {
+        return env.vars.contains_key(name);
+    }
+    (0..size).all(|index| {
+        dae::flat_index_to_subscripts(&var.dims, index)
+            .map(|subscripts| {
+                env.vars
+                    .contains_key(&dae::format_subscript_key(name, &subscripts))
+            })
+            .unwrap_or(false)
+    })
+}
+
+pub fn refresh_env_solver_and_parameter_values(
     env: &mut VarEnv<f64>,
     dae: &Dae,
     y: &[f64],
@@ -259,7 +306,7 @@ pub fn try_refresh_env_solver_and_parameter_values(
 ) -> Result<(), EvalError> {
     check_runtime_vector_len("y", y.len(), solver_vector_len(dae))?;
     check_runtime_vector_len("p", p.len(), parameter_vector_len(dae))?;
-    refresh_env_solver_and_parameter_values(env, dae, y, p, t);
+    refresh_env_solver_and_parameter_values_unchecked(env, dae, y, p, t);
     Ok(())
 }
 

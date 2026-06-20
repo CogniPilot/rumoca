@@ -88,7 +88,7 @@ fn resolve_dae_function_by_key<'a>(
         indices
             .iter()
             .zip(output.dims.iter())
-            .all(|(idx, dim)| *dim >= 0 && *idx >= 1 && *idx <= *dim as usize)
+            .all(|(idx, dim)| dimension_index_in_bounds(*idx, *dim))
     }
 
     rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
@@ -100,6 +100,13 @@ fn resolve_dae_function_by_key<'a>(
             None
         }
     })
+}
+
+fn dimension_index_in_bounds(index: usize, dim: i64) -> bool {
+    let Ok(dim) = usize::try_from(dim) else {
+        return false;
+    };
+    index >= 1 && index <= dim
 }
 
 fn resolve_dae_function<'a>(
@@ -195,10 +202,19 @@ pub(super) fn validate_sim_function_call_name(
 mod dynamic_projection_tests {
     use super::*;
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("dynamic_projection_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     fn function_with_dynamic_array_output() -> rumoca_core::Function {
-        let mut function = rumoca_core::Function::new("Pkg.f", Default::default());
+        let span = fixture_span();
+        let mut function = rumoca_core::Function::new("Pkg.f", span);
         function.outputs.push(
-            rumoca_core::FunctionParam::new("y", "Real")
+            rumoca_core::FunctionParam::new("y", "Real", span)
                 .with_dims(vec![0])
                 .with_shape_expr(vec![rumoca_core::Subscript::Expr {
                     expr: Box::new(rumoca_core::Expression::VarRef {
@@ -506,7 +522,7 @@ pub(super) fn validate_field_access_expression(
         name,
         args,
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        ..
     } = base.as_ref()
     {
         validate_expression_list(
@@ -1104,7 +1120,7 @@ mod tests {
         let mut dae = Dae::default();
         dae.symbols.functions.insert(
             VarName::new("Complex"),
-            rumoca_core::Function::new("Complex", Default::default()),
+            rumoca_core::Function::new("Complex", rumoca_core::Span::DUMMY),
         );
         dae.variables.outputs.insert(
             VarName::new("y"),
@@ -1125,12 +1141,57 @@ mod tests {
                     is_constructor: true,
                     span: rumoca_core::Span::DUMMY,
                 }),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
         validate_simulation_function_support(&dae)
             .expect("Complex constructor should be accepted during function validation");
+    }
+
+    #[test]
+    fn validate_field_access_rejects_unknown_spanned_constructor_field() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(81), 3, 17);
+        let mut dae = Dae::default();
+        let mut constructor = rumoca_core::Function::new("Pkg.Record", span);
+        constructor
+            .inputs
+            .push(rumoca_core::FunctionParam::new("known", "Real", span));
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.Record"), constructor);
+        let expr = Expression::FieldAccess {
+            base: Box::new(Expression::FunctionCall {
+                name: VarName::new("Pkg.Record").into(),
+                args: Vec::new(),
+                is_constructor: true,
+                span,
+            }),
+            field: "missing".to_string(),
+            span,
+        };
+        let aliases = HashSet::new();
+        let mut validated_functions = HashSet::new();
+        let mut active_stack = HashSet::new();
+
+        let err = validate_field_access_expression(
+            &dae,
+            &expr,
+            &mut validated_functions,
+            &mut active_stack,
+            &aliases,
+        )
+        .expect_err("unknown constructor field should fail validation");
+
+        assert_eq!(err.name, "Pkg.Record.missing");
+        assert_eq!(
+            err.reason,
+            "constructor field projection cannot be resolved"
+        );
     }
 
     #[test]
@@ -1160,7 +1221,11 @@ mod tests {
                     )],
                     span: rumoca_core::Span::DUMMY,
                 }),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -1189,5 +1254,10 @@ mod tests {
             &aliases,
         )
         .expect("named-argument markers are call metadata, not runtime functions");
+    }
+
+    #[test]
+    fn dimension_index_in_bounds_rejects_out_of_range_index() {
+        assert!(!dimension_index_in_bounds(3, 2));
     }
 }

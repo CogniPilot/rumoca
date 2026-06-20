@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn test_simulate_model_wrapper_returns_time_series_payload() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"
     model Decay
@@ -61,14 +61,14 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
         Some(1)
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_parameter_metadata_and_overrides_are_used_by_simulation() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"
     model TunableDecay
@@ -108,14 +108,14 @@ fn test_parameter_metadata_and_overrides_are_used_by_simulation() {
         "larger k should decay x faster: baseline={baseline_x}, overridden={overridden_x}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"
     model BallWasmSmoke
@@ -196,14 +196,14 @@ fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
         "expected time-event reinit to reset velocity upward, got v={v:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_simulate_model_wrapper_advances_after_relation_root_crossing() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"
     model RootCrossWasmSmoke
@@ -250,7 +250,7 @@ fn test_simulate_model_wrapper_advances_after_relation_root_crossing() {
     assert!(y.iter().copied().fold(0.0, f64::max) >= 0.9);
     assert!(s.last().copied().unwrap_or(0.0) >= 0.3);
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]

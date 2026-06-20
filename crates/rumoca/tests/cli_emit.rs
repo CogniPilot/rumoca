@@ -34,6 +34,17 @@ algorithm
 end FlatOnlyFixture;
 ";
 
+const STRUCTURED_EQUATION_FIXTURE: &str = "\
+model StructuredEquationFixture
+  parameter Integer N = 3;
+  Real x[N];
+equation
+  for i in 1:N loop
+    x[i] = i;
+  end for;
+end StructuredEquationFixture;
+";
+
 fn fixture_file() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("EmitFixture.mo");
@@ -108,6 +119,33 @@ fn emit_flat_json_stops_before_todae() {
     assert!(
         json.get("algorithms").is_some(),
         "flat artifact should contain the model algorithm section, got:\n{out}"
+    );
+}
+
+#[test]
+fn emit_flat_json_exposes_structured_equation_families() {
+    let (_dir, file) = named_fixture_file("StructuredEquationFixture", STRUCTURED_EQUATION_FIXTURE);
+    let out = assert_emit_ok(&file, "flat-json");
+    let json = serde_json::from_str::<serde_json::Value>(&out)
+        .expect("flat-json should produce valid JSON");
+    let families = json
+        .get("structured_equations")
+        .and_then(serde_json::Value::as_array)
+        .expect("flat artifact should expose structured_equations");
+
+    assert_eq!(families.len(), 1);
+    assert!(
+        json.get("for_equations").is_none(),
+        "flat artifact should not expose obsolete for_equations key, got:\n{out}"
+    );
+    assert_eq!(
+        families[0]["domain"]["binders"][0]["display_name"],
+        serde_json::json!("i")
+    );
+    assert_eq!(families[0]["equation_counts"], serde_json::json!([1, 1, 1]));
+    assert!(
+        families[0].get("iterations").is_none(),
+        "structured family should not serialize one entry per scalar iteration"
     );
 }
 

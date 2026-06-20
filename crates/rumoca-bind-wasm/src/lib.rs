@@ -21,13 +21,15 @@ mod workspace_config_api;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::Date;
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use rumoca_compile::parsing::ClassType;
+#[cfg(target_arch = "wasm32")]
+use std::sync::TryLockError;
 use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
 use wasm_bindgen_futures::JsFuture;
@@ -44,8 +46,9 @@ use rumoca_compile::compile::{
     compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
 };
 use rumoca_compile::parsing::{
-    Causality, ClassDef, DefId, Expression, Location as CoreLocation, OpBinary, StoredDefinition,
-    Variability, collect_model_names, parse_source_to_ast, validate_source_syntax,
+    Causality, ClassDef, DefId, Expression, Location as CoreLocation, OpBinary, ParseError, Span,
+    StoredDefinition, Variability, collect_model_names, parse_source_to_ast,
+    parse_source_to_ast_with_errors,
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
@@ -79,6 +82,21 @@ pub use crate::source_root_api::{
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::stepper_api::WasmStepper;
 pub use crate::workspace_config_api::workspace_effective_source_roots;
+
+fn checked_vec_with_capacity<T>(capacity: usize, kind: &'static str) -> Result<Vec<T>, JsValue> {
+    let mut values = Vec::new();
+    values.try_reserve(capacity).map_err(|_| {
+        JsValue::from_str(&format!(
+            "{kind} allocation overflow for {capacity} entries"
+        ))
+    })?;
+    Ok(values)
+}
+
+fn serialize_js_value<T: Serialize>(value: &T, context: &'static str) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(value)
+        .map_err(|error| JsValue::from_str(&format!("{context}: {error}")))
+}
 
 /// Global compilation session containing both bundled source-root and user documents.
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -115,12 +133,17 @@ pub(crate) fn wasm_timing_start() -> WTimingStart {
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
-    (Date::now() - start).max(0.0).round() as u64
+    let elapsed = (Date::now() - start).max(0.0).round();
+    if elapsed.is_finite() && elapsed <= u64::MAX as f64 {
+        elapsed as u64
+    } else {
+        u64::MAX
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
-    start.elapsed().as_millis() as u64
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 // ==========================================================================
@@ -175,9 +198,9 @@ pub fn get_build_time_utc() -> String {
 
 /// Get the built-in codegen targets bundled with the WASM runtime.
 #[wasm_bindgen]
-pub fn get_builtin_targets() -> JsValue {
+pub fn get_builtin_targets() -> Result<JsValue, JsValue> {
     let targets = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
-    serde_wasm_bindgen::to_value(&targets).unwrap_or(JsValue::NULL)
+    serialize_js_value(&targets, "Serialize built-in target descriptors")
 }
 
 // ==========================================================================
@@ -273,18 +296,18 @@ struct WasmClassInfo {
 
 /// Parse Modelica source code and return whether it's valid.
 #[wasm_bindgen]
-pub fn parse(source: &str) -> JsValue {
-    let result = match validate_source_syntax(source, "input.mo") {
-        Ok(()) => ParseResult {
+pub fn parse(source: &str) -> Result<JsValue, JsValue> {
+    let result = match parse_source_to_ast_with_errors(source, "input.mo") {
+        Ok(_) => ParseResult {
             success: true,
             error: None,
         },
-        Err(e) => ParseResult {
+        Err(errors) => ParseResult {
             success: false,
-            error: Some(e.to_string()),
+            error: Some(first_parse_error_message(&errors)),
         },
     };
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    serialize_js_value(&result, "Serialize parse result")
 }
 
 #[derive(Serialize, Deserialize)]
@@ -299,36 +322,128 @@ struct WasmLintMessage {
 
 /// Lint Modelica source code and return messages.
 #[wasm_bindgen]
-pub fn lint(source: &str) -> JsValue {
+pub fn lint(source: &str) -> Result<JsValue, JsValue> {
     let options = LintOptions::default();
     let messages = lint_source(source, "input.mo", &options);
-    let wasm_messages: Vec<WasmLintMessage> = messages
-        .into_iter()
-        .map(|m| WasmLintMessage {
+    let mut wasm_messages = checked_vec_with_capacity(messages.len(), "lint messages")?;
+    for m in messages {
+        wasm_messages.push(WasmLintMessage {
             rule: m.rule.to_string(),
             level: m.level.to_string(),
             message: m.message,
             line: m.line,
             column: m.column,
             suggestion: m.suggestion,
-        })
-        .collect();
-    serde_wasm_bindgen::to_value(&wasm_messages).unwrap_or(JsValue::NULL)
+        });
+    }
+    serialize_js_value(&wasm_messages, "Serialize lint messages")
+}
+
+fn first_parse_error_message(errors: &[ParseError]) -> String {
+    errors
+        .first()
+        .map(parse_error_message)
+        .unwrap_or_else(|| "parse failed without an error".to_string())
+}
+
+fn parse_error_message(error: &ParseError) -> String {
+    match error {
+        ParseError::SyntaxError { message, .. } => message.clone(),
+        ParseError::NoAstProduced => "parsing succeeded but no AST was produced".to_string(),
+        ParseError::IoError { path, message } => format!("failed to read `{path}`: {message}"),
+    }
+}
+
+fn span_start_line_column(source: &str, span: Span) -> Result<Option<(u32, u32)>, JsValue> {
+    if span.is_dummy() {
+        return Ok(None);
+    }
+
+    let target = span.start.0;
+    if target > source.len() {
+        return Err(JsValue::from_str(
+            "parse diagnostic span starts beyond source length",
+        ));
+    }
+    if !source.is_char_boundary(target) {
+        return Err(JsValue::from_str(
+            "parse diagnostic span does not start at a UTF-8 boundary",
+        ));
+    }
+
+    let mut line = 1_u32;
+    let mut column = 1_u32;
+    for (offset, ch) in source.char_indices() {
+        if offset >= target {
+            return Ok(Some((line, column)));
+        }
+        if ch == '\n' {
+            line = line
+                .checked_add(1)
+                .ok_or_else(|| JsValue::from_str("parse diagnostic line exceeds u32 bounds"))?;
+            column = 1;
+        } else {
+            column = column
+                .checked_add(1)
+                .ok_or_else(|| JsValue::from_str("parse diagnostic column exceeds u32 bounds"))?;
+        }
+    }
+
+    Ok(Some((line, column)))
+}
+
+fn parse_error_line_column(source: &str, error: &ParseError) -> Result<(u32, u32), JsValue> {
+    let ParseError::SyntaxError { span, .. } = error else {
+        return Ok((1, 1));
+    };
+    let Some(span) = span else {
+        return Ok((1, 1));
+    };
+    Ok(span_start_line_column(source, *span)?.unwrap_or((1, 1)))
+}
+
+fn syntax_error_message(source: &str, error: &ParseError) -> Result<WasmLintMessage, JsValue> {
+    let (line, column) = parse_error_line_column(source, error)?;
+    Ok(WasmLintMessage {
+        rule: "syntax-error".to_string(),
+        level: "error".to_string(),
+        message: parse_error_message(error),
+        line,
+        column,
+        suggestion: None,
+    })
+}
+
+fn syntax_error_messages(
+    source: &str,
+    errors: &[ParseError],
+) -> Result<Vec<WasmLintMessage>, JsValue> {
+    let capacity = if errors.is_empty() { 1 } else { errors.len() };
+    let mut messages = checked_vec_with_capacity(capacity, "syntax diagnostics")?;
+    if errors.is_empty() {
+        messages.push(WasmLintMessage {
+            rule: "syntax-error".to_string(),
+            level: "error".to_string(),
+            message: "parse failed without an error".to_string(),
+            line: 1,
+            column: 1,
+            suggestion: None,
+        });
+        return Ok(messages);
+    }
+
+    for error in errors {
+        messages.push(syntax_error_message(source, error)?);
+    }
+    Ok(messages)
 }
 
 /// Check Modelica source code and return all diagnostics.
 #[wasm_bindgen]
-pub fn check(source: &str) -> JsValue {
-    if let Err(e) = validate_source_syntax(source, "input.mo") {
-        let error = WasmLintMessage {
-            rule: "syntax-error".to_string(),
-            level: "error".to_string(),
-            message: e.to_string(),
-            line: 1,
-            column: 1,
-            suggestion: None,
-        };
-        return serde_wasm_bindgen::to_value(&vec![error]).unwrap_or(JsValue::NULL);
+pub fn check(source: &str) -> Result<JsValue, JsValue> {
+    if let Err(errors) = parse_source_to_ast_with_errors(source, "input.mo") {
+        let messages = syntax_error_messages(source, &errors)?;
+        return serialize_js_value(&messages, "Serialize syntax diagnostics");
     }
     lint(source)
 }
@@ -403,7 +518,8 @@ fn build_compile_response(
         "status": if balance_val == 0 { "Balanced" } else { "Unbalanced" },
     });
 
-    let pretty = serde_json::to_string_pretty(dae).unwrap_or_default();
+    let pretty = serde_json::to_string_pretty(dae)
+        .map_err(|e| JsValue::from_str(&format!("DAE pretty JSON error: {e}")))?;
 
     let response = serde_json::json!({
         "dae": dae_native_json.clone(),
@@ -457,11 +573,43 @@ pub(crate) fn compile_requested_model(
 pub(crate) fn with_singleton_session<T>(
     f: impl FnOnce(&mut Session) -> Result<T, JsValue>,
 ) -> Result<T, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
+    let mut lock = singleton_session_lock()?;
     let session = lock.get_or_insert_with(Session::default);
     f(session)
+}
+
+pub(crate) fn with_optional_singleton_session<T>(
+    f: impl FnOnce(Option<&Session>) -> Result<T, JsValue>,
+) -> Result<T, JsValue> {
+    let lock = singleton_session_lock()?;
+    f(lock.as_ref())
+}
+
+pub(crate) fn clear_singleton_session() -> Result<(), JsValue> {
+    let mut lock = singleton_session_lock()?;
+    *lock = None;
+    Ok(())
+}
+
+fn singleton_session_lock() -> Result<MutexGuard<'static, Option<Session>>, JsValue> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return SESSION.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => JsValue::from_str(
+                "WASM session is already busy; retry after the current request completes",
+            ),
+            TryLockError::Poisoned(error) => {
+                JsValue::from_str(&format!("WASM session lock is poisoned: {error}"))
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SESSION
+            .lock()
+            .map_err(|error| JsValue::from_str(&format!("WASM session lock is poisoned: {error}")))
+    }
 }
 
 pub(crate) fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
@@ -785,17 +933,19 @@ fn causality_label(causality: &Causality) -> String {
     }
 }
 
-fn parsed_definition_within(definitions: &StoredDefinition) -> Vec<String> {
-    let within = definitions
-        .within
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_default();
-    rumoca_core::split_path_with_indices(&within)
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .map(ToString::to_string)
-        .collect()
+fn parsed_definition_within(definitions: &StoredDefinition) -> Result<Vec<String>, JsValue> {
+    let within = match definitions.within.as_ref() {
+        Some(within) => within.to_string(),
+        None => String::new(),
+    };
+    let parts = rumoca_core::split_path_with_indices(&within);
+    let mut normalized = checked_vec_with_capacity(parts.len(), "within path parts")?;
+    for part in parts {
+        if !part.is_empty() {
+            normalized.push(part.to_string());
+        }
+    }
+    Ok(normalized)
 }
 
 fn insert_parsed_class_tree(
@@ -837,21 +987,21 @@ fn insert_parsed_class_tree(
     insert_parsed_class_tree(&mut node.children, Some(&qualified_name), rest, class);
 }
 
-fn parsed_tree_node_to_wasm(node: ParsedClassTreeNode) -> WasmClassTreeNode {
-    WasmClassTreeNode {
+fn parsed_tree_node_to_wasm(node: ParsedClassTreeNode) -> Result<WasmClassTreeNode, JsValue> {
+    let mut children = checked_vec_with_capacity(node.children.len(), "class tree children")?;
+    for child in node.children.into_values() {
+        children.push(parsed_tree_node_to_wasm(child)?);
+    }
+    Ok(WasmClassTreeNode {
         name: node.name,
         qualified_name: node.qualified_name,
         class_type: node.class_type.unwrap_or_else(|| "package".to_string()),
         partial: node.partial,
-        children: node
-            .children
-            .into_values()
-            .map(parsed_tree_node_to_wasm)
-            .collect(),
-    }
+        children,
+    })
 }
 
-fn parsed_class_tree(session: &Session) -> Vec<WasmClassTreeNode> {
+fn parsed_class_tree(session: &Session) -> Result<Vec<WasmClassTreeNode>, JsValue> {
     let mut roots: BTreeMap<String, ParsedClassTreeNode> = BTreeMap::new();
     for uri in session.document_uris() {
         let Some(doc) = session.get_document(uri) else {
@@ -860,16 +1010,26 @@ fn parsed_class_tree(session: &Session) -> Vec<WasmClassTreeNode> {
         let Some(definitions) = doc.parsed().or(doc.recovered()) else {
             continue;
         };
-        let within = parsed_definition_within(definitions);
+        let within = parsed_definition_within(definitions)?;
         for class in definitions.classes.values() {
             insert_parsed_class_tree(&mut roots, None, &within, class);
         }
     }
-    roots.into_values().map(parsed_tree_node_to_wasm).collect()
+    let mut classes = checked_vec_with_capacity(roots.len(), "class tree roots")?;
+    for node in roots.into_values() {
+        classes.push(parsed_tree_node_to_wasm(node)?);
+    }
+    Ok(classes)
 }
 
-fn count_classes(node: &WasmClassTreeNode) -> usize {
-    1 + node.children.iter().map(count_classes).sum::<usize>()
+fn count_classes(node: &WasmClassTreeNode) -> Result<usize, JsValue> {
+    let mut total = 1usize;
+    for child in &node.children {
+        total = total
+            .checked_add(count_classes(child)?)
+            .ok_or_else(|| JsValue::from_str("class tree count overflow"))?;
+    }
+    Ok(total)
 }
 
 fn find_class_by_qualified_name<'a>(
@@ -919,8 +1079,13 @@ fn find_class_in_session<'a>(session: &'a Session, qualified_name: &str) -> Opti
 }
 
 fn list_classes_in_session(session: &mut Session) -> Result<String, JsValue> {
-    let classes = parsed_class_tree(session);
-    let total_classes = classes.iter().map(count_classes).sum();
+    let classes = parsed_class_tree(session)?;
+    let mut total_classes = 0usize;
+    for class in &classes {
+        total_classes = total_classes
+            .checked_add(count_classes(class)?)
+            .ok_or_else(|| JsValue::from_str("class tree count overflow"))?;
+    }
 
     let response = WasmClassTreeResponse {
         total_classes,
@@ -943,17 +1108,17 @@ fn get_class_info_in_session(
         .ok_or_else(|| JsValue::from_str(&format!("Class not found: {}", qualified_name)))?;
     let docs = extract_documentation_fields(&class.annotation);
 
-    let mut components: Vec<WasmClassComponentInfo> = class
-        .components
-        .values()
-        .map(|component| WasmClassComponentInfo {
+    let mut components =
+        checked_vec_with_capacity(class.components.len(), "class component metadata")?;
+    for component in class.components.values() {
+        components.push(WasmClassComponentInfo {
             name: component.name.clone(),
             type_name: component.type_name.to_string(),
             variability: variability_label(&component.variability),
             causality: causality_label(&component.causality),
             description: token_list_to_text(&component.description),
-        })
-        .collect();
+        });
+    }
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
     let info = WasmClassInfo {
@@ -1055,16 +1220,9 @@ fn wasm_cached_completion_class_name_count(
         }
         return session.namespace_class_names_cached().len();
     }
-    let source_root_names = session
-        .namespace_index_query("")
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(_, name, _)| name)
-        .collect::<Vec<_>>();
-    if source_root_names.is_empty() {
-        session.namespace_class_names_cached().len()
-    } else {
-        source_root_names.len()
+    match session.namespace_index_query("") {
+        Ok(entries) if !entries.is_empty() => entries.len(),
+        _ => session.namespace_class_names_cached().len(),
     }
 }
 
@@ -1480,55 +1638,54 @@ pub fn lsp_completion_with_timing(
 /// Get go-to-definition target(s) for a position.
 #[wasm_bindgen]
 pub fn lsp_definition(source: &str, line: u32, character: u32) -> Result<String, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let session = lock.get_or_insert_with(Session::default);
-    session.update_document("input.mo", source);
-    let Some(doc) = session.get_document("input.mo").cloned() else {
-        return serde_json::to_string(&Option::<lsp_types::GotoDefinitionResponse>::None)
-            .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)));
-    };
-    let Some(ast) = doc.parsed() else {
-        return serde_json::to_string(&Option::<lsp_types::GotoDefinitionResponse>::None)
-            .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)));
-    };
-    let uri = Url::parse("file:///input.mo")
-        .map_err(|e| JsValue::from_str(&format!("Invalid URI: {}", e)))?;
-    let position = Position { line, character };
-    let response = session
-        .navigation_class_target_query("input.mo", line, character)
-        .map(|info| class_target_definition(session, &info, &uri))
-        .or_else(|| {
-            session
-                .local_component_info_query("input.mo", line, character)
-                .map(|info| local_component_definition(&info, &uri))
-        })
-        .or_else(|| {
-            let resolved = resolved_tree_for_navigation(session, Some(ast), line);
-            let tree = resolved.as_ref().map(|resolved| &resolved.0);
-            tree.and_then(|tree| {
-                parsed_source_root_class_definition(
-                    session,
-                    ast,
-                    tree,
-                    &doc.content,
-                    position,
-                    &uri,
-                )
+    with_singleton_session(|session| {
+        session.update_document("input.mo", source);
+        let Some(doc) = session.get_document("input.mo").cloned() else {
+            return serde_json::to_string(&Option::<lsp_types::GotoDefinitionResponse>::None)
+                .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)));
+        };
+        let Some(ast) = doc.parsed() else {
+            return serde_json::to_string(&Option::<lsp_types::GotoDefinitionResponse>::None)
+                .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)));
+        };
+        let uri = Url::parse("file:///input.mo")
+            .map_err(|e| JsValue::from_str(&format!("Invalid URI: {}", e)))?;
+        let position = Position { line, character };
+        let response = session
+            .navigation_class_target_query("input.mo", line, character)
+            .map(|info| class_target_definition(session, &info, &uri))
+            .or_else(|| {
+                session
+                    .local_component_info_query("input.mo", line, character)
+                    .map(|info| local_component_definition(&info, &uri))
             })
             .or_else(|| {
-                rumoca_tool_lsp::handle_goto_definition(
-                    ast,
-                    tree,
-                    &doc.content,
-                    &uri,
-                    line,
-                    character,
-                )
-            })
-        });
-    serde_json::to_string(&response).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+                let resolved = resolved_tree_for_navigation(session, Some(ast), line);
+                let tree = resolved.as_ref().map(|resolved| &resolved.0);
+                tree.and_then(|tree| {
+                    parsed_source_root_class_definition(
+                        session,
+                        ast,
+                        tree,
+                        &doc.content,
+                        position,
+                        &uri,
+                    )
+                })
+                .or_else(|| {
+                    rumoca_tool_lsp::handle_goto_definition(
+                        ast,
+                        tree,
+                        &doc.content,
+                        &uri,
+                        line,
+                        character,
+                    )
+                })
+            });
+        serde_json::to_string(&response)
+            .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+    })
 }
 
 /// Get document symbols (outline).

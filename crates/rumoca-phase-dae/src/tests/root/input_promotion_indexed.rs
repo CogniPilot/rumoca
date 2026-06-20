@@ -11,7 +11,11 @@ fn test_equation_defined_indexed_array_input_promotes_internal_input() {
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             dims: vec![4],
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -39,7 +43,11 @@ fn test_equation_defined_array_lhs_promotes_internal_input_elements() {
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -84,7 +92,11 @@ fn test_rhs_input_alias_with_lhs_internal_input_promotes_rhs_input() {
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -118,7 +130,11 @@ fn test_rhs_array_alias_with_lhs_internal_input_promotes_rhs_inputs() {
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 dims,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -173,7 +189,11 @@ fn test_component_array_selection_lhs_promotes_indexed_internal_inputs() {
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 dims,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }

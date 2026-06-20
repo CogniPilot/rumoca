@@ -1,5 +1,78 @@
 use super::*;
 
+fn valid_algebraic_refresh_plan(
+    model: &solve::SolveModel,
+    block: &PreparedScalarProgramBlock,
+) -> RefreshPlan {
+    match build_algebraic_refresh_plan(model, block) {
+        Ok(plan) => plan,
+        Err(error) => panic!("valid algebraic refresh plan should build: {error}"),
+    }
+}
+
+fn test_span(name: &'static str) -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 1, 2)
+}
+
+fn spanned_block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {
+    solve::ScalarProgramBlock::with_source_span(rows, test_span(name))
+}
+
+#[test]
+fn runtime_new_reports_invalid_native_stride_metadata() {
+    let span =
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("bad.mo"), 3, 8);
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 1,
+            step: 1,
+        }],
+    };
+    let block = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::Map {
+            domain: domain.clone(),
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("valid dense output map"),
+            base_ops: vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![solve::AffineStencilLoadStride {
+                op_position: 99,
+                terms: Vec::new(),
+            }],
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span,
+        }],
+    };
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: block,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let error = match SolveRuntime::new(&model) {
+        Ok(_) => panic!("invalid native stride metadata should fail runtime preparation"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("native map family stride op position 99 out of bounds for 2 ops"),
+        "error should explain invalid native metadata: {error}"
+    );
+    assert_eq!(error.source_span(), Some(span));
+}
+
 #[test]
 fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     let model = solve::SolveModel {
@@ -13,12 +86,13 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::new(vec![
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
                         non_assignment_targeted_residual_row(),
                         assignment_residual_row(),
-                    ]),
-                ),
+                    ],
+                    "refresh_shadow.mo",
+                )),
                 implicit_row_targets: vec![
                     Some(solve::scalar_slot_y(1)),
                     Some(solve::scalar_slot_y(1)),
@@ -30,9 +104,10 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
         ..Default::default()
     };
     let block =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs);
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("valid implicit RHS should prepare");
 
-    let plan = build_algebraic_refresh_plan(&model, &block);
+    let plan = valid_algebraic_refresh_plan(&model, &block);
 
     assert!(!plan.iterative);
     assert_eq!(plan.rows.len(), 1);
@@ -55,9 +130,10 @@ fn refresh_plan_accepts_scaled_affine_residual_target() {
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::new(vec![scaled_assignment_residual_row()]),
-                ),
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![scaled_assignment_residual_row()],
+                    "scaled_affine_residual.mo",
+                )),
                 implicit_row_targets: vec![Some(solve::scalar_slot_y(1))],
                 ..Default::default()
             },
@@ -66,9 +142,10 @@ fn refresh_plan_accepts_scaled_affine_residual_target() {
         ..Default::default()
     };
     let block =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs);
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("valid implicit RHS should prepare");
 
-    let plan = build_algebraic_refresh_plan(&model, &block);
+    let plan = valid_algebraic_refresh_plan(&model, &block);
     let value = block
         .eval_target_assignment_row_with_context(
             0,
@@ -103,13 +180,14 @@ fn refresh_plan_accepts_direct_affine_residual_target() {
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::new(vec![
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
                         derivative_placeholder_row(2),
                         derivative_placeholder_row(3),
                         direct_assignment_residual_row(),
-                    ]),
-                ),
+                    ],
+                    "direct_affine_residual.mo",
+                )),
                 implicit_row_targets: vec![
                     Some(solve::scalar_slot_y(0)),
                     Some(solve::scalar_slot_y(1)),
@@ -122,9 +200,10 @@ fn refresh_plan_accepts_direct_affine_residual_target() {
         ..Default::default()
     };
     let block =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs);
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("valid implicit RHS should prepare");
 
-    let plan = build_algebraic_refresh_plan(&model, &block);
+    let plan = valid_algebraic_refresh_plan(&model, &block);
     let value = block
         .eval_target_assignment_row_with_context(
             2,
@@ -144,6 +223,60 @@ fn refresh_plan_accepts_direct_affine_residual_target() {
 }
 
 #[test]
+fn refresh_plan_evaluates_projected_multi_output_program_row() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "y".to_string()],
+                    ..Default::default()
+                },
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![vec![
+                        solve::LinearOp::Const { dst: 0, value: 1.0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                        solve::LinearOp::Const { dst: 0, value: 2.0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                    ]],
+                    "projected_multi_output.mo",
+                )),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![1],
+                        y_indices: vec![1],
+                        causal_steps: vec![solve::AlgebraicProjectionStep { row: 1, y_index: 1 }],
+                    }],
+                },
+                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0, 0.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let plan = &runtime.algebraic_refresh;
+
+    assert!(!plan.iterative);
+    assert_eq!(plan.rows.len(), 1);
+    assert_eq!(plan.rows[0].row_idx, 0);
+    assert_eq!(plan.rows[0].output_offset, 1);
+    assert_eq!(plan.rows[0].target_index, 1);
+
+    let mut solver_y = model.initial_y.clone();
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-10, 4)
+        .expect("projected multi-output refresh row should evaluate");
+
+    assert_eq!(solver_y, vec![0.0, 2.0]);
+}
+
+#[test]
 fn refresh_residual_fallback_solves_positive_unit_coefficient() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
@@ -156,12 +289,10 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::new(vec![
-                        positive_sum_residual_row(),
-                        derivative_placeholder_row(1),
-                    ]),
-                ),
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![positive_sum_residual_row(), derivative_placeholder_row(1)],
+                    "positive_residual.mo",
+                )),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
                     blocks: vec![solve::AlgebraicProjectionBlock {
                         rows: vec![0],
@@ -176,7 +307,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
         initial_y: vec![10.0, 4.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
     runtime
@@ -201,13 +332,15 @@ fn derivative_refresh_errors_on_missing_algebraic_producer() {
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::new(vec![derivative_placeholder_row(0)]),
-                ),
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![derivative_placeholder_row(0)],
+                    "missing_producer_implicit.mo",
+                )),
                 implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::new(vec![derivative_placeholder_row(1)]),
-                ),
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![derivative_placeholder_row(1)],
+                    "missing_producer_derivative.mo",
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -215,7 +348,7 @@ fn derivative_refresh_errors_on_missing_algebraic_producer() {
         initial_y: vec![0.0, 0.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let err = runtime
         .eval_state_derivatives(0.0, &[1.0], &[], 1.0e-10, 1)
         .expect_err("missing algebraic producer should not fall back to initial_y");
@@ -223,6 +356,60 @@ fn derivative_refresh_errors_on_missing_algebraic_producer() {
     assert!(
         err.to_string().contains("without producer rows: alias"),
         "error should name the missing producer dependency: {err}"
+    );
+}
+
+#[test]
+fn visible_values_for_names_preserves_requested_order() {
+    let model = solve::SolveModel {
+        visible_names: vec!["b".to_string(), "a".to_string()],
+        visible_value_rows: spanned_block(
+            vec![const_visible_value_row(2.0), const_visible_value_row(1.0)],
+            "visible_values.mo",
+        ),
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let names = vec!["a".to_string(), "missing".to_string(), "b".to_string()];
+
+    let values = runtime
+        .visible_values_for_names(&[], &[], 0.0, &names)
+        .expect("visible values should evaluate");
+
+    assert_eq!(
+        values.keys().cloned().collect::<Vec<_>>(),
+        vec!["a".to_string(), "b".to_string()]
+    );
+    assert_eq!(values.get("a"), Some(&1.0));
+    assert_eq!(values.get("b"), Some(&2.0));
+}
+
+#[test]
+fn visible_value_runtime_errors_keep_row_span() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("visible.mo"),
+        4,
+        9,
+    );
+    let model = solve::SolveModel {
+        visible_names: vec!["x".to_string()],
+        visible_value_rows: solve::ScalarProgramBlock::with_source_span(
+            vec![derivative_placeholder_row(0)],
+            span,
+        ),
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+
+    let names = vec!["x".to_string()];
+    let err = runtime
+        .visible_values_for_names(&[], &[], 0.0, &names)
+        .expect_err("missing input should fail visible row evaluation");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.to_string().contains("missing y[0]"),
+        "error should explain the missing visible input: {err}"
     );
 }
 
@@ -286,6 +473,13 @@ fn scaled_assignment_residual_row() -> Vec<solve::LinearOp> {
     ]
 }
 
+fn const_visible_value_row(value: f64) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::Const { dst: 0, value },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
 fn positive_sum_residual_row() -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::LoadY { dst: 0, index: 0 },
@@ -344,20 +538,20 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 // (it would yield 0) — so this pins the projection forward-sensitivity.
 fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
     use solve::LinearOp::{Binary, Const, LoadSeed, LoadY, StoreOutput};
-    use solve::{BinaryOp, ComputeBlock, ScalarProgramBlock};
+    use solve::{BinaryOp, ComputeBlock};
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "a".to_string()];
     // der(x) = a  (reads the algebraic slot 1)
     model.problem.continuous.derivative_rhs =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![vec![
-            LoadY { dst: 0, index: 1 },
-            StoreOutput { src: 0 },
-        ]]));
+        ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![vec![LoadY { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+            "projection_derivative.mo",
+        ));
     // implicit_rhs: row 0 state residual placeholder, row 1 algebraic residual a - k*x
-    model.problem.continuous.implicit_rhs =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
             vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
             vec![
                 LoadY { dst: 0, index: 1 },
@@ -377,7 +571,9 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
                 },
                 StoreOutput { src: 4 },
             ],
-        ]));
+        ],
+        "projection_implicit.mo",
+    ));
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
@@ -388,32 +584,35 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
         }],
     };
     // full_jacobian_v: JVP of der(x)=a → d(der) = seed[a]
-    model.artifacts.continuous.full_jacobian_v = ScalarProgramBlock::new(vec![vec![
-        LoadSeed { dst: 0, index: 1 },
-        StoreOutput { src: 0 },
-    ]]);
+    model.artifacts.continuous.full_jacobian_v = spanned_block(
+        vec![vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+        "projection_full_jvp.mo",
+    );
     // implicit_jacobian_v_scalar: per-row JVP of implicit_rhs (row-aligned).
-    model.artifacts.continuous.implicit_jacobian_v_scalar = ScalarProgramBlock::new(vec![
-        vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+    model.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(
         vec![
-            LoadSeed { dst: 0, index: 1 },
-            Const { dst: 1, value: k },
-            LoadSeed { dst: 2, index: 0 },
-            Binary {
-                dst: 3,
-                op: BinaryOp::Mul,
-                lhs: 1,
-                rhs: 2,
-            },
-            Binary {
-                dst: 4,
-                op: BinaryOp::Sub,
-                lhs: 0,
-                rhs: 3,
-            },
-            StoreOutput { src: 4 },
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                LoadSeed { dst: 0, index: 1 },
+                Const { dst: 1, value: k },
+                LoadSeed { dst: 2, index: 0 },
+                Binary {
+                    dst: 3,
+                    op: BinaryOp::Mul,
+                    lhs: 1,
+                    rhs: 2,
+                },
+                Binary {
+                    dst: 4,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 3,
+                },
+                StoreOutput { src: 4 },
+            ],
         ],
-    ]);
+        "projection_implicit_jvp.mo",
+    );
     model.initial_y = vec![0.0, 0.0];
     model
 }
@@ -421,7 +620,8 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
 #[test]
 fn state_jacobian_includes_projection_forward_sensitivity() {
     let k = 2.0;
-    let runtime = SolveRuntime::new(&projection_coupled_state_model(k));
+    let runtime = SolveRuntime::new(&projection_coupled_state_model(k))
+        .expect("valid runtime should prepare");
     let mut out = [0.0_f64];
     runtime
         .eval_state_jacobian_v_ad_into(
@@ -454,8 +654,8 @@ fn state_jacobian_includes_projection_forward_sensitivity() {
 /// and the row-aligned implicit JVP — the case that regressed to the
 /// states-only Jacobian (which would give 0) before the projection-aware fix.
 fn linear_algebraic_loop_state_model() -> solve::SolveModel {
+    use solve::ComputeBlock;
     use solve::LinearOp::{LoadSeed, LoadY, StoreOutput};
-    use solve::{ComputeBlock, ScalarProgramBlock};
     let load_y: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadY { dst, index };
     let load_seed: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadSeed { dst, index };
     // Slots: x = 0 (state), a = 1, b = 2 (algebraics).
@@ -466,18 +666,23 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
         vec!["x".to_string(), "a".to_string(), "b".to_string()];
     // der(x) = a + b
     model.problem.continuous.derivative_rhs =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![sum_row(
-            LoadY { dst: 0, index: 1 },
-            LoadY { dst: 1, index: 2 },
-        )]));
+        ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![sum_row(
+                LoadY { dst: 0, index: 1 },
+                LoadY { dst: 1, index: 2 },
+            )],
+            "loop_derivative.mo",
+        ));
     // 2x2 algebraic loop: r_a = 4a + b - x, r_b = a + 4b - 2x (diagonally
     // dominant so both the value and seed Gauss-Seidel refreshes converge).
-    model.problem.continuous.implicit_rhs =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
             vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
             affine3(load_y, 4.0, 1, 1.0, 2, 1.0, 0),
             affine3(load_y, 1.0, 1, 4.0, 2, 2.0, 0),
-        ]));
+        ],
+        "loop_implicit.mo",
+    ));
     model.problem.continuous.implicit_row_targets = vec![
         Some(solve::scalar_slot_y(0)),
         Some(solve::scalar_slot_y(1)),
@@ -492,16 +697,22 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
         }],
     };
     // full_jacobian_v: JVP of der = a + b.
-    model.artifacts.continuous.full_jacobian_v = ScalarProgramBlock::new(vec![sum_row(
-        LoadSeed { dst: 0, index: 1 },
-        LoadSeed { dst: 1, index: 2 },
-    )]);
+    model.artifacts.continuous.full_jacobian_v = spanned_block(
+        vec![sum_row(
+            LoadSeed { dst: 0, index: 1 },
+            LoadSeed { dst: 1, index: 2 },
+        )],
+        "loop_full_jvp.mo",
+    );
     // Row-aligned per-row JVP of implicit_rhs (same structure, seeds for values).
-    model.artifacts.continuous.implicit_jacobian_v_scalar = ScalarProgramBlock::new(vec![
-        vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
-        affine3(load_seed, 4.0, 1, 1.0, 2, 1.0, 0),
-        affine3(load_seed, 1.0, 1, 4.0, 2, 2.0, 0),
-    ]);
+    model.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(
+        vec![
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            affine3(load_seed, 4.0, 1, 1.0, 2, 1.0, 0),
+            affine3(load_seed, 1.0, 1, 4.0, 2, 2.0, 0),
+        ],
+        "loop_implicit_jvp.mo",
+    );
     model.initial_y = vec![0.0, 0.0, 0.0];
     model
 }
@@ -562,7 +773,8 @@ fn affine3(
 
 #[test]
 fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
-    let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model());
+    let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model())
+        .expect("valid runtime should prepare");
     assert!(
         runtime.derivative_refresh.iterative,
         "the mutually-dependent algebraic loop should refresh iteratively"

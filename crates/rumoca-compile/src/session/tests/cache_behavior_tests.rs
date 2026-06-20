@@ -865,9 +865,11 @@ fn test_compiled_source_root_streaming_reuses_cache() {
         .expect("compiled source root should build");
 
     let mut first = Vec::new();
-    source_root.compile_models_streaming(&["A", "B"], 1, |name, result| {
-        first.push((name, result));
-    });
+    source_root
+        .compile_models_streaming(&["A", "B"], 1, |name, result| {
+            first.push((name, result));
+        })
+        .unwrap_or_else(|error| panic!("compiled source-root streaming failed: {error}"));
     assert_eq!(first.len(), 2);
 
     {
@@ -886,9 +888,11 @@ fn test_compiled_source_root_streaming_reuses_cache() {
     }
 
     let mut second = Vec::new();
-    source_root.compile_models_streaming(&["A", "B"], 1, |name, result| {
-        second.push((name, result));
-    });
+    source_root
+        .compile_models_streaming(&["A", "B"], 1, |name, result| {
+            second.push((name, result));
+        })
+        .unwrap_or_else(|error| panic!("compiled source-root streaming failed: {error}"));
     assert_eq!(second.len(), 2);
     assert!(matches!(
         &second[0].1,
