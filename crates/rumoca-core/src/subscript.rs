@@ -103,7 +103,11 @@ mod tests {
     use crate::{BytePos, Literal, SourceId};
 
     fn test_span() -> Span {
-        Span::new(SourceId(7), BytePos(11), BytePos(13))
+        Span::new(
+            SourceId::from_source_name("core_subscript_source_7.mo"),
+            BytePos(11),
+            BytePos(13),
+        )
     }
 
     #[test]

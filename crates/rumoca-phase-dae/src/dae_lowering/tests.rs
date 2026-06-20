@@ -2,7 +2,11 @@ use super::*;
 use rumoca_core::Span;
 
 fn test_span() -> Span {
-    Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("dae_lowering_fixture.mo"),
+        1,
+        2,
+    )
 }
 
 /// Build a VarRef expression.
@@ -259,7 +263,7 @@ fn test_scalarize_phantom_vector_equations() {
             var_ref("sineVoltage.plug_n.pin.v"),
         ),
     );
-    let eq = dae::Equation::residual_array(eq_rhs, Span::DUMMY, "test equation", 3);
+    let eq = dae::Equation::residual_array(eq_rhs, test_span(), "test equation", 3);
     dae.continuous.equations.push(eq);
 
     // Run scalarization
@@ -338,7 +342,7 @@ fn test_scalarize_phantom_vector_equations_visits_event_partitions() {
         .real_updates
         .push(dae::Equation::residual_array(
             rhs.clone(),
-            Span::DUMMY,
+            test_span(),
             "discrete real",
             2,
         ));
@@ -346,13 +350,13 @@ fn test_scalarize_phantom_vector_equations_visits_event_partitions() {
         .valued_updates
         .push(dae::Equation::residual_array(
             rhs.clone(),
-            Span::DUMMY,
+            test_span(),
             "discrete valued",
             2,
         ));
     dae.conditions.equations.push(dae::Equation::residual_array(
         rhs,
-        Span::DUMMY,
+        test_span(),
         "condition",
         2,
     ));
@@ -444,7 +448,11 @@ fn scalarize_phantom_vector_equations_reports_missing_function_shape_with_call_s
         );
     }
 
-    let call_span = Span::from_offsets(rumoca_core::SourceId(17), 23, 41);
+    let call_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("dae_lowering_fixture.mo"),
+        23,
+        41,
+    );
     dae.continuous.equations.push(dae::Equation::residual_array(
         function_call_with_span("missingShape", vec![var_ref("plug.pin.v")], call_span),
         call_span,
@@ -492,14 +500,14 @@ fn test_scalarize_singleton_phantom_connector_reference() {
                     var_ref("boundary.C"),
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                 ],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Span::DUMMY,
+        span: test_span(),
         origin: "equation from boundary".to_string(),
         scalar_count: 1,
     });
@@ -572,7 +580,7 @@ fn embedded_scalar_reference_canonicalization_requires_provenance() {
         name: rumoca_core::Reference::from_component_reference(
             rumoca_core::component_reference_from_flat_name(
                 &rumoca_core::VarName::new("battery.pin.v[1]"),
-                rumoca_core::Span::DUMMY,
+                Span::DUMMY,
             )
             .expect("fixture name must form a component reference"),
         ),
@@ -619,18 +627,18 @@ fn test_scalarize_vector_binding_preserves_array_comprehension_without_phantom_r
                         start: Box::new(int_lit(1)),
                         step: None,
                         end: Box::new(var_ref("pipe.n")),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                 }],
                 filter: None,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             var_ref("pipe.nParallel"),
         ),
     );
     dae.continuous.equations.push(dae::Equation::residual_array(
         rhs,
-        Span::DUMMY,
+        test_span(),
         "binding equation for pipe.vs",
         2,
     ));
@@ -690,13 +698,13 @@ fn test_scalarize_phantom_vector_equations_selects_zeros() {
             op: rumoca_core::OpBinary::Add,
             lhs: Box::new(var_ref("sensor.plug_p.pin.i")),
             rhs: Box::new(var_ref("sensor.plug_n.pin.i")),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         zeros(3),
     );
     dae.continuous.equations.push(dae::Equation::residual_array(
         eq_rhs,
-        Span::DUMMY,
+        test_span(),
         "phantom connector current conservation",
         3,
     ));
@@ -754,11 +762,11 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
         );
     }
 
-    let mut function = rumoca_core::Function::new("Space.ToSpacePhasor", Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Space.ToSpacePhasor", test_span());
     function.outputs.push(rumoca_core::FunctionParam {
         def_id: None,
         name: "y".to_string(),
-        span: Span::DUMMY,
+        span: test_span(),
         type_name: "Real".to_string(),
         type_class: None,
         dims: vec![2],
@@ -780,7 +788,7 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
     );
     dae.continuous.equations.push(dae::Equation::residual_array(
         eq_rhs,
-        Span::DUMMY,
+        test_span(),
         "space phasor equation",
         2,
     ));
@@ -845,7 +853,7 @@ fn test_scalarize_leaves_scalar_equations_unchanged() {
         ),
     );
 
-    let eq = dae::Equation::residual(sub(var_ref("x"), var_ref("y")), Span::DUMMY, "scalar eq");
+    let eq = dae::Equation::residual(sub(var_ref("x"), var_ref("y")), test_span(), "scalar eq");
     dae.continuous.equations.push(eq);
 
     scalarize_phantom_vector_equations(&mut dae).unwrap();
@@ -879,7 +887,7 @@ fn test_scalarize_ignores_vector_equations_without_phantom_refs() {
         .insert(rumoca_core::VarName::new("b"), var_b);
 
     let eq =
-        dae::Equation::residual_array(sub(var_ref("a"), var_ref("b")), Span::DUMMY, "vector eq", 3);
+        dae::Equation::residual_array(sub(var_ref("a"), var_ref("b")), test_span(), "vector eq", 3);
     dae.continuous.equations.push(eq);
 
     scalarize_phantom_vector_equations(&mut dae).unwrap();
@@ -923,7 +931,7 @@ fn test_scalarize_preserves_declared_matrix_vector_equations() {
 
     let eq = dae::Equation::residual_array(
         sub(mul(var_ref("J"), der(var_ref("omega"))), var_ref("M_body")),
-        Span::DUMMY,
+        test_span(),
         "matrix vector equation",
         3,
     );

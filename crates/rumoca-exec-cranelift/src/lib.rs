@@ -169,7 +169,11 @@ mod tests {
     use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
 
     fn fixture_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(53), 0, 1)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("exec_cranelift_source_53.mo"),
+            0,
+            1,
+        )
     }
 
     #[test]

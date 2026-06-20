@@ -1288,26 +1288,24 @@ mod tests {
     #[test]
     fn flat_to_dae_expression_attaches_exact_variable_component_ref() -> Result<(), ToDaeError> {
         let mut flat = flat::Model::new();
+        let span = test_span(20, 27);
         let component_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "vehicle".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "motor".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: vec![rumoca_core::Subscript::generated_index(
-                        1,
-                        rumoca_core::Span::DUMMY,
-                    )],
+                    span,
+                    subs: vec![rumoca_core::Subscript::generated_index(1, span)],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "tau_inv".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -1329,7 +1327,7 @@ mod tests {
         let expr = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("vehicle.motor[1].tau_inv"),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
 
         let rewritten = flat_to_dae_expression_with_refs(&expr, &flat)?;
@@ -1420,23 +1418,24 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_replaces_partial_source_component_ref() {
         let name = rumoca_core::VarName::new("adder.gate.x");
+        let span = test_span(40, 47);
         let authoritative_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "adder".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "gate".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "x".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -1465,9 +1464,9 @@ mod tests {
             rhs: rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::with_component_reference(name.as_str(), partial_ref),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            span: rumoca_core::Span::DUMMY,
+            span,
             origin: "test".to_string(),
             scalar_count: 1,
         });
@@ -1484,23 +1483,24 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_recovers_record_prefix_from_scalar_fields() {
         let field_name = rumoca_core::VarName::new("mp.modelcard.VTO");
+        let span = test_span(60, 67);
         let field_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "VTO".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -1529,10 +1529,10 @@ mod tests {
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::Reference::new("mp.modelcard"),
                         subscripts: Vec::new(),
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 origin: dae::VariableOrigin::Source,
                 ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
@@ -1567,27 +1567,22 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_recovers_subscripted_array_prefix() {
         let field_name = rumoca_core::VarName::new("J[1,1].value");
+        let span = test_span(80, 87);
         let field_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "J".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![
-                        rumoca_core::Subscript::Index {
-                            value: 1,
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                        rumoca_core::Subscript::Index {
-                            value: 1,
-                            span: rumoca_core::Span::DUMMY,
-                        },
+                        rumoca_core::Subscript::Index { value: 1, span },
+                        rumoca_core::Subscript::Index { value: 1, span },
                     ],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "value".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -1614,7 +1609,7 @@ mod tests {
                 start: Some(rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("J[1,1]"),
                     subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 origin: dae::VariableOrigin::Source,
                 ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
@@ -1646,23 +1641,24 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_does_not_invent_bare_component_prefixes() {
         let field_name = rumoca_core::VarName::new("mp.modelcard.VTO");
+        let span = test_span(100, 107);
         let field_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "VTO".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -1689,7 +1685,7 @@ mod tests {
                 start: Some(rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("mp"),
                     subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 origin: dae::VariableOrigin::Source,
                 ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(

@@ -1066,7 +1066,13 @@ mod tests {
 
     #[test]
     fn cat_dim1_dims_rejects_overflowing_first_dimension() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(10), 4, 9);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_10.mo",
+            ),
+            4,
+            9,
+        );
         let operands = [
             ArrayOperand {
                 values: Vec::new(),
@@ -1092,7 +1098,13 @@ mod tests {
 
     #[test]
     fn cat_dim2_dims_rejects_overflowing_column_count() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(11), 6, 14);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_11.mo",
+            ),
+            6,
+            14,
+        );
         let operands = [
             ArrayOperand {
                 values: Vec::new(),
@@ -1118,8 +1130,20 @@ mod tests {
 
     #[test]
     fn cat_dim2_dims_reports_row_mismatch_operand_span() -> Result<(), String> {
-        let first_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 1, 5);
-        let mismatch_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 8, 13);
+        let first_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_12.mo",
+            ),
+            1,
+            5,
+        );
+        let mismatch_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_12.mo",
+            ),
+            8,
+            13,
+        );
         let operands = [
             ArrayOperand {
                 values: Vec::new(),
@@ -1147,7 +1171,13 @@ mod tests {
 
     #[test]
     fn checked_matrix_row_start_rejects_overflow() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 3, 7);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_12.mo",
+            ),
+            3,
+            7,
+        );
         let err = checked_matrix_row_start_at(usize::MAX, 2, "cat(2, ...) row offset", span)
             .expect_err("matrix row offset overflow must fail");
 
@@ -1160,7 +1190,13 @@ mod tests {
 
     #[test]
     fn broadcast_shape_reports_mismatch_span() -> Result<(), String> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 2, 11);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_13.mo",
+            ),
+            2,
+            11,
+        );
 
         let Err(err) = broadcast_shape(&[2, 3], &[4, 5], span) else {
             return Err("incompatible broadcast shapes succeeded".to_string());
@@ -1176,7 +1212,13 @@ mod tests {
 
     #[test]
     fn multiplication_dims_reports_mismatch_span() -> Result<(), String> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(14), 6, 18);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_14.mo",
+            ),
+            6,
+            18,
+        );
 
         let Err(err) = multiplication_dims(&[2, 3], &[4, 5], span) else {
             return Err("incompatible multiplication shapes succeeded".to_string());
@@ -1192,7 +1234,13 @@ mod tests {
 
     #[test]
     fn checked_shape_size_rejects_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(5), 5, 8);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_5.mo",
+            ),
+            5,
+            8,
+        );
         let err = checked_shape_size(&[usize::MAX, 2], "array operand shape", span)
             .expect_err("shape product overflow must fail");
 
@@ -1258,7 +1306,13 @@ mod tests {
 
     #[test]
     fn fallible_vec_with_capacity_rejects_impossible_capacity() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 9, 11);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_9.mo",
+            ),
+            9,
+            11,
+        );
         let err = fallible_vec_with_capacity::<Reg>(
             usize::MAX,
             "array-like dynamic index tuple count",
@@ -1310,23 +1364,23 @@ mod tests {
 
     #[test]
     fn lower_static_range_values_rejects_real_overflow() {
-        let start = rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(f64::MAX),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let step = rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(f64::MAX),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let end = rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(f64::MAX),
-            span: rumoca_core::Span::DUMMY,
-        };
         let span = rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name("static_range_overflow.mo"),
             3,
             16,
         );
+        let start = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f64::MAX),
+            span,
+        };
+        let step = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f64::MAX),
+            span,
+        };
+        let end = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f64::MAX),
+            span,
+        };
 
         let err = lower_static_range_values(&start, Some(&step), &end, span)
             .expect_err("overflowing Real range step must fail");

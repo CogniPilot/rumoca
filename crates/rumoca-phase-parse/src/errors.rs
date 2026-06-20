@@ -387,7 +387,11 @@ fn convert_syntax_error(err: SyntaxError, source: &str) -> ParseError {
     } else if first_token == "$" || first_token.is_empty() {
         "unexpected end of input".to_string()
     } else {
-        format!("unexpected `{}`", clean_token_name(&first_token))
+        // Use the literal token text (not `clean_token_name`, which lowercases
+        // identifiers and would render the user's `Ball2` as `ball2`). This
+        // keeps the message consistent with the primary label built from
+        // `unexpected`.
+        format!("unexpected `{}`", first_token)
     };
 
     // Clean up expected token names
@@ -663,7 +667,11 @@ mod tests {
 
     #[test]
     fn test_syntax_error_diagnostic() {
-        let span = Span::from_offsets(SourceId(0), 10, 15);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_parse_errors_source_0.mo"),
+            10,
+            15,
+        );
         let err = ParseError::SyntaxError {
             message: "unexpected token".to_string(),
             expected: vec!["SEMICOLON".to_string(), "END".to_string()],
@@ -728,8 +736,16 @@ mod tests {
 
     #[test]
     fn test_should_replace_with_recovered_span_for_near_origin_placeholder() {
-        let original = Span::from_offsets(SourceId(0), 1, 1);
-        let recovered = Span::from_offsets(SourceId(0), 40, 43);
+        let original = Span::from_offsets(
+            SourceId::from_source_name("phase_parse_errors_source_0.mo"),
+            1,
+            1,
+        );
+        let recovered = Span::from_offsets(
+            SourceId::from_source_name("phase_parse_errors_source_0.mo"),
+            40,
+            43,
+        );
         assert!(should_replace_with_recovered_span(original, recovered));
     }
 }

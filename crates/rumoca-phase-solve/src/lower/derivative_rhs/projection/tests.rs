@@ -2,7 +2,13 @@ use super::*;
 
 #[test]
 fn checked_projection_offset_rejects_host_index_overflow_with_span() -> Result<(), String> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(21), 4, 12);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_21.mo",
+        ),
+        4,
+        12,
+    );
 
     let Err(mul_err) =
         checked_projection_offset(usize::MAX, 2, 0, "derivative projection flat index", span)
@@ -67,7 +73,13 @@ fn checked_usize_scalar_count_dummy_span_stays_unspanned() {
 
 #[test]
 fn next_range_value_preserves_range_span_on_overflow() -> Result<(), String> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(22), 2, 18);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_22.mo",
+        ),
+        2,
+        18,
+    );
 
     let Err(err) = next_range_value(i64::MAX, 1, span) else {
         return Err("overflowing derivative slice range step succeeded".to_string());
@@ -102,7 +114,13 @@ fn derivative_slice_subscript_bounds_error_reports_subscript_span() {
 
 #[test]
 fn scalar_binding_indexed_dimension_error_reports_subscript_span() -> Result<(), String> {
-    let subscript_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(23), 9, 12);
+    let subscript_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_23.mo",
+        ),
+        9,
+        12,
+    );
     let mut dae_model = dae::Dae::new();
     dae_model.variables.states.insert(
         rumoca_core::VarName::new("x"),
@@ -133,7 +151,13 @@ fn scalar_binding_indexed_dimension_error_reports_subscript_span() -> Result<(),
 
 #[test]
 fn unsupported_derivative_target_shape_reports_target_span() -> Result<(), String> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(24), 4, 16);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_24.mo",
+        ),
+        4,
+        16,
+    );
     let target = rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(1),
         span,
@@ -166,7 +190,13 @@ fn next_range_value_dummy_span_stays_unspanned() {
 
 #[test]
 fn expression_result_dims_rejects_der_without_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(11), 3, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_11.mo",
+        ),
+        3,
+        8,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: Vec::new(),
@@ -204,7 +234,13 @@ fn expression_result_dims_rejects_synthetic_der_without_argument_unspanned() {
 
 #[test]
 fn expression_result_dims_rejects_fill_without_dimension_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 5, 14);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_12.mo",
+        ),
+        5,
+        14,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
         args: vec![rumoca_core::Expression::Literal {
@@ -248,7 +284,13 @@ fn expression_result_dims_rejects_synthetic_fill_without_dimension_unspanned() {
 
 #[test]
 fn project_expression_scalars_rejects_der_without_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(14), 3, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_14.mo",
+        ),
+        3,
+        8,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: Vec::new(),
@@ -268,7 +310,13 @@ fn project_expression_scalars_rejects_der_without_argument() {
 
 #[test]
 fn project_expression_scalars_rejects_fill_without_value_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(15), 5, 14);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_15.mo",
+        ),
+        5,
+        14,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
         args: Vec::new(),
@@ -288,7 +336,13 @@ fn project_expression_scalars_rejects_fill_without_value_argument() {
 
 #[test]
 fn project_expression_scalars_rejects_fill_without_dimension_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(16), 5, 14);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_16.mo",
+        ),
+        5,
+        14,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
         args: vec![rumoca_core::Expression::Literal {
@@ -311,7 +365,13 @@ fn project_expression_scalars_rejects_fill_without_dimension_argument() {
 
 #[test]
 fn project_expression_scalars_rejects_zeros_without_dimension_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(17), 9, 16);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_17.mo",
+        ),
+        9,
+        16,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Zeros,
         args: Vec::new(),
@@ -331,7 +391,13 @@ fn project_expression_scalars_rejects_zeros_without_dimension_argument() {
 
 #[test]
 fn project_expression_scalars_rejects_ones_without_dimension_argument() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(18), 9, 16);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_18.mo",
+        ),
+        9,
+        16,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Ones,
         args: Vec::new(),
@@ -351,7 +417,13 @@ fn project_expression_scalars_rejects_ones_without_dimension_argument() {
 
 #[test]
 fn expression_result_dims_accepts_declared_scalar_function_output() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 8, 21);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_13.mo",
+        ),
+        8,
+        21,
+    );
     let mut dae_model = dae::Dae::new();
     let mut function = rumoca_core::Function::new("Pkg.scalar", span);
     function
@@ -376,7 +448,13 @@ fn expression_result_dims_accepts_declared_scalar_function_output() -> Result<()
 
 #[test]
 fn expression_result_dims_accepts_scalar_external_table_intrinsic() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 22, 43);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_13.mo",
+        ),
+        22,
+        43,
+    );
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new("getTimeTableValueNoDer"),
         args: Vec::new(),
@@ -392,7 +470,13 @@ fn expression_result_dims_accepts_scalar_external_table_intrinsic() -> Result<()
 
 #[test]
 fn expression_result_dims_accepts_scalarized_record_root() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 44, 45);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_13.mo",
+        ),
+        44,
+        45,
+    );
     let mut dae_model = dae::Dae::new();
     for field in ["u.re", "u.im"] {
         dae_model.variables.parameters.insert(
@@ -421,7 +505,13 @@ fn expression_result_dims_accepts_scalarized_record_root() -> Result<(), LowerEr
 
 #[test]
 fn expression_result_dims_accepts_unflagged_constructor_symbol() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 46, 62);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_13.mo",
+        ),
+        46,
+        62,
+    );
     let mut dae_model = dae::Dae::new();
     let mut constructor = rumoca_core::Function::new("Complex", span);
     constructor.is_constructor = true;
@@ -450,7 +540,13 @@ fn expression_result_dims_accepts_unflagged_constructor_symbol() -> Result<(), L
 
 #[test]
 fn expression_result_dims_accepts_projected_matrix_function_output() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 8, 24);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_13.mo",
+        ),
+        8,
+        24,
+    );
     let mut dae_model = dae::Dae::new();
     let mut function = rumoca_core::Function::new("Pkg.mat9", span);
     function.outputs.push(
@@ -477,7 +573,13 @@ fn expression_result_dims_accepts_projected_matrix_function_output() -> Result<(
 
 #[test]
 fn expression_result_dims_reports_missing_function_output_dims_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 30, 42);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_13.mo",
+        ),
+        30,
+        42,
+    );
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new("Pkg.missing"),
         args: Vec::new(),
@@ -505,7 +607,13 @@ fn derivative_slice_range_step_detects_final_overshoot() {
 
 #[test]
 fn compile_time_positive_range_rejects_large_ranges() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(31), 4, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_31.mo",
+        ),
+        4,
+        9,
+    );
     let int_expr = |value| rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
         span,
@@ -524,7 +632,13 @@ fn compile_time_positive_range_rejects_large_ranges() {
 
 #[test]
 fn compile_time_integer_rejects_i64_overflow_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(14), 2, 18);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_14.mo",
+        ),
+        2,
+        18,
+    );
     let expr = rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(i64::MAX as f64),
         span,
@@ -540,7 +654,13 @@ fn compile_time_integer_rejects_i64_overflow_with_span() {
 
 #[test]
 fn scalar_keys_for_dims_rejects_scalar_count_overflow() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(25), 1, 4);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_25.mo",
+        ),
+        1,
+        4,
+    );
     let err = scalar_keys_for_dims("x", &[usize::MAX, 2], span)
         .expect_err("scalarized key enumeration must not overflow");
 

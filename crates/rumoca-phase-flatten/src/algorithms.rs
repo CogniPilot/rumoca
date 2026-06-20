@@ -300,7 +300,11 @@ mod tests {
     use std::sync::Arc;
 
     fn test_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(0), 0, 1)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_flatten_algorithms_source_0.mo"),
+            0,
+            1,
+        )
     }
 
     fn make_comp_ref(names: &[&str]) -> ast::ComponentReference {

@@ -589,6 +589,10 @@ fn format_projection_scope_key(
 mod tests {
     use super::*;
 
+    fn unspanned_function_projection_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn projection_indices_for_dims_declines_overflowing_shape_product() {
         assert_eq!(projection_indices_for_dims(&[i64::MAX, 3], 0), None);
@@ -597,7 +601,11 @@ mod tests {
     #[test]
     fn normalize_projection_indices_declines_overflowing_shape_product() {
         assert_eq!(
-            normalize_projection_indices(&[i64::MAX, 3], &[1, 1], rumoca_core::Span::DUMMY),
+            normalize_projection_indices(
+                &[i64::MAX, 3],
+                &[1, 1],
+                unspanned_function_projection_test_span()
+            ),
             Ok(None)
         );
     }
@@ -605,7 +613,12 @@ mod tests {
     #[test]
     fn scope_indices_for_projection_declines_zero_linear_index() {
         assert_eq!(
-            scope_indices_for_projection(&[3, 3], &[], &[0], rumoca_core::Span::DUMMY),
+            scope_indices_for_projection(
+                &[3, 3],
+                &[],
+                &[0],
+                unspanned_function_projection_test_span()
+            ),
             Ok(None)
         );
     }

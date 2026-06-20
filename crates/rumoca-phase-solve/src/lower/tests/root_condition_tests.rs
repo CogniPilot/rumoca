@@ -6,19 +6,19 @@ fn lower_discrete_rhs_skips_untargeted_condition_rows() {
     dae_model
         .variables
         .algebraics
-        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+        .insert(rumoca_core::VarName::new("y"), source_scalar_var("y"));
     let condition = binary(
         rumoca_core::OpBinary::Gt,
         var("y"),
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     );
     dae_model.conditions.relations.push(condition.clone());
     dae_model.conditions.equations.push(dae::Equation::residual(
         condition,
-        rumoca_core::Span::DUMMY,
+        lower_test_span(),
         // MLS Appendix B: a targetless f_c row is a relation/root condition,
         // not a condition-memory assignment row for discrete event updates.
         "targetless relation row",
@@ -38,11 +38,11 @@ fn lower_root_conditions_emit_unbiased_relation_surface() {
     dae_model
         .variables
         .states
-        .insert(rumoca_core::VarName::new("h"), scalar_var("h"));
+        .insert(rumoca_core::VarName::new("h"), source_scalar_var("h"));
     dae_model
         .variables
         .discrete_valued
-        .insert(rumoca_core::VarName::new("c[1]"), scalar_var("c[1]"));
+        .insert(rumoca_core::VarName::new("c[1]"), source_scalar_var("c[1]"));
     let relation = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Lt,
         lhs: Box::new(var("h")),
@@ -54,9 +54,9 @@ fn lower_root_conditions_emit_unbiased_relation_surface() {
     };
     dae_model.conditions.relations.push(relation.clone());
     dae_model.conditions.equations.push(dae::Equation::explicit(
-        rumoca_core::VarName::new("c[1]"),
+        source_ref("c[1]"),
         relation,
-        rumoca_core::Span::DUMMY,
+        lower_test_span(),
         "condition memory",
     ));
 
@@ -91,13 +91,12 @@ fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
     dae_model
         .variables
         .states
-        .insert(rumoca_core::VarName::new("h1"), scalar_var("h1"));
+        .insert(rumoca_core::VarName::new("h1"), source_scalar_var("h1"));
     dae_model
         .variables
         .states
-        .insert(rumoca_core::VarName::new("h2"), scalar_var("h2"));
-    let mut c = scalar_var("c");
-    c.dims = vec![2];
+        .insert(rumoca_core::VarName::new("h2"), source_scalar_var("h2"));
+    let c = source_array_var("c", &[2]);
     dae_model
         .variables
         .discrete_valued
@@ -127,13 +126,13 @@ fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
         .conditions
         .equations
         .push(dae::Equation::explicit_with_scalar_count(
-            rumoca_core::VarName::new("c"),
+            source_ref("c"),
             rumoca_core::Expression::Array {
                 elements: vec![first_relation, second_relation],
                 is_matrix: false,
                 span,
             },
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
             "MLS Appendix B aggregate condition memories",
             2,
         ));

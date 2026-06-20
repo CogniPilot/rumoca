@@ -3,7 +3,11 @@ use super::*;
 #[test]
 fn test_elimination_substitution_differentiates_scalar_alias_in_derivative_call() {
     let mut dae = Dae::new();
-    let span = Span::from_offsets(rumoca_core::SourceId(17), 10, 42);
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_substitution_more_source_17.mo"),
+        10,
+        42,
+    );
     dae.variables
         .states
         .insert(VarName::new("w2"), test_dae_variable("w2"));
@@ -92,7 +96,11 @@ fn test_scalar_substitution_stamps_source_free_replacement_root() {
 #[test]
 fn test_apply_substitutions_rejects_short_eliminated_flags_without_panic()
 -> Result<(), Box<dyn std::error::Error>> {
-    let span = Span::from_offsets(rumoca_core::SourceId(17), 50, 80);
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_substitution_more_source_17.mo"),
+        50,
+        80,
+    );
     let mut dae = Dae::new();
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -124,7 +132,11 @@ fn test_apply_substitutions_rejects_short_eliminated_flags_without_panic()
 
 #[test]
 fn test_equation_analysis_expr_preserves_equation_span() -> Result<(), Box<dyn std::error::Error>> {
-    let span = Span::from_offsets(rumoca_core::SourceId(17), 90, 120);
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_substitution_more_source_17.mo"),
+        90,
+        120,
+    );
     let eq = dae::Equation {
         lhs: Some(reference("x")),
         rhs: real(1.0),

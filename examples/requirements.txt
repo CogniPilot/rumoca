@@ -1,0 +1,17 @@
+# Python environment for the rumoca examples (notebooks + scripts).
+#
+# Users:
+#   python -m venv .venv && . .venv/bin/activate
+#   pip install -r requirements.txt          # rumoca comes from PyPI
+#
+# Developers:
+#   `cargo xtask vscode edit` sets up examples/.venv automatically, running
+#   `maturin develop --extras notebook` first so the LOCAL rumoca build overrides
+#   the PyPI one, then installing the rest of this file.
+
+rumoca[notebook]   # the compiler + the %%modelica Jupyter magic (pulls IPython)
+ipykernel          # lets VSCode/Jupyter launch this venv as a notebook kernel
+jupyterlab         # run the example notebooks in a browser
+sympy              # `--target sympy` / `%%modelica --load` generated modules
+numpy              # post-processing simulation results
+matplotlib         # plotting results

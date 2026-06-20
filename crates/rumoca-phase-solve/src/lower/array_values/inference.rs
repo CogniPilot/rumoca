@@ -1176,7 +1176,7 @@ mod tests {
         let builder = lower_builder(&layout, &functions);
         let subscripts = [
             rumoca_core::Subscript::index(1, span),
-            rumoca_core::Subscript::colon(rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::colon(span),
         ];
 
         let err = builder
@@ -1442,9 +1442,9 @@ mod tests {
         let layout = VarLayout::default();
         let functions = IndexMap::new();
         let builder = lower_builder(&layout, &functions);
-        let start = literal_i64(1, rumoca_core::Span::DUMMY);
+        let start = literal_i64(1, range_span);
         let step = literal_i64(0, step_span);
-        let end = literal_i64(4, rumoca_core::Span::DUMMY);
+        let end = literal_i64(4, range_span);
 
         let err = builder
             .eval_compile_time_range_values(
@@ -1463,7 +1463,13 @@ mod tests {
 
     #[test]
     fn non_negative_fill_dimension_rejects_negative_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(41), 3, 8);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_inference_source_41.mo",
+            ),
+            3,
+            8,
+        );
 
         let err =
             non_negative_fill_dimension(-1, span).expect_err("negative fill dimension must fail");
@@ -1477,7 +1483,13 @@ mod tests {
         if usize::BITS >= i64::BITS {
             return;
         }
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(42), 11, 17);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_inference_source_42.mo",
+            ),
+            11,
+            17,
+        );
 
         let err = non_negative_fill_dimension(i64::MAX, span)
             .expect_err("oversized fill dimension must fail");

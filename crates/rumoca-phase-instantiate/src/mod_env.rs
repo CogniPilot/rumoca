@@ -830,7 +830,11 @@ mod tests {
     }
 
     fn test_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_instantiate_mod_env_source_7.mo"),
+            0,
+            1,
+        )
     }
 
     fn make_token(text: &str) -> rumoca_core::Token {

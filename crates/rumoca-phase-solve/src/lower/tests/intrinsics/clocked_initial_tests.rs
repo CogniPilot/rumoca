@@ -42,7 +42,7 @@ fn lower_discrete_rhs_holds_shift_sample_value_until_target_tick() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = shiftSample(u, 1, 3)".to_string(),
         scalar_count: 1,
     });
@@ -113,7 +113,7 @@ fn lower_discrete_rhs_uses_base_clock_for_indexed_shift_sample_value_form() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = shiftSample(u[2], 3, 2)".to_string(),
         scalar_count: 1,
     });
@@ -182,7 +182,7 @@ fn lower_discrete_rhs_uses_source_phase_for_back_sample_value_form() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = backSample(u, 4, 3)".to_string(),
         scalar_count: 1,
     });
@@ -258,7 +258,7 @@ fn lower_discrete_rhs_uses_back_sample_source_start_before_first_source_tick() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = backSample(u, 4, 3)".to_string(),
         scalar_count: 1,
     });
@@ -323,7 +323,7 @@ fn lower_discrete_rhs_uses_hold_source_start_before_first_source_tick() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = hold(u)".to_string(),
         scalar_count: 1,
     });
@@ -383,7 +383,7 @@ fn lower_discrete_rhs_uses_hold_start_during_initial_event_at_first_tick() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = hold(u)".to_string(),
         scalar_count: 1,
     });
@@ -443,7 +443,7 @@ fn lower_runtime_assignment_keeps_clocked_target_start_before_first_tick() {
             subscripts: vec![],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "target = source".to_string(),
         scalar_count: 1,
     };
@@ -501,7 +501,7 @@ fn lower_runtime_assignment_inherits_rhs_clock_for_target_start_guard() {
             subscripts: vec![],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "target = source".to_string(),
         scalar_count: 1,
     };
@@ -559,7 +559,7 @@ fn lower_runtime_assignment_uses_equation_span_for_unspanned_start_guard_rhs() {
         rhs: rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("source").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_test_span(),
         },
         span: equation_span,
         origin: "target = source".to_string(),
@@ -609,9 +609,9 @@ fn lower_runtime_assignment_rejects_unspanned_start_guard_context() {
         rhs: rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("source").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_test_span(),
         origin: "target = source".to_string(),
         scalar_count: 1,
     };
@@ -705,7 +705,7 @@ fn lower_expression_supports_size_builtin_for_known_array_dims() {
             rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("A").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
@@ -948,7 +948,13 @@ fn lower_expression_supports_mod_and_rem_builtins() {
 #[test]
 fn lower_expression_reports_builtin_arity_errors_with_call_span() {
     let layout = VarLayout::default();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(93), 12, 28);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_intrinsics_clocked_initial_tests_source_93.mo",
+        ),
+        12,
+        28,
+    );
     for function in [
         rumoca_core::BuiltinFunction::Div,
         rumoca_core::BuiltinFunction::Mod,
@@ -1003,7 +1009,13 @@ fn lower_expression_reports_builtin_arity_errors_with_call_span() {
 #[test]
 fn lower_expression_reports_invalid_range_dimension_with_span() {
     let layout = VarLayout::default();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(94), 32, 41);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_intrinsics_clocked_initial_tests_source_94.mo",
+        ),
+        32,
+        41,
+    );
     let range = rumoca_core::Expression::Range {
         start: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
@@ -1049,7 +1061,7 @@ fn lower_initial_residual_treats_initial_builtin_as_true() {
             args: vec![],
             span: test_span(),
         },
-        rumoca_core::Span::DUMMY,
+        test_span(),
         "initial() row",
     ));
     let rows =
@@ -1105,12 +1117,12 @@ fn lower_initial_residual_includes_dae_initialization_equations() {
         .initialization
         .equations
         .push(dae::Equation::explicit(
-            rumoca_core::VarName::new("x"),
+            source_ref("x"),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(2.5),
                 span: test_span(),
             },
-            rumoca_core::Span::DUMMY,
+            test_span(),
             "fixed start initialization for x",
         ));
     let layout = crate::build_var_layout(&dae_model).expect("test DAE layout should build");
@@ -1316,10 +1328,8 @@ fn lower_expression_prefers_qualified_normal_quantile_intrinsic_over_function_bo
         .parameters
         .insert(rumoca_core::VarName::new("c"), source_array_var("c", &[1]));
 
-    let mut quantile = rumoca_core::Function::new(
-        "Modelica.Math.Distributions.Normal.quantile",
-        rumoca_core::Span::DUMMY,
-    );
+    let mut quantile =
+        rumoca_core::Function::new("Modelica.Math.Distributions.Normal.quantile", test_span());
     quantile.inputs = vec![
         rumoca_core::FunctionParam::new("p", "Real", test_span()),
         rumoca_core::FunctionParam::new("mu", "Real", test_span()),

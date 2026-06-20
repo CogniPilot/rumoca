@@ -3,6 +3,7 @@
 __pycache__/
 tests/notebooks/python/.venv/
 tests/notebooks/python/poetry.lock
+examples/.venv/
 res
 .vscode/ros_path
 build/

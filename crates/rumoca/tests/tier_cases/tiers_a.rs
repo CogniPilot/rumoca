@@ -51,6 +51,11 @@ mod tier_0_minimal {
         let source = r#"model Described "A model with description" Real x "position"; equation x = 1; end Described;"#;
         let r = assert_compiles(source, "Described");
         assert!(r.is_balanced(), "One var, one eq should be balanced");
+        assert_eq!(
+            r.dae.metadata.model_description.as_deref(),
+            Some("A model with description"),
+            "model description should propagate from parsed source through DAE metadata"
+        );
     }
 
     #[test]
@@ -881,6 +886,30 @@ end ZeroSizedEquation;
             "zero-sized array equation should be eliminated"
         );
         assert_eq!(r.balance, 0, "zero-sized array model should be balanced");
+    }
+
+    /// Embedded range subscripts over a zero-sized dimension should also be
+    /// eliminated. This mirrors connector forms like `ports_mXi_flow[1, :]`
+    /// when the medium carries zero mass-fraction entries.
+    #[test]
+    fn t4b_06b_zero_sized_embedded_range_equation() {
+        let source = r#"
+model ZeroSizedEmbeddedRange
+    parameter Integer n = 0;
+    Real ports_mXi_flow[1, n];
+equation
+    ports_mXi_flow[1, :] = fill(0.0, n);
+end ZeroSizedEmbeddedRange;
+"#;
+        let r = assert_compiles(source, "ZeroSizedEmbeddedRange");
+        assert_eq!(
+            r.f_x_count, 0,
+            "embedded range over a zero-sized dimension should be eliminated"
+        );
+        assert_eq!(
+            r.balance, 0,
+            "zero-sized embedded range model should be balanced"
+        );
     }
 
     /// MLS §10.1: Equations where the LHS targets a zero-sized array variable

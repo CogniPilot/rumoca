@@ -218,7 +218,7 @@ fn lower_discrete_rhs_holds_clocked_sample_between_clock_ticks() {
             ],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = sample(u, clock)".to_string(),
         scalar_count: 1,
     });
@@ -277,7 +277,7 @@ fn lower_discrete_rhs_holds_vector_clocked_sample_elements_between_ticks() {
             ],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         // MLS §10.6 and §16.5.1: array-valued sample equations denote
         // element-wise clocked sample equations; each scalar target holds
         // between ticks and samples the corresponding source left limit.
@@ -343,7 +343,7 @@ fn lower_discrete_rhs_samples_internal_vector_current_elements_at_initial_clock_
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = __rumoca_sample(u, clock)".to_string(),
         scalar_count: 2,
     });
@@ -411,7 +411,7 @@ fn lower_discrete_rhs_reads_previous_array_from_pre_slots() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = previous(u)".to_string(),
         scalar_count: 2,
     });
@@ -472,7 +472,7 @@ fn lower_discrete_rhs_samples_current_value_at_initial_clock_tick() {
             ],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = sample(u, clock)".to_string(),
         scalar_count: 1,
     });
@@ -540,7 +540,7 @@ fn lower_discrete_rhs_uses_dynamic_clock_var_for_sample_clock() {
             ],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = sample(u, clock)".to_string(),
         scalar_count: 1,
     });
@@ -600,7 +600,7 @@ fn lower_discrete_rhs_treats_sample_parameter_interval_as_periodic_tick() {
             ],
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = sample(startTime, period)".to_string(),
         scalar_count: 1,
     });
@@ -740,7 +740,13 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
         name: rumoca_core::VarName::new("Modelica.Math.Random.Utilities.automaticLocalSeed").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("Controller.noise1".to_string()),
-            span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(92), 10, 29),
+            span: rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(
+                    "phase_solve_lower_tests_intrinsics_source_92.mo",
+                ),
+                10,
+                29,
+            ),
         }],
         is_constructor: false,
         span: test_span(),
@@ -753,7 +759,11 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
 
 #[test]
 fn lower_expression_rejects_unlowered_full_path_name_runtime_special() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 10, 40);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_intrinsics_source_91.mo"),
+        10,
+        40,
+    );
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Files.fullPathName").into(),
         args: vec![rumoca_core::Expression::Literal {
@@ -770,7 +780,11 @@ fn lower_expression_rejects_unlowered_full_path_name_runtime_special() {
 
 #[test]
 fn lower_expression_rejects_unlowered_streams_read_line_runtime_special() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 50, 90);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_intrinsics_source_91.mo"),
+        50,
+        90,
+    );
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Streams.readLine").into(),
         args: vec![rumoca_core::Expression::Literal {
@@ -838,10 +852,8 @@ fn lower_expression_rejects_unlowered_advanced_string_scanner_runtime_specials()
 #[test]
 fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() {
     let mut functions = IndexMap::new();
-    let mut find_last = rumoca_core::Function::new(
-        "Modelica.Utilities.Strings.findLast",
-        rumoca_core::Span::DUMMY,
-    );
+    let mut find_last =
+        rumoca_core::Function::new("Modelica.Utilities.Strings.findLast", test_span());
     find_last.inputs.push(function_param("string"));
     find_last.inputs.push(function_param("searchString"));
     find_last.inputs.push(function_param("startIndex"));
@@ -1021,7 +1033,7 @@ fn lower_discrete_rhs_supports_interval_intrinsic_for_clocked_varref_metadata() 
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         // MLS §16.5.1: interval(v) uses the associated clock interval of v.
         origin: "test interval metadata".to_string(),
         scalar_count: 1,
@@ -1064,7 +1076,7 @@ fn lower_discrete_rhs_preserves_super_sample_value_form_for_clocked_varref() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "y = superSample(u, 2)".to_string(),
         scalar_count: 1,
     });
@@ -1129,7 +1141,7 @@ fn lower_discrete_rhs_uses_target_timing_for_inferred_clock_constructor() {
             }),
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "when Clock() then y = u".to_string(),
         scalar_count: 1,
     });
@@ -1182,7 +1194,7 @@ fn lower_discrete_rhs_uses_triggered_condition_for_event_clock_constructor() {
             is_constructor: false,
             span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         origin: "tick = Clock(u)".to_string(),
         scalar_count: 1,
     });

@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn singularity_with_source_span_keeps_primary_label() {
         let span = Span {
-            source: SourceId(7),
+            source: SourceId::from_source_name("phase_structural_diagnostics_source_7.mo"),
             start: BytePos(11),
             end: BytePos(11),
         };

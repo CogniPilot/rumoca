@@ -32,7 +32,7 @@ fn add_conditional_residual_clock_equation(dae_model: &mut dae::Dae) {
                         op: rumoca_core::OpBinary::Lt,
                         lhs: Box::new(var("periodicClock.resolution")),
                         rhs: Box::new(var("threshold")),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                     rumoca_core::Expression::Binary {
                         op: rumoca_core::OpBinary::Sub,
@@ -44,14 +44,14 @@ fn add_conditional_residual_clock_equation(dae_model: &mut dae::Dae) {
                                     name: rumoca_core::VarName::new("Clock").into(),
                                     args: vec![var("periodicClock.factor")],
                                     is_constructor: false,
-                                    span: rumoca_core::Span::DUMMY,
+                                    span: test_span(1, 2),
                                 },
                                 var("periodicClock.resolutionFactor"),
                             ],
                             is_constructor: false,
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(1, 2),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                 )],
                 else_branch: Box::new(rumoca_core::Expression::Binary {
@@ -64,13 +64,13 @@ fn add_conditional_residual_clock_equation(dae_model: &mut dae::Dae) {
                             var("periodicClock.resolutionFactor"),
                         ],
                         is_constructor: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(1, 2),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "periodic_clock_conditional_residual",
         ));
 }
@@ -82,7 +82,7 @@ fn add_shift_alias_chain_equations(dae_model: &mut dae::Dae) {
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new("periodicClock.y"),
             var("periodicClock.c"),
-            Span::DUMMY,
+            test_span(1, 2),
             "periodic_clock_output_alias",
         ));
     dae_model
@@ -91,7 +91,7 @@ fn add_shift_alias_chain_equations(dae_model: &mut dae::Dae) {
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new("sample1.clock"),
             var("periodicClock.y"),
-            Span::DUMMY,
+            test_span(1, 2),
             "sample_clock_alias",
         ));
     dae_model
@@ -102,9 +102,9 @@ fn add_shift_alias_chain_equations(dae_model: &mut dae::Dae) {
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Sample,
                 args: vec![var("u"), var("sample1.clock")],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "sample_output",
         ));
     dae_model
@@ -113,7 +113,7 @@ fn add_shift_alias_chain_equations(dae_model: &mut dae::Dae) {
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new("shiftSample1.u"),
             var("sample1.y"),
-            Span::DUMMY,
+            test_span(1, 2),
             "shift_input_alias",
         ));
     dae_model
@@ -129,9 +129,9 @@ fn add_shift_alias_chain_equations(dae_model: &mut dae::Dae) {
                     var("shiftSample1.resolution"),
                 ],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "shift_output",
         ));
 }
@@ -185,7 +185,7 @@ fn test_runtime_precompute_resolves_clock_resolution_factor_from_table_lookup() 
     conversion_table.start = Some(rumoca_core::Expression::Array {
         elements: vec![lit(1.0), lit(1000.0)],
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(1, 2),
     });
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("periodicClock.conversionTable"),
@@ -203,11 +203,11 @@ fn test_runtime_precompute_resolves_clock_resolution_factor_from_table_lookup() 
                 name: rumoca_core::VarName::new("Integer").into(),
                 args: vec![var("periodicClock.resolution")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             }),
-            rumoca_core::Span::DUMMY,
+            test_span(1, 2),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(1, 2),
     });
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("periodicClock.resolutionFactor"),
@@ -226,9 +226,9 @@ fn test_runtime_precompute_resolves_clock_resolution_factor_from_table_lookup() 
                     var("periodicClock.resolutionFactor"),
                 ],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "periodic_clock_from_conversion_table",
         ));
 
@@ -288,7 +288,7 @@ fn test_runtime_precompute_uses_else_clock_timing_when_condition_is_false() {
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new("u"),
             clock_call(0.02),
-            Span::DUMMY,
+            test_span(1, 2),
             "source_clock",
         ));
     dae_model
@@ -303,18 +303,18 @@ fn test_runtime_precompute_uses_else_clock_timing_when_condition_is_false() {
                         name: rumoca_core::VarName::new("superSample").into(),
                         args: vec![var("u")],
                         is_constructor: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                 )],
                 else_branch: Box::new(rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::VarName::new("superSample").into(),
                     args: vec![var("u"), var("factor")],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(1, 2),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "const_false_clock_branch",
         ));
 
@@ -378,7 +378,7 @@ fn clock_equivalence_test_model() -> dae::Dae {
         rumoca_core::Expression::If {
             branches: vec![(var("b_super"), var("u_super"))],
             else_branch: Box::new(lit(0.0)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(1, 2),
         },
         "same_target_clock_condition",
     );
@@ -413,7 +413,7 @@ fn push_real_update(
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new(lhs),
             rhs,
-            Span::DUMMY,
+            test_span(1, 2),
             origin,
         ));
 }
@@ -427,7 +427,7 @@ fn super_sample_expr(source: &str, factor: Option<f64>) -> rumoca_core::Expressi
         name: rumoca_core::VarName::new("superSample").into(),
         args,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(1, 2),
     }
 }
 
@@ -440,11 +440,11 @@ fn push_same_clock_add_equation(dae_model: &mut dae::Dae) {
                 op: rumoca_core::OpBinary::Add,
                 lhs: Box::new(var("add.u1")),
                 rhs: Box::new(var("add.u2")),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(1, 2),
         },
-        Span::DUMMY,
+        test_span(1, 2),
         "same_clock_add",
     ));
 }
@@ -463,26 +463,26 @@ fn test_runtime_precompute_skips_inferred_clock_forms_without_static_schedule() 
                         name: rumoca_core::VarName::new("Clock").into(),
                         args: vec![],
                         is_constructor: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                     rumoca_core::Expression::Unary {
                         op: rumoca_core::OpUnary::Not,
                         rhs: Box::new(rumoca_core::Expression::BuiltinCall {
                             function: rumoca_core::BuiltinFunction::Pre,
                             args: vec![var("b")],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(1, 2),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                 )],
                 else_branch: Box::new(rumoca_core::Expression::BuiltinCall {
                     function: rumoca_core::BuiltinFunction::Pre,
                     args: vec![var("b")],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(1, 2),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "inferred_clock_toggle",
         ));
     dae_model
@@ -494,9 +494,9 @@ fn test_runtime_precompute_skips_inferred_clock_forms_without_static_schedule() 
                 name: rumoca_core::VarName::new("superSample").into(),
                 args: vec![var("b")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "inferred_super_sample",
         ));
 
@@ -552,24 +552,24 @@ fn test_runtime_precompute_uses_unique_static_clock_for_no_argument_clock_guard(
                             name: rumoca_core::VarName::new("Clock").into(),
                             args: vec![],
                             is_constructor: false,
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(1, 2),
                         }],
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                     rumoca_core::Expression::Unary {
                         op: rumoca_core::OpUnary::Not,
                         rhs: Box::new(rumoca_core::Expression::BuiltinCall {
                             function: rumoca_core::BuiltinFunction::Pre,
                             args: vec![var("__pre__.y2")],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(1, 2),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(1, 2),
                     },
                 )],
                 else_branch: Box::new(var("__pre__.y2")),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "guarded when equation assignment to y2",
         ));
     dae_model
@@ -581,9 +581,9 @@ fn test_runtime_precompute_uses_unique_static_clock_for_no_argument_clock_guard(
                 name: rumoca_core::VarName::new("hold").into(),
                 args: vec![var("y2")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "y = hold(y2)",
         ));
 
@@ -621,9 +621,9 @@ fn test_runtime_precompute_skips_event_clock_constructor_without_static_schedule
                 name: rumoca_core::VarName::new("Clock").into(),
                 args: vec![var("tick")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(1, 2),
             },
-            Span::DUMMY,
+            test_span(1, 2),
             "event_clock_constructor",
         ));
 

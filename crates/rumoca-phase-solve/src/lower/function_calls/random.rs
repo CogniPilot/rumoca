@@ -26,7 +26,10 @@ impl<'a> LowerBuilder<'a> {
             "Modelica.Math.Random.Utilities.automaticGlobalSeed" | "automaticGlobalSeed" => {
                 let call_site = self.alloc_call_site()?;
                 let counter = call_site.checked_add(1).ok_or_else(|| {
-                    random_contract_error("automaticGlobalSeed call-site counter overflow")
+                    random_contract_error_with_span(
+                        "automaticGlobalSeed call-site counter overflow",
+                        span,
+                    )
                 })?;
                 self.emit_const_at(
                     rumoca_eval_dae::deterministic_automatic_global_seed(counter) as f64,
@@ -567,10 +570,13 @@ fn zero_based_projection_index(
         .first()
         .map(|index| {
             index.checked_sub(1).ok_or_else(|| {
-                random_contract_error(format!(
-                    "random output projection `{}` uses zero subscript",
-                    projection.output_name
-                ))
+                random_contract_error_with_span(
+                    format!(
+                        "random output projection `{}` uses zero subscript",
+                        projection.output_name
+                    ),
+                    projection.span,
+                )
             })
         })
         .transpose()
@@ -592,12 +598,6 @@ fn random_args_span(
     args.first()
         .and_then(rumoca_core::Expression::span)
         .unwrap_or(owner_span)
-}
-
-fn random_contract_error(reason: impl Into<String>) -> LowerError {
-    LowerError::UnspannedContractViolation {
-        reason: reason.into(),
-    }
 }
 
 fn random_contract_error_with_span(
@@ -626,6 +626,18 @@ fn required_automatic_local_seed_path(
 mod tests {
     use super::*;
 
+    fn random_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_random_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn unspanned_random_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     fn projection_with_index(index: usize) -> FunctionOutputProjection {
         FunctionOutputProjection {
             base_function_name: rumoca_core::VarName::new("random"),
@@ -633,17 +645,18 @@ mod tests {
             output_field: None,
             scope_indices: Vec::new(),
             indices: vec![index],
-            span: rumoca_core::Span::DUMMY,
+            span: random_test_span(),
         }
     }
 
     #[test]
-    fn zero_based_projection_index_rejects_zero_without_dummy_span() {
+    fn zero_based_projection_index_rejects_zero_with_projection_span() {
+        let span = random_test_span();
         let err = zero_based_projection_index(&projection_with_index(0))
             .expect_err("zero random projection index must fail");
 
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
         assert!(
             err.reason()
                 .contains("random output projection `stateOut` uses zero subscript")
@@ -652,7 +665,7 @@ mod tests {
 
     #[test]
     fn checked_random_value_capacity_does_not_fabricate_dummy_span() {
-        let err = checked_random_value_capacity_at(usize::MAX, 1, rumoca_core::Span::DUMMY)
+        let err = checked_random_value_capacity_at(usize::MAX, 1, unspanned_random_test_span())
             .expect_err("random output value count overflow must fail");
 
         assert_eq!(err.source_span(), None);

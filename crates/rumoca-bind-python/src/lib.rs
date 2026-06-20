@@ -10,6 +10,7 @@
 //! `ProjectSession` Python class provides a reusable session for workloads that
 //! want to retain loaded source roots and compile/query caches across calls.
 
+use ::rumoca::cli::Commands;
 use ::rumoca::{CompilationResult as HighLevelCompilationResult, TemplateIr};
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -1034,6 +1035,51 @@ fn simulate_file(
     )
 }
 
+/// Run a verbatim `rumoca` CLI invocation and return its result as a JSON string.
+///
+/// `args` are the CLI arguments *without* the leading program name (e.g.
+/// `["compile", "-m", "M"]`); `source` is the inline Modelica text the cell/file
+/// would otherwise live in (defaults to empty). The arguments are parsed with the
+/// exact same clap command tree the `rumoca` binary uses
+/// ([`rumoca::cli::parse_args`]), so there is zero drift between this binding and
+/// the CLI.
+///
+/// Supported subcommands: `compile` (-> [`rumoca::cli::compile_to_value`]) and
+/// the direct form of `sim` (-> [`rumoca::cli::simulate_to_value`]). Other
+/// subcommands return an error describing what the structured API supports.
+#[pyfunction]
+#[pyo3(signature = (args, source=None))]
+fn cli(args: Vec<String>, source: Option<&str>) -> Result<String, PyRuntimeStringError> {
+    let parsed = ::rumoca::cli::parse_args(args).map_err(PyRuntimeStringError)?;
+    let source = source.unwrap_or("");
+    let value = match parsed.command {
+        Commands::Compile(compile_args) => ::rumoca::cli::compile_to_value(&compile_args, source)
+            .map_err(|e| PyRuntimeStringError(e.to_string()))?,
+        Commands::Sim(sim_args) => ::rumoca::cli::simulate_to_value(&sim_args, source)
+            .map_err(|e| PyRuntimeStringError(e.to_string()))?,
+        other => {
+            return Err(PyRuntimeStringError(format!(
+                "the `cli` binding only supports `compile` and direct `sim` for structured \
+                 output; `{}` is not available as data",
+                command_name(&other)
+            )));
+        }
+    };
+    serde_json::to_string(&value).map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Compile(_) => "compile",
+        Commands::Sim(_) => "sim",
+        Commands::Fmt(_) => "fmt",
+        Commands::Lint(_) => "lint",
+        Commands::Completions { .. } => "completions",
+        Commands::Targets(_) => "targets",
+        Commands::Cache(_) => "cache",
+    }
+}
+
 fn builtin_targets_json() -> Value {
     Value::Array(
         rumoca_compile::codegen::templates::builtin_targets()
@@ -1288,8 +1334,15 @@ fn load_local_compile_unit(
 
     let files = collect_compile_unit_source_files(path)
         .map_err(|e| PyRuntimeStringError(format!("Compile-unit error: {e}")))?;
+    // The directory scan can yield the requested file under a different
+    // spelling (`./test.mo` vs `test.mo`), so compare canonical paths — a raw
+    // `Path` comparison registers the file twice and reports it as a duplicate
+    // class of itself.
+    let requested_canonical = path.canonicalize().ok();
     for sibling in files {
-        if sibling == path {
+        if sibling == path
+            || (requested_canonical.is_some() && sibling.canonicalize().ok() == requested_canonical)
+        {
             continue;
         }
         let sibling_path = sibling.to_string_lossy().to_string();
@@ -1660,9 +1713,13 @@ fn simulate_file_in_session(
     )
 }
 
-/// Rumoca Python module.
+/// Rumoca compiled extension module (`rumoca._native`).
+///
+/// The public Python API lives under the `rumoca` package
+/// (`crates/rumoca-bind-python/python/rumoca/__init__.py`), which re-exports
+/// everything here and adds the `%%modelica` Jupyter cell magic.
 #[pymodule]
-fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(format_source, m)?)?;
@@ -1685,6 +1742,7 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scenario_codegen_config, m)?)?;
     m.add_function(wrap_pyfunction!(simulate, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_file, m)?)?;
+    m.add_function(wrap_pyfunction!(cli, m)?)?;
     m.add_class::<ParseResult>()?;
     m.add_class::<LintMessage>()?;
     m.add_class::<SimulationOptions>()?;

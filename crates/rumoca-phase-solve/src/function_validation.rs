@@ -220,14 +220,12 @@ mod dynamic_projection_tests {
                     expr: Box::new(rumoca_core::Expression::VarRef {
                         name: VarName::new("n").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }]),
         );
-        function.body.push(rumoca_core::Statement::Return {
-            span: rumoca_core::Span::DUMMY,
-        });
+        function.body.push(rumoca_core::Statement::Return { span });
         function
     }
 
@@ -1115,12 +1113,21 @@ fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
 mod tests {
     use super::*;
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("function_validation_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn validate_simulation_function_support_allows_complex_constructor_without_body() {
+        let span = fixture_span();
         let mut dae = Dae::default();
         dae.symbols.functions.insert(
             VarName::new("Complex"),
-            rumoca_core::Function::new("Complex", rumoca_core::Span::DUMMY),
+            rumoca_core::Function::new("Complex", span),
         );
         dae.variables.outputs.insert(
             VarName::new("y"),
@@ -1131,21 +1138,17 @@ mod tests {
                     args: vec![
                         Expression::Literal {
                             value: rumoca_core::Literal::Real(1.0),
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Real(2.0),
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                         },
                     ],
                     is_constructor: true,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
             },
         );
 
@@ -1155,7 +1158,11 @@ mod tests {
 
     #[test]
     fn validate_field_access_rejects_unknown_spanned_constructor_field() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(81), 3, 17);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_function_validation_source_81.mo"),
+            3,
+            17,
+        );
         let mut dae = Dae::default();
         let mut constructor = rumoca_core::Function::new("Pkg.Record", span);
         constructor
@@ -1196,6 +1203,7 @@ mod tests {
 
     #[test]
     fn validate_simulation_function_support_allows_runtime_special_projection_names() {
+        let span = fixture_span();
         let mut dae = Dae::default();
         dae.variables.outputs.insert(
             VarName::new("x"),
@@ -1210,22 +1218,15 @@ mod tests {
                         args: vec![Expression::VarRef {
                             name: rumoca_core::VarName::new("state").into(),
                             subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                         }],
                         is_constructor: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }),
-                    subscripts: vec![rumoca_core::Subscript::generated_index(
-                        1,
-                        rumoca_core::Span::DUMMY,
-                    )],
-                    span: rumoca_core::Span::DUMMY,
+                    subscripts: vec![rumoca_core::Subscript::generated_index(1, span)],
+                    span,
                 }),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
             },
         );
 
@@ -1236,6 +1237,7 @@ mod tests {
 
     #[test]
     fn validate_simulation_function_support_allows_named_argument_markers() {
+        let span = fixture_span();
         let dae = Dae::default();
         let aliases = HashSet::new();
         let mut validated_functions = HashSet::new();
@@ -1246,7 +1248,7 @@ mod tests {
             &rumoca_core::Reference::from("__rumoca_named_arg__.id"),
             &[Expression::Literal {
                 value: rumoca_core::Literal::Integer(7),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }],
             false,
             &mut validated_functions,

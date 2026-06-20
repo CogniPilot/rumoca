@@ -1,5 +1,9 @@
 use super::*;
 
+fn unspanned_array_values_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 #[test]
 fn reserve_array_capacity_dummy_span_stays_unspanned() {
     let mut values = Vec::<u8>::new();
@@ -7,7 +11,7 @@ fn reserve_array_capacity_dummy_span_stays_unspanned() {
         &mut values,
         usize::MAX,
         "array helper",
-        rumoca_core::Span::DUMMY,
+        unspanned_array_values_test_span(),
     )
     .expect_err("impossible capacity must be rejected");
 
@@ -61,7 +65,7 @@ fn lower_array_operand_rejects_unspanned_shaped_operand() -> Result<(), LowerErr
             },
         ],
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_array_values_test_span(),
     };
 
     let Err(err) = builder.lower_array_operand(&expr, &Scope::new(), 0) else {
@@ -112,7 +116,7 @@ fn lower_array_like_values_rejects_unspanned_scalar_value() -> Result<(), LowerE
     let mut builder = LowerBuilder::new(&layout, &functions);
     let expr = rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(1.0),
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_array_values_test_span(),
     };
 
     let Err(err) = builder.lower_array_like_values(&expr, &Scope::new(), 0) else {
@@ -141,9 +145,9 @@ fn lower_array_like_values_rejects_unspanned_tuple() -> Result<(), LowerError> {
     let expr = rumoca_core::Expression::Tuple {
         elements: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_array_values_test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_array_values_test_span(),
     };
 
     let Err(err) = builder.lower_array_like_values(&expr, &Scope::new(), 0) else {
@@ -177,7 +181,7 @@ fn lower_array_like_values_uses_tuple_owner_for_unspanned_elements() -> Result<(
     let expr = rumoca_core::Expression::Tuple {
         elements: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_array_values_test_span(),
         }],
         span,
     };
@@ -198,7 +202,7 @@ fn lower_min_max_builtin_rejects_empty_args_without_dummy_span() -> Result<(), L
         &[],
         &Scope::new(),
         0,
-        rumoca_core::Span::DUMMY,
+        unspanned_array_values_test_span(),
         BinaryOp::Min,
         f64::INFINITY,
     ) else {
@@ -226,14 +230,14 @@ fn lower_min_max_builtin_rejects_unspanned_reduction_arg() -> Result<(), LowerEr
     let expr = rumoca_core::Expression::Array {
         elements: Vec::new(),
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_array_values_test_span(),
     };
 
     let Err(err) = builder.lower_min_max_builtin(
         &[expr],
         &Scope::new(),
         0,
-        rumoca_core::Span::DUMMY,
+        unspanned_array_values_test_span(),
         BinaryOp::Min,
         f64::INFINITY,
     ) else {

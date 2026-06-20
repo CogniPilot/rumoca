@@ -2,10 +2,21 @@ use super::*;
 use crate::LowerError;
 use crate::lower::expression_rows;
 
+fn discrete_array_source_span(source: u64, start: usize, end: usize) -> rumoca_core::Span {
+    let source_name = format!(
+        "phase_solve_lower_tests_array_operator_tests_discrete_array_tests_source_{source}.mo"
+    );
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(&source_name),
+        start,
+        end,
+    )
+}
+
 #[test]
 fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() {
     let mut dae_model = dae::Dae::default();
-    let mut matrix_fn = rumoca_core::Function::new("Pkg.matrix", rumoca_core::Span::DUMMY);
+    let mut matrix_fn = rumoca_core::Function::new("Pkg.matrix", lower_test_span());
     matrix_fn
         .outputs
         .push(function_param_with_dims("R", &[2, 2]));
@@ -14,10 +25,10 @@ fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() 
             comp: matrix_component_ref("R", row, col),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(value),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         });
     }
     dae_model
@@ -51,7 +62,7 @@ fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() 
             },
             var("v"),
         ),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "function matrix-vector assignment".to_string(),
         scalar_count: 2,
     });
@@ -107,7 +118,7 @@ fn lower_expression_lowers_projected_function_matrix_output_component() {
 
 #[test]
 fn lower_residual_scalarizes_function_returned_record_fields() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(44), 10, 20);
+    let span = discrete_array_source_span(44, 10, 20);
     let dae_model = function_returned_record_fields_dae(span);
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
@@ -291,7 +302,7 @@ fn builtin_with_span(
 
 #[test]
 fn lower_residual_preserves_function_record_matrix_field_shape() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(44), 30, 90);
+    let span = discrete_array_source_span(44, 30, 90);
     let mut dae_model = dae::Dae::default();
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("frame.R.T"),
@@ -398,7 +409,7 @@ fn lower_residual_preserves_function_record_matrix_field_shape() {
 
 #[test]
 fn lower_residual_rejects_function_record_matrix_field_shape_mismatch() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(44), 100, 140);
+    let span = discrete_array_source_span(44, 100, 140);
     let mut dae_model = dae::Dae::default();
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("frame.R.T"),
@@ -500,7 +511,7 @@ fn lower_expression_lowers_structural_singleton_subscript_as_scalar_value() {
             name: rumoca_core::VarName::new("n"),
             start: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
             is_tunable: false,
             ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
@@ -525,12 +536,12 @@ fn lower_expression_lowers_structural_singleton_subscript_as_scalar_value() {
                 var("n"),
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             )),
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     dae_model
         .variables
@@ -544,17 +555,17 @@ fn lower_expression_lowers_structural_singleton_subscript_as_scalar_value() {
                 selected,
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §10.5: scalar array subscripts select one element, even when the
         // index is a structural expression flowing through a clocked intrinsic.
         origin: "structural singleton subscript".to_string(),
@@ -600,7 +611,7 @@ fn lower_discrete_rhs_lowers_matrix_matrix_multiply_as_array_rows() {
     dae_model.discrete.real_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: mul(var("a"), var("b")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §10.6.5: matrix * matrix yields one scalar equation per
         // resulting matrix element when lowered to solve-IR rows.
         origin: "matrix product discrete update".to_string(),
@@ -827,7 +838,7 @@ fn lower_discrete_rhs_lowers_scalar_array_multiply_as_broadcast_rows() {
     dae_model.discrete.real_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: mul(var("gain"), var("u")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §10.6.5: scalar * array scales every array element.
         origin: "scalar vector product discrete update".to_string(),
         scalar_count: 2,
@@ -872,7 +883,7 @@ fn lower_discrete_rhs_lowers_array_constructor_with_vector_elements_as_matrix() 
     let unary_builtin = |function| rumoca_core::Expression::BuiltinCall {
         function,
         args: vec![var("phi")],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     dae_model.discrete.real_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
@@ -883,11 +894,11 @@ fn lower_discrete_rhs_lowers_array_constructor_with_vector_elements_as_matrix() 
                     unary_builtin(rumoca_core::BuiltinFunction::Sin),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             var("x"),
         ),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §10.4.1: an array constructor with array-valued elements
         // prefixes the element shape, so {cos(phi), sin(phi)} is 2 x size(phi).
         origin: "array-valued constructor matrix-vector update".to_string(),
@@ -931,34 +942,33 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
     let row = |values: [f64; 3]| rumoca_core::Expression::Array {
         elements: values.into_iter().map(real_lit).collect(),
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
-    let mut matrix_fn =
-        rumoca_core::Function::new("Pkg.dynamicMatrixProduct", rumoca_core::Span::DUMMY);
+    let mut matrix_fn = rumoca_core::Function::new("Pkg.dynamicMatrixProduct", lower_test_span());
     matrix_fn.inputs.push(function_param_with_dims("x", &[3]));
     matrix_fn.outputs.push(function_param_with_dims("y", &[2]));
     matrix_fn.locals.push(rumoca_core::FunctionParam {
         def_id: None,
         name: "A".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         type_name: "Real".to_string(),
         type_class: None,
         dims: vec![2, 0],
         shape_expr: vec![
-            rumoca_core::Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-            rumoca_core::Subscript::colon(rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::generated_index(2, lower_test_span()),
+            rumoca_core::Subscript::colon(lower_test_span()),
         ],
         default: Some(rumoca_core::Expression::Array {
             elements: vec![row([1.0, 2.0, 3.0]), row([4.0, 5.0, 6.0])],
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         description: None,
     });
     matrix_fn.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("y"),
         value: mul(var("A"), var("x")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -972,7 +982,7 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
             is_constructor: false,
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §10.4.1 and §12.4: function-local array declarations may use
         // dimensions inferred from structural inputs; once values are lowered,
         // a single unknown dimension can be recovered from the value count.
@@ -1010,13 +1020,13 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
             ..scalar_var("y")
         },
     );
-    let mut copy_fn = rumoca_core::Function::new("Pkg.copy", rumoca_core::Span::DUMMY);
+    let mut copy_fn = rumoca_core::Function::new("Pkg.copy", lower_test_span());
     copy_fn.inputs.push(function_param_with_dims("x", &[3]));
     copy_fn.outputs.push(function_param_with_dims("y", &[0]));
     copy_fn.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("y"),
         value: var("x"),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -1030,7 +1040,7 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
             is_constructor: false,
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "unknown output dims copy".to_string(),
         scalar_count: 3,
     });
@@ -1175,7 +1185,7 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
     let equation = dae::Equation {
         lhs: None,
         rhs: mul(var("A"), var("B")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "matrix-matrix multiply".to_string(),
         scalar_count: 4,
     };
@@ -1275,9 +1285,9 @@ fn lower_expression_rows_rejects_unspanned_matmul_node() {
             op: rumoca_core::OpBinary::Mul,
             lhs: Box::new(var("A")),
             rhs: Box::new(var("B")),
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_test_span(),
         origin: "unspanned matrix multiply".to_string(),
         scalar_count: 4,
     };
@@ -1339,7 +1349,7 @@ fn lower_expression_rows_preserves_vector_matrix_products_as_matmul_nodes() {
         let equation = dae::Equation {
             lhs: None,
             rhs: mul(var("A"), var("B")),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
             origin: format!("multiply {:?} by {:?}", lhs_dims, rhs_dims),
             scalar_count,
         };
@@ -1460,7 +1470,7 @@ fn lower_residual_shape_error_reports_equation_source_span() {
         },
     );
 
-    let equation_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 120, 139);
+    let equation_span = discrete_array_source_span(12, 120, 139);
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("A").into()),
         rhs: var("b"),
@@ -1498,8 +1508,8 @@ fn lower_residual_shape_error_prefers_operation_source_span() {
         },
     );
 
-    let equation_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 120, 139);
-    let operation_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 126, 131);
+    let equation_span = discrete_array_source_span(12, 120, 139);
+    let operation_span = discrete_array_source_span(12, 126, 131);
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: rumoca_core::Expression::Binary {
@@ -1572,7 +1582,7 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
         .parameters
         .insert(rumoca_core::VarName::new("k"), scalar_var("k"));
 
-    let mut function = rumoca_core::Function::new("Pkg.outputs", rumoca_core::Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.outputs", lower_test_span());
     function.outputs.push(function_param_with_dims("r", &[2]));
     function.outputs.push(function_param_with_dims("gain", &[]));
     function.body.push(rumoca_core::Statement::Assignment {
@@ -1580,14 +1590,14 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
         value: rumoca_core::Expression::Array {
             elements: vec![real_lit(1.0), real_lit(2.0)],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     function.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("gain"),
         value: real_lit(3.0),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -1598,16 +1608,16 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
         rhs: sub(
             rumoca_core::Expression::Tuple {
                 elements: vec![var("y"), var("k")],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::VarName::new("Pkg.outputs").into(),
                 args: Vec::new(),
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "tuple function output residual".to_string(),
         scalar_count: 3,
     });
@@ -1661,7 +1671,7 @@ fn lower_discrete_rhs_lowers_easy_array_builtins() {
                 rumoca_core::Expression::Array {
                     elements: vec![real_lit(10.0), real_lit(20.0)],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
         ),

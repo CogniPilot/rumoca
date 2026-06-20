@@ -1,5 +1,9 @@
 use super::*;
 
+fn unspanned_statement_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 fn literal_i64(value: i64, span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
@@ -27,9 +31,9 @@ fn eval_for_index_values_rejects_zero_step_with_step_span() {
         10,
     );
     let range = rumoca_core::Expression::Range {
-        start: Box::new(literal_i64(1, rumoca_core::Span::DUMMY)),
+        start: Box::new(literal_i64(1, range_span)),
         step: Some(Box::new(literal_i64(0, step_span))),
-        end: Box::new(literal_i64(3, rumoca_core::Span::DUMMY)),
+        end: Box::new(literal_i64(3, range_span)),
         span: range_span,
     };
     let layout = rumoca_ir_solve::VarLayout::default();
@@ -80,10 +84,7 @@ fn eval_compile_time_builtin_reports_zero_denominator_span() {
         10,
         11,
     );
-    let args = [
-        literal_i64(4, rumoca_core::Span::DUMMY),
-        literal_i64(0, denom_span),
-    ];
+    let args = [literal_i64(4, call_span), literal_i64(0, denom_span)];
     let layout = rumoca_ir_solve::VarLayout::default();
     let functions = IndexMap::new();
     let builder = lower_builder(&layout, &functions);
@@ -106,7 +107,11 @@ fn eval_compile_time_builtin_reports_zero_denominator_span() {
 
 #[test]
 fn positive_size_dimension_rejects_zero_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(31), 4, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_statements_tests_source_31.mo"),
+        4,
+        9,
+    );
 
     let err = positive_size_dimension(0, span)
         .expect_err("size dimension zero must fail instead of saturating");
@@ -120,7 +125,11 @@ fn positive_size_dimension_rejects_host_overflow_with_span() {
     if usize::BITS >= i64::BITS {
         return;
     }
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(32), 6, 15);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_statements_tests_source_32.mo"),
+        6,
+        15,
+    );
 
     let err =
         positive_size_dimension(i64::MAX, span).expect_err("oversized size dimension must fail");
@@ -134,7 +143,7 @@ fn positive_size_dimension_rejects_host_overflow_with_span() {
 
 #[test]
 fn missing_guarded_assignment_binding_rejects_dummy_span_without_fabricating_span() {
-    let err = missing_guarded_assignment_binding("x[1]", rumoca_core::Span::DUMMY);
+    let err = missing_guarded_assignment_binding("x[1]", unspanned_statement_test_span());
 
     assert_eq!(err.source_span(), None);
     assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
@@ -147,7 +156,11 @@ fn missing_guarded_assignment_binding_rejects_dummy_span_without_fabricating_spa
 
 #[test]
 fn real_fft_frequency_count_rejects_non_positive_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(33), 2, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_statements_tests_source_33.mo"),
+        2,
+        8,
+    );
 
     let err =
         checked_fft_frequency_count(0.0, span).expect_err("realFFT frequency count zero must fail");
@@ -158,7 +171,11 @@ fn real_fft_frequency_count_rejects_non_positive_with_span() {
 
 #[test]
 fn real_fft_frequency_count_rejects_fractional_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(34), 11, 18);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_statements_tests_source_34.mo"),
+        11,
+        18,
+    );
 
     let err = checked_fft_frequency_count(2.5, span)
         .expect_err("realFFT frequency count must be integral");
@@ -178,7 +195,11 @@ fn checked_usize_dims_to_i64_rejects_overflow_with_span() {
     else {
         return;
     };
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 12, 20);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_statements_tests_source_46.mo"),
+        12,
+        20,
+    );
 
     let err = checked_usize_dims_to_i64(&[dim], "record component shape", span)
         .expect_err("record component dimensions must fit in Modelica integer range");
@@ -198,7 +219,7 @@ fn checked_usize_dims_to_i64_rejects_overflow_without_fabricating_span() {
     let err = checked_usize_dims_to_i64(
         &[usize::MAX],
         "record component shape",
-        rumoca_core::Span::DUMMY,
+        unspanned_statement_test_span(),
     )
     .expect_err("oversized dimensions must fail");
 
@@ -212,7 +233,11 @@ fn checked_usize_dims_to_i64_rejects_overflow_without_fabricating_span() {
 
 #[test]
 fn checked_compile_time_i64_rejects_upper_bound_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(47), 9, 18);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_statements_tests_source_47.mo"),
+        9,
+        18,
+    );
 
     let err = checked_compile_time_i64(i64::MAX as f64, "for index", Some(span))
         .expect_err("rounded f64 upper bound must not saturate to i64::MAX");

@@ -311,6 +311,10 @@ mod tests {
         }
     }
 
+    fn unspanned_residual_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn residual_compute_block_contract_reports_target_mismatch_with_equation_span() {
         let span = rumoca_core::Span::from_offsets(
@@ -389,14 +393,14 @@ mod tests {
     #[test]
     fn residual_equation_scalar_count_does_not_fabricate_dummy_span() {
         let first = dae::Equation::residual_array(
-            literal_zero(rumoca_core::Span::DUMMY),
-            rumoca_core::Span::DUMMY,
+            literal_zero(unspanned_residual_test_span()),
+            unspanned_residual_test_span(),
             "first",
             usize::MAX,
         );
         let second = dae::Equation::residual_array(
-            literal_zero(rumoca_core::Span::DUMMY),
-            rumoca_core::Span::DUMMY,
+            literal_zero(unspanned_residual_test_span()),
+            unspanned_residual_test_span(),
             "second",
             1,
         );
@@ -415,7 +419,12 @@ mod tests {
 
     #[test]
     fn residual_output_y_range_uses_checked_scalar_fallback() -> Result<(), LowerError> {
-        let range = residual_output_y_range(None, &IndexMap::new(), 7, rumoca_core::Span::DUMMY)?;
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("residual_output_range.mo"),
+            1,
+            5,
+        );
+        let range = residual_output_y_range(None, &IndexMap::new(), 7, span)?;
 
         assert_eq!(range, 7..8);
         Ok(())
@@ -440,9 +449,13 @@ mod tests {
 
     #[test]
     fn residual_output_y_range_does_not_fabricate_dummy_span() {
-        let err =
-            residual_output_y_range(None, &IndexMap::new(), usize::MAX, rumoca_core::Span::DUMMY)
-                .expect_err("overflowing residual output range should fail");
+        let err = residual_output_y_range(
+            None,
+            &IndexMap::new(),
+            usize::MAX,
+            unspanned_residual_test_span(),
+        )
+        .expect_err("overflowing residual output range should fail");
 
         assert_eq!(err.source_span(), None);
         assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));

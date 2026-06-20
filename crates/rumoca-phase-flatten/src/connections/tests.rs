@@ -4,7 +4,11 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
 fn test_span() -> Span {
-    Span::from_offsets(rumoca_core::SourceId(7), 11, 23)
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_flatten_connections_source_7.mo"),
+        11,
+        23,
+    )
 }
 
 fn create_test_model() -> flat::Model {

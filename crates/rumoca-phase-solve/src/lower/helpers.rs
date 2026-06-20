@@ -1306,7 +1306,11 @@ mod tests {
 
     #[test]
     fn static_index_expr_rejects_host_index_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(11), 3, 9);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_helpers_source_11.mo"),
+            3,
+            9,
+        );
         let expr = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(usize::MAX as f64),
             span,
@@ -1356,7 +1360,11 @@ mod tests {
 
     #[test]
     fn compile_time_index_expr_rejects_host_index_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 4, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_helpers_source_12.mo"),
+            4,
+            12,
+        );
         let expr = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(usize::MAX as f64),
             span,
@@ -1507,7 +1515,11 @@ mod tests {
 
     #[test]
     fn positive_f64_index_rejects_non_positive_value_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(13), 1, 2);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_helpers_source_13.mo"),
+            1,
+            2,
+        );
         let err =
             positive_f64_index(0.0, span).expect_err("zero is not a positive Modelica subscript");
 

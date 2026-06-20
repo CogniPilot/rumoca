@@ -455,7 +455,11 @@ mod tests {
             ),
         );
 
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
+            0,
+            10,
+        );
         let der_x = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args: vec![rumoca_core::Expression::VarRef {
@@ -519,7 +523,11 @@ mod tests {
             ),
         );
 
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
+            0,
+            10,
+        );
 
         let y_ref = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::from_var_name(y_name.clone()),
@@ -611,7 +619,11 @@ mod tests {
                 ),
             ),
         );
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
+            0,
+            10,
+        );
         let y_ref = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::from_var_name(y_name),
             subscripts: vec![],
@@ -707,7 +719,11 @@ mod tests {
             ),
         );
 
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
+            0,
+            10,
+        );
 
         let y_ref = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::from_var_name(y_name.clone()),
@@ -773,7 +789,11 @@ mod tests {
             ),
         );
 
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
+            0,
+            10,
+        );
         let der_x = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args: vec![rumoca_core::Expression::VarRef {
@@ -833,7 +853,11 @@ mod tests {
             ),
         );
 
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
+            0,
+            10,
+        );
         let y_ref = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::from_var_name(y_name.clone()),
             subscripts: vec![],

@@ -764,9 +764,18 @@ pub fn scalar_slot_p(index: usize) -> ScalarSlot {
 mod tests {
     use super::*;
 
+    fn layout_source_span(source: u64, start: usize, end: usize) -> Span {
+        let source_name = format!("ir_solve_layout_source_{source}.mo");
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(&source_name),
+            start,
+            end,
+        )
+    }
+
     #[test]
     fn component_reference_key_error_displays_missing_def_id() {
-        let span = Span::from_offsets(rumoca_core::SourceId(21), 4, 9);
+        let span = layout_source_span(21, 4, 9);
         let reference = ComponentReference {
             local: false,
             span,
@@ -790,7 +799,7 @@ mod tests {
 
     #[test]
     fn component_reference_key_error_displays_dynamic_subscript() {
-        let span = Span::from_offsets(rumoca_core::SourceId(22), 12, 20);
+        let span = layout_source_span(22, 12, 20);
         let reference = ComponentReference {
             local: false,
             span,
@@ -901,7 +910,7 @@ mod tests {
 
     #[test]
     fn layout_shape_contract_rejects_shape_size_overflow_with_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(8), 2, 6);
+        let span = layout_source_span(8, 2, 6);
         let bindings = IndexMap::from([("x".to_string(), scalar_slot_y(0))]);
         let shapes = IndexMap::from([("x".to_string(), vec![usize::MAX, 2])]);
         let shape_spans = IndexMap::from([("x".to_string(), span)]);
@@ -918,7 +927,7 @@ mod tests {
 
     #[test]
     fn layout_shape_contract_rejects_slot_range_overflow_before_indexing() {
-        let span = Span::from_offsets(rumoca_core::SourceId(9), 4, 11);
+        let span = layout_source_span(9, 4, 11);
         let start = usize::MAX;
         let bindings = IndexMap::from([(
             "x".to_string(),
@@ -947,7 +956,7 @@ mod tests {
 
     #[test]
     fn layout_shape_contract_rejects_indexed_slot_byte_offset_overflow_with_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(10), 5, 12);
+        let span = layout_source_span(10, 5, 12);
         let start = usize::MAX / F64_BYTES + 1;
         let bindings = IndexMap::from([(
             "x".to_string(),
@@ -982,7 +991,7 @@ mod tests {
 
     #[test]
     fn layout_shape_contract_reports_source_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(4), 8, 13);
+        let span = layout_source_span(4, 8, 13);
         let bindings = IndexMap::new();
         let shapes = IndexMap::from([("x".to_string(), vec![2])]);
         let shape_spans = IndexMap::from([("x".to_string(), span)]);
@@ -1001,10 +1010,7 @@ mod tests {
             ("y".to_string(), scalar_slot_y(1)),
         ]);
         let shapes = IndexMap::from([("x".to_string(), vec![1]), ("y".to_string(), vec![1])]);
-        let shape_spans = IndexMap::from([(
-            "x".to_string(),
-            Span::from_offsets(rumoca_core::SourceId(11), 1, 2),
-        )]);
+        let shape_spans = IndexMap::from([("x".to_string(), layout_source_span(11, 1, 2))]);
 
         let err = VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, 2, 0)
             .expect_err("explicit shape spans must cover every shape");
@@ -1017,7 +1023,7 @@ mod tests {
 
     #[test]
     fn layout_shape_contract_rejects_stale_shape_span_metadata() {
-        let span = Span::from_offsets(rumoca_core::SourceId(12), 4, 8);
+        let span = layout_source_span(12, 4, 8);
         let bindings = IndexMap::from([("x".to_string(), scalar_slot_y(0))]);
         let shapes = IndexMap::from([("x".to_string(), vec![1])]);
         let shape_spans = IndexMap::from([("x".to_string(), span), ("stale".to_string(), span)]);

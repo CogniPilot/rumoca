@@ -30,13 +30,13 @@ fn lower_derivative_rhs_extracts_dot_product_with_vector_function_derivative() {
             name: rumoca_core::VarName::new(name).into(),
             args,
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         };
     let array =
         |elements: Vec<rumoca_core::Expression>, is_matrix: bool| rumoca_core::Expression::Array {
             elements,
             is_matrix,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         };
     let unit = |idx: usize| {
         array(
@@ -47,14 +47,14 @@ fn lower_derivative_rhs_extracts_dot_product_with_vector_function_derivative() {
         )
     };
 
-    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", rumoca_core::Span::DUMMY);
+    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", lower_test_span());
     resolve2.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve2.inputs.push(function_param_with_dims("v1", &[3]));
     resolve2.outputs.push(function_param_with_dims("v2", &[3]));
     resolve2.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("v2"),
         value: mul(var("T"), var("v1")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -130,13 +130,13 @@ fn lower_derivative_rhs_projects_transposed_matrix_function_derivative() {
             name: rumoca_core::VarName::new(name).into(),
             args,
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         };
     let array =
         |elements: Vec<rumoca_core::Expression>, is_matrix: bool| rumoca_core::Expression::Array {
             elements,
             is_matrix,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         };
     let unit = |idx: usize| {
         array(
@@ -149,17 +149,17 @@ fn lower_derivative_rhs_projects_transposed_matrix_function_derivative() {
     let transpose = |expr: rumoca_core::Expression| rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Transpose,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
 
-    let mut resolve1 = rumoca_core::Function::new("Pkg.resolve1", rumoca_core::Span::DUMMY);
+    let mut resolve1 = rumoca_core::Function::new("Pkg.resolve1", lower_test_span());
     resolve1.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve1.inputs.push(function_param_with_dims("v2", &[3]));
     resolve1.outputs.push(function_param_with_dims("v1", &[3]));
     resolve1.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("v1"),
         value: mul(transpose(var("T")), var("v2")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -232,20 +232,20 @@ fn lower_derivative_rhs_projects_vector_function_derivative_divided_by_scalar() 
             name: rumoca_core::VarName::new(name).into(),
             args,
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         };
     let div = |lhs: rumoca_core::Expression, rhs: rumoca_core::Expression| {
         binary(rumoca_core::OpBinary::Div, lhs, rhs)
     };
 
-    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", rumoca_core::Span::DUMMY);
+    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", lower_test_span());
     resolve2.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve2.inputs.push(function_param_with_dims("v1", &[3]));
     resolve2.outputs.push(function_param_with_dims("v2", &[3]));
     resolve2.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("v2"),
         value: mul(var("T"), var("v1")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -331,7 +331,7 @@ fn lower_derivative_rhs_projects_vector_if_derivative_with_zeros_else() {
         rhs: rumoca_core::Expression::If {
             branches: vec![(var("enabled"), sub(var("v"), der(var("r"))))],
             else_branch: Box::new(sub(var("v"), zeros3)),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         span: lower_test_span(),
         origin: "vector if derivative with zeros else".to_string(),
@@ -410,7 +410,7 @@ fn register_structural_if_vector_functions(dae_model: &mut dae::Dae) {
 }
 
 fn length_function() -> rumoca_core::Function {
-    let mut length = rumoca_core::Function::new("Pkg.length", rumoca_core::Span::DUMMY);
+    let mut length = rumoca_core::Function::new("Pkg.length", lower_test_span());
     length.inputs.push(function_param_with_dims("v", &[3]));
     length.outputs.push(function_param("result"));
     length.body.push(projection_assignment(
@@ -424,8 +424,7 @@ fn length_function() -> rumoca_core::Function {
 }
 
 fn normalize_with_assert_function() -> rumoca_core::Function {
-    let mut normalize =
-        rumoca_core::Function::new("Pkg.normalizeWithAssert", rumoca_core::Span::DUMMY);
+    let mut normalize = rumoca_core::Function::new("Pkg.normalizeWithAssert", lower_test_span());
     normalize.inputs.push(function_param_with_dims("v", &[3]));
     normalize
         .outputs
@@ -452,7 +451,7 @@ fn normalize_with_assert_function() -> rumoca_core::Function {
 }
 
 fn gravity_function() -> rumoca_core::Function {
-    let mut gravity = rumoca_core::Function::new("Pkg.gravity", rumoca_core::Span::DUMMY);
+    let mut gravity = rumoca_core::Function::new("Pkg.gravity", lower_test_span());
     gravity.inputs.push(function_param_with_dims("r", &[3]));
     gravity.inputs.push(function_param("mode"));
     gravity.inputs.push(function_param_with_dims("g", &[3]));
@@ -469,7 +468,7 @@ fn gravity_function() -> rumoca_core::Function {
                 var("g"),
             )],
             else_branch: Box::new(projection_call("Pkg.unprojected", vec![var("r")], false)),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     ));
     gravity
@@ -484,7 +483,7 @@ fn push_structural_if_vector_equation(dae_model: &mut dae::Dae) {
                 var("a"),
                 builtin(rumoca_core::BuiltinFunction::Zeros, vec![int_lit(3)]),
             )),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         span: lower_test_span(),
         origin: "structural vector function in vector derivative if".to_string(),

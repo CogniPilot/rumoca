@@ -1,11 +1,11 @@
 use super::*;
 
 fn function_with_array_input(name: &str, dims: Vec<i64>) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new(name, rumoca_core::Span::DUMMY);
+    let mut function = rumoca_core::Function::new(name, lower_test_span());
     function.inputs.push(
         rumoca_core::FunctionParam::new("u", "Real", lower_test_span())
             .with_dims(dims)
-            .with_span(rumoca_core::Span::DUMMY),
+            .with_span(lower_test_span()),
     );
     function.outputs.push(rumoca_core::FunctionParam::new(
         "y",
@@ -15,7 +15,7 @@ fn function_with_array_input(name: &str, dims: Vec<i64>) -> rumoca_core::Functio
     function.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("y"),
         value: real_lit(0.0),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     function
 }
@@ -25,7 +25,7 @@ fn call_function_with_arg(name: &str, arg: rumoca_core::Expression) -> rumoca_co
         name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         args: vec![arg],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -34,13 +34,19 @@ fn call_function_without_args(name: &str) -> rumoca_core::Expression {
         name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         args: Vec::new(),
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
 #[test]
 fn lower_expression_reports_function_input_shape_value_count_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 4, 16);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_function_expression_tests_shape_diagnostic_tests_source_46.mo",
+        ),
+        4,
+        16,
+    );
     let mut functions = IndexMap::new();
     let function = function_with_array_input("Pkg.shapeCount", vec![2, 2]);
     functions.insert(function.name.clone(), function);
@@ -68,10 +74,15 @@ fn lower_expression_reports_function_input_shape_value_count_with_span() {
 
 #[test]
 fn lower_expression_reports_negative_local_array_shape_with_subscript_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(48), 12, 18);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_function_expression_tests_shape_diagnostic_tests_source_48.mo",
+        ),
+        12,
+        18,
+    );
     let mut functions = IndexMap::new();
-    let mut function =
-        rumoca_core::Function::new("Pkg.localNegativeShape", rumoca_core::Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.localNegativeShape", lower_test_span());
     function.outputs.push(rumoca_core::FunctionParam::new(
         "y",
         "Real",
@@ -83,7 +94,7 @@ fn lower_expression_reports_negative_local_array_shape_with_subscript_span() {
             .with_default(rumoca_core::Expression::Array {
                 elements: vec![real_lit(1.0), real_lit(2.0)],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
     );
     function.body.push(rumoca_core::Statement::Assignment {
@@ -117,7 +128,13 @@ fn lower_expression_reports_negative_local_array_shape_with_subscript_span() {
 
 #[test]
 fn lower_expression_reports_negative_function_input_shape_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(47), 8, 20);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_function_expression_tests_shape_diagnostic_tests_source_47.mo",
+        ),
+        8,
+        20,
+    );
     let mut functions = IndexMap::new();
     let function = function_with_array_input("Pkg.negativeShape", vec![-1]);
     functions.insert(function.name.clone(), function);

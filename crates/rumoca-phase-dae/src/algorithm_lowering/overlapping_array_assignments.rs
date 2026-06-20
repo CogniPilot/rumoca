@@ -145,7 +145,11 @@ mod tests {
     use super::*;
 
     fn test_span() -> Span {
-        Span::from_offsets(rumoca_core::SourceId(83), 7, 19)
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("overlapping_array_assignments_fixture.mo"),
+            7,
+            19,
+        )
     }
 
     fn literal(value: f64) -> Expression {

@@ -820,6 +820,7 @@ mod tests {
 
     #[test]
     fn missing_conditional_when_branch_rejects_continuous_non_state_targets() {
+        let span = test_span(110);
         let target = rumoca_core::VarName::new("y");
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -835,7 +836,7 @@ mod tests {
             },
         );
 
-        let err = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, Span::DUMMY)
+        let err = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, span)
             .expect_err("continuous non-state target must not synthesize pre(target)");
 
         assert!(err.to_string().contains("not assigned in every branch"));

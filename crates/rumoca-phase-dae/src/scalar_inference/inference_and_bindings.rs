@@ -820,14 +820,15 @@ mod tests {
     fn create_dae_variable_preserves_component_reference() {
         let component_def_id = rumoca_core::DefId::new(17);
         let name = VarName::new("x");
+        let span = test_span();
         let flat_var = flat::Variable {
             name: name.clone(),
             component_ref: Some(rumoca_core::ComponentReference {
                 local: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
                 parts: vec![rumoca_core::ComponentRefPart {
                     ident: "x".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 }],
                 def_id: Some(component_def_id),
@@ -919,18 +920,19 @@ mod tests {
     #[test]
     fn rewrite_start_expr_preserves_top_level_structured_reference_when_not_aliasing() {
         let record_def_id = rumoca_core::DefId::new(43);
+        let span = test_span();
         let record_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 },
             ],
@@ -942,7 +944,7 @@ mod tests {
                 record_ref.clone(),
             ),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
         let known_var_names = HashSet::new();
 

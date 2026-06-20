@@ -24,9 +24,17 @@ fn ad_test_span() -> rumoca_core::Span {
     )
 }
 
+fn unspanned_ad_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 #[test]
 fn matmul_jvp_lowering_rejects_non_matmul_node_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(21), 4, 12);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_ad_tests_source_21.mo"),
+        4,
+        12,
+    );
     let node = ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
         vec![vec![
             LinearOp::Const { dst: 0, value: 0.0 },
@@ -65,7 +73,11 @@ fn matmul_jvp_lowering_rejects_empty_scalar_program_node() {
 
 #[test]
 fn spanned_scalar_program_ad_rejects_mismatched_span_count() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(84), 6, 11);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_ad_tests_source_84.mo"),
+        6,
+        11,
+    );
     let rows = vec![
         vec![
             LinearOp::Const { dst: 0, value: 1.0 },
@@ -108,7 +120,7 @@ fn unspanned_scalar_program_ad_rejects_mismatched_span_count() {
         ],
     ];
 
-    let err = lower_scalar_program_block_ad_with_spans(&rows, &[rumoca_core::Span::DUMMY])
+    let err = lower_scalar_program_block_ad_with_spans(&rows, &[unspanned_ad_test_span()])
         .expect_err("unspanned mismatched AD row metadata must fail");
 
     assert_eq!(err.source_span(), None);
@@ -121,7 +133,11 @@ fn unspanned_scalar_program_ad_rejects_mismatched_span_count() {
 
 #[test]
 fn constant_matmul_jvp_rejects_output_count_overflow() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(71), 3, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_ad_tests_source_71.mo"),
+        3,
+        9,
+    );
     let block = ComputeBlock {
         nodes: vec![ComputeNode::MatMul {
             lhs_ops: vec![LinearOp::Const { dst: 0, value: 1.0 }],
@@ -151,7 +167,11 @@ fn constant_matmul_jvp_rejects_output_count_overflow() {
 
 #[test]
 fn linsolve_jvp_rejects_matrix_range_overflow() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(72), 5, 17);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_ad_tests_source_72.mo"),
+        5,
+        17,
+    );
     let block = ComputeBlock {
         nodes: vec![ComputeNode::LinSolve {
             setup_ops: Vec::new(),
@@ -204,7 +224,7 @@ fn scalar_linear_solve_component_ad_rejects_matrix_range_overflow() {
 fn scalar_ad_rejects_register_allocation_overflow() {
     let mut builder = AdBuilder {
         next_reg: u32::MAX,
-        ..AdBuilder::new_with_span(SeedMode::SolverYOnly, rumoca_core::Span::DUMMY)
+        ..AdBuilder::new_with_span(SeedMode::SolverYOnly, unspanned_ad_test_span())
     };
 
     let err = builder
@@ -221,7 +241,11 @@ fn scalar_ad_rejects_register_allocation_overflow() {
 
 #[test]
 fn spanned_ad_builder_rejects_register_allocation_overflow() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(73), 8, 19);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_ad_tests_source_73.mo"),
+        8,
+        19,
+    );
     let mut builder = AdBuilder {
         next_reg: u32::MAX,
         ..AdBuilder::new_with_span(SeedMode::SolverYOnly, span)
@@ -463,7 +487,7 @@ fn compute_block_jvp_matmul_constant_lhs_emits_matmul_jvp() {
             lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
             rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: ad_test_span(),
         }],
     };
 
@@ -528,7 +552,7 @@ fn compute_block_jvp_matmul_variable_lhs_emits_matmul_jvp() {
             lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
             rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: ad_test_span(),
         }],
     };
 
@@ -588,7 +612,7 @@ fn compute_block_jvp_matmul_constant_operands_emit_zero_rows() {
             lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
             rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: ad_test_span(),
         }],
     };
 
@@ -623,7 +647,7 @@ fn compute_block_jvp_linsolve_preserves_tensor_node_and_matches_scalar_fallback(
             n: 2,
             next_reg: 6,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: ad_test_span(),
         }],
     };
 

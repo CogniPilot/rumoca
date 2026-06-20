@@ -1,7 +1,11 @@
 use super::*;
 
 fn test_span() -> rumoca_core::Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1)
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("eval_flat_phase_constant_source_7.mo"),
+        0,
+        1,
+    )
 }
 
 fn var(name: &str) -> rumoca_core::Expression {

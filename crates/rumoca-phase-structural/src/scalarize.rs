@@ -1130,7 +1130,11 @@ fn add_expr_with_span(lhs: Expression, rhs: Expression, span: Span) -> Expressio
 
 #[cfg(test)]
 fn scalarize_test_span() -> Span {
-    Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_scalarize_tests_source_1.mo"),
+        1,
+        2,
+    )
 }
 
 #[cfg(test)]

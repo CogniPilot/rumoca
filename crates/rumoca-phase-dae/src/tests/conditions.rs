@@ -3,7 +3,11 @@ use rumoca_core::Span;
 use rumoca_ir_flat as flat;
 
 fn test_span(start: usize, end: usize) -> Span {
-    Span::from_offsets(rumoca_core::SourceId(91), start, end)
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_dae_conditions_fixture.mo"),
+        start,
+        end,
+    )
 }
 
 fn scalar_var(name: &str) -> flat::Variable {

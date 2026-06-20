@@ -1209,7 +1209,11 @@ mod tests {
     }
 
     fn fixture_span() -> Span {
-        Span::from_offsets(rumoca_core::SourceId(1), 10, 20)
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("ir_dae_lib_source_1.mo"),
+            10,
+            20,
+        )
     }
 
     fn lit_real(value: f64) -> Expression {

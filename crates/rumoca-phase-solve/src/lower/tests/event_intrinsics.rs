@@ -6,9 +6,9 @@ fn lower_discrete_rhs_keeps_edge_initial_as_runtime_event_flag() {
     dae_model
         .variables
         .discrete_valued
-        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+        .insert(rumoca_core::VarName::new("y"), source_scalar_var("y"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y").into()),
+        lhs: Some(source_ref("y")),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Edge,
             args: vec![rumoca_core::Expression::BuiltinCall {
@@ -18,7 +18,7 @@ fn lower_discrete_rhs_keeps_edge_initial_as_runtime_event_flag() {
             }],
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "edge(initial()) event assignment".to_string(),
         scalar_count: 1,
     });
@@ -48,16 +48,16 @@ fn lower_discrete_rhs_uses_pre_relation_memory_for_edge_previous_value() {
     dae_model
         .variables
         .parameters
-        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+        .insert(rumoca_core::VarName::new("u"), source_scalar_var("u"));
     dae_model
         .variables
         .discrete_valued
-        .insert(rumoca_core::VarName::new("c"), scalar_var("c"));
+        .insert(rumoca_core::VarName::new("c"), source_scalar_var("c"));
     insert_pre_parameter(&mut dae_model, "c", &[]);
     dae_model
         .variables
         .discrete_valued
-        .insert(rumoca_core::VarName::new("hit"), scalar_var("hit"));
+        .insert(rumoca_core::VarName::new("hit"), source_scalar_var("hit"));
     let relation = binary(
         rumoca_core::OpBinary::Gt,
         var("u"),
@@ -68,20 +68,20 @@ fn lower_discrete_rhs_uses_pre_relation_memory_for_edge_previous_value() {
     );
     dae_model.conditions.relations.push(relation.clone());
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("hit").into()),
+        lhs: Some(source_ref("hit")),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Edge,
             args: vec![relation.clone()],
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "edge relation memory update".to_string(),
         scalar_count: 1,
     });
     dae_model.conditions.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("c").into()),
+        lhs: Some(source_ref("c")),
         rhs: relation,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "relation memory update".to_string(),
         scalar_count: 1,
     });

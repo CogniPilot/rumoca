@@ -2,7 +2,11 @@ use super::*;
 use rumoca_ir_solve::{BinaryOp, LinearOp};
 
 fn fixture_span() -> rumoca_core::Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId(47), 0, 1)
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("eval_solve_assignment_shape_source_47.mo"),
+        0,
+        1,
+    )
 }
 
 // Regression: `reg_depends_on_y_index` used to recurse over the register DAG

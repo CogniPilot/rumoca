@@ -197,7 +197,13 @@ fn spanned_eq(rhs: Expression, origin: &str, span: Span) -> Equation {
 
 #[test]
 fn test_split_linear_target_zero_remainder_uses_context_span() {
-    let span = Span::from_offsets(rumoca_core::SourceId(12), 20, 31);
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_12.mo",
+        ),
+        20,
+        31,
+    );
     let (_, remainder) = split_linear_target(&var_with_span("x", span), &VarName::new("x"), span)
         .expect("direct target should split");
 
@@ -415,8 +421,20 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
 #[test]
 fn test_demote_direct_assigned_states_allows_fixed_connection_alias() {
     let mut dae = Dae::new();
-    let connection_span = Span::from_offsets(rumoca_core::SourceId(2), 10, 42);
-    let derivative_span = Span::from_offsets(rumoca_core::SourceId(2), 43, 58);
+    let connection_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_2.mo",
+        ),
+        10,
+        42,
+    );
+    let derivative_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_2.mo",
+        ),
+        43,
+        58,
+    );
     dae.variables
         .states
         .insert(VarName::new("support.phi"), test_variable("support.phi"));
@@ -469,7 +487,13 @@ fn test_demote_direct_assigned_states_allows_fixed_connection_alias() {
 #[test]
 fn test_demote_direct_assigned_states_rejects_state_dependent_connection_alias() {
     let mut dae = Dae::new();
-    let connection_span = Span::from_offsets(rumoca_core::SourceId(3), 8, 36);
+    let connection_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_3.mo",
+        ),
+        8,
+        36,
+    );
     dae.variables
         .states
         .insert(VarName::new("x"), test_variable("x"));
@@ -509,7 +533,13 @@ fn test_demote_direct_assigned_states_rejects_state_dependent_connection_alias()
 #[test]
 fn test_demote_direct_assigned_states_allows_fixed_state_with_extra_value_ref() {
     let mut dae = Dae::new();
-    let fixed_span = Span::from_offsets(rumoca_core::SourceId(4), 12, 18);
+    let fixed_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_4.mo",
+        ),
+        12,
+        18,
+    );
     dae.variables
         .states
         .insert(VarName::new("w"), test_variable("w"));
@@ -1264,8 +1294,20 @@ fn test_symbolic_function_derivative_stops_at_recursive_function_call() {
 
 #[test]
 fn test_expand_derivative_preserves_initial_condition_span() {
-    let initial_span = Span::from_offsets(rumoca_core::SourceId(1), 10, 17);
-    let if_span = Span::from_offsets(rumoca_core::SourceId(1), 4, 30);
+    let initial_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_1.mo",
+        ),
+        10,
+        17,
+    );
+    let if_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_1.mo",
+        ),
+        4,
+        30,
+    );
     let expr = Expression::If {
         branches: vec![(
             Expression::BuiltinCall {

@@ -337,9 +337,17 @@ fn contextual_reason(contexts: &[String], reason: &str) -> String {
 mod tests {
     use super::*;
 
+    fn unspanned_lower_error_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn contract_violation_preserves_real_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(3), 4, 9);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_error_source_3.mo"),
+            4,
+            9,
+        );
         let err = LowerError::contract_violation("metadata mismatch", span);
 
         assert_eq!(err.source_span(), Some(span));
@@ -348,7 +356,8 @@ mod tests {
 
     #[test]
     fn contract_violation_does_not_fabricate_dummy_span() {
-        let err = LowerError::contract_violation("metadata mismatch", rumoca_core::Span::DUMMY);
+        let err =
+            LowerError::contract_violation("metadata mismatch", unspanned_lower_error_test_span());
 
         assert_eq!(err.source_span(), None);
         assert_eq!(err.reason(), "invalid IR contract: metadata mismatch");
@@ -356,7 +365,11 @@ mod tests {
 
     #[test]
     fn fallback_span_preserves_invalid_function_context() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 19);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_error_source_7.mo"),
+            11,
+            19,
+        );
         let err = LowerError::InvalidFunction {
             name: "Pkg.f".to_string(),
             reason: "required input `x` has no actual argument".to_string(),
@@ -372,7 +385,11 @@ mod tests {
 
     #[test]
     fn scalarization_error_preserves_source_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 21, 34);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_error_source_9.mo"),
+            21,
+            34,
+        );
         let err: LowerError = rumoca_eval_solve::ScalarizeError::InvalidStrideDimension {
             kind: "map",
             dimension: 3,

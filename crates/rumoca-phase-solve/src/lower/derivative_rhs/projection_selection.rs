@@ -495,6 +495,10 @@ mod tests {
         )
     }
 
+    fn unspanned_projection_selection_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn reserve_projection_capacity_dummy_span_stays_unspanned() {
         let mut values = Vec::<rumoca_core::Expression>::new();
@@ -502,7 +506,7 @@ mod tests {
             &mut values,
             usize::MAX,
             "projection values",
-            rumoca_core::Span::DUMMY,
+            unspanned_projection_selection_test_span(),
         )
         .expect_err("impossible capacity must be rejected");
 

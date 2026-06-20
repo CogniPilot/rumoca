@@ -96,6 +96,125 @@ fn test_compile_to_json_returns_canonical_payload() {
     );
 }
 
+const BALL_SOURCE: &str = "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n";
+
+#[test]
+fn test_cli_compile_default_matches_compile() {
+    // Verbatim CLI compile (no --emit/--target) returns the same raw DAE the
+    // `compile` one-shot does.
+    let cli_json = cli(
+        vec![
+            "compile".into(),
+            "-m".into(),
+            "Ball".into(),
+            "Ball.mo".into(),
+        ],
+        Some(BALL_SOURCE),
+    )
+    .expect("cli compile");
+    let cli_value: Value = serde_json::from_str(&cli_json).expect("valid JSON");
+    let direct = compile(BALL_SOURCE, Some("Ball"), Some("Ball.mo"), None).expect("compile");
+    let direct_value: Value = serde_json::from_str(&direct).expect("valid JSON");
+    assert_eq!(cli_value, direct_value);
+}
+
+#[test]
+fn test_cli_compile_emit_solve_json_returns_ir() {
+    let cli_json = cli(
+        vec![
+            "compile".into(),
+            "-m".into(),
+            "Ball".into(),
+            "--emit".into(),
+            "solve-json".into(),
+            "Ball.mo".into(),
+        ],
+        Some(BALL_SOURCE),
+    )
+    .expect("cli compile emit");
+    let value: Value = serde_json::from_str(&cli_json).expect("valid JSON");
+    assert!(value.is_object(), "solve IR JSON should be an object");
+}
+
+#[test]
+fn test_cli_compile_emit_dae_mo_returns_modelica() {
+    let cli_json = cli(
+        vec![
+            "compile".into(),
+            "-m".into(),
+            "Ball".into(),
+            "--emit".into(),
+            "dae-mo".into(),
+            "Ball.mo".into(),
+        ],
+        Some(BALL_SOURCE),
+    )
+    .expect("cli compile emit dae-mo");
+    let value: Value = serde_json::from_str(&cli_json).expect("valid JSON");
+    assert_eq!(
+        value.get("format").and_then(Value::as_str),
+        Some("modelica")
+    );
+    assert!(
+        value
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.contains("Ball")),
+        "dae-mo source should mention the model"
+    );
+}
+
+#[test]
+fn test_cli_sim_returns_payload() {
+    // Non-trivial decay (start=1) so the solver has dynamics to integrate.
+    let decay = "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n";
+    let cli_json = cli(
+        vec![
+            "sim".into(),
+            "-m".into(),
+            "Decay".into(),
+            "--t-end".into(),
+            "1".into(),
+            "Decay.mo".into(),
+        ],
+        Some(decay),
+    )
+    .expect("cli sim");
+    let value: Value = serde_json::from_str(&cli_json).expect("valid JSON");
+    assert_eq!(value.get("model").and_then(Value::as_str), Some("Decay"));
+    assert!(
+        value.get("payload").is_some(),
+        "sim result should have payload"
+    );
+    assert!(
+        value.get("metrics").is_some(),
+        "sim result should have metrics"
+    );
+}
+
+#[test]
+fn test_cli_rejects_bad_args() {
+    // Verbatim clap parsing: an unknown flag is a parse error surfaced as the
+    // clap message.
+    let err = cli(vec!["compile".into(), "--nope".into()], Some(BALL_SOURCE))
+        .expect_err("unknown flag should error");
+    let message: String = err.0;
+    assert!(
+        message.contains("--nope") || message.contains("unexpected argument"),
+        "clap parse error should be surfaced: {message}"
+    );
+}
+
+#[test]
+fn test_cli_unsupported_subcommand_errors() {
+    let err = cli(vec!["lint".into()], None).expect_err("lint is not a data command");
+    assert!(
+        err.0.contains("only supports"),
+        "unsupported subcommand should explain: {}",
+        err.0
+    );
+}
+
 #[test]
 fn test_compile_file_reads_source_from_path() {
     let temp_dir = unique_temp_model_dir("rumoca_bind_python_ball");
@@ -316,4 +435,36 @@ fn unique_temp_model_dir(stem: &str) -> std::path::PathBuf {
         .expect("system time")
         .as_nanos();
     std::env::temp_dir().join(format!("{stem}_{nanos}"))
+}
+
+// Serializes tests that mutate the process-wide current directory so they do
+// not race each other.
+static CWD_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn test_compile_file_relative_path_does_not_self_duplicate() {
+    let temp_dir = unique_temp_model_dir("rumoca_bind_python_relative_ball");
+    fs::create_dir(&temp_dir).expect("create temp model dir");
+    fs::write(
+        temp_dir.join("Ball.mo"),
+        "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
+    )
+    .expect("write temp model");
+
+    let dae_json = {
+        let _guard = CWD_GUARD.lock().expect("cwd guard");
+        let original = env::current_dir().expect("current dir");
+        env::set_current_dir(&temp_dir).expect("enter temp dir");
+        // A bare relative filename makes the directory scan spell the requested
+        // file as `./Ball.mo`; without canonical dedup it is registered twice
+        // and reported as a duplicate class of itself.
+        let result = compile_file("Ball.mo", Some("Ball"), None);
+        env::set_current_dir(&original).expect("restore dir");
+        result.expect("compile from relative path")
+    };
+
+    let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+    assert_dae_model_class_type(&dae);
+
+    let _ = fs::remove_dir_all(temp_dir);
 }

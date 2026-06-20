@@ -900,7 +900,13 @@ mod tests {
 
     #[test]
     fn array_like_builtin_lowering_rejects_non_array_dispatch_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(23), 2, 8);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_builtins_source_23.mo",
+            ),
+            2,
+            8,
+        );
         let arg = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
             span,
@@ -930,7 +936,13 @@ mod tests {
 
     #[test]
     fn array_like_builtin_missing_arg_uses_available_arg_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(24), 5, 9);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_builtins_source_24.mo",
+            ),
+            5,
+            9,
+        );
         let arg = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(0),
             span,
@@ -1141,11 +1153,11 @@ mod tests {
         );
         let start = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.0),
-            span: rumoca_core::Span::DUMMY,
+            span: count_span,
         };
         let stop = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: count_span,
         };
         let count = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
@@ -1171,7 +1183,13 @@ mod tests {
 
     #[test]
     fn checked_non_negative_dimension_rejects_negative_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(25), 1, 4);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_builtins_source_25.mo",
+            ),
+            1,
+            4,
+        );
 
         let err = checked_non_negative_dimension(-1, "fill dimension", span)
             .expect_err("negative dimension must fail");
@@ -1182,7 +1200,13 @@ mod tests {
 
     #[test]
     fn checked_builtin_count_product_rejects_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(26), 9, 14);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_builtins_source_26.mo",
+            ),
+            9,
+            14,
+        );
 
         let err = checked_builtin_count_product(usize::MAX, 2, "fill dimensions", Some(span))
             .expect_err("dimension product overflow must fail");
@@ -1208,7 +1232,13 @@ mod tests {
 
     #[test]
     fn reserve_reg_capacity_rejects_impossible_capacity_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(27), 3, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_builtins_source_27.mo",
+            ),
+            3,
+            12,
+        );
         let mut values = Vec::<Reg>::new();
 
         let err = reserve_reg_capacity(
@@ -1247,7 +1277,13 @@ mod tests {
 
     #[test]
     fn checked_matrix_extent_rejects_overflow() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(28), 4, 10);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_builtins_source_28.mo",
+            ),
+            4,
+            10,
+        );
 
         let err = checked_matrix_extent(usize::MAX, 2, "transpose matrix extent", Some(span))
             .expect_err("matrix extent overflow must fail");

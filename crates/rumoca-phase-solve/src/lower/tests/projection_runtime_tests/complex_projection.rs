@@ -85,12 +85,12 @@ fn lower_expression_collapses_singleton_colon_projection() {
             "flow",
         )),
         subscripts: vec![
-            rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::generated_index(1, lower_test_span()),
             rumoca_core::Subscript::Colon {
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("singleton colon projection should resolve from layout shape");
@@ -151,7 +151,7 @@ fn lower_expression_handles_projected_complex_sum_over_array_comprehension() {
     let layout = VarLayout::default();
     let lit = |value: f64| rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let expr = rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::FunctionCall {
@@ -169,13 +169,13 @@ fn lower_expression_handles_projected_complex_sum_over_array_comprehension() {
                                 test_component_ref_from_name("k"),
                             ),
                             subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                         lit(1.0),
                     ],
                     is_constructor: true,
 
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 }),
                 indices: vec![rumoca_core::ComprehensionIndex {
                     name: "k".to_string(),
@@ -183,17 +183,17 @@ fn lower_expression_handles_projected_complex_sum_over_array_comprehension() {
                         start: Box::new(lit(1.0)),
                         step: None,
                         end: Box::new(lit(2.0)),
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                 }],
                 filter: None,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("projected complex sum over array comprehension should lower");
@@ -237,7 +237,7 @@ fn lower_expression_handles_projected_complex_operator_call() {
     let layout = VarLayout::default();
     let lit = |value: f64| rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let expr = rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::FunctionCall {
@@ -252,7 +252,7 @@ fn lower_expression_handles_projected_complex_operator_call() {
                     args: vec![lit(1.0), lit(2.0)],
                     is_constructor: true,
 
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(
@@ -261,14 +261,14 @@ fn lower_expression_handles_projected_complex_operator_call() {
                     args: vec![lit(3.0), lit(4.0)],
                     is_constructor: true,
 
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("projected complex operator call should lower");
@@ -446,8 +446,7 @@ fn lower_expression_handles_projected_complex_output_with_array_literal_field_in
 fn lower_expression_handles_projected_complex_sum_with_encoded_slice_varref() {
     let mut functions = IndexMap::new();
     let span = lower_test_span();
-    let mut function =
-        rumoca_core::Function::new("Pkg.sumComplexEncoded", rumoca_core::Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.sumComplexEncoded", lower_test_span());
     function.inputs.push(
         rumoca_core::FunctionParam::new("v", "Modelica.ComplexMath.Complex", lower_test_span())
             .with_dims(vec![3]),
@@ -488,10 +487,10 @@ fn lower_expression_handles_projected_complex_sum_with_encoded_slice_varref() {
                 },
             ],
             is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
 
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     functions.insert(function.name.clone(), function);
 
@@ -546,8 +545,7 @@ fn lower_expression_handles_projected_complex_sum_with_encoded_slice_varref() {
 #[test]
 fn lower_expression_rejects_complex_array_input_width_mismatch_with_span() {
     let mut functions = IndexMap::new();
-    let mut function =
-        rumoca_core::Function::new("Pkg.sumComplexEncoded", rumoca_core::Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.sumComplexEncoded", lower_test_span());
     function.inputs.push(
         rumoca_core::FunctionParam::new("v", "Modelica.ComplexMath.Complex", lower_test_span())
             .with_dims(vec![3]),
@@ -571,9 +569,9 @@ fn lower_expression_rejects_complex_array_input_width_mismatch_with_span() {
                             test_component_ref_from_name("v[:].re"),
                         ),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::BuiltinCall {
                     function: rumoca_core::BuiltinFunction::Sum,
@@ -582,23 +580,29 @@ fn lower_expression_rejects_complex_array_input_width_mismatch_with_span() {
                             test_component_ref_from_name("v[:].im"),
                         ),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     functions.insert(function.name.clone(), function);
 
     let lit = |value: f64| rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(61), 12, 48);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_projection_runtime_tests_complex_projection_source_61.mo",
+        ),
+        12,
+        48,
+    );
     let arg = rumoca_core::Expression::Array {
         elements: vec![rumoca_core::Expression::FunctionCall {
             name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
@@ -645,9 +649,9 @@ fn lower_expression_der_builtin_returns_zero() {
                 "x",
             )),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let lowered =
         lower_expression(&expr, &layout, &IndexMap::new()).expect("der builtin should lower");

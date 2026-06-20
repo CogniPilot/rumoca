@@ -846,10 +846,22 @@ fn expand_values_to_size(
 mod tests {
     use super::*;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn unspanned_layout_test_span() -> Span {
+        Span::DUMMY
+    }
+
     fn real(value: f64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -857,7 +869,7 @@ mod tests {
         rumoca_core::Expression::BuiltinCall {
             function,
             args: vec![real(-5.5), real(2.0)],
-            span: Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -880,23 +892,24 @@ mod tests {
 
     #[test]
     fn build_var_layout_indexes_arrays_by_component_reference() {
+        let span = test_span();
         let component_ref = rumoca_core::ComponentReference {
             local: false,
-            span: Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "plant".to_string(),
-                    span: Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "motor".to_string(),
-                    span: Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "tau".to_string(),
-                    span: Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -928,7 +941,11 @@ mod tests {
 
     #[test]
     fn build_var_layout_rejects_source_array_without_component_reference() {
-        let span = Span::from_offsets(rumoca_core::SourceId(17), 3, 8);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            3,
+            8,
+        );
         let mut dae_model = dae::Dae::default();
         dae_model.variables.algebraics.insert(
             rumoca_core::VarName::new("a"),
@@ -957,7 +974,11 @@ mod tests {
 
     #[test]
     fn build_var_layout_preserves_zero_size_array_shape_without_scalar_slot() {
-        let span = Span::from_offsets(rumoca_core::SourceId(18), 5, 11);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            5,
+            11,
+        );
         let mut dae_model = dae::Dae::default();
         dae_model.variables.algebraics.insert(
             rumoca_core::VarName::new("empty"),
@@ -984,7 +1005,11 @@ mod tests {
 
     #[test]
     fn insert_var_bindings_reports_slot_byte_offset_overflow_with_source_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(19), 7, 14);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            7,
+            14,
+        );
         let var = dae::Variable {
             name: rumoca_core::VarName::new("huge"),
             source_span: span,
@@ -1024,7 +1049,11 @@ mod tests {
 
     #[test]
     fn add_slot_count_reports_overflow_with_source_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(20), 11, 19);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            11,
+            19,
+        );
 
         let err = add_slot_count(usize::MAX, 1, "tail", span)
             .expect_err("slot count overflow must fail layout construction");
@@ -1042,7 +1071,7 @@ mod tests {
             SlotStorage::Y,
             usize::MAX / F64_BYTES + 1,
             "dummy_source",
-            Span::DUMMY,
+            unspanned_layout_test_span(),
         )
         .expect_err("dummy-span scalar slot byte offset overflow must fail");
 
@@ -1086,7 +1115,11 @@ mod tests {
 
     #[test]
     fn insert_array_slot_bindings_reports_capacity_overflow_with_source_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(21), 2, 9);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            2,
+            9,
+        );
         let mut bindings = IndexMap::new();
         let mut shapes = IndexMap::new();
         let mut shape_spans = IndexMap::new();
@@ -1126,9 +1159,13 @@ mod tests {
     fn reserve_indexed_slot_capacity_reports_overflow_without_dummy_span() {
         let mut slots = Vec::new();
 
-        let err =
-            reserve_indexed_slot_capacity(&mut slots, usize::MAX, "dummy_indexed", Span::DUMMY)
-                .expect_err("dummy-span indexed slot capacity overflow must fail");
+        let err = reserve_indexed_slot_capacity(
+            &mut slots,
+            usize::MAX,
+            "dummy_indexed",
+            unspanned_layout_test_span(),
+        )
+        .expect_err("dummy-span indexed slot capacity overflow must fail");
 
         assert_eq!(err.source_span(), None);
         assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
@@ -1140,7 +1177,11 @@ mod tests {
 
     #[test]
     fn expand_values_to_size_reports_capacity_overflow_with_source_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(22), 4, 13);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            4,
+            13,
+        );
 
         let err = expand_values_to_size(vec![1.0], usize::MAX, "huge_constant", span)
             .expect_err("oversized constant value expansion must fail layout construction");
@@ -1154,8 +1195,13 @@ mod tests {
 
     #[test]
     fn expand_values_to_size_reports_capacity_overflow_without_dummy_span() {
-        let err = expand_values_to_size(vec![1.0], usize::MAX, "dummy_constant", Span::DUMMY)
-            .expect_err("dummy-span constant value expansion must fail layout construction");
+        let err = expand_values_to_size(
+            vec![1.0],
+            usize::MAX,
+            "dummy_constant",
+            unspanned_layout_test_span(),
+        )
+        .expect_err("dummy-span constant value expansion must fail layout construction");
 
         assert_eq!(err.source_span(), None);
         assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
@@ -1167,12 +1213,12 @@ mod tests {
 
     #[test]
     fn expand_values_to_size_preserves_broadcast_and_padding_behavior() {
-        let broadcast = expand_values_to_size(vec![2.5], 3, "constant", Span::DUMMY);
+        let broadcast = expand_values_to_size(vec![2.5], 3, "constant", test_span());
         let Ok(broadcast) = broadcast else {
             panic!("scalar constant should broadcast");
         };
         assert_eq!(broadcast, vec![2.5, 2.5, 2.5]);
-        let padded = expand_values_to_size(vec![1.0, 2.0], 4, "constant", Span::DUMMY);
+        let padded = expand_values_to_size(vec![1.0, 2.0], 4, "constant", test_span());
         let Ok(padded) = padded else {
             panic!("short explicit constant should pad with the last value");
         };
@@ -1181,7 +1227,11 @@ mod tests {
 
     #[test]
     fn build_var_layout_reports_invalid_dims_with_source_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(23), 7, 14);
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
+            7,
+            14,
+        );
         let mut dae_model = dae::Dae::default();
         dae_model.variables.algebraics.insert(
             rumoca_core::VarName::new("bad"),
@@ -1214,7 +1264,7 @@ mod tests {
             rumoca_core::VarName::new("bad"),
             dae::Variable {
                 name: rumoca_core::VarName::new("bad"),
-                source_span: Span::DUMMY,
+                source_span: unspanned_layout_test_span(),
                 dims: vec![2, -1],
                 component_ref: Some(crate::test_support::component_ref_from_name("bad")),
                 ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(

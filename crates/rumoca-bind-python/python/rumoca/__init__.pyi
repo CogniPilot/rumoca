@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, Sequence
 
+from ._magic import (
+    load_ipython_extension as load_ipython_extension,
+    unload_ipython_extension as unload_ipython_extension,
+)
+
 ScenarioTask = Literal["simulate", "codegen"]
 Solver = Literal["auto", "rk-like", "bdf"]
 
@@ -224,6 +229,7 @@ def check(source: str, filename: str | None = None) -> list[LintMessage]: ...
 def format(source: str, filename: str | None = None) -> str: ...
 def format_or_original(source: str, filename: str | None = None) -> str: ...
 def get_builtin_targets() -> str: ...
+def cli(args: list[str], source: str | None = None) -> str: ...
 def effective_source_roots(
     source_roots: list[str] | None = None,
     workspace_root: str | None = None,

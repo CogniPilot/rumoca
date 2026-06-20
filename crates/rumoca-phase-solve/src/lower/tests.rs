@@ -36,6 +36,10 @@ fn lower_test_span() -> rumoca_core::Span {
     )
 }
 
+fn unspanned_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 fn scalar_program_block_fixture(
     block: &rumoca_ir_solve::ComputeBlock,
 ) -> rumoca_ir_solve::ScalarProgramBlock {
@@ -51,7 +55,7 @@ fn lower_builder_try_pack_registers_rejects_overflow() {
     builder.next_reg = Reg::MAX;
 
     let err = builder
-        .try_pack_registers(&[0], rumoca_core::Span::DUMMY)
+        .try_pack_registers(&[0], unspanned_test_span())
         .expect_err("register pack should reject allocation overflow");
 
     assert_eq!(err.source_span(), None);
@@ -147,7 +151,7 @@ fn random_result_rejects_register_allocation_overflow() {
         .emit_random_result(
             rumoca_ir_solve::RandomGenerator::Xorshift1024Star,
             &[0],
-            rumoca_core::Span::DUMMY,
+            unspanned_test_span(),
         )
         .expect_err("random result should reject allocation overflow");
 
@@ -170,7 +174,7 @@ fn random_result_overflow_does_not_emit_partial_pack() {
         .emit_random_result(
             rumoca_ir_solve::RandomGenerator::Xorshift1024Star,
             &[0],
-            rumoca_core::Span::DUMMY,
+            unspanned_test_span(),
         )
         .expect_err("random result should preflight pack plus result allocation");
 
@@ -188,7 +192,11 @@ fn slot_load_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(15), 8, 12);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_15.mo"),
+        8,
+        12,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -268,7 +276,11 @@ fn const_emit_at_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(16), 2, 7);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_16.mo"),
+        2,
+        7,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -289,7 +301,11 @@ fn scalar_binary_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(25), 9, 13);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_25.mo"),
+        9,
+        13,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -310,7 +326,11 @@ fn scalar_unary_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(26), 4, 10);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_26.mo"),
+        4,
+        10,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -331,7 +351,11 @@ fn periodic_tick_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(17), 4, 11);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_17.mo"),
+        4,
+        11,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -352,7 +376,11 @@ fn select_emit_at_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(18), 6, 14);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_18.mo"),
+        6,
+        14,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -373,7 +401,11 @@ fn size_builtin_rejects_missing_base_argument_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(21), 4, 10);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_21.mo"),
+        4,
+        10,
+    );
 
     let err = builder
         .lower_size_builtin(&[], span, &Scope::new(), 0)
@@ -395,11 +427,11 @@ fn size_builtin_rejects_unspanned_base_without_fabricating_span() {
     let mut builder = super::LowerBuilder::new(&layout, &functions);
     let base = rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(1),
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_test_span(),
     };
 
     let err = builder
-        .lower_size_builtin(&[base], rumoca_core::Span::DUMMY, &Scope::new(), 0)
+        .lower_size_builtin(&[base], unspanned_test_span(), &Scope::new(), 0)
         .expect_err("unspanned size() base should fail before emitting code");
 
     assert_eq!(err.source_span(), None);
@@ -416,7 +448,11 @@ fn size_from_dims_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(19), 3, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_19.mo"),
+        3,
+        9,
+    );
     let base = rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(1),
         span,
@@ -441,12 +477,16 @@ fn structural_index_selector_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(20), 12, 13);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_20.mo"),
+        12,
+        13,
+    );
     let subscript = rumoca_core::Subscript::index(1, span);
     builder.next_reg = Reg::MAX;
 
     let err = builder
-        .lower_structural_index_selector(&subscript, rumoca_core::Span::DUMMY, &Scope::new(), 0)
+        .lower_structural_index_selector(&subscript, unspanned_test_span(), &Scope::new(), 0)
         .expect_err("structural index selector should reject register overflow");
 
     assert_eq!(err.source_span(), Some(span));
@@ -463,8 +503,12 @@ fn structural_index_selector_uses_context_span_for_generated_subscript() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(20), 18, 27);
-    let subscript = rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_20.mo"),
+        18,
+        27,
+    );
+    let subscript = rumoca_core::Subscript::generated_index(1, unspanned_test_span());
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -485,7 +529,11 @@ fn standard_normal_quantile_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(21), 5, 18);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_21.mo"),
+        5,
+        18,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -506,7 +554,11 @@ fn raw_real_fft_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(22), 1, 19);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_22.mo"),
+        1,
+        19,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -527,7 +579,11 @@ fn array_builtin_zero_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(23), 7, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_23.mo"),
+        7,
+        8,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Zeros,
         args: vec![rumoca_core::Expression::Literal {
@@ -556,7 +612,11 @@ fn min_max_empty_rejects_register_allocation_overflow() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(31), 2, 6);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_31.mo"),
+        2,
+        6,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -587,7 +647,11 @@ fn subscript_match_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(24), 2, 6);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_24.mo"),
+        2,
+        6,
+    );
     builder.next_reg = Reg::MAX;
 
     let err = builder
@@ -608,7 +672,11 @@ fn assignment_control_guard_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = super::LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(27), 11, 17);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_27.mo"),
+        11,
+        17,
+    );
     let mut scope = Scope::new();
     scope.insert(super::generated_scope_key(super::RETURN_FLAG_BINDING), 0);
     scope.insert(super::generated_scope_key(super::BREAK_FLAG_BINDING), 1);
@@ -690,6 +758,10 @@ fn source_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference
         }
     }
     component_ref
+}
+
+fn source_ref(name: &str) -> rumoca_core::Reference {
+    rumoca_core::Reference::from_component_reference(source_component_ref_from_name(name))
 }
 
 fn source_fixture_def_id(name: &str) -> rumoca_core::DefId {
@@ -1037,7 +1109,7 @@ fn function_param(name: &str) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
         name: name.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         type_name: "Real".to_string(),
         type_class: None,
         dims: vec![],
@@ -1051,7 +1123,7 @@ fn function_param_with_dims(name: &str, dims: &[i64]) -> rumoca_core::FunctionPa
     rumoca_core::FunctionParam {
         def_id: None,
         name: name.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         type_name: "Real".to_string(),
         type_class: None,
         dims: dims.to_vec(),
@@ -1063,9 +1135,9 @@ fn function_param_with_dims(name: &str, dims: &[i64]) -> rumoca_core::FunctionPa
 
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
+        name: rumoca_core::Reference::generated(name),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_test_span(),
     }
 }
 
@@ -1137,7 +1209,7 @@ fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 

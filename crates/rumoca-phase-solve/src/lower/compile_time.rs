@@ -399,10 +399,22 @@ fn reserve_compile_time_start_capacity(
 mod tests {
     use super::*;
 
+    fn compile_time_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_compile_time_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn unspanned_compile_time_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     fn real(value: f64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: compile_time_test_span(),
         }
     }
 
@@ -410,14 +422,18 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: compile_time_test_span(),
         }
     }
 
     #[test]
     fn structural_bindings_report_invalid_variable_shape_span() {
         let mut dae_model = dae::Dae::default();
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(45), 7, 19);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_compile_time_source_45.mo"),
+            7,
+            19,
+        );
         dae_model.variables.constants.insert(
             rumoca_core::VarName::new("bad"),
             dae::Variable {
@@ -450,7 +466,11 @@ mod tests {
 
     #[test]
     fn expand_values_to_size_reports_capacity_overflow_with_source_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 5, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_compile_time_source_46.mo"),
+            5,
+            12,
+        );
         let err = expand_values_to_size(vec![1.0], usize::MAX, "huge_structural", span)
             .expect_err("oversized structural start broadcast should fail before allocating");
 
@@ -469,7 +489,7 @@ mod tests {
             vec![1.0],
             usize::MAX,
             "huge_structural",
-            rumoca_core::Span::DUMMY,
+            unspanned_compile_time_test_span(),
         )
         .expect_err("oversized structural start broadcast should fail before allocating");
 
@@ -484,13 +504,14 @@ mod tests {
 
     #[test]
     fn expand_values_to_size_preserves_scalar_broadcast_behavior() {
+        let span = compile_time_test_span();
         assert_eq!(
-            expand_values_to_size(vec![3.0], 4, "x", rumoca_core::Span::DUMMY)
+            expand_values_to_size(vec![3.0], 4, "x", span)
                 .expect("scalar structural start should broadcast"),
             vec![3.0, 3.0, 3.0, 3.0]
         );
         assert_eq!(
-            expand_values_to_size(vec![1.0, 2.0], 4, "x", rumoca_core::Span::DUMMY)
+            expand_values_to_size(vec![1.0, 2.0], 4, "x", span)
                 .expect("non-scalar structural starts are left unchanged"),
             vec![1.0, 2.0]
         );
@@ -508,7 +529,7 @@ mod tests {
     fn var_key_declines_unrepresentable_expression_subscript() {
         let subscript = rumoca_core::Subscript::expr(
             Box::new(real(usize::MAX as f64)),
-            rumoca_core::Span::DUMMY,
+            compile_time_test_span(),
         );
 
         assert_eq!(

@@ -8,7 +8,7 @@
     "samplePeriod": {
       "name": "samplePeriod",
       "source_span": {
-        "source": 1,
+        "source": 6737700698879693057,
         "start": 10,
         "end": 20
       },
@@ -19,7 +19,7 @@
             "Real": 0.1
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -46,7 +46,7 @@
     "hold.y": {
       "name": "hold.y",
       "source_span": {
-        "source": 1,
+        "source": 6737700698879693057,
         "start": 10,
         "end": 20
       },
@@ -57,7 +57,7 @@
             "Real": 0.0
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -83,7 +83,7 @@
     "and1.y": {
       "name": "and1.y",
       "source_span": {
-        "source": 1,
+        "source": 6737700698879693057,
         "start": 10,
         "end": 20
       },
@@ -94,7 +94,7 @@
             "Boolean": false
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -118,7 +118,7 @@
     "not1.y": {
       "name": "not1.y",
       "source_span": {
-        "source": 1,
+        "source": 6737700698879693057,
         "start": 10,
         "end": 20
       },
@@ -129,7 +129,7 @@
             "Boolean": true
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -198,7 +198,7 @@
                   "name": "and1.y",
                   "subscripts": [],
                   "span": {
-                    "source": 1,
+                    "source": 6737700698879693057,
                     "start": 10,
                     "end": 20
                   }
@@ -210,7 +210,7 @@
                     "Real": 1.0
                   },
                   "span": {
-                    "source": 1,
+                    "source": 6737700698879693057,
                     "start": 10,
                     "end": 20
                   }
@@ -224,14 +224,14 @@
                 "Real": 0.0
               },
               "span": {
-                "source": 1,
+                "source": 6737700698879693057,
                 "start": 10,
                 "end": 20
               }
             }
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -288,7 +288,7 @@
               "name": "greater.y",
               "subscripts": [],
               "span": {
-                "source": 1,
+                "source": 6737700698879693057,
                 "start": 10,
                 "end": 20
               }
@@ -299,14 +299,14 @@
               "name": "pulse.y",
               "subscripts": [],
               "span": {
-                "source": 1,
+                "source": 6737700698879693057,
                 "start": 10,
                 "end": 20
               }
             }
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -361,14 +361,14 @@
               "name": "and1.y",
               "subscripts": [],
               "span": {
-                "source": 1,
+                "source": 6737700698879693057,
                 "start": 10,
                 "end": 20
               }
             }
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -427,7 +427,7 @@
               "name": "time",
               "subscripts": [],
               "span": {
-                "source": 1,
+                "source": 6737700698879693057,
                 "start": 10,
                 "end": 20
               }
@@ -438,14 +438,14 @@
               "name": "samplePeriod",
               "subscripts": [],
               "span": {
-                "source": 1,
+                "source": 6737700698879693057,
                 "start": 10,
                 "end": 20
               }
             }
           },
           "span": {
-            "source": 1,
+            "source": 6737700698879693057,
             "start": 10,
             "end": 20
           }
@@ -469,7 +469,7 @@
             "name": "time",
             "subscripts": [],
             "span": {
-              "source": 1,
+              "source": 6737700698879693057,
               "start": 10,
               "end": 20
             }
@@ -480,14 +480,14 @@
             "name": "samplePeriod",
             "subscripts": [],
             "span": {
-              "source": 1,
+              "source": 6737700698879693057,
               "start": 10,
               "end": 20
             }
           }
         },
         "span": {
-          "source": 1,
+          "source": 6737700698879693057,
           "start": 10,
           "end": 20
         }

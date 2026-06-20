@@ -377,7 +377,11 @@ mod tests {
     use super::*;
 
     fn test_span() -> Span {
-        Span::from_offsets(rumoca_core::SourceId(97), 11, 23)
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("current_value_rewrite_fixture.mo"),
+            11,
+            23,
+        )
     }
 
     fn literal(value: f64, span: Span) -> Expression {

@@ -19,7 +19,11 @@ fn minus_op() -> OpUnary {
 }
 
 fn test_span() -> Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_eliminate_tests_source_1.mo"),
+        1,
+        2,
+    )
 }
 
 fn structural_ok<T>(result: Result<T, StructuralError>) -> T {

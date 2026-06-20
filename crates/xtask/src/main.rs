@@ -17,6 +17,7 @@ mod static_server;
 mod test_cmd;
 mod verify_cmd;
 mod vscode_cmd;
+mod vscode_python_env;
 mod wasm_tooling;
 
 #[global_allocator]

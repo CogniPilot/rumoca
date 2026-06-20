@@ -31,7 +31,11 @@ fn compile_failure_report_handles_missing_label_source() {
         phase: None,
         error_code: Some("EX998".to_string()),
         error: "phase emitted stale source id".to_string(),
-        primary_label: Some(Label::primary(Span::from_offsets(SourceId(99), 0, 1))),
+        primary_label: Some(Label::primary(Span::from_offsets(
+            SourceId::from_source_name("rumoca_main_tests_source_99.mo"),
+            0,
+            1,
+        ))),
     };
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");

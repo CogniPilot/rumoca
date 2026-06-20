@@ -395,9 +395,13 @@ fn call_site_error(reason: String) -> LowerError {
 mod tests {
     use super::*;
 
+    fn unspanned_emit_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn allocation_error_does_not_fabricate_dummy_span() {
-        let err = allocation_error(Reg::MAX, rumoca_core::Span::DUMMY);
+        let err = allocation_error(Reg::MAX, unspanned_emit_test_span());
 
         assert_eq!(err.source_span(), None);
         assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));

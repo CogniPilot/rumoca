@@ -402,9 +402,18 @@ pub(in crate::lower) fn split_named_and_positional_call_args<'a>(
 mod tests {
     use super::*;
 
+    fn unspanned_runtime_intrinsics_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn find_string_special_value_uses_modelica_one_based_index() {
-        let value = find_string_special_value(false, "abcdef", "cd", rumoca_core::Span::DUMMY)
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("runtime_intrinsics_string_find.mo"),
+            3,
+            20,
+        );
+        let value = find_string_special_value(false, "abcdef", "cd", span)
             .expect("literal string find should evaluate");
 
         assert_eq!(value, 3.0);
@@ -412,7 +421,12 @@ mod tests {
 
     #[test]
     fn find_string_special_value_returns_zero_for_missing_match() {
-        let value = find_string_special_value(true, "abcdef", "xy", rumoca_core::Span::DUMMY)
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("runtime_intrinsics_string_find_last.mo"),
+            5,
+            26,
+        );
+        let value = find_string_special_value(true, "abcdef", "xy", span)
             .expect("literal string findLast should evaluate");
 
         assert_eq!(value, 0.0);
@@ -434,20 +448,20 @@ mod tests {
         let args = vec![
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: unspanned_runtime_intrinsics_test_span(),
             },
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span: unspanned_runtime_intrinsics_test_span(),
             },
             rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("n").into(),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span: unspanned_runtime_intrinsics_test_span(),
             },
         ];
 
-        let err = random_state_len_arg(&args, rumoca_core::Span::DUMMY)
+        let err = random_state_len_arg(&args, unspanned_runtime_intrinsics_test_span())
             .expect_err("unspanned random state length must fail");
 
         assert_eq!(err.source_span(), None);
@@ -460,20 +474,26 @@ mod tests {
 
     #[test]
     fn random_state_len_arg_uses_owner_span_for_non_literal() {
-        let owner_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(901), 4, 19);
+        let owner_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_function_calls_runtime_intrinsics_source_901.mo",
+            ),
+            4,
+            19,
+        );
         let args = vec![
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             },
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             },
             rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("n").into(),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span: unspanned_runtime_intrinsics_test_span(),
             },
         ];
 
