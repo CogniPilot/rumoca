@@ -466,9 +466,17 @@ fn real_fft_sample_points(
 mod tests {
     use super::*;
 
+    fn unspanned_fft_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn checked_fft_frequency_count_rejects_fractional_value_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(31), 5, 9);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_fft_source_31.mo"),
+            5,
+            9,
+        );
         let err =
             checked_fft_frequency_count(2.5, span).expect_err("fractional FFT count must fail");
 
@@ -481,7 +489,11 @@ mod tests {
 
     #[test]
     fn checked_fft_frequency_count_rejects_host_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(32), 7, 15);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_lower_fft_source_32.mo"),
+            7,
+            15,
+        );
         let err = checked_fft_frequency_count(usize::MAX as f64, span)
             .expect_err("oversized FFT count must fail");
 
@@ -491,7 +503,7 @@ mod tests {
 
     #[test]
     fn checked_fft_frequency_count_rejects_host_overflow_without_fabricating_span() {
-        let err = checked_fft_frequency_count(usize::MAX as f64, rumoca_core::Span::DUMMY)
+        let err = checked_fft_frequency_count(usize::MAX as f64, unspanned_fft_test_span())
             .expect_err("oversized FFT count must fail");
 
         assert_eq!(err.source_span(), None);
@@ -529,11 +541,11 @@ mod tests {
         let args = [
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.0),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
         ];
 
@@ -573,7 +585,7 @@ mod tests {
     fn fft_projection_error_is_unspanned_without_projection_span() {
         let err = fft_projection_error(
             "FFT phase projection index must be one-based",
-            rumoca_core::Span::DUMMY,
+            unspanned_fft_test_span(),
         );
 
         assert_eq!(err.source_span(), None);

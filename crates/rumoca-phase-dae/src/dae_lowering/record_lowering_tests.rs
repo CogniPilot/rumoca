@@ -3,7 +3,7 @@ use rumoca_core::{ClassType, Literal, Span, VarName};
 
 fn test_span(start: usize) -> Span {
     Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("record_lowering_test.mo"),
+        rumoca_core::SourceId::from_source_name(file!()),
         start,
         start + 5,
     )
@@ -18,7 +18,7 @@ fn var_ref(name: &str, span: Span) -> rumoca_core::Expression {
 }
 
 fn record_constructor() -> rumoca_core::Function {
-    let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("Pkg.Record", test_span(1));
     constructor.is_constructor = true;
     constructor.add_input(rumoca_core::FunctionParam::new("a", "Real", test_span(1)));
     constructor.add_input(rumoca_core::FunctionParam::new("b", "Real", test_span(1)));
@@ -26,7 +26,7 @@ fn record_constructor() -> rumoca_core::Function {
 }
 
 fn function_with_record_input() -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.f", test_span(1));
     function.add_input(
         rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span(1))
             .with_type_class(ClassType::Record),
@@ -36,7 +36,7 @@ fn function_with_record_input() -> rumoca_core::Function {
 }
 
 fn function_with_array_input() -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.g", test_span(1));
     function
         .add_input(rumoca_core::FunctionParam::new("u", "Real", test_span(1)).with_dims(vec![-1]));
     function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span(1)));
@@ -218,12 +218,12 @@ fn dae_record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
             name: VarName::new("Pkg.f").into(),
             args: vec![rumoca_core::Expression::Literal {
                 value: Literal::Real(1.0),
-                span: Span::DUMMY,
+                span: test_span(1),
             }],
             is_constructor: false,
-            span: Span::DUMMY,
+            span: test_span(1),
         },
-        span: Span::DUMMY,
+        span: test_span(1),
         origin: "test".to_string(),
         scalar_count: 1,
     });

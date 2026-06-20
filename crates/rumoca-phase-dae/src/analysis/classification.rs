@@ -118,11 +118,15 @@ mod tests {
     use super::*;
     use indexmap::IndexSet;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+    }
+
     fn make_var(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -130,14 +134,14 @@ mod tests {
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args: vec![make_var(var_name)],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
     fn make_int(value: i64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -155,7 +159,7 @@ mod tests {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(make_der("x")),
             rhs: Box::new(make_int(1)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
 
         let mut states: IndexSet<rumoca_core::VarName> = IndexSet::new();
@@ -180,7 +184,7 @@ mod tests {
         let nested_der = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sin,
             args: vec![make_der("nested_x")],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
 
         let mut states: IndexSet<rumoca_core::VarName> = IndexSet::new();

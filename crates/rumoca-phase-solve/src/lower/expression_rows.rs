@@ -1469,7 +1469,13 @@ mod tests {
 
     #[test]
     fn scalar_row_namespace_rejects_overflow() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(19), 1, 4);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_expression_rows_source_19.mo",
+            ),
+            1,
+            4,
+        );
         let err = scalar_row_namespace(u64::MAX, 1, span)
             .expect_err("row namespace multiplication should reject overflow");
 
@@ -1477,9 +1483,13 @@ mod tests {
         assert!(matches!(err, LowerError::ContractViolation { .. }));
     }
 
+    fn unspanned_expression_rows_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn scalar_row_namespace_rejects_overflow_without_dummy_span() {
-        let err = scalar_row_namespace(u64::MAX, 1, rumoca_core::Span::DUMMY)
+        let err = scalar_row_namespace(u64::MAX, 1, unspanned_expression_rows_test_span())
             .expect_err("row namespace multiplication should reject overflow");
 
         assert_eq!(err.source_span(), None);
@@ -1497,7 +1507,13 @@ mod tests {
         else {
             return;
         };
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(21), 2, 7);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_expression_rows_source_21.mo",
+            ),
+            2,
+            7,
+        );
 
         let err = row_namespace_from_usize(row_idx, Some(span))
             .expect_err("row namespace must fit in u64");
@@ -1527,7 +1543,13 @@ mod tests {
         else {
             return;
         };
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(20), 3, 8);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_expression_rows_source_20.mo",
+            ),
+            3,
+            8,
+        );
 
         let err = generated_subscript_from_usize(index, span)
             .expect_err("generated subscript must fit in Modelica integer range");
@@ -1548,7 +1570,13 @@ mod tests {
         else {
             return;
         };
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(21), 5, 11);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_expression_rows_source_21.mo",
+            ),
+            5,
+            11,
+        );
         let value = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
             span,
@@ -1567,7 +1595,13 @@ mod tests {
 
     #[test]
     fn expand_row_values_reports_capacity_overflow_with_owner_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(22), 1, 4);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_expression_rows_source_22.mo",
+            ),
+            1,
+            4,
+        );
         let err = match expand_row_values(vec![0], usize::MAX, span) {
             Ok(_) => panic!("oversized expression value expansion should fail before allocating"),
             Err(err) => err,

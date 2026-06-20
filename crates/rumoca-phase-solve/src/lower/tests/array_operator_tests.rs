@@ -26,7 +26,7 @@ fn builtin(
     rumoca_core::Expression::BuiltinCall {
         function,
         args,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -84,7 +84,13 @@ fn lower_expression_lowers_vector_vector_multiply_as_scalar_product() {
 
 #[test]
 fn lower_expression_reports_linspace_arity_error_with_argument_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(22), 9, 12);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_array_operator_tests_source_22.mo",
+        ),
+        9,
+        12,
+    );
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Linspace,
         args: vec![rumoca_core::Expression::Literal {
@@ -118,7 +124,13 @@ fn lower_expression_reports_non_scalar_multiply_shape_error_with_operation_span(
         .parameters
         .insert(rumoca_core::VarName::new("M"), array_var("M", &[2, 2]));
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(23), 4, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_array_operator_tests_source_23.mo",
+        ),
+        4,
+        9,
+    );
     let expr = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Mul,
         lhs: Box::new(var("v")),
@@ -150,8 +162,20 @@ fn lower_residual_reports_array_division_denominator_shape_with_operation_span()
         .variables
         .algebraics
         .insert(rumoca_core::VarName::new("b"), array_var("b", &[2]));
-    let equation_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(24), 10, 24);
-    let operation_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(24), 14, 19);
+    let equation_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_array_operator_tests_source_24.mo",
+        ),
+        10,
+        24,
+    );
+    let operation_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_tests_array_operator_tests_source_24.mo",
+        ),
+        14,
+        19,
+    );
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("A").into()),
         rhs: rumoca_core::Expression::Binary {
@@ -191,7 +215,7 @@ fn lower_residual_projects_scalarized_record_refs_in_array_row() {
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: add(var("a"), var("b")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "scalarized record sum".to_string(),
         scalar_count: 2,
     });
@@ -224,7 +248,7 @@ fn lower_complex_field_access_projects_parent_refs_from_scalarized_bindings() {
     let expr = rumoca_core::Expression::FieldAccess {
         base: Box::new(mul(source_var("a"), source_var("b"))),
         field: "re".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
@@ -353,7 +377,7 @@ fn lower_expression_selects_dynamic_scalarized_record_field_index() {
 #[test]
 fn lower_residual_projects_unflagged_complex_constructor_in_scalarized_record_row() {
     let mut dae_model = dae::Dae::default();
-    let mut complex_ctor = rumoca_core::Function::new("Complex", rumoca_core::Span::DUMMY);
+    let mut complex_ctor = rumoca_core::Function::new("Complex", lower_test_span());
     complex_ctor.is_constructor = true;
     complex_ctor.inputs.push(rumoca_core::FunctionParam::new(
         "re",
@@ -382,7 +406,7 @@ fn lower_residual_projects_unflagged_complex_constructor_in_scalarized_record_ro
         name: rumoca_core::VarName::new("Complex").into(),
         args: vec![real_lit(0.0), real_lit(1.0)],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let scaled = |factor: rumoca_core::Expression, current: rumoca_core::Expression| {
         mul(mul(mul(j(), source_var("omega")), factor), current)
@@ -396,7 +420,7 @@ fn lower_residual_projects_unflagged_complex_constructor_in_scalarized_record_ro
                 scaled(source_var("m"), source_var("i2")),
             ),
         ),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "scalarized transformer row".to_string(),
         scalar_count: 2,
     });
@@ -427,7 +451,7 @@ fn lower_residual_preserves_row_matrix_literal_shape_for_matrix_vector_product()
     let row = |values: [f64; 4]| rumoca_core::Expression::Array {
         elements: values.into_iter().map(real_lit).collect(),
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let matrix = rumoca_core::Expression::Array {
         elements: vec![
@@ -436,7 +460,7 @@ fn lower_residual_preserves_row_matrix_literal_shape_for_matrix_vector_product()
             row([9.0, 10.0, 11.0, 12.0]),
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
 
     let mut dae_model = dae::Dae::default();
@@ -457,7 +481,7 @@ fn lower_residual_preserves_row_matrix_literal_shape_for_matrix_vector_product()
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: sub(mul(matrix, var("q")), var("y")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "row matrix literal product".to_string(),
         scalar_count: 3,
     });
@@ -499,13 +523,11 @@ fn lower_residual_lowers_slice_of_scalarized_record_field_array() {
     let pin_v = rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::Index {
             base: Box::new(var("pin")),
-            subscripts: vec![rumoca_core::Subscript::generated_colon(
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
+            subscripts: vec![rumoca_core::Subscript::generated_colon(lower_test_span())],
+            span: lower_test_span(),
         }),
         field: "v".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -547,7 +569,7 @@ fn lower_expression_lowers_sum_of_scalarized_record_field_array() {
         vec![rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("pin.LossPower").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }],
     );
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
@@ -581,14 +603,14 @@ fn lower_residual_lowers_sum_of_nested_scalarized_record_field_array() {
     dae_model.continuous.equations.push(residual(sub(
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(60.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         source_builtin(
             rumoca_core::BuiltinFunction::Sum,
             vec![rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("imc.rs.resistor.LossPower").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
         ),
     )));
@@ -652,14 +674,14 @@ fn lower_residual_lowers_sum_of_assignment_only_scalarized_record_field_array() 
     dae_model.continuous.equations.push(residual(sub(
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(60.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         source_builtin(
             rumoca_core::BuiltinFunction::Sum,
             vec![rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("pin.LossPower").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
         ),
     )));
@@ -734,7 +756,7 @@ fn lower_residual_lowers_structural_slice_times_state_vector_as_scalar_product()
             name: rumoca_core::VarName::new("n"),
             start: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(3),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
             is_tunable: false,
             ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
@@ -764,20 +786,20 @@ fn lower_residual_lowers_structural_slice_times_state_vector_as_scalar_product()
             Box::new(rumoca_core::Expression::Range {
                 start: Box::new(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 }),
                 step: None,
                 end: Box::new(var("n")),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("der(x[1])").into()),
         rhs: mul(slice, var("x")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §10.6.5: vector * vector is a scalar product even when one
         // operand is a structural slice and the other is a state vector.
         origin: "state vector scalar product residual".to_string(),
@@ -805,15 +827,15 @@ fn record_array_member_slice_expr(base: &str, field: &str) -> rumoca_core::Expre
                     test_component_ref_from_name(base),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
             subscripts: vec![rumoca_core::Subscript::Colon {
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         field: field.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -864,7 +886,7 @@ fn record_array_member_slice_with_numbering_gap_is_a_contract_violation() {
     let functions = IndexMap::new();
     let builder = crate::lower::LowerBuilder::new(&layout, &functions);
     let err = builder
-        .ensure_dense_record_array_slice("pin", "v", 1, rumoca_core::Span::DUMMY)
+        .ensure_dense_record_array_slice("pin", "v", 1, unspanned_test_span())
         .expect_err("a gap behind the probe stopping point must be rejected");
     assert!(
         matches!(
@@ -878,7 +900,7 @@ fn record_array_member_slice_with_numbering_gap_is_a_contract_violation() {
         "unexpected error: {err}"
     );
     builder
-        .ensure_dense_record_array_slice("pin", "v", 3, rumoca_core::Span::DUMMY)
+        .ensure_dense_record_array_slice("pin", "v", 3, unspanned_test_span())
         .expect("a probe that covered every element is dense");
 }
 
@@ -889,13 +911,13 @@ fn scalar_structural_index_rejects_unspanned_function_call_context() {
             name: rumoca_core::VarName::new("Pkg.f").into(),
             args: vec![],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::Index {
             value: 1,
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_test_span(),
     };
 
     let err = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())

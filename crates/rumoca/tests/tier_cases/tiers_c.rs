@@ -875,6 +875,27 @@ end MiniBusTranscriptionArr;
             r.balance, 0,
             "output-to-bus connection should not overconstrain when output already has a defining equation"
         );
+        let origins = r
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .map(|eq| eq.origin.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            origins
+                .iter()
+                .any(|origin| origin.contains("equation from g")),
+            "source model should retain the component equation defining g.y; origins={origins:?}"
+        );
+        assert!(
+            origins.iter().all(|origin| {
+                !(origin.contains("connection equation")
+                    && origin.contains("g")
+                    && origin.contains("outBus.x"))
+            }),
+            "redundant output-to-known bus connection should be skipped; origins={origins:?}"
+        );
     }
 }
 

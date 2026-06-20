@@ -153,7 +153,11 @@ mod tests {
     use super::*;
 
     fn fixture_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 0, 1)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("eval_solve_update_rows_source_46.mo"),
+            0,
+            1,
+        )
     }
 
     #[test]

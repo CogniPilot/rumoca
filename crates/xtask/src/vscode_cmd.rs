@@ -775,6 +775,16 @@ pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
     )?;
     prepare_vscode_web_assets(&root)?;
 
+    // Set up the examples Python env so notebooks (and the %%modelica magic) are
+    // ready to use against the LOCAL rumoca build. Best-effort: a missing Python
+    // toolchain must not block editing the extension.
+    if let Err(error) = crate::vscode_python_env::prepare_examples_python_env(&root) {
+        eprintln!(
+            "[xtask vscode edit] examples Python env setup skipped ({error:#}); \
+             notebooks will not have a local rumoca build"
+        );
+    }
+
     let mut rust_watch_stop: Option<Arc<AtomicBool>> = None;
     let mut rust_watch_handle: Option<thread::JoinHandle<()>> = None;
     if !args.skip_lsp_build {

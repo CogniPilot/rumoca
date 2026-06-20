@@ -198,17 +198,21 @@ mod tests {
         }
     }
 
+    fn unspanned_event_action_test_span() -> Span {
+        Span::DUMMY
+    }
+
     #[test]
     fn lower_event_action_rejects_missing_source_span() {
         let action = dae::DaeEventAction {
             condition: Expression::Literal {
                 value: Literal::Boolean(true),
-                span: Span::DUMMY,
+                span: unspanned_event_action_test_span(),
             },
             kind: dae::DaeEventActionKind::Assert {
-                message: string_literal("failed", Span::DUMMY),
+                message: string_literal("failed", unspanned_event_action_test_span()),
             },
-            span: Span::DUMMY,
+            span: unspanned_event_action_test_span(),
             origin: "assert action".to_string(),
         };
         let err = lower_event_action(&action, &dae::Dae::default(), &solve::VarLayout::default())
@@ -227,7 +231,7 @@ mod tests {
         let err = event_vec_with_capacity::<u8>(
             usize::MAX,
             "event action test vector",
-            Some(Span::DUMMY),
+            Some(unspanned_event_action_test_span()),
         )
         .expect_err("oversized unspanned event action vector should fail");
 

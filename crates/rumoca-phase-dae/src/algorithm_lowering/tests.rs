@@ -1,7 +1,11 @@
 use super::*;
 
 fn test_span() -> Span {
-    Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("algorithm_lowering_fixture.mo"),
+        1,
+        2,
+    )
 }
 
 fn test_comp_ref(name: &str) -> rumoca_core::ComponentReference {
@@ -49,12 +53,12 @@ fn reaches_source_alias_chain(
 #[test]
 fn lower_algorithm_uses_statement_span_for_main_assignment_equations() {
     let algorithm_span = Span::new(
-        rumoca_core::SourceId(7),
+        rumoca_core::SourceId::from_source_name("algorithm_lowering_fixture.mo"),
         rumoca_core::BytePos(11),
         rumoca_core::BytePos(23),
     );
     let statement_span = Span::new(
-        rumoca_core::SourceId(7),
+        rumoca_core::SourceId::from_source_name("algorithm_lowering_fixture.mo"),
         rumoca_core::BytePos(17),
         rumoca_core::BytePos(21),
     );
@@ -73,9 +77,9 @@ fn lower_algorithm_uses_statement_span_for_main_assignment_equations() {
                 comp: test_comp_ref("x"),
                 value: Expression::Literal {
                     value: Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }
             .with_span(statement_span),
         ],
@@ -93,12 +97,12 @@ fn lower_algorithm_uses_statement_span_for_main_assignment_equations() {
 #[test]
 fn lower_algorithm_uses_statement_span_for_when_assignment_equations() {
     let algorithm_span = Span::new(
-        rumoca_core::SourceId(8),
+        rumoca_core::SourceId::from_source_name("algorithm_lowering_fixture.mo"),
         rumoca_core::BytePos(31),
         rumoca_core::BytePos(47),
     );
     let statement_span = Span::new(
-        rumoca_core::SourceId(8),
+        rumoca_core::SourceId::from_source_name("algorithm_lowering_fixture.mo"),
         rumoca_core::BytePos(35),
         rumoca_core::BytePos(43),
     );
@@ -117,18 +121,18 @@ fn lower_algorithm_uses_statement_span_for_when_assignment_equations() {
                 blocks: vec![rumoca_core::StatementBlock {
                     cond: Expression::Literal {
                         value: Literal::Boolean(true),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                     stmts: vec![rumoca_core::Statement::Assignment {
                         comp: test_comp_ref("y"),
                         value: Expression::Literal {
                             value: Literal::Boolean(false),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }],
                 }],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }
             .with_span(statement_span),
         ],
@@ -159,11 +163,11 @@ fn lower_algorithm_rejects_reinit_outside_when_statement() {
             variable: test_comp_ref("x"),
             value: Expression::Literal {
                 value: Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        Span::DUMMY,
+        test_span(),
         "algorithm",
     );
 
@@ -180,30 +184,30 @@ fn guarded_expr_prepends_to_existing_if_without_nesting_fallback() {
         Expression::VarRef {
             name: VarName::new("g1").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        Span::DUMMY,
+        test_span(),
     );
     let merged = guarded_expr(
         Expression::VarRef {
             name: VarName::new("g2").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         Expression::Literal {
             value: Literal::Integer(2),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         first,
-        Span::DUMMY,
+        test_span(),
     );
 
     let Expression::If {
@@ -220,22 +224,22 @@ fn guarded_expr_prepends_to_existing_if_without_nesting_fallback() {
         branches[0].1,
         Expression::Literal {
             value: Literal::Integer(2),
-            span: rumoca_core::Span::DUMMY
-        }
+            span
+        } if span == test_span()
     ));
     assert!(matches!(
         branches[1].1,
         Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY
-        }
+            span
+        } if span == test_span()
     ));
     assert!(matches!(
         *else_branch,
         Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY
-        }
+            span
+        } if span == test_span()
     ));
 }
 
@@ -245,17 +249,17 @@ fn expression_exceeds_node_budget_counts_nested_expression_nodes() {
         op: rumoca_core::OpBinary::Add,
         lhs: Box::new(Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }),
         rhs: Box::new(Expression::Unary {
             op: rumoca_core::OpUnary::Not,
             rhs: Box::new(Expression::Literal {
                 value: Literal::Boolean(false),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     assert!(expression_exceeds_node_budget(&expr, 3));
@@ -549,7 +553,7 @@ fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_tar
         "y",
         Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "explicit equation from source",
     ));
@@ -558,7 +562,7 @@ fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_tar
         Expression::VarRef {
             name: VarName::new("u").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: y = u",
     ));
@@ -567,7 +571,7 @@ fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_tar
         Expression::VarRef {
             name: VarName::new("v").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: y = v",
     ));
@@ -588,8 +592,8 @@ fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_tar
                     eq.rhs,
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY
-                    }
+                        span
+                    } if span == test_span()
                 );
                 assert!(
                     !is_connection_equation_origin(&eq.origin),
@@ -640,7 +644,7 @@ fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
         "y",
         Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "explicit equation from source",
     ));
@@ -649,7 +653,7 @@ fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
         Expression::VarRef {
             name: VarName::new("u").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: y = u",
     ));
@@ -658,7 +662,7 @@ fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
         Expression::VarRef {
             name: VarName::new("v").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: u = v",
     ));
@@ -681,8 +685,8 @@ fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
                     eq.rhs,
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY
-                    }
+                        span
+                    } if span == test_span()
                 );
             }
             Some("u") => {
@@ -735,7 +739,7 @@ fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
         "src",
         Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "explicit equation from source",
     ));
@@ -744,7 +748,7 @@ fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
         Expression::VarRef {
             name: VarName::new("a").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: src = a",
     ));
@@ -753,7 +757,7 @@ fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
         Expression::VarRef {
             name: VarName::new("b").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: a = b",
     ));
@@ -762,7 +766,7 @@ fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
         Expression::VarRef {
             name: VarName::new("c").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "connection equation: b = c",
     ));
@@ -783,8 +787,8 @@ fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
                 eq.rhs,
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY
-                }
+                    span
+                } if span == test_span()
             );
         }
         if let rumoca_core::Expression::VarRef {
@@ -833,7 +837,7 @@ fn canonicalize_discrete_assignments_preserves_conflicting_same_target_rows() {
         "y",
         Expression::Literal {
             value: Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "explicit equation from first source",
     ));
@@ -841,7 +845,7 @@ fn canonicalize_discrete_assignments_preserves_conflicting_same_target_rows() {
         "y",
         Expression::Literal {
             value: Literal::Integer(2),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
         "explicit equation from second source",
     ));

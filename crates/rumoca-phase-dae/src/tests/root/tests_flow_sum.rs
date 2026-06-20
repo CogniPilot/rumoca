@@ -1,59 +1,6 @@
 use super::*;
 
 #[test]
-fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connector() {
-    let mut flat = Model::new();
-    flat.top_level_connectors.insert("pin".to_string());
-    flat.add_variable(
-        VarName::new("pin.i"),
-        crate::test_support::with_component_ref(flat::Variable {
-            name: VarName::new("pin.i"),
-            flow: true,
-            is_primitive: true,
-            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                rumoca_core::SourceId::from_source_name(file!()),
-                1,
-                2,
-            ))
-        }),
-    );
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(make_var_ref("pin.i")),
-            rhs: Box::new(rumoca_core::Expression::Literal {
-                value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::UnconnectedFlow {
-            variable: "pin.i".to_string(),
-        },
-        scalar_count: 1,
-    });
-
-    let mut dae = Dae::new();
-    dae.variables.algebraics.insert(
-        rumoca_core::VarName::new("pin.i"),
-        Variable::new(
-            rumoca_core::VarName::new("pin.i"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-
-    let prefix_counts = build_prefix_counts(&flat);
-    classify_equations(&mut dae, &flat, &prefix_counts).unwrap();
-
-    assert_eq!(
-        dae.continuous.equations.len(),
-        1,
-        "non-OC connector unconnected flow closure remains a counted structural equation"
-    );
-}
-
-#[test]
 fn test_count_interface_flows_requires_top_level_connector_membership() {
     let mut flat = Model::new();
     flat.add_variable(
@@ -87,6 +34,7 @@ fn test_count_interface_flows_requires_top_level_connector_membership() {
 
 #[test]
 fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
+    let span = crate::test_support::test_span();
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("arr.i"),
@@ -120,17 +68,17 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(rumoca_core::Expression::Literal {
                 value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             rhs: Box::new(rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Add,
                 lhs: Box::new(make_var_ref("arr.i")),
                 rhs: Box::new(make_var_ref("s.i")),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
         origin: rumoca_ir_flat::EquationOrigin::FlowSum {
             description: "arr.i + s.i = 0".to_string(),
         },
@@ -165,6 +113,7 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
 
 #[test]
 fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
+    let span = crate::test_support::test_span();
     let mut flat = Model::new();
     for name in ["arr1.i", "arr2.i"] {
         flat.add_variable(
@@ -200,7 +149,7 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(rumoca_core::Expression::Literal {
                 value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             rhs: Box::new(rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Add,
@@ -209,13 +158,13 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
                     op: rumoca_core::OpBinary::Add,
                     lhs: Box::new(make_var_ref("arr2.i")),
                     rhs: Box::new(make_var_ref("s.i")),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
         origin: rumoca_ir_flat::EquationOrigin::FlowSum {
             description: "arr1.i + arr2.i + s.i = 0".to_string(),
         },

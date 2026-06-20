@@ -22,7 +22,7 @@ fn dynamic_external_time_table_dae() -> dae::Dae {
     n.start = Some(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Size,
         args: vec![var("table"), int_expr(1)],
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     });
     dae_model
         .variables
@@ -71,7 +71,7 @@ fn dynamic_boolean_time_table_dae() -> dae::Dae {
     n.start = Some(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Size,
         args: vec![var("table1.table"), int_expr(1)],
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     });
     dae_model
         .variables
@@ -114,7 +114,7 @@ fn dynamic_boolean_time_table_matrix() -> rumoca_core::Expression {
                 op: OpBinary::Gt,
                 lhs: Box::new(var("table1.n")),
                 rhs: Box::new(real_expr(0.0)),
-                span: rumoca_core::Span::DUMMY,
+                span: solve_model_test_span(),
             },
             array_expr(
                 vec![
@@ -134,32 +134,19 @@ fn dynamic_boolean_time_table_matrix() -> rumoca_core::Expression {
             vec![array_expr(vec![real_expr(0.0), real_expr(0.0)], false)],
             true,
         )),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
 fn dynamic_external_time_table_matrix() -> rumoca_core::Expression {
-    let first_row = array_expr(
-        vec![
-            rumoca_core::Expression::VarRef {
-                name: rumoca_core::VarName::new("table").into(),
-                subscripts: vec![rumoca_core::Subscript::generated_index(
-                    1,
-                    rumoca_core::Span::DUMMY,
-                )],
-                span: rumoca_core::Span::DUMMY,
-            },
-            real_expr(0.0),
-        ],
-        false,
-    );
+    let first_row = array_expr(vec![indexed_var("table", 1), real_expr(0.0)], false);
     rumoca_core::Expression::If {
         branches: vec![(
             rumoca_core::Expression::Binary {
                 op: OpBinary::Gt,
                 lhs: Box::new(var("n")),
                 rhs: Box::new(real_expr(0.0)),
-                span: rumoca_core::Span::DUMMY,
+                span: solve_model_test_span(),
             },
             array_expr(
                 vec![
@@ -176,7 +163,7 @@ fn dynamic_external_time_table_matrix() -> rumoca_core::Expression {
             vec![array_expr(vec![real_expr(0.0), real_expr(0.0)], false)],
             true,
         )),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -185,7 +172,7 @@ fn dynamic_external_time_table_toggles(n_name: &str) -> rumoca_core::Expression 
         expr: Box::new(rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Mod,
             args: vec![var("i"), real_expr(2.0)],
-            span: rumoca_core::Span::DUMMY,
+            span: solve_model_test_span(),
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
             name: "i".to_string(),
@@ -193,11 +180,11 @@ fn dynamic_external_time_table_toggles(n_name: &str) -> rumoca_core::Expression 
                 start: Box::new(int_expr(1)),
                 step: None,
                 end: Box::new(var(n_name)),
-                span: rumoca_core::Span::DUMMY,
+                span: solve_model_test_span(),
             },
         }],
         filter: None,
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 

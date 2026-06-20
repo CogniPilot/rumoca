@@ -1,5 +1,9 @@
 use super::*;
 
+fn unspanned_stencil_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 fn push_structured_programs_fixture(
     nodes: &mut Vec<solve::ComputeNode>,
     rows: &mut Vec<StructuredProgram>,
@@ -21,6 +25,14 @@ fn domain_scalar_count(domain: &rumoca_core::StructuredIndexDomain) -> usize {
     domain
         .scalar_count()
         .expect("fixture domain should have a valid scalar count")
+}
+
+fn stencil_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_stencil_fixture.mo"),
+        1,
+        2,
+    )
 }
 
 #[test]
@@ -68,7 +80,7 @@ fn access_proof(operands: Vec<StructuredAccessOperand>) -> StructuredAccessProof
 fn literal_expr(value: rumoca_core::Literal) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value,
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
     }
 }
 
@@ -96,7 +108,7 @@ fn decay_row(y: usize, p: usize, dae_equation_index: usize) -> StructuredProgram
         ])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: y..y + 1,
         load_y_ranges: vec![load_y_range(1, y..y + 1)],
         ops: vec![
@@ -123,7 +135,7 @@ fn family(start: usize, count: usize) -> dae::StructuredEquationFamily {
         domain: test_domain(count),
         first_equation_index: start,
         equation_counts: vec![1; count],
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         origin: "test".to_string(),
     }
 }
@@ -137,7 +149,7 @@ fn multi_equation_family(
         domain: test_domain(count),
         first_equation_index: start,
         equation_counts: vec![equation_count; count],
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         origin: "test".to_string(),
     }
 }
@@ -180,7 +192,7 @@ fn family_2d(start: usize, rows: usize, cols: usize) -> dae::StructuredEquationF
         domain: test_domain_2d(rows, cols),
         first_equation_index: start,
         equation_counts: vec![1; rows * cols],
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         origin: "test".to_string(),
     }
 }
@@ -194,7 +206,7 @@ fn stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
         ])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: 0..4,
         load_y_ranges: vec![load_y_range(0, 0..5), load_y_range(1, 0..5)],
         ops: vec![
@@ -224,7 +236,7 @@ fn nonlinear_stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgr
         ])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: 0..4,
         load_y_ranges: vec![load_y_range(0, 0..5), load_y_range(2, 0..5)],
         ops: vec![
@@ -262,7 +274,7 @@ fn pointwise_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: y..y + 1,
         load_y_ranges: vec![load_y_range(0, y..y + 1)],
         ops: vec![
@@ -281,7 +293,7 @@ fn scaled_row(y: usize, coefficient: f64, dae_equation_index: usize) -> Structur
         ])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: y..y + 1,
         load_y_ranges: vec![load_y_range(1, y..y + 1)],
         ops: vec![
@@ -307,7 +319,7 @@ fn shifted_single_load_row(y: usize, dae_equation_index: usize) -> StructuredPro
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 1)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: 0..5,
         load_y_ranges: vec![load_y_range(0, 0..5)],
         ops: vec![
@@ -326,7 +338,7 @@ fn pointwise_other_array_row(y: usize, dae_equation_index: usize) -> StructuredP
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 4)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: 0..4,
         load_y_ranges: vec![load_y_range(0, 4..8)],
         ops: vec![
@@ -345,7 +357,7 @@ fn shifted_other_array_row(y: usize, dae_equation_index: usize) -> StructuredPro
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 5)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
         output_y_range: 0..4,
         load_y_ranges: vec![load_y_range(0, 4..8)],
         ops: vec![
@@ -363,9 +375,9 @@ fn var_ref(name: &str, index: i64) -> rumoca_core::Expression {
         name: rumoca_core::Reference::new(name),
         subscripts: vec![rumoca_core::Subscript::Index {
             value: index,
-            span: rumoca_core::Span::DUMMY,
+            span: stencil_test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
     }
 }
 
@@ -373,7 +385,7 @@ fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
     }
 }
 
@@ -383,9 +395,9 @@ fn residual_equation(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression)
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: stencil_test_span(),
         },
-        rumoca_core::Span::DUMMY,
+        stencil_test_span(),
         "test",
     )
 }
@@ -438,7 +450,7 @@ fn structured_slot_row_lookup_preserves_first_unconsumed_row() -> Result<(), Low
     let slots = vec![Some(first), Some(second), Some(first), None];
     let consumed = vec![true, false, false, false];
 
-    let lookup = structured_slot_row_lookup(&slots, &consumed, rumoca_core::Span::DUMMY)?;
+    let lookup = structured_slot_row_lookup(&slots, &consumed, stencil_test_span())?;
 
     assert_eq!(lookup.get(&first), Some(&2));
     assert_eq!(lookup.get(&second), Some(&1));
@@ -448,7 +460,11 @@ fn structured_slot_row_lookup_preserves_first_unconsumed_row() -> Result<(), Low
 
 #[test]
 fn structured_slot_row_lookup_rejects_consumed_slot_count_mismatch() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(31), 2, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_stencil_tests_source_31.mo"),
+        2,
+        9,
+    );
     let slot = dae::StructuredEquationSlot {
         family_index: 0,
         iteration_index: 0,
@@ -506,9 +522,9 @@ fn rhs_plus_one(expr: rumoca_core::Expression) -> rumoca_core::Expression {
         lhs: Box::new(expr),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: stencil_test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
     }
 }
 
@@ -517,10 +533,10 @@ fn rhs_times_integer(value: i64, expr: rumoca_core::Expression) -> rumoca_core::
         op: rumoca_core::OpBinary::Mul,
         lhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
-            span: rumoca_core::Span::DUMMY,
+            span: stencil_test_span(),
         }),
         rhs: Box::new(expr),
-        span: rumoca_core::Span::DUMMY,
+        span: stencil_test_span(),
     }
 }
 
@@ -1014,7 +1030,7 @@ fn ordinal_delta_rejects_i64_underflow() -> Result<(), LowerError> {
         &domain,
         &[i64::MAX],
         &[i64::MIN],
-        rumoca_core::Span::DUMMY,
+        unspanned_stencil_test_span(),
     )
     .expect_err("overflowing ordinal delta must fail");
     assert_eq!(err.source_span(), None);
@@ -1032,7 +1048,7 @@ fn apply_integer_terms_rejects_host_overflow() -> Result<(), LowerError> {
         &domain,
         &[1],
         &[2],
-        rumoca_core::Span::DUMMY,
+        unspanned_stencil_test_span(),
     )
     .expect_err("oversized affine index base must fail");
     assert_eq!(err.source_span(), None);
@@ -1050,7 +1066,7 @@ fn apply_float_terms_rejects_non_finite_result() -> Result<(), LowerError> {
         &domain,
         &[1],
         &[2],
-        rumoca_core::Span::DUMMY,
+        unspanned_stencil_test_span(),
     )
     .expect_err("non-finite affine float term must fail");
     assert_eq!(err.source_span(), None);

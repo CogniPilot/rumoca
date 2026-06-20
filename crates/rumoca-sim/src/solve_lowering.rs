@@ -1024,6 +1024,11 @@ mod tests {
 
     use super::*;
 
+    fn sim_source_span(source: u64, start: usize, end: usize) -> Span {
+        let source_name = format!("sim_solve_lowering_source_{source}.mo");
+        Span::from_offsets(SourceId::from_source_name(&source_name), start, end)
+    }
+
     #[test]
     fn simulation_structural_lowering_keeps_observations_for_torn_variables() {
         let dae = symbolic_loop_dae();
@@ -1088,7 +1093,7 @@ mod tests {
 
     #[test]
     fn metadata_attachment_lower_error_preserves_dae_source_span() {
-        let span = Span::from_offsets(SourceId(9), 21, 34);
+        let span = sim_source_span(9, 21, 34);
         let err = metadata_attachment_lower_error(
             rumoca_phase_dae::ToDaeError::runtime_metadata_violation_at(
                 "missing reference metadata",
@@ -1131,7 +1136,7 @@ mod tests {
 
     #[test]
     fn simulation_structural_singularity_carries_unmatched_variable_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(7), 100, 110);
+        let span = sim_source_span(7, 100, 110);
         let mut dae = dae::Dae::new();
         for name in ["a", "b"] {
             dae.variables.algebraics.insert(
@@ -1325,7 +1330,7 @@ mod tests {
                 )
             },
         );
-        let span = Span::from_offsets(rumoca_core::SourceId(4), 40, 45);
+        let span = sim_source_span(4, 40, 45);
         let rhs = sub(var("A").with_span(span), var("b").with_span(span));
         model.continuous.equations.push(dae::Equation {
             lhs: None,
@@ -1351,7 +1356,7 @@ mod tests {
 
     #[test]
     fn simulation_diagnostic_preserves_runtime_preparation_span() {
-        let span = Span::from_offsets(rumoca_core::SourceId(8), 12, 18);
+        let span = sim_source_span(8, 12, 18);
         let error = rumoca_eval_solve::EvalSolveError::Scalarization {
             message: "invalid native map metadata".to_string(),
             span: Some(span),
@@ -1656,7 +1661,7 @@ mod tests {
     }
 
     fn fixture_span() -> Span {
-        Span::from_offsets(SourceId(10_001), 1, 2)
+        sim_source_span(10_001, 1, 2)
     }
 
     fn eq(rhs: Expression) -> dae::Equation {

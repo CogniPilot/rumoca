@@ -594,6 +594,16 @@ end DotProductResidual;
             r.balance, 0,
             "vector dot-product residual should contribute one scalar equation"
         );
+        assert_eq!(
+            r.dae
+                .continuous
+                .equations
+                .iter()
+                .map(|eq| eq.scalar_count)
+                .collect::<Vec<_>>(),
+            vec![3, 3, 1],
+            "array assignments should stay vector-sized while the dot-product residual is scalar"
+        );
     }
 
     /// Non-`each` fill() modifiers on arrayed components must distribute per element.

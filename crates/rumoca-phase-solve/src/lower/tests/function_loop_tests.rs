@@ -14,10 +14,10 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
                 comp: component_ref("out"),
                 value: rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(0.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Statement::For {
                 indices: vec![rumoca_core::ForIndex {
@@ -25,7 +25,7 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
                     range: rumoca_core::Expression::Range {
                         start: Box::new(rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         }),
                         step: None,
                         end: Box::new(rumoca_core::Expression::BuiltinCall {
@@ -34,12 +34,12 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
                                 var("u"),
                                 rumoca_core::Expression::Literal {
                                     value: rumoca_core::Literal::Integer(1),
-                                    span: rumoca_core::Span::DUMMY,
+                                    span: lower_test_span(),
                                 },
                             ],
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                 }],
                 equations: vec![rumoca_core::Statement::Assignment {
@@ -50,23 +50,23 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
                             base: Box::new(var("u")),
                             subscripts: vec![rumoca_core::Subscript::generated_expr(
                                 Box::new(var("i")),
-                                rumoca_core::Span::DUMMY,
+                                lower_test_span(),
                             )],
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                     ),
 
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 }],
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ],
         is_constructor: false,
         pure: true,
         external: None,
         derivatives: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     sum.inputs[0].type_name = "Real".to_string();
     dae_model
@@ -108,7 +108,7 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
 #[test]
 fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
     let mut dae_model = dae::Dae::default();
-    let mut sum = rumoca_core::Function::new("My.sumViaLocalSize", rumoca_core::Span::DUMMY);
+    let mut sum = rumoca_core::Function::new("My.sumViaLocalSize", lower_test_span());
     sum.inputs.push(function_param_with_dims("u", &[0]));
     sum.outputs.push(function_param("out"));
     sum.locals.push(
@@ -118,7 +118,7 @@ fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
     sum.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("out"),
         value: real_lit(0.0),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     sum.body.push(rumoca_core::Statement::For {
         indices: vec![rumoca_core::ForIndex {
@@ -127,15 +127,15 @@ fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
                 start: Box::new(int_lit(1)),
                 step: None,
                 end: Box::new(var("n")),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         }],
         equations: vec![rumoca_core::Statement::Assignment {
             comp: component_ref("out"),
             value: add(var("out"), var_index_expr("u", var("i"))),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -162,7 +162,7 @@ fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
 #[test]
 fn lower_expression_uses_function_local_size_in_fill_dimension() {
     let mut dae_model = dae::Dae::default();
-    let mut count_fill = rumoca_core::Function::new("My.countFill", rumoca_core::Span::DUMMY);
+    let mut count_fill = rumoca_core::Function::new("My.countFill", lower_test_span());
     count_fill.inputs.push(function_param_with_dims("u", &[0]));
     count_fill.outputs.push(function_param("out"));
     count_fill.locals.push(
@@ -181,7 +181,7 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
             is_constructor: false,
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     dae_model
         .symbols
@@ -193,10 +193,10 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
         args: vec![rumoca_core::Expression::Array {
             elements: vec![real_lit(1.0), real_lit(2.0), real_lit(3.0)],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
         .expect("function local size should be available for fill dimension");
@@ -208,7 +208,7 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
 #[test]
 fn lower_expression_unrolls_for_loop_over_qualified_real_fft_sample_points() {
     let mut dae_model = dae::Dae::default();
-    let mut count = rumoca_core::Function::new("My.fftPointCount", rumoca_core::Span::DUMMY);
+    let mut count = rumoca_core::Function::new("My.fftPointCount", lower_test_span());
     count.outputs.push(function_param("out"));
     count.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("out"),

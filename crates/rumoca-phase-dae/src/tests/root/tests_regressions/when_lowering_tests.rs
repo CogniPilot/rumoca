@@ -2,8 +2,16 @@ use super::*;
 
 fn sequential_when_same_target_model() -> Model {
     let mut flat = Model::new();
-    let first_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 20);
-    let second_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 30, 40);
+    let first_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("when_lowering_fixture.mo"),
+        10,
+        20,
+    );
+    let second_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("when_lowering_fixture.mo"),
+        30,
+        40,
+    );
     for name in ["c1", "c2", "y"] {
         flat.add_variable(
             VarName::new(name),
@@ -113,7 +121,11 @@ fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order(
     else {
         panic!("algorithm when lowering must preserve the initial-section value before pre(y)");
     };
-    let expected_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 30, 40);
+    let expected_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("when_lowering_fixture.mo"),
+        30,
+        40,
+    );
     assert_eq!(
         *inactive_span, expected_span,
         "generated inactive initial/pre guard must retain the assignment source span"

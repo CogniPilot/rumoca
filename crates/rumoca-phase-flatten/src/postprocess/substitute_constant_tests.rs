@@ -2,7 +2,11 @@ use super::*;
 use rumoca_core::Span;
 
 fn test_span() -> Span {
-    Span::from_offsets(rumoca_core::SourceId(91), 10, 22)
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_flatten_substitute_constant_source_91.mo"),
+        10,
+        22,
+    )
 }
 
 fn simple_assignment(value: rumoca_core::Expression) -> rumoca_core::Statement {

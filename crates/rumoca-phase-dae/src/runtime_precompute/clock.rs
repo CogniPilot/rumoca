@@ -1485,7 +1485,11 @@ mod tests {
     use super::*;
 
     fn test_span(start: usize, end: usize) -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), start, end)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            start,
+            end,
+        )
     }
 
     fn reverse_alias_model(source_span: rumoca_core::Span) -> dae::Dae {

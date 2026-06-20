@@ -293,10 +293,14 @@ mod tests {
     use super::*;
     use rumoca_core::Span;
 
+    fn test_span() -> Span {
+        Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+    }
+
     #[test]
     fn test_collect_algorithm_defined_vars_expands_record_outputs() {
         let mut flat = flat::Model::default();
-        let mut alg = flat::Algorithm::new(Vec::new(), Span::DUMMY, "test");
+        let mut alg = flat::Algorithm::new(Vec::new(), test_span(), "test");
         alg.outputs.push(rumoca_core::VarName::new("rec").into());
         alg.outputs.push(rumoca_core::VarName::new("x").into());
         flat.algorithms.push(alg);
@@ -321,32 +325,32 @@ mod tests {
     #[test]
     fn test_collect_continuous_algorithm_defined_vars_skips_when_only_assignments() {
         let mut flat = flat::Model::default();
-        let mut alg = flat::Algorithm::new(Vec::new(), Span::DUMMY, "test");
+        let mut alg = flat::Algorithm::new(Vec::new(), test_span(), "test");
         alg.statements.push(rumoca_core::Statement::When {
             blocks: vec![rumoca_core::StatementBlock {
                 cond: rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: rumoca_core::ComponentReference {
                         local: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                         parts: vec![rumoca_core::ComponentRefPart {
                             ident: "x".to_string(),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                             subs: vec![],
                         }],
                         def_id: None,
                     },
                     value: rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(1.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         });
         flat.algorithms.push(alg);
 

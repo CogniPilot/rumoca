@@ -34,6 +34,7 @@ fn test_equation_defined_indexed_array_input_promotes_internal_input() {
 
 #[test]
 fn test_equation_defined_array_lhs_promotes_internal_input_elements() {
+    let span = crate::test_support::test_span();
     let mut flat = Model::new();
     for name in ["plant.motor[1].omega_cmd", "plant.motor[2].omega_cmd"] {
         flat.add_variable(
@@ -60,12 +61,12 @@ fn test_equation_defined_array_lhs_promotes_internal_input_elements() {
                     make_var_ref("plant.motor[2].omega_cmd"),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             rhs: Box::new(make_var_ref("plant.omega_cmd")),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
         origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
             component: "plant.motor".to_string(),
         },
@@ -116,6 +117,7 @@ fn test_rhs_input_alias_with_lhs_internal_input_promotes_rhs_input() {
 
 #[test]
 fn test_rhs_array_alias_with_lhs_internal_input_promotes_rhs_inputs() {
+    let span = crate::test_support::test_span();
     let mut flat = Model::new();
     for (name, dims) in [
         ("plant.omega_cmd", vec![2]),
@@ -149,11 +151,11 @@ fn test_rhs_array_alias_with_lhs_internal_input_promotes_rhs_inputs() {
                     make_var_ref("plant.motor[2].omega_cmd"),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
         origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
             component: "plant".to_string(),
         },

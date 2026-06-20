@@ -835,14 +835,18 @@ mod tests {
     }
 
     fn test_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 23)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("appendix_b_validation_fixture.mo"),
+            11,
+            23,
+        )
     }
 
     fn var_ref(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -850,7 +854,7 @@ mod tests {
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Pre,
             args: vec![var_ref(name)],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -863,21 +867,21 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(format!("__pre__.{}", name)).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
     fn lit(value: f64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
     fn lit_string(value: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String(value.to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -886,7 +890,7 @@ mod tests {
             name: rumoca_core::VarName::new(name).into(),
             args,
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -895,7 +899,7 @@ mod tests {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -961,7 +965,7 @@ mod tests {
             .valued_updates
             .push(dae::Equation::residual(
                 sub(var_ref("m"), pre_var("m")),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "test residual f_m",
             ));
 
@@ -990,7 +994,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("a"),
                 var_ref("b"),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "a = b",
             ));
         dae_model
@@ -999,7 +1003,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("b"),
                 var_ref("a"),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "b = a",
             ));
 
@@ -1026,7 +1030,7 @@ mod tests {
         dae_model.conditions.equations.push(dae::Equation::explicit(
             rumoca_core::VarName::new("c[1]"),
             var_ref("a"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
             "condition",
         ));
         dae_model
@@ -1035,7 +1039,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("a"),
                 pre_var("a"),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "a = pre(a)",
             ));
         dae_model
@@ -1044,7 +1048,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("b"),
                 var_ref("a"),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "b = a",
             ));
 
@@ -1069,7 +1073,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("a"),
                 call("hold", vec![var_ref("b")]),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "a = hold(b)",
             ));
         dae_model
@@ -1078,7 +1082,7 @@ mod tests {
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("b"),
                 var_ref("a"),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "b = a",
             ));
 
@@ -1104,14 +1108,14 @@ mod tests {
                         rumoca_core::Expression::BuiltinCall {
                             function: rumoca_core::BuiltinFunction::Initial,
                             args: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         var_ref("a"),
                     )],
                     else_branch: Box::new(pre_var("a")),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "a = if initial() then a else pre(a)",
             ));
 
@@ -1126,9 +1130,9 @@ mod tests {
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Sample,
                 args: vec![lit(0.0), lit(0.1)],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            rumoca_core::Span::DUMMY,
+            test_span(),
             "sample in f_x",
         ));
 
@@ -1145,7 +1149,7 @@ mod tests {
             .equations
             .push(dae::Equation::residual(
                 call("Clock", vec![lit(0.1)]),
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "clock in initial equation",
             ));
 
@@ -1174,9 +1178,9 @@ mod tests {
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Edge,
                 args: vec![var_ref("x")],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            rumoca_core::Span::DUMMY,
+            test_span(),
             "raw edge in f_x",
         ));
 
@@ -1204,11 +1208,11 @@ mod tests {
                     name: rumoca_core::VarName::new("table").into(),
                     subscripts: vec![rumoca_core::Subscript::generated_expr(
                         Box::new(pre_call("selector")),
-                        rumoca_core::Span::DUMMY,
+                        test_span(),
                     )],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
-                rumoca_core::Span::DUMMY,
+                test_span(),
                 "target = table[pre(selector)]",
             ));
 
@@ -1239,7 +1243,14 @@ mod tests {
     #[test]
     fn unspanned_triggered_clock_condition_is_rejected() {
         let mut dae_model = dae::Dae::default();
-        dae_model.clocks.triggered_conditions.push(var_ref("gate"));
+        dae_model
+            .clocks
+            .triggered_conditions
+            .push(rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("gate").into(),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            });
 
         let err = validate_appendix_b_invariants(&dae_model)
             .expect_err("triggered clock conditions must carry source provenance");
@@ -1251,7 +1262,7 @@ mod tests {
         let mut dae_model = dae::Dae::default();
         dae_model.continuous.equations.push(dae::Equation::residual(
             call("assert", vec![var_ref("ok"), lit(0.0)]),
-            rumoca_core::Span::DUMMY,
+            test_span(),
             "raw assert in f_x",
         ));
 
@@ -1269,7 +1280,7 @@ mod tests {
             kind: dae::DaeEventActionKind::Assert {
                 message: lit_string("failed"),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
             origin: "assert action".to_string(),
         });
         dae_model.events.event_actions.push(dae::DaeEventAction {
@@ -1277,7 +1288,7 @@ mod tests {
             kind: dae::DaeEventActionKind::Terminate {
                 message: lit_string("done"),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
             origin: "terminate action".to_string(),
         });
 

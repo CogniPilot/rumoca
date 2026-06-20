@@ -17,7 +17,7 @@ fn lower_derivative_rhs_extracts_explicit_state_derivative_rows() {
             rumoca_core::Expression::Unary {
                 op: rumoca_core::OpUnary::Minus,
                 rhs: Box::new(var("k")),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             var("x"),
         ),
@@ -91,7 +91,7 @@ fn lower_derivative_rhs_extracts_piecewise_state_derivative_rows() {
         .push(residual(rumoca_core::Expression::If {
             branches: vec![(var("limited"), sub(der(var("x")), real_lit(0.0)))],
             else_branch: Box::new(sub(der(var("x")), var("u"))),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
@@ -135,7 +135,7 @@ fn lower_derivative_rhs_extracts_nested_piecewise_inductor_row() {
         rumoca_core::Expression::If {
             branches: vec![(var("quasiStatic"), real_lit(0.0))],
             else_branch: Box::new(mul(var("L"), der(var("i")))),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     )));
 
@@ -190,7 +190,7 @@ fn lower_derivative_rhs_extracts_whole_if_with_derivative_free_branch() {
                 ),
             )],
             else_branch: Box::new(sub(add(var("flow_a"), var("flow_b")), real_lit(0.0))),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");

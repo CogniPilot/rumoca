@@ -8,7 +8,13 @@ fn checked_usize_dims_to_i64_rejects_overflow_with_span() {
     else {
         return;
     };
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(45), 2, 10);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_function_calls_tests_source_45.mo",
+        ),
+        2,
+        10,
+    );
 
     let err = checked_usize_dims_to_i64(&[dim], "function input actual shape", span)
         .expect_err("function-call dimensions must fit in Modelica integer range");

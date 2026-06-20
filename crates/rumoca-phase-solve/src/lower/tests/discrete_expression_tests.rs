@@ -55,7 +55,7 @@ fn lower_discrete_rhs_recovers_if_residual_assignment_value() {
             branches: vec![(
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 // MLS §8.3.4: an if-equation branch may contain the same
                 // assignment equation written in residual form.
@@ -63,7 +63,7 @@ fn lower_discrete_rhs_recovers_if_residual_assignment_value() {
                     var("z"),
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(2.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                 ),
             )],
@@ -71,10 +71,10 @@ fn lower_discrete_rhs_recovers_if_residual_assignment_value() {
                 var("z"),
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(3.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             )),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }));
 
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
@@ -136,7 +136,7 @@ fn normalized_discrete_updates_preserve_explicit_difference_assignment() {
     dae_model.discrete.real_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("x").into()),
         rhs: sub(var("a"), var("b")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "x = a - b".to_string(),
         scalar_count: 1,
     });
@@ -166,7 +166,7 @@ fn lower_expression_prunes_unreachable_static_if_branch() {
             real_lit(2.0),
         )],
         else_branch: Box::new(var("missing.binding")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
 
     let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
@@ -240,29 +240,29 @@ fn lower_discrete_rhs_uses_first_output_for_array_function_expression() {
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_index("out", 1),
                     value: real_lit(4.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_index("out", 2),
                     value: real_lit(5.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref("line"),
                     value: real_lit(99.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref("bit"),
                     value: real_lit(100.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: false,
             pure: true,
             external: None,
             derivatives: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
@@ -273,7 +273,7 @@ fn lower_discrete_rhs_uses_first_output_for_array_function_expression() {
             is_constructor: false,
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §12.4: an expression-form function call denotes the first
         // function output. Additional outputs are visible only via tuple
         // assignment/projection and must not widen array-valued expressions.
@@ -315,29 +315,29 @@ fn lower_discrete_rhs_projects_array_function_output_by_position() {
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_index("out", 1),
                     value: real_lit(6.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_index("out", 2),
                     value: real_lit(7.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref("line"),
                     value: real_lit(98.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref("bit"),
                     value: real_lit(99.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: false,
             pure: true,
             external: None,
             derivatives: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
@@ -351,11 +351,11 @@ fn lower_discrete_rhs_projects_array_function_output_by_position() {
             }),
             subscripts: vec![rumoca_core::Subscript::generated_index(
                 1,
-                rumoca_core::Span::DUMMY,
+                lower_test_span(),
             )],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // MLS §12.4: positional indexing on a multi-output function call is
         // output projection. `f()[1]` selects the first output, not the first
         // scalar element of that output.
@@ -397,29 +397,29 @@ fn lower_discrete_rhs_recovers_dynamic_function_output_shape_from_assignments() 
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_indices("out", &[1, 1]),
                     value: real_lit(8.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_indices("out", &[1, 2]),
                     value: real_lit(9.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref("line"),
                     value: real_lit(98.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref("bit"),
                     value: real_lit(99.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: false,
             pure: true,
             external: None,
             derivatives: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
@@ -430,7 +430,7 @@ fn lower_discrete_rhs_recovers_dynamic_function_output_shape_from_assignments() 
             is_constructor: false,
             span: lower_test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         // Some MSL functions, including Digital RAM memory loading, have
         // output dimensions derived from input parameters. If those dimensions
         // are not static in FunctionParam, the indexed output assignments still
@@ -465,19 +465,19 @@ fn lower_expression_indexes_array_function_expression_result() {
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_index("out", 1),
                     value: real_lit(7.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Statement::Assignment {
                     comp: component_ref_index("out", 2),
                     value: real_lit(8.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: false,
             pure: true,
             external: None,
             derivatives: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     );
 
@@ -515,20 +515,20 @@ fn lower_expression_indexes_array_literal_with_dynamic_subscript() {
                 rumoca_core::Expression::Array {
                     elements: vec![real_lit(10.0), real_lit(20.0)],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Array {
                     elements: vec![real_lit(30.0), real_lit(40.0)],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(Box::new(var("row")), rumoca_core::Span::DUMMY),
-            rumoca_core::Subscript::generated_expr(Box::new(int_lit(1)), rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::generated_expr(Box::new(var("row")), lower_test_span()),
+            rumoca_core::Subscript::generated_expr(Box::new(int_lit(1)), lower_test_span()),
         ],
         span,
     };
@@ -663,16 +663,16 @@ fn lower_expression_indexes_if_array_value_with_dynamic_subscript() {
                         rumoca_core::Expression::Array {
                             elements: vec![real_lit(10.0), real_lit(20.0)],
                             is_matrix: false,
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                         rumoca_core::Expression::Array {
                             elements: vec![real_lit(30.0), real_lit(40.0)],
                             is_matrix: false,
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                     ],
                     is_matrix: true,
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             )],
             else_branch: Box::new(rumoca_core::Expression::Array {
@@ -680,22 +680,22 @@ fn lower_expression_indexes_if_array_value_with_dynamic_subscript() {
                     rumoca_core::Expression::Array {
                         elements: vec![real_lit(50.0), real_lit(60.0)],
                         is_matrix: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                     rumoca_core::Expression::Array {
                         elements: vec![real_lit(70.0), real_lit(80.0)],
                         is_matrix: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                 ],
                 is_matrix: true,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(Box::new(var("row")), rumoca_core::Span::DUMMY),
-            rumoca_core::Subscript::generated_expr(Box::new(int_lit(1)), rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::generated_expr(Box::new(var("row")), lower_test_span()),
+            rumoca_core::Subscript::generated_expr(Box::new(int_lit(1)), lower_test_span()),
         ],
         span,
     };
@@ -780,7 +780,7 @@ fn lower_discrete_rhs_indexes_if_array_value_with_dynamic_slice() {
             ],
             span,
         },
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         origin: "dynamic if-selected array row slice".to_string(),
         scalar_count: 2,
     });
@@ -829,7 +829,7 @@ fn lower_discrete_rhs_expands_fill_branch_in_array_if_expression() {
             branches: vec![(
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::BuiltinCall {
                     function: rumoca_core::BuiltinFunction::Fill,
@@ -837,27 +837,27 @@ fn lower_discrete_rhs_expands_fill_branch_in_array_if_expression() {
                         var("u"),
                         rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                     ],
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             )],
             else_branch: Box::new(rumoca_core::Expression::Array {
                 elements: vec![
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(1.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(2.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span: lower_test_span(),
                     },
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         span,
         // MLS §10.6.2: fill(s, n) constructs an n-element array, so it can
@@ -921,7 +921,7 @@ fn insert_previous_range_slice_variables(dae_model: &mut dae::Dae) {
             name: rumoca_core::VarName::new("n"),
             start: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
             is_tunable: false,
             ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
@@ -1021,25 +1021,25 @@ fn lower_discrete_rhs_preserves_pre_array_branch_values() {
             branches: vec![(
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(false),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Array {
                     elements: vec![
                         rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Real(1.0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                         rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Real(2.0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: lower_test_span(),
                         },
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             )],
             else_branch: Box::new(pre_var("y")),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         span,
         // DAE lowering rewrites pre(y) to the __pre__.y parameter array before

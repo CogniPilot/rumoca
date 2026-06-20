@@ -3,7 +3,11 @@ use rumoca_core::Span;
 use std::collections::HashMap;
 
 fn test_span() -> Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_scalarize_tests_source_1.mo"),
+        1,
+        2,
+    )
 }
 
 fn var(name: &str) -> Expression {
@@ -314,7 +318,13 @@ fn scalarize_complex_record_array_residual_targets_each_field_element() {
                 complex(var_idx("a", &[3]), real(0.0)),
             ]),
             6,
-            Span::from_offsets(rumoca_core::SourceId(0), 10, 20),
+            Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(
+                    "phase_structural_scalarize_tests_source_0.mo",
+                ),
+                10,
+                20,
+            ),
         ));
 
     scalarize_equations(&mut dae_model).unwrap();
@@ -359,7 +369,13 @@ fn scalarize_matrix_binding_residual_targets_each_element() {
                 array(vec![real(0.0), real(0.0), real(0.0)]),
             ]),
             9,
-            Span::from_offsets(rumoca_core::SourceId(0), 10, 20),
+            Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(
+                    "phase_structural_scalarize_tests_source_0.mo",
+                ),
+                10,
+                20,
+            ),
         ));
 
     scalarize_equations(&mut dae_model).unwrap();

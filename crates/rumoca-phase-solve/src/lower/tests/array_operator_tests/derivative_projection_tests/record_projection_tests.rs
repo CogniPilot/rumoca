@@ -230,7 +230,7 @@ fn projection_component_ref(name: &str) -> rumoca_core::ComponentReference {
         span: lower_test_span(),
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
             subs: Vec::new(),
         }],
         def_id: None,
@@ -245,7 +245,7 @@ fn projection_function_param(
     rumoca_core::FunctionParam {
         def_id: None,
         name: name.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
         type_name: type_name.to_string(),
         type_class: None,
         dims: dims.to_vec(),
@@ -275,7 +275,7 @@ pub(super) fn projection_call(
         name: rumoca_core::VarName::new(name).into(),
         args,
         is_constructor,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -376,7 +376,7 @@ fn rotation_matrix_function() -> rumoca_core::Function {
             vec![4.0, 5.0, 6.0],
             vec![7.0, 8.0, 10.0],
         ]),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     rotation
 }
@@ -389,7 +389,7 @@ fn resolve2_function() -> rumoca_core::Function {
     resolve2.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("v2"),
         value: mul(var("T"), var("v1")),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     resolve2
 }
@@ -405,7 +405,7 @@ fn axes_function() -> rumoca_core::Function {
     axes.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("R"),
         value: axes_orientation_call(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     axes
 }

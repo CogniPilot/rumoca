@@ -641,7 +641,11 @@ fn int_expr_with_span(value: i64, span: rumoca_core::Span) -> Expression {
 pub fn int_expr(value: i64) -> Expression {
     int_expr_with_span(
         value,
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1),
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_flatten_qualify_source_7.mo"),
+            0,
+            1,
+        ),
     )
 }
 

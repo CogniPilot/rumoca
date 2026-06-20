@@ -675,9 +675,19 @@ fn is_runtime_discrete_clock_call(name: &rumoca_core::Reference) -> bool {
 mod tests {
     use super::*;
 
+    fn unspanned_root_condition_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn checked_relation_offset_end_rejects_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(41), 3, 9);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_root_conditions_source_41.mo",
+            ),
+            3,
+            9,
+        );
         let err = checked_relation_offset_end(usize::MAX, 1, span)
             .expect_err("relation offset overflow must fail");
 
@@ -690,7 +700,7 @@ mod tests {
 
     #[test]
     fn checked_relation_offset_end_rejects_overflow_without_dummy_span() {
-        let err = checked_relation_offset_end(usize::MAX, 1, rumoca_core::Span::DUMMY)
+        let err = checked_relation_offset_end(usize::MAX, 1, unspanned_root_condition_test_span())
             .expect_err("relation offset overflow must fail");
 
         assert_eq!(err.source_span(), None);
@@ -705,7 +715,7 @@ mod tests {
         let err = root_vec_with_capacity::<LinearOp>(
             usize::MAX,
             "root condition row count",
-            rumoca_core::Span::DUMMY,
+            unspanned_root_condition_test_span(),
         )
         .expect_err("impossible root vector capacity must fail");
 
@@ -724,7 +734,13 @@ mod tests {
         else {
             return;
         };
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(43), 7, 15);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_root_conditions_source_43.mo",
+            ),
+            7,
+            15,
+        );
 
         let err = checked_relation_subscript(index, span)
             .expect_err("relation subscript must fit in Modelica integer range");

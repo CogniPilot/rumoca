@@ -622,31 +622,37 @@ pub(crate) fn zero_rhs_row() -> Vec<solve::LinearOp> {
 mod tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_implicit_rhs_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn uncovered_implicit_tail_rows_rejects_state_prefix_overflow() -> Result<(), LowerError> {
-        let err = uncovered_implicit_tail_rows(&[zero_rhs_row()], &[], 2, rumoca_core::Span::DUMMY)
+        let span = test_span();
+        let err = uncovered_implicit_tail_rows(&[zero_rhs_row()], &[], 2, span)
             .expect_err("state prefix larger than scalar rows must fail");
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
         Ok(())
     }
 
     #[test]
     fn uncovered_implicit_tail_rows_rejects_out_of_range_coverage() -> Result<(), LowerError> {
-        let err = uncovered_implicit_tail_rows(
-            &[zero_rhs_row()],
-            &[Some(1)],
-            0,
-            rumoca_core::Span::DUMMY,
-        )
-        .expect_err("coverage row outside scalar rows must fail");
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        let span = test_span();
+        let err = uncovered_implicit_tail_rows(&[zero_rhs_row()], &[Some(1)], 0, span)
+            .expect_err("coverage row outside scalar rows must fail");
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
         Ok(())
     }
 
     #[test]
     fn fallback_residual_row_target_rejects_byte_offset_overflow() {
+        let span = test_span();
         let index = usize::MAX / std::mem::size_of::<f64>() + 1;
         let err = fallback_residual_row_target(
             Some(solve::ScalarSlot::Y {
@@ -654,12 +660,12 @@ mod tests {
                 byte_offset: 0,
             }),
             usize::MAX,
-            rumoca_core::Span::DUMMY,
+            span,
         )
         .expect_err("fallback row target should reject byte offset overflow");
 
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
         assert!(
             err.to_string()
                 .contains("implicit RHS Y target byte offset for slot")
@@ -668,12 +674,8 @@ mod tests {
 
     #[test]
     fn fallback_residual_row_target_checks_byte_offset() {
-        let target = fallback_residual_row_target(
-            Some(solve::scalar_slot_y(2)),
-            3,
-            rumoca_core::Span::DUMMY,
-        )
-        .expect("valid fallback row target should build");
+        let target = fallback_residual_row_target(Some(solve::scalar_slot_y(2)), 3, test_span())
+            .expect("valid fallback row target should build");
 
         assert_eq!(
             target,
@@ -705,7 +707,7 @@ mod tests {
             1,
             3,
             &mut residual_to_implicit_rows,
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )?;
 
         assert_eq!(

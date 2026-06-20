@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn active_todae_errors_keep_stable_diagnostic_codes() {
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(SourceId::from_source_name("errors_fixture.mo"), 0, 10);
         use miette::Diagnostic;
 
         let cases = [

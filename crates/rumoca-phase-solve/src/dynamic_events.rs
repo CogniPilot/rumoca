@@ -357,7 +357,15 @@ mod tests {
     }
 
     fn test_span(start: usize, end: usize) -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(89), start, end)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_dynamic_events_source_89.mo"),
+            start,
+            end,
+        )
+    }
+
+    fn unspanned_dynamic_event_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
     }
 
     fn time_ref() -> rumoca_core::Expression {
@@ -388,7 +396,7 @@ mod tests {
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Pre,
             args: vec![var_ref(name)],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(30, 34),
         }
     }
 
@@ -399,7 +407,7 @@ mod tests {
         rumoca_core::Expression::BuiltinCall {
             function,
             args,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(30, 34),
         }
     }
 
@@ -417,20 +425,20 @@ mod tests {
                             op: OpBinary::Ge,
                             lhs: Box::new(time_ref()),
                             rhs: Box::new(pre_var("nextEvent")),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(40, 55),
                         },
                         rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Real(1.0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(56, 59),
                         },
                     )],
                     else_branch: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(0.5),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(65, 68),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(40, 68),
                 },
-                rumoca_core::Span::DUMMY,
+                test_span(35, 68),
                 "nextEvent guard",
             ));
 
@@ -454,20 +462,20 @@ mod tests {
                             op: OpBinary::Ge,
                             lhs: Box::new(time_ref()),
                             rhs: Box::new(var_ref("t_next")),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(40, 55),
                         },
                         rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Real(1.0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(56, 59),
                         },
                     )],
                     else_branch: Box::new(rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(0.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(65, 68),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(40, 68),
                 },
-                rumoca_core::Span::DUMMY,
+                test_span(35, 68),
                 "gateOut guard",
             ));
 
@@ -492,11 +500,11 @@ mod tests {
                         op: OpBinary::Add,
                         lhs: Box::new(var_ref("pulseStart")),
                         rhs: Box::new(var_ref("width")),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(48, 66),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(40, 66),
                 },
-                rumoca_core::Span::DUMMY,
+                test_span(35, 66),
                 "pulse output",
             ));
 
@@ -524,9 +532,9 @@ mod tests {
                         op: OpBinary::Lt,
                         lhs: Box::new(builtin_call(function, vec![time_ref(), var_ref("period")])),
                         rhs: Box::new(var_ref("width")),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(40, 62),
                     },
-                    rumoca_core::Span::DUMMY,
+                    test_span(35, 62),
                     "periodic turn guard",
                 ));
 
@@ -567,12 +575,12 @@ mod tests {
         let time = rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("time").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_dynamic_event_test_span(),
         };
         let period = rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("period").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_dynamic_event_test_span(),
         };
 
         let err = next_period_event_expr(&[time, period])
@@ -601,10 +609,10 @@ mod tests {
                             vec![time_ref(), var_ref("period")],
                         )),
                         rhs: Box::new(var_ref("width")),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(40, 62),
                     }],
                 ),
-                rumoca_core::Span::DUMMY,
+                test_span(35, 62),
                 "noEvent periodic guard",
             ));
 
@@ -638,9 +646,9 @@ mod tests {
                         vec![time_ref(), var_ref("period")],
                     )),
                     rhs: Box::new(var_ref("width")),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(40, 62),
                 },
-                rumoca_core::Span::DUMMY,
+                test_span(35, 62),
                 "periodic turn guard",
             ));
 

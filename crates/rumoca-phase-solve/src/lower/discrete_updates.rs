@@ -1693,9 +1693,19 @@ fn checked_relation_subscript(
 mod tests {
     use super::*;
 
+    fn unspanned_discrete_update_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn discrete_vec_with_capacity_reports_capacity_overflow() -> Result<(), LowerError> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(95), 4, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_95.mo",
+            ),
+            4,
+            12,
+        );
 
         let err = match discrete_vec_with_capacity::<u8>(usize::MAX, "discrete test vector", span) {
             Ok(_) => {
@@ -1721,7 +1731,7 @@ mod tests {
         let err = discrete_vec_with_capacity::<u8>(
             usize::MAX,
             "discrete test vector",
-            rumoca_core::Span::DUMMY,
+            unspanned_discrete_update_test_span(),
         )
         .expect_err("oversized discrete test vector must fail before allocating");
 
@@ -1736,7 +1746,13 @@ mod tests {
 
     #[test]
     fn checked_relation_offset_end_rejects_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(42), 5, 13);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_42.mo",
+            ),
+            5,
+            13,
+        );
         let err = checked_relation_offset_end(usize::MAX, 1, span)
             .expect_err("relation offset overflow must fail");
 
@@ -1749,7 +1765,7 @@ mod tests {
 
     #[test]
     fn checked_relation_offset_end_rejects_overflow_without_fabricating_span() {
-        let err = checked_relation_offset_end(usize::MAX, 1, rumoca_core::Span::DUMMY)
+        let err = checked_relation_offset_end(usize::MAX, 1, unspanned_discrete_update_test_span())
             .expect_err("relation offset overflow must fail");
 
         assert_eq!(err.source_span(), None);
@@ -1768,7 +1784,13 @@ mod tests {
         else {
             return;
         };
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(44), 9, 19);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_44.mo",
+            ),
+            9,
+            19,
+        );
 
         let err = checked_relation_subscript(index, span)
             .expect_err("relation subscript must fit in Modelica integer range");
@@ -1791,7 +1813,7 @@ mod tests {
             return;
         };
 
-        let err = checked_relation_subscript(index, rumoca_core::Span::DUMMY)
+        let err = checked_relation_subscript(index, unspanned_discrete_update_test_span())
             .expect_err("relation subscript must fit in Modelica integer range");
 
         assert_eq!(err.source_span(), None);
@@ -1806,7 +1828,13 @@ mod tests {
 
     #[test]
     fn component_reference_with_scalar_indices_preserves_source_span() -> Result<(), LowerError> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(47), 3, 17);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_47.mo",
+            ),
+            3,
+            17,
+        );
         let provenance_span = span.require_provenance("test scalar target subscript")?;
         let name = rumoca_core::VarName::new("x");
         let component_ref = rumoca_core::component_reference_from_flat_name(&name, span)
@@ -1829,7 +1857,7 @@ mod tests {
     #[test]
     fn component_reference_with_scalar_indices_rejects_dummy_span() {
         let variable = dae::Variable {
-            source_span: rumoca_core::Span::DUMMY,
+            source_span: unspanned_discrete_update_test_span(),
             ..dae::Variable::new(
                 rumoca_core::VarName::new("x"),
                 rumoca_core::Span::from_offsets(
@@ -1840,7 +1868,7 @@ mod tests {
             )
         };
 
-        let err = discrete_target_scalar_span(&variable, rumoca_core::Span::DUMMY)
+        let err = discrete_target_scalar_span(&variable, unspanned_discrete_update_test_span())
             .expect_err("source-derived scalar target subscript requires provenance");
 
         assert_eq!(err.source_span(), None);

@@ -266,7 +266,11 @@ mod tests {
     use super::*;
 
     fn test_span(start: usize, end: usize) -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId(93), start, end)
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            start,
+            end,
+        )
     }
 
     fn bool_var(name: &str, span: rumoca_core::Span) -> Expression {

@@ -61,7 +61,11 @@ fn make_bool_expr(value: bool) -> ast::Expression {
 }
 
 fn test_span() -> rumoca_core::Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 0, 1)
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_instantiate_tests_source_7.mo"),
+        0,
+        1,
+    )
 }
 
 fn make_string_expr_with_span(value: &str, span: rumoca_core::Span) -> ast::Expression {

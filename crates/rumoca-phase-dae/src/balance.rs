@@ -1164,6 +1164,14 @@ mod tests {
     use super::*;
     use rumoca_core::Span;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("balance_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     fn scalar_eq(count: usize) -> dae::Equation {
         scalar_eq_with_lhs("x", count)
     }
@@ -1176,15 +1184,15 @@ mod tests {
                 lhs: Box::new(rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new(lhs_name).into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 rhs: Box::new(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: "test".to_string(),
             scalar_count: count,
         }
@@ -1196,9 +1204,9 @@ mod tests {
             rhs: rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new(rhs_name).into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: "test".to_string(),
             scalar_count: 1,
         }
@@ -1233,11 +1241,11 @@ mod tests {
                 name: rumoca_core::VarName::new(rhs_name).into(),
                 subscripts: vec![rumoca_core::Subscript::generated_index(
                     rhs_index,
-                    rumoca_core::Span::DUMMY,
+                    test_span(),
                 )],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: "explicit connection equation: a = b[1]".to_string(),
             scalar_count: 1,
         }
@@ -1250,9 +1258,9 @@ mod tests {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(var_ref(lhs_name)),
                 rhs: Box::new(var_ref(rhs_name)),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: origin.to_string(),
             scalar_count: 1,
         }
@@ -1262,7 +1270,7 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 

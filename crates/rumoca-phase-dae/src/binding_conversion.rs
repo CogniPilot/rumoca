@@ -839,7 +839,7 @@ mod tests {
             binding: Some(Expression::VarRef {
                 name: VarName::new("port_p.v").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
                 rumoca_core::SourceId::from_source_name(file!()),
@@ -870,7 +870,7 @@ mod tests {
             is_primitive: true,
             binding: Some(Expression::Literal {
                 value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
                 rumoca_core::SourceId::from_source_name(file!()),
@@ -896,7 +896,7 @@ mod tests {
                 is_primitive: true,
                 binding: Some(Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
                     rumoca_core::SourceId::from_source_name(file!()),
@@ -911,15 +911,15 @@ mod tests {
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("x").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 rhs: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: EquationOrigin::ComponentEquation {
                 component: "M".to_string(),
             },
@@ -940,7 +940,7 @@ mod tests {
         let binding = Expression::VarRef {
             name: VarName::new("data.frictionParameters").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let owner_span = test_span();
 
@@ -997,7 +997,7 @@ mod tests {
         let binding = Expression::VarRef {
             name: VarName::new("aimc.aimcData.statorCoreParameters").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let owner_span = test_span();
 

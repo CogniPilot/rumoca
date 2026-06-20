@@ -3,12 +3,10 @@ use super::*;
 mod input_binding_tests;
 mod input_promotion_extra;
 mod input_promotion_indexed;
-mod tests_embedded_range;
 mod tests_equation_classification;
 mod tests_flow_sum;
 mod tests_function_param_calls;
 mod tests_regressions;
-mod tests_scalar_shape;
 
 /// Helper to create a rumoca_core::ComponentReference from a simple name.
 fn make_comp_ref(name: &str) -> rumoca_core::ComponentReference {

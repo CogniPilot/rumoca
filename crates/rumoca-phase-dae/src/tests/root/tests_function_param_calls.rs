@@ -2,17 +2,15 @@ use super::*;
 
 #[test]
 fn test_todae_accepts_function_typed_parameter_calls_in_function_body() {
+    let span = crate::test_support::test_span();
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
 
-    let partial =
-        rumoca_core::Function::new("Modelica.Math.Nonlinear.partialScalarFunction", Span::DUMMY);
+    let partial = rumoca_core::Function::new("Modelica.Math.Nonlinear.partialScalarFunction", span);
     flat.add_function(partial);
 
-    let mut nonlinear = rumoca_core::Function::new(
-        "Modelica.Math.Nonlinear.solveOneNonlinearEquation",
-        Span::DUMMY,
-    );
+    let mut nonlinear =
+        rumoca_core::Function::new("Modelica.Math.Nonlinear.solveOneNonlinearEquation", span);
     nonlinear.inputs.push(
         rumoca_core::FunctionParam::new(
             "f",
@@ -37,9 +35,9 @@ fn test_todae_accepts_function_typed_parameter_calls_in_function_body() {
             name: VarName::new("Modelica.Math.Nonlinear.solveOneNonlinearEquation.f").into(),
             args: vec![make_var_ref("u")],
             is_constructor: false,
-            span: Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
     });
     flat.add_function(nonlinear);
 
@@ -60,13 +58,12 @@ fn test_todae_accepts_function_typed_parameter_calls_in_function_body() {
 
 #[test]
 fn test_todae_accepts_function_typed_parameter_without_flat_function_entry() {
+    let span = crate::test_support::test_span();
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
 
-    let mut nonlinear = rumoca_core::Function::new(
-        "Modelica.Math.Nonlinear.solveOneNonlinearEquation",
-        Span::DUMMY,
-    );
+    let mut nonlinear =
+        rumoca_core::Function::new("Modelica.Math.Nonlinear.solveOneNonlinearEquation", span);
     nonlinear.inputs.push(
         rumoca_core::FunctionParam::new(
             "f",
@@ -91,9 +88,9 @@ fn test_todae_accepts_function_typed_parameter_without_flat_function_entry() {
             name: VarName::new("Modelica.Math.Nonlinear.solveOneNonlinearEquation.f").into(),
             args: vec![make_var_ref("u")],
             is_constructor: false,
-            span: Span::DUMMY,
+            span,
         },
-        span: Span::DUMMY,
+        span,
     });
     flat.add_function(nonlinear);
 

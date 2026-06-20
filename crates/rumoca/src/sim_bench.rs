@@ -7,29 +7,31 @@ use serde::Serialize;
 
 use rumoca_sim::{SimOptions, SimSolverMode};
 
-use super::{
+use crate::cli::{
     DiagnosticsArgs, ModelInputArgs, ModelOptions, SimulateSolverMode,
     compile_dae_with_inferred_model, init_debug_tracing,
 };
 #[cfg(feature = "runner")]
-use super::{configured_model_name, resolve_path};
+use crate::cli::{configured_model_name, resolve_path};
 
 #[derive(Args, Debug)]
 #[command(
     arg_required_else_help = true,
     group(clap::ArgGroup::new("bench_source").required(true).multiple(true).args(["MODELICA_FILE", "config"])),
 )]
-pub(crate) struct SimBenchArgs {
-    /// Modelica file to benchmark directly, or override [model].file with --config.
+pub struct SimBenchArgs {
+    /// Modelica file to benchmark directly, or override the config's `model.file`
+    /// with --config.
     #[arg(name = "MODELICA_FILE")]
     pub(crate) model_file: Option<String>,
 
-    /// Run a rumoca-scenario.toml scenario (rumoca-scenario.toml / rumoca-scenario.<profile>.toml) instead of a direct benchmark.
+    /// Run a rumoca-scenario.toml scenario (`rumoca-scenario.toml` /
+    /// `rumoca-scenario.<profile>.toml`) instead of a direct benchmark.
     #[arg(short, long)]
     pub(crate) config: Option<String>,
 
     /// Shared model-selection options (--model / --source-root); with --config
-    /// these override the config's [model] / source_roots.
+    /// these override the config's `model` / `source_roots`.
     #[command(flatten)]
     pub(crate) model_options: ModelOptions,
 
@@ -41,7 +43,7 @@ pub(crate) struct SimBenchArgs {
     #[arg(long, default_value_t = 1)]
     pub(crate) warmups: usize,
 
-    /// Simulation end time. Direct runs default to 1.0; scenario runs use [sim].t_end.
+    /// Simulation end time. Direct runs default to 1.0; scenario runs use `sim.t_end`.
     #[arg(long)]
     pub(crate) t_end: Option<f64>,
 

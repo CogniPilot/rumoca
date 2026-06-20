@@ -916,10 +916,18 @@ mod tests {
     use super::*;
     use indexmap::IndexMap;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_initial_values_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     fn real(value: f64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -927,7 +935,7 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -1008,7 +1016,7 @@ mod tests {
             &dae::Dae::default(),
             &time_layout(),
             &rumoca_core::VarName::new("time"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect("time is a built-in solve-layout scalar");
 
@@ -1021,7 +1029,7 @@ mod tests {
             &dae::Dae::default(),
             &time_layout(),
             &rumoca_core::VarName::new("missing"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect_err("unknown alias target must still fail fast");
 
@@ -1033,7 +1041,11 @@ mod tests {
 
     #[test]
     fn assignment_target_scalar_names_rejects_oversized_layout_dimension_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(14), 7, 19);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_initial_values_source_14.mo"),
+            7,
+            19,
+        );
         let layout = solve::VarLayout::from_parts_with_shapes(
             IndexMap::new(),
             IndexMap::from([("x".to_string(), vec![0, usize::MAX])]),
@@ -1054,7 +1066,11 @@ mod tests {
 
     #[test]
     fn assignment_target_scalar_names_rejects_shape_product_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(15), 3, 11);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_initial_values_source_15.mo"),
+            3,
+            11,
+        );
         let err = checked_initial_target_element_count("x", &[i64::MAX as usize, 3], span)
             .expect_err("overflowing target element count should fail fast");
 
@@ -1073,7 +1089,7 @@ mod tests {
             &dae_model,
             &layout,
             &rumoca_core::VarName::new("sum.u[1]"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect("indexed target is backed by DAE shape metadata and a layout slot");
 
@@ -1088,7 +1104,7 @@ mod tests {
             &dae_model,
             &layout,
             &rumoca_core::VarName::new("sum.u[3]"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect_err("indexed target must be in bounds");
 
@@ -1104,7 +1120,7 @@ mod tests {
             &dae_model,
             &layout,
             &rumoca_core::VarName::new("sum.u[1]"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect_err("indexed target must have a concrete solve layout slot");
 

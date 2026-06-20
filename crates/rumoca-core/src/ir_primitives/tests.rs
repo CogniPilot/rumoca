@@ -18,7 +18,11 @@ fn test_span() -> Span {
 
 #[test]
 fn expression_require_span_accepts_real_span() {
-    let span = Span::from_offsets(SourceId(7), 3, 7);
+    let span = Span::from_offsets(
+        SourceId::from_source_name("core_ir_primitives_source_7.mo"),
+        3,
+        7,
+    );
     let expr = Expression::Literal {
         value: Literal::Integer(1),
         span,
@@ -428,11 +432,17 @@ fn expression_semantic_equality_ignores_spans() {
             value: Literal::Real(0.0),
             span: Span::DUMMY,
         }),
-        span: Span::from_offsets(super::SourceId(1), 1, 2),
+        span: Span::from_offsets(
+            super::SourceId::from_source_name("core_ir_primitives_source_1.mo"),
+            1,
+            2,
+        ),
     };
-    let rhs = lhs
-        .clone()
-        .with_span(Span::from_offsets(super::SourceId(1), 3, 4));
+    let rhs = lhs.clone().with_span(Span::from_offsets(
+        super::SourceId::from_source_name("core_ir_primitives_source_1.mo"),
+        3,
+        4,
+    ));
 
     assert!(expressions_semantically_equal(&lhs, &rhs));
     assert!(lhs.semantically_eq_ignoring_spans(&rhs));

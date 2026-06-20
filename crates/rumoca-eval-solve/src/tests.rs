@@ -4,7 +4,11 @@ use rumoca_eval_dae::{VarEnv, eval_expr};
 use rumoca_ir_solve::RandomGenerator;
 
 fn fixture_span() -> rumoca_core::Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId(45), 0, 1)
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("eval_solve_tests_source_45.mo"),
+        0,
+        1,
+    )
 }
 
 fn lit(value: f64) -> rumoca_core::Expression {

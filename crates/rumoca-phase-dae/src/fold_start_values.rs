@@ -543,7 +543,11 @@ mod tests {
     use rumoca_core::{BuiltinFunction, Literal, OpBinary};
 
     fn test_span(start: usize, end: usize) -> Span {
-        Span::from_offsets(rumoca_core::SourceId(11), start, end)
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("fold_start_values_fixture.mo"),
+            start,
+            end,
+        )
     }
 
     fn var(name: &str) -> Expression {

@@ -12,6 +12,23 @@ fn solve_test_span() -> rumoca_core::Span {
     )
 }
 
+fn unspanned_solve_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
+fn solve_numbered_span(source: u64, start: usize, end: usize) -> rumoca_core::Span {
+    let source_name = format!("phase_solve_tests_source_{source}.mo");
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(&source_name),
+        start,
+        end,
+    )
+}
+
+fn solve_file_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+}
+
 fn scalar_program_block_fixture(
     block: &rumoca_ir_solve::ComputeBlock,
 ) -> rumoca_ir_solve::ScalarProgramBlock {
@@ -25,11 +42,7 @@ fn array_var(name: &str, dims: &[i64]) -> dae::Variable {
         component_ref: Some(source_component_ref_from_name(name)),
         source_span: solve_test_span(),
         dims: dims.to_vec(),
-        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name(file!()),
-            1,
-            2,
-        ))
+        ..rumoca_ir_dae::Variable::empty_with_span(solve_file_span())
     }
 }
 
@@ -38,39 +51,16 @@ fn scalar_var(name: &str) -> dae::Variable {
         name: rumoca_core::VarName::new(name),
         component_ref: Some(source_component_ref_from_name(name)),
         source_span: solve_test_span(),
-        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name(file!()),
-            1,
-            2,
-        ))
+        ..rumoca_ir_dae::Variable::empty_with_span(solve_file_span())
     }
 }
 
 fn source_array_var(name: &str, dims: &[i64]) -> dae::Variable {
-    dae::Variable {
-        name: rumoca_core::VarName::new(name),
-        component_ref: Some(source_component_ref_from_name(name)),
-        source_span: solve_test_span(),
-        dims: dims.to_vec(),
-        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name(file!()),
-            1,
-            2,
-        ))
-    }
+    array_var(name, dims)
 }
 
 fn source_scalar_var(name: &str) -> dae::Variable {
-    dae::Variable {
-        name: rumoca_core::VarName::new(name),
-        component_ref: Some(source_component_ref_from_name(name)),
-        source_span: solve_test_span(),
-        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name(file!()),
-            1,
-            2,
-        ))
-    }
+    scalar_var(name)
 }
 
 fn test_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference {
@@ -95,6 +85,10 @@ fn source_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference
     component_ref
 }
 
+fn source_ref(name: &str) -> rumoca_core::Reference {
+    rumoca_core::Reference::from_component_reference(source_component_ref_from_name(name))
+}
+
 fn source_fixture_def_id(name: &str) -> rumoca_core::DefId {
     let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
         hash.wrapping_mul(16_777_619) ^ u32::from(byte)
@@ -104,7 +98,7 @@ fn source_fixture_def_id(name: &str) -> rumoca_core::DefId {
 
 #[test]
 fn lower_vec_with_capacity_reports_capacity_overflow_with_span() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(93), 1, 5);
+    let span = solve_numbered_span(93, 1, 5);
 
     let err = match lower_vec_with_capacity::<u8>(usize::MAX, "test vector", span) {
         Ok(_) => {
@@ -127,7 +121,7 @@ fn lower_vec_with_capacity_reports_capacity_overflow_with_span() -> Result<(), L
 
 #[test]
 fn lower_vec_with_capacity_reports_capacity_overflow_without_dummy_span() {
-    let err = lower_vec_with_capacity::<u8>(usize::MAX, "test vector", rumoca_core::Span::DUMMY)
+    let err = lower_vec_with_capacity::<u8>(usize::MAX, "test vector", unspanned_solve_test_span())
         .expect_err("unspanned oversized test vector should fail before allocating");
 
     assert_eq!(err.source_span(), None);
@@ -144,7 +138,7 @@ fn lower_hash_set_with_capacity_reports_capacity_overflow_without_dummy_span() {
     let err = lower_hash_set_with_capacity::<usize>(
         usize::MAX,
         "test hash set",
-        rumoca_core::Span::DUMMY,
+        unspanned_solve_test_span(),
     )
     .expect_err("unspanned oversized hash set should fail before allocating");
 
@@ -165,7 +159,7 @@ fn reserve_lower_index_map_capacity_reports_capacity_overflow_without_dummy_span
         &mut values,
         usize::MAX,
         "test index map",
-        rumoca_core::Span::DUMMY,
+        unspanned_solve_test_span(),
     )
     .expect_err("unspanned oversized index map should fail before allocating");
 
@@ -180,7 +174,7 @@ fn reserve_lower_index_map_capacity_reports_capacity_overflow_without_dummy_span
 
 #[test]
 fn checked_layout_remainder_reports_underflow_without_dummy_span() {
-    let err = checked_layout_remainder(2, 3, "test layout", rumoca_core::Span::DUMMY)
+    let err = checked_layout_remainder(2, 3, "test layout", unspanned_solve_test_span())
         .expect_err("unspanned layout underflow should fail");
 
     assert_eq!(err.source_span(), None);
@@ -194,7 +188,7 @@ fn checked_layout_remainder_reports_underflow_without_dummy_span() {
 
 #[test]
 fn algebraic_projection_plan_reports_range_underflow_without_dummy_span() {
-    let err = lower_algebraic_projection_plan(&[], &[], 2, 1, rumoca_core::Span::DUMMY)
+    let err = lower_algebraic_projection_plan(&[], &[], 2, 1, unspanned_solve_test_span())
         .expect_err("invalid projection range should fail");
 
     assert_eq!(err.source_span(), None);
@@ -208,7 +202,7 @@ fn algebraic_projection_plan_reports_range_underflow_without_dummy_span() {
 
 #[test]
 fn solve_identity_mass_matrix_reports_capacity_overflow_with_span() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(97), 2, 6);
+    let span = solve_numbered_span(97, 2, 6);
     let mut problem = solve::SolveProblem::default();
     problem.solve_layout.state_scalar_count = usize::MAX;
     problem.continuous.derivative_rhs = solve::ComputeBlock {
@@ -238,7 +232,7 @@ fn solve_identity_mass_matrix_reports_capacity_overflow_with_span() -> Result<()
 
 #[test]
 fn checked_literal_positive_indices_preserves_literal_indices() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(94), 3, 8);
+    let span = solve_numbered_span(94, 3, 8);
     let subscripts = vec![
         rumoca_core::Subscript::index(1, span),
         rumoca_core::Subscript::index(3, span),
@@ -253,7 +247,7 @@ fn checked_literal_positive_indices_preserves_literal_indices() -> Result<(), Lo
 
 #[test]
 fn checked_literal_positive_indices_declines_nonliteral_subscripts() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(95), 5, 12);
+    let span = solve_numbered_span(95, 5, 12);
     let subscripts = vec![rumoca_core::Subscript::colon(span)];
 
     assert_eq!(checked_literal_positive_indices(&subscripts, None)?, None);
@@ -262,7 +256,10 @@ fn checked_literal_positive_indices_declines_nonliteral_subscripts() -> Result<(
 
 #[test]
 fn checked_literal_positive_indices_rejects_missing_source_span() {
-    let subscripts = vec![rumoca_core::Subscript::index(1, rumoca_core::Span::DUMMY)];
+    let subscripts = vec![rumoca_core::Subscript::index(
+        1,
+        unspanned_solve_test_span(),
+    )];
 
     let err = checked_literal_positive_indices(&subscripts, None)
         .expect_err("source-free literal subscripts should fail fast");
@@ -276,7 +273,7 @@ fn checked_literal_positive_indices_rejects_missing_source_span() {
 #[cfg(target_pointer_width = "32")]
 #[test]
 fn checked_literal_positive_indices_rejects_host_index_overflow_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(96), 7, 14);
+    let span = solve_numbered_span(96, 7, 14);
     let subscripts = vec![rumoca_core::Subscript::index(i64::MAX, span)];
 
     let err = checked_literal_positive_indices(&subscripts, None)
@@ -290,7 +287,7 @@ fn checked_literal_positive_indices_rejects_host_index_overflow_with_span() {
 
 #[test]
 fn checked_solver_scalar_index_rejects_overflow_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 4, 10);
+    let span = solve_numbered_span(91, 4, 10);
     let var = dae::Variable {
         name: rumoca_core::VarName::new("x"),
         source_span: span,
@@ -315,7 +312,7 @@ fn checked_solver_scalar_index_rejects_overflow_with_span() {
 fn checked_solver_scalar_index_rejects_overflow_without_dummy_span() {
     let var = dae::Variable {
         name: rumoca_core::VarName::new("x"),
-        source_span: rumoca_core::Span::DUMMY,
+        source_span: unspanned_solve_test_span(),
         ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name(file!()),
             1,
@@ -336,7 +333,7 @@ fn checked_solver_scalar_index_rejects_overflow_without_dummy_span() {
 
 #[test]
 fn checked_solver_scalar_offset_rejects_overflow_with_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(92), 6, 12);
+    let span = solve_numbered_span(92, 6, 12);
     let var = dae::Variable {
         name: rumoca_core::VarName::new("x"),
         source_span: span,
@@ -361,7 +358,7 @@ fn checked_solver_scalar_offset_rejects_overflow_with_span() {
 fn checked_solver_scalar_offset_rejects_overflow_without_dummy_span() {
     let var = dae::Variable {
         name: rumoca_core::VarName::new("x"),
-        source_span: rumoca_core::Span::DUMMY,
+        source_span: unspanned_solve_test_span(),
         ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name(file!()),
             1,
@@ -383,7 +380,7 @@ fn checked_solver_scalar_offset_rejects_overflow_without_dummy_span() {
 #[test]
 fn continuous_equation_scalar_name_reports_missing_array_lhs_with_span() {
     let dae_model = dae::Dae::new();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 13, 21);
+    let span = solve_numbered_span(9, 13, 21);
 
     let err = super::continuous_equation_scalar_name(
         &dae_model,
@@ -411,7 +408,7 @@ fn continuous_equation_scalar_name_reports_missing_array_lhs_without_dummy_span(
         &rumoca_core::VarName::new("missingArray"),
         0,
         2,
-        rumoca_core::Span::DUMMY,
+        unspanned_solve_test_span(),
     )
     .expect_err("array continuous equation target must resolve to a DAE variable");
 
@@ -426,7 +423,7 @@ fn continuous_equation_scalar_name_reports_missing_array_lhs_without_dummy_span(
 #[test]
 fn discrete_update_scalar_name_reports_missing_array_lhs_with_span() {
     let dae_model = dae::Dae::new();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(10), 23, 31);
+    let span = solve_numbered_span(10, 23, 31);
 
     let err = super::discrete_update_scalar_name(
         &dae_model,
@@ -454,7 +451,7 @@ fn discrete_update_scalar_name_reports_missing_array_lhs_without_dummy_span() {
         &rumoca_core::VarName::new("missingDiscreteArray"),
         0,
         2,
-        rumoca_core::Span::DUMMY,
+        unspanned_solve_test_span(),
     )
     .expect_err("array discrete update target must resolve to a DAE variable");
 
@@ -469,7 +466,7 @@ fn discrete_update_scalar_name_reports_missing_array_lhs_without_dummy_span() {
 #[test]
 fn target_expr_scalar_name_accepts_spanned_index_base_ref() -> Result<(), LowerError> {
     let dae_model = dae::Dae::new();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(11), 5, 12);
+    let span = solve_numbered_span(11, 5, 12);
     let expr = rumoca_core::Expression::Index {
         base: Box::new(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("tail"),
@@ -569,7 +566,7 @@ fn implicit_rhs_records_residual_row_placement() {
         &residual_targets,
         1,
         4,
-        rumoca_core::Span::DUMMY,
+        solve_test_span(),
     )
     .expect("implicit rows should build");
 
@@ -593,12 +590,12 @@ fn implicit_rhs_reports_solver_sized_buffer_overflow() -> Result<(), super::Lowe
         &[],
         0,
         usize::MAX,
-        rumoca_core::Span::DUMMY,
+        unspanned_solve_test_span(),
     ) {
         Ok(_) => {
             return Err(super::LowerError::ContractViolation {
                 reason: "oversized implicit RHS buffers should fail before allocating".to_string(),
-                span: rumoca_core::Span::DUMMY,
+                span: solve_test_span(),
             });
         }
         Err(err) => err,
@@ -744,7 +741,7 @@ fn algebraic_projection_loop_keeps_explicit_row_targets() -> Result<(), LowerErr
     let Some(block) = block else {
         return Err(LowerError::ContractViolation {
             reason: "targeted loop block should lower".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         });
     };
 
@@ -801,13 +798,7 @@ fn var(name: &str) -> rumoca_core::Expression {
 }
 
 fn source_var(name: &str) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(source_component_ref_from_name(
-            name,
-        )),
-        subscripts: Vec::new(),
-        span: solve_test_span(),
-    }
+    var(name)
 }
 
 fn source_indexed_var(
@@ -852,7 +843,7 @@ fn range_expr(
         start: Box::new(start),
         step: None,
         end: Box::new(end),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -865,7 +856,7 @@ fn stepped_range_expr(
         start: Box::new(start),
         step: Some(Box::new(step)),
         end: Box::new(end),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -907,7 +898,7 @@ fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -915,7 +906,7 @@ fn pre(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Pre,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -926,7 +917,7 @@ fn builtin_call(
     rumoca_core::Expression::BuiltinCall {
         function,
         args,
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -935,7 +926,7 @@ fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core:
         name: rumoca_core::VarName::new(name).into(),
         args,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -948,7 +939,7 @@ fn binary(
         op,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -956,7 +947,7 @@ fn unary(op: rumoca_core::OpUnary, rhs: rumoca_core::Expression) -> rumoca_core:
     rumoca_core::Expression::Unary {
         op,
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
     }
 }
 
@@ -1002,7 +993,7 @@ fn solve_appendix_b_validation_rejects_unresolved_function_call() {
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: function_call("Missing.f", vec![]),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_test_span(),
         origin: "function target invariant regression".to_string(),
         scalar_count: 1,
     });
@@ -1050,7 +1041,7 @@ fn solve_appendix_b_validation_rejects_invalid_matmul_operand_range() {
             lhs_sparsity: solve::SparsityPattern::Dense,
             rhs_sparsity: solve::SparsityPattern::Dense,
             metadata: solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         }],
     };
 
@@ -1079,7 +1070,7 @@ fn solve_appendix_b_validation_rejects_invalid_linsolve_operand_range() {
             n: 2,
             next_reg: 5,
             metadata: solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         }],
     };
 
@@ -1201,7 +1192,7 @@ fn solve_appendix_b_validation_rejects_invalid_map_stride_target() {
             }],
             const_strides: Vec::new(),
             metadata: solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         }],
     };
 
@@ -1253,7 +1244,7 @@ fn solve_appendix_b_validation_rejects_invalid_map_const_stride_target() {
                 }],
             }],
             metadata: solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: solve_test_span(),
         }],
     };
 
@@ -1489,7 +1480,7 @@ fn solver_name_index_canonical_names_respect_truncated_solver_len() {
 #[test]
 fn solver_name_index_maps_report_invalid_variable_shape_span() {
     let mut dae_model = dae::Dae::default();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(42), 5, 18);
+    let span = solve_numbered_span(42, 5, 18);
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("bad"),
         dae::Variable {
@@ -1567,13 +1558,13 @@ fn solve_problem_lowers_appendix_b_condition_memory_as_initial_updates() {
     dae_model.conditions.equations.push(dae::Equation::explicit(
         rumoca_core::VarName::new("c[1]"),
         var("flag"),
-        rumoca_core::Span::DUMMY,
+        solve_test_span(),
         "condition memory",
     ));
     dae_model.conditions.equations.push(dae::Equation::explicit(
         rumoca_core::VarName::new("d"),
         var("p"),
-        rumoca_core::Span::DUMMY,
+        solve_test_span(),
         "non-condition discrete assignment in f_c",
     ));
 
@@ -1600,7 +1591,7 @@ fn solve_problem_lowers_generated_condition_memory_initial_updates() {
     dae_model.conditions.equations.push(dae::Equation::explicit(
         rumoca_core::VarName::new("__rumoca_c[1]"),
         var("c"),
-        rumoca_core::Span::DUMMY,
+        solve_test_span(),
         "generated condition memory",
     ));
 

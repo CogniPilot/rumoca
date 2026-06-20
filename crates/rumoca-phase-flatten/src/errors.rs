@@ -358,7 +358,11 @@ mod tests {
 
     #[test]
     fn test_undefined_variable_error() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_errors_source_0.mo"),
+            10,
+            20,
+        );
         let err = FlattenError::undefined_variable("x", span);
         assert_eq!(format!("{err}"), "undefined variable: x");
 
@@ -370,7 +374,11 @@ mod tests {
 
     #[test]
     fn test_incompatible_connectors_with_help() {
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_errors_source_0.mo"),
+            0,
+            10,
+        );
         let err = FlattenError::incompatible_connectors("A", "B", span);
 
         // Check that help text is present

@@ -504,7 +504,11 @@ mod tests {
 
     #[test]
     fn test_model_not_found_with_span() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_instantiate_errors_source_0.mo"),
+            10,
+            20,
+        );
         let err = InstantiateError::model_not_found_with_span("TestModel", span);
         assert_eq!(format!("{err}"), "model `TestModel` not found");
 
@@ -516,7 +520,11 @@ mod tests {
 
     #[test]
     fn test_conflicting_inheritance_with_help() {
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_instantiate_errors_source_0.mo"),
+            0,
+            10,
+        );
         let err = InstantiateError::conflicting_inheritance("x", "Base1", "Base2", span);
 
         // Check that help text is present

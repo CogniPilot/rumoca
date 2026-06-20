@@ -1,8 +1,18 @@
 use super::*;
 
+fn unspanned_derivative_rhs_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 #[test]
 fn derivative_vec_with_capacity_reports_capacity_overflow() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(94), 2, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_94.mo",
+        ),
+        2,
+        8,
+    );
 
     let err = match derivative_vec_with_capacity::<u8>(usize::MAX, "derivative test vector", span) {
         Ok(_) => {
@@ -28,7 +38,7 @@ fn derivative_vec_with_capacity_dummy_span_stays_unspanned() {
     let err = derivative_vec_with_capacity::<u8>(
         usize::MAX,
         "derivative test vector",
-        rumoca_core::Span::DUMMY,
+        unspanned_derivative_rhs_test_span(),
     )
     .expect_err("oversized derivative test vector should fail before allocating");
 
@@ -43,10 +53,18 @@ fn derivative_vec_with_capacity_dummy_span_stays_unspanned() {
     );
 }
 
+fn derivative_rhs_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_derivative_rhs_fixture.mo"),
+        1,
+        2,
+    )
+}
+
 fn real(value: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: derivative_rhs_test_span(),
     }
 }
 
@@ -65,14 +83,20 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span: derivative_rhs_test_span(),
     }
 }
 
 #[test]
 fn expression_result_dims_rejects_missing_scalar_binding() {
     let dae_model = dae::Dae::default();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(41), 0, 7);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_41.mo",
+        ),
+        0,
+        7,
+    );
     let err = expression_result_dims(&var_ref("missing"), &dae_model, &IndexMap::new(), span)
         .expect_err("missing binding must not default to scalar shape");
     assert!(matches!(err, LowerError::MissingBinding { name } if name == "missing"));
@@ -85,7 +109,13 @@ fn expression_result_dims_accepts_existing_scalar_binding() {
         .variables
         .algebraics
         .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(41), 8, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_41.mo",
+        ),
+        8,
+        9,
+    );
     let dims = expression_result_dims(&var_ref("x"), &dae_model, &IndexMap::new(), span)
         .expect("existing scalar binding has scalar shape");
     assert!(dims.is_empty());
@@ -94,7 +124,13 @@ fn expression_result_dims_accepts_existing_scalar_binding() {
 #[test]
 fn binding_keys_reject_missing_scalarized_binding() {
     let dae_model = dae::Dae::default();
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(95), 3, 7);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_95.mo",
+        ),
+        3,
+        7,
+    );
     let subscripts = vec![rumoca_core::Subscript::generated_index(1, span)];
     let err =
         binding_keys_for_subscripted_name("x", &subscripts, &dae_model, &IndexMap::new(), span)
@@ -109,7 +145,13 @@ fn binding_keys_accept_existing_scalarized_binding() {
         .variables
         .algebraics
         .insert(rumoca_core::VarName::new("x[1]"), scalar_var("x[1]"));
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(96), 4, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_96.mo",
+        ),
+        4,
+        8,
+    );
     let subscripts = vec![rumoca_core::Subscript::generated_index(1, span)];
     let keys =
         binding_keys_for_subscripted_name("x", &subscripts, &dae_model, &IndexMap::new(), span)
@@ -119,7 +161,13 @@ fn binding_keys_accept_existing_scalarized_binding() {
 
 #[test]
 fn lower_derivative_rhs_reports_missing_component_root_with_state_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(15), 5, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_15.mo",
+        ),
+        5,
+        9,
+    );
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
         rumoca_core::VarName::new("x"),
@@ -163,7 +211,13 @@ fn lower_derivative_rhs_reports_missing_component_root_with_state_span() {
 
 #[test]
 fn lower_derivative_rhs_reports_missing_component_root_entry_with_state_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(16), 7, 11);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_16.mo",
+        ),
+        7,
+        11,
+    );
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
         rumoca_core::VarName::new("x"),
@@ -207,13 +261,19 @@ fn lower_derivative_rhs_reports_missing_component_root_entry_with_state_span() {
 
 #[test]
 fn lower_derivative_rhs_uses_equation_span_when_state_span_is_missing() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(20), 13, 21);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_20.mo",
+        ),
+        13,
+        21,
+    );
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
         rumoca_core::VarName::new("x"),
         dae::Variable {
             name: rumoca_core::VarName::new("x"),
-            source_span: rumoca_core::Span::DUMMY,
+            source_span: unspanned_derivative_rhs_test_span(),
             ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
                 rumoca_core::SourceId::from_source_name(file!()),
                 1,
@@ -255,7 +315,13 @@ fn lower_derivative_rhs_uses_equation_span_when_state_span_is_missing() {
 
 #[test]
 fn state_output_y_range_rejects_component_underflow_with_state_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(17), 2, 6);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_17.mo",
+        ),
+        2,
+        6,
+    );
     let dae_model = dae_with_state_span("x", span);
     let state = StateScalar {
         name: "x[2]".to_string(),
@@ -273,7 +339,13 @@ fn state_output_y_range_rejects_component_underflow_with_state_span() {
 
 #[test]
 fn state_output_y_range_rejects_end_overflow_with_state_span() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(18), 3, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_18.mo",
+        ),
+        3,
+        8,
+    );
     let dae_model = dae_with_state_span("x", span);
     let state = StateScalar {
         name: "x".to_string(),
@@ -311,7 +383,13 @@ fn dae_with_state_span(name: &str, span: rumoca_core::Span) -> dae::Dae {
 
 #[test]
 fn literal_array_elements_flat_flattens_matrix_rows_once() -> Result<(), LowerError> {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(19), 0, 8);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_tests_source_19.mo",
+        ),
+        0,
+        8,
+    );
     let rows = vec![
         rumoca_core::Expression::Array {
             elements: vec![real(1.0), real(2.0)],

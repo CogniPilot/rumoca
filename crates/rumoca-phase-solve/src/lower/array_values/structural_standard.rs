@@ -87,7 +87,13 @@ mod tests {
 
     #[test]
     fn symmetric_orientation_rejects_unsupported_dimension_with_span() -> Result<(), String> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(15), 4, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_structural_standard_source_15.mo",
+            ),
+            4,
+            12,
+        );
 
         let Err(err) = symmetric_orientation_values(0, span) else {
             return Err("unsupported symmetricOrientation dimension succeeded".to_string());

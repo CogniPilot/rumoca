@@ -4,7 +4,7 @@
 use anyhow::Result;
 use rumoca_compile::cache;
 
-use crate::{CacheArgs, CacheCommand, CachePruneArgs, CacheStatusArgs};
+use crate::cli::{CacheArgs, CacheCommand, CachePruneArgs, CacheStatusArgs};
 
 pub(crate) fn run_cache(args: CacheArgs) -> Result<()> {
     match args.command {

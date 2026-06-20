@@ -1,11 +1,21 @@
 use super::*;
 
+fn unspanned_complex_operator_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::DUMMY
+}
+
 #[test]
 fn complex_binary_parts_rejects_unsupported_op_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 19);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_complex_operator_tests_source_7.mo",
+        ),
+        11,
+        19,
+    );
 
     let err = match builder.lower_complex_binary_parts(BinaryOp::Atan2, 0, 1, 2, 3, span) {
         Ok(_) => panic!("unsupported complex binary op should fail"),
@@ -25,7 +35,13 @@ fn builtin_argument_error_uses_stable_builtin_name_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(8), 3, 11);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_complex_operator_tests_source_8.mo",
+        ),
+        3,
+        11,
+    );
 
     let err = builder
         .lower_builtin(
@@ -49,7 +65,12 @@ fn builtin_argument_error_does_not_fabricate_dummy_span() {
     let mut builder = LowerBuilder::new(&layout, &functions);
 
     let err = builder
-        .lower_div_builtin(&[], &Scope::new(), 0, rumoca_core::Span::DUMMY)
+        .lower_div_builtin(
+            &[],
+            &Scope::new(),
+            0,
+            unspanned_complex_operator_test_span(),
+        )
         .expect_err("div() without arguments must fail");
 
     assert_eq!(err.source_span(), None);
@@ -64,7 +85,13 @@ fn unsupported_binary_operator_error_uses_operator_display_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
     let mut builder = LowerBuilder::new(&layout, &functions);
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 4, 9);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_complex_operator_tests_source_9.mo",
+        ),
+        4,
+        9,
+    );
     let literal = |value| rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
         span,
@@ -93,7 +120,7 @@ fn complex_projection_source_reference_requires_span_metadata() {
     let expr = rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new("z"),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span: unspanned_complex_operator_test_span(),
     };
 
     let err = builder

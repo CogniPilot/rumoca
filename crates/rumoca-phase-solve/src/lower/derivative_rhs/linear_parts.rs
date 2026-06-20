@@ -843,6 +843,10 @@ mod tests {
         )
     }
 
+    fn unspanned_linear_parts_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     fn var_ref(
         name: &str,
         subscripts: Vec<rumoca_core::Subscript>,
@@ -904,7 +908,7 @@ mod tests {
         let err = linear_index_map_with_capacity::<rumoca_core::Expression>(
             usize::MAX,
             "derivative coefficients",
-            rumoca_core::Span::DUMMY,
+            unspanned_linear_parts_test_span(),
         )
         .expect_err("impossible capacity must be rejected");
 
@@ -963,7 +967,7 @@ mod tests {
         let expr = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: unspanned_linear_parts_test_span(),
         };
 
         let err = der_state_name(&expr, &["x".to_string()])

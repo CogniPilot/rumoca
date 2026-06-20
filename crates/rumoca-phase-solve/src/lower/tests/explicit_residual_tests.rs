@@ -6,14 +6,14 @@ fn lower_residual_lowers_explicit_algebraic_equation_as_lhs_minus_rhs() {
     dae_model
         .variables
         .outputs
-        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+        .insert(rumoca_core::VarName::new("y"), source_scalar_var("y"));
     dae_model.continuous.equations.push(dae::Equation::explicit(
-        rumoca_core::VarName::new("y"),
+        source_ref("y"),
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(2.0),
             span: lower_test_span(),
         },
-        rumoca_core::Span::DUMMY,
+        lower_test_span(),
         "y = 2",
     ));
 

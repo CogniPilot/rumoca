@@ -130,7 +130,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(rumoca_core::Expression::Tuple {
                     elements: vec![var("noise"), var("seedState")],
-                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 28),
+                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 10, 28),
                 }),
                 rhs: Box::new(rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(
@@ -141,7 +141,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(1),
                                 span: rumoca_core::Span::from_offsets(
-                                    rumoca_core::SourceId(1),
+                                    rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"),
                                     45,
                                     46,
                                 ),
@@ -149,7 +149,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(2),
                                 span: rumoca_core::Span::from_offsets(
-                                    rumoca_core::SourceId(1),
+                                    rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"),
                                     48,
                                     49,
                                 ),
@@ -157,21 +157,21 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(3),
                                 span: rumoca_core::Span::from_offsets(
-                                    rumoca_core::SourceId(1),
+                                    rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"),
                                     51,
                                     52,
                                 ),
                             },
                         ],
                         is_matrix: false,
-                        span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 44, 53),
+                        span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 44, 53),
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 30, 54),
+                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 30, 54),
                 }),
-                span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 54),
+                span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 10, 54),
             },
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 54),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 10, 54),
             "tuple function update with source span",
         ));
 
@@ -324,9 +324,9 @@ fn lower_discrete_rhs_lowers_impure_random_event_call() {
                     .into(),
                 args: vec![var("globalSeed.id_impure")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
             // MLS §12.3: impure calls are legal in event contexts. Lower the
             // event RHS to an explicit solve-IR impure-random op instead of
             // routing through external-function string fallback.
@@ -351,7 +351,7 @@ fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
     let span = lower_test_span();
     let mut impure_random = rumoca_core::Function::new(
         "Modelica.Math.Random.Utilities.impureRandom",
-        rumoca_core::Span::DUMMY,
+        lower_test_span(),
     );
     impure_random.pure = false;
     impure_random.external = Some(Default::default());
@@ -370,7 +370,7 @@ fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
         .functions
         .insert(impure_random.name.clone(), impure_random);
 
-    let mut wrapper = rumoca_core::Function::new("Pkg.impureWrapper", rumoca_core::Span::DUMMY);
+    let mut wrapper = rumoca_core::Function::new("Pkg.impureWrapper", lower_test_span());
     wrapper.pure = false;
     wrapper.inputs.push(rumoca_core::FunctionParam::new(
         "id",
@@ -430,7 +430,7 @@ fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
                 is_constructor: false,
                 span,
             },
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
             // MSL random integer wrappers are scalar functions that assign a
             // local from impureRandom before computing their output. The
             // record-assignment fast path must not reject the scalar external
@@ -456,7 +456,7 @@ fn lower_discrete_rhs_expands_random_state_out_array_projection() {
     let span = lower_test_span();
     let mut random = rumoca_core::Function::new(
         "Modelica.Math.Random.Generators.Xorshift64star.random",
-        rumoca_core::Span::DUMMY,
+        lower_test_span(),
     );
     random.external = Some(Default::default());
     random.inputs.push(
@@ -500,7 +500,7 @@ fn lower_discrete_rhs_expands_random_state_out_array_projection() {
                 is_constructor: false,
                 span,
             },
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
             // MLS §12.4.3: selecting one array-valued output from a multi-output
             // function is still array-valued. The solve-IR lowerer must project
             // each stateOut element, not treat `.stateOut` as a separate function.
@@ -520,7 +520,7 @@ fn lower_discrete_rhs_expands_random_state_out_array_projection() {
 }
 
 fn random_like_function() -> rumoca_core::Function {
-    let mut random_like = rumoca_core::Function::new("Pkg.randomLike", rumoca_core::Span::DUMMY);
+    let mut random_like = rumoca_core::Function::new("Pkg.randomLike", lower_test_span());
     random_like.inputs.push(
         rumoca_core::FunctionParam::new("seedIn", "Integer", lower_test_span()).with_dims(vec![3]),
     );
@@ -537,37 +537,37 @@ fn random_like_function() -> rumoca_core::Function {
             comp: component_ref("x"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.25),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref_index("seedOut", 1),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(11),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref_index("seedOut", 2),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(22),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref_index("seedOut", 3),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(33),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     ];
     random_like
@@ -576,7 +576,7 @@ fn random_like_function() -> rumoca_core::Function {
 #[test]
 fn lower_expression_binds_named_function_arguments_by_name() {
     let mut functions = IndexMap::new();
-    let mut function = rumoca_core::Function::new("Pkg.f", rumoca_core::Span::DUMMY);
+    let mut function = rumoca_core::Function::new("Pkg.f", lower_test_span());
     function.inputs.push(function_param("a"));
     function.inputs.push(function_param("b"));
     function.outputs.push(function_param("y"));
@@ -589,19 +589,19 @@ fn lower_expression_binds_named_function_arguments_by_name() {
                     test_component_ref_from_name("a"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
             rhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(
                     test_component_ref_from_name("b"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
 
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     functions.insert(rumoca_core::VarName::new("Pkg.f"), function);
 
@@ -614,14 +614,14 @@ fn lower_expression_binds_named_function_arguments_by_name() {
                 "b",
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(2.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ),
             named_arg(
                 "a",
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(7.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ),
         ],
@@ -647,9 +647,9 @@ fn lower_initial_expression_rows_read_lowered_pre_parameter() {
         lhs: Box::new(pre_var("x")),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }];
     let rows =
         lower_initial_expression_rows_from_expressions(&expressions, &layout, &IndexMap::new())
@@ -663,7 +663,7 @@ fn lower_initial_expression_rows_read_lowered_pre_parameter() {
 #[test]
 fn lower_expression_handles_constructor_field_access_by_signature() {
     let mut dae_model = dae::Dae::default();
-    let mut constructor = rumoca_core::Function::new("My.Record", rumoca_core::Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("My.Record", lower_test_span());
     constructor.inputs.push(function_param("R"));
     constructor.inputs.push(function_param("C"));
     dae_model
@@ -679,18 +679,18 @@ fn lower_expression_handles_constructor_field_access_by_signature() {
             args: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(2.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(3.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         field: "C".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
 
     let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
@@ -713,11 +713,11 @@ fn lower_expression_handles_index_projection() {
                 "xs",
             )),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             2,
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
         span,
     };
@@ -997,7 +997,7 @@ fn lower_expression_handles_dynamic_index_subscript_expr() {
                 "xs",
             )),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::generated_expr(
             Box::new(rumoca_core::Expression::VarRef {
@@ -1005,9 +1005,9 @@ fn lower_expression_handles_dynamic_index_subscript_expr() {
                     test_component_ref_from_name("i"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
         span,
     };
@@ -1044,19 +1044,19 @@ fn lower_expression_handles_dynamic_index_over_array_literal() {
             elements: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(10.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(20.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(30.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::generated_expr(
             Box::new(rumoca_core::Expression::VarRef {
@@ -1064,9 +1064,9 @@ fn lower_expression_handles_dynamic_index_over_array_literal() {
                     test_component_ref_from_name("i"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
         span,
     };
@@ -1157,13 +1157,13 @@ fn nested_ux01_conversion(input: rumoca_core::Expression) -> rumoca_core::Expres
                 nested_ux01_expr("X"),
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::generated_expr(
             Box::new(input),
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -1177,7 +1177,7 @@ fn nested_table_plane(selected: rumoca_core::Expression) -> rumoca_core::Express
                     nested_logic_expr("0"),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1186,16 +1186,16 @@ fn nested_table_plane(selected: rumoca_core::Expression) -> rumoca_core::Express
                     nested_logic_expr("1"),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![selected, nested_logic_expr("1"), nested_logic_expr("U")],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -1209,20 +1209,17 @@ fn nested_enum_table_expr() -> rumoca_core::Expression {
                 nested_table_plane(nested_logic_expr("U")),
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(
-                Box::new(var("strength")),
-                rumoca_core::Span::DUMMY,
-            ),
+            rumoca_core::Subscript::generated_expr(Box::new(var("strength")), lower_test_span()),
             rumoca_core::Subscript::generated_expr(
                 Box::new(nested_ux01_conversion(var("enable"))),
-                rumoca_core::Span::DUMMY,
+                lower_test_span(),
             ),
             rumoca_core::Subscript::generated_expr(
                 Box::new(nested_ux01_conversion(var("x"))),
-                rumoca_core::Span::DUMMY,
+                lower_test_span(),
             ),
         ],
         span,
@@ -1284,13 +1281,13 @@ fn msl_buf3s_ux01_conversion(input: rumoca_core::Expression) -> rumoca_core::Exp
                 msl_ux01_expr("X"),
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::generated_expr(
             Box::new(input),
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -1306,7 +1303,7 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1317,7 +1314,7 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1328,7 +1325,7 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1339,11 +1336,11 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
@@ -1356,23 +1353,20 @@ fn msl_buf3s_truth_expr() -> rumoca_core::Expression {
                 elements: std::iter::repeat_n(plane, 10).collect(),
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(
-                Box::new(var("strength")),
-                rumoca_core::Span::DUMMY,
-            ),
+            rumoca_core::Subscript::generated_expr(Box::new(var("strength")), lower_test_span()),
             rumoca_core::Subscript::generated_expr(
                 Box::new(msl_buf3s_ux01_conversion(var("enable"))),
-                rumoca_core::Span::DUMMY,
+                lower_test_span(),
             ),
             rumoca_core::Subscript::generated_expr(
                 Box::new(msl_buf3s_ux01_conversion(var("x"))),
-                rumoca_core::Span::DUMMY,
+                lower_test_span(),
             ),
         ],
         span,

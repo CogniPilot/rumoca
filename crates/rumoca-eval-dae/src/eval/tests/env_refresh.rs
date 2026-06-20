@@ -297,7 +297,11 @@ fn build_runtime_parameter_tail_env_rejects_short_parameter_vector() {
 
 #[test]
 fn build_runtime_parameter_tail_env_rejects_bad_array_start_shape() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(17), 5, 13);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("eval_dae_env_refresh_source_17.mo"),
+        5,
+        13,
+    );
     let mut dae = dae::Dae::default();
     let mut constant = dae::Variable::new(
         VarName::new("c"),

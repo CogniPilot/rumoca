@@ -647,63 +647,75 @@ mod tests {
     use rumoca_core::Span;
     use rumoca_ir_dae as dae;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_structural_incidence_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     fn var(name: &str) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
     fn index(expr: rumoca_core::Expression, value: i64) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::Index {
             base: Box::new(expr),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                value,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
+            subscripts: vec![rumoca_core::Subscript::generated_index(value, span)],
+            span,
         }
     }
 
     fn field(expr: rumoca_core::Expression, name: &str) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::FieldAccess {
             base: Box::new(expr),
             field: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
     fn lit(v: f64) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(v),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
     fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
     fn add(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Add,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
     fn eq(rhs: rumoca_core::Expression) -> dae::Equation {
+        let span = test_span();
         dae::Equation {
             lhs: None,
             rhs,
-            span: Span::DUMMY,
+            span,
             origin: String::new(),
             scalar_count: 1,
         }
@@ -739,7 +751,7 @@ mod tests {
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Der,
                 args: vec![var("x")],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             var("z"),
         )));
@@ -772,7 +784,7 @@ mod tests {
             rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new("support[1].phi"),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             lit(0.0),
         )));
@@ -810,7 +822,7 @@ mod tests {
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Product,
                 args: vec![var("u")],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         )));
 

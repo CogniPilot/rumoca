@@ -755,24 +755,42 @@ mod tests {
     }
 
     fn var_ref(name: &str) -> rumoca_core::Expression {
+        let span = runtime_assignment_test_span();
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
     fn real_literal(value: f64) -> rumoca_core::Expression {
+        let span = runtime_assignment_test_span();
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
+    }
+
+    fn runtime_assignment_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn unspanned_runtime_assignment_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
     }
 
     #[test]
     fn runtime_assignment_scalar_name_reports_missing_array_lhs_with_span() {
         let dae_model = dae::Dae::new();
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 19);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_7.mo"),
+            11,
+            19,
+        );
 
         let err = runtime_assignment_scalar_name(
             &dae_model,
@@ -800,7 +818,7 @@ mod tests {
             &rumoca_core::VarName::new("missingArray"),
             0,
             2,
-            rumoca_core::Span::DUMMY,
+            unspanned_runtime_assignment_test_span(),
         )
         .expect_err("unspanned array runtime assignment target must fail");
 
@@ -815,7 +833,11 @@ mod tests {
     #[test]
     fn runtime_tail_aliases_orient_away_from_non_alias_source() -> Result<(), LowerError> {
         let dae_model = dae_with_discrete_reals(&["a", "b"]);
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(8), 4, 13);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_8.mo"),
+            4,
+            13,
+        );
         let equations = vec![
             dae::Equation::explicit(
                 rumoca_core::Reference::new("b"),
@@ -842,7 +864,11 @@ mod tests {
 
     #[test]
     fn target_expr_name_accepts_spanned_index_base_ref() -> Result<(), LowerError> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 2, 10);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_9.mo"),
+            2,
+            10,
+        );
         let expr = rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new("tail"),
@@ -865,7 +891,7 @@ mod tests {
         let equations = vec![dae::Equation::explicit(
             rumoca_core::Reference::new("a"),
             var_ref("b"),
-            rumoca_core::Span::DUMMY,
+            runtime_assignment_test_span(),
             "runtime alias",
         )];
 
@@ -880,7 +906,11 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn runtime_assignment_len_dim_rejects_modelica_dimension_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(19), 8, 16);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_19.mo"),
+            8,
+            16,
+        );
 
         let err = runtime_assignment_len_dim(usize::MAX, "runtime assignment array length", span)
             .expect_err("oversized runtime assignment dimension should fail");
@@ -893,7 +923,11 @@ mod tests {
 
     #[test]
     fn runtime_assignment_equation_reports_shape_size_overflow_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(17), 3, 14);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_17.mo"),
+            3,
+            14,
+        );
         let mut dae_model = dae::Dae::new();
         dae_model.variables.discrete_reals.insert(
             rumoca_core::VarName::new("tail"),
@@ -931,7 +965,11 @@ mod tests {
 
     #[test]
     fn runtime_assignment_equation_reports_negative_dimension_with_span() {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(18), 5, 21);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_18.mo"),
+            5,
+            21,
+        );
         let mut dae_model = dae::Dae::new();
         dae_model.variables.discrete_reals.insert(
             rumoca_core::VarName::new("tail"),

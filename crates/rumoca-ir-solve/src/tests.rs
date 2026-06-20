@@ -18,7 +18,11 @@ fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
 }
 
 fn fixture_span() -> Span {
-    Span::from_offsets(SourceId(44), 0, 1)
+    Span::from_offsets(
+        SourceId::from_source_name("ir_solve_tests_source_44.mo"),
+        0,
+        1,
+    )
 }
 
 #[test]

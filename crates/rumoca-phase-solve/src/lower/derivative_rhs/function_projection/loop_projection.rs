@@ -275,7 +275,13 @@ mod tests {
 
     #[test]
     fn build_i64_range_values_rejects_large_ranges_with_span() -> Result<(), String> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(23), 1, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_derivative_rhs_function_projection_loop_projection_source_23.mo",
+            ),
+            1,
+            12,
+        );
 
         let Err(err) = build_i64_range_values(1, 100_002, 1, span) else {
             return Err("oversized function projection range succeeded".to_string());
@@ -310,7 +316,13 @@ mod tests {
 
     #[test]
     fn checked_compile_time_i64_rejects_upper_bound_with_span() -> Result<(), String> {
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(22), 4, 12);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_derivative_rhs_function_projection_loop_projection_source_22.mo",
+            ),
+            4,
+            12,
+        );
 
         let Err(err) = checked_compile_time_i64(i64::MAX as f64, span) else {
             return Err("rounded f64 upper bound saturated to i64::MAX".to_string());

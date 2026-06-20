@@ -1541,7 +1541,7 @@ pub mod error_macro_tests {
 
     #[test]
     fn test_single_field_constructor() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(SourceId::from_source_name("core_lib_source_0.mo"), 10, 20);
         let err = TestError::single_field("test_name", span);
         match err {
             TestError::SingleField { name, span: s } => {
@@ -1555,7 +1555,7 @@ pub mod error_macro_tests {
 
     #[test]
     fn test_two_fields_constructor() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(SourceId::from_source_name("core_lib_source_0.mo"), 10, 20);
         let err = TestError::two_fields("first", "second", span);
         match err {
             TestError::TwoFields { a, b, span: s } => {
@@ -1569,7 +1569,7 @@ pub mod error_macro_tests {
 
     #[test]
     fn test_span_only_constructor() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(SourceId::from_source_name("core_lib_source_0.mo"), 10, 20);
         let err = TestError::span_only(span);
         match err {
             TestError::SpanOnly { span: s } => {

@@ -28,5 +28,19 @@
 mod compiler;
 mod error;
 
+pub mod cli;
+
+// CLI subcommand implementations. Declared here (rather than in `main.rs`) so
+// both the binary and the reusable `cli` module can reach them; `cli` owns the
+// argument types and dispatch, these own the per-command work.
+pub(crate) mod cache_cmd;
+pub(crate) mod fmt_cli;
+pub(crate) mod fmu;
+pub(crate) mod main_helpers;
+pub(crate) mod sim_bench;
+pub(crate) mod sim_inspect;
+pub(crate) mod target_manifest;
+pub(crate) mod targets_cmd;
+
 pub use compiler::{CompilationResult, Compiler, DaeCompilationResult, TemplateIr};
 pub use error::CompilerError;
