@@ -8,7 +8,7 @@ pub struct ComprehensionIndex {
     pub range: Expression,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComponentRefPart {
     pub ident: String,
     pub span: Span,
@@ -16,7 +16,7 @@ pub struct ComponentRefPart {
     pub subs: Vec<Subscript>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComponentReference {
     #[serde(default)]
     pub local: bool,
@@ -390,76 +390,103 @@ pub struct StatementBlock {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     Empty {
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Assignment {
         comp: ComponentReference,
         value: Expression,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Return {
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Break {
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     For {
         indices: Vec<ForIndex>,
         equations: Vec<Statement>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     While {
         block: StatementBlock,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     If {
         cond_blocks: Vec<StatementBlock>,
         else_block: Option<Vec<Statement>>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     When {
         blocks: Vec<StatementBlock>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
         outputs: Vec<ComponentReference>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Reinit {
         variable: ComponentReference,
         value: Expression,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Assert {
         condition: Expression,
         message: Box<Expression>,
         level: Option<Box<Expression>>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
 }
 
-impl Default for Statement {
-    fn default() -> Self {
-        Statement::Empty { span: Span::DUMMY }
-    }
-}
-
 impl Statement {
     pub fn with_span(self, span: Span) -> Self {
-        if span == Span::DUMMY {
+        if span.is_dummy() {
             self
         } else {
             self.map_span(|_| span)
@@ -480,7 +507,7 @@ impl Statement {
             | Statement::Reinit { span, .. }
             | Statement::Assert { span, .. } => *span,
         };
-        (span != Span::DUMMY).then_some(span)
+        (!span.is_dummy()).then_some(span)
     }
 
     pub fn as_unspanned(&self) -> &Statement {
@@ -695,6 +722,27 @@ impl FunctionShapeContractError {
     }
 }
 
+impl std::fmt::Display for FunctionShapeContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Param { function, source } => {
+                write!(
+                    f,
+                    "function `{function}` parameter shape contract failed: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for FunctionShapeContractError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Param { source, .. } => Some(source),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionParam {
     #[serde(default)]
@@ -710,11 +758,11 @@ pub struct FunctionParam {
 }
 
 impl FunctionParam {
-    pub fn new(name: impl Into<String>, type_name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, type_name: impl Into<String>, span: Span) -> Self {
         Self {
             def_id: None,
             name: name.into(),
-            span: Span::DUMMY,
+            span,
             type_name: type_name.into(),
             type_class: None,
             dims: Vec::new(),
@@ -834,6 +882,38 @@ impl FunctionParamShapeContractError {
         }
     }
 }
+
+impl std::fmt::Display for FunctionParamShapeContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyName { .. } => write!(f, "function parameter has an empty name"),
+            Self::EmptyTypeName { param, .. } => {
+                write!(f, "function parameter `{param}` has an empty type name")
+            }
+            Self::NegativeDimension {
+                param, dimension, ..
+            } => write!(
+                f,
+                "function parameter `{param}` has negative dimension {dimension}"
+            ),
+            Self::NegativeShapeIndex { param, index, .. } => write!(
+                f,
+                "function parameter `{param}` has negative shape index {index}"
+            ),
+            Self::ShapeExprLengthMismatch {
+                param,
+                dims,
+                shape_expr,
+                ..
+            } => write!(
+                f,
+                "function parameter `{param}` has {dims} dimensions but {shape_expr} shape expressions"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FunctionParamShapeContractError {}
 
 #[cfg(test)]
 mod tests {

@@ -92,7 +92,7 @@ pub fn project_algebraics<M: AlgebraicProjectionModel>(
     state_count: usize,
     tol: f64,
 ) -> Result<(), RuntimeSolveError> {
-    let algebraic_count = y.len().saturating_sub(state_count);
+    let algebraic_count = algebraic_tail_len(y.len(), state_count, "project algebraics")?;
     if algebraic_count == 0 {
         return Ok(());
     }
@@ -137,7 +137,7 @@ fn project_algebraics_with_plan<M: AlgebraicProjectionModel>(
     for _ in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
         seed_nonfinite_algebraics(y, state_count);
         model.eval_residual(y, p, t, &mut rhs)?;
-        let residual = projection_residual_tail(&rhs, plan, state_count);
+        let residual = projection_residual_tail(&rhs, plan, state_count)?;
         if residual_converged(&residual, tol) {
             return Ok(());
         }
@@ -168,8 +168,9 @@ fn projection_residual_tail(
     rhs: &[f64],
     plan: &solve::AlgebraicProjectionPlan,
     state_count: usize,
-) -> Vec<f64> {
-    let mut residual = vec![0.0; rhs.len().saturating_sub(state_count)];
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut residual =
+        vec![0.0; algebraic_tail_len(rhs.len(), state_count, "projection residual tail")?];
     for row in plan.blocks.iter().flat_map(|block| {
         block
             .rows
@@ -180,14 +181,24 @@ fn projection_residual_tail(
         if row < state_count {
             continue;
         }
-        let Some(value) = rhs.get(row).copied() else {
-            continue;
-        };
+        let value = residual_at(rhs, row, "projection residual tail")?;
         if let Some(slot) = residual.get_mut(row - state_count) {
             *slot = value;
         }
     }
-    residual
+    Ok(residual)
+}
+
+fn algebraic_tail_len(
+    total: usize,
+    state_count: usize,
+    context: &'static str,
+) -> Result<usize, RuntimeSolveError> {
+    total.checked_sub(state_count).ok_or_else(|| {
+        RuntimeSolveError::solve_ir(format!(
+            "{context} state count {state_count} exceeds vector length {total}"
+        ))
+    })
 }
 
 fn project_algebraic_block<M: AlgebraicProjectionModel>(
@@ -219,8 +230,8 @@ fn project_algebraic_block<M: AlgebraicProjectionModel>(
     let residual = block
         .rows
         .iter()
-        .map(|row| rhs.get(*row).copied().unwrap_or(0.0))
-        .collect::<Vec<_>>();
+        .map(|row| residual_at(&rhs, *row, "algebraic projection block"))
+        .collect::<Result<Vec<_>, _>>()?;
     if residual_converged(&residual, tol) {
         return Ok(ProjectionBlockUpdate {
             changed,
@@ -280,7 +291,7 @@ fn project_algebraic_block<M: AlgebraicProjectionModel>(
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct ProjectionBlockUpdate {
     changed: bool,
     settled: bool,
@@ -310,7 +321,11 @@ fn project_causal_step<M: AlgebraicProjectionModel>(
     tol: f64,
 ) -> Result<bool, RuntimeSolveError> {
     if step.y_index >= y.len() {
-        return Ok(false);
+        return Err(RuntimeSolveError::solve_ir(format!(
+            "causal projection step references y index {}, but the model has only {} variables",
+            step.y_index,
+            y.len()
+        )));
     }
     let mut rhs = vec![0.0; y.len()];
     let mut seed = vec![0.0; y.len()];
@@ -318,9 +333,7 @@ fn project_causal_step<M: AlgebraicProjectionModel>(
     let mut changed = false;
     for _ in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
         model.eval_residual(y, p, t, &mut rhs)?;
-        let Some(residual) = rhs.get(step.row).copied() else {
-            return Ok(changed);
-        };
+        let residual = residual_at(&rhs, step.row, "causal projection step")?;
         if !residual.is_finite() {
             return Ok(changed);
         }
@@ -330,7 +343,7 @@ fn project_causal_step<M: AlgebraicProjectionModel>(
         seed[step.y_index] = 1.0;
         model.eval_jacobian_v(y, p, t, &seed, &mut jv)?;
         seed[step.y_index] = 0.0;
-        let derivative = jv.get(step.row).copied().unwrap_or(0.0);
+        let derivative = residual_at(&jv, step.row, "causal projection jacobian-vector product")?;
         if !derivative.is_finite() || derivative.abs() <= 1.0e-15 {
             return Ok(changed);
         }
@@ -441,8 +454,8 @@ pub fn project_initial_variables_with_plan<M: AlgebraicProjectionModel>(
                 .ok()
         });
         let Some(delta) = delta else {
-            return Err(RuntimeSolveError::SolveIr(
-                "failed to project initial variables".to_string(),
+            return Err(RuntimeSolveError::solve_ir(
+                "failed to project initial variables",
             ));
         };
         for (idx, value) in delta.iter().enumerate() {
@@ -480,12 +493,12 @@ fn projection_error<M: AlgebraicProjectionModel>(
             let target = model
                 .target_name_for_row(state_count + row)
                 .map_or(String::new(), |name| format!(" target={name}"));
-            RuntimeSolveError::SolveIr(format!(
+            RuntimeSolveError::solve_ir(format!(
                 "{message}: max residual row={row}{target} value={value:.6e} norm={:.6e}",
                 residual_norm(residual)
             ))
         }
-        None => RuntimeSolveError::SolveIr(message.to_string()),
+        None => RuntimeSolveError::solve_ir(message),
     }
 }
 
@@ -562,7 +575,7 @@ fn initial_residual_at(
     context: &str,
 ) -> Result<f64, RuntimeSolveError> {
     residual.get(row).copied().ok_or_else(|| {
-        RuntimeSolveError::SolveIr(format!(
+        RuntimeSolveError::solve_ir(format!(
             "{context} references residual row {row}, but the model has only {} initial residual rows",
             residual.len()
         ))
@@ -826,12 +839,12 @@ fn initial_projection_error(
     match worst {
         Some((row, value)) => {
             let original_row = selected_rows.get(row).copied().unwrap_or(row);
-            RuntimeSolveError::SolveIr(format!(
+            RuntimeSolveError::solve_ir(format!(
                 "{message}: max selected residual row={row} original_row={original_row} value={value:.6e} norm={:.6e}",
                 residual_norm(residual)
             ))
         }
-        None => RuntimeSolveError::SolveIr(message.to_string()),
+        None => RuntimeSolveError::solve_ir(message),
     }
 }
 
@@ -962,7 +975,8 @@ fn algebraic_block_jacobian(
         seed[y_idx] = 1.0;
         model.eval_jacobian_v(y, p, t, &seed, &mut jv)?;
         for (row, residual_idx) in rows.iter().copied().enumerate() {
-            jacobian[(row, col)] = jv.get(residual_idx).copied().unwrap_or(0.0);
+            jacobian[(row, col)] =
+                residual_at(&jv, residual_idx, "algebraic block jacobian-vector product")?;
         }
         seed[y_idx] = 0.0;
     }
@@ -989,8 +1003,10 @@ fn initial_block_jacobian(
         let mut perturbed = vec![0.0; base_residual.len()];
         model.eval_initial_residual(&perturbed_y, p, t, &mut perturbed)?;
         for (row_idx, residual_idx) in rows.iter().copied().enumerate() {
-            let base = base_residual.get(residual_idx).copied().unwrap_or(0.0);
-            let value = perturbed.get(residual_idx).copied().unwrap_or(base);
+            let base =
+                initial_residual_at(base_residual, residual_idx, "initial block base residual")?;
+            let value =
+                initial_residual_at(&perturbed, residual_idx, "initial block perturbed residual")?;
             jacobian[(row_idx, col)] = (value - base) / step;
         }
     }
@@ -1023,6 +1039,15 @@ fn projectable_initial_rows(
         rows.extend(fallback_rows);
     }
     rows
+}
+
+fn residual_at(residual: &[f64], row: usize, context: &str) -> Result<f64, RuntimeSolveError> {
+    residual.get(row).copied().ok_or_else(|| {
+        RuntimeSolveError::solve_ir(format!(
+            "{context} references residual row {row}, but the model evaluated only {} residual rows",
+            residual.len()
+        ))
+    })
 }
 
 fn row_is_projectable(residual: &[f64], jacobian: &DMatrix<f64>, row: usize) -> bool {
@@ -1359,6 +1384,34 @@ mod tests {
     }
 
     #[test]
+    fn project_algebraics_rejects_state_count_past_y_length() {
+        let model = BlockProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            initial_residual_len: 0,
+        };
+        let mut y = vec![1.0];
+
+        let err = project_algebraics(&model, &mut y, &[], 0.0, 2, 1.0e-12)
+            .expect_err("state count beyond y length should fail");
+
+        assert!(
+            err.to_string()
+                .contains("state count 2 exceeds vector length 1")
+        );
+    }
+
+    #[test]
+    fn projection_residual_tail_rejects_state_count_past_rhs_length() {
+        let err = projection_residual_tail(&[0.0], &solve::AlgebraicProjectionPlan::default(), 2)
+            .expect_err("state count beyond residual length should fail");
+
+        assert!(
+            err.to_string()
+                .contains("state count 2 exceeds vector length 1")
+        );
+    }
+
+    #[test]
     fn project_algebraic_block_uses_svd_for_rectangular_jacobian() {
         let model = BlockProjectionModel {
             plan: solve::AlgebraicProjectionPlan::default(),
@@ -1377,6 +1430,46 @@ mod tests {
         assert!(update.changed);
         assert!(!update.settled);
         assert!((y[0] - 2.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn project_algebraic_block_rejects_row_outside_residual_vector() {
+        let model = BlockProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            initial_residual_len: 0,
+        };
+        let block = solve::AlgebraicProjectionBlock {
+            rows: vec![2],
+            y_indices: vec![0],
+            causal_steps: Vec::new(),
+        };
+        let mut y = vec![0.0, 0.0];
+
+        let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12)
+            .expect_err("invalid projection row should bubble a runtime error");
+
+        assert!(
+            err.to_string()
+                .contains("references residual row 2, but the model evaluated only 2")
+        );
+    }
+
+    #[test]
+    fn project_causal_step_rejects_row_outside_residual_vector() {
+        let model = BlockProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            initial_residual_len: 0,
+        };
+        let mut y = vec![0.0, 0.0];
+        let step = solve::AlgebraicProjectionStep { row: 2, y_index: 0 };
+
+        let err = project_causal_step(&model, &mut y, &[], 0.0, &step, 1.0e-12)
+            .expect_err("invalid causal projection row should bubble a runtime error");
+
+        assert!(
+            err.to_string()
+                .contains("references residual row 2, but the model evaluated only 2")
+        );
     }
 
     #[test]

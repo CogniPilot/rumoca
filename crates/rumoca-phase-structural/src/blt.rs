@@ -66,7 +66,7 @@ mod tests {
             n_var,
             eq_unknowns,
             unknown_names,
-            unknown_spans: vec![rumoca_core::Span::DUMMY; n_var],
+            unknown_spans: vec![None; n_var],
             equation_refs: eq_refs,
         }
     }

@@ -317,6 +317,10 @@ fn parse_error_to_common_diagnostic(
             span,
             ..
         } => {
+            let Some(span) = span else {
+                return CommonDiagnostic::global_error("EP001", message.clone())
+                    .with_note("parse diagnostic has no source span");
+            };
             let Some(remapped_span) = remap_parse_span(doc, source_map, *span) else {
                 return missing_source_error();
             };

@@ -10,7 +10,11 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -21,7 +25,11 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
             is_primitive: true,
             connected: true,
             dims: vec![2, 3],
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -60,7 +68,11 @@ fn test_model_description_propagation() {
             &rumoca_core::VarName::new("x"),
             rumoca_core::Span::DUMMY,
         ),
-        ..Default::default()
+        ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     };
     flat.add_variable("x".into(), var);
 

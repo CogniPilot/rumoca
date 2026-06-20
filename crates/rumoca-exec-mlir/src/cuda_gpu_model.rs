@@ -116,15 +116,11 @@ pub fn batch_euler_cuda(
     dt: f64,
     n_steps: usize,
 ) -> Result<Vec<Vec<f64>>, MlirError> {
-    let n = y0_batch.len();
-    assert_eq!(
-        n,
-        p_batch.len(),
-        "y0_batch and p_batch must have the same length"
-    );
-
-    let n_states = y0_batch[0].len();
-    let n_params = p_batch[0].len();
+    let BatchShape {
+        trajectories: n,
+        states: n_states,
+        parameters: n_params,
+    } = validate_batch_inputs("batch_euler_cuda", y0_batch, p_batch)?;
 
     // Allocate per-trajectory device buffers and streams.
     let mut d_y: Vec<CUdeviceptr> = Vec::with_capacity(n);
@@ -206,11 +202,11 @@ pub fn batch_euler_cuda_device(
     dt: f64,
     n_steps: usize,
 ) -> Result<Vec<Vec<f64>>, MlirError> {
-    let n = y0_batch.len();
-    assert_eq!(n, p_batch.len());
-
-    let n_states = y0_batch[0].len();
-    let n_params = p_batch[0].len();
+    let BatchShape {
+        trajectories: n,
+        states: n_states,
+        parameters: n_params,
+    } = validate_batch_inputs("batch_euler_cuda_device", y0_batch, p_batch)?;
 
     // Allocate per-trajectory device buffers and streams.
     let mut d_y: Vec<CUdeviceptr> = Vec::with_capacity(n);
@@ -271,4 +267,115 @@ pub fn batch_euler_cuda_device(
     }
 
     Ok(final_y)
+}
+
+#[derive(Debug)]
+struct BatchShape {
+    trajectories: usize,
+    states: usize,
+    parameters: usize,
+}
+
+fn validate_batch_inputs(
+    operation: &'static str,
+    y0_batch: &[Vec<f64>],
+    p_batch: &[Vec<f64>],
+) -> Result<BatchShape, MlirError> {
+    let trajectories = y0_batch.len();
+    if trajectories == 0 {
+        return invalid_batch_input(operation, "batch must contain at least one trajectory");
+    }
+    if trajectories != p_batch.len() {
+        return invalid_batch_input(
+            operation,
+            format!(
+                "y0_batch length {} does not match p_batch length {}",
+                trajectories,
+                p_batch.len()
+            ),
+        );
+    }
+
+    let states = y0_batch[0].len();
+    let parameters = p_batch[0].len();
+    for (index, y0) in y0_batch.iter().enumerate() {
+        if y0.len() != states {
+            return invalid_batch_input(
+                operation,
+                format!(
+                    "y0_batch[{index}] length {} does not match first trajectory length {states}",
+                    y0.len()
+                ),
+            );
+        }
+    }
+    for (index, params) in p_batch.iter().enumerate() {
+        if params.len() != parameters {
+            return invalid_batch_input(
+                operation,
+                format!(
+                    "p_batch[{index}] length {} does not match first parameter length {parameters}",
+                    params.len()
+                ),
+            );
+        }
+    }
+
+    Ok(BatchShape {
+        trajectories,
+        states,
+        parameters,
+    })
+}
+
+fn invalid_batch_input<T>(
+    operation: &'static str,
+    message: impl Into<String>,
+) -> Result<T, MlirError> {
+    Err(MlirError::InvalidInput {
+        operation,
+        message: message.into(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatchShape, validate_batch_inputs};
+
+    #[test]
+    fn batch_shape_rejects_empty_batches() {
+        let err = validate_batch_inputs("test", &[], &[]).expect_err("empty batch should fail");
+        assert!(err.to_string().contains("at least one trajectory"));
+    }
+
+    #[test]
+    fn batch_shape_rejects_mismatched_batch_lengths() {
+        let err = validate_batch_inputs("test", &[vec![1.0]], &[])
+            .expect_err("mismatched batch lengths should fail");
+        assert!(err.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn batch_shape_rejects_ragged_states() {
+        let err = validate_batch_inputs("test", &[vec![1.0], vec![1.0, 2.0]], &[vec![], vec![]])
+            .expect_err("ragged state vectors should fail");
+        assert!(err.to_string().contains("y0_batch[1]"));
+    }
+
+    #[test]
+    fn batch_shape_accepts_rectangular_batches() {
+        let BatchShape {
+            trajectories,
+            states,
+            parameters,
+        } = validate_batch_inputs(
+            "test",
+            &[vec![1.0, 2.0], vec![3.0, 4.0]],
+            &[vec![5.0], vec![6.0]],
+        )
+        .expect("rectangular batch should pass");
+        assert_eq!(trajectories, 2);
+        assert_eq!(states, 2);
+        assert_eq!(parameters, 1);
+    }
 }

@@ -8,8 +8,9 @@ use rumoca_ir_solve as solve;
 
 use super::render_solve;
 use super::{
-    CodegenError, create_environment, dae_template_json,
-    reject_external_functions_for_simulation_template, solve_template_blocks_value,
+    CodegenError, LazyDerivativeNodesValue, LazyScalarRowsValue, create_environment,
+    dae_template_json, reject_external_functions_for_simulation_template,
+    solve_template_blocks_value,
 };
 
 /// Lazily materialized `dae` template entry for solve-target contexts.
@@ -137,35 +138,37 @@ fn solve_render_context_value_with_dae(
     // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
     let problem_arc = std::sync::Arc::new(solve_problem.clone());
     let artifacts_arc = std::sync::Arc::new(artifacts.clone());
-    let solve_value = super::solve_lazy::solve_value(problem_arc.clone(), artifacts_arc.clone());
-    let artifacts_value = super::solve_lazy::artifacts_value(artifacts_arc.clone());
+    let solve_value = super::solve_lazy::solve_value(problem_arc.clone(), artifacts_arc.clone())?;
+    let artifacts_value = super::solve_lazy::artifacts_value(artifacts_arc.clone())?;
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
-    let derivative_nodes = Value::from_serialize(c_renderable_derivative_nodes(
-        &solve_problem.continuous.derivative_rhs,
+    let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(
+        solve_problem.continuous.derivative_rhs.clone(),
     ));
-    let implicit_rows =
-        rumoca_eval_solve::to_scalar_program_block(&solve_problem.continuous.implicit_rhs);
-    let has_implicit_rows = !implicit_rows.programs.is_empty();
+    let has_implicit_rows = solve_problem.continuous.implicit_rhs.len()? > 0;
+    let implicit_rows = Value::from_object(LazyScalarRowsValue::new(
+        solve_problem.continuous.implicit_rhs.clone(),
+    )?);
     let implicit_jacobian_rows = if !has_implicit_rows {
-        solve::ScalarProgramBlock::default()
+        Value::from_object(render_solve::SolveRowsValue::new(Vec::new()))
     } else if artifacts
         .continuous
         .implicit_jacobian_v_scalar
         .programs
         .is_empty()
     {
-        rumoca_eval_solve::to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)
+        Value::from_object(LazyScalarRowsValue::new(
+            artifacts.continuous.implicit_jacobian_v.clone(),
+        )?)
     } else {
-        artifacts.continuous.implicit_jacobian_v_scalar.clone()
+        Value::from_object(render_solve::SolveRowsValue::new(
+            artifacts
+                .continuous
+                .implicit_jacobian_v_scalar
+                .programs
+                .clone(),
+        ))
     };
     let full_jacobian_rows = artifacts.continuous.full_jacobian_v.clone();
-    // Row arrays (matching the historical `.programs` shape) as typed
-    // objects so the row renderers take the typed fast path.
-    let implicit_rows =
-        Value::from_object(render_solve::SolveRowsValue::new(implicit_rows.programs));
-    let implicit_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
-        implicit_jacobian_rows.programs,
-    ));
     let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
         full_jacobian_rows.programs,
     ));
@@ -200,25 +203,11 @@ fn solve_render_context_value_with_dae(
 
 pub(super) fn c_renderable_derivative_nodes(
     block: &solve::ComputeBlock,
-) -> Vec<solve::ComputeNode> {
-    block
-        .nodes
-        .iter()
-        .filter_map(c_renderable_derivative_node)
-        .collect()
-}
-
-fn c_renderable_derivative_node(node: &solve::ComputeNode) -> Option<solve::ComputeNode> {
-    match node {
-        solve::ComputeNode::MatMul { .. } | solve::ComputeNode::ScalarPrograms(_) => {
-            Some(node.clone())
-        }
-        _ => {
-            let block = solve::ComputeBlock {
-                nodes: vec![node.clone()],
-            };
-            let scalar = rumoca_eval_solve::to_scalar_program_block(&block);
-            (!scalar.is_empty()).then_some(solve::ComputeNode::ScalarPrograms(scalar))
-        }
+) -> Result<Vec<solve::ComputeNode>, CodegenError> {
+    let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
+    if scalar.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![solve::ComputeNode::ScalarPrograms(scalar)])
     }
 }

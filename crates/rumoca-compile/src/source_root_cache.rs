@@ -57,24 +57,21 @@ struct SourceRootInputHash {
     files: Vec<HashedSourceRootFile>,
 }
 
-fn cache_exe_fingerprint() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| {
-            let metadata = fs::metadata(&path).ok()?;
-            let modified = metadata
-                .modified()
-                .map(system_time_to_nanos)
-                .unwrap_or_default();
-            Some(format!(
-                "{}:{}:{}:{}",
-                path.display(),
-                metadata.len(),
-                modified.as_secs(),
-                modified.subsec_nanos()
-            ))
-        })
-        .unwrap_or_else(|| "unknown-exe".to_string())
+fn cache_exe_fingerprint() -> Result<String> {
+    let path = std::env::current_exe().context("resolve current executable")?;
+    let metadata = fs::metadata(&path)
+        .with_context(|| format!("read compiler executable metadata: {}", path.display()))?;
+    let modified = metadata
+        .modified()
+        .with_context(|| format!("read compiler executable modified time: {}", path.display()))
+        .and_then(system_time_to_nanos)?;
+    Ok(format!(
+        "{}:{}:{}:{}",
+        path.display(),
+        metadata.len(),
+        modified.as_secs(),
+        modified.subsec_nanos()
+    ))
 }
 
 fn recursive_collect_compiler_source_files(
@@ -148,30 +145,40 @@ fn compiler_source_fingerprint() -> Option<String> {
     Some(hasher.finalize().to_hex().to_string())
 }
 
-pub(crate) fn source_root_cache_compiler_version() -> String {
-    static CACHED: OnceLock<String> = OnceLock::new();
+pub(crate) fn source_root_cache_compiler_version() -> Result<String> {
+    static CACHED: OnceLock<Result<String, String>> = OnceLock::new();
 
-    CACHED
-        .get_or_init(|| {
-            if let Some(source_fingerprint) = compiler_source_fingerprint() {
-                return format!(
-                    "rumoca-compile/{}/src:{}",
-                    env!("CARGO_PKG_VERSION"),
-                    source_fingerprint
-                );
-            }
-
-            format!(
-                "rumoca-compile/{}/exe:{}",
-                env!("CARGO_PKG_VERSION"),
-                cache_exe_fingerprint()
-            )
-        })
-        .clone()
+    match CACHED.get_or_init(|| {
+        source_root_cache_compiler_version_uncached().map_err(|error| format!("{error:#}"))
+    }) {
+        Ok(version) => Ok(version.clone()),
+        Err(error) => Err(anyhow::anyhow!(error.clone())),
+    }
 }
 
-fn system_time_to_nanos(time: SystemTime) -> Duration {
-    time.duration_since(UNIX_EPOCH).unwrap_or_default()
+fn source_root_cache_compiler_version_uncached() -> Result<String> {
+    if let Some(source_fingerprint) = compiler_source_fingerprint() {
+        return Ok(format!(
+            "rumoca-compile/{}/src:{}",
+            env!("CARGO_PKG_VERSION"),
+            source_fingerprint
+        ));
+    }
+
+    Ok(format!(
+        "rumoca-compile/{}/exe:{}",
+        env!("CARGO_PKG_VERSION"),
+        cache_exe_fingerprint()?
+    ))
+}
+
+fn system_time_to_nanos(time: SystemTime) -> Result<Duration> {
+    time.duration_since(UNIX_EPOCH).map_err(|error| {
+        anyhow::anyhow!(
+            "compiler timestamp precedes Unix epoch by {:?}",
+            error.duration()
+        )
+    })
 }
 
 fn recursive_collect_dirs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -191,7 +198,7 @@ fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     collect_source_root_source_files(path).map_err(|err| std::io::Error::other(err.to_string()))
 }
 
-fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<SourceRootInputHash> {
+fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> Result<SourceRootInputHash> {
     let canonical_root = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut dirs = Vec::new();
     if path.is_dir() {
@@ -225,7 +232,7 @@ fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<So
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(format!("schema={}\n", SOURCE_ROOT_CACHE_SCHEMA_VERSION).as_bytes());
-    hasher.update(format!("compiler={}\n", source_root_cache_compiler_version()).as_bytes());
+    hasher.update(format!("compiler={}\n", source_root_cache_compiler_version()?).as_bytes());
     hasher.update(canonical_root.to_string_lossy().as_bytes());
     hasher.update(b"\n");
     for dir in dirs {
@@ -483,6 +490,14 @@ mod tests {
     use super::*;
     use crate::parse::parse_files_parallel_with_cache_statuses;
     use crate::source_roots::PackageLayoutError;
+
+    #[test]
+    fn compiler_timestamp_rejects_pre_epoch_time() {
+        let error = system_time_to_nanos(SystemTime::UNIX_EPOCH - Duration::from_secs(1))
+            .expect_err("pre-epoch compiler timestamp should fail");
+
+        assert!(format!("{error:#}").contains("compiler timestamp precedes Unix epoch"));
+    }
 
     #[test]
     fn source_root_cache_hits_after_first_parse() {

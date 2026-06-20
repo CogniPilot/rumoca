@@ -3175,6 +3175,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "flate2",
+ "indexmap",
  "miette",
  "mimalloc",
  "minijinja",
@@ -3686,6 +3687,7 @@ version = "0.9.6"
 dependencies = [
  "diffsol",
  "indexmap",
+ "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-ir-solve",
  "rumoca-solver",
@@ -3698,6 +3700,7 @@ name = "rumoca-solver-rk45"
 version = "0.9.6"
 dependencies = [
  "indexmap",
+ "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-ir-solve",
  "rumoca-solver",

@@ -3,13 +3,19 @@ use super::*;
 #[test]
 fn test_runtime_precompute_skips_shift_sample_with_non_static_source_clock() {
     let mut dae_model = dae::Dae::default();
-    let mut shift_counter = dae::Variable::new(rumoca_core::VarName::new("shiftCounter"));
+    let mut shift_counter = dae::Variable::new(
+        rumoca_core::VarName::new("shiftCounter"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     shift_counter.start = Some(lit(2.0));
     dae_model
         .variables
         .parameters
         .insert(rumoca_core::VarName::new("shiftCounter"), shift_counter);
-    let mut resolution = dae::Variable::new(rumoca_core::VarName::new("resolution"));
+    let mut resolution = dae::Variable::new(
+        rumoca_core::VarName::new("resolution"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     resolution.start = Some(lit(10.0));
     dae_model
         .variables
@@ -17,7 +23,10 @@ fn test_runtime_precompute_skips_shift_sample_with_non_static_source_clock() {
         .insert(rumoca_core::VarName::new("resolution"), resolution);
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("u"),
-        dae::Variable::new(rumoca_core::VarName::new("u")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     dae_model

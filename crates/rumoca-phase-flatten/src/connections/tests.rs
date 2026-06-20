@@ -3,6 +3,10 @@ use rumoca_core::TypeId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
+fn test_span() -> Span {
+    Span::from_offsets(rumoca_core::SourceId(7), 11, 23)
+}
+
 fn create_test_model() -> flat::Model {
     let mut flat = flat::Model::new();
 
@@ -10,7 +14,7 @@ fn create_test_model() -> flat::Model {
     let pin_v = flat::Variable {
         name: rumoca_core::VarName::new("pin.v"),
         flow: false,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("pin.v"), pin_v);
 
@@ -18,7 +22,7 @@ fn create_test_model() -> flat::Model {
     let pin_i = flat::Variable {
         name: rumoca_core::VarName::new("pin.i"),
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("pin.i"), pin_i);
 
@@ -98,7 +102,7 @@ fn test_is_stream_variable() {
         rumoca_core::VarName::new("pin.h_outflow"),
         flat::Variable {
             stream: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -119,14 +123,16 @@ fn test_connect_primitive_vars_routes_streams_to_stream_set() {
         rumoca_core::VarName::new("a.h_outflow"),
         flat::Variable {
             stream: true,
-            ..Default::default()
+            source_span: test_span(),
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("b.h_outflow"),
         flat::Variable {
             stream: true,
-            ..Default::default()
+            source_span: test_span(),
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -156,15 +162,19 @@ fn test_stream_connection_does_not_generate_potential_equality() {
     flat.add_variable(
         rumoca_core::VarName::new("a.h_outflow"),
         flat::Variable {
+            name: rumoca_core::VarName::new("a.h_outflow"),
             stream: true,
-            ..Default::default()
+            source_span: test_span(),
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("b.h_outflow"),
         flat::Variable {
+            name: rumoca_core::VarName::new("b.h_outflow"),
             stream: true,
-            ..Default::default()
+            source_span: test_span(),
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -209,7 +219,8 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
             flat::Variable {
                 name: rumoca_core::VarName::new(name),
                 is_primitive: false,
-                ..Default::default()
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.add_variable(
@@ -218,7 +229,8 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
                 name: rumoca_core::VarName::new(format!("{name}.m")),
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 is_primitive: true,
-                ..Default::default()
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.add_variable(
@@ -226,7 +238,8 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
             flat::Variable {
                 name: rumoca_core::VarName::new(format!("{name}.v")),
                 is_primitive: true,
-                ..Default::default()
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.add_variable(
@@ -235,7 +248,8 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
                 name: rumoca_core::VarName::new(format!("{name}.i")),
                 flow: true,
                 is_primitive: true,
-                ..Default::default()
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
@@ -283,7 +297,7 @@ fn test_is_flow_variable_subscripted_element_of_array_field() {
         flat::Variable {
             flow: true,
             dims: vec![4],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     assert!(is_flow_variable(
@@ -319,10 +333,11 @@ fn test_union_find() {
 }
 
 #[test]
-fn test_create_equality_residual() {
-    let lhs = var_to_expr(&rumoca_core::VarName::new("a"));
-    let rhs = var_to_expr(&rumoca_core::VarName::new("b"));
-    let residual = create_equality_residual(lhs, rhs);
+fn test_create_equality_residual() -> Result<(), rumoca_core::MissingProvenanceSpan> {
+    let span = test_span().require_provenance("test connection equality")?;
+    let lhs = var_to_expr(&rumoca_core::VarName::new("a"), span);
+    let rhs = var_to_expr(&rumoca_core::VarName::new("b"), span);
+    let residual = create_equality_residual(lhs, rhs, span);
 
     // Should be Binary { op: Sub, lhs: a, rhs: b }
     match residual {
@@ -331,17 +346,19 @@ fn test_create_equality_residual() {
         }
         _ => panic!("Expected Binary expression"),
     }
+    Ok(())
 }
 
 #[test]
-fn test_create_sum() {
+fn test_create_sum() -> Result<(), rumoca_core::MissingProvenanceSpan> {
+    let span = test_span().require_provenance("test connection sum")?;
     let exprs = vec![
-        var_to_expr(&rumoca_core::VarName::new("a")),
-        var_to_expr(&rumoca_core::VarName::new("b")),
-        var_to_expr(&rumoca_core::VarName::new("c")),
+        var_to_expr(&rumoca_core::VarName::new("a"), span),
+        var_to_expr(&rumoca_core::VarName::new("b"), span),
+        var_to_expr(&rumoca_core::VarName::new("c"), span),
     ];
 
-    let sum = create_sum(exprs);
+    let sum = create_sum(exprs, span);
 
     // Should be ((a + b) + c)
     match sum {
@@ -350,6 +367,7 @@ fn test_create_sum() {
         }
         _ => panic!("Expected Binary expression"),
     }
+    Ok(())
 }
 
 #[test]
@@ -359,15 +377,15 @@ fn test_generate_equality_equations() {
     // Add variables
     flat.add_variable(
         rumoca_core::VarName::new("r1.n.v"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r2.p.v"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r3.p.v"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
 
     let vars = vec![
@@ -376,7 +394,7 @@ fn test_generate_equality_equations() {
         rumoca_core::VarName::new("r3.p.v"),
     ];
 
-    generate_equality_equations(&mut flat, &vars, rumoca_core::Span::DUMMY).unwrap();
+    generate_equality_equations(&mut flat, &vars, test_span()).unwrap();
 
     // Should generate 2 equations (n-1 for n=3)
     assert_eq!(flat.equations.len(), 2);
@@ -409,13 +427,13 @@ fn test_generate_flow_equation() {
     // Add flow variables
     let v1 = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("r1.n.i"), v1);
 
     let v2 = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("r2.p.i"), v2);
 
@@ -429,7 +447,7 @@ fn test_generate_flow_equation() {
         &vars,
         "",
         &IndexMap::<String, indexmap::IndexSet<rumoca_core::VarName>>::default(),
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -459,14 +477,14 @@ fn test_generate_flow_equation_marks_base_connected_for_subscripted_var() {
         flat::Variable {
             flow: true,
             dims: vec![4],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("b.n.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -479,7 +497,7 @@ fn test_generate_flow_equation_marks_base_connected_for_subscripted_var() {
         &vars,
         "",
         &IndexMap::<String, indexmap::IndexSet<rumoca_core::VarName>>::default(),
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -501,14 +519,14 @@ fn test_generate_flow_equation_subscripted_unknown_dims_is_scalar() {
         flat::Variable {
             flow: true,
             dims: vec![],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("b.n.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -521,7 +539,7 @@ fn test_generate_flow_equation_subscripted_unknown_dims_is_scalar() {
         &vars,
         "",
         &IndexMap::<String, indexmap::IndexSet<rumoca_core::VarName>>::default(),
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -537,14 +555,14 @@ fn test_generate_flow_equation_mixed_scalar_and_array_is_scalar_sum() {
         flat::Variable {
             flow: true,
             dims: vec![2],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("s.n.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -557,7 +575,7 @@ fn test_generate_flow_equation_mixed_scalar_and_array_is_scalar_sum() {
         &vars,
         "",
         &IndexMap::<String, indexmap::IndexSet<rumoca_core::VarName>>::default(),
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -576,7 +594,7 @@ fn test_generate_flow_equation_two_arrays_and_scalar_keeps_array_scalar_count() 
         flat::Variable {
             flow: true,
             dims: vec![2],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
@@ -584,14 +602,14 @@ fn test_generate_flow_equation_two_arrays_and_scalar_keeps_array_scalar_count() 
         flat::Variable {
             flow: true,
             dims: vec![2],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("s.n.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -605,7 +623,7 @@ fn test_generate_flow_equation_two_arrays_and_scalar_keeps_array_scalar_count() 
         &vars,
         "",
         &IndexMap::<String, indexmap::IndexSet<rumoca_core::VarName>>::default(),
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -623,14 +641,14 @@ fn test_generate_flow_equation_sign_convention() {
     // Add inside connector (3 parts: component.connector.variable)
     let v_inside = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("r.p.i"), v_inside);
 
     // Add outside connector (2 parts: connector.variable)
     let v_outside = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("p.i"), v_outside);
 
@@ -649,7 +667,7 @@ fn test_generate_flow_equation_sign_convention() {
         &vars,
         "",
         &interface_flow_vars_by_scope,
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -673,13 +691,13 @@ fn test_generate_flow_equation_sign_for_nested_outside_connector_member() {
 
     let outside_nested = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("port.frame.f"), outside_nested);
 
     let inside = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("comp.port.f"), inside);
 
@@ -697,7 +715,7 @@ fn test_generate_flow_equation_sign_for_nested_outside_connector_member() {
         &vars,
         "",
         &interface_flow_vars_by_scope,
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -717,14 +735,14 @@ fn test_generate_flow_equation_uses_scope_specific_interface_flows() {
         rumoca_core::VarName::new("cell.p.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("cell.multiSensor.pc.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -742,7 +760,7 @@ fn test_generate_flow_equation_uses_scope_specific_interface_flows() {
         &vars,
         "cell",
         &interface_flow_vars_by_scope,
-        rumoca_core::Span::DUMMY,
+        test_span(),
     )
     .unwrap();
 
@@ -761,13 +779,13 @@ fn test_validate_flow_consistency_ok() {
     // Both flow
     let v1 = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a.i"), v1);
 
     let v2 = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b.i"), v2);
 
@@ -788,13 +806,13 @@ fn test_validate_flow_consistency_mismatch() {
     // One flow, one non-flow
     let v1 = flat::Variable {
         flow: true,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a.i"), v1);
 
     let v2 = flat::Variable {
         flow: false,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b.v"), v2);
 
@@ -815,13 +833,13 @@ fn test_validate_dimension_compatibility_ok() {
     // Same dimensions
     let v1 = flat::Variable {
         dims: vec![3],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), v1);
 
     let v2 = flat::Variable {
         dims: vec![3],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), v2);
 
@@ -842,13 +860,13 @@ fn test_validate_dimension_compatibility_mismatch() {
     // Different dimensions
     let v1 = flat::Variable {
         dims: vec![3],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), v1);
 
     let v2 = flat::Variable {
         dims: vec![5],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), v2);
 
@@ -869,14 +887,14 @@ fn test_validate_dimension_compatibility_io_mismatch_still_fails() {
     let v1 = flat::Variable {
         dims: vec![2],
         causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("u"), v1);
 
     let v2 = flat::Variable {
         dims: vec![3],
         causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("y"), v2);
 
@@ -898,13 +916,13 @@ fn test_validate_dimension_compatibility_partial_subscript_projects_remaining_di
 
     let lhs = flat::Variable {
         dims: vec![2, 3],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), lhs);
 
     let rhs = flat::Variable {
         dims: vec![3],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), rhs);
 
@@ -926,13 +944,13 @@ fn test_validate_dimension_compatibility_partial_subscript_mismatch_fails() {
 
     let lhs = flat::Variable {
         dims: vec![2, 3],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), lhs);
 
     let rhs = flat::Variable {
         dims: vec![4],
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), rhs);
 
@@ -964,13 +982,13 @@ fn test_validate_type_compatibility_ok() {
     // Both same type (type_id = 1 for both)
     let v1 = flat::Variable {
         type_id: TypeId(1), // Same type
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), v1);
 
     let v2 = flat::Variable {
         type_id: TypeId(1), // Same type
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), v2);
 
@@ -993,13 +1011,13 @@ fn test_validate_type_compatibility_mismatch() {
     // Different types (type_id = 1 vs 2)
     let v1 = flat::Variable {
         type_id: TypeId(1), // e.g., Real
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), v1);
 
     let v2 = flat::Variable {
         type_id: TypeId(2), // e.g., Integer
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), v2);
 
@@ -1021,13 +1039,13 @@ fn test_validate_type_compatibility_unknown_allowed() {
 
     let v1 = flat::Variable {
         type_id: TypeId::UNKNOWN,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), v1);
 
     let v2 = flat::Variable {
         type_id: TypeId(1),
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), v2);
 
@@ -1052,13 +1070,13 @@ fn test_validate_type_compatibility_alias_root_allowed() {
 
     let v1 = flat::Variable {
         type_id: alias,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("a"), v1);
 
     let v2 = flat::Variable {
         type_id: root,
-        ..Default::default()
+        ..flat::Variable::empty_with_span(test_span())
     };
     flat.add_variable(rumoca_core::VarName::new("b"), v2);
 
@@ -1136,14 +1154,14 @@ fn test_parse_array_element_ref_simple_and_indexed_prefix() {
         rumoca_core::VarName::new("x"),
         flat::Variable {
             dims: vec![3],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("cell[2].v"),
         flat::Variable {
             dims: vec![4],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1164,7 +1182,7 @@ fn test_parse_array_element_ref_rejects_non_scalar_or_non_terminal_subscripts() 
         rumoca_core::VarName::new("x"),
         flat::Variable {
             dims: vec![2, 2],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1180,7 +1198,7 @@ fn test_scalarize_collapsed_connector_element() {
         flat::Variable {
             flow: true,
             dims: vec![4],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1204,7 +1222,7 @@ fn test_scalarize_collapsed_connector_element_without_dims_still_scalarizes() {
             flow: true,
             // Collapsed connector-array fields can reach flatten with dims=[].
             dims: vec![],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1228,7 +1246,7 @@ fn test_is_flow_variable_subscripted_with_unknown_dims() {
             flow: true,
             // Unknown dims in flat::Variable must still allow element flow handling.
             dims: vec![],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1498,7 +1516,7 @@ fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
         rumoca_core::VarName::new("plug_p.pin[2].i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
@@ -1506,7 +1524,7 @@ fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
         flat::Variable {
             flow: true,
             dims: vec![3],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1549,14 +1567,14 @@ fn test_connect_sub_variable_does_not_index_scalar_b_member() {
         rumoca_core::VarName::new("resistor[1].p.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("r0.n.i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1593,7 +1611,7 @@ fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
         rumoca_core::VarName::new("plug_p.pin[1].i"),
         flat::Variable {
             flow: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
@@ -1601,7 +1619,7 @@ fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
         flat::Variable {
             flow: true,
             dims: vec![1],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1645,13 +1663,13 @@ fn test_find_sub_variables_with_array_expansion() {
     for i in 1..=3 {
         flat.add_variable(
             rumoca_core::VarName::new(format!("resistor[{}].p.v", i)),
-            flat::Variable::default(),
+            flat::Variable::empty_with_span(test_span()),
         );
         flat.add_variable(
             rumoca_core::VarName::new(format!("resistor[{}].p.i", i)),
             flat::Variable {
                 flow: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
@@ -1677,14 +1695,14 @@ fn test_find_sub_variables_indexed_prefix_matches_collapsed_connector_array_fiel
         flat::Variable {
             flow: true,
             dims: vec![4],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("s[1].inductance.n.v"),
         flat::Variable {
             dims: vec![4],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1703,19 +1721,19 @@ fn test_find_sub_variables_exact_match_preferred() {
     // Add both exact and indexed variables
     flat.add_variable(
         rumoca_core::VarName::new("r1.n.v"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r1.n.i"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r1[1].n.v"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r1[1].n.i"),
-        flat::Variable::default(),
+        flat::Variable::empty_with_span(test_span()),
     );
 
     // Searching for "r1.n" should find exact matches
@@ -1743,7 +1761,7 @@ fn test_find_sub_variables_indexed_prefix_does_not_cross_match_connector_members
             flat::Variable {
                 dims: vec![1],
                 flow: name.ends_with(".i"),
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }

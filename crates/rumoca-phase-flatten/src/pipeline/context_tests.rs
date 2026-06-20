@@ -10,6 +10,88 @@ mod tests {
     use rumoca_ir_flat as flat;
     use std::sync::Arc;
 
+    const TEST_FILE: &str = "context_tests.mo";
+
+    fn test_source_location() -> rumoca_core::Location {
+        rumoca_core::Location {
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 2,
+            start: 0,
+            end: 1,
+            file_name: TEST_FILE.to_string(),
+        }
+    }
+
+    fn add_test_source(tree: &mut ClassTree) {
+        tree.source_map.add(TEST_FILE, "component x;");
+    }
+
+    fn source_backed_tree() -> ClassTree {
+        let mut tree = ClassTree::default();
+        add_test_source(&mut tree);
+        tree
+    }
+
+    fn symbolic_instance(
+        instance_id: InstanceId,
+        qualified_name: &str,
+        dims_expr: Vec<ast::Subscript>,
+    ) -> InstanceData {
+        InstanceData {
+            instance_id,
+            component_ref: None,
+            qualified_name: QualifiedName::from_dotted(qualified_name),
+            source_location: test_source_location(),
+            dims: Vec::new(),
+            dims_expr,
+            type_id: rumoca_core::TypeId::default(),
+            type_name: String::new(),
+            type_def_id: None,
+            declaration_source_scope: None,
+            class_overrides: ast::ClassOverrideMap::default(),
+            has_forwarding_class_redeclare: false,
+            variability: rumoca_core::Variability::Empty,
+            causality: rumoca_core::Causality::Empty,
+            flow: false,
+            stream: false,
+            start: None,
+            fixed: None,
+            min: None,
+            max: None,
+            nominal: None,
+            quantity: None,
+            unit: None,
+            display_unit: None,
+            description: None,
+            state_select: rumoca_core::StateSelect::default(),
+            binding: None,
+            binding_source: None,
+            binding_source_scope: None,
+            attribute_source_scopes: ast::AstIndexMap::default(),
+            binding_from_modification: false,
+            is_primitive: true,
+            is_discrete_type: false,
+            from_expandable_connector: false,
+            evaluate: false,
+            is_final: false,
+            is_overconstrained: false,
+            is_protected: false,
+            is_connector_type: false,
+            oc_record_path: None,
+            oc_eq_constraint_size: None,
+        }
+    }
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("flatten_context_test.mo"),
+            8,
+            32,
+        )
+    }
+
     fn component_ref_expr(path: &str) -> ast::Expression {
         let parts = crate::path_utils::segments(path)
             .into_iter()
@@ -26,7 +108,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })
     }
 
@@ -331,7 +413,7 @@ mod tests {
             name: rumoca_core::VarName::new("world.cylinders.R.T"),
             is_primitive: true,
             dims: vec![3, 3],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         };
         flat.add_variable(field.name.clone(), field.clone());
 
@@ -379,7 +461,7 @@ mod tests {
                 name: var_name.clone(),
                 dims: vec![2, 3, 3],
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
@@ -450,7 +532,7 @@ mod tests {
                     is_matrix: false,
                     span: rumoca_core::Span::DUMMY,
                 }),
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
@@ -480,7 +562,7 @@ mod tests {
     #[test]
     fn symbolic_component_dimensions_replace_stale_flat_dimensions() {
         let mut ctx = Context::new();
-        let tree = ClassTree::default();
+        let tree = source_backed_tree();
         let mut flat = flat::Model::default();
         let nf_name = rumoca_core::VarName::new("realFFT.nf");
         flat.add_variable(
@@ -494,7 +576,7 @@ mod tests {
                 }),
                 is_discrete_type: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         let abs_name = rumoca_core::VarName::new("realFFT.abs");
@@ -504,20 +586,18 @@ mod tests {
                 name: abs_name.clone(),
                 dims: vec![4],
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("realFFT.abs"),
-                dims_expr: vec![ast::Subscript::Expression(component_ref_expr("realFFT.nf"))],
-                is_primitive: true,
-                ..Default::default()
-            },
+            symbolic_instance(
+                InstanceId::new(1),
+                "realFFT.abs",
+                vec![ast::Subscript::Expression(component_ref_expr("realFFT.nf"))],
+            ),
         );
 
         ctx.build_parameter_lookup(&flat, &tree);
@@ -539,6 +619,7 @@ mod tests {
     fn enum_type_component_dimensions_use_literal_count() {
         let mut ctx = Context::new();
         let mut tree = ClassTree::new();
+        add_test_source(&mut tree);
         let logic_def_id = DefId::new(42);
         let mut logic = ClassDef {
             name: token("Logic"),
@@ -564,17 +645,17 @@ mod tests {
                 name: table_name.clone(),
                 dims: vec![1, 1],
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("gate.delayTable"),
-                dims_expr: vec![
+            symbolic_instance(
+                InstanceId::new(1),
+                "gate.delayTable",
+                vec![
                     ast::Subscript::Expression(ast::Expression::ComponentReference(
                         ast::ComponentReference {
                             local: false,
@@ -598,9 +679,7 @@ mod tests {
                         },
                     )),
                 ],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         ctx.build_parameter_lookup(&flat, &tree);
@@ -627,6 +706,7 @@ mod tests {
     fn colon_component_dimensions_use_enum_range_binding_shape() {
         let mut ctx = Context::new();
         let mut tree = ClassTree::new();
+        add_test_source(&mut tree);
         let logic_def_id = DefId::new(42);
         let mut logic = ClassDef {
             name: token("Logic"),
@@ -683,22 +763,20 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("delay.LogicValues"),
-                dims_expr: vec![ast::Subscript::Range {
+            symbolic_instance(
+                InstanceId::new(1),
+                "delay.LogicValues",
+                vec![ast::Subscript::Range {
                     token: rumoca_core::Token::default(),
                 }],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         ctx.build_parameter_lookup(&flat, &tree);
@@ -724,7 +802,7 @@ mod tests {
     #[test]
     fn colon_component_dimensions_use_binding_shape() {
         let mut ctx = Context::new();
-        let tree = ClassTree::default();
+        let tree = source_backed_tree();
         let mut flat = flat::Model::default();
         let x_name = rumoca_core::VarName::new("a.x");
         flat.add_variable(
@@ -755,22 +833,20 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("a.x"),
-                dims_expr: vec![ast::Subscript::Range {
+            symbolic_instance(
+                InstanceId::new(1),
+                "a.x",
+                vec![ast::Subscript::Range {
                     token: rumoca_core::Token::default(),
                 }],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         ctx.build_parameter_lookup(&flat, &tree);
@@ -790,7 +866,7 @@ mod tests {
     #[test]
     fn colon_component_dimensions_accept_zero_sized_binding_shape() {
         let mut ctx = Context::new();
-        let tree = ClassTree::default();
+        let tree = source_backed_tree();
         let mut flat = flat::Model::default();
         let table_name = rumoca_core::VarName::new("table");
         flat.add_variable(
@@ -800,17 +876,17 @@ mod tests {
                 dims: vec![0, 2],
                 binding: Some(fill_expr(0, &[0, 2])),
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("table"),
-                dims_expr: vec![
+            symbolic_instance(
+                InstanceId::new(1),
+                "table",
+                vec![
                     ast::Subscript::Range {
                         token: rumoca_core::Token::default(),
                     },
@@ -818,9 +894,7 @@ mod tests {
                         token: rumoca_core::Token::default(),
                     },
                 ],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         ctx.build_parameter_lookup(&flat, &tree);
@@ -843,7 +917,7 @@ mod tests {
     #[test]
     fn colon_component_dimensions_without_shape_fail_fast() {
         let mut ctx = Context::new();
-        let tree = ClassTree::default();
+        let tree = source_backed_tree();
         let mut flat = flat::Model::default();
         let x_name = rumoca_core::VarName::new("a.x");
         flat.add_variable(
@@ -852,22 +926,20 @@ mod tests {
                 name: rumoca_core::VarName::new("a.x"),
                 dims: vec![1],
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("a.x"),
-                dims_expr: vec![ast::Subscript::Range {
+            symbolic_instance(
+                InstanceId::new(1),
+                "a.x",
+                vec![ast::Subscript::Range {
                     token: rumoca_core::Token::default(),
                 }],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         let err = ctx
@@ -883,7 +955,7 @@ mod tests {
     #[test]
     fn symbolic_colon_component_dimensions_can_reuse_known_flat_dims() {
         let mut ctx = Context::new();
-        let tree = ClassTree::default();
+        let tree = source_backed_tree();
         let mut flat = flat::Model::default();
         let table_name = rumoca_core::VarName::new("model.table");
         flat.add_variable(
@@ -892,21 +964,19 @@ mod tests {
                 name: rumoca_core::VarName::new("model.table"),
                 dims: vec![8, 2],
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("model.table"),
-                dims_expr: vec![ast::Subscript::Range {
+            symbolic_instance(
+                InstanceId::new(1),
+                "model.table",
+                vec![ast::Subscript::Range {
                     token: rumoca_core::Token::default(),
                 }],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         let changed = ctx
@@ -937,7 +1007,7 @@ mod tests {
                 binding: Some(int_array(&[-1, 1])),
                 binding_from_modification: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         let nx_name = rumoca_core::VarName::new("adaptor.filter[1].transferFunction[1].nx");
@@ -953,7 +1023,7 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 
@@ -974,7 +1044,7 @@ mod tests {
     #[test]
     fn unresolved_symbolic_component_dimensions_fail_before_flat_ir_is_used() {
         let mut ctx = Context::new();
-        let tree = ClassTree::default();
+        let tree = source_backed_tree();
         let mut flat = flat::Model::default();
         let y_name = rumoca_core::VarName::new("model.y");
         flat.add_variable(
@@ -983,21 +1053,19 @@ mod tests {
                 name: rumoca_core::VarName::new("model.y"),
                 dims: vec![1],
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         let mut overlay = InstanceOverlay::default();
         overlay.components.insert(
             InstanceId::new(1),
-            InstanceData {
-                instance_id: InstanceId::new(1),
-                qualified_name: QualifiedName::from_dotted("model.y"),
-                dims_expr: vec![ast::Subscript::Expression(component_ref_expr(
+            symbolic_instance(
+                InstanceId::new(1),
+                "model.y",
+                vec![ast::Subscript::Expression(component_ref_expr(
                     "model.missing_dim",
                 ))],
-                is_primitive: true,
-                ..Default::default()
-            },
+            ),
         );
 
         let err = ctx
@@ -1503,7 +1571,7 @@ mod tests {
                 name: "noise".to_string(),
                 is_replaceable: true,
                 type_def_id: Some(default_noise_def_id),
-                ..Default::default()
+                ..Component::empty_with_span(test_span())
             },
         );
         tree.definitions.classes.insert("Host".to_string(), host);
@@ -1548,7 +1616,7 @@ mod tests {
                 name: "frictionParameters".to_string(),
                 is_replaceable: false,
                 type_def_id: Some(friction_def_id),
-                ..Default::default()
+                ..Component::empty_with_span(test_span())
             },
         );
         tree.definitions.classes.insert("Host".to_string(), host);
@@ -1603,7 +1671,7 @@ mod tests {
                 name: "noise".to_string(),
                 is_replaceable: true,
                 type_def_id: Some(default_noise_def_id),
-                ..Default::default()
+                ..Component::empty_with_span(test_span())
             },
         );
         tree.definitions.classes.insert("Host".to_string(), host);

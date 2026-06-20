@@ -77,7 +77,7 @@ fn discrete_observation_refresh_rows(
             && (expression_has_observation_pulse(dae_model, &eq.rhs)
                 || expression_has_observation_event_relation(&eq.rhs));
         let mut reads = Vec::new();
-        collect_expression_read_slots(dae_model, layout, &eq.rhs, &mut reads);
+        collect_expression_read_slots(dae_model, layout, &eq.rhs, &mut reads)?;
         for flat_index in 0..scalar_count {
             let name = discrete_update_scalar_name(
                 dae_model,

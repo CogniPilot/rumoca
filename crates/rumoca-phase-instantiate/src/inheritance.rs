@@ -570,7 +570,11 @@ fn redeclare_target_span(
         )));
     };
 
-    Ok(location_to_span(&part.ident.location, &tree.source_map))
+    location_to_span(
+        &part.ident.location,
+        &tree.source_map,
+        "extends redeclare target name",
+    )
 }
 
 /// Check if `subtype` is a subtype of `supertype`.
@@ -1087,7 +1091,7 @@ pub fn process_extends_with_cache(
 
         // MLS §7.2: Apply extends modifications after recursive merge so
         // transitively inherited targets are available.
-        apply_extends_modifications(&mut inherited, base_class, extend)?;
+        apply_extends_modifications(tree, &mut inherited, base_class, extend)?;
     }
 
     // Store in cache for reuse, then return
@@ -1112,11 +1116,11 @@ pub fn process_extends_with_cache(
 /// qualify the start expression with the parent type's lexical scope instead
 /// of the component instance prefix.
 fn apply_extends_modifications(
+    tree: &ast::ClassTree,
     target: &mut InheritedContent,
     base_class: &ast::ClassDef,
     extend: &ast::Extend,
 ) -> InstantiateResult<()> {
-    let extend_span = Span::DUMMY;
     let mut final_override: Option<String> = None;
     walk_extend_modifications(extend, |modification| {
         let Some((name, value, is_final)) =
@@ -1141,6 +1145,11 @@ fn apply_extends_modifications(
         }
     });
     if let Some(name) = final_override {
+        let extend_span = location_to_span(
+            &extend.location,
+            &tree.source_map,
+            "extends modification final override",
+        )?;
         return Err(Box::new(InstantiateError::redeclare_final(
             name,
             extend_span,
@@ -1196,18 +1205,38 @@ pub(crate) fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<u
 }
 
 /// Create a Span from a rumoca_core::Location using the source map for file resolution.
-pub fn location_to_span(loc: &rumoca_core::Location, source_map: &SourceMap) -> Span {
-    source_map.location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+pub fn location_to_span(
+    loc: &rumoca_core::Location,
+    source_map: &SourceMap,
+    context: &str,
+) -> InstantiateResult<Span> {
+    if loc.file_name.is_empty() || loc.start >= loc.end {
+        return Err(Box::new(InstantiateError::missing_source_context(format!(
+            "{context} is missing a non-empty source location"
+        ))));
+    }
+    source_map
+        .try_location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+        .ok_or_else(|| {
+            Box::new(InstantiateError::missing_source_context(format!(
+                "source file `{}` for {context} was not found",
+                loc.file_name
+            )))
+        })
 }
 
 /// Create a Span from an Option<rumoca_core::Location> using the source map.
-/// Returns Span::DUMMY if the location is None.
-pub(crate) fn option_location_to_span(
+pub(crate) fn required_location_to_span(
     loc: Option<&rumoca_core::Location>,
     source_map: &SourceMap,
-) -> Span {
-    loc.map(|l| location_to_span(l, source_map))
-        .unwrap_or(Span::DUMMY)
+    context: &str,
+) -> InstantiateResult<Span> {
+    let loc = loc.ok_or_else(|| {
+        Box::new(InstantiateError::missing_source_context(format!(
+            "{context} is missing source provenance"
+        )))
+    })?;
+    location_to_span(loc, source_map, context)
 }
 
 /// Compare variability by semantic kind (ignoring rumoca_core::Token locations).
@@ -1341,7 +1370,11 @@ fn merge_inherited(
                     name.clone(),
                     "previous base",
                     extend.base_name.to_string(),
-                    location_to_span(&extend.location, source_map),
+                    location_to_span(
+                        &extend.location,
+                        source_map,
+                        "conflicting inherited component extends clause",
+                    )?,
                 )));
             }
             // Compatible - diamond inheritance is OK, keep existing
@@ -1416,7 +1449,11 @@ fn merge_inherited_nested_class(
         name,
         "previous base",
         extend.base_name.to_string(),
-        location_to_span(&extend.location, source_map),
+        location_to_span(
+            &extend.location,
+            source_map,
+            "conflicting inherited nested class extends clause",
+        )?,
     )))
 }
 
@@ -1510,7 +1547,7 @@ fn merge_class_content(
     class: &ast::ClassDef,
     extend: &ast::Extend,
 ) -> InstantiateResult<()> {
-    let extend_span = location_to_span(&extend.location, &tree.source_map);
+    let extend_span = location_to_span(&extend.location, &tree.source_map, "extends clause")?;
     let mut validation_error: Option<Box<InstantiateError>> = None;
 
     validate_break_names(class, extend, extend_span)?;
@@ -1536,7 +1573,11 @@ fn merge_class_content(
                     name.clone(),
                     "previous base",
                     extend.base_name.to_string(),
-                    location_to_span(&extend.location, &tree.source_map),
+                    location_to_span(
+                        &extend.location,
+                        &tree.source_map,
+                        "conflicting class content extends clause",
+                    )?,
                 )));
             }
             // Compatible - diamond inheritance is OK, keep existing
@@ -1595,11 +1636,22 @@ fn merge_class_content(
                 target.classes.insert(name.to_string(), nested.clone());
                 return;
             }
+            let span = match location_to_span(
+                &extend.location,
+                &tree.source_map,
+                "conflicting nested class extends clause",
+            ) {
+                Ok(span) => span,
+                Err(err) => {
+                    validation_error = Some(err);
+                    return;
+                }
+            };
             validation_error = Some(Box::new(InstantiateError::conflicting_inheritance(
                 name.to_string(),
                 "previous base",
                 extend.base_name.to_string(),
-                location_to_span(&extend.location, &tree.source_map),
+                span,
             )));
         } else {
             let mut inherited_class = nested.clone();

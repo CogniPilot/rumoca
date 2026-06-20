@@ -20,8 +20,8 @@ pub struct Incidence {
     pub unknown_names: Vec<UnknownId>,
     /// Source span of each unknown (index → span), parallel to `unknown_names`,
     /// so structural-singularity errors are traceable back to the offending
-    /// model variable. `Span::DUMMY` for unknowns not sourced from DAE variables.
-    pub unknown_spans: Vec<rumoca_core::Span>,
+    /// model variable. `None` represents unknowns not sourced from DAE variables.
+    pub unknown_spans: Vec<Option<rumoca_core::Span>>,
     /// dae::Equation references (index → `EquationRef`).
     pub equation_refs: Vec<EquationRef>,
 }
@@ -39,7 +39,7 @@ impl Incidence {
             n_eq,
             n_var,
             eq_unknowns,
-            unknown_spans: vec![rumoca_core::Span::DUMMY; n_var],
+            unknown_spans: vec![None; n_var],
             unknown_names,
             equation_refs,
         }
@@ -83,7 +83,7 @@ fn build_unknown_map(
 ) -> (
     HashMap<UnknownId, usize>,
     Vec<UnknownId>,
-    Vec<rumoca_core::Span>,
+    Vec<Option<rumoca_core::Span>>,
 ) {
     let mut map = HashMap::new();
     let mut names = Vec::new();
@@ -134,7 +134,7 @@ enum UnknownKind {
 fn push_unknowns_for_variable(
     map: &mut HashMap<UnknownId, usize>,
     names: &mut Vec<UnknownId>,
-    spans: &mut Vec<rumoca_core::Span>,
+    spans: &mut Vec<Option<rumoca_core::Span>>,
     name: &rumoca_core::VarName,
     var: &dae::Variable,
     kind: UnknownKind,
@@ -167,13 +167,13 @@ fn push_unknowns_for_variable(
 fn push_unknown(
     map: &mut HashMap<UnknownId, usize>,
     names: &mut Vec<UnknownId>,
-    spans: &mut Vec<rumoca_core::Span>,
+    spans: &mut Vec<Option<rumoca_core::Span>>,
     id: UnknownId,
     span: rumoca_core::Span,
 ) {
     map.insert(id.clone(), names.len());
     names.push(id);
-    spans.push(span);
+    spans.push((!span.is_dummy()).then_some(span));
 }
 
 fn unknown_id(kind: UnknownKind, name: rumoca_core::VarName) -> UnknownId {
@@ -714,11 +714,25 @@ mod tests {
         let mut dae = dae::Dae::new();
         dae.variables.states.insert(
             rumoca_core::VarName::new("x"),
-            dae::Variable::new(rumoca_core::VarName::new("x")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new("z"),
-            dae::Variable::new(rumoca_core::VarName::new("z")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("z"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
 
         dae.continuous.equations.push(eq(sub(
@@ -745,7 +759,14 @@ mod tests {
         let mut dae = dae::Dae::new();
         dae.variables.states.insert(
             rumoca_core::VarName::new("support.phi"),
-            dae::Variable::new(rumoca_core::VarName::new("support.phi")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("support.phi"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         dae.continuous.equations.push(eq(sub(
             rumoca_core::Expression::VarRef {
@@ -764,14 +785,24 @@ mod tests {
     fn test_build_solver_sparsity_triplets_maps_whole_array_refs_to_all_scalars() {
         let mut dae = dae::Dae::new();
 
-        let mut u = dae::Variable::new(rumoca_core::VarName::new("u"));
+        let mut u = dae::Variable::new(
+            rumoca_core::VarName::new("u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         u.dims = vec![2];
         dae.variables
             .algebraics
             .insert(rumoca_core::VarName::new("u"), u);
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new("y"),
-            dae::Variable::new(rumoca_core::VarName::new("y")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("y"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
 
         dae.continuous.equations.push(eq(sub(
@@ -791,7 +822,10 @@ mod tests {
     fn test_build_solver_sparsity_triplets_resolves_indexed_record_field_arrays() {
         let mut dae = dae::Dae::new();
 
-        let mut z_re = dae::Variable::new(rumoca_core::VarName::new("z.re"));
+        let mut z_re = dae::Variable::new(
+            rumoca_core::VarName::new("z.re"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         z_re.dims = vec![3];
         dae.variables
             .algebraics

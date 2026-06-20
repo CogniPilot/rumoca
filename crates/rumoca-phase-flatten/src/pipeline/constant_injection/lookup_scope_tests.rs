@@ -39,11 +39,19 @@ fn token(text: &str) -> Token {
     }
 }
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("constant_injection_test.mo"),
+        4,
+        20,
+    )
+}
+
 fn int_expr(value: i64) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
         token: token(&value.to_string()),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -51,7 +59,7 @@ fn real_expr(value: &str) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
         token: token(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -66,7 +74,7 @@ fn comp_ref(path: &str) -> ComponentReference {
             })
             .collect(),
         def_id: None,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -74,7 +82,7 @@ fn call_expr(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
     ast::Expression::FunctionCall {
         comp: comp_ref(name),
         args,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -120,7 +128,7 @@ fn component_record_constant_alias_is_visible_under_source_type_name() {
             variability: Variability::Constant(Token::default()),
             binding: Some(real_expr("1e-12")),
             has_explicit_binding: true,
-            ..Component::default()
+            ..Component::empty_with_span(test_span())
         },
     );
 
@@ -139,7 +147,7 @@ fn component_record_constant_alias_is_visible_under_source_type_name() {
         type_name: ast::Name::from_string("SpiceConstants"),
         type_def_id: Some(record_def),
         variability: Variability::Constant(Token::default()),
-        ..Component::default()
+        ..Component::empty_with_span(test_span())
     };
     let mut ctx = Context::new();
 
@@ -157,7 +165,7 @@ fn component_record_constant_alias_is_visible_under_source_type_name() {
         ctx.constant_values.get("mp.SpiceConstants.CKTgmin"),
         Some(&rumoca_core::Expression::Literal {
             value: Literal::Real(1e-12),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })
     );
     assert!(ctx.constant_values.contains_key("mp.C.CKTgmin"));
@@ -296,7 +304,7 @@ fn const_flat_expr_accepts_enum_literal_component_ref() {
         Some(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'U'"),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })
     );
 }

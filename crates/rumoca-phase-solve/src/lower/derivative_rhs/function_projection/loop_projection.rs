@@ -19,7 +19,14 @@ impl FunctionProjectionAnalysis<'_> {
     ) -> Result<(), LowerError> {
         if ctx.index_depth >= indices.len() {
             for statement in equations {
-                self.apply_statement(function, statement, scope, projected, ctx.depth + 1)?;
+                self.apply_statement(
+                    function,
+                    statement,
+                    scope,
+                    projected,
+                    ctx.depth + 1,
+                    ctx.span,
+                )?;
             }
             return Ok(());
         }
@@ -61,11 +68,15 @@ impl FunctionProjectionAnalysis<'_> {
     ) -> Result<rumoca_core::ComponentReference, LowerError> {
         let mut component_ref = component_ref.clone();
         for part in &mut component_ref.parts {
-            part.subs = part
-                .subs
-                .iter()
-                .map(|subscript| self.substitute_static_subscript(subscript, scope))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut subscripts = loop_projection_vec_with_capacity(
+                part.subs.len(),
+                "function projection component-reference subscript count",
+                part.span,
+            )?;
+            for subscript in &part.subs {
+                subscripts.push(self.substitute_static_subscript(subscript, scope)?);
+            }
+            part.subs = subscripts;
         }
         Ok(component_ref)
     }
@@ -77,7 +88,7 @@ impl FunctionProjectionAnalysis<'_> {
     ) -> Result<rumoca_core::Subscript, LowerError> {
         match subscript {
             rumoca_core::Subscript::Expr { expr, span } => {
-                let value = self.compile_time_int(&self.substitute(expr, scope), *span)?;
+                let value = self.compile_time_int(&self.substitute(expr, scope)?, *span)?;
                 Ok(rumoca_core::Subscript::Index { value, span: *span })
             }
             rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
@@ -92,7 +103,7 @@ impl FunctionProjectionAnalysis<'_> {
         scope: &FunctionProjectionScope,
         span: rumoca_core::Span,
     ) -> Result<Vec<i64>, LowerError> {
-        let range = self.substitute(range, scope);
+        let range = self.substitute(range, scope)?;
         match range {
             rumoca_core::Expression::Range {
                 start, step, end, ..
@@ -104,18 +115,33 @@ impl FunctionProjectionAnalysis<'_> {
                     None => 1,
                 };
                 if step == 0 {
-                    return Err(LowerError::Unsupported {
-                        reason: "function projection for-loop step cannot be zero".to_string(),
-                    }
-                    .with_fallback_span(span));
+                    return Err(unsupported_at(
+                        "function projection for-loop step cannot be zero",
+                        span,
+                    ));
                 }
-                Ok(build_i64_range_values(start, end, step))
+                build_i64_range_values(start, end, step, span)
             }
-            rumoca_core::Expression::Array { elements, .. } => elements
-                .iter()
-                .map(|element| self.compile_time_int(element, span))
-                .collect(),
-            _ => Ok(vec![self.compile_time_int(&range, span)?]),
+            rumoca_core::Expression::Array { elements, .. } => elements.iter().try_fold(
+                loop_projection_vec_with_capacity(
+                    elements.len(),
+                    "function projection range element count",
+                    span,
+                )?,
+                |mut values, element| {
+                    values.push(self.compile_time_int(element, span)?);
+                    Ok(values)
+                },
+            ),
+            _ => {
+                let mut values = loop_projection_vec_with_capacity(
+                    1,
+                    "function projection scalar range value count",
+                    span,
+                )?;
+                values.push(self.compile_time_int(&range, span)?);
+                Ok(values)
+            }
         }
     }
 
@@ -125,41 +151,173 @@ impl FunctionProjectionAnalysis<'_> {
         span: rumoca_core::Span,
     ) -> Result<i64, LowerError> {
         let value = self.compile_time_scalar(expr).ok_or_else(|| {
-            LowerError::Unsupported {
-                reason: "function projection requires a compile-time integer".to_string(),
-            }
-            .with_fallback_span(span)
+            unsupported_at("function projection requires a compile-time integer", span)
         })?;
-        let rounded = value.round();
-        if !value.is_finite() || (rounded - value).abs() > 1e-9 {
-            return Err(LowerError::Unsupported {
-                reason: format!("function projection requires an integer, got `{value}`"),
-            }
-            .with_fallback_span(span));
-        }
-        if rounded < i64::MIN as f64 || rounded > i64::MAX as f64 {
-            return Err(LowerError::Unsupported {
-                reason: format!("function projection integer `{value}` overflows i64"),
-            }
-            .with_fallback_span(span));
-        }
-        Ok(rounded as i64)
+        checked_compile_time_i64(value, span)
     }
 }
 
-fn build_i64_range_values(start: i64, end: i64, step: i64) -> Vec<i64> {
-    let mut values = Vec::new();
-    let mut current = start;
-    if step > 0 {
-        while current <= end {
-            values.push(current);
-            current += step;
-        }
-    } else {
-        while current >= end {
-            values.push(current);
-            current += step;
-        }
+fn checked_compile_time_i64(value: f64, span: rumoca_core::Span) -> Result<i64, LowerError> {
+    let rounded = value.round();
+    if !value.is_finite() || (rounded - value).abs() > 1e-9 {
+        return Err(unsupported_at(
+            format!("function projection requires an integer, got `{value}`"),
+            span,
+        ));
     }
-    values
+    if rounded < i64::MIN as f64 || rounded >= i64::MAX as f64 {
+        return Err(unsupported_at(
+            format!("function projection integer `{value}` overflows i64"),
+            span,
+        ));
+    }
+    // Bounds and integrality are checked above; Rust has no TryFrom<f64>.
+    Ok(rounded as i64)
+}
+
+fn build_i64_range_values(
+    start: i64,
+    end: i64,
+    step: i64,
+    span: rumoca_core::Span,
+) -> Result<Vec<i64>, LowerError> {
+    let mut values =
+        loop_projection_vec_with_capacity(0, "function projection range value count", span)?;
+    let mut current = start;
+    while range_step_keeps_going(current, end, step) {
+        reserve_loop_projection_capacity(&mut values, 1, "function projection range value", span)?;
+        values.push(current);
+        if values.len() > 100_000 {
+            return Err(unsupported_at(
+                "function projection for-loop range is too large",
+                span,
+            ));
+        }
+        if range_would_overshoot_i64(current, end, step) {
+            break;
+        }
+        current = current.checked_add(step).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "function projection for-loop range step overflows after index {current} with step {step}"
+                ),
+                span,
+            )
+        })?;
+    }
+    Ok(values)
+}
+
+fn loop_projection_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<T>, LowerError> {
+    let mut values = Vec::new();
+    reserve_loop_projection_capacity(&mut values, capacity, context, span)?;
+    Ok(values)
+}
+
+fn reserve_loop_projection_capacity<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    values.try_reserve_exact(additional).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })
+}
+
+fn range_step_keeps_going(current: i64, end: i64, step: i64) -> bool {
+    if step > 0 {
+        current <= end
+    } else {
+        current >= end
+    }
+}
+
+fn range_would_overshoot_i64(current: i64, end: i64, step: i64) -> bool {
+    if step > 0 && current <= end {
+        return end
+            .checked_sub(current)
+            .is_some_and(|remaining| remaining < step);
+    }
+    if step < 0 && current >= end {
+        let Some(step_abs) = step.checked_neg() else {
+            return false;
+        };
+        return current
+            .checked_sub(end)
+            .is_some_and(|remaining| remaining < step_abs);
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_i64_range_values_stops_before_step_overflow() -> Result<(), String> {
+        let Ok(values) =
+            build_i64_range_values(i64::MAX - 1, i64::MAX, 2, rumoca_core::Span::DUMMY)
+        else {
+            return Err("overshooting final step failed instead of terminating".to_string());
+        };
+
+        assert_eq!(values, vec![i64::MAX - 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn build_i64_range_values_rejects_large_ranges_with_span() -> Result<(), String> {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(23), 1, 12);
+
+        let Err(err) = build_i64_range_values(1, 100_002, 1, span) else {
+            return Err("oversized function projection range succeeded".to_string());
+        };
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            err.reason()
+                .contains("function projection for-loop range is too large"),
+            "{err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reserve_loop_projection_capacity_dummy_span_stays_unspanned() {
+        let mut values = Vec::<i64>::new();
+        let err = reserve_loop_projection_capacity(
+            &mut values,
+            usize::MAX,
+            "function projection range value",
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("impossible loop projection capacity must be rejected");
+
+        assert!(
+            matches!(err, LowerError::UnspannedContractViolation { .. }),
+            "dummy loop projection capacity span should stay unspanned: {err:?}"
+        );
+        assert!(err.reason().contains("capacity exceeds host memory limits"));
+    }
+
+    #[test]
+    fn checked_compile_time_i64_rejects_upper_bound_with_span() -> Result<(), String> {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(22), 4, 12);
+
+        let Err(err) = checked_compile_time_i64(i64::MAX as f64, span) else {
+            return Err("rounded f64 upper bound saturated to i64::MAX".to_string());
+        };
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(err.reason().contains("overflows i64"));
+        Ok(())
+    }
 }

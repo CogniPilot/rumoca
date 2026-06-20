@@ -32,13 +32,15 @@ impl<'a> LowerBuilder<'a> {
                     .map(Ok)
                     .unwrap_or_else(|| self.infer_expr_dims(base, scope))?
             }
-            rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-                self.infer_builtin_call_dims(function, args, scope)?
-            }
-            rumoca_core::Expression::FunctionCall { name, args, .. }
-                if is_synchronous_array_like_intrinsic(name.as_str()) =>
-            {
-                self.infer_expr_dims(required_arg(args, name.as_str())?, scope)?
+            rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } => self.infer_builtin_call_dims(function, args, scope, *span)?,
+            rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } if is_synchronous_array_like_intrinsic(name.as_str()) => {
+                self.infer_expr_dims(required_arg(args, name.as_str(), *span)?, scope)?
             }
             rumoca_core::Expression::FunctionCall { name, span, .. } => {
                 self.infer_function_call_output_dims(name, *span)?
@@ -54,9 +56,11 @@ impl<'a> LowerBuilder<'a> {
                 self.infer_tuple_flat_dims(elements, scope)?
             }
             rumoca_core::Expression::Range {
-                start, step, end, ..
-            } => lower_static_range_values(start, step.as_deref(), end)
-                .expect("static range dimension inference must only receive scalar bounds")
+                start,
+                step,
+                end,
+                span,
+            } => lower_static_range_values(start, step.as_deref(), end, *span)?
                 .map_or_else(Vec::new, |values| vector_dims(values.len())),
             rumoca_core::Expression::If {
                 branches,
@@ -69,8 +73,10 @@ impl<'a> LowerBuilder<'a> {
                 self.infer_binary_dims(op, lhs, rhs, scope)?
             }
             rumoca_core::Expression::Index {
-                base, subscripts, ..
-            } => self.infer_index_expr_dims(base, subscripts, scope)?,
+                base,
+                subscripts,
+                span,
+            } => self.infer_index_expr_dims(base, subscripts, *span, scope)?,
             rumoca_core::Expression::ArrayComprehension { .. }
             | rumoca_core::Expression::Literal { value: _, .. }
             | rumoca_core::Expression::Empty { .. } => Vec::new(),
@@ -85,9 +91,59 @@ impl<'a> LowerBuilder<'a> {
         let mut scalar_count = 0usize;
         for element in elements {
             let dims = self.infer_expr_dims(element, scope)?;
-            scalar_count += shape_size(&dims);
+            let span = self.required_inference_expr_span(element, "tuple element scalar count")?;
+            let element_size = checked_shape_size(&dims, "tuple element scalar count", span)?;
+            scalar_count = scalar_count.checked_add(element_size).ok_or_else(|| {
+                LowerError::contract_violation(
+                    "tuple scalar count overflows host index range",
+                    span,
+                )
+            })?;
         }
         Ok(vector_dims(scalar_count))
+    }
+
+    fn required_inference_expr_span(
+        &self,
+        expr: &rumoca_core::Expression,
+        context: &'static str,
+    ) -> Result<rumoca_core::Span, LowerError> {
+        expr.span()
+            .or_else(|| self.active_source_context_span())
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("missing source provenance for {context}"),
+            })
+    }
+
+    fn required_inference_span_from_exprs(
+        &self,
+        exprs: &[&rumoca_core::Expression],
+        context: &'static str,
+    ) -> Result<rumoca_core::Span, LowerError> {
+        exprs
+            .iter()
+            .find_map(|expr| expr.span())
+            .or_else(|| self.active_source_context_span())
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("missing source provenance for {context}"),
+            })
+    }
+
+    fn required_subscript_or_context_span(
+        &self,
+        subscripts: &[rumoca_core::Subscript],
+        owner_span: Option<rumoca_core::Span>,
+        context: &'static str,
+    ) -> Result<rumoca_core::Span, LowerError> {
+        subscripts
+            .iter()
+            .map(rumoca_core::Subscript::span)
+            .find(|span| !span.is_dummy())
+            .or_else(|| owner_span.filter(|span| !span.is_dummy()))
+            .or_else(|| self.active_source_context_span())
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("missing source provenance for {context}"),
+            })
     }
 
     fn infer_function_call_field_dims(
@@ -214,23 +270,29 @@ impl<'a> LowerBuilder<'a> {
         if let Some(dims) = self.local_binding_dims.get(name_text)
             && dims.iter().all(|dim| *dim >= 0)
         {
-            return Ok(dims.iter().map(|dim| *dim as usize).collect());
+            return concrete_i64_dims(dims, name_text, "local binding dimensions", span);
         }
-        if let Some(values) = scoped_indexed_binding_values(scope, &name_path) {
+        if let Some(values) = scoped_indexed_binding_values(scope, &name_path, span)? {
             return Ok(vector_dims(values.len()));
         }
         if let Some(values) = self.local_indexed_binding_values(name_text) {
             return Ok(vector_dims(values.len()));
         }
         if let Some(shape) = self.layout.shape(name_text) {
-            return Ok(shape.to_vec());
+            return copy_shape_dims(shape, "layout binding shape rank", span);
         }
-        let indexed_dims = indexed_key_for_reference(&self.indexed_bindings, name, span)?
-            .and_then(|key| self.indexed_meta_for_key(&key))
-            .map(|meta| meta.dims.clone())
-            .unwrap_or_default();
-        if !indexed_dims.is_empty() {
-            return Ok(indexed_dims);
+        if let Some(key) = indexed_key_for_reference(&self.indexed_bindings, name, span)? {
+            let Some(meta) = self.indexed_meta_for_key(&key) else {
+                return Err(LowerError::contract_violation(
+                    format!(
+                        "indexed binding metadata for `{key:?}` has no corresponding binding group"
+                    ),
+                    span,
+                ));
+            };
+            if !meta.dims.is_empty() {
+                return Ok(meta.dims.clone());
+            }
         }
         if let Some(dims) = self.local_binding_dims.get(name_text) {
             return concrete_i64_dims(dims, name_text, "local binding dimensions", span);
@@ -251,31 +313,33 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
-        if let Some(dims) = self.infer_slice_dims(name.as_str(), subscripts, scope)? {
+        if let Some(dims) =
+            self.infer_slice_dims(name.as_str(), subscripts, scope, Self::non_dummy_span(span))?
+        {
             return Ok(dims);
         }
         let base_dims = self.infer_unsubscripted_var_ref_dims(name, scope, span)?;
         if base_dims.is_empty() {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
+            return Err(LowerError::contract_violation(
+                format!(
                     "subscripted variable `{}` has no array shape metadata",
                     name.as_str()
                 ),
-                span: subscript_or_expr_span(subscripts, span),
-            });
+                subscript_or_expr_span(subscripts, span),
+            ));
         }
         if subscripts.len() > base_dims.len() {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
+            return Err(LowerError::contract_violation(
+                format!(
                     "subscripted variable `{}` has {} subscripts for {} dimensions",
                     name.as_str(),
                     subscripts.len(),
                     base_dims.len()
                 ),
-                span: subscript_or_expr_span(subscripts, span),
-            });
+                subscript_or_expr_span(subscripts, span),
+            ));
         }
-        inferred_subscripted_dims(&base_dims, subscripts, self, scope)
+        inferred_subscripted_dims(&base_dims, subscripts, Some(span), self, scope)
     }
 
     fn infer_function_call_output_dims(
@@ -286,7 +350,7 @@ impl<'a> LowerBuilder<'a> {
         if resolve_intrinsic_builtin(name.as_str()).is_some() {
             return Ok(Vec::new());
         }
-        if let Some(projection) = self.lookup_function_output_projection(name) {
+        if let Some(projection) = self.lookup_function_output_projection(name, span)? {
             return self.infer_projected_function_call_output_dims(&projection, span);
         }
         let function = self
@@ -294,13 +358,12 @@ impl<'a> LowerBuilder<'a> {
             .ok_or_else(|| LowerError::MissingFunction {
                 name: name.as_str().to_string(),
             })?;
-        let output = function
-            .outputs
-            .first()
-            .ok_or_else(|| LowerError::ContractViolation {
-                reason: format!("function `{}` has no output value", name.as_str()),
+        let output = function.outputs.first().ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("function `{}` has no output value", name.as_str()),
                 span,
-            })?;
+            )
+        })?;
         concrete_i64_dims(
             &output.dims,
             name.as_str(),
@@ -327,13 +390,15 @@ impl<'a> LowerBuilder<'a> {
             .outputs
             .iter()
             .find(|output| output.name == projection.output_name)
-            .ok_or_else(|| LowerError::ContractViolation {
-                reason: format!(
-                    "function `{}` has no output `{}`",
-                    projection.base_function_name.as_str(),
-                    projection.output_name
-                ),
-                span,
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!(
+                        "function `{}` has no output `{}`",
+                        projection.base_function_name.as_str(),
+                        projection.output_name
+                    ),
+                    span,
+                )
             })?;
         let dims = concrete_i64_dims(
             &output.dims,
@@ -345,21 +410,25 @@ impl<'a> LowerBuilder<'a> {
                 output.span
             },
         )?;
-        if projection.indices.is_empty() {
+        if projection.scope_indices.is_empty() {
             return Ok(dims);
         }
-        if projection.indices.len() > dims.len() {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
+        if projection.scope_indices.len() > dims.len() {
+            return Err(LowerError::contract_violation(
+                format!(
                     "projected function output `{}` has {} indices for {} dimensions",
                     projection.output_name,
-                    projection.indices.len(),
+                    projection.scope_indices.len(),
                     dims.len()
                 ),
                 span,
-            });
+            ));
         }
-        Ok(dims[projection.indices.len()..].to_vec())
+        copy_shape_dims(
+            &dims[projection.scope_indices.len()..],
+            "projected function output remaining shape rank",
+            span,
+        )
     }
 
     fn infer_if_expr_dims(
@@ -373,10 +442,10 @@ impl<'a> LowerBuilder<'a> {
         for (_, value) in branches {
             let dims = self.infer_expr_dims(value, scope)?;
             if dims != expected {
-                return Err(LowerError::ContractViolation {
-                    reason: "if-expression branches have mismatched array dimensions".to_string(),
-                    span: value.span().unwrap_or(span),
-                });
+                return Err(LowerError::contract_violation(
+                    "if-expression branches have mismatched array dimensions",
+                    value.span().unwrap_or(span),
+                ));
             }
         }
         Ok(expected)
@@ -387,8 +456,11 @@ impl<'a> LowerBuilder<'a> {
         function: &rumoca_core::BuiltinFunction,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
-        if let Some(dims) = self.infer_linear_algebra_builtin_dims(function, args, scope)? {
+        if let Some(dims) =
+            self.infer_linear_algebra_builtin_dims(function, args, scope, call_span)?
+        {
             return Ok(dims);
         }
         Ok(match function {
@@ -396,26 +468,29 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::BuiltinFunction::Pre
             | rumoca_core::BuiltinFunction::Sample
             | rumoca_core::BuiltinFunction::NoEvent => {
-                self.infer_expr_dims(required_builtin_arg(args, function, 0)?, scope)?
+                self.infer_expr_dims(required_builtin_arg(args, function, 0, call_span)?, scope)?
             }
             rumoca_core::BuiltinFunction::Smooth => {
-                self.infer_expr_dims(required_builtin_arg(args, function, 1)?, scope)?
+                self.infer_expr_dims(required_builtin_arg(args, function, 1, call_span)?, scope)?
             }
             function if unary_array_builtin_op(function).is_some() => {
-                self.infer_expr_dims(required_builtin_arg(args, function, 0)?, scope)?
+                self.infer_expr_dims(required_builtin_arg(args, function, 0, call_span)?, scope)?
             }
-            rumoca_core::BuiltinFunction::Fill => self.infer_fill_dims(&args[1..])?,
+            rumoca_core::BuiltinFunction::Fill => {
+                let dims = fill_dimension_args(args, call_span)?;
+                self.infer_fill_dims(dims, call_span)?
+            }
             rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones => {
-                self.infer_fill_dims(args)?
+                self.infer_fill_dims(args, call_span)?
             }
             rumoca_core::BuiltinFunction::Linspace => {
                 vector_dims(self.eval_compile_time_positive_index(
-                    required_builtin_arg(args, function, 2)?,
+                    required_builtin_arg(args, function, 2, call_span)?,
                     &self.local_const_bindings,
                     "linspace count",
                 )?)
             }
-            rumoca_core::BuiltinFunction::Cat => self.infer_cat_dims(args, scope)?,
+            rumoca_core::BuiltinFunction::Cat => self.infer_cat_dims(args, scope, call_span)?,
             _ => Vec::new(),
         })
     }
@@ -425,23 +500,32 @@ impl<'a> LowerBuilder<'a> {
         function: &rumoca_core::BuiltinFunction,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Option<Vec<usize>>, LowerError> {
         Ok(match function {
-            rumoca_core::BuiltinFunction::Identity => Some(self.infer_identity_dims(args)?),
-            rumoca_core::BuiltinFunction::Diagonal => Some(self.infer_diagonal_dims(args, scope)?),
+            rumoca_core::BuiltinFunction::Identity => {
+                Some(self.infer_identity_dims(args, call_span)?)
+            }
+            rumoca_core::BuiltinFunction::Diagonal => {
+                Some(self.infer_diagonal_dims(args, scope, call_span)?)
+            }
             rumoca_core::BuiltinFunction::Transpose => {
-                Some(self.infer_transpose_dims(args, scope)?)
+                Some(self.infer_transpose_dims(args, scope, call_span)?)
             }
             rumoca_core::BuiltinFunction::Scalar => Some(Vec::new()),
-            rumoca_core::BuiltinFunction::Vector => Some(self.infer_vector_dims(args, scope)?),
-            rumoca_core::BuiltinFunction::Matrix => Some(self.infer_matrix_dims(args, scope)?),
+            rumoca_core::BuiltinFunction::Vector => {
+                Some(self.infer_vector_dims(args, scope, call_span)?)
+            }
+            rumoca_core::BuiltinFunction::Matrix => {
+                Some(self.infer_matrix_dims(args, scope, call_span)?)
+            }
             rumoca_core::BuiltinFunction::Cross => Some(vec![3]),
             rumoca_core::BuiltinFunction::Skew => Some(vec![3, 3]),
             rumoca_core::BuiltinFunction::OuterProduct => {
-                Some(self.infer_outer_product_dims(args, scope)?)
+                Some(self.infer_outer_product_dims(args, scope, call_span)?)
             }
             rumoca_core::BuiltinFunction::Symmetric => {
-                Some(self.infer_symmetric_dims(args, scope)?)
+                Some(self.infer_symmetric_dims(args, scope, call_span)?)
             }
             _ => None,
         })
@@ -450,9 +534,10 @@ impl<'a> LowerBuilder<'a> {
     fn infer_identity_dims(
         &self,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let dim = self.eval_compile_time_positive_index(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Identity, 0)?,
+            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Identity, 0, call_span)?,
             &self.local_const_bindings,
             "identity dimension",
         )?;
@@ -463,9 +548,10 @@ impl<'a> LowerBuilder<'a> {
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Diagonal, 0)?,
+            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Diagonal, 0, call_span)?,
             scope,
         )?;
         Ok(match dims.as_slice() {
@@ -478,9 +564,10 @@ impl<'a> LowerBuilder<'a> {
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Transpose, 0)?,
+            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Transpose, 0, call_span)?,
             scope,
         )?;
         Ok(match dims.as_slice() {
@@ -493,21 +580,29 @@ impl<'a> LowerBuilder<'a> {
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Vector, 0)?,
+            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Vector, 0, call_span)?,
             scope,
         )?;
-        Ok(vector_dims(shape_size(&dims)))
+        Ok(vector_dims(checked_shape_size(
+            &dims,
+            "vector() value count",
+            args.first()
+                .and_then(rumoca_core::Expression::span)
+                .unwrap_or(call_span),
+        )?))
     }
 
     fn infer_matrix_dims(
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Matrix, 0)?,
+            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Matrix, 0, call_span)?,
             scope,
         )?;
         Ok(match dims.as_slice() {
@@ -522,13 +617,24 @@ impl<'a> LowerBuilder<'a> {
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let lhs_dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::OuterProduct, 0)?,
+            required_builtin_arg(
+                args,
+                &rumoca_core::BuiltinFunction::OuterProduct,
+                0,
+                call_span,
+            )?,
             scope,
         )?;
         let rhs_dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::OuterProduct, 1)?,
+            required_builtin_arg(
+                args,
+                &rumoca_core::BuiltinFunction::OuterProduct,
+                1,
+                call_span,
+            )?,
             scope,
         )?;
         Ok(match (lhs_dims.as_slice(), rhs_dims.as_slice()) {
@@ -541,9 +647,10 @@ impl<'a> LowerBuilder<'a> {
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let dims = self.infer_expr_dims(
-            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Symmetric, 0)?,
+            required_builtin_arg(args, &rumoca_core::BuiltinFunction::Symmetric, 0, call_span)?,
             scope,
         )?;
         Ok(if matches!(dims.as_slice(), [rows, cols] if rows == cols) {
@@ -558,15 +665,24 @@ impl<'a> LowerBuilder<'a> {
         base_name: &str,
         subscripts: &[rumoca_core::Subscript],
         scope: &Scope,
+        owner_span: Option<rumoca_core::Span>,
     ) -> Result<Option<Vec<usize>>, LowerError> {
         let Some(shape) = self.layout.shape(base_name) else {
             return Ok(None);
         };
-        let counts = self.slice_selection_counts(subscripts, shape, scope)?;
-        let dims = counts
-            .into_iter()
-            .filter(|count| *count > 1)
-            .collect::<Vec<_>>();
+        let span = self.required_subscript_or_context_span(
+            subscripts,
+            owner_span,
+            "inferred slice dimension count",
+        )?;
+        let counts = self.slice_selection_counts(subscripts, shape, scope, Some(span))?;
+        let mut dims =
+            array_vec_with_capacity(counts.len(), "inferred slice dimension count", span)?;
+        for count in counts {
+            if count > 1 {
+                dims.push(count);
+            }
+        }
         Ok(Some(dims))
     }
 
@@ -579,17 +695,32 @@ impl<'a> LowerBuilder<'a> {
         subscripts: &[rumoca_core::Subscript],
         shape: &[usize],
         scope: &Scope,
+        owner_span: Option<rumoca_core::Span>,
     ) -> Result<Vec<usize>, LowerError> {
+        let span = self.required_subscript_or_context_span(
+            subscripts,
+            owner_span,
+            "slice selection count",
+        )?;
         if subscripts.len() > shape.len() {
-            return Err(LowerError::Unsupported {
-                reason: "array slice has more subscripts than dimensions".to_string(),
-            });
+            return Err(unsupported_at(
+                "array slice has more subscripts than dimensions",
+                span,
+            ));
         }
-        let mut counts = Vec::with_capacity(shape.len());
+        let mut counts = array_vec_with_capacity(shape.len(), "slice selection count", span)?;
         for (dim_index, subscript) in subscripts.iter().enumerate() {
             counts.push(self.slice_subscript_count(subscript, shape[dim_index], scope)?);
         }
-        counts.extend(shape[subscripts.len()..].iter().copied());
+        reserve_array_capacity(
+            &mut counts,
+            shape.len() - subscripts.len(),
+            "slice selection count",
+            span,
+        )?;
+        for dim in &shape[subscripts.len()..] {
+            counts.push(*dim);
+        }
         Ok(counts)
     }
 
@@ -602,25 +733,25 @@ impl<'a> LowerBuilder<'a> {
         match subscript {
             rumoca_core::Subscript::Index { value, .. } if *value > 0 => Ok(1),
             rumoca_core::Subscript::Colon { .. } => Ok(dim),
-            rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
+            rumoca_core::Subscript::Expr { expr, span } => match expr.as_ref() {
                 rumoca_core::Expression::Range { .. } => {
-                    Ok(self.slice_expr_indices(expr, dim, scope)?.len())
+                    Ok(self.slice_expr_indices(expr, dim, scope, *span)?.len())
                 }
                 _ => {
                     let index_dims = self.infer_expr_dims(expr, scope)?;
                     if !index_dims.is_empty() {
-                        return Err(LowerError::Unsupported {
-                            reason: "array-valued subscript is unsupported in slice shape \
-                                     inference"
-                                .to_string(),
-                        });
+                        return Err(unsupported_at(
+                            "array-valued subscript is unsupported in slice shape inference",
+                            expr.span().unwrap_or_else(|| subscript.span()),
+                        ));
                     }
                     Ok(1)
                 }
             },
-            _ => Err(LowerError::Unsupported {
-                reason: "non-positive subscript is unsupported".to_string(),
-            }),
+            _ => Err(unsupported_at(
+                "non-positive subscript is unsupported",
+                subscript.span(),
+            )),
         }
     }
 
@@ -628,10 +759,13 @@ impl<'a> LowerBuilder<'a> {
         &self,
         base: &rumoca_core::Expression,
         subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Vec<usize>, LowerError> {
+        let owner_span = Self::non_dummy_span(span).or_else(|| base.span());
         if let Ok(base_name) = dynamic_binding_base_key(base)
-            && let Some(dims) = self.infer_slice_dims(base_name.as_str(), subscripts, scope)?
+            && let Some(dims) =
+                self.infer_slice_dims(base_name.as_str(), subscripts, scope, owner_span)?
         {
             return Ok(dims);
         }
@@ -640,18 +774,18 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Vec::new());
         }
         if subscripts.len() > base_dims.len() {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
-                    "indexed expression has {} subscripts for {} inferred dimensions",
-                    subscripts.len(),
-                    base_dims.len()
-                ),
-                span: base.span().unwrap_or_else(|| {
-                    subscript_or_expr_span(subscripts, rumoca_core::Span::DUMMY)
-                }),
-            });
+            let reason = format!(
+                "indexed expression has {} subscripts for {} inferred dimensions",
+                subscripts.len(),
+                base_dims.len()
+            );
+            let span = expr_span_from_subscripts(subscripts).or_else(|| base.span());
+            if let Some(span) = span {
+                return Err(LowerError::contract_violation(reason, span));
+            }
+            return Err(LowerError::UnspannedContractViolation { reason });
         }
-        inferred_subscripted_dims(&base_dims, subscripts, self, scope)
+        inferred_subscripted_dims(&base_dims, subscripts, base.span(), self, scope)
     }
 
     pub(super) fn eval_compile_time_positive_index(
@@ -660,29 +794,53 @@ impl<'a> LowerBuilder<'a> {
         const_scope: &IndexMap<String, f64>,
         context: &str,
     ) -> Result<usize, LowerError> {
-        let value = self.eval_compile_time_int(expr, const_scope, context)?;
+        let span = expr
+            .span()
+            .or_else(|| self.active_source_context_span())
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("{context} requires source span metadata"),
+            })?;
+        self.eval_compile_time_positive_index_at(expr, const_scope, context, span)
+    }
+
+    pub(super) fn eval_compile_time_positive_index_at(
+        &self,
+        expr: &rumoca_core::Expression,
+        const_scope: &IndexMap<String, f64>,
+        context: &str,
+        context_span: rumoca_core::Span,
+    ) -> Result<usize, LowerError> {
+        let span = expr.span().unwrap_or(context_span);
+        let value = self.eval_compile_time_int_at(expr, const_scope, context, span)?;
         usize::try_from(value)
             .ok()
             .filter(|value| *value > 0)
-            .ok_or_else(|| LowerError::Unsupported {
-                reason: format!("{context} must be positive"),
-            })
+            .map_or_else(
+                || Err(unsupported_at(format!("{context} must be positive"), span)),
+                Ok,
+            )
     }
 
     pub(in crate::lower) fn compile_time_subscript_indices(
         &self,
         subscripts: &[rumoca_core::Subscript],
+        owner_span: rumoca_core::Span,
     ) -> Result<Option<Vec<usize>>, LowerError> {
         if subscripts.is_empty() {
             return Ok(Some(Vec::new()));
         }
 
         let const_scope = &self.local_const_bindings;
-        let mut indices = Vec::with_capacity(subscripts.len());
+        let span = subscript_or_expr_span(subscripts, owner_span);
+        let mut indices =
+            array_vec_with_capacity(subscripts.len(), "compile-time subscript index count", span)?;
         for subscript in subscripts {
             match subscript {
-                rumoca_core::Subscript::Index { value, .. } if *value > 0 => {
-                    indices.push(*value as usize)
+                rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+                    indices.push(crate::lower::helpers::positive_i64_index(
+                        *value,
+                        crate::lower::helpers::span_or_owner(*span, owner_span),
+                    )?)
                 }
                 rumoca_core::Subscript::Expr { expr, .. }
                     if !matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
@@ -698,9 +856,10 @@ impl<'a> LowerBuilder<'a> {
                     return Ok(None);
                 }
                 _ => {
-                    return Err(LowerError::Unsupported {
-                        reason: "non-positive subscript is unsupported".to_string(),
-                    });
+                    return Err(unsupported_at(
+                        "non-positive subscript is unsupported",
+                        subscript.span(),
+                    ));
                 }
             }
         }
@@ -715,12 +874,15 @@ impl<'a> LowerBuilder<'a> {
         match expr {
             rumoca_core::Expression::Literal { value: _, .. } => true,
             rumoca_core::Expression::VarRef {
-                name, subscripts, ..
+                name,
+                subscripts,
+                span,
+                ..
             } => {
                 if subscripts.is_empty() && const_scope.contains_key(name.as_str()) {
                     return true;
                 }
-                compile_time_var_key(name, subscripts, const_scope)
+                compile_time_var_key(name, subscripts, const_scope, *span)
                     .ok()
                     .is_some_and(|key| {
                         self.structural_bindings.contains_key(key.as_str())
@@ -779,9 +941,11 @@ impl<'a> LowerBuilder<'a> {
         start: &rumoca_core::Expression,
         step: Option<&rumoca_core::Expression>,
         end: &rumoca_core::Expression,
+        range_span: rumoca_core::Span,
         const_scope: &IndexMap<String, f64>,
         context: &str,
     ) -> Result<Vec<i64>, LowerError> {
+        let step_span = step.and_then(rumoca_core::Expression::span);
         let start = self.eval_compile_time_int(start, const_scope, context)?;
         let end = self.eval_compile_time_int(end, const_scope, context)?;
         let step = match step {
@@ -790,9 +954,10 @@ impl<'a> LowerBuilder<'a> {
             None => -1,
         };
         if step == 0 {
-            return Err(LowerError::Unsupported {
-                reason: format!("{context} step must be non-zero"),
-            });
+            return Err(unsupported_at(
+                format!("{context} step must be non-zero"),
+                step_span.unwrap_or(range_span),
+            ));
         }
 
         let mut values = Vec::new();
@@ -804,16 +969,13 @@ impl<'a> LowerBuilder<'a> {
             values.push(value);
             value = value
                 .checked_add(step)
-                .ok_or_else(|| LowerError::Unsupported {
-                    reason: format!("{context} overflows i64"),
-                })?;
+                .ok_or_else(|| unsupported_at(format!("{context} overflows i64"), range_span))?;
         }
         if (step > 0 && value <= end) || (step < 0 && value >= end) {
-            return Err(LowerError::Unsupported {
-                reason: format!(
-                    "{context} exceeds maximum lowered range length {MAX_STATIC_RANGE_VALUES}"
-                ),
-            });
+            return Err(unsupported_at(
+                format!("{context} exceeds maximum lowered range length {MAX_STATIC_RANGE_VALUES}"),
+                range_span,
+            ));
         }
         Ok(values)
     }
@@ -822,6 +984,7 @@ impl<'a> LowerBuilder<'a> {
         &self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
+        call_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         if args.len() <= 1 {
             return Ok(Vec::new());
@@ -831,30 +994,35 @@ impl<'a> LowerBuilder<'a> {
             &self.local_const_bindings,
             "cat dimension",
         )?;
-        let operands = args
-            .iter()
-            .skip(1)
-            .map(|arg| {
-                Ok(ArrayOperand {
-                    values: Vec::new(),
-                    dims: self.infer_expr_dims(arg, scope)?,
-                })
-            })
-            .collect::<Result<Vec<_>, LowerError>>()?;
-        cat_array_dims(dim, &operands)
+        let span = args[0].span().unwrap_or(call_span);
+        let mut operands = array_vec_with_capacity(args.len() - 1, "cat operand count", span)?;
+        for arg in args.iter().skip(1) {
+            operands.push(ArrayOperand {
+                values: Vec::new(),
+                dims: self.infer_expr_dims(arg, scope)?,
+                shape_span: arg.span().unwrap_or(span),
+            });
+        }
+        cat_array_dims(dim, &operands, span)
     }
 
-    fn infer_fill_dims(&self, dims: &[rumoca_core::Expression]) -> Result<Vec<usize>, LowerError> {
+    fn infer_fill_dims(
+        &self,
+        dims: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
+    ) -> Result<Vec<usize>, LowerError> {
         let const_scope = &self.local_const_bindings;
-        let mut values = Vec::with_capacity(dims.len());
+        let span = dims
+            .first()
+            .and_then(rumoca_core::Expression::span)
+            .unwrap_or(call_span);
+        let mut values = array_vec_with_capacity(dims.len(), "fill dimension count", span)?;
         for dim in dims {
             let dim_value = self.eval_compile_time_int(dim, const_scope, "fill dimension")?;
-            if dim_value < 0 {
-                return Err(LowerError::Unsupported {
-                    reason: "fill dimension must be non-negative".to_string(),
-                });
-            }
-            values.push(dim_value as usize);
+            values.push(non_negative_fill_dimension(
+                dim_value,
+                dim.span().unwrap_or(call_span),
+            )?);
         }
         Ok(values)
     }
@@ -870,15 +1038,17 @@ impl<'a> LowerBuilder<'a> {
 
         let lhs_dims = self.infer_expr_dims(lhs, scope)?;
         let rhs_dims = self.infer_expr_dims(rhs, scope)?;
+        let span =
+            self.required_inference_span_from_exprs(&[lhs, rhs], "binary dimension inference")?;
         Ok(match op {
-            Op::Mul => multiplication_dims(&lhs_dims, &rhs_dims)?,
+            Op::Mul => multiplication_dims(&lhs_dims, &rhs_dims, span)?,
             Op::Add
             | Op::AddElem
             | Op::Sub
             | Op::SubElem
             | Op::MulElem
             | Op::DivElem
-            | Op::ExpElem => broadcast_shape(&lhs_dims, &rhs_dims)?,
+            | Op::ExpElem => broadcast_shape(&lhs_dims, &rhs_dims, span)?,
             Op::Div if rhs_dims.is_empty() => lhs_dims,
             _ => Vec::new(),
         })
@@ -888,10 +1058,10 @@ impl<'a> LowerBuilder<'a> {
 fn required_arg<'a>(
     args: &'a [rumoca_core::Expression],
     name: &str,
+    call_span: rumoca_core::Span,
 ) -> Result<&'a rumoca_core::Expression, LowerError> {
-    args.first().ok_or_else(|| LowerError::ContractViolation {
-        reason: format!("{name} requires at least one argument"),
-        span: rumoca_core::Span::DUMMY,
+    args.first().ok_or_else(|| {
+        LowerError::contract_violation(format!("{name} requires at least one argument"), call_span)
     })
 }
 
@@ -899,12 +1069,31 @@ fn required_builtin_arg<'a>(
     args: &'a [rumoca_core::Expression],
     function: &rumoca_core::BuiltinFunction,
     index: usize,
+    call_span: rumoca_core::Span,
 ) -> Result<&'a rumoca_core::Expression, LowerError> {
-    args.get(index)
-        .ok_or_else(|| LowerError::ContractViolation {
-            reason: format!("{function:?} requires argument {}", index + 1),
-            span: rumoca_core::Span::DUMMY,
-        })
+    args.get(index).ok_or_else(|| {
+        LowerError::contract_violation(
+            format!("{} requires argument {}", function.name(), index + 1),
+            args.first()
+                .and_then(rumoca_core::Expression::span)
+                .unwrap_or(call_span),
+        )
+    })
+}
+
+fn fill_dimension_args(
+    args: &[rumoca_core::Expression],
+    call_span: rumoca_core::Span,
+) -> Result<&[rumoca_core::Expression], LowerError> {
+    if args.len() < 2 {
+        return Err(LowerError::contract_violation(
+            format!("fill requires at least 2 arguments, got {}", args.len()),
+            args.first()
+                .and_then(rumoca_core::Expression::span)
+                .unwrap_or(call_span),
+        ));
+    }
+    Ok(&args[1..])
 }
 
 fn scalar_singleton_projection(subscripts: &[rumoca_core::Subscript]) -> bool {
@@ -922,16 +1111,28 @@ fn concrete_i64_dims(
     context: &str,
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
-    dims.iter()
-        .map(|dim| {
-            usize::try_from(*dim).map_err(|_| LowerError::ContractViolation {
-                reason: format!(
-                    "{context} for `{name}` contain unresolved negative dimension {dim}"
-                ),
+    let mut concrete = array_vec_with_capacity(dims.len(), context, span)?;
+    for dim in dims {
+        concrete.push(usize::try_from(*dim).map_err(|_| {
+            LowerError::contract_violation(
+                format!("{context} for `{name}` contain unresolved negative dimension {dim}"),
                 span,
-            })
-        })
-        .collect()
+            )
+        })?);
+    }
+    Ok(concrete)
+}
+
+fn non_negative_fill_dimension(value: i64, span: rumoca_core::Span) -> Result<usize, LowerError> {
+    if value < 0 {
+        return Err(unsupported_at("fill dimension must be non-negative", span));
+    }
+    usize::try_from(value).map_err(|_| {
+        LowerError::contract_violation(
+            format!("fill dimension {value} exceeds host index range"),
+            span,
+        )
+    })
 }
 
 fn subscript_or_expr_span(
@@ -943,4 +1144,348 @@ fn subscript_or_expr_span(
         .map(rumoca_core::Subscript::span)
         .find(|span| !span.is_dummy())
         .unwrap_or(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn literal_i64(value: i64, span: rumoca_core::Span) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span,
+        }
+    }
+
+    fn lower_builder<'a>(
+        layout: &'a VarLayout,
+        functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    ) -> LowerBuilder<'a> {
+        LowerBuilder::new(layout, functions)
+    }
+
+    #[test]
+    fn slice_selection_counts_reports_excess_subscripts_with_subscript_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("slice_excess.mo"),
+            20,
+            21,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let subscripts = [
+            rumoca_core::Subscript::index(1, span),
+            rumoca_core::Subscript::colon(rumoca_core::Span::DUMMY),
+        ];
+
+        let err = builder
+            .slice_selection_counts(&subscripts, &[3], &Scope::new(), Some(span))
+            .expect_err("excess subscripts must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "array slice has more subscripts than dimensions"
+        );
+    }
+
+    #[test]
+    fn slice_subscript_count_reports_non_positive_subscript_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("slice_non_positive.mo"),
+            8,
+            9,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let subscript = rumoca_core::Subscript::index(0, span);
+
+        let err = builder
+            .slice_subscript_count(&subscript, 3, &Scope::new())
+            .expect_err("zero subscript must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(err.reason(), "non-positive subscript is unsupported");
+    }
+
+    #[test]
+    fn eval_compile_time_positive_index_reports_expr_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("index_positive.mo"),
+            13,
+            14,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = literal_i64(0, span);
+
+        let err = builder
+            .eval_compile_time_positive_index(&expr, &IndexMap::new(), "array subscript")
+            .expect_err("zero compile-time index must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(err.reason(), "array subscript must be positive");
+    }
+
+    #[test]
+    fn slice_expr_indices_reports_context_span_for_generated_expr() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("slice_generated_expr.mo"),
+            5,
+            8,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = literal_i64(0, rumoca_core::Span::DUMMY);
+
+        let err = builder
+            .slice_expr_indices(&expr, 4, &Scope::new(), span)
+            .expect_err("zero generated slice expression must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(err.reason(), "array slice index must be positive");
+    }
+
+    #[test]
+    fn builtin_dim_inference_missing_arg_uses_call_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("identity_empty_dims.mo"),
+            4,
+            14,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Identity,
+            args: Vec::new(),
+            span,
+        };
+
+        let err = builder
+            .infer_expr_dims(&expr, &Scope::new())
+            .expect_err("identity() dimension inference must require an argument");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            err.reason().contains("identity requires argument 1"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn synchronous_dim_inference_missing_arg_uses_call_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("previous_empty_dims.mo"),
+            2,
+            12,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("previous"),
+            args: Vec::new(),
+            is_constructor: false,
+            span,
+        };
+
+        let err = builder
+            .infer_expr_dims(&expr, &Scope::new())
+            .expect_err("previous() dimension inference must require an argument");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: previous requires at least one argument"
+        );
+    }
+
+    #[test]
+    fn synchronous_dim_inference_missing_arg_without_span_stays_unspanned() {
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("previous"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let err = builder
+            .infer_expr_dims(&expr, &Scope::new())
+            .expect_err("previous() dimension inference must require an argument");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: previous requires at least one argument"
+        );
+    }
+
+    #[test]
+    fn fill_dim_inference_uses_call_span_when_dim_is_generated() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("fill_generated_dim.mo"),
+            7,
+            18,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(0.0),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                literal_i64(-1, rumoca_core::Span::DUMMY),
+            ],
+            span,
+        };
+
+        let err = builder
+            .infer_expr_dims(&expr, &Scope::new())
+            .expect_err("negative generated fill dimension must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(err.reason(), "fill dimension must be non-negative");
+    }
+
+    #[test]
+    fn fill_dim_inference_missing_args_uses_call_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("fill_empty_dims.mo"),
+            3,
+            9,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: Vec::new(),
+            span,
+        };
+
+        let err = builder
+            .infer_expr_dims(&expr, &Scope::new())
+            .expect_err("fill() dimension inference must require value and dimension arguments");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: fill requires at least 2 arguments, got 0"
+        );
+    }
+
+    #[test]
+    fn fill_dim_inference_missing_args_without_span_stays_unspanned() {
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let err = builder
+            .infer_expr_dims(&expr, &Scope::new())
+            .expect_err("fill() dimension inference must require value and dimension arguments");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: fill requires at least 2 arguments, got 0"
+        );
+    }
+
+    #[test]
+    fn concrete_i64_dims_rejects_negative_dim_without_fabricating_span() {
+        let err = concrete_i64_dims(
+            &[-1],
+            "x",
+            "array inference dimensions",
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("negative inferred dimensions must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: array inference dimensions for `x` contain unresolved negative dimension -1"
+        );
+    }
+
+    #[test]
+    fn eval_compile_time_range_values_reports_zero_step_span() {
+        let range_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("range_zero_step.mo"),
+            3,
+            14,
+        );
+        let step_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("range_zero_step.mo"),
+            7,
+            8,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let start = literal_i64(1, rumoca_core::Span::DUMMY);
+        let step = literal_i64(0, step_span);
+        let end = literal_i64(4, rumoca_core::Span::DUMMY);
+
+        let err = builder
+            .eval_compile_time_range_values(
+                &start,
+                Some(&step),
+                &end,
+                range_span,
+                &IndexMap::new(),
+                "array slice range",
+            )
+            .expect_err("zero range step must fail");
+
+        assert_eq!(err.source_span(), Some(step_span));
+        assert_eq!(err.reason(), "array slice range step must be non-zero");
+    }
+
+    #[test]
+    fn non_negative_fill_dimension_rejects_negative_with_span() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(41), 3, 8);
+
+        let err =
+            non_negative_fill_dimension(-1, span).expect_err("negative fill dimension must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(err.reason(), "fill dimension must be non-negative");
+    }
+
+    #[test]
+    fn non_negative_fill_dimension_rejects_host_overflow_with_span() {
+        if usize::BITS >= i64::BITS {
+            return;
+        }
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(42), 11, 17);
+
+        let err = non_negative_fill_dimension(i64::MAX, span)
+            .expect_err("oversized fill dimension must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            err.reason().contains("exceeds host index range"),
+            "unexpected error: {err}"
+        );
+    }
 }

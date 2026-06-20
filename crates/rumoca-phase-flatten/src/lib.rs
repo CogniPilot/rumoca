@@ -51,6 +51,7 @@ mod pipeline;
 mod postprocess;
 pub mod qualify;
 pub(crate) mod record_constant_arrays;
+mod source_spans;
 mod static_subscripts;
 mod structured_refs;
 mod variables;
@@ -63,12 +64,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use rumoca_core::{ExpressionVisitor, Reference, Span};
+use rumoca_core::{ExpressionVisitor, Reference};
 use rumoca_core::{OptionalTimer, maybe_elapsed_duration, maybe_start_timer};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
 use constant_extraction::*;
+use source_spans::required_location_span;
 
 pub use errors::{FlattenError, FlattenResult};
 
@@ -750,11 +752,19 @@ mod nested_class_constant_scope_tests {
         }
     }
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("nested_class_constant_scope_test.mo"),
+            10,
+            40,
+        )
+    }
+
     fn unsigned_integer(text: &str) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: token(text),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -768,7 +778,7 @@ mod nested_class_constant_scope_tests {
                     subs: None,
                 })
                 .collect(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
             def_id: Some(def_id),
         })
     }
@@ -824,7 +834,7 @@ mod nested_class_constant_scope_tests {
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(unsigned_integer("2")),
                 has_explicit_binding: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         outer.classes.insert("PkgAlias".to_string(), package_alias);
@@ -840,7 +850,7 @@ mod nested_class_constant_scope_tests {
                 "Modelica.Electrical.Batteries.ParameterRecords.ExampleData",
             ),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         leaked_component
             .modifications
@@ -899,10 +909,10 @@ mod nested_class_constant_scope_tests {
                         unsigned_integer("5"),
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 has_explicit_binding: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         outer.classes.insert("data".to_string(), data);
@@ -948,7 +958,7 @@ mod nested_class_constant_scope_tests {
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(unsigned_integer("298")),
                 has_explicit_binding: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         outer
@@ -967,7 +977,7 @@ mod nested_class_constant_scope_tests {
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(unsigned_integer("1")),
                 has_explicit_binding: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         outer.classes.insert("Internal".to_string(), internal);
@@ -1020,7 +1030,7 @@ mod nested_class_constant_scope_tests {
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(unsigned_integer("298")),
                 has_explicit_binding: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         table_based
@@ -1078,20 +1088,23 @@ fn inject_enclosing_class_constants(
     ctx: &mut Context,
 ) -> Result<(), FlattenError> {
     let Some(model_def_id) = class_index.def_id_by_qualified_name(model_name) else {
-        return Err(FlattenError::missing_resolved_class_metadata(
+        return Err(missing_resolved_class_metadata_for_class_name(
+            tree,
+            class_index,
             model_name,
-            "enclosing class constant injection".to_string(),
-            rumoca_core::Span::DUMMY,
+            "enclosing class constant injection",
         ));
     };
     let Some(parent_def_id) = class_index.parent_def_id(model_def_id) else {
         return Ok(());
     };
     let Some(enclosing_name) = class_index.qualified_name(parent_def_id) else {
-        return Err(FlattenError::missing_resolved_class_metadata(
+        return Err(missing_resolved_class_metadata_for_def_id(
+            tree,
+            class_index,
+            parent_def_id,
             model_name,
-            "enclosing class constant injection parent scope".to_string(),
-            rumoca_core::Span::DUMMY,
+            "enclosing class constant injection parent scope",
         ));
     };
     let ancestors = collect_ancestor_classes_with_index(tree, class_index, enclosing_name);
@@ -1102,4 +1115,45 @@ fn inject_enclosing_class_constants(
         extract_nested_class_constants(tree, class_index, ancestor, enclosing_name, ctx);
     }
     extract_ancestor_constants_multi_pass(tree, class_index, enclosing_name, &ancestors, ctx)
+}
+
+fn missing_resolved_class_metadata_for_class_name(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    name: &str,
+    context: &str,
+) -> FlattenError {
+    let Some(class_def) = class_index.get_by_qualified_name(name) else {
+        return FlattenError::missing_source_context(format!(
+            "cannot report missing resolved class metadata for `{name}` during {context}: class definition not found"
+        ));
+    };
+    missing_resolved_class_metadata_for_class(tree, name, context, class_def)
+}
+
+fn missing_resolved_class_metadata_for_def_id(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    def_id: rumoca_core::DefId,
+    name: &str,
+    context: &str,
+) -> FlattenError {
+    let Some(class_def) = class_index.get(def_id) else {
+        return FlattenError::missing_source_context(format!(
+            "cannot report missing resolved class metadata for `{name}` during {context}: class definition for {def_id:?} not found"
+        ));
+    };
+    missing_resolved_class_metadata_for_class(tree, name, context, class_def)
+}
+
+fn missing_resolved_class_metadata_for_class(
+    tree: &ast::ClassTree,
+    name: &str,
+    context: &str,
+    class_def: &ast::ClassDef,
+) -> FlattenError {
+    match required_location_span(&tree.source_map, &class_def.location, context) {
+        Ok(span) => FlattenError::missing_resolved_class_metadata(name, context, span),
+        Err(error) => error,
+    }
 }

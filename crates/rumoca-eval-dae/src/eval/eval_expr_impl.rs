@@ -284,6 +284,9 @@ fn validate_scalar_array_product<T: SimFloat>(
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<bool, EvalError> {
+    if !expression_is_array_like(lhs, env)? && !expression_is_array_like(rhs, env)? {
+        return Ok(false);
+    }
     validate_array_argument(lhs, env)?;
     validate_array_argument(rhs, env)?;
     if eval_vector_dot_product(lhs, rhs, env).is_some() {
@@ -293,6 +296,38 @@ fn validate_scalar_array_product<T: SimFloat>(
         eval_binary_array_values(&rumoca_core::OpBinary::Mul, lhs, rhs, env)?
             .is_some_and(|values| values.len() == 1),
     )
+}
+
+fn expression_is_array_like<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    match expr {
+        rumoca_core::Expression::Array { .. }
+        | rumoca_core::Expression::Tuple { .. }
+        | rumoca_core::Expression::Range { .. }
+        | rumoca_core::Expression::ArrayComprehension { .. } => Ok(true),
+        rumoca_core::Expression::BuiltinCall { function, args, .. }
+            if args.len() == 1 && builtin_accepts_array_argument(*function) =>
+        {
+            expression_is_array_like(&args[0], env)
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Ok(encoded_slice_field_values(name.as_str(), env)?.is_some()
+            || array_values_from_env_name_generic::<T>(name.as_str(), env)?.is_some()),
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            match try_eval_field_access_array_values(base, field, env) {
+                Ok(_) => Ok(true),
+                Err(EvalError::MissingBinding { .. })
+                | Err(EvalError::UnsupportedExpression {
+                    kind: "field access array value",
+                }) => Ok(false),
+                Err(err) => Err(err),
+            }
+        }
+        _ => Ok(false),
+    }
 }
 
 fn validate_builtin_call<T: SimFloat>(

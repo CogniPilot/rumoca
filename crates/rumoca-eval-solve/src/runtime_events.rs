@@ -88,8 +88,8 @@ pub(crate) fn event_eval_params_with_relation_overrides(
     root_relation_memory_targets: &[Option<solve::ScalarSlot>],
     root_relation_overrides: &[(usize, f64)],
     p: &[f64],
-) -> Vec<f64> {
-    let mut event_eval_p = p.to_vec();
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut event_eval_p = runtime_event_copy_values(p, "event relation override parameters")?;
     for (root_idx, value) in root_relation_overrides {
         let Some(Some(solve::ScalarSlot::P { index, .. })) =
             root_relation_memory_targets.get(*root_idx).copied()
@@ -100,7 +100,7 @@ pub(crate) fn event_eval_params_with_relation_overrides(
             *slot = *value;
         }
     }
-    event_eval_p
+    Ok(event_eval_p)
 }
 
 pub fn eval_event_actions_with_context(
@@ -131,22 +131,22 @@ fn visible_value_with_context(
     context: RowEvalContext<'_>,
 ) -> Result<f64, RuntimeSolveError> {
     if model.visible_value_rows.len() == model.visible_names.len() {
-        let evaluator = PreparedScalarProgramBlock::new(model.visible_value_rows.clone());
+        let evaluator = PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?;
         return evaluator
             .eval_row_with_context(visible_idx, y, params, t, context)
             .map_err(Into::into);
     }
     if let Some(idx) = runtime_parameter_index(&model.problem.solve_layout, name) {
         return params.get(idx).copied().ok_or_else(|| {
-            RuntimeSolveError::SolveIr(format!("runtime slot `{name}` is out of range"))
+            RuntimeSolveError::solve_ir(format!("runtime slot `{name}` is out of range"))
         });
     }
     if let Some(idx) = model.problem.solve_layout.solver_maps.name_to_idx.get(name) {
         return y.get(*idx).copied().ok_or_else(|| {
-            RuntimeSolveError::SolveIr(format!("solver slot `{name}` is out of range"))
+            RuntimeSolveError::solve_ir(format!("solver slot `{name}` is out of range"))
         });
     }
-    Err(RuntimeSolveError::SolveIr(format!(
+    Err(RuntimeSolveError::solve_ir(format!(
         "visible trace name `{name}` is not in solve layout"
     )))
 }
@@ -183,7 +183,7 @@ fn dynamic_time_event_row_values(
     if block.is_empty() {
         return Ok(Vec::new());
     }
-    let mut values = vec![0.0; block.len()];
+    let mut values = runtime_event_zero_values(block.len(), "dynamic time-event row values")?;
     solve_eval::eval_scalar_program_block_with_context(
         block,
         y,
@@ -202,4 +202,70 @@ fn dynamic_time_event_row_values(
 fn dynamic_time_event_value(model: &solve::SolveModel, params: &[f64], name: &str) -> Option<f64> {
     runtime_parameter_index(&model.problem.solve_layout, name)
         .and_then(|idx| params.get(idx).copied())
+}
+
+fn runtime_event_zero_values(
+    len: usize,
+    context: &'static str,
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut values = runtime_event_vec_with_capacity(len, context)?;
+    values.resize(len, 0.0);
+    Ok(values)
+}
+
+fn runtime_event_copy_values(
+    values: &[f64],
+    context: &'static str,
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut copy = runtime_event_vec_with_capacity(values.len(), context)?;
+    copy.extend_from_slice(values);
+    Ok(copy)
+}
+
+fn runtime_event_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, RuntimeSolveError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| RuntimeSolveError::solve_ir(format!("{context} capacity overflows")))?;
+    Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_eval_params_with_relation_overrides_applies_p_targets() {
+        let params = event_eval_params_with_relation_overrides(
+            &[
+                Some(solve::ScalarSlot::P {
+                    index: 1,
+                    byte_offset: 8,
+                }),
+                Some(solve::ScalarSlot::Y {
+                    index: 0,
+                    byte_offset: 0,
+                }),
+            ],
+            &[(0, 9.0), (1, 7.0), (4, 3.0)],
+            &[1.0, 2.0, 3.0],
+        )
+        .expect("relation override params should copy");
+
+        assert_eq!(params, vec![1.0, 9.0, 3.0]);
+    }
+
+    #[test]
+    fn runtime_event_vec_with_capacity_rejects_impossible_capacity() {
+        let err = runtime_event_vec_with_capacity::<u8>(usize::MAX, "runtime event test vector")
+            .expect_err("impossible runtime event capacity should fail");
+
+        assert!(
+            err.to_string()
+                .contains("runtime event test vector capacity overflows")
+        );
+    }
 }

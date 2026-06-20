@@ -28,8 +28,9 @@ with full modification context (MLS behavior for evaluated dimensions).
 - `compile_model()` is strict: returns `Result<CompilationResult>`.
   - `NeedsInner` is surfaced as an error with explicit missing inner names.
   - `Failed` returns a phase-qualified message (`Instantiate`, `Typecheck`, `Flatten`, `ToDae`).
-- `compile_model_phases()` is structured: returns `PhaseResult` so callers can classify
-  success vs `NeedsInner` vs phase failure.
+- `compile_model_phases()` is structured: returns `Result<PhaseResult>` so callers can
+  classify success vs `NeedsInner` vs phase failure while still bubbling infrastructure
+  errors.
 - `compile_model_internal()` is the single phase pipeline entry point used by strict and
   strict-reachable-with-recovery flows.
 

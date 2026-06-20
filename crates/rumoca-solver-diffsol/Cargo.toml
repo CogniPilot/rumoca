@@ -10,12 +10,13 @@ repository.workspace = true
 rumoca-solver = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+indexmap = { workspace = true }
 diffsol = { version = "0.13" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-indexmap = { workspace = true }
+rumoca-core = { workspace = true }
 
 [lints]
 workspace = true

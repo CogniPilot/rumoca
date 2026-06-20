@@ -119,10 +119,10 @@ fn quadrotor_se23_13state_initial_derivatives_are_stable() {
 /// with nesting depth (29 KB → 80 MB → OOM). After the fix each matmul/linsolve
 /// lowers to ONE multi-output program with operands computed once.
 #[test]
-fn quadrotor_se23_scalar_program_does_not_explode() {
+fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::error::Error>> {
     let Some(lie_groups) = cached_lie_groups() else {
         eprintln!("skipping SE_2(3) scalar-program size regression: requires cached CMM");
-        return;
+        return Ok(());
     };
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
     let model = fixtures.join("QuadrotorSquare13_fn.mo");
@@ -130,13 +130,12 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
     let compiled = Compiler::new()
         .model("QuadrotorSquare13_fn")
         .source_root(&lie_groups.to_string_lossy())
-        .compile_path_dae(&model)
-        .expect("SE_2(3) 13-state quadrotor should compile to DAE");
+        .compile_path_dae(&model)?;
 
-    let problem = rumoca_sim::lower_solve_problem(&compiled.dae)
-        .expect("derivative should lower to solve IR");
+    let problem = rumoca_sim::lower_solve_problem(&compiled.dae)?;
     let block = &problem.continuous.derivative_rhs;
-    let scalar = rumoca_eval_solve::to_scalar_program_block(block);
+    let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
+    let block_output_count = block.len()?;
     let total_ops: usize = scalar.programs.iter().map(|program| program.len()).sum();
     let approx_bytes = total_ops * std::mem::size_of::<rumoca_ir_solve::LinearOp>();
 
@@ -149,13 +148,14 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
             rumoca_ir_solve::ComputeNode::ScalarPrograms(_) => "ScalarPrograms",
             rumoca_ir_solve::ComputeNode::MatMul { .. } => "MatMul",
             rumoca_ir_solve::ComputeNode::LinSolve { .. } => "LinSolve",
+            rumoca_ir_solve::ComputeNode::Map { .. } => "Map",
             rumoca_ir_solve::ComputeNode::AffineStencil { .. } => "AffineStencil",
         })
         .collect();
     eprintln!(
         "SE_2(3) derivative_rhs: nodes={:?}, output_count={}, programs={}, total_ops={}, ~{} KB",
         node_kinds,
-        block.len(),
+        block_output_count,
         scalar.programs.len(),
         total_ops,
         approx_bytes / 1024,
@@ -167,7 +167,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
     // running StoreOutput counter).
     assert_eq!(
         scalar.output_count(),
-        block.len(),
+        block_output_count,
         "scalar output count must match the ComputeBlock output count"
     );
 
@@ -181,11 +181,6 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
         scalar.programs.len(),
         1,
         "vector function-call derivative should lower to one shared program"
-    );
-    assert!(
-        approx_bytes < 16 * 1024 * 1024,
-        "scalar derivative program is {} KB — function-projection duplication regression?",
-        approx_bytes / 1024
     );
 
     // Runtime-variable subscripts into the constant reference tables
@@ -206,6 +201,11 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
                 _ => (s, i),
             });
     assert!(
+        approx_bytes < 16 * 1024 * 1024,
+        "scalar derivative program is {} KB — function-projection duplication regression?",
+        approx_bytes / 1024
+    );
+    assert!(
         indexed_loads >= 40,
         "expected runtime table subscripts to lower to LoadIndexedP (got {indexed_loads}); \
          dynamic-index → select-chain regression?"
@@ -220,4 +220,5 @@ fn quadrotor_se23_scalar_program_does_not_explode() {
         "scalar derivative has {selects} selects; expected ~400 after indexed-load lowering — \
          dynamic-index select-chain regression?"
     );
+    Ok(())
 }

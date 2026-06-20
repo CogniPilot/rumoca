@@ -1,9 +1,10 @@
 use super::*;
 
 struct SupportedSlicePlan {
-    fixed_selectors: Vec<Option<Expression>>,
+    fixed_selectors: Vec<Option<(Expression, Span)>>,
     pass_axis: usize,
     pass_dim: i64,
+    pass_span: Span,
 }
 
 fn supported_slice_plan(
@@ -17,12 +18,14 @@ fn supported_slice_plan(
 
     let mut fixed_selectors = Vec::with_capacity(subscripts.len());
     let mut pass_axis = None;
+    let mut pass_span = None;
     for (axis, (subscript, dim)) in subscripts.iter().zip(dims.iter()).enumerate() {
         if is_full_dimension_subscript(subscript, *dim, flat) {
             if pass_axis.is_some() {
                 return None;
             }
             pass_axis = Some(axis);
+            pass_span = Some(subscript.span());
             fixed_selectors.push(None);
             continue;
         }
@@ -30,10 +33,12 @@ fn supported_slice_plan(
     }
 
     let pass_axis = pass_axis?;
+    let pass_span = pass_span?;
     Some(SupportedSlicePlan {
         fixed_selectors,
         pass_axis,
         pass_dim: dims[pass_axis],
+        pass_span,
     })
 }
 
@@ -60,13 +65,16 @@ fn is_full_dimension_subscript(subscript: &Subscript, dim: i64, flat: &Model) ->
     }
 }
 
-fn scalar_subscript_expr(subscript: &Subscript) -> Option<Expression> {
+fn scalar_subscript_expr(subscript: &Subscript) -> Option<(Expression, Span)> {
     match subscript {
-        Subscript::Index { value, .. } => Some(Expression::Literal {
-            value: Literal::Integer(*value),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        Subscript::Expr { expr, .. } => Some((**expr).clone()),
+        Subscript::Index { value, span } => Some((
+            Expression::Literal {
+                value: Literal::Integer(*value),
+                span: *span,
+            },
+            *span,
+        )),
+        Subscript::Expr { expr, span } => Some(((**expr).clone(), *span)),
         Subscript::Colon { .. } => None,
     }
 }
@@ -80,24 +88,59 @@ fn materialize_scalar_subscripts(
         .enumerate()
         .map(|(axis, selector)| {
             if axis == plan.pass_axis {
-                return Some(Subscript::generated_index(
+                return generated_index_subscript(
                     pass_value,
-                    rumoca_core::Span::DUMMY,
-                ));
+                    plan.pass_span,
+                    "algorithm slice pass-axis subscript",
+                );
             }
-            selector.as_ref().map(expr_to_subscript)
+            selector
+                .as_ref()
+                .and_then(|(expr, span)| expr_to_subscript(expr, *span))
         })
         .collect()
 }
 
-fn expr_to_subscript(expr: &Expression) -> Subscript {
+fn expr_to_subscript(expr: &Expression, context_span: Span) -> Option<Subscript> {
     match expr {
         Expression::Literal {
             value: Literal::Integer(value),
+            span,
+        } if !span.is_dummy() => {
+            generated_index_subscript(*value, *span, "algorithm slice literal subscript")
+        }
+        Expression::Literal {
+            value: Literal::Integer(value),
             ..
-        } => Subscript::generated_index(*value, rumoca_core::Span::DUMMY),
-        _ => Subscript::generated_expr(Box::new(expr.clone())),
+        } => generated_index_subscript(
+            *value,
+            context_span,
+            "algorithm slice context literal subscript",
+        ),
+        _ => generated_expr_subscript(
+            Box::new(expr.clone()),
+            expr.span().unwrap_or(context_span),
+            "algorithm slice expression subscript",
+        ),
     }
+}
+
+fn generated_index_subscript(index: i64, span: Span, context: &'static str) -> Option<Subscript> {
+    Some(Subscript::generated_index_with_provenance(
+        index,
+        span.require_provenance(context).ok()?,
+    ))
+}
+
+fn generated_expr_subscript(
+    expr: Box<Expression>,
+    span: Span,
+    context: &'static str,
+) -> Option<Subscript> {
+    Some(Subscript::generated_expr_with_provenance(
+        expr,
+        span.require_provenance(context).ok()?,
+    ))
 }
 
 fn flat_expr_dims(flat: &Model, expr: &Expression) -> Option<Vec<i64>> {
@@ -136,7 +179,7 @@ fn flat_expr_dims(flat: &Model, expr: &Expression) -> Option<Vec<i64>> {
     }
 }
 
-fn expand_supported_slice_read(flat: &Model, expr: &Expression) -> Expression {
+fn expand_supported_slice_read(flat: &Model, expr: &Expression, span: Span) -> Expression {
     let Expression::Index {
         base, subscripts, ..
     } = expr
@@ -170,13 +213,13 @@ fn expand_supported_slice_read(flat: &Model, expr: &Expression) -> Expression {
         elements.push(Expression::VarRef {
             name: name.clone(),
             subscripts,
-            span: rumoca_core::Span::DUMMY,
+            span,
         });
     }
     Expression::Array {
         elements,
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -185,28 +228,45 @@ fn lower_supported_slice_assignment(
     comp: &ComponentReference,
     value: &Expression,
     span: Span,
-) -> Option<Vec<AlgorithmAssignment>> {
-    let (base_target, subscripts) = algorithm_assignment_base_with_subscripts(comp)?;
-    let dims = flat.variables.get(&base_target)?.dims.clone();
-    let plan = supported_slice_plan(subscripts, &dims, flat)?;
+) -> Result<Option<Vec<AlgorithmAssignment>>, String> {
+    let Some((base_target, subscripts)) = algorithm_assignment_base_with_subscripts(comp) else {
+        return Ok(None);
+    };
+    let Some(dims) = flat.variables.get(&base_target).map(|var| var.dims.clone()) else {
+        return Ok(None);
+    };
+    let Some(plan) = supported_slice_plan(subscripts, &dims, flat) else {
+        return Ok(None);
+    };
 
-    let value = expand_supported_slice_read(flat, value);
-    let value_dims = flat_expr_dims(flat, &value)?;
+    let value = expand_supported_slice_read(flat, value, span);
+    let Some(value_dims) = flat_expr_dims(flat, &value) else {
+        return Ok(None);
+    };
     if value_dims.len() != 1 || value_dims[0] != plan.pass_dim {
-        return None;
+        return Ok(None);
     }
 
     let mut lowered = Vec::new();
     for pass_value in 1..=plan.pass_dim {
-        let scalar_value = index_vector_expr(&value, pass_value);
-        let targets = materialize_assignment_targets(&plan, &dims, pass_value)?;
+        let Some(scalar_value) = index_vector_expr(&value, pass_value, span) else {
+            return Ok(None);
+        };
+        let Some(targets) = materialize_assignment_targets(&plan, &dims, pass_value, span) else {
+            return Ok(None);
+        };
         for (subscripts, guard) in targets {
             let scalar_target = varname_with_subscripts(&base_target, &subscripts);
-            let scalar_value = guard
-                .map(|condition| {
-                    guarded_dynamic_assignment(&base_target, &subscripts, condition, &scalar_value)
-                })
-                .unwrap_or_else(|| scalar_value.clone());
+            let scalar_value = match guard {
+                Some(condition) => guarded_dynamic_assignment(
+                    &base_target,
+                    &subscripts,
+                    condition,
+                    &scalar_value,
+                    span,
+                )?,
+                None => scalar_value.clone(),
+            };
             lowered.push((
                 scalar_target,
                 scalar_value,
@@ -215,40 +275,49 @@ fn lower_supported_slice_assignment(
             ));
         }
     }
-    Some(lowered)
+    Ok(Some(lowered))
 }
 
 fn materialize_assignment_targets(
     plan: &SupportedSlicePlan,
     dims: &[i64],
     pass_value: i64,
+    span: Span,
 ) -> Option<Vec<(Vec<Subscript>, Option<Expression>)>> {
     let mut targets = vec![(Vec::new(), None)];
     for (axis, selector) in plan.fixed_selectors.iter().enumerate() {
         let options = assignment_axis_options(axis, selector.as_ref(), dims, pass_value, plan)?;
-        targets = extend_assignment_targets(targets, options);
+        targets = extend_assignment_targets(targets, options, span);
     }
     Some(targets)
 }
 
 fn assignment_axis_options(
     axis: usize,
-    selector: Option<&Expression>,
+    selector: Option<&(Expression, Span)>,
     dims: &[i64],
     pass_value: i64,
     plan: &SupportedSlicePlan,
 ) -> Option<Vec<(Subscript, Option<Expression>)>> {
     if axis == plan.pass_axis {
         return Some(vec![(
-            Subscript::generated_index(pass_value, rumoca_core::Span::DUMMY),
+            generated_index_subscript(
+                pass_value,
+                plan.pass_span,
+                "algorithm assignment pass-axis subscript",
+            )?,
             None,
         )]);
     }
 
-    let selector = selector?;
+    let (selector, selector_span) = selector?;
     if let Some(index) = literal_integer_expr(selector) {
         return Some(vec![(
-            Subscript::generated_index(index, rumoca_core::Span::DUMMY),
+            generated_index_subscript(
+                index,
+                *selector_span,
+                "algorithm assignment selector subscript",
+            )?,
             None,
         )]);
     }
@@ -257,21 +326,24 @@ fn assignment_axis_options(
     if dim <= 0 {
         return None;
     }
-    Some(
-        (1..=dim)
-            .map(|candidate| {
-                (
-                    Subscript::generated_index(candidate, rumoca_core::Span::DUMMY),
-                    Some(dynamic_selector_guard(selector, candidate)),
-                )
-            })
-            .collect(),
-    )
+    (1..=dim)
+        .map(|candidate| {
+            Some((
+                generated_index_subscript(
+                    candidate,
+                    *selector_span,
+                    "algorithm assignment dynamic selector subscript",
+                )?,
+                Some(dynamic_selector_guard(selector, candidate, *selector_span)),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()
 }
 
 fn extend_assignment_targets(
     targets: Vec<(Vec<Subscript>, Option<Expression>)>,
     options: Vec<(Subscript, Option<Expression>)>,
+    span: Span,
 ) -> Vec<(Vec<Subscript>, Option<Expression>)> {
     let mut extended = Vec::with_capacity(targets.len() * options.len());
     for (prefix, prefix_guard) in targets {
@@ -280,7 +352,7 @@ fn extend_assignment_targets(
             subscripts.push(subscript.clone());
             extended.push((
                 subscripts,
-                combine_guards(prefix_guard.clone(), guard.clone()),
+                combine_guards(prefix_guard.clone(), guard.clone(), span),
             ));
         }
     }
@@ -297,25 +369,29 @@ fn literal_integer_expr(expr: &Expression) -> Option<i64> {
     }
 }
 
-fn dynamic_selector_guard(selector: &Expression, candidate: i64) -> Expression {
+fn dynamic_selector_guard(selector: &Expression, candidate: i64, span: Span) -> Expression {
     Expression::Binary {
         op: rumoca_core::OpBinary::Eq,
         lhs: Box::new(selector.clone()),
         rhs: Box::new(Expression::Literal {
             value: Literal::Integer(candidate),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn combine_guards(lhs: Option<Expression>, rhs: Option<Expression>) -> Option<Expression> {
+fn combine_guards(
+    lhs: Option<Expression>,
+    rhs: Option<Expression>,
+    span: Span,
+) -> Option<Expression> {
     match (lhs, rhs) {
         (Some(lhs), Some(rhs)) => Some(Expression::Binary {
             op: rumoca_core::OpBinary::And,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }),
         (Some(expr), None) | (None, Some(expr)) => Some(expr),
         (None, None) => None,
@@ -327,42 +403,48 @@ fn guarded_dynamic_assignment(
     subscripts: &[Subscript],
     condition: Expression,
     value: &Expression,
-) -> Expression {
-    Expression::If {
+    span: Span,
+) -> Result<Expression, String> {
+    Ok(Expression::If {
         branches: vec![(condition, value.clone())],
         else_branch: Box::new(Expression::VarRef {
-            name: super::structured_target_reference(base_target),
+            name: super::structured_target_reference(base_target, span)
+                .map_err(|err| err.to_string())?,
             subscripts: subscripts.to_vec(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }),
-        span: rumoca_core::Span::DUMMY,
-    }
+        span,
+    })
 }
 
-fn index_vector_expr(expr: &Expression, index: i64) -> Expression {
+fn index_vector_expr(expr: &Expression, index: i64, span: Span) -> Option<Expression> {
+    let owner_span = expr.span().unwrap_or(span);
+    let subscript =
+        generated_index_subscript(index, owner_span, "algorithm vector index expression")?;
     match expr {
         Expression::VarRef {
             name, subscripts, ..
         } => {
             let mut indexed = subscripts.clone();
-            indexed.push(Subscript::generated_index(index, rumoca_core::Span::DUMMY));
-            Expression::VarRef {
+            indexed.push(subscript);
+            Some(Expression::VarRef {
                 name: name.clone(),
                 subscripts: indexed,
-                span: rumoca_core::Span::DUMMY,
-            }
+                span,
+            })
         }
-        _ => Expression::Index {
+        _ => Some(Expression::Index {
             base: Box::new(expr.clone()),
-            subscripts: vec![Subscript::generated_index(index, rumoca_core::Span::DUMMY)],
-            span: rumoca_core::Span::DUMMY,
-        },
+            subscripts: vec![subscript],
+            span,
+        }),
     }
 }
 
 fn lower_index_list_assignment(
     comp: &ComponentReference,
     value: &Expression,
+    assignment_span: Span,
 ) -> Option<Vec<AlgorithmAssignment>> {
     let (base_target, subscripts) = algorithm_assignment_base_with_subscripts(comp)?;
     if subscripts.len() != 1 {
@@ -370,7 +452,8 @@ fn lower_index_list_assignment(
     }
 
     let Subscript::Expr {
-        expr: index_expr, ..
+        expr: index_expr,
+        span: index_span,
     } = &subscripts[0]
     else {
         return None;
@@ -396,28 +479,34 @@ fn lower_index_list_assignment(
         return None;
     }
 
-    Some(
-        index_elements
-            .iter()
-            .zip(value_elements.iter())
-            .map(|(index_element, rhs)| {
-                (
-                    varname_with_subscripts(
-                        &base_target,
-                        &[Subscript::generated_expr(Box::new(index_element.clone()))],
-                    ),
-                    rhs.clone(),
-                    Span::DUMMY,
-                    "algorithm assignment (index-list lowering)".to_string(),
-                )
-            })
-            .collect(),
-    )
+    index_elements
+        .iter()
+        .zip(value_elements.iter())
+        .map(|(index_element, rhs)| {
+            let subscript_span = index_element
+                .span()
+                .or_else(|| (!index_span.is_dummy()).then_some(*index_span))?;
+            Some((
+                varname_with_subscripts(
+                    &base_target,
+                    &[generated_expr_subscript(
+                        Box::new(index_element.clone()),
+                        subscript_span,
+                        "algorithm index-list assignment subscript",
+                    )?],
+                ),
+                rhs.clone(),
+                assignment_span,
+                "algorithm assignment (index-list lowering)".to_string(),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()
 }
 
 fn dynamic_scalar_assignment_targets(
     subscripts: &[Subscript],
     dims: &[i64],
+    span: Span,
 ) -> Option<Vec<(Vec<Subscript>, Option<Expression>)>> {
     if subscripts.len() != dims.len() || subscripts.is_empty() {
         return None;
@@ -427,9 +516,9 @@ fn dynamic_scalar_assignment_targets(
     let mut targets = vec![(Vec::new(), None)];
     for (subscript, dim) in subscripts.iter().zip(dims.iter()) {
         let selector = scalar_subscript_expr(subscript)?;
-        let options = dynamic_scalar_axis_options(&selector, *dim)?;
+        let options = dynamic_scalar_axis_options(&selector.0, selector.1, *dim)?;
         has_dynamic_selector |= options.iter().any(|(_, guard)| guard.is_some());
-        targets = extend_assignment_targets(targets, options);
+        targets = extend_assignment_targets(targets, options, span);
     }
 
     has_dynamic_selector.then_some(targets)
@@ -437,27 +526,34 @@ fn dynamic_scalar_assignment_targets(
 
 fn dynamic_scalar_axis_options(
     selector: &Expression,
+    selector_span: Span,
     dim: i64,
 ) -> Option<Vec<(Subscript, Option<Expression>)>> {
     if let Some(index) = literal_integer_expr(selector) {
         return Some(vec![(
-            Subscript::generated_index(index, rumoca_core::Span::DUMMY),
+            generated_index_subscript(
+                index,
+                selector_span,
+                "algorithm dynamic scalar selector subscript",
+            )?,
             None,
         )]);
     }
     if dim <= 0 {
         return None;
     }
-    Some(
-        (1..=dim)
-            .map(|candidate| {
-                (
-                    Subscript::generated_index(candidate, rumoca_core::Span::DUMMY),
-                    Some(dynamic_selector_guard(selector, candidate)),
-                )
-            })
-            .collect(),
-    )
+    (1..=dim)
+        .map(|candidate| {
+            Some((
+                generated_index_subscript(
+                    candidate,
+                    selector_span,
+                    "algorithm dynamic scalar candidate subscript",
+                )?,
+                Some(dynamic_selector_guard(selector, candidate, selector_span)),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()
 }
 
 fn lower_dynamic_scalar_assignment(
@@ -465,33 +561,37 @@ fn lower_dynamic_scalar_assignment(
     comp: &ComponentReference,
     value: &Expression,
     span: Span,
-) -> Option<Vec<AlgorithmAssignment>> {
+) -> Result<Option<Vec<AlgorithmAssignment>>, String> {
     if flat_expr_dims(flat, value).is_some_and(|dims| !dims.is_empty()) {
-        return None;
+        return Ok(None);
     }
 
-    let (base_target, subscripts) = algorithm_assignment_base_with_subscripts(comp)?;
-    let dims = flat.variables.get(&base_target)?.dims.clone();
-    let targets = dynamic_scalar_assignment_targets(subscripts, &dims)?;
-    Some(
-        targets
-            .into_iter()
-            .map(|(subscripts, guard)| {
-                let scalar_target = varname_with_subscripts(&base_target, &subscripts);
-                let scalar_value = guard
-                    .map(|condition| {
-                        guarded_dynamic_assignment(&base_target, &subscripts, condition, value)
-                    })
-                    .unwrap_or_else(|| value.clone());
-                (
-                    scalar_target,
-                    scalar_value,
-                    span,
-                    "algorithm assignment (dynamic scalar index lowering)".to_string(),
-                )
-            })
-            .collect(),
-    )
+    let Some((base_target, subscripts)) = algorithm_assignment_base_with_subscripts(comp) else {
+        return Ok(None);
+    };
+    let Some(dims) = flat.variables.get(&base_target).map(|var| var.dims.clone()) else {
+        return Ok(None);
+    };
+    let Some(targets) = dynamic_scalar_assignment_targets(subscripts, &dims, span) else {
+        return Ok(None);
+    };
+    let mut lowered = Vec::with_capacity(targets.len());
+    for (subscripts, guard) in targets {
+        let scalar_target = varname_with_subscripts(&base_target, &subscripts);
+        let scalar_value = match guard {
+            Some(condition) => {
+                guarded_dynamic_assignment(&base_target, &subscripts, condition, value, span)?
+            }
+            None => value.clone(),
+        };
+        lowered.push((
+            scalar_target,
+            scalar_value,
+            span,
+            "algorithm assignment (dynamic scalar index lowering)".to_string(),
+        ));
+    }
+    Ok(Some(lowered))
 }
 
 pub(super) fn lower_assignment_statement(
@@ -500,15 +600,15 @@ pub(super) fn lower_assignment_statement(
     value: &Expression,
     span: Span,
 ) -> Result<Vec<AlgorithmAssignment>, String> {
-    if let Some(lowered) = lower_index_list_assignment(comp, value) {
+    if let Some(lowered) = lower_index_list_assignment(comp, value, span) {
         return Ok(lowered);
     }
 
-    if let Some(lowered) = lower_supported_slice_assignment(flat, comp, value, span) {
+    if let Some(lowered) = lower_supported_slice_assignment(flat, comp, value, span)? {
         return Ok(lowered);
     }
 
-    if let Some(lowered) = lower_dynamic_scalar_assignment(flat, comp, value, span) {
+    if let Some(lowered) = lower_dynamic_scalar_assignment(flat, comp, value, span)? {
         return Ok(lowered);
     }
 
@@ -519,7 +619,7 @@ pub(super) fn lower_assignment_statement(
     };
     Ok(vec![(
         target,
-        expand_supported_slice_read(flat, value),
+        expand_supported_slice_read(flat, value, span),
         span,
         "algorithm assignment".to_string(),
     )])

@@ -15,6 +15,32 @@ pub enum MlirError {
     },
     #[error("template rendering failed: {0}")]
     Template(String),
+    #[error("built-in target {target} is missing required template {template}")]
+    MissingBuiltinTemplate {
+        target: &'static str,
+        template: &'static str,
+    },
+    #[error("Solve-IR scalarization failed: {message}")]
+    Scalarization {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+    #[error("Solve-IR shape contract failed: {message}")]
+    ShapeContract {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+    #[error("{function} output length mismatch: expected {expected}, got {actual}")]
+    OutputLength {
+        function: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("{operation} invalid input: {message}")]
+    InvalidInput {
+        operation: &'static str,
+        message: String,
+    },
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("dlopen failed: {0}")]
@@ -29,4 +55,32 @@ pub enum MlirError {
          Searched: {searched}"
     )]
     LibdeviceNotFound { searched: String },
+}
+
+impl MlirError {
+    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+        match self {
+            Self::Scalarization { span, .. } => *span,
+            Self::ShapeContract { span, .. } => *span,
+            _ => None,
+        }
+    }
+}
+
+impl From<rumoca_eval_solve::ScalarizeError> for MlirError {
+    fn from(value: rumoca_eval_solve::ScalarizeError) -> Self {
+        Self::Scalarization {
+            message: value.to_string(),
+            span: value.source_span(),
+        }
+    }
+}
+
+impl From<rumoca_ir_solve::SolveProblemShapeContractError> for MlirError {
+    fn from(value: rumoca_ir_solve::SolveProblemShapeContractError) -> Self {
+        Self::ShapeContract {
+            message: value.to_string(),
+            span: value.source_span(),
+        }
+    }
 }

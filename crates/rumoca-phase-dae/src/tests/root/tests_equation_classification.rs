@@ -5,11 +5,17 @@ fn test_get_output_in_input_output_connection_subscripted_output() {
     let mut dae = Dae::new();
     dae.variables.inputs.insert(
         rumoca_core::VarName::new("gain.u"),
-        Variable::new(rumoca_core::VarName::new("gain.u")),
+        Variable::new(
+            rumoca_core::VarName::new("gain.u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.outputs.insert(
         rumoca_core::VarName::new("table.y"),
-        Variable::new(rumoca_core::VarName::new("table.y")),
+        Variable::new(
+            rumoca_core::VarName::new("table.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let eq = rumoca_ir_flat::Equation {
@@ -51,7 +57,11 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -61,7 +71,11 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -93,11 +107,17 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
     let mut dae = Dae::new();
     dae.variables.outputs.insert(
         rumoca_core::VarName::new("table.y"),
-        Variable::new(rumoca_core::VarName::new("table.y")),
+        Variable::new(
+            rumoca_core::VarName::new("table.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.inputs.insert(
         rumoca_core::VarName::new("gain.u"),
-        Variable::new(rumoca_core::VarName::new("gain.u")),
+        Variable::new(
+            rumoca_core::VarName::new("gain.u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -125,7 +145,11 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -135,7 +159,11 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -144,7 +172,11 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
             name: VarName::new("outBus.x"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -177,15 +209,24 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
     let mut dae = Dae::new();
     dae.variables.outputs.insert(
         rumoca_core::VarName::new("gain.y"),
-        Variable::new(rumoca_core::VarName::new("gain.y")),
+        Variable::new(
+            rumoca_core::VarName::new("gain.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.inputs.insert(
         rumoca_core::VarName::new("gain.u"),
-        Variable::new(rumoca_core::VarName::new("gain.u")),
+        Variable::new(
+            rumoca_core::VarName::new("gain.u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.parameters.insert(
         rumoca_core::VarName::new("outBus.x"),
-        Variable::new(rumoca_core::VarName::new("outBus.x")),
+        Variable::new(
+            rumoca_core::VarName::new("outBus.x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -217,7 +258,11 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
             is_overconstrained: true,
             oc_record_path: Some("port.reference".to_string()),
             oc_eq_constraint_size: Some(0),
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -226,7 +271,11 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
             name: VarName::new("port.Phi.re"),
             flow: true,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -250,7 +299,10 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("port.Phi.re"),
-        Variable::new(rumoca_core::VarName::new("port.Phi.re")),
+        Variable::new(
+            rumoca_core::VarName::new("port.Phi.re"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);

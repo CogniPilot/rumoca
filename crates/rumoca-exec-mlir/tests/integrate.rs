@@ -5,15 +5,46 @@
 /// Analytical: x(t) = exp(-t)
 use rumoca_exec_mlir::{MlirError, build_ode_model};
 
+fn decay_solve_layout() -> rumoca_ir_solve::SolveLayout {
+    use indexmap::IndexMap;
+    use rumoca_ir_solve::{SolveLayout, SolverNameIndexMaps};
+
+    SolveLayout {
+        solver_maps: SolverNameIndexMaps {
+            names: vec!["x".to_string()],
+            name_to_idx: IndexMap::from([("x".to_string(), 0)]),
+            base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
+        },
+        state_scalar_count: 1,
+        algebraic_scalar_count: 0,
+        output_scalar_count: 0,
+        parameter_count: 0,
+        compiled_parameter_len: 0,
+        input_scalar_names: Vec::new(),
+        discrete_real_scalar_names: Vec::new(),
+        discrete_valued_scalar_names: Vec::new(),
+        relation_memory_parameter_indices: Vec::new(),
+        initial_event_parameter_index: None,
+        pre_param_bindings: Vec::new(),
+    }
+}
+
 /// Build a `SolveModel` for `xdot = -y[0]` (exponential decay) directly
 /// from solve-IR rows, mirroring the rk45 test helper pattern.
 fn decay_model() -> rumoca_ir_solve::SolveModel {
-    use indexmap::IndexMap;
+    use rumoca_core::{SourceId, Span};
     use rumoca_ir_solve::{
         ComputeBlock, ContinuousSolveSystem, DiscreteSolveSystem, InitializationSolveSystem,
-        LinearOp, ScalarProgramBlock, SolveClockPartition, SolveEventPartition, SolveLayout,
-        SolveProblem, SolverNameIndexMaps, UnaryOp,
+        LinearOp, ScalarProgramBlock, SolveClockPartition, SolveEventPartition, SolveProblem,
+        UnaryOp,
     };
+
+    fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+        ScalarProgramBlock::with_source_span(
+            rows,
+            Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        )
+    }
 
     // xdot = -y[0]
     let rhs_rows = vec![vec![
@@ -26,19 +57,25 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         LinearOp::StoreOutput { src: 1 },
     ]];
 
-    let zero_block = ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![vec![
-        LinearOp::Const { dst: 0, value: 0.0 },
-        LinearOp::StoreOutput { src: 0 },
-    ]]));
-    let zero_rb = ScalarProgramBlock::new(vec![vec![
-        LinearOp::Const { dst: 0, value: 0.0 },
-        LinearOp::StoreOutput { src: 0 },
-    ]]);
+    let zero_block = ComputeBlock::from_scalar_program_block(spb(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        "integrate_zero_block.mo",
+    ));
+    let zero_rb = spb(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        "integrate_zero_row.mo",
+    );
 
     let implicit_rhs_cb =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(rhs_rows.clone()));
+        ComputeBlock::from_scalar_program_block(spb(rhs_rows.clone(), "integrate_implicit.mo"));
     let derivative_rhs_cb =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(rhs_rows.clone()));
+        ComputeBlock::from_scalar_program_block(spb(rhs_rows.clone(), "integrate_derivative.mo"));
 
     rumoca_ir_solve::SolveModel {
         problem: SolveProblem {
@@ -47,7 +84,10 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             continuous: ContinuousSolveSystem {
                 implicit_rhs: implicit_rhs_cb,
                 implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
-                residual: ScalarProgramBlock::new(rhs_rows),
+                residual: ComputeBlock::from_scalar_program_block(spb(
+                    rhs_rows,
+                    "integrate_residual.mo",
+                )),
                 derivative_rhs: derivative_rhs_cb,
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },
@@ -65,24 +105,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             },
             events: SolveEventPartition::default(),
             clocks: SolveClockPartition::default(),
-            solve_layout: SolveLayout {
-                solver_maps: SolverNameIndexMaps {
-                    names: vec!["x".to_string()],
-                    name_to_idx: IndexMap::from([("x".to_string(), 0)]),
-                    base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 0,
-                output_scalar_count: 0,
-                parameter_count: 0,
-                compiled_parameter_len: 0,
-                input_scalar_names: Vec::new(),
-                discrete_real_scalar_names: Vec::new(),
-                discrete_valued_scalar_names: Vec::new(),
-                relation_memory_parameter_indices: Vec::new(),
-                initial_event_parameter_index: None,
-                pre_param_bindings: Vec::new(),
-            },
+            solve_layout: decay_solve_layout(),
         },
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {

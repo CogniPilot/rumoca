@@ -72,7 +72,7 @@ impl CompiledKernelWasm {
     ) -> Result<(), WasmCompileError> {
         let mut y_scratch = Vec::new();
         let y_slice = if y.len() < self.required_y_len {
-            y_scratch.resize(self.required_y_len, 0.0);
+            resize_zeroed_scratch(&mut y_scratch, self.required_y_len, "y scratch")?;
             y_scratch[..y.len()].copy_from_slice(y);
             y_scratch.as_slice()
         } else {
@@ -81,7 +81,7 @@ impl CompiledKernelWasm {
 
         let mut p_scratch = Vec::new();
         let p_slice = if p.len() < self.required_p_len {
-            p_scratch.resize(self.required_p_len, 0.0);
+            resize_zeroed_scratch(&mut p_scratch, self.required_p_len, "p scratch")?;
             p_scratch[..p.len()].copy_from_slice(p);
             p_scratch.as_slice()
         } else {
@@ -91,7 +91,7 @@ impl CompiledKernelWasm {
         let mut seed_scratch = Vec::new();
         let seed_slice = match seed {
             Some(seed_values) if seed_values.len() < self.required_y_len => {
-                seed_scratch.resize(self.required_y_len, 0.0);
+                resize_zeroed_scratch(&mut seed_scratch, self.required_y_len, "seed scratch")?;
                 seed_scratch[..seed_values.len()].copy_from_slice(seed_values);
                 Some(seed_scratch.as_slice())
             }
@@ -101,11 +101,10 @@ impl CompiledKernelWasm {
 
         let out_len = out.len();
         let out_short = out_len < self.rows;
-        let mut out_scratch = if out_short {
-            vec![0.0; self.rows]
-        } else {
-            Vec::new()
-        };
+        let mut out_scratch = Vec::new();
+        if out_short {
+            resize_zeroed_scratch(&mut out_scratch, self.rows, "output scratch")?;
+        }
 
         {
             let out_slice: &mut [f64] = if out_short {
@@ -134,6 +133,23 @@ impl CompiledKernelWasm {
         }
         Ok(())
     }
+}
+
+fn resize_zeroed_scratch(
+    values: &mut Vec<f64>,
+    len: usize,
+    kind: &'static str,
+) -> Result<(), WasmCompileError> {
+    if values.len() >= len {
+        values.resize(len, 0.0);
+        return Ok(());
+    }
+    let additional = len - values.len();
+    values.try_reserve(additional).map_err(|_| {
+        WasmCompileError::Backend(format!("{kind} allocation overflow for {len} values"))
+    })?;
+    values.resize(len, 0.0);
+    Ok(())
 }
 
 pub struct CompiledResidualWasm {
@@ -486,5 +502,28 @@ mod tests {
         assert!(stats.saw_memory_export);
         assert_eq!(stats.function_bodies, 1);
         assert!(stats.op_count > 20);
+    }
+
+    #[test]
+    fn compile_rejects_linear_solve_register_range_overflow() {
+        let rows = vec![vec![
+            LinearOp::LinearSolveComponent {
+                dst: 0,
+                matrix_start: u32::MAX,
+                rhs_start: 0,
+                n: usize::MAX,
+                component: 0,
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]];
+
+        let err = match super::CompiledKernelWasm::from_rows(rows, 0, 0) {
+            Ok(_) => panic!("oversized linear solve metadata should fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(err, super::WasmCompileError::Backend(message) if message.contains("linear solve matrix size overflow"))
+        );
     }
 }

@@ -5,9 +5,20 @@ fn test_eval_function_call_selected_complex_output_with_array_literal_input() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = Function::new("Pkg.pickFirstComplex", Default::default());
-    f.add_input(FunctionParam::new("c", "Modelica.ComplexMath.Complex").with_dims(vec![1]));
-    f.add_output(FunctionParam::new("result", "Modelica.ComplexMath.Complex"));
+    let mut f = Function::new("Pkg.pickFirstComplex", rumoca_core::Span::DUMMY);
+    f.add_input(
+        FunctionParam::new(
+            "c",
+            "Modelica.ComplexMath.Complex",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![1]),
+    );
+    f.add_output(FunctionParam::new(
+        "result",
+        "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     f.body = vec![Statement::Assignment {
         comp: comp_ref("result"),
         value: Expression::VarRef {
@@ -47,9 +58,20 @@ fn test_eval_function_call_selected_complex_sum_with_slice_field_access() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = Function::new("Pkg.sumComplex", Default::default());
-    f.add_input(FunctionParam::new("v", "Modelica.ComplexMath.Complex").with_dims(vec![1]));
-    f.add_output(FunctionParam::new("result", "Modelica.ComplexMath.Complex"));
+    let mut f = Function::new("Pkg.sumComplex", rumoca_core::Span::DUMMY);
+    f.add_input(
+        FunctionParam::new(
+            "v",
+            "Modelica.ComplexMath.Complex",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![1]),
+    );
+    f.add_output(FunctionParam::new(
+        "result",
+        "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     f.body = vec![Statement::Assignment {
         comp: comp_ref("result"),
         value: Expression::FunctionCall {
@@ -157,9 +179,20 @@ fn test_eval_function_call_selected_complex_sum_with_encoded_slice_varref() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = Function::new("Pkg.sumComplexEncoded", Default::default());
-    f.add_input(FunctionParam::new("v", "Modelica.ComplexMath.Complex").with_dims(vec![3]));
-    f.add_output(FunctionParam::new("result", "Modelica.ComplexMath.Complex"));
+    let mut f = Function::new("Pkg.sumComplexEncoded", rumoca_core::Span::DUMMY);
+    f.add_input(
+        FunctionParam::new(
+            "v",
+            "Modelica.ComplexMath.Complex",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
+    f.add_output(FunctionParam::new(
+        "result",
+        "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     f.body = vec![Statement::Assignment {
         comp: comp_ref("result"),
         value: Expression::FunctionCall {

@@ -49,7 +49,8 @@ end ArrayTest;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(model_src, "test.mo").unwrap();
-    let tree = ast::ClassTree::from_parsed(def);
+    let mut tree = ast::ClassTree::from_parsed(def);
+    tree.source_map.add("test.mo", model_src);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let model = "ArrayTest.TestArray";

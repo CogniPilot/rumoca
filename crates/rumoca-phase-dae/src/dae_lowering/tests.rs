@@ -1,12 +1,16 @@
 use super::*;
 use rumoca_core::Span;
 
+fn test_span() -> Span {
+    Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+}
+
 /// Build a VarRef expression.
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -18,9 +22,9 @@ fn var_ref_with_expr_subscript(
         name: rumoca_core::VarName::new(name).into(),
         subscripts: vec![rumoca_core::Subscript::Expr {
             expr: Box::new(subscript),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -30,7 +34,7 @@ fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -39,7 +43,7 @@ fn mul(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
         op: rumoca_core::OpBinary::Mul,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -48,14 +52,14 @@ fn div(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
         op: rumoca_core::OpBinary::Div,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn int_lit(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -63,7 +67,7 @@ fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -72,14 +76,14 @@ fn zeros(dim: i64) -> rumoca_core::Expression {
         function: rumoca_core::BuiltinFunction::Zeros,
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(dim),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
-    function_call_with_span(name, args, rumoca_core::Span::DUMMY)
+    function_call_with_span(name, args, test_span())
 }
 
 fn function_call_with_span(
@@ -99,7 +103,11 @@ fn parameter(name: &str, start: Option<rumoca_core::Expression>) -> dae::Variabl
     dae::Variable {
         name: rumoca_core::VarName::new(name),
         start,
-        ..Default::default()
+        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     }
 }
 
@@ -206,7 +214,10 @@ fn test_scalarize_phantom_vector_equations() {
     let mut dae = Dae::new();
 
     // Declared array variable
-    let mut sv_v = dae::Variable::new(rumoca_core::VarName::new("sineVoltage.v"));
+    let mut sv_v = dae::Variable::new(
+        rumoca_core::VarName::new("sineVoltage.v"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     sv_v.dims = vec![3];
     dae.variables
         .algebraics
@@ -217,12 +228,26 @@ fn test_scalarize_phantom_vector_equations() {
         let name_p = format!("sineVoltage.plug_p.pin[{k}].v");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name_p),
-            dae::Variable::new(rumoca_core::VarName::new(&name_p)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name_p),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         let name_n = format!("sineVoltage.plug_n.pin[{k}].v");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name_n),
-            dae::Variable::new(rumoca_core::VarName::new(&name_n)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name_n),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -284,7 +309,10 @@ fn test_scalarize_phantom_vector_equations() {
 #[test]
 fn test_scalarize_phantom_vector_equations_visits_event_partitions() {
     let mut dae = Dae::new();
-    let mut vector_var = dae::Variable::new(rumoca_core::VarName::new("sensor.v"));
+    let mut vector_var = dae::Variable::new(
+        rumoca_core::VarName::new("sensor.v"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     vector_var.dims = vec![2];
     dae.variables
         .algebraics
@@ -294,7 +322,14 @@ fn test_scalarize_phantom_vector_equations_visits_event_partitions() {
         let name = format!("sensor.pin[{k}].v");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name),
-            dae::Variable::new(rumoca_core::VarName::new(&name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -346,7 +381,10 @@ fn test_scalarize_phantom_vector_equations_visits_event_partitions() {
 #[test]
 fn test_scalarize_phantom_vector_equations_preserves_event_assignment_lhs() {
     let mut dae = Dae::new();
-    let mut vector_var = dae::Variable::new(rumoca_core::VarName::new("switch.off"));
+    let mut vector_var = dae::Variable::new(
+        rumoca_core::VarName::new("switch.off"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     vector_var.dims = vec![2];
     dae.variables
         .discrete_valued
@@ -356,14 +394,21 @@ fn test_scalarize_phantom_vector_equations_preserves_event_assignment_lhs() {
         let name = format!("switch.idealSwitch[{k}].off");
         dae.variables.discrete_valued.insert(
             rumoca_core::VarName::new(&name),
-            dae::Variable::new(rumoca_core::VarName::new(&name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
     dae.discrete.valued_updates.push(dae::Equation::explicit(
         rumoca_core::VarName::new("switch.off"),
         var_ref("switch.idealSwitch.off"),
-        Span::DUMMY,
+        test_span(),
         "discrete valued assignment",
     ));
     dae.discrete.valued_updates[0].scalar_count = 2;
@@ -388,7 +433,14 @@ fn scalarize_phantom_vector_equations_reports_missing_function_shape_with_call_s
         let name = format!("plug.pin[{k}].v");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name),
-            dae::Variable::new(rumoca_core::VarName::new(&name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -403,7 +455,7 @@ fn scalarize_phantom_vector_equations_reports_missing_function_shape_with_call_s
     let err = scalarize_phantom_vector_equations(&mut dae)
         .expect_err("missing function metadata should be a spanned DAE error");
     match err {
-        ToDaeError::RuntimeContractViolation { detail, span } => {
+        ToDaeError::RuntimeContractViolation { detail, span, .. } => {
             assert!(detail.contains("missing function output metadata for `missingShape`"));
             assert_eq!(span, rumoca_core::span_to_source_span(call_span));
         }
@@ -416,11 +468,17 @@ fn test_scalarize_singleton_phantom_connector_reference() {
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("boundary.ports[1].C_outflow"),
-        dae::Variable::new(rumoca_core::VarName::new("boundary.ports[1].C_outflow")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("boundary.ports[1].C_outflow"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.parameters.insert(
         rumoca_core::VarName::new("boundary.C"),
-        dae::Variable::new(rumoca_core::VarName::new("boundary.C")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("boundary.C"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     dae.continuous.equations.push(dae::Equation {
@@ -459,13 +517,57 @@ fn test_scalarize_singleton_phantom_connector_reference() {
 #[test]
 fn test_canonicalizes_trailing_embedded_subscript_to_var_ref_subscript() {
     let mut dae = Dae::new();
-    let mut voltage = dae::Variable::new(rumoca_core::VarName::new("battery.pin.v"));
+    let span = test_span();
+    let mut voltage = dae::Variable::new(
+        rumoca_core::VarName::new("battery.pin.v"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     voltage.dims = vec![1];
     dae.variables
         .algebraics
         .insert(rumoca_core::VarName::new("battery.pin.v"), voltage);
     // Flatten output carries the structured component reference; bare
     // name-encoded source references are not canonicalized.
+    let structured_ref = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(
+            rumoca_core::component_reference_from_flat_name(
+                &rumoca_core::VarName::new("battery.pin.v[1]"),
+                span,
+            )
+            .expect("fixture name must form a component reference"),
+        ),
+        subscripts: vec![],
+        span,
+    };
+    dae.continuous.equations.push(dae::Equation::residual(
+        structured_ref,
+        span,
+        "connection equation: battery.pin.v[1] = other.v[1]",
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = &dae.continuous.equations[0].rhs
+    else {
+        panic!("expected canonical var ref");
+    };
+    assert_eq!(name.as_str(), "battery.pin.v");
+    assert_eq!(subscripts.len(), 1);
+}
+
+#[test]
+fn embedded_scalar_reference_canonicalization_requires_provenance() {
+    let mut dae = Dae::new();
+    let mut voltage = dae::Variable::new(
+        rumoca_core::VarName::new("battery.pin.v"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    voltage.dims = vec![1];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("battery.pin.v"), voltage);
     let structured_ref = rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::from_component_reference(
             rumoca_core::component_reference_from_flat_name(
@@ -483,22 +585,24 @@ fn test_canonicalizes_trailing_embedded_subscript_to_var_ref_subscript() {
         "connection equation: battery.pin.v[1] = other.v[1]",
     ));
 
-    scalarize_phantom_vector_equations(&mut dae).unwrap();
+    let err = scalarize_phantom_vector_equations(&mut dae)
+        .expect_err("source-derived embedded scalar subscripts require provenance");
 
-    let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = &dae.continuous.equations[0].rhs
-    else {
-        panic!("expected canonical var ref");
-    };
-    assert_eq!(name.as_str(), "battery.pin.v");
-    assert_eq!(subscripts.len(), 1);
+    assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    assert!(
+        err.to_string()
+            .contains("DAE embedded scalar reference subscript"),
+        "error should identify the missing embedded-subscript provenance: {err}"
+    );
 }
 
 #[test]
 fn test_scalarize_vector_binding_preserves_array_comprehension_without_phantom_refs() {
     let mut dae = Dae::new();
-    let mut vs = dae::Variable::new(rumoca_core::VarName::new("pipe.vs"));
+    let mut vs = dae::Variable::new(
+        rumoca_core::VarName::new("pipe.vs"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     vs.dims = vec![2];
     dae.variables
         .algebraics
@@ -558,12 +662,26 @@ fn test_scalarize_phantom_vector_equations_selects_zeros() {
         let name_p = format!("sensor.plug_p.pin[{k}].i");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name_p),
-            dae::Variable::new(rumoca_core::VarName::new(&name_p)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name_p),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         let name_n = format!("sensor.plug_n.pin[{k}].i");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name_n),
-            dae::Variable::new(rumoca_core::VarName::new(&name_n)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(&name_n),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -615,8 +733,9 @@ fn test_scalarize_phantom_vector_equations_selects_zeros() {
 #[test]
 fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
     let mut dae = Dae::new();
+    let span = test_span();
 
-    let mut y = dae::Variable::new(rumoca_core::VarName::new("sensor.y"));
+    let mut y = dae::Variable::new(rumoca_core::VarName::new("sensor.y"), span);
     y.dims = vec![2];
     dae.variables
         .algebraics
@@ -626,12 +745,12 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
         let name_p = format!("sensor.plug_p.pin[{k}].v");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name_p),
-            dae::Variable::new(rumoca_core::VarName::new(&name_p)),
+            dae::Variable::new(rumoca_core::VarName::new(&name_p), span),
         );
         let name_n = format!("sensor.plug_n.pin[{k}].v");
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(&name_n),
-            dae::Variable::new(rumoca_core::VarName::new(&name_n)),
+            dae::Variable::new(rumoca_core::VarName::new(&name_n), span),
         );
     }
 
@@ -684,7 +803,7 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
             subscripts,
             &[rumoca_core::Subscript::generated_index(
                 (idx + 1) as i64,
-                rumoca_core::Span::DUMMY,
+                test_span(),
             )]
         );
         let rumoca_core::Expression::FunctionCall { args, .. } = base.as_ref() else {
@@ -713,11 +832,17 @@ fn test_scalarize_leaves_scalar_equations_unchanged() {
     // A simple scalar equation: x - y = 0
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("x"),
-        dae::Variable::new(rumoca_core::VarName::new("x")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let eq = dae::Equation::residual(sub(var_ref("x"), var_ref("y")), Span::DUMMY, "scalar eq");
@@ -735,13 +860,19 @@ fn test_scalarize_ignores_vector_equations_without_phantom_refs() {
     let mut dae = Dae::new();
 
     // Both variables are declared arrays — no phantom refs
-    let mut var_a = dae::Variable::new(rumoca_core::VarName::new("a"));
+    let mut var_a = dae::Variable::new(
+        rumoca_core::VarName::new("a"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     var_a.dims = vec![3];
     dae.variables
         .algebraics
         .insert(rumoca_core::VarName::new("a"), var_a);
 
-    let mut var_b = dae::Variable::new(rumoca_core::VarName::new("b"));
+    let mut var_b = dae::Variable::new(
+        rumoca_core::VarName::new("b"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     var_b.dims = vec![3];
     dae.variables
         .algebraics
@@ -763,19 +894,28 @@ fn test_scalarize_ignores_vector_equations_without_phantom_refs() {
 fn test_scalarize_preserves_declared_matrix_vector_equations() {
     let mut dae = Dae::new();
 
-    let mut j = dae::Variable::new(rumoca_core::VarName::new("J"));
+    let mut j = dae::Variable::new(
+        rumoca_core::VarName::new("J"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     j.dims = vec![3, 3];
     dae.variables
         .parameters
         .insert(rumoca_core::VarName::new("J"), j);
 
-    let mut omega = dae::Variable::new(rumoca_core::VarName::new("omega"));
+    let mut omega = dae::Variable::new(
+        rumoca_core::VarName::new("omega"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     omega.dims = vec![3];
     dae.variables
         .states
         .insert(rumoca_core::VarName::new("omega"), omega);
 
-    let mut m_body = dae::Variable::new(rumoca_core::VarName::new("M_body"));
+    let mut m_body = dae::Variable::new(
+        rumoca_core::VarName::new("M_body"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     m_body.dims = vec![3];
     dae.variables
         .algebraics

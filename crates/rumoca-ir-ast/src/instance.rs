@@ -11,8 +11,8 @@ use crate::AstIndexMap as IndexMap;
 use indexmap::IndexSet;
 use rumoca_core::{
     ComponentPath, ComponentRefPart as CoreComponentRefPart,
-    ComponentReference as CoreComponentReference, DefId, ScopeId, Span, Subscript as CoreSubscript,
-    TypeId,
+    ComponentReference as CoreComponentReference, DefId, ProvenanceSpan, ScopeId, Span,
+    Subscript as CoreSubscript, TypeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -733,9 +733,11 @@ impl Default for InstanceData {
 
 pub fn component_reference_for_instance(
     qualified_name: &QualifiedName,
-    span: Span,
+    span: ProvenanceSpan,
     def_id: Option<DefId>,
 ) -> CoreComponentReference {
+    let provenance = span;
+    let span = provenance.span();
     CoreComponentReference {
         local: false,
         span,
@@ -747,7 +749,7 @@ pub fn component_reference_for_instance(
                 span,
                 subs: subs
                     .iter()
-                    .map(|sub| CoreSubscript::generated_index(*sub, span))
+                    .map(|sub| CoreSubscript::generated_index_with_provenance(*sub, provenance))
                     .collect(),
             })
             .collect(),
@@ -1147,15 +1149,21 @@ mod tests {
     }
 
     #[test]
-    fn component_reference_for_instance_preserves_parts_subscripts_and_def_id() {
+    fn component_reference_for_instance_preserves_parts_subscripts_and_def_id()
+    -> Result<(), rumoca_core::MissingProvenanceSpan> {
         let def_id = DefId::new(9);
-        let span = Span::DUMMY;
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("instance_test.mo"),
+            1,
+            5,
+        );
+        let provenance = span.require_provenance("instance test component reference")?;
         let mut qn = QualifiedName::new();
         qn.push("body".to_string(), vec![]);
         qn.push("frame".to_string(), vec![2]);
         qn.push("r_0".to_string(), vec![]);
 
-        let reference = component_reference_for_instance(&qn, span, Some(def_id));
+        let reference = component_reference_for_instance(&qn, provenance, Some(def_id));
 
         assert_eq!(reference.def_id, Some(def_id));
         assert_eq!(reference.parts.len(), 3);
@@ -1163,9 +1171,12 @@ mod tests {
         assert_eq!(reference.parts[1].ident, "frame");
         assert_eq!(
             reference.parts[1].subs,
-            vec![CoreSubscript::generated_index(2, span)]
+            vec![CoreSubscript::generated_index_with_provenance(
+                2, provenance
+            )]
         );
         assert_eq!(reference.parts[2].ident, "r_0");
+        Ok(())
     }
 
     #[test]

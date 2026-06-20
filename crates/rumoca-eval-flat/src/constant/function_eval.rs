@@ -1395,11 +1395,19 @@ fn apply_single_subscript(
 mod tests {
     use super::*;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("function_eval_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn make_simple_function() -> Function {
         // function f(input Real x) output Real y; algorithm y := x * 2; end f;
         let mut func = Function::new("test.f", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("x", "Real"));
-        func.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        func.add_input(rumoca_core::FunctionParam::new("x", "Real", test_span()));
+        func.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
         func.pure = true;
 
         // y := x * 2
@@ -1455,10 +1463,14 @@ mod tests {
     #[test]
     fn test_named_argument_binding() {
         let mut func = Function::new("test.third", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("x", "Integer"));
-        func.add_input(rumoca_core::FunctionParam::new("y", "Integer"));
-        func.add_input(rumoca_core::FunctionParam::new("z", "Integer"));
-        func.add_output(rumoca_core::FunctionParam::new("result", "Integer"));
+        func.add_input(rumoca_core::FunctionParam::new("x", "Integer", test_span()));
+        func.add_input(rumoca_core::FunctionParam::new("y", "Integer", test_span()));
+        func.add_input(rumoca_core::FunctionParam::new("z", "Integer", test_span()));
+        func.add_output(rumoca_core::FunctionParam::new(
+            "result",
+            "Integer",
+            test_span(),
+        ));
         func.pure = true;
         func.body = vec![rumoca_core::Statement::Assignment {
             comp: rumoca_core::ComponentReference {
@@ -1539,8 +1551,8 @@ mod tests {
     fn test_recursion_limit() {
         // Create a recursive function that will exceed the limit
         let mut func = Function::new("test.recurse", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("n", "Integer"));
-        func.add_output(rumoca_core::FunctionParam::new("y", "Integer"));
+        func.add_input(rumoca_core::FunctionParam::new("n", "Integer", test_span()));
+        func.add_output(rumoca_core::FunctionParam::new("y", "Integer", test_span()));
         func.pure = true;
 
         // Simple function that always returns 0 (to test limit checking)
@@ -1595,7 +1607,11 @@ mod tests {
     fn test_while_loop() {
         // Test: function countTo4() output Integer count; algorithm count := 0; while count < 4 loop count := count + 1; end while; end countTo4;
         let mut func = Function::new("test.countTo4", Span::DUMMY);
-        func.add_output(rumoca_core::FunctionParam::new("count", "Integer"));
+        func.add_output(rumoca_core::FunctionParam::new(
+            "count",
+            "Integer",
+            test_span(),
+        ));
         func.pure = true;
 
         // count := 0

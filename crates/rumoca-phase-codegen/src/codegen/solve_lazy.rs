@@ -17,6 +17,8 @@ use minijinja::Value;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
 
+use crate::errors::CodegenError;
+
 // ── Generic lazy Map / Seq ───────────────────────────────────────────────────
 
 type MapGet = Arc<dyn Fn(&str) -> Option<Value> + Send + Sync>;
@@ -157,27 +159,29 @@ fn raw_op_list_value(ops: Arc<Vec<solve::LinearOp>>) -> Value {
 // ── IR hierarchy ─────────────────────────────────────────────────────────────
 
 fn scalar_program_block_value(block: Arc<solve::ScalarProgramBlock>) -> Value {
-    lazy_map(&["programs", "program_spans"], move |k| match k {
-        "programs" => Some(Value::from_object(SolveProgramsObject {
-            block: block.clone(),
-        })),
-        "program_spans" => Some(Value::from_serialize(&block.program_spans)),
-        _ => None,
-    })
+    lazy_map(
+        &["programs", "program_spans", "output_indices"],
+        move |k| match k {
+            "programs" => Some(Value::from_object(SolveProgramsObject {
+                block: block.clone(),
+            })),
+            "program_spans" => Some(Value::from_serialize(&block.program_spans)),
+            "output_indices" => Some(Value::from_serialize(&block.output_indices)),
+            _ => None,
+        },
+    )
 }
 
-fn compute_node_value(node: Arc<solve::ComputeNode>) -> Value {
+fn compute_node_value(node: Arc<solve::ComputeNode>) -> Result<Value, CodegenError> {
     // Serialized as a tagged enum: { "MatMul": {...} } / { "ScalarPrograms": ... }
     // / { "LinSolve": {...} }. Only the active variant key is present.
-    match node.as_ref() {
-        solve::ComputeNode::ScalarPrograms(_) => lazy_map(&["ScalarPrograms"], move |k| {
-            (k == "ScalarPrograms").then(|| {
-                let solve::ComputeNode::ScalarPrograms(block) = node.as_ref() else {
-                    unreachable!()
-                };
-                scalar_program_block_value(Arc::new(block.clone()))
+    Ok(match node.as_ref() {
+        solve::ComputeNode::ScalarPrograms(block) => {
+            let block = Arc::new(block.clone());
+            lazy_map(&["ScalarPrograms"], move |k| {
+                (k == "ScalarPrograms").then(|| scalar_program_block_value(block.clone()))
             })
-        }),
+        }
         solve::ComputeNode::MatMul { .. } => lazy_map(&["MatMul"], move |k| {
             (k == "MatMul").then(|| matmul_value(node.clone()))
         }),
@@ -186,16 +190,16 @@ fn compute_node_value(node: Arc<solve::ComputeNode>) -> Value {
         }),
         // An affine stencil renders as its scalarized expansion — matching how
         // `c_renderable_derivative_nodes` lowers stencils for the C templates.
-        solve::ComputeNode::AffineStencil { .. } => {
+        solve::ComputeNode::Map { .. } | solve::ComputeNode::AffineStencil { .. } => {
             let scalar = rumoca_eval_solve::to_scalar_program_block(&solve::ComputeBlock {
                 nodes: vec![node.as_ref().clone()],
-            });
+            })?;
+            let scalar = Arc::new(scalar);
             lazy_map(&["ScalarPrograms"], move |k| {
-                (k == "ScalarPrograms")
-                    .then(|| scalar_program_block_value(Arc::new(scalar.clone())))
+                (k == "ScalarPrograms").then(|| scalar_program_block_value(scalar.clone()))
             })
         }
-    }
+    })
 }
 
 fn matmul_value(node: Arc<solve::ComputeNode>) -> Value {
@@ -228,7 +232,7 @@ fn matmul_value(node: Arc<solve::ComputeNode>) -> Value {
                 span,
             } = node.as_ref()
             else {
-                unreachable!()
+                return None;
             };
             match k {
                 "lhs_ops" => Some(raw_op_list_value(Arc::new(lhs_ops.clone()))),
@@ -270,7 +274,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
                 span,
             } = node.as_ref()
             else {
-                unreachable!()
+                return None;
             };
             match k {
                 "setup_ops" => Some(raw_op_list_value(Arc::new(setup_ops.clone()))),
@@ -288,8 +292,12 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
 
 /// Lazy view of a `ComputeBlock` exposing `nodes` (structured) plus the derived
 /// `scalar_programs` fallback and counts — matching `solve_template_blocks_value`.
-pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Value {
-    lazy_map(
+pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Value, CodegenError> {
+    let scalar = Arc::new(rumoca_eval_solve::to_scalar_program_block(&block)?);
+    let output_count = block.len()?;
+    let uses_linear_solve = super::scalar_program_block_uses_linear_solve_component(&scalar);
+    let nodes = nodes_value(block.clone())?;
+    Ok(lazy_map(
         &[
             "nodes",
             "scalar_programs",
@@ -298,31 +306,21 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Value {
             "scalar_programs_use_linear_solve_component",
         ],
         move |k| match k {
-            "nodes" => {
-                let block = block.clone();
-                Some(lazy_seq(block.nodes.len(), move |i| {
-                    compute_node_value(Arc::new(block.nodes[i].clone()))
-                }))
-            }
-            "scalar_programs" => {
-                let scalar = Arc::new(rumoca_eval_solve::to_scalar_program_block(&block));
-                Some(scalar_program_block_value(scalar))
-            }
-            "output_count" => Some(Value::from(block.len())),
+            "nodes" => Some(nodes.clone()),
+            "scalar_programs" => Some(scalar_program_block_value(scalar.clone())),
+            "output_count" => Some(Value::from(output_count)),
             "tensor_node_count" => Some(Value::from(block.tensor_node_count())),
-            "scalar_programs_use_linear_solve_component" => {
-                let scalar = rumoca_eval_solve::to_scalar_program_block(&block);
-                Some(Value::from(
-                    super::scalar_program_block_uses_linear_solve_component(&scalar),
-                ))
-            }
+            "scalar_programs_use_linear_solve_component" => Some(Value::from(uses_linear_solve)),
             _ => None,
         },
-    )
+    ))
 }
 
-fn continuous_value(problem: Arc<solve::SolveProblem>) -> Value {
-    lazy_map(
+fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
+    let implicit_rhs = compute_block_value(Arc::new(problem.continuous.implicit_rhs.clone()))?;
+    let derivative_rhs = compute_block_value(Arc::new(problem.continuous.derivative_rhs.clone()))?;
+    let residual = compute_block_value(Arc::new(problem.continuous.residual.clone()))?;
+    Ok(lazy_map(
         &[
             "implicit_rhs",
             "implicit_row_targets",
@@ -333,9 +331,9 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Value {
         move |k| {
             let c = &problem.continuous;
             match k {
-                "implicit_rhs" => Some(compute_block_value(Arc::new(c.implicit_rhs.clone()))),
-                "derivative_rhs" => Some(compute_block_value(Arc::new(c.derivative_rhs.clone()))),
-                "residual" => Some(scalar_program_block_value(Arc::new(c.residual.clone()))),
+                "implicit_rhs" => Some(implicit_rhs.clone()),
+                "derivative_rhs" => Some(derivative_rhs.clone()),
+                "residual" => Some(residual.clone()),
                 "implicit_row_targets" => Some(Value::from_serialize(&c.implicit_row_targets)),
                 "algebraic_projection_plan" => {
                     Some(Value::from_serialize(&c.algebraic_projection_plan))
@@ -343,7 +341,7 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Value {
                 _ => None,
             }
         },
-    )
+    ))
 }
 
 fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
@@ -412,24 +410,29 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
     )
 }
 
-pub(super) fn artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
-    lazy_map(&["continuous"], move |k| {
-        (k == "continuous").then(|| continuous_artifacts_value(artifacts.clone()))
-    })
+pub(super) fn artifacts_value(
+    artifacts: Arc<solve::SolveArtifacts>,
+) -> Result<Value, CodegenError> {
+    let continuous = continuous_artifacts_value(artifacts.clone())?;
+    Ok(lazy_map(&["continuous"], move |k| {
+        (k == "continuous").then(|| continuous.clone())
+    }))
 }
 
 /// Lazy `solve.artifacts.continuous` map: the continuous Jacobian / mass-matrix
 /// artifacts, each produced on demand so a target that never reads them pays
 /// nothing for materializing op-heavy blocks.
-fn continuous_artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
-    lazy_map(
+fn continuous_artifacts_value(
+    artifacts: Arc<solve::SolveArtifacts>,
+) -> Result<Value, CodegenError> {
+    let implicit_jacobian_v =
+        compute_block_value(Arc::new(artifacts.continuous.implicit_jacobian_v.clone()))?;
+    Ok(lazy_map(
         &["mass_matrix", "implicit_jacobian_v", "full_jacobian_v"],
         move |k| {
             let c = &artifacts.continuous;
             match k {
-                "implicit_jacobian_v" => {
-                    Some(compute_block_value(Arc::new(c.implicit_jacobian_v.clone())))
-                }
+                "implicit_jacobian_v" => Some(implicit_jacobian_v.clone()),
                 "full_jacobian_v" => Some(scalar_program_block_value(Arc::new(
                     c.full_jacobian_v.clone(),
                 ))),
@@ -437,7 +440,7 @@ fn continuous_artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
                 _ => None,
             }
         },
-    )
+    ))
 }
 
 /// Lazy `solve` context object: the `SolveProblem` fields plus an embedded
@@ -447,8 +450,10 @@ fn continuous_artifacts_value(artifacts: Arc<solve::SolveArtifacts>) -> Value {
 pub(super) fn solve_value(
     problem: Arc<solve::SolveProblem>,
     artifacts: Arc<solve::SolveArtifacts>,
-) -> Value {
-    lazy_map(
+) -> Result<Value, CodegenError> {
+    let continuous = continuous_value(problem.clone())?;
+    let artifacts_value = artifacts_value(artifacts.clone())?;
+    Ok(lazy_map(
         &[
             "schema_version",
             "layout",
@@ -464,22 +469,28 @@ pub(super) fn solve_value(
             "schema_version" => Some(Value::from(problem.schema_version)),
             "layout" => Some(Value::from_serialize(&problem.layout)),
             "solve_layout" => Some(Value::from_serialize(&problem.solve_layout)),
-            "continuous" => Some(continuous_value(problem.clone())),
+            "continuous" => Some(continuous.clone()),
             "discrete" => Some(discrete_value(problem.clone())),
             "events" => Some(events_value(problem.clone())),
             "initialization" => Some(Value::from_serialize(&problem.initialization)),
             "clocks" => Some(Value::from_serialize(&problem.clocks)),
-            "artifacts" => Some(artifacts_value(artifacts.clone())),
+            "artifacts" => Some(artifacts_value.clone()),
             _ => None,
         },
-    )
+    ))
 }
 
 /// Lazy `nodes` Seq of a `ComputeBlock` (each `ComputeNode` materialized on
 /// demand, with its op lists lazy underneath).
-pub(super) fn nodes_value(block: Arc<solve::ComputeBlock>) -> Value {
+pub(super) fn nodes_value(block: Arc<solve::ComputeBlock>) -> Result<Value, CodegenError> {
     let len = block.nodes.len();
-    lazy_seq(len, move |i| {
-        compute_node_value(Arc::new(block.nodes[i].clone()))
-    })
+    let mut nodes = Vec::new();
+    nodes.try_reserve_exact(len).map_err(|_| {
+        CodegenError::template("solve compute node list exceeds host memory limits")
+    })?;
+    for node in &block.nodes {
+        nodes.push(compute_node_value(Arc::new(node.clone()))?);
+    }
+    let nodes = Arc::new(nodes);
+    Ok(lazy_seq(len, move |i| nodes[i].clone()))
 }

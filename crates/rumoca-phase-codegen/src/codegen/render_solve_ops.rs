@@ -8,7 +8,7 @@ use crate::errors::render_err;
 
 use super::RenderResult;
 
-// ── Python (CasADi / JAX) ───────────────────────────────────────────
+// Python (CasADi / JAX)
 
 /// Unary ops for the Python (CasADi/JAX) dialect. Emits bare function names the
 /// consuming template binds to `ca.*` / `jnp.*`. Mirrors the reference
@@ -78,7 +78,7 @@ pub(super) fn render_solve_compare_py(op: &str, lhs: String, rhs: String) -> Ren
     Ok(format!("(({lhs}) {op} ({rhs}))"))
 }
 
-// ── WGSL (WebGPU compute shader) ────────────────────────────────────
+// WGSL (WebGPU compute shader)
 
 pub(super) fn render_solve_unary_wgsl(op: &str, arg: String) -> RenderResult {
     match op {
@@ -139,7 +139,7 @@ pub(super) fn render_solve_compare_wgsl(op: &str, lhs: String, rhs: String) -> R
     Ok(format!("select(0.0, 1.0, ({lhs}) {op} ({rhs}))"))
 }
 
-// ── C ────────────────────────────────────────────────────────────────
+// C
 
 pub(super) fn render_solve_unary_c(op: &str, arg: String) -> RenderResult {
     match op {
@@ -185,7 +185,7 @@ pub(super) fn render_solve_binary_c(op: &str, lhs: String, rhs: String) -> Rende
     }
 }
 
-// ── Rust ─────────────────────────────────────────────────────────────
+// Rust
 
 pub(super) fn render_solve_unary_rust(op: &str, arg: String) -> RenderResult {
     match op {
@@ -235,7 +235,7 @@ pub(super) fn render_solve_binary_rust(op: &str, lhs: String, rhs: String) -> Re
     }
 }
 
-// ── C / Rust shared compare (ternary-style) ─────────────────────────
+// C / Rust shared compare (ternary-style)
 
 pub(super) fn render_solve_compare(op: &str, lhs: String, rhs: String) -> RenderResult {
     let op = match op {

@@ -205,14 +205,14 @@ mod tests {
             VarName::new("deadline"),
             Variable {
                 name: VarName::new("deadline"),
-                ..Default::default()
+                ..Variable::empty_with_span(test_span())
             },
         );
         dae.variables.parameters.insert(
             VarName::new("p"),
             Variable {
                 name: VarName::new("p"),
-                ..Default::default()
+                ..Variable::empty_with_span(test_span())
             },
         );
         let indexed_parameter = Expression::VarRef {

@@ -1,36 +1,77 @@
+// SPEC_0021 file-size exception: solve-model regression tests cover model
+// inventory, start values, runtime parameters, and random initialization in one
+// file. split plan: move runtime-parameter and initialization fixtures into
+// focused test modules.
 use super::*;
+
+mod external_table_and_random_tests;
+
+fn solve_model_test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("solve_model_fixture.mo"),
+        0,
+        1,
+    )
+}
 
 fn scalar_var(name: &str) -> dae::Variable {
     dae::Variable {
         name: rumoca_core::VarName::new(name),
-        component_ref: Some(test_component_ref_from_name(name)),
-        ..Default::default()
+        component_ref: Some(source_component_ref_from_name(name)),
+        source_span: solve_model_test_span(),
+        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     }
 }
 
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
+        name: rumoca_core::Reference::from_component_reference(source_component_ref_from_name(
+            name,
+        )),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
+    }
+}
+
+fn plain_var(name: &str, span: rumoca_core::Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: Vec::new(),
+        span,
     }
 }
 
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
-    test_component_ref_from_name(name)
+    source_component_ref_from_name(name)
 }
 
-fn test_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference {
-    crate::test_support::component_ref_from_name(name)
+fn source_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference::from_flat_segments(
+        name,
+        solve_model_test_span(),
+        Some(source_fixture_def_id(name)),
+    )
+}
+
+fn source_fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
 }
 
 fn indexed_var(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(int_expr(
-            index,
-        )))],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(int_expr(index)),
+            solve_model_test_span(),
+        )],
+        span: solve_model_test_span(),
     }
 }
 
@@ -38,7 +79,7 @@ fn field_access_expr(base: rumoca_core::Expression, field: &str) -> rumoca_core:
     rumoca_core::Expression::FieldAccess {
         base: Box::new(base),
         field: field.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -46,23 +87,23 @@ fn slice_expr(base: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::Index {
         base: Box::new(base),
         subscripts: vec![rumoca_core::Subscript::generated_colon(
-            rumoca_core::Span::DUMMY,
+            solve_model_test_span(),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
 fn int_expr(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
 fn string_expr(value: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::String(value.to_string()),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -70,14 +111,14 @@ fn array_expr(elements: Vec<rumoca_core::Expression>, is_matrix: bool) -> rumoca
     rumoca_core::Expression::Array {
         elements,
         is_matrix,
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
 fn real_expr(value: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -86,7 +127,7 @@ fn call_expr(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Exp
         name: rumoca_core::VarName::new(name).into(),
         args,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -98,7 +139,7 @@ fn constructor_call_expr(
         name: rumoca_core::VarName::new(name).into(),
         args,
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -107,7 +148,7 @@ fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
         op: OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -115,7 +156,7 @@ fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: solve_model_test_span(),
     }
 }
 
@@ -134,7 +175,7 @@ fn lower_expands_visible_observation_for_scalarized_record_field_slice() {
         );
         dae_model.continuous.equations.push(dae::Equation::residual(
             sub(var(name.as_str()), real_expr(index as f64)),
-            Default::default(),
+            solve_model_test_span(),
             format!("{name} row"),
         ));
     }
@@ -142,7 +183,7 @@ fn lower_expands_visible_observation_for_scalarized_record_field_slice() {
         0,
         dae::Equation::residual(
             sub(der(var("x")), real_expr(0.0)),
-            Default::default(),
+            solve_model_test_span(),
             "x row",
         ),
     );
@@ -172,6 +213,272 @@ fn seed_var_values_rejects_empty_scalar_seed() {
     let message = err.to_string();
     assert!(message.contains("start value for `p`"));
     assert!(message.contains("empty scalar start value"));
+}
+
+#[test]
+fn lower_dae_to_solve_model_reports_invalid_variable_shape_span() {
+    let mut dae_model = dae::Dae::default();
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(43), 11, 29);
+    let mut bad = scalar_var("bad");
+    bad.dims = vec![2, -1];
+    bad.source_span = span;
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("bad"), bad);
+
+    let err = lower_dae_to_solve_model(&dae_model)
+        .expect_err("invalid DAE variable shape should bubble through solve-model lowering");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("DAE variable `bad` has negative dimension -1"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn scalar_names_reports_invalid_variable_shape_span() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(44), 3, 17);
+    let mut bad = scalar_var("bad");
+    bad.dims = vec![2, -1];
+    bad.source_span = span;
+
+    let err = scalar_names("bad", &bad)
+        .expect_err("invalid DAE variable shape should bubble through scalar-name expansion");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("DAE variable `bad` has negative dimension -1"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn expand_values_to_size_reports_capacity_overflow_with_source_span() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(45), 7, 15);
+    let err = expand_values_to_size(vec![1.0], usize::MAX, "huge_start", span)
+        .expect_err("oversized start expansion should fail before allocating");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("solve-model start value capacity for `huge_start` overflows"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn expand_values_to_size_reports_capacity_overflow_without_dummy_span() {
+    let err = expand_values_to_size(
+        vec![1.0],
+        usize::MAX,
+        "huge_start",
+        rumoca_core::Span::DUMMY,
+    )
+    .expect_err("oversized unspanned start expansion should fail before allocating");
+
+    assert_eq!(err.source_span(), None);
+    assert!(matches!(
+        err,
+        SolveModelLowerError::Lower(LowerError::UnspannedContractViolation { .. })
+    ));
+    assert!(
+        err.diagnostic_reason()
+            .contains("solve-model start value capacity for `huge_start` overflows"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn initial_solver_values_report_capacity_overflow_before_runtime_eval()
+-> Result<(), SolveModelLowerError> {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(75), 4, 12);
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable {
+            source_span: span,
+            ..scalar_var("x")
+        },
+    );
+
+    let err = match initial_solver_values(
+        &dae_model,
+        None,
+        &[],
+        usize::MAX,
+        Arc::new(EvalRuntimeState::default()),
+    ) {
+        Ok(_) => {
+            return Err(SolveModelLowerError::Lower(LowerError::ContractViolation {
+                reason: "oversized initial solver values should fail before allocating".to_string(),
+                span,
+            }));
+        }
+        Err(err) => err,
+    };
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("initial solver values capacity exceeds host memory limits"),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn expand_values_to_size_preserves_broadcast_and_padding_behavior() {
+    assert_eq!(
+        expand_values_to_size(vec![2.5], 3, "x", rumoca_core::Span::DUMMY)
+            .expect("scalar start should broadcast"),
+        vec![2.5, 2.5, 2.5]
+    );
+    assert_eq!(
+        expand_values_to_size(vec![1.0, 2.0], 4, "x", rumoca_core::Span::DUMMY)
+            .expect("short explicit start should pad with the last value"),
+        vec![1.0, 2.0, 2.0, 2.0]
+    );
+}
+
+#[test]
+fn default_start_values_for_size_reports_capacity_overflow_with_source_span() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(46), 2, 8);
+    let mut var = scalar_var("huge_default");
+    var.source_span = span;
+
+    let err = default_start_values_for_size(&var, 0.0, usize::MAX)
+        .expect_err("oversized default start expansion should fail before allocating");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("solve-model start value capacity for `huge_default` overflows"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn default_start_values_for_size_preserves_scalar_default_start() {
+    let var = scalar_var("x");
+
+    assert_eq!(
+        default_start_values_for_size(&var, 4.0, 0).expect("scalar default should be present"),
+        vec![4.0]
+    );
+    assert_eq!(
+        default_start_values_for_size(&var, 4.0, 3).expect("array default should expand"),
+        vec![4.0, 4.0, 4.0]
+    );
+}
+
+#[test]
+fn identity_mass_matrix_reports_capacity_overflow() -> Result<(), SolveModelLowerError> {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(76), 1, 9);
+
+    let err = match state_identity_mass_matrix(usize::MAX, span) {
+        Ok(_) => {
+            return Err(SolveModelLowerError::Lower(LowerError::ContractViolation {
+                reason: "oversized identity mass matrix should fail before allocating".to_string(),
+                span,
+            }));
+        }
+        Err(err) => err,
+    };
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("identity mass matrix rows capacity exceeds host memory limits"),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn visible_subscripts_report_integer_range_overflow() -> Result<(), LowerError> {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(77), 3, 11);
+
+    let err = match visible_subscripts_from_usize(vec![usize::MAX], span) {
+        Ok(_) => {
+            return Err(LowerError::ContractViolation {
+                reason: "oversized visible subscript should fail before lowering".to_string(),
+                span,
+            });
+        }
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        LowerError::ContractViolation { reason, span: actual }
+            if actual == span
+                && reason.contains("visible variable subscript exceeds Modelica integer range")
+    ));
+    Ok(())
+}
+
+#[test]
+fn visible_subscripts_report_integer_range_overflow_without_dummy_span() {
+    let err = visible_subscripts_from_usize(vec![usize::MAX], rumoca_core::Span::DUMMY)
+        .expect_err("oversized unspanned visible subscript should fail before lowering");
+
+    assert_eq!(err.source_span(), None);
+    assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+    assert!(
+        err.reason()
+            .contains("visible variable subscript exceeds Modelica integer range"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn state_derivative_order_flags_report_capacity_overflow_with_span() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(47), 9, 17);
+    let err = reserve_state_derivative_order_flags(usize::MAX, span)
+        .expect_err("oversized state-row ordering flags should fail before allocating");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("state derivative row ordering capacity overflows"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn state_derivative_order_flags_report_capacity_overflow_without_dummy_span() {
+    let err = reserve_state_derivative_order_flags(usize::MAX, rumoca_core::Span::DUMMY)
+        .expect_err("oversized unspanned state-row flags should fail before allocating");
+
+    assert_eq!(err.source_span(), None);
+    assert!(matches!(
+        err,
+        SolveModelLowerError::Lower(LowerError::UnspannedContractViolation { .. })
+    ));
+    assert!(
+        err.diagnostic_reason()
+            .contains("state derivative row ordering capacity overflows"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn state_derivative_order_capacity_reports_overflow_with_span() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(48), 1, 6);
+    let mut values = Vec::<dae::Equation>::new();
+    let err = reserve_state_derivative_order_capacity(&mut values, usize::MAX, span)
+        .expect_err("oversized state-row ordering buffer should fail before allocating");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(
+        err.diagnostic_reason()
+            .contains("state derivative row ordering capacity overflows"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -289,12 +596,12 @@ fn lower_sizes_initial_vector_from_final_solve_layout() {
         .insert(rumoca_core::VarName::new("v"), scalar_var("v"));
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("v"), real_expr(1.0)),
-        Default::default(),
+        solve_model_test_span(),
         "visible algebraic residual",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         real_expr(0.0),
-        Default::default(),
+        solve_model_test_span(),
         "extra template residual",
     ));
 
@@ -318,7 +625,7 @@ fn lower_keeps_algebraic_binding_needed_by_derivative_rhs() {
         .insert(rumoca_core::VarName::new("a"), scalar_var("a"));
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(der(var("x")), var("a")),
-        Default::default(),
+        solve_model_test_span(),
         // MLS Appendix B B.1a: derivative rows may read algebraics from
         // the same continuous implicit system even when residual rows are
         // reduced before solve-IR lowering.
@@ -347,7 +654,7 @@ fn lower_replaces_nonfinite_start_guess_with_type_default() {
         .insert(rumoca_core::VarName::new("v"), v);
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("v"), real_expr(1.0)),
-        Default::default(),
+        solve_model_test_span(),
         // MLS §4.4/§8.6: start is only an initialization guess; a
         // non-finite guess must not prevent equations from solving `v`.
         "non-finite start guess for algebraic",
@@ -378,12 +685,12 @@ fn lower_seeds_solver_visible_start_dependencies_from_default_guesses() {
 
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("source"), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "source algebraic residual",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("dependent"), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "dependent algebraic residual",
     ));
 
@@ -404,7 +711,7 @@ fn lower_seeds_start_dependencies_removed_by_structural_metadata() {
         .insert(rumoca_core::VarName::new("dependent"), dependent);
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("dependent"), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "dependent algebraic residual",
     ));
 
@@ -440,7 +747,7 @@ fn lower_rejects_missing_binding_in_explicit_start_guess() {
         .insert(rumoca_core::VarName::new("v"), v);
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("v"), real_expr(1.0)),
-        Default::default(),
+        solve_model_test_span(),
         "explicit start references a missing binding",
     ));
 
@@ -499,12 +806,12 @@ fn lower_propagates_fixed_start_across_alias_to_state_guess() {
     dae_model.variables.outputs.insert("y".into(), y);
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(der(var("x")), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "derivative row",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("y"), var("x")),
-        Default::default(),
+        solve_model_test_span(),
         "output y aliases state x",
     ));
 
@@ -534,7 +841,7 @@ fn lower_propagates_fixed_array_start_across_alias_to_solver_guess() {
 
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("target"), var("source")),
-        Default::default(),
+        solve_model_test_span(),
         "target aliases source",
     ));
 
@@ -567,12 +874,12 @@ fn lower_seeds_evaluable_continuous_assignment_to_initial_guess() {
             var("computed"),
             binary_expr(OpBinary::Add, var("parameter"), real_expr(1.0)),
         ),
-        Default::default(),
+        solve_model_test_span(),
         "evaluable continuous assignment",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(var("alias"), var("computed")),
-        Default::default(),
+        solve_model_test_span(),
         "alias of computed continuous assignment",
     ));
 
@@ -603,7 +910,7 @@ fn lower_does_not_overwrite_fixed_start_with_continuous_assignment_seed() {
             var("computed"),
             binary_expr(OpBinary::Add, var("parameter"), real_expr(1.0)),
         ),
-        Default::default(),
+        solve_model_test_span(),
         "continuous assignment must not replace fixed start seed",
     ));
 
@@ -624,7 +931,7 @@ fn lower_skips_nonfinite_continuous_assignment_seed() {
             var("computed"),
             binary_expr(OpBinary::Div, real_expr(0.0), real_expr(0.0)),
         ),
-        Default::default(),
+        solve_model_test_span(),
         "non-finite continuous assignment seed",
     ));
 
@@ -699,6 +1006,7 @@ fn lower_keeps_runtime_tail_names_visible_for_traces() {
 
 #[test]
 fn lower_skips_visible_observation_with_dynamic_subscript() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(78), 5, 23);
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -717,22 +1025,22 @@ fn lower_skips_visible_observation_with_dynamic_subscript() {
         .insert(rumoca_core::VarName::new("k"), scalar_var("k"));
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(der(var("x")), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "derivative row",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
-        sub(indexed_var("a", 1), real_expr(1.0)),
-        Default::default(),
+        sub(indexed_var("a", 1).with_span(span), real_expr(1.0)).with_span(span),
+        span,
         "a[1] row",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
-        sub(indexed_var("a", 2), real_expr(2.0)),
-        Default::default(),
+        sub(indexed_var("a", 2).with_span(span), real_expr(2.0)).with_span(span),
+        span,
         "a[2] row",
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
-        sub(var("k"), real_expr(1.0)),
-        Default::default(),
+        sub(plain_var("k", span), real_expr(1.0)).with_span(span),
+        span,
         "dynamic index row",
     ));
     let visible = vec![VisibleExpression {
@@ -742,10 +1050,13 @@ fn lower_skips_visible_observation_with_dynamic_subscript() {
                 name: rumoca_core::VarName::new("pick").into(),
                 args: Vec::new(),
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(var("k")))],
-            span: rumoca_core::Span::DUMMY,
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(plain_var("k", span)),
+                span,
+            )],
+            span,
         },
     }];
 
@@ -787,7 +1098,8 @@ fn variable_meta_marks_relation_driven_real_output_event_discontinuous() {
         scalar_count: 1,
     });
 
-    let meta = build_variable_meta(&dae_model, &["y".to_string()]);
+    let meta =
+        build_variable_meta(&dae_model, &["y".to_string()]).expect("valid meta should build");
 
     assert_eq!(meta.len(), 1);
     assert_eq!(meta[0].variability.as_deref(), Some("continuous"));
@@ -806,7 +1118,11 @@ fn variable_meta_marks_guarded_residual_output_event_discontinuous() {
         dae::Variable {
             name: rumoca_core::VarName::new("c"),
             dims: vec![5],
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
     dae_model.continuous.equations.push(dae::Equation {
@@ -821,7 +1137,8 @@ fn variable_meta_marks_guarded_residual_output_event_discontinuous() {
         scalar_count: 1,
     });
 
-    let meta = build_variable_meta(&dae_model, &["y".to_string()]);
+    let meta =
+        build_variable_meta(&dae_model, &["y".to_string()]).expect("valid meta should build");
 
     assert_eq!(meta.len(), 1);
     assert_eq!(meta[0].variability.as_deref(), Some("continuous"));
@@ -866,7 +1183,8 @@ fn variable_meta_propagates_event_discontinuity_through_algebraic_dependency() {
         scalar_count: 1,
     });
 
-    let meta = build_variable_meta(&dae_model, &["y".to_string()]);
+    let meta =
+        build_variable_meta(&dae_model, &["y".to_string()]).expect("valid meta should build");
 
     assert_eq!(meta.len(), 1);
     assert_eq!(meta[0].time_domain.as_deref(), Some("event-discontinuous"));
@@ -885,7 +1203,11 @@ fn lower_supports_visible_observation_with_array_literal_size_range() {
             name: rumoca_core::VarName::new("My.badSizeRange"),
             def_id: None,
             inputs: vec![],
-            outputs: vec![rumoca_core::FunctionParam::new("out", "Real")],
+            outputs: vec![rumoca_core::FunctionParam::new(
+                "out",
+                "Real",
+                solve_model_test_span(),
+            )],
             locals: vec![],
             body: vec![
                 rumoca_core::Statement::Assignment {
@@ -924,12 +1246,12 @@ fn lower_supports_visible_observation_with_array_literal_size_range() {
             pure: true,
             external: None,
             derivatives: vec![],
-            span: Default::default(),
+            span: solve_model_test_span(),
         },
     );
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(der(var("x")), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "derivative row",
     ));
     let visible = vec![VisibleExpression {
@@ -959,8 +1281,16 @@ fn lower_skips_visible_observation_with_unbound_function_input() {
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.needsInput"),
             def_id: None,
-            inputs: vec![rumoca_core::FunctionParam::new("u", "Real")],
-            outputs: vec![rumoca_core::FunctionParam::new("out", "Real")],
+            inputs: vec![rumoca_core::FunctionParam::new(
+                "u",
+                "Real",
+                solve_model_test_span(),
+            )],
+            outputs: vec![rumoca_core::FunctionParam::new(
+                "out",
+                "Real",
+                solve_model_test_span(),
+            )],
             locals: vec![],
             body: vec![rumoca_core::Statement::Assignment {
                 comp: component_ref("out"),
@@ -971,12 +1301,12 @@ fn lower_skips_visible_observation_with_unbound_function_input() {
             pure: true,
             external: None,
             derivatives: vec![],
-            span: Default::default(),
+            span: solve_model_test_span(),
         },
     );
     dae_model.continuous.equations.push(dae::Equation::residual(
         sub(der(var("x")), real_expr(0.0)),
-        Default::default(),
+        solve_model_test_span(),
         "derivative row",
     ));
     let visible = vec![VisibleExpression {
@@ -1027,7 +1357,7 @@ fn lower_propagates_initial_equation_through_runtime_alias() {
         .equations
         .push(dae::Equation::residual(
             sub(var("active"), real_expr(1.0)),
-            Default::default(),
+            solve_model_test_span(),
             "initial equation active = true",
         ));
     dae_model
@@ -1036,7 +1366,7 @@ fn lower_propagates_initial_equation_through_runtime_alias() {
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new("active"),
             var("localActive"),
-            Default::default(),
+            solve_model_test_span(),
             "runtime alias active = localActive",
         ));
     dae_model
@@ -1045,7 +1375,7 @@ fn lower_propagates_initial_equation_through_runtime_alias() {
         .push(dae::Equation::explicit(
             rumoca_core::VarName::new("localActive"),
             var("__pre__.newActive"),
-            Default::default(),
+            solve_model_test_span(),
             "runtime alias localActive = pre(newActive)",
         ));
 
@@ -1100,7 +1430,7 @@ fn lower_seeds_current_value_from_lowered_pre_initial_equation() {
         .equations
         .push(dae::Equation::residual(
             sub(var("__pre__.active"), real_expr(1.0)),
-            Default::default(),
+            solve_model_test_span(),
             "lowered initial equation pre(active) = true",
         ));
 
@@ -1126,6 +1456,7 @@ fn lower_seeds_current_value_from_lowered_pre_initial_equation() {
 
 #[test]
 fn lower_applies_subscripted_discrete_initial_equations() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(79), 7, 25);
     let mut dae_model = dae::Dae::default();
     dae_model
         .symbols
@@ -1134,27 +1465,25 @@ fn lower_applies_subscripted_discrete_initial_equations() {
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("state"),
         dae::Variable {
-            name: rumoca_core::VarName::new("state"),
             dims: vec![2],
             start: Some(int_expr(0)),
-            ..Default::default()
+            ..scalar_var("state")
         },
     );
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("__pre__.state"),
         dae::Variable {
-            name: rumoca_core::VarName::new("__pre__.state"),
             dims: vec![2],
             fixed: Some(true),
-            ..Default::default()
+            ..scalar_var("__pre__.state")
         },
     );
     dae_model
         .initialization
         .equations
         .push(dae::Equation::residual(
-            sub(indexed_var("state", 2), var("Logic.X")),
-            Default::default(),
+            sub(indexed_var("state", 2).with_span(span), var("Logic.X")).with_span(span),
+            span,
             "state[2] = Logic.X",
         ));
 
@@ -1213,7 +1542,7 @@ fn lower_broadcasts_enum_literal_start_to_array_runtime_starts() {
         subscripts: Vec::new(),
         span: rumoca_core::Span::DUMMY,
     });
-    let scalar_names = scalar_names("active", &active);
+    let scalar_names = scalar_names("active", &active).expect("valid scalar names should build");
     dae_model
         .variables
         .discrete_valued
@@ -1273,411 +1602,4 @@ fn lower_propagates_enum_parameter_binding_chain_to_runtime_start() {
         panic!("Counter.q[1] should be a runtime parameter");
     };
     assert_eq!(prepared.parameters[index], 3.0);
-}
-
-fn dynamic_external_time_table_dae() -> dae::Dae {
-    let mut dae_model = dae::Dae::default();
-    let mut table = scalar_var("table");
-    table.dims = vec![4];
-    table.start = Some(array_expr(
-        vec![
-            real_expr(1.0),
-            real_expr(3.0),
-            real_expr(5.0),
-            real_expr(7.0),
-        ],
-        false,
-    ));
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("table"), table);
-
-    let mut n = scalar_var("n");
-    n.start = Some(rumoca_core::Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Size,
-        args: vec![var("table"), int_expr(1)],
-        span: rumoca_core::Span::DUMMY,
-    });
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("n"), n);
-
-    let mut table_dyn = scalar_var("table_dyn");
-    table_dyn.dims = vec![0, 2];
-    table_dyn.start = Some(dynamic_external_time_table_matrix());
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("table_dyn"), table_dyn);
-
-    let mut table_id = scalar_var("table_id");
-    table_id.start = Some(call_expr(
-        "ExternalCombiTimeTable",
-        vec![
-            real_expr(0.0),
-            real_expr(0.0),
-            var("table_dyn"),
-            real_expr(0.0),
-            array_expr(vec![int_expr(2)], false),
-            int_expr(3),
-            int_expr(1),
-        ],
-    ));
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("table_id"), table_id);
-    dae_model
-}
-
-fn dynamic_boolean_time_table_dae() -> dae::Dae {
-    let mut dae_model = dae::Dae::default();
-    let mut table = scalar_var("table1.table");
-    table.dims = vec![2];
-    table.start = Some(array_expr(vec![real_expr(0.05), real_expr(0.15)], false));
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("table1.table"), table);
-
-    let mut n = scalar_var("table1.n");
-    n.start = Some(rumoca_core::Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Size,
-        args: vec![var("table1.table"), int_expr(1)],
-        span: rumoca_core::Span::DUMMY,
-    });
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("table1.n"), n);
-
-    let mut table_dyn = scalar_var("table1.combiTimeTable.table");
-    table_dyn.dims = vec![0, 2];
-    table_dyn.start = Some(dynamic_boolean_time_table_matrix());
-    dae_model.variables.parameters.insert(
-        rumoca_core::VarName::new("table1.combiTimeTable.table"),
-        table_dyn,
-    );
-
-    let mut table_id = scalar_var("table1.combiTimeTable.tableID");
-    table_id.start = Some(call_expr(
-        "ExternalCombiTimeTable",
-        vec![
-            real_expr(0.0),
-            real_expr(0.0),
-            var("table1.combiTimeTable.table"),
-            real_expr(0.0),
-            array_expr(vec![int_expr(2)], false),
-            int_expr(3),
-            int_expr(1),
-        ],
-    ));
-    dae_model.variables.parameters.insert(
-        rumoca_core::VarName::new("table1.combiTimeTable.tableID"),
-        table_id,
-    );
-    dae_model
-}
-
-fn dynamic_boolean_time_table_matrix() -> rumoca_core::Expression {
-    let first_row = array_expr(vec![indexed_var("table1.table", 1), real_expr(0.0)], true);
-    rumoca_core::Expression::If {
-        branches: vec![(
-            rumoca_core::Expression::Binary {
-                op: OpBinary::Gt,
-                lhs: Box::new(var("table1.n")),
-                rhs: Box::new(real_expr(0.0)),
-                span: rumoca_core::Span::DUMMY,
-            },
-            array_expr(
-                vec![
-                    first_row,
-                    array_expr(
-                        vec![
-                            var("table1.table"),
-                            dynamic_external_time_table_toggles("table1.n"),
-                        ],
-                        true,
-                    ),
-                ],
-                true,
-            ),
-        )],
-        else_branch: Box::new(array_expr(
-            vec![array_expr(vec![real_expr(0.0), real_expr(0.0)], false)],
-            true,
-        )),
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn dynamic_external_time_table_matrix() -> rumoca_core::Expression {
-    let first_row = array_expr(
-        vec![
-            rumoca_core::Expression::VarRef {
-                name: rumoca_core::VarName::new("table").into(),
-                subscripts: vec![rumoca_core::Subscript::generated_index(
-                    1,
-                    rumoca_core::Span::DUMMY,
-                )],
-                span: rumoca_core::Span::DUMMY,
-            },
-            real_expr(0.0),
-        ],
-        false,
-    );
-    rumoca_core::Expression::If {
-        branches: vec![(
-            rumoca_core::Expression::Binary {
-                op: OpBinary::Gt,
-                lhs: Box::new(var("n")),
-                rhs: Box::new(real_expr(0.0)),
-                span: rumoca_core::Span::DUMMY,
-            },
-            array_expr(
-                vec![
-                    first_row,
-                    array_expr(
-                        vec![var("table"), dynamic_external_time_table_toggles("n")],
-                        false,
-                    ),
-                ],
-                true,
-            ),
-        )],
-        else_branch: Box::new(array_expr(
-            vec![array_expr(vec![real_expr(0.0), real_expr(0.0)], false)],
-            true,
-        )),
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn dynamic_external_time_table_toggles(n_name: &str) -> rumoca_core::Expression {
-    rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Mod,
-            args: vec![var("i"), real_expr(2.0)],
-            span: rumoca_core::Span::DUMMY,
-        }),
-        indices: vec![rumoca_core::ComprehensionIndex {
-            name: "i".to_string(),
-            range: rumoca_core::Expression::Range {
-                start: Box::new(int_expr(1)),
-                step: None,
-                end: Box::new(var(n_name)),
-                span: rumoca_core::Span::DUMMY,
-            },
-        }],
-        filter: None,
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-#[test]
-fn default_parameters_build_external_time_table_from_dynamic_matrix_start() {
-    let dae_model = dynamic_external_time_table_dae();
-    let runtime = Arc::new(EvalRuntimeState::default());
-    let params = default_parameter_values(&dae_model, None, runtime.clone())
-        .expect("parameter starts lower");
-    assert_eq!(
-        params.len(),
-        6,
-        "dynamic matrix parameter must not consume a flattened slot"
-    );
-    let table_id = *params.last().expect("table_id parameter");
-    let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime);
-    let tables = external_table_data_for_parameter_values_in(&env, &params);
-    let next = rumoca_eval_dae::eval::eval_time_table_next_event_value_in(table_id, 0.0, &tables);
-    let high = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 2.0, &tables)
-        .expect("table lookup");
-
-    assert!(table_id > 0.0);
-    assert!((next - 1.0).abs() <= 1.0e-12, "next={next}");
-    assert!((high - 1.0).abs() <= 1.0e-12, "high={high}");
-}
-
-#[test]
-fn default_parameters_build_boolean_time_table_with_duplicate_first_knot() {
-    let dae_model = dynamic_boolean_time_table_dae();
-    let runtime = Arc::new(EvalRuntimeState::default());
-    let params = default_parameter_values(&dae_model, None, runtime.clone())
-        .expect("parameter starts lower");
-    let table_id = *params.last().expect("table_id parameter");
-    let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime);
-    let tables = external_table_data_for_parameter_values_in(&env, &params);
-    let before = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.049, &tables)
-        .expect("table lookup before duplicate knot");
-    let after = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.050001, &tables)
-        .expect("table lookup after duplicate knot");
-
-    assert!(table_id > 0.0);
-    assert!((before - 0.0).abs() <= 1.0e-12, "before={before}");
-    assert!((after - 1.0).abs() <= 1.0e-12, "after={after}");
-}
-
-#[test]
-fn default_parameters_build_external_time_table_from_constructor_marked_call_with_strings() {
-    let mut dae_model = dynamic_boolean_time_table_dae();
-    let table_id = dae_model
-        .variables
-        .parameters
-        .get_mut(&rumoca_core::VarName::new("table1.combiTimeTable.tableID"))
-        .expect("table ID parameter");
-    table_id.start = Some(constructor_call_expr(
-        "Modelica.Blocks.Types.ExternalCombiTimeTable",
-        vec![
-            string_expr("NoName"),
-            string_expr("NoName"),
-            var("table1.combiTimeTable.table"),
-            real_expr(0.0),
-            array_expr(vec![int_expr(2)], false),
-            int_expr(3),
-            int_expr(1),
-        ],
-    ));
-
-    let runtime = Arc::new(EvalRuntimeState::default());
-    let params = default_parameter_values(&dae_model, None, runtime.clone())
-        .expect("parameter starts lower");
-    let table_id = *params.last().expect("table_id parameter");
-    let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime);
-    let tables = external_table_data_for_parameter_values_in(&env, &params);
-    let after = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.050001, &tables)
-        .expect("table lookup after duplicate knot");
-
-    assert!(table_id > 0.0);
-    assert!((after - 1.0).abs() <= 1.0e-12, "after={after}");
-}
-
-#[test]
-fn lower_applies_initial_random_distribution_chain_to_runtime_parameters() {
-    let dae_model = initial_random_distribution_chain_model();
-    let prepared = lower_dae_to_solve_model(&dae_model)
-        .expect("Solve IR lowering should apply direct initial equations");
-    let layout = &prepared.problem.solve_layout;
-    let r_raw = prepared.parameters[layout
-        .discrete_real_parameter_index("r_raw")
-        .expect("r_raw runtime parameter")];
-    let r = prepared.parameters[layout
-        .discrete_real_parameter_index("r")
-        .expect("r runtime parameter")];
-    let state_1 = prepared.parameters[layout
-        .discrete_valued_parameter_index("state[1]")
-        .expect("state[1] runtime parameter")];
-
-    assert!(r_raw > 0.0 && r_raw < 1.0, "r_raw={r_raw}");
-    assert!(r.is_finite(), "r={r}");
-    assert!(state_1 > 0.0, "state_1={state_1}");
-}
-
-fn initial_random_distribution_chain_model() -> dae::Dae {
-    let mut dae_model = dae::Dae::default();
-    for (name, value) in [
-        ("localSeed", 0.0),
-        ("actualGlobalSeed", 0.0),
-        ("mu", 0.0),
-        ("sigma", 2.0),
-    ] {
-        let mut parameter = scalar_var(name);
-        parameter.start = Some(real_expr(value));
-        dae_model
-            .variables
-            .parameters
-            .insert(rumoca_core::VarName::new(name), parameter);
-    }
-    dae_model.variables.discrete_valued.insert(
-        rumoca_core::VarName::new("state"),
-        dae::Variable {
-            name: rumoca_core::VarName::new("state"),
-            dims: vec![4],
-            start: Some(int_expr(0)),
-            ..Default::default()
-        },
-    );
-    dae_model.variables.parameters.insert(
-        rumoca_core::VarName::new("__pre__.state"),
-        dae::Variable {
-            name: rumoca_core::VarName::new("__pre__.state"),
-            dims: vec![4],
-            start: Some(int_expr(0)),
-            ..Default::default()
-        },
-    );
-    dae_model
-        .variables
-        .discrete_reals
-        .insert(rumoca_core::VarName::new("r_raw"), scalar_var("r_raw"));
-    dae_model
-        .variables
-        .discrete_reals
-        .insert(rumoca_core::VarName::new("r"), scalar_var("r"));
-
-    insert_initial_random_distribution_chain_equations(&mut dae_model);
-    dae_model
-}
-
-fn insert_initial_random_distribution_chain_equations(dae_model: &mut dae::Dae) {
-    dae_model
-        .initialization
-        .equations
-        .push(dae::Equation::explicit(
-            rumoca_core::VarName::new("localSeed"),
-            call_expr(
-                "Modelica.Math.Random.Utilities.automaticLocalSeed",
-                vec![string_expr("initial_random_distribution_chain_model")],
-            ),
-            Default::default(),
-            "localSeed = automaticLocalSeed(\"initial_random_distribution_chain_model\")",
-        ));
-    dae_model
-        .initialization
-        .equations
-        .push(dae::Equation::residual(
-            sub(
-                var("__pre__.state"),
-                call_expr(
-                    "Modelica.Math.Random.Generators.Xorshift128plus.initialState",
-                    vec![var("localSeed"), var("actualGlobalSeed")],
-                ),
-            ),
-            Default::default(),
-            // MLS Appendix B.2.2: initial equations may initialize discrete
-            // random state through pre(state), already lowered to the
-            // `__pre__.state` parameter array at the Solve boundary.
-            "__pre__.state = initialState(localSeed, actualGlobalSeed)",
-        ));
-    dae_model
-        .initialization
-        .equations
-        .push(dae::Equation::explicit(
-            rumoca_core::VarName::new("r_raw"),
-            call_expr(
-                "Modelica.Math.Random.Generators.Xorshift128plus.random",
-                vec![
-                    var("__pre__.state"),
-                    rumoca_core::Expression::BuiltinCall {
-                        function: rumoca_core::BuiltinFunction::Size,
-                        args: vec![var("__pre__.state"), int_expr(1)],
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                ],
-            ),
-            Default::default(),
-            "r_raw = random(__pre__.state, size(__pre__.state, 1))",
-        ));
-    dae_model
-        .initialization
-        .equations
-        .push(dae::Equation::explicit(
-            rumoca_core::VarName::new("r"),
-            call_expr(
-                "Modelica.Math.Distributions.Normal.quantile",
-                vec![var("r_raw"), var("mu"), var("sigma")],
-            ),
-            Default::default(),
-            "r = Normal.quantile(r_raw, mu, sigma)",
-        ));
 }

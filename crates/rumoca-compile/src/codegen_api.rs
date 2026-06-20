@@ -14,7 +14,9 @@ pub fn dae_for_solve_template_context(dae_model: &dae::Dae) -> Result<dae::Dae, 
     rumoca_phase_structural::scalarize::scalarize_equations(&mut prepared).map_err(|err| {
         CodegenError::template(format!("solve-template DAE scalarization: {err}"))
     })?;
-    Ok(rumoca_phase_dae::prepare_dae_for_codegen(&prepared).into_dae())
+    rumoca_phase_dae::prepare_dae_for_codegen(&prepared)
+        .map(|prepared| prepared.into_dae())
+        .map_err(|err| CodegenError::template(format!("solve-template DAE preparation: {err}")))
 }
 
 pub fn render_dae_template(dae_model: &dae::Dae, template: &str) -> Result<String, CodegenError> {

@@ -4,7 +4,7 @@ use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_dae::expr_contains_var;
 
 use super::{
-    Dae, Equation, Expression, Literal, OpBinary, OpUnary, Subscript, VarName, add_expr,
+    Dae, Equation, Expression, Literal, OpBinary, OpUnary, Span, Subscript, VarName, add_expr,
     direct_demotion_round_context, expression_contains_any_der_call,
     extract_state_direct_assignment_equation, state_has_standalone_der_equation, state_select_rank,
     sub_expr,
@@ -12,8 +12,9 @@ use super::{
 
 const LINEAR_EPSILON: f64 = 1.0e-12;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct LinearRow {
+    span: Span,
     terms: IndexMap<String, f64>,
     /// Parameters whose compile-time values were baked into the coefficients.
     /// When a demotion derived from this row is applied, these must be pinned
@@ -23,6 +24,14 @@ struct LinearRow {
 }
 
 impl LinearRow {
+    fn new(span: Span) -> Self {
+        Self {
+            span,
+            terms: IndexMap::new(),
+            structural_params: BTreeSet::new(),
+        }
+    }
+
     fn add_term(&mut self, name: String, coeff: f64) {
         let next = self.terms.get(&name).copied().unwrap_or(0.0) + coeff;
         if next.abs() <= LINEAR_EPSILON {
@@ -40,6 +49,9 @@ impl LinearRow {
     }
 
     fn add_scaled(&mut self, other: &LinearRow, factor: f64) {
+        if self.span.is_dummy() && !other.span.is_dummy() {
+            self.span = other.span;
+        }
         for (name, coeff) in &other.terms {
             self.add_term(name.clone(), coeff * factor);
         }
@@ -231,11 +243,11 @@ fn scalar_var_name(dae: &Dae, name: &VarName, subscripts: &[Subscript]) -> Optio
 
 fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
     match expr {
-        Expression::Literal { .. } => Some(LinearRow::default()),
+        Expression::Literal { .. } => Some(LinearRow::new(expression_row_span(expr))),
         Expression::VarRef {
             name, subscripts, ..
         } => {
-            let mut row = LinearRow::default();
+            let mut row = LinearRow::new(expression_row_span(expr));
             row.add_term(scalar_var_name(dae, name.var_name(), subscripts)?, 1.0);
             Some(row)
         }
@@ -369,11 +381,36 @@ fn equation_linear_row(dae: &Dae, eq: &Equation) -> Option<LinearRow> {
         let lhs_expr = Expression::VarRef {
             name: lhs.clone(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: eq.span,
         };
-        return linear_terms(dae, &sub_expr(lhs_expr, eq.rhs.clone()));
+        return linear_terms(dae, &sub_expr(lhs_expr, eq.rhs.clone(), eq.span));
     }
     linear_terms(dae, &eq.rhs)
+}
+
+fn expression_row_span(expr: &Expression) -> Span {
+    match expr {
+        Expression::VarRef { name, span, .. } => {
+            if !span.is_dummy() {
+                *span
+            } else {
+                name.span().unwrap_or(*span)
+            }
+        }
+        Expression::Binary { span, .. }
+        | Expression::Unary { span, .. }
+        | Expression::BuiltinCall { span, .. }
+        | Expression::FunctionCall { span, .. }
+        | Expression::Literal { span, .. }
+        | Expression::If { span, .. }
+        | Expression::Array { span, .. }
+        | Expression::Tuple { span, .. }
+        | Expression::Range { span, .. }
+        | Expression::ArrayComprehension { span, .. }
+        | Expression::Index { span, .. }
+        | Expression::FieldAccess { span, .. }
+        | Expression::Empty { span } => *span,
+    }
 }
 
 fn candidate_from_state_constraint(
@@ -408,61 +445,64 @@ fn candidate_from_state_constraint(
     state_names.contains(&candidate).then_some(candidate)
 }
 
-fn var_expr(name: &str) -> Expression {
+fn var_expr(name: &str, span: Span) -> Expression {
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn real_expr(value: f64) -> Expression {
+fn real_expr(value: f64, span: Span) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn neg_expr(rhs: Expression) -> Expression {
+fn neg_expr(rhs: Expression, span: Span) -> Expression {
     Expression::Unary {
         op: OpUnary::Minus,
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn mul_expr(lhs: Expression, rhs: Expression) -> Expression {
+fn mul_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Mul,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn div_expr(lhs: Expression, rhs: Expression) -> Expression {
+fn div_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Div,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-fn linear_term_expr(name: &str, coeff: f64) -> Expression {
-    let term = var_expr(name);
+fn linear_term_expr(name: &str, coeff: f64, span: Span) -> Expression {
+    let term = var_expr(name, span);
     if (coeff - 1.0).abs() <= LINEAR_EPSILON {
         term
     } else {
-        mul_expr(real_expr(coeff), term)
+        mul_expr(real_expr(coeff, span), term, span)
     }
 }
 
-fn sum_linear_terms<'a>(terms: impl Iterator<Item = (&'a String, &'a f64)>) -> Expression {
+fn sum_linear_terms<'a>(
+    terms: impl Iterator<Item = (&'a String, &'a f64)>,
+    span: Span,
+) -> Expression {
     terms
-        .map(|(name, coeff)| linear_term_expr(name, *coeff))
-        .reduce(add_expr)
-        .unwrap_or_else(|| real_expr(0.0))
+        .map(|(name, coeff)| linear_term_expr(name, *coeff, span))
+        .reduce(|lhs, rhs| add_expr(lhs, rhs, span))
+        .unwrap_or_else(|| real_expr(0.0, span))
 }
 
 fn solve_linear_row_for_state(row: &LinearRow, state_name: &VarName) -> Option<Expression> {
@@ -474,12 +514,13 @@ fn solve_linear_row_for_state(row: &LinearRow, state_name: &VarName) -> Option<E
         row.terms
             .iter()
             .filter(|(name, _)| name.as_str() != state_name.as_str()),
+        row.span,
     );
-    let numerator = neg_expr(remainder);
+    let numerator = neg_expr(remainder, row.span);
     if (coeff - 1.0).abs() <= LINEAR_EPSILON {
         Some(numerator)
     } else {
-        Some(div_expr(numerator, real_expr(coeff)))
+        Some(div_expr(numerator, real_expr(coeff, row.span), row.span))
     }
 }
 
@@ -490,7 +531,7 @@ fn canonical_singleton_state_term(dae: &Dae, name: &str) -> Option<String> {
 }
 
 fn canonicalize_singleton_state_terms(dae: &Dae, row: &LinearRow) -> LinearRow {
-    let mut canonical = LinearRow::default();
+    let mut canonical = LinearRow::new(row.span);
     for (name, coeff) in &row.terms {
         let term_name = canonical_singleton_state_term(dae, name).unwrap_or_else(|| name.clone());
         canonical.add_term(term_name, *coeff);

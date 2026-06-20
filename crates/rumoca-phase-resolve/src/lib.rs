@@ -84,12 +84,42 @@ fn apply_semantic_diagnostic_policy(mut diag: Diagnostic, options: ResolveOption
     diag
 }
 
+const ER098_MISSING_SOURCE_CONTEXT: &str = "ER098";
+
 /// Convert a Location to a Span for error reporting using the source map.
-fn location_to_span(loc: &Location, source_map: &SourceMap) -> Span {
+fn location_to_span(loc: &Location, source_map: &SourceMap) -> Option<Span> {
     if !location_has_valid_span(loc) {
-        return Span::DUMMY;
+        return None;
     }
-    source_map.location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+    source_map.try_location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+}
+
+fn location_span_or_emit(
+    diagnostics: &mut Diagnostics,
+    loc: &Location,
+    source_map: &SourceMap,
+    context: &str,
+) -> Option<Span> {
+    let span = location_to_span(loc, source_map);
+    if span.is_none() {
+        diagnostics.emit(missing_source_context_diagnostic(context, loc));
+    }
+    span
+}
+
+fn missing_source_context_diagnostic(context: &str, loc: &Location) -> Diagnostic {
+    let reason = if !location_has_valid_span(loc) {
+        format!("{context} is missing a non-empty source location")
+    } else {
+        format!(
+            "source file `{}` for {context} was not found",
+            loc.file_name
+        )
+    };
+    Diagnostic::global_error(
+        ER098_MISSING_SOURCE_CONTEXT,
+        format!("missing source context: {reason}"),
+    )
 }
 
 fn location_has_valid_span(loc: &Location) -> bool {
@@ -662,7 +692,14 @@ fn emit_unresolved_symbol_diagnostics(
             ),
         };
 
-        let span = location_to_span(&unresolved.source_location, &resolver.source_map);
+        let Some(span) = location_span_or_emit(
+            &mut resolver.diagnostics,
+            &unresolved.source_location,
+            &resolver.source_map,
+            kind,
+        ) else {
+            continue;
+        };
         let primary_label = PrimaryLabel::new(span).with_message(format!("unresolved {kind}"));
         let diag = if is_error {
             rumoca_core::Diagnostic::error(

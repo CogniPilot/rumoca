@@ -1,9 +1,17 @@
 use super::*;
 
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("initialization_test.mo"),
+        5,
+        17,
+    )
+}
+
 fn real_lit(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
-        span: Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -11,7 +19,7 @@ fn var_ref(name: &str) -> Expression {
     Expression::VarRef {
         name: VarName::new(name).into(),
         subscripts: Vec::new(),
-        span: Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -19,7 +27,7 @@ fn der_of(name: &str) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
         args: vec![var_ref(name)],
-        span: Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -30,17 +38,22 @@ fn real_var(name: &str, fixed: Option<bool>, start: Option<Expression>) -> flat:
         is_primitive: true,
         fixed,
         start,
-        ..Default::default()
+        source_span: test_span(),
+        ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     }
 }
 
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
-        span: Span::DUMMY,
+        span: test_span(),
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: Span::DUMMY,
+            span: test_span(),
             subs: Vec::new(),
         }],
         def_id: None,
@@ -53,9 +66,9 @@ fn add_derivative_equation(flat: &mut Model, state_name: &str) {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(der_of(state_name)),
             rhs: Box::new(real_lit(0.0)),
-            span: Span::DUMMY,
+            span: test_span(),
         },
-        span: Span::DUMMY,
+        span: test_span(),
         origin: flat::EquationOrigin::ComponentEquation {
             component: "init-fixture".to_string(),
         },
@@ -97,8 +110,8 @@ fn todae_adds_fixed_start_initial_equation_for_state() {
         equations[0].rhs,
         Expression::Literal {
             value: Literal::Real(2.0),
-            span: Span::DUMMY
-        }
+            span
+        } if span == test_span()
     ));
 }
 
@@ -124,8 +137,8 @@ fn todae_adds_fixed_start_initial_equation_for_algebraic() {
         equations[0].rhs,
         Expression::Literal {
             value: Literal::Real(3.0),
-            span: Span::DUMMY
-        }
+            span
+        } if span == test_span()
     ));
 }
 

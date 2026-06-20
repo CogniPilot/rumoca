@@ -1,19 +1,4 @@
-//! Interpreter fallback for evaluating row plans without JIT.
-//!
-//! These functions mirror the JIT-compiled row evaluators but run as a pure
-//! Rust interpreter, used for validation (cross-checking JIT output) and as
-//! a fallback when the JIT path is not available.
-
-use super::input_validation::{row_input_requirements, validate_input_requirements};
-use super::{
-    CompileError, GeneralRowPlan, RowInputs, RowPlan, SimpleOp, SimpleRowPlan, input_compile_error,
-};
-use rumoca_core::ExternalTableData;
-use rumoca_eval_solve::{
-    try_eval_table_bound_value_in, try_eval_table_lookup_slope_value_in,
-    try_eval_table_lookup_value_in, try_eval_time_table_next_event_value_in,
-};
-use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp, resolve_indexed_slot};
+use super::*;
 
 #[inline(always)]
 pub(super) fn execute_row(
@@ -40,7 +25,7 @@ fn execute_simple_row(
     t: f64,
     out: &mut [f64],
 ) -> Result<(), CompileError> {
-    let regs = runtime_reg_slice(regs_scratch, row.reg_count);
+    let regs = runtime_reg_slice(regs_scratch, row.reg_count)?;
     for op in row.ops.iter().copied() {
         match op {
             SimpleOp::Const { dst, value } => set_reg_value(regs, dst as usize, value),
@@ -97,7 +82,7 @@ fn execute_general_row(
     inputs: RowInputs<'_>,
     out: &mut [f64],
 ) -> Result<(), CompileError> {
-    let regs = runtime_reg_slice(regs_scratch, row.reg_count);
+    let regs = runtime_reg_slice(regs_scratch, row.reg_count)?;
     for op in row.ops.iter().copied() {
         execute_general_op(
             regs,
@@ -167,18 +152,14 @@ fn execute_general_op(
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::LinearSolveComponent { dst, .. } => {
-            set_reg_value(regs, dst as usize, eval_linear_solve_component(regs, op));
+            let value = eval_linear_solve_component(regs, op)?;
+            set_reg_value(regs, dst as usize, value);
         }
         LinearOp::TableBounds { dst, table_id, max } => {
             let table_id = read_reg_value(regs, table_id as usize);
-            let value =
-                try_eval_table_bound_value_in(table_id, max, external_tables).ok_or_else(|| {
-                    table_compile_error(
-                        if max { "bounds max" } else { "bounds min" },
-                        table_id,
-                        None,
-                    )
-                })?;
+            let operation = if max { "bounds max" } else { "bounds min" };
+            let value = eval_table_bound_value_in(table_id, max, external_tables)
+                .map_err(|error| table_compile_error(operation, table_id, None, error))?;
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::TableLookup { .. }
@@ -239,8 +220,8 @@ fn execute_general_table_op(
             let table_id = read_reg_value(regs, table_id as usize);
             let column = read_reg_value(regs, column as usize);
             let input = read_reg_value(regs, input as usize);
-            let value = try_eval_table_lookup_value_in(table_id, column, input, external_tables)
-                .ok_or_else(|| table_compile_error("lookup", table_id, Some(column)))?;
+            let value = eval_table_lookup_value_in(table_id, column, input, external_tables)
+                .map_err(|error| table_compile_error("lookup", table_id, Some(column), error))?;
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::TableLookupSlope {
@@ -252,9 +233,10 @@ fn execute_general_table_op(
             let table_id = read_reg_value(regs, table_id as usize);
             let column = read_reg_value(regs, column as usize);
             let input = read_reg_value(regs, input as usize);
-            let value =
-                try_eval_table_lookup_slope_value_in(table_id, column, input, external_tables)
-                    .ok_or_else(|| table_compile_error("lookup slope", table_id, Some(column)))?;
+            let value = eval_table_lookup_slope_value_in(table_id, column, input, external_tables)
+                .map_err(|error| {
+                    table_compile_error("lookup slope", table_id, Some(column), error)
+                })?;
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::TableNextEvent {
@@ -264,8 +246,8 @@ fn execute_general_table_op(
         } => {
             let table_id = read_reg_value(regs, table_id as usize);
             let time = read_reg_value(regs, time as usize);
-            let value = try_eval_time_table_next_event_value_in(table_id, time, external_tables)
-                .ok_or_else(|| table_compile_error("next event", table_id, None))?;
+            let value = eval_time_table_next_event_value_in(table_id, time, external_tables)
+                .map_err(|error| table_compile_error("next event", table_id, None, error))?;
             set_reg_value(regs, dst as usize, value);
         }
         _ => {}
@@ -277,11 +259,14 @@ fn table_compile_error(
     operation: &'static str,
     table_id: f64,
     column: Option<f64>,
+    error: impl std::fmt::Display,
 ) -> CompileError {
     let message = if let Some(column) = column {
-        format!("external table {operation} failed for table id {table_id} column {column}")
+        format!(
+            "external table {operation} failed for table id {table_id} column {column}: {error}"
+        )
     } else {
-        format!("external table {operation} failed for table id {table_id}")
+        format!("external table {operation} failed for table id {table_id}: {error}")
     };
     CompileError::Input(message)
 }
@@ -298,11 +283,20 @@ fn read_input_value(
 }
 
 #[inline(always)]
-fn runtime_reg_slice(regs_scratch: &mut Vec<f64>, reg_count: usize) -> &mut [f64] {
+fn runtime_reg_slice(
+    regs_scratch: &mut Vec<f64>,
+    reg_count: usize,
+) -> Result<&mut [f64], CompileError> {
     if regs_scratch.len() < reg_count {
+        let additional = reg_count - regs_scratch.len();
+        regs_scratch.try_reserve(additional).map_err(|_| {
+            CompileError::Backend(format!(
+                "runtime register scratch allocation overflow for {reg_count} registers"
+            ))
+        })?;
         regs_scratch.resize(reg_count, 0.0);
     }
-    &mut regs_scratch[..reg_count]
+    Ok(&mut regs_scratch[..reg_count])
 }
 
 #[inline(always)]
@@ -315,7 +309,7 @@ fn read_reg_value(regs: &[f64], reg: usize) -> f64 {
     regs[reg]
 }
 
-fn eval_linear_solve_component(regs: &[f64], op: LinearOp) -> f64 {
+fn eval_linear_solve_component(regs: &[f64], op: LinearOp) -> Result<f64, CompileError> {
     let LinearOp::LinearSolveComponent {
         matrix_start,
         rhs_start,
@@ -324,13 +318,23 @@ fn eval_linear_solve_component(regs: &[f64], op: LinearOp) -> f64 {
         ..
     } = op
     else {
-        return f64::NAN;
+        return Err(CompileError::Backend(
+            "linear solve component evaluator received a non-linear-solve op".to_string(),
+        ));
     };
-    if n == 0 || component >= n {
-        return f64::NAN;
+    if n == 0 {
+        return Err(CompileError::Backend(
+            "linear solve component has zero size".to_string(),
+        ));
     }
-    let mut matrix = vec![0.0; n * n];
-    let mut rhs = vec![0.0; n];
+    if component >= n {
+        return Err(CompileError::Backend(format!(
+            "linear solve component index {component} is out of range for size {n}"
+        )));
+    }
+    let matrix_len = checked_square_len(n, "linear solve matrix")?;
+    let mut matrix = zeroed_f64_vec(matrix_len, "linear solve matrix")?;
+    let mut rhs = zeroed_f64_vec(n, "linear solve rhs")?;
     for row in 0..n {
         rhs[row] = read_reg_value(regs, rhs_start as usize + row);
         for col in 0..n {
@@ -340,15 +344,26 @@ fn eval_linear_solve_component(regs: &[f64], op: LinearOp) -> f64 {
     solve_dense_component(&mut matrix, &mut rhs, n, component)
 }
 
-fn solve_dense_component(matrix: &mut [f64], rhs: &mut [f64], n: usize, component: usize) -> f64 {
+fn zeroed_f64_vec(len: usize, kind: &'static str) -> Result<Vec<f64>, CompileError> {
+    let mut values = checked_vec_with_capacity(len, kind)?;
+    values.resize(len, 0.0);
+    Ok(values)
+}
+
+fn solve_dense_component(
+    matrix: &mut [f64],
+    rhs: &mut [f64],
+    n: usize,
+    component: usize,
+) -> Result<f64, CompileError> {
     for col in 0..n {
         let Some(pivot) = pivot_row(matrix, n, col) else {
-            return f64::NAN;
+            return Ok(f64::NAN);
         };
         swap_dense_rows(matrix, rhs, n, col, pivot);
         let pivot_value = matrix[col * n + col];
         if pivot_value.abs() <= f64::EPSILON {
-            return f64::NAN;
+            return Ok(f64::NAN);
         }
         for row in col + 1..n {
             let factor = matrix[row * n + col] / pivot_value;
@@ -360,14 +375,14 @@ fn solve_dense_component(matrix: &mut [f64], rhs: &mut [f64], n: usize, componen
         }
     }
 
-    let mut solution = vec![0.0; n];
+    let mut solution = zeroed_f64_vec(n, "linear solve solution")?;
     for row in (0..n).rev() {
         let tail = ((row + 1)..n)
             .map(|col| matrix[row * n + col] * solution[col])
             .sum::<f64>();
         solution[row] = (rhs[row] - tail) / matrix[row * n + row];
     }
-    solution[component]
+    Ok(solution[component])
 }
 
 fn pivot_row(matrix: &[f64], n: usize, col: usize) -> Option<usize> {

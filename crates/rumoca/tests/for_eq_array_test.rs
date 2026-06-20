@@ -2,6 +2,12 @@
 
 use rumoca_compile::compile::{CompiledSourceRoot, PhaseResult};
 
+fn compile_model_phases(source_root: &CompiledSourceRoot, model_name: &str) -> PhaseResult {
+    source_root
+        .compile_model_phases(model_name)
+        .unwrap_or_else(|error| panic!("compiled source-root phase cache failed: {error}"))
+}
+
 /// Test with MSL-style imports and SISO.
 #[test]
 fn test_msl_style_imports() {
@@ -83,7 +89,7 @@ end TestPkg;
 
     // Test Dimmer
     println!("\n=== Compiling TestPkg.Dimmer ===");
-    match source_root.compile_model_phases("TestPkg.Dimmer") {
+    match compile_model_phases(&source_root, "TestPkg.Dimmer") {
         PhaseResult::Success(result) => {
             println!("Success!");
             let balance =

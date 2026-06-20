@@ -30,16 +30,10 @@ Built-in targets include:
 | `modelica` / `flat-modelica` / `dae-modelica` / `base-modelica` | ast/flat/dae | source-transform | Modelica source at each stage |
 
 The `rumoca targets` table also reports a readiness level (0 = experimental
-… 2 = validated) and per-feature support columns (scalarization, matmul,
-linear solve, affine stencils, events, AD, …) for each target. Treat the table
-— not this page — as the current source of truth.
-
-Regular `for`-equation domains in array/PDE-style models can lower to
-source-proven affine stencils. Native stencil-aware targets, currently the
-experimental `wgsl-solve` path used by browser GPU runs, can emit one
-parametric kernel for the repeated grid operation. Other Solve targets still
-receive the scalar fallback, so stencil support changes performance and code
-shape rather than model semantics.
+… 2 = validated) and per-feature support columns (scalarization, tensor
+features such as matmul/linear solve/elementwise/stencil kernels, events, AD,
+…) for each target. Treat the table — not this page — as the current source of
+truth.
 
 ## Rendering a Target
 

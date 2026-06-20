@@ -70,13 +70,9 @@ class {{ model_name }}{% if dae.model_description %} "{{ dae.model_description }
   discrete Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor %}
 equation
-{%- for eq in dae.f_x %}
-  {{ render_equation(eq, cfg) }};
-{%- endfor -%}
+{{ render_dae_equations(dae, "f_x", cfg) }}
 {%- if dae.initial_equations | length > 0 %}
 initial equation
-{%- for eq in dae.initial_equations %}
-  {{ render_equation(eq, cfg) }};
-{%- endfor -%}
+{{ render_dae_equations(dae, "initial_equations", cfg) }}
 {%- endif %}
 end {{ model_name }};

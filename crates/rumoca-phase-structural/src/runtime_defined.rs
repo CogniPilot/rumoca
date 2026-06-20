@@ -263,14 +263,22 @@ mod tests {
             rumoca_core::VarName::new("a"),
             dae::Variable {
                 name: rumoca_core::VarName::new("a"),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.variables.discrete_valued.insert(
             rumoca_core::VarName::new("enable"),
             dae::Variable {
                 name: rumoca_core::VarName::new("enable"),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.discrete.valued_updates.push(dae::Equation::explicit(
@@ -304,14 +312,22 @@ mod tests {
             rumoca_core::VarName::new("a"),
             dae::Variable {
                 name: rumoca_core::VarName::new("a"),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.variables.discrete_valued.insert(
             rumoca_core::VarName::new("enable"),
             dae::Variable {
                 name: rumoca_core::VarName::new("enable"),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.discrete.valued_updates.push(dae::Equation::explicit(
@@ -345,14 +361,22 @@ mod tests {
             rumoca_core::VarName::new("gate.y"),
             dae::Variable {
                 name: rumoca_core::VarName::new("gate.y"),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new("gate.aux"),
             dae::Variable {
                 name: rumoca_core::VarName::new("gate.aux"),
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.continuous.equations.push(dae::Equation::residual(

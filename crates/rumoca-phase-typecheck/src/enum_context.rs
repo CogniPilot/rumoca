@@ -14,15 +14,17 @@ impl TypeChecker {
         let class_index = ClassDefIndex::from_tree(tree);
         let mut class_entries = Vec::new();
         for def_id in class_index.def_ids() {
-            let class_def = class_index
-                .get(def_id)
-                .expect("ClassDefIndex::def_ids must only return indexed class definitions");
+            let Some(class_def) = class_index.get(def_id) else {
+                return Err(Box::new(TypeCheckError::missing_source_context(format!(
+                    "class index DefId {def_id:?} did not resolve to a class definition"
+                ))));
+            };
             let Some(name) = class_index.qualified_name(def_id) else {
                 return Err(Box::new(TypeCheckError::phase_diagnostic(
                     "ET001",
                     format!("missing resolved class name metadata for DefId {def_id:?}"),
                     "name resolution must preserve class DefId name metadata for enum dimensions",
-                    self.location_span(&class_def.name.location),
+                    self.location_span(&class_def.name.location)?,
                 )));
             };
             class_entries.push((name.to_string(), def_id));
@@ -30,9 +32,11 @@ impl TypeChecker {
         class_entries.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
 
         for (name, def_id) in class_entries {
-            let class_def = class_index
-                .get(def_id)
-                .expect("ClassDefIndex::qualified_name entries must resolve to class definitions");
+            let Some(class_def) = class_index.get(def_id) else {
+                return Err(Box::new(TypeCheckError::missing_source_context(format!(
+                    "qualified class entry {name} with DefId {def_id:?} did not resolve to a class definition"
+                ))));
+            };
             let size = class_def.enum_literals.len();
             if size == 0 {
                 continue;
@@ -43,7 +47,7 @@ impl TypeChecker {
                     "ET002",
                     format!("missing local class name metadata for DefId {def_id:?}"),
                     "name resolution must preserve class DefId local-name metadata for enum dimensions",
-                    self.location_span(&class_def.name.location),
+                    self.location_span(&class_def.name.location)?,
                 )));
             };
             self.eval_ctx

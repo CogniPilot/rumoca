@@ -249,7 +249,8 @@ end DimPass;
 "#;
 
     let stored_def = rumoca_phase_parse::parse_to_ast(source, "test.mo").expect("parse failed");
-    let tree = rumoca_ir_ast::ClassTree::from_parsed(stored_def);
+    let mut tree = rumoca_ir_ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("test.mo", source);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = rumoca_phase_resolve::resolve(parsed).expect("resolve failed");
     let tree = resolved.into_inner();
@@ -283,6 +284,175 @@ end DimPass;
         vec![3],
         "inst.y must use inner.nout=size(table,1)=3 after multi-pass convergence"
     );
+}
+
+/// MLS §7.2/§12.6: a base-record component bound to a derived record constructor
+/// must project the derived record's effective field defaults before component
+/// modifiers use those fields for dimensions.
+#[test]
+fn test_derived_record_constructor_field_defaults_drive_table_dimensions() {
+    let source = r#"
+package Hyst
+  record BaseData
+    parameter Real tabris[:, :] = [0, 0; 1, 1];
+  end BaseData;
+
+  record M330_50A
+    extends BaseData(tabris = [1, 10; 2, 20; 3, 30]);
+  end M330_50A;
+
+  block MIMOs
+    parameter Integer n = 1;
+    input Real u[n];
+    output Real y[n];
+  end MIMOs;
+
+  block CombiTable1Dv
+    extends MIMOs(final n = size(columns, 1));
+    parameter Real table[:, :] = [0, 0; 1, 1];
+    parameter Integer columns[:] = 2:size(table, 2);
+  end CombiTable1Dv;
+
+  model GenericHystTellinenTable
+    parameter BaseData mat = M330_50A();
+    CombiTable1Dv tabris(table = mat.tabris);
+  end GenericHystTellinenTable;
+
+  model Top
+    GenericHystTellinenTable core;
+  end Top;
+end Hyst;
+"#;
+
+    let stored_def = rumoca_phase_parse::parse_to_ast(source, "test.mo").expect("parse failed");
+    let mut tree = rumoca_ir_ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("test.mo", source);
+    let parsed = rumoca_ir_ast::ParsedTree::new(tree);
+    let resolved = rumoca_phase_resolve::resolve(parsed).expect("resolve failed");
+    let tree = resolved.into_inner();
+    let mut overlay =
+        match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Hyst.Top") {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => {
+                panic!("unexpected NeedsInner: {missing_inners:?}");
+            }
+            rumoca_phase_instantiate::InstantiationOutcome::Error(e) => {
+                panic!("instantiate failed: {e:?}");
+            }
+        };
+
+    if let Err(diags) = rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "Hyst.Top")
+    {
+        let messages: Vec<_> = diags.iter().map(|d| d.message.as_str()).collect();
+        panic!("typecheck failed: {messages:?}");
+    }
+
+    let u_dims = overlay
+        .components
+        .values()
+        .find(|d| d.qualified_name.to_flat_string() == "core.tabris.u")
+        .map(|d| d.dims.clone())
+        .expect("core.tabris.u should exist");
+    assert_eq!(
+        u_dims,
+        vec![1],
+        "table columns 2:size(table,2) from M330_50A.tabris should give one MIMO input"
+    );
+}
+
+/// MLS §12.4 / §8.3.3: structural for-equation ranges may depend on a
+/// parameter computed by an imported pure function and a parent modifier.
+#[test]
+fn test_imported_function_parameter_drives_nested_connection_range() {
+    let source = r#"
+package Poly
+  package Functions
+    function numberOfSymmetricBaseSystems
+      input Integer m = 3;
+      output Integer n;
+    algorithm
+      n := 1;
+      if mod(m, 2) == 0 then
+        if m == 2 then
+          n := 1;
+        else
+          n := n * 2 * numberOfSymmetricBaseSystems(integer(m / 2));
+        end if;
+      else
+        n := 1;
+      end if;
+    end numberOfSymmetricBaseSystems;
+  end Functions;
+
+  connector Pin
+    Real v;
+    flow Real i;
+  end Pin;
+
+  connector Plug
+    parameter Integer m = 3;
+    Pin pin[m];
+  end Plug;
+
+  model MultiStar
+    import Poly.Functions.numberOfSymmetricBaseSystems;
+    parameter Integer m = 3;
+    final parameter Integer mSystems = numberOfSymmetricBaseSystems(m);
+    final parameter Integer mBasic = integer(m / mSystems);
+    Plug plug_p(final m = m);
+    Plug starpoints(final m = mSystems);
+  equation
+    for k in 1:mSystems loop
+      for j in 1:mBasic loop
+        connect(plug_p.pin[(k - 1) * mBasic + j], starpoints.pin[k]);
+      end for;
+    end for;
+  end MultiStar;
+
+  model MultiStarResistance
+    import Poly.Functions.numberOfSymmetricBaseSystems;
+    parameter Integer m = 3;
+    final parameter Integer mBasic = numberOfSymmetricBaseSystems(m);
+    Plug plug(m = m);
+    MultiStar multiStar(m = m);
+    Plug resistor(m = mBasic);
+  equation
+    connect(plug, multiStar.plug_p);
+    connect(multiStar.starpoints, resistor);
+  end MultiStarResistance;
+
+  record Data
+    import Poly.Functions.numberOfSymmetricBaseSystems;
+    parameter Integer m = 6;
+    parameter Integer mSystems = numberOfSymmetricBaseSystems(m);
+    parameter Integer mBasic = integer(m / mSystems);
+  end Data;
+
+  model Top
+    parameter Data data;
+    MultiStarResistance multiStar(m = data.m);
+  end Top;
+end Poly;
+"#;
+
+    let stored_def = rumoca_phase_parse::parse_to_ast(source, "test.mo").expect("parse failed");
+    let mut tree = rumoca_ir_ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("test.mo", source);
+    let parsed = rumoca_ir_ast::ParsedTree::new(tree);
+    let resolved = rumoca_phase_resolve::resolve(parsed).expect("resolve failed");
+    let tree = resolved.into_inner();
+
+    match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Poly.Top") {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(_) => {}
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("unexpected NeedsInner: {missing_inners:?}");
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(e) => {
+            panic!("instantiate failed: {e:?}");
+        }
+    }
 }
 
 /// MLS §7.3 + §8.3.2: for-equation ranges using `Medium.nXi` inside an

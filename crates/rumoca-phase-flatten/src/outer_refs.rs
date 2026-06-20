@@ -184,6 +184,14 @@ mod tests {
     use rumoca_core::{ComprehensionIndex, Literal};
     use rumoca_ir_flat::{Algorithm, Equation, EquationOrigin, WhenClause};
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("outer_refs_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn var_ref(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
@@ -266,7 +274,7 @@ mod tests {
                 max: Some(var_ref("outerBus.maxAttr")),
                 nominal: Some(var_ref("outerBus.nominalAttr")),
                 binding: Some(var_ref("outerBus.binding")),
-                ..flat::Variable::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
 

@@ -2,10 +2,27 @@ use super::*;
 use rumoca_phase_parse::parse_to_ast;
 
 fn resolve_test_source(source: &str) -> Result<ResolvedTree, Diagnostics> {
+    resolve_with_options(parsed_tree_from_source(source), ResolveOptions::default())
+}
+
+fn parsed_tree_from_source(source: &str) -> ParsedTree {
     let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
     let mut tree = ClassTree::from_parsed(ast);
     tree.source_map.add("test.mo", source);
-    resolve(ParsedTree::new(tree))
+    ParsedTree::new(tree)
+}
+
+fn resolve_parsed_tree_source(source: &str) -> Result<ResolvedTree, Diagnostics> {
+    resolve(parsed_tree_from_source(source))
+}
+
+fn resolve_tree_source(source: &str) -> ResolvedTree {
+    let result = resolve_parsed_tree_source(source);
+    assert!(result.is_ok(), "resolution should succeed");
+    match result {
+        Ok(tree) => tree,
+        Err(_) => unreachable!("resolution result was checked above"),
+    }
 }
 
 fn find_comp_ref_def_id(expr: &rumoca_ir_ast::Expression) -> Option<DefId> {
@@ -92,8 +109,7 @@ equation
 y = x + 1;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
     let tree = result.unwrap().into_inner();
@@ -355,8 +371,7 @@ equation
 y = x + 1;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -508,8 +523,7 @@ import Modelica.Blocks.Continuous.PID;
 PID pid();
 end Ball;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -547,8 +561,7 @@ equation
 der(x) = x;
 end Ball;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -583,8 +596,7 @@ model M
   import P.{A, B};
 end M;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -613,8 +625,7 @@ model Test
   Inner x;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -637,8 +648,7 @@ result := Complex(0);
   end '0';
 end Complex;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(
         result.is_ok(),
         "single-segment class import must be allowed for operator records"
@@ -661,8 +671,7 @@ equation
   y = x;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -684,8 +693,7 @@ equation
   x = 0;
 end M;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(
         result.is_err(),
         "resolution should fail for non-replaceable partial type path"
@@ -711,8 +719,7 @@ partial block PartialLogical
   replaceable PartialBooleanMISO combinator constrainedby PartialBooleanMISO;
 end PartialLogical;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(
         result.is_ok(),
         "partial classes may contain replaceable components constrained by partial classes"
@@ -731,8 +738,7 @@ block Concrete
   replaceable PartialBooleanMISO combinator constrainedby PartialBooleanMISO;
 end Concrete;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(
         result.is_ok(),
         "replaceable partial-typed components must remain legal until instantiation"
@@ -771,8 +777,7 @@ equation
 y = unknownFunc(1.0);
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_err(), "resolution should fail");
 
     let diags = result.expect_err("expected resolve diagnostics");
@@ -793,8 +798,7 @@ equation
 y = unknownFunc(1.0);
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let parsed = ParsedTree::new(ClassTree::from_parsed(ast));
+    let parsed = parsed_tree_from_source(source);
     let options = ResolveOptions {
         unresolved_component_refs_are_errors: false,
         unresolved_function_calls_are_errors: false,
@@ -838,10 +842,7 @@ equation
   y = Medium.f(1.0);
 end UsesMediumAlias;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let tree = resolve_parsed(ast)
-        .expect("resolution should succeed")
-        .into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -890,10 +891,7 @@ model C
   B b(redeclare package Medium = Medium);
 end C;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let tree = resolve_parsed(ast)
-        .expect("resolution should succeed")
-        .into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree.definitions.classes.get("C").expect("C should exist");
     let component = model.components.get("b").expect("b should exist");
     let modification = component
@@ -952,8 +950,7 @@ model Network
   Boundary source(redeclare package Medium = Medium);
 end Network;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    resolve_parsed(ast).expect("resolution should succeed");
+    let _ = resolve_tree_source(source);
 }
 
 #[test]
@@ -1001,10 +998,7 @@ model Derived
   Real p = Medium.saturationPressure(1.0);
 end Derived;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let tree = resolve_parsed(ast)
-        .expect("resolution should succeed")
-        .into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1055,10 +1049,7 @@ equation
   d = Medium.density_pTX(1.0, 2.0);
 end Derived;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let tree = resolve_parsed(ast)
-        .expect("resolution should succeed")
-        .into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1117,10 +1108,7 @@ model UsesTableBasedState
   Real state = Medium.f(1.0);
 end UsesTableBasedState;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let tree = resolve_parsed(ast)
-        .expect("resolution should succeed")
-        .into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1200,10 +1188,7 @@ model UsesTableBasedState
   Medium.ThermodynamicState state = Medium.setState_pTX(1, 2);
 end UsesTableBasedState;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let tree = resolve_parsed(ast)
-        .expect("resolution should succeed")
-        .into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1240,8 +1225,7 @@ for i in 1:3 loop
 end for;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 }
 
@@ -1257,9 +1241,7 @@ for i in 1:n loop
 end for;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast).expect("resolution should succeed");
-    let tree = result.into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1287,9 +1269,7 @@ for i in 1:n loop
 end for;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast).expect("resolution should succeed");
-    let tree = result.into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1317,9 +1297,7 @@ while n > 0 loop
 end while;
 end Test;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast).expect("resolution should succeed");
-    let tree = result.into_inner();
+    let tree = resolve_tree_source(source).into_inner();
     let model = tree
         .definitions
         .classes
@@ -1344,8 +1322,7 @@ model Inner
 end Inner;
 end TestPkg;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
     let tree = result.unwrap().into_inner();
@@ -1377,8 +1354,7 @@ extends Base;
 Real y;
 end Derived;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
     let tree = result.unwrap().into_inner();
@@ -1425,8 +1401,7 @@ extends MyPkg.Base;
 Real y;
 end Derived;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
     let tree = result.unwrap().into_inner();
@@ -1468,8 +1443,7 @@ extends NonExistent;
 Real y;
 end Derived;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
 
     // Resolution should fail with base class not found error
     assert!(result.is_err(), "resolution should fail");
@@ -1495,8 +1469,7 @@ extends A;
 Real x;
 end A;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
 
     // Resolution should fail with "base class not found" error
     assert!(result.is_err(), "resolution should fail");
@@ -1528,8 +1501,7 @@ extends Base2;
 Real z;
 end Derived;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
     let tree = result.unwrap().into_inner();
@@ -1563,8 +1535,7 @@ extends A;
 Real y;
 end B;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
 
     // Resolution should fail with circular inheritance error
     assert!(result.is_err(), "resolution should fail for indirect cycle");
@@ -1595,8 +1566,7 @@ model C
 extends A;
 end C;
 "#;
-    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
-    let result = resolve_parsed(ast);
+    let result = resolve_parsed_tree_source(source);
 
     // Resolution should fail with circular inheritance error
     assert!(result.is_err(), "resolution should fail for chain cycle");

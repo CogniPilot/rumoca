@@ -15,7 +15,9 @@ use crate::name_resolution;
 use crate::path_utils::{
     get_top_level_prefix, normalized_top_level_names, path_is_in_top_level_set,
 };
-use crate::{flat_to_dae_expression_with_refs, flat_to_dae_var_name, remap_flat_for_equations};
+use crate::{
+    flat_to_dae_expression_with_refs, flat_to_dae_var_name, remap_flat_structured_equations,
+};
 
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
     // Only check connection equations
@@ -623,6 +625,7 @@ fn rhs_field_expression(
     field: &RecordFieldSpec,
     index: usize,
     flat: &flat::Model,
+    equation_span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     if let rumoca_core::Expression::FunctionCall {
         name,
@@ -639,7 +642,11 @@ fn rhs_field_expression(
         return arg;
     }
 
-    field.field_access(rhs.clone(), rhs.span().unwrap_or(rumoca_core::Span::DUMMY))
+    let span = match rhs.span() {
+        Some(span) => span,
+        None => equation_span,
+    };
+    field.field_access(rhs.clone(), span)
 }
 
 fn reference_for_variable(field_var: &flat::Variable) -> rumoca_core::Reference {
@@ -655,12 +662,13 @@ fn reference_for_variable(field_var: &flat::Variable) -> rumoca_core::Reference 
 fn field_residual(
     lhs: rumoca_core::Expression,
     rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -668,11 +676,14 @@ fn field_var_ref(field_var: &flat::Variable) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: reference_for_variable(field_var),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span: field_var.source_span,
     }
 }
 
-fn field_lhs_expression(field_vars: &[&flat::Variable]) -> rumoca_core::Expression {
+fn field_lhs_expression(
+    field_vars: &[&flat::Variable],
+    equation_span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     if let [field_var] = field_vars {
         return field_var_ref(field_var);
     }
@@ -682,7 +693,7 @@ fn field_lhs_expression(field_vars: &[&flat::Variable]) -> rumoca_core::Expressi
             .map(|field_var| field_var_ref(field_var))
             .collect(),
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: equation_span,
     }
 }
 
@@ -907,8 +918,9 @@ pub(crate) fn expand_record_field_equation(
         let scalar_count = field_scalar_count(&field_vars);
         equations.push(flat::Equation::new_array(
             field_residual(
-                field_lhs_expression(&field_vars),
-                rhs_field_expression(rhs, field, index, flat),
+                field_lhs_expression(&field_vars, eq.span),
+                rhs_field_expression(rhs, field, index, flat, eq.span),
+                eq.span,
             ),
             eq.span,
             eq.origin.clone(),
@@ -934,7 +946,7 @@ fn route_classified_equation(
         for split_eq in split_equations {
             let split_scalar_count = split_eq.scalar_count;
             let split_dae_eq = dae::Equation::residual_array(
-                flat_to_dae_expression_with_refs(&split_eq.residual, flat),
+                flat_to_dae_expression_with_refs(&split_eq.residual, flat)?,
                 split_eq.span,
                 split_eq.origin.to_string(),
                 split_scalar_count,
@@ -1166,15 +1178,18 @@ fn is_numeric_zero(expr: &rumoca_core::Expression) -> bool {
     }
 }
 
-fn pre_of_target(target: &rumoca_core::VarName) -> rumoca_core::Expression {
+fn pre_of_target(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Pre,
         args: vec![rumoca_core::Expression::VarRef {
             name: target.clone().into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span,
         }],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -1270,36 +1285,50 @@ fn explicit_lhs_reference_from_target(
             component_reference_with_scalar_indices(
                 component_ref,
                 &scalar_name.indices,
-                variable.source_span,
-            ),
+                explicit_target_subscript_span(variable.source_span, span)?,
+            )?,
         ));
     }
-    Err(ToDaeError::RuntimeContractViolation {
-        detail: format!(
+    Err(ToDaeError::runtime_contract_violation_at(
+        format!(
             "explicit discrete assignment target `{target}` lost structured component-reference metadata"
         ),
-        span: rumoca_core::span_to_source_span(
-            flat.variables
-                .get(target)
-                .map(|variable| variable.source_span)
-                .unwrap_or(span),
-        ),
-    })
+        flat.variables
+            .get(target)
+            .map(|variable| variable.source_span)
+            .unwrap_or(span),
+    ))
 }
 
 fn component_reference_with_scalar_indices(
     mut component_ref: rumoca_core::ComponentReference,
     indices: &[i64],
-    span: rumoca_core::Span,
-) -> rumoca_core::ComponentReference {
+    span: rumoca_core::ProvenanceSpan,
+) -> Result<rumoca_core::ComponentReference, ToDaeError> {
     if let Some(part) = component_ref.parts.last_mut() {
-        part.subs.extend(
-            indices
-                .iter()
-                .map(|index| rumoca_core::Subscript::generated_index(*index, span)),
-        );
+        for index in indices {
+            part.subs
+                .push(rumoca_core::Subscript::generated_index_with_provenance(
+                    *index, span,
+                ));
+        }
     }
-    component_ref
+    Ok(component_ref)
+}
+
+fn explicit_target_subscript_span(
+    variable_span: rumoca_core::Span,
+    owner_span: rumoca_core::Span,
+) -> Result<rumoca_core::ProvenanceSpan, ToDaeError> {
+    owner_span
+        .require_provenance("explicit discrete assignment target subscript")
+        .map_err(|err| {
+            if variable_span.is_dummy() {
+                ToDaeError::runtime_metadata_violation(err.to_string())
+            } else {
+                ToDaeError::runtime_metadata_violation_at(err.to_string(), variable_span)
+            }
+        })
 }
 
 fn explicit_assignment_target(expr: &rumoca_core::Expression) -> Option<ExplicitAssignmentTarget> {
@@ -1340,6 +1369,7 @@ fn collect_explicit_discrete_assignments(
     expr: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    equation_span: rumoca_core::Span,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     match expr {
         rumoca_core::Expression::Binary {
@@ -1347,9 +1377,13 @@ fn collect_explicit_discrete_assignments(
             lhs,
             rhs,
             ..
-        } => {
-            collect_binary_explicit_discrete_assignments(lhs, rhs, dae, discrete_valued_lhs_counts)
-        }
+        } => collect_binary_explicit_discrete_assignments(
+            lhs,
+            rhs,
+            dae,
+            discrete_valued_lhs_counts,
+            equation_span,
+        ),
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -1359,12 +1393,18 @@ fn collect_explicit_discrete_assignments(
             else_branch,
             dae,
             discrete_valued_lhs_counts,
+            equation_span,
         ),
         rumoca_core::Expression::Unary {
             op: rumoca_core::OpUnary::Minus,
             rhs,
             ..
-        } => collect_explicit_discrete_assignments(rhs, dae, discrete_valued_lhs_counts),
+        } => collect_explicit_discrete_assignments(
+            rhs,
+            dae,
+            discrete_valued_lhs_counts,
+            equation_span,
+        ),
         _ => Ok(None),
     }
 }
@@ -1374,17 +1414,32 @@ fn collect_binary_explicit_discrete_assignments(
     rhs: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    equation_span: rumoca_core::Span,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
-    if let Some(assignments) =
-        collect_oriented_discrete_alias_assignment(lhs, rhs, dae, discrete_valued_lhs_counts)?
-    {
+    if let Some(assignments) = collect_oriented_discrete_alias_assignment(
+        lhs,
+        rhs,
+        dae,
+        discrete_valued_lhs_counts,
+        equation_span,
+    )? {
         return Ok(Some(assignments));
     }
     if is_numeric_zero(lhs) {
-        return collect_zero_rhs_discrete_assignment(rhs, dae, discrete_valued_lhs_counts);
+        return collect_zero_rhs_discrete_assignment(
+            rhs,
+            dae,
+            discrete_valued_lhs_counts,
+            equation_span,
+        );
     }
     if is_numeric_zero(rhs) {
-        return collect_zero_rhs_discrete_assignment(lhs, dae, discrete_valued_lhs_counts);
+        return collect_zero_rhs_discrete_assignment(
+            lhs,
+            dae,
+            discrete_valued_lhs_counts,
+            equation_span,
+        );
     }
     let Some(name) = explicit_assignment_target_name(lhs) else {
         return Ok(None);
@@ -1398,9 +1453,10 @@ fn collect_zero_rhs_discrete_assignment(
     expr: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    equation_span: rumoca_core::Span,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     if let Some(assignments) =
-        collect_explicit_discrete_assignments(expr, dae, discrete_valued_lhs_counts)?
+        collect_explicit_discrete_assignments(expr, dae, discrete_valued_lhs_counts, equation_span)?
     {
         return Ok(Some(assignments));
     }
@@ -1408,15 +1464,18 @@ fn collect_zero_rhs_discrete_assignment(
         return Ok(None);
     };
     let mut result = HashMap::new();
-    result.insert(target, integer_zero_expr());
+    result.insert(target, integer_zero_expr(equation_span)?);
     Ok(Some(result))
 }
 
-fn integer_zero_expr() -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
+fn integer_zero_expr(span: rumoca_core::Span) -> Result<rumoca_core::Expression, ToDaeError> {
+    let owner = span
+        .require_provenance("explicit discrete assignment zero")
+        .map_err(|err| ToDaeError::runtime_metadata_violation(err.to_string()))?;
+    Ok(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(0),
-        span: rumoca_core::Span::DUMMY,
-    }
+        span: owner.span(),
+    })
 }
 
 fn collect_if_explicit_discrete_assignments(
@@ -1424,12 +1483,14 @@ fn collect_if_explicit_discrete_assignments(
     else_branch: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    equation_span: rumoca_core::Span,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     let Some((branch_maps, else_map)) = collect_discrete_assignment_branches(
         branches,
         else_branch,
         dae,
         discrete_valued_lhs_counts,
+        equation_span,
     )?
     else {
         return Ok(None);
@@ -1439,6 +1500,7 @@ fn collect_if_explicit_discrete_assignments(
         target_order,
         &branch_maps,
         &else_map,
+        equation_span,
     )))
 }
 
@@ -1450,18 +1512,27 @@ fn collect_discrete_assignment_branches(
     else_branch: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    equation_span: rumoca_core::Span,
 ) -> Result<Option<(DiscreteBranchAssignments, DiscreteAssignmentMap)>, ToDaeError> {
     let mut branch_maps = Vec::new();
     for (condition, value) in branches {
-        let Some(assignments) =
-            collect_explicit_discrete_assignments(value, dae, discrete_valued_lhs_counts)?
+        let Some(assignments) = collect_explicit_discrete_assignments(
+            value,
+            dae,
+            discrete_valued_lhs_counts,
+            equation_span,
+        )?
         else {
             return Ok(None);
         };
         branch_maps.push((condition.clone(), assignments));
     }
-    let Some(else_map) =
-        collect_explicit_discrete_assignments(else_branch, dae, discrete_valued_lhs_counts)?
+    let Some(else_map) = collect_explicit_discrete_assignments(
+        else_branch,
+        dae,
+        discrete_valued_lhs_counts,
+        equation_span,
+    )?
     else {
         return Ok(None);
     };
@@ -1489,12 +1560,13 @@ fn build_if_discrete_assignment_map(
     target_order: Vec<rumoca_core::VarName>,
     branch_maps: &DiscreteBranchAssignments,
     else_map: &DiscreteAssignmentMap,
+    equation_span: rumoca_core::Span,
 ) -> DiscreteAssignmentMap {
     let mut result = HashMap::new();
     for target in target_order {
         result.insert(
             target.clone(),
-            build_if_discrete_assignment_expr(&target, branch_maps, else_map),
+            build_if_discrete_assignment_expr(&target, branch_maps, else_map, equation_span),
         );
     }
     result
@@ -1504,6 +1576,7 @@ fn build_if_discrete_assignment_expr(
     target: &rumoca_core::VarName,
     branch_maps: &DiscreteBranchAssignments,
     else_map: &DiscreteAssignmentMap,
+    equation_span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     let branch_values = branch_maps
         .iter()
@@ -1511,18 +1584,18 @@ fn build_if_discrete_assignment_expr(
             let rhs = assignments
                 .get(target)
                 .cloned()
-                .unwrap_or_else(|| pre_of_target(target));
+                .unwrap_or_else(|| pre_of_target(target, equation_span));
             (condition.clone(), rhs)
         })
         .collect();
     let else_value = else_map
         .get(target)
         .cloned()
-        .unwrap_or_else(|| pre_of_target(target));
+        .unwrap_or_else(|| pre_of_target(target, equation_span));
     rumoca_core::Expression::If {
         branches: branch_values,
         else_branch: Box::new(else_value),
-        span: rumoca_core::Span::DUMMY,
+        span: equation_span,
     }
 }
 
@@ -1531,6 +1604,7 @@ fn collect_oriented_discrete_alias_assignment(
     rhs: &rumoca_core::Expression,
     dae: &dae::Dae,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+    equation_span: rumoca_core::Span,
 ) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     let Some(lhs_target) = explicit_assignment_target(lhs) else {
         return Ok(None);
@@ -1550,22 +1624,16 @@ fn collect_oriented_discrete_alias_assignment(
         return Ok(None);
     }
 
-    let lhs_definitions = lookup_discrete_lhs_count(&lhs_target.name, discrete_valued_lhs_counts)
-        .ok_or_else(|| ToDaeError::RuntimeContractViolation {
-        detail: format!(
-            "missing discrete-valued LHS definition count for `{}`",
-            lhs_target.name
-        ),
-        span: rumoca_core::span_to_source_span(lhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
-    })?;
-    let rhs_definitions = lookup_discrete_lhs_count(&rhs_target.name, discrete_valued_lhs_counts)
-        .ok_or_else(|| ToDaeError::RuntimeContractViolation {
-        detail: format!(
-            "missing discrete-valued LHS definition count for `{}`",
-            rhs_target.name
-        ),
-        span: rumoca_core::span_to_source_span(rhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
-    })?;
+    let lhs_definitions = required_discrete_lhs_count(
+        &lhs_target.name,
+        discrete_valued_lhs_counts,
+        expression_or_context_span(lhs, equation_span),
+    )?;
+    let rhs_definitions = required_discrete_lhs_count(
+        &rhs_target.name,
+        discrete_valued_lhs_counts,
+        expression_or_context_span(rhs, equation_span),
+    )?;
     if lhs_definitions <= 1 || rhs_definitions != 0 {
         return Ok(None);
     }
@@ -1575,11 +1643,34 @@ fn collect_oriented_discrete_alias_assignment(
     Ok(Some(result))
 }
 
+fn expression_or_context_span(
+    expr: &rumoca_core::Expression,
+    context_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    match expr.span() {
+        Some(span) => span,
+        None => context_span,
+    }
+}
+
 fn lookup_discrete_lhs_count(
     target: &rumoca_core::VarName,
     counts: &HashMap<rumoca_core::VarName, usize>,
 ) -> Option<usize> {
     counts.get(target).copied()
+}
+
+fn required_discrete_lhs_count(
+    target: &rumoca_core::VarName,
+    counts: &HashMap<rumoca_core::VarName, usize>,
+    span: rumoca_core::Span,
+) -> Result<usize, ToDaeError> {
+    lookup_discrete_lhs_count(target, counts).ok_or_else(|| {
+        ToDaeError::runtime_contract_violation_at(
+            format!("missing discrete-valued LHS definition count for `{target}`"),
+            span,
+        )
+    })
 }
 
 fn is_discrete_valued_target(dae: &dae::Dae, target: &rumoca_core::VarName) -> bool {
@@ -1623,8 +1714,12 @@ fn push_explicit_discrete_assignments(
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
 ) -> Result<bool, ToDaeError> {
     let rhs = crate::dae_to_flat_expression(&equation.rhs);
-    let Some(assignments) =
-        collect_explicit_discrete_assignments(&rhs, dae, discrete_valued_lhs_counts)?
+    let Some(assignments) = collect_explicit_discrete_assignments(
+        &rhs,
+        dae,
+        discrete_valued_lhs_counts,
+        equation.span,
+    )?
     else {
         return Ok(false);
     };
@@ -1640,7 +1735,7 @@ fn push_explicit_discrete_assignments(
         };
         let explicit = dae::Equation::explicit_with_scalar_count(
             explicit_lhs_reference_from_target(&target, flat, equation.span)?,
-            flat_to_dae_expression_with_refs(&rhs, flat),
+            flat_to_dae_expression_with_refs(&rhs, flat)?,
             equation.span,
             format!("explicit {}", equation.origin),
             scalar_count,
@@ -1702,7 +1797,7 @@ pub(super) fn classify_equations(
                 stats.record_kept(&expanded_eq.origin);
             }
             let dae_eq = dae::Equation::residual_array(
-                flat_to_dae_expression_with_refs(&expanded_eq.residual, flat),
+                flat_to_dae_expression_with_refs(&expanded_eq.residual, flat)?,
                 expanded_eq.span,
                 expanded_eq.origin.to_string(),
                 scalar_count,
@@ -1714,7 +1809,8 @@ pub(super) fn classify_equations(
         }
     }
 
-    dae.continuous.for_equations = remap_flat_for_equations(&flat.for_equations, &flat_to_fx_index);
+    dae.continuous.structured_equations =
+        remap_flat_structured_equations(&flat.structured_equations, &flat_to_fx_index);
 
     if debug_eq_filter {
         stats.log();

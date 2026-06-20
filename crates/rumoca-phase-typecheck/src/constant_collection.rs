@@ -166,8 +166,27 @@ impl TypeChecker {
         })
     }
 
-    /// Extract constants for one resolved redeclare override root under its alias.
+    /// Extract constants for one resolved redeclare override root.
+    ///
+    /// Redeclared package constants are reachable both through the lexical
+    /// alias (`Medium.nXi`) and through concrete package references preserved
+    /// by instantiation (`Modelica.Media.Air.ReferenceAir.Air_pT.nXi`).
     pub(crate) fn extract_override_class_constants(
+        tree: &ClassTree,
+        alias: &str,
+        def_id: DefId,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        Self::extract_override_class_constants_at_prefix(tree, alias, def_id, ctx);
+        if let Some(target_name) = tree.def_map.get(&def_id)
+            && target_name != alias
+        {
+            Self::extract_override_class_constants_at_prefix(tree, target_name, def_id, ctx);
+        }
+    }
+
+    /// Extract constants for one resolved redeclare override root under one prefix.
+    fn extract_override_class_constants_at_prefix(
         tree: &ClassTree,
         alias: &str,
         def_id: DefId,
@@ -604,29 +623,45 @@ impl TypeChecker {
     ) {
         // Walk nested class declarations (e.g., `package Medium = SomeMedium`)
         for (nested_name, nested_class) in &class_def.classes {
-            // MLS §5.3: local nested class/package names shadow imported aliases.
-            // Clear stale alias-prefixed values before seeding this class scope.
-            Self::clear_alias_scope_values(ctx, nested_name);
-            // Extract constants directly from the nested class
-            Self::extract_class_constants(nested_name, nested_class, ctx);
-            // Follow extends chains to concrete types and extract their constants
-            for ext in &nested_class.extends {
-                Self::extract_extends_modification_constants(nested_name, ext, ctx);
-                Self::extract_nested_extends_redeclare_constants(
-                    tree,
-                    nested_name,
-                    model_name,
-                    ext,
-                    ctx,
-                );
-                Self::extract_class_constants_from_extends(
-                    tree,
-                    nested_name,
-                    &ext.base_name.to_string(),
-                    model_name,
-                    ctx,
-                );
-            }
+            let qualified_name = format!("{model_name}.{nested_name}");
+            Self::extract_nested_class_alias_constants(
+                tree,
+                nested_name,
+                nested_class,
+                model_name,
+                ctx,
+            );
+            Self::extract_nested_class_alias_constants(
+                tree,
+                &qualified_name,
+                nested_class,
+                model_name,
+                ctx,
+            );
+        }
+    }
+
+    fn extract_nested_class_alias_constants(
+        tree: &ClassTree,
+        alias: &str,
+        nested_class: &ClassDef,
+        model_name: &str,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        // MLS §5.3: local nested class/package names shadow imported aliases.
+        // Clear stale alias-prefixed values before seeding this class scope.
+        Self::clear_alias_scope_values(ctx, alias);
+        Self::extract_class_constants(alias, nested_class, ctx);
+        for ext in &nested_class.extends {
+            Self::extract_extends_modification_constants(alias, ext, ctx);
+            Self::extract_nested_extends_redeclare_constants(tree, alias, model_name, ext, ctx);
+            Self::extract_class_constants_from_extends(
+                tree,
+                alias,
+                &ext.base_name.to_string(),
+                model_name,
+                ctx,
+            );
         }
     }
 

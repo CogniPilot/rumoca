@@ -1,5 +1,5 @@
 use super::*;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_dae::{self as dae, DaeVisitor};
 
 type ComponentReference = rumoca_core::ComponentReference;
@@ -14,29 +14,36 @@ type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
 
 struct KnownReferenceIndex {
-    flat_queries: HashSet<String>,
-    dae_queries: HashSet<String>,
-    enum_literal_queries: HashSet<String>,
+    flat_queries: IndexSet<String>,
+    dae_queries: IndexSet<String>,
+    enum_literal_queries: IndexSet<String>,
 }
 
 impl KnownReferenceIndex {
-    fn build(dae: &Dae, known_flat_var_names: &HashSet<String>) -> Self {
+    fn build(dae: &Dae, known_flat_var_names: &HashSet<String>) -> Result<Self, ToDaeError> {
         let mut dae_var_collector = DaeVariableNameCollector { names: Vec::new() };
         dae_var_collector.visit_variables(&dae.variables);
-        Self {
+        Ok(Self {
             flat_queries: build_flat_reference_query_set(
                 known_flat_var_names.iter().map(String::as_str),
-            ),
+            )?,
             dae_queries: build_dae_reference_query_set(
                 dae_var_collector.names.iter().map(String::as_str),
-            ),
+            )?,
             enum_literal_queries: build_enum_literal_query_set(&dae.symbols.enum_literal_ordinals),
-        }
+        })
     }
 }
 
 struct DaeVariableNameCollector {
     names: Vec<String>,
+}
+
+fn copied_scope<'a>(function_scope: Option<&HashSet<&'a str>>) -> HashSet<&'a str> {
+    match function_scope {
+        Some(scope) => scope.iter().copied().collect(),
+        None => HashSet::new(),
+    }
 }
 
 impl DaeVisitor for DaeVariableNameCollector {
@@ -50,21 +57,25 @@ impl DaeVisitor for DaeVariableNameCollector {
     }
 }
 
-fn build_flat_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> HashSet<String> {
-    let mut queries = HashSet::new();
+fn build_flat_reference_query_set<'a>(
+    names: impl Iterator<Item = &'a str>,
+) -> Result<IndexSet<String>, ToDaeError> {
+    let mut queries = IndexSet::new();
     for name in names {
         insert_reference_query_alias(&mut queries, name);
         insert_reference_query_alias(&mut queries, &path_utils::strip_all_subscripts(name));
-        insert_ancestor_reference_queries(&mut queries, name);
+        insert_ancestor_reference_queries(&mut queries, name)?;
     }
-    queries
+    Ok(queries)
 }
 
-fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> HashSet<String> {
-    let mut queries = HashSet::new();
+fn build_dae_reference_query_set<'a>(
+    names: impl Iterator<Item = &'a str>,
+) -> Result<IndexSet<String>, ToDaeError> {
+    let mut queries = IndexSet::new();
     for name in names {
         queries.insert(name.to_string());
-        insert_ancestor_reference_queries(&mut queries, name);
+        insert_ancestor_reference_queries(&mut queries, name)?;
         if !path_utils::is_nested_name(name) && path_utils::has_top_level_subscript(name) {
             insert_reference_query_alias(
                 &mut queries,
@@ -72,30 +83,37 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
             );
         }
     }
-    queries
+    Ok(queries)
 }
 
-pub(crate) fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<String> {
+pub(crate) fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> IndexSet<String> {
     ordinals.keys().cloned().collect()
 }
 
-fn insert_reference_query_alias(queries: &mut HashSet<String>, name: &str) {
+fn insert_reference_query_alias(queries: &mut IndexSet<String>, name: &str) {
     if !name.is_empty() {
         queries.insert(name.to_string());
     }
 }
 
-fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) {
+fn insert_ancestor_reference_queries(
+    queries: &mut IndexSet<String>,
+    name: &str,
+) -> Result<(), ToDaeError> {
     let path = rumoca_core::ComponentPath::from_flat_path(name);
     for idx in 1..path.len() {
-        let prefix = path
-            .prefix(idx)
-            .expect("ancestor prefix index is in range")
-            .to_flat_string();
+        let Some(prefix) = path.prefix(idx) else {
+            return Err(ToDaeError::runtime_contract_violation(format!(
+                "reference `{name}` could not produce ancestor prefix {idx} from {} path segments",
+                path.len()
+            )));
+        };
+        let prefix = prefix.to_flat_string();
         insert_reference_query_alias(queries, &prefix);
         let normalized = path_utils::strip_all_subscripts(&prefix);
         insert_reference_query_alias(queries, &normalized);
     }
+    Ok(())
 }
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
@@ -112,9 +130,14 @@ fn validate_constructor_field_selection(
         name,
         args,
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        span: call_span,
     } = base
     {
+        let span = if call_span.is_dummy() {
+            span
+        } else {
+            *call_span
+        };
         for arg in args {
             validate_expression_constructor_selections(arg, functions, span)?;
         }
@@ -411,18 +434,16 @@ impl DaeVisitor for ConstructorSelectionAttributeValidator<'_> {
     fn visit_variable(
         &mut self,
         _partition: dae::DaeVariablePartition,
-        _name: &VarName,
+        name: &VarName,
         variable: &dae::Variable,
     ) {
         if self.result.is_err() {
             return;
         }
-        for (expr, span) in variable_attribute_expressions(variable) {
-            self.result = validate_expression_constructor_selections(
-                expr,
-                self.functions,
-                variable_attribute_span(expr, span),
-            );
+        for attribute in variable_attribute_expressions(variable) {
+            self.result = variable_attribute_span(name, variable, &attribute).and_then(|span| {
+                validate_expression_constructor_selections(attribute.expr, self.functions, span)
+            });
             if self.result.is_err() {
                 return;
             }
@@ -434,7 +455,7 @@ pub(super) fn validate_dae_references(
     dae: &Dae,
     known_flat_var_names: &HashSet<String>,
 ) -> Result<(), ToDaeError> {
-    let known_refs = KnownReferenceIndex::build(dae, known_flat_var_names);
+    let known_refs = KnownReferenceIndex::build(dae, known_flat_var_names)?;
     validate_variable_provenance(dae)?;
     validate_variable_reference_attributes(dae, &known_refs)?;
     validate_equation_rhs_references(dae, &known_refs)?;
@@ -498,20 +519,22 @@ impl DaeVisitor for VariableReferenceAttributeValidator<'_> {
     fn visit_variable(
         &mut self,
         _partition: dae::DaeVariablePartition,
-        _name: &VarName,
+        name: &VarName,
         variable: &dae::Variable,
     ) {
         if self.result.is_err() {
             return;
         }
-        for (expr, span) in variable_attribute_expressions(variable) {
-            self.result = validate_expression_references(
-                expr,
-                self.dae,
-                variable_attribute_span(expr, span),
-                None,
-                self.known_refs,
-            );
+        for attribute in variable_attribute_expressions(variable) {
+            self.result = variable_attribute_span(name, variable, &attribute).and_then(|span| {
+                validate_expression_references(
+                    attribute.expr,
+                    self.dae,
+                    span,
+                    None,
+                    self.known_refs,
+                )
+            });
             if self.result.is_err() {
                 return;
             }
@@ -545,7 +568,7 @@ fn validate_relation_references(
         validate_expression_references(
             relation,
             dae,
-            expression_validation_span(relation, Span::DUMMY),
+            relation_validation_span(relation)?,
             None,
             known_refs,
         )?;
@@ -553,25 +576,61 @@ fn validate_relation_references(
     Ok(())
 }
 
-fn expression_validation_span(expr: &Expression, fallback: Span) -> Span {
-    expr.span().unwrap_or(fallback)
+fn relation_validation_span(expr: &Expression) -> Result<Span, ToDaeError> {
+    expr.span().ok_or_else(|| {
+        ToDaeError::runtime_metadata_violation(
+            "condition relation expression is missing source provenance",
+        )
+    })
 }
 
 fn variable_attribute_expressions(
     variable: &dae::Variable,
-) -> impl Iterator<Item = (&Expression, Option<Span>)> {
+) -> impl Iterator<Item = VariableAttributeExpression<'_>> {
     [
-        (variable.start.as_ref(), variable.start_attribute_span()),
-        (variable.min.as_ref(), variable.min_attribute_span()),
-        (variable.max.as_ref(), variable.max_attribute_span()),
-        (variable.nominal.as_ref(), variable.nominal_attribute_span()),
+        (
+            "start",
+            variable.start.as_ref(),
+            variable.start_attribute_span(),
+        ),
+        ("min", variable.min.as_ref(), variable.min_attribute_span()),
+        ("max", variable.max.as_ref(), variable.max_attribute_span()),
+        (
+            "nominal",
+            variable.nominal.as_ref(),
+            variable.nominal_attribute_span(),
+        ),
     ]
     .into_iter()
-    .filter_map(|(expr, span)| expr.map(|expr| (expr, span)))
+    .filter_map(|(name, expr, span)| {
+        expr.map(|expr| VariableAttributeExpression { name, expr, span })
+    })
 }
 
-fn variable_attribute_span(expr: &Expression, span: Option<Span>) -> Span {
-    span.unwrap_or_else(|| expression_validation_span(expr, Span::DUMMY))
+struct VariableAttributeExpression<'a> {
+    name: &'static str,
+    expr: &'a Expression,
+    span: Option<Span>,
+}
+
+fn variable_attribute_span(
+    variable_name: &VarName,
+    variable: &dae::Variable,
+    attribute: &VariableAttributeExpression<'_>,
+) -> Result<Span, ToDaeError> {
+    attribute
+        .span
+        .or_else(|| attribute.expr.span())
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation_at(
+                format!(
+                    "variable attribute `{}.{}` expression is missing source provenance",
+                    variable_name.as_str(),
+                    attribute.name
+                ),
+                variable.source_span,
+            )
+        })
 }
 
 fn validate_function_references(
@@ -739,9 +798,7 @@ fn validate_for_statement_references(
     function_scope: Option<&HashSet<&str>>,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
-    let mut loop_scope: HashSet<&str> = function_scope
-        .map(|scope| scope.iter().copied().collect())
-        .unwrap_or_default();
+    let mut loop_scope = copied_scope(function_scope);
     for index in indices {
         validate_expression_references(&index.range, dae, span, Some(&loop_scope), known_refs)?;
         loop_scope.insert(index.ident.as_str());
@@ -852,9 +909,24 @@ fn validate_component_reference_target(
     let expr = Expression::VarRef {
         name: comp.to_var_name().into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: component_reference_target_span(comp, span)?,
     };
     validate_expression_references(&expr, dae, span, function_scope, known_refs)
+}
+
+fn component_reference_target_span(
+    comp: &ComponentReference,
+    context_span: Span,
+) -> Result<Span, ToDaeError> {
+    (!comp.span.is_dummy())
+        .then_some(comp.span)
+        .or_else(|| (!context_span.is_dummy()).then_some(context_span))
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "component reference target `{}` is missing source provenance",
+                comp.to_var_name().as_str()
+            ))
+        })
 }
 
 fn validate_expression_references(
@@ -1027,9 +1099,7 @@ fn validate_array_comprehension_references(
     function_scope: Option<&HashSet<&str>>,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
-    let mut comprehension_scope: HashSet<&str> = function_scope
-        .map(|scope| scope.iter().copied().collect())
-        .unwrap_or_default();
+    let mut comprehension_scope = copied_scope(function_scope);
     for index in indices {
         validate_expression_references(
             &index.range,
@@ -1101,7 +1171,8 @@ mod tests {
 
     #[test]
     fn flat_reference_queries_include_normalized_member_names() {
-        let queries = build_flat_reference_query_set(["pin_n[1].v"].into_iter());
+        let queries = build_flat_reference_query_set(["pin_n[1].v"].into_iter())
+            .unwrap_or_else(|err| panic!("flat reference query set should build: {err}"));
         assert!(queries.contains("pin_n"));
         assert!(queries.contains("pin_n[1]"));
         assert!(queries.contains("pin_n[1].v"));
@@ -1111,7 +1182,8 @@ mod tests {
 
     #[test]
     fn dae_reference_queries_do_not_normalize_full_member_names() {
-        let queries = build_dae_reference_query_set(["pin_n[1].v"].into_iter());
+        let queries = build_dae_reference_query_set(["pin_n[1].v"].into_iter())
+            .unwrap_or_else(|err| panic!("DAE reference query set should build: {err}"));
         assert!(queries.contains("pin_n"));
         assert!(queries.contains("pin_n[1]"));
         assert!(queries.contains("pin_n[1].v"));
@@ -1143,8 +1215,8 @@ mod tests {
         );
 
         let known = KnownReferenceIndex {
-            flat_queries: HashSet::new(),
-            dae_queries: HashSet::new(),
+            flat_queries: IndexSet::new(),
+            dae_queries: IndexSet::new(),
             enum_literal_queries: build_enum_literal_query_set(&ordinals),
         };
 
@@ -1168,8 +1240,8 @@ mod tests {
         ordinals.insert("gate.L.'U'".to_string(), 0);
 
         let known = KnownReferenceIndex {
-            flat_queries: HashSet::new(),
-            dae_queries: HashSet::new(),
+            flat_queries: IndexSet::new(),
+            dae_queries: IndexSet::new(),
             enum_literal_queries: build_enum_literal_query_set(&ordinals),
         };
 
@@ -1190,9 +1262,9 @@ mod tests {
     #[test]
     fn known_reference_short_leaf_matching_ignores_dots_inside_indices() {
         let known = KnownReferenceIndex {
-            flat_queries: HashSet::from(["system.a[index.with.dot]".to_string()]),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
+            flat_queries: IndexSet::from(["system.a[index.with.dot]".to_string()]),
+            dae_queries: IndexSet::new(),
+            enum_literal_queries: IndexSet::new(),
         };
 
         assert!(!is_known_dae_reference(
@@ -1208,9 +1280,9 @@ mod tests {
     #[test]
     fn known_reference_rejects_unqualified_leaf_of_component_member() {
         let known = KnownReferenceIndex {
-            flat_queries: HashSet::from(["pid.x".to_string(), "x2".to_string()]),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
+            flat_queries: IndexSet::from(["pid.x".to_string(), "x2".to_string()]),
+            dae_queries: IndexSet::new(),
+            enum_literal_queries: IndexSet::new(),
         };
 
         assert!(!is_known_dae_reference(
@@ -1221,5 +1293,60 @@ mod tests {
             &rumoca_core::Reference::new("pid.x"),
             &known
         ));
+    }
+
+    fn component_ref(name: &str, span: Span) -> ComponentReference {
+        ComponentReference {
+            local: false,
+            span,
+            parts: vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span,
+                subs: Vec::new(),
+            }],
+            def_id: None,
+        }
+    }
+
+    fn test_span(offset: usize) -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("reference_validation_test.mo"),
+            offset,
+            offset + 3,
+        )
+    }
+
+    #[test]
+    fn component_reference_target_span_prefers_component_span() {
+        let component_span = test_span(10);
+        let context_span = test_span(20);
+        let comp = component_ref("x", component_span);
+
+        assert_eq!(
+            component_reference_target_span(&comp, context_span)
+                .unwrap_or_else(|err| panic!("component span should resolve: {err}")),
+            component_span
+        );
+    }
+
+    #[test]
+    fn component_reference_target_span_uses_context_span_when_component_is_unspanned() {
+        let context_span = test_span(30);
+        let comp = component_ref("x", Span::DUMMY);
+
+        assert_eq!(
+            component_reference_target_span(&comp, context_span)
+                .unwrap_or_else(|err| panic!("context span should resolve: {err}")),
+            context_span
+        );
+    }
+
+    #[test]
+    fn component_reference_target_span_rejects_missing_provenance() {
+        let comp = component_ref("x", Span::DUMMY);
+        let err = component_reference_target_span(&comp, Span::DUMMY)
+            .expect_err("unspanned component reference should fail");
+
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
     }
 }

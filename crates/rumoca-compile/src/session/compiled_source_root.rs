@@ -40,7 +40,9 @@ impl CompiledSourceRoot {
     /// This resolves the AST once. Type checking happens after instantiation.
     pub fn from_stored_definition(def: ast::StoredDefinition) -> Result<Self> {
         let mut session = Session::new(SessionConfig::default());
-        session.add_parsed("source_root", def);
+        let source_name =
+            stored_definition_source_name(&def).unwrap_or_else(|| "source_root".to_string());
+        session.add_parsed(&source_name, def);
         session.build_resolved()?;
         let resolved = session.ensure_resolved()?.clone();
         Ok(Self::from_indexed_state(
@@ -117,24 +119,22 @@ impl CompiledSourceRoot {
         &self.resolved
     }
 
-    fn cached_phase_result(&self, model_name: &str) -> PhaseResult {
-        if let Some(result) = self
-            .compile_cache
-            .lock()
-            .expect("compiled source-root cache poisoned")
-            .get(model_name)
-            .cloned()
-        {
-            return result;
+    fn cached_phase_result(&self, model_name: &str) -> Result<PhaseResult> {
+        if let Some(result) = self.compile_cache()?.get(model_name).cloned() {
+            return Ok(result);
         }
 
         let result = compile_model_internal(&self.resolved_tree().0, model_name);
-        self.compile_cache
-            .lock()
-            .expect("compiled source-root cache poisoned")
+        self.compile_cache()?
             .entry(model_name.to_string())
             .or_insert_with(|| result.clone());
-        result
+        Ok(result)
+    }
+
+    fn compile_cache(&self) -> Result<std::sync::MutexGuard<'_, IndexMap<String, PhaseResult>>> {
+        self.compile_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("compiled source-root cache poisoned"))
     }
 
     fn reachable_model_closure(&self, model_name: &str) -> ReachableModelClosure {
@@ -142,12 +142,9 @@ impl CompiledSourceRoot {
             .model_closure(model_name)
     }
 
-    fn compile_targets_with_cache(&self, targets: &[String]) -> Vec<(String, PhaseResult)> {
+    fn compile_targets_with_cache(&self, targets: &[String]) -> Result<Vec<(String, PhaseResult)>> {
         let (mut results, missing) = {
-            let cache = self
-                .compile_cache
-                .lock()
-                .expect("compiled source-root cache poisoned");
+            let cache = self.compile_cache()?;
             split_cached_target_results(&cache, targets)
         };
 
@@ -158,24 +155,21 @@ impl CompiledSourceRoot {
                 .map(|name| (name.clone(), compile_model_internal(tree, name)))
                 .collect();
 
-            let mut cache = self
-                .compile_cache
-                .lock()
-                .expect("compiled source-root cache poisoned");
+            let mut cache = self.compile_cache()?;
             for (name, result) in compiled_misses {
                 cache.entry(name.clone()).or_insert_with(|| result.clone());
                 results.insert(name, result);
             }
         }
 
-        targets
+        Ok(targets
             .iter()
             .filter_map(|target| {
                 results
                     .shift_remove(target)
                     .map(|result| (target.clone(), result))
             })
-            .collect()
+            .collect())
     }
 
     fn compile_targets_streaming_with_cache<F>(
@@ -183,14 +177,12 @@ impl CompiledSourceRoot {
         targets: &[String],
         max_in_flight_results: usize,
         consume: F,
-    ) where
+    ) -> Result<()>
+    where
         F: FnMut(String, PhaseResult) + Send,
     {
         let (mut cached_results, missing) = {
-            let cache = self
-                .compile_cache
-                .lock()
-                .expect("compiled source-root cache poisoned");
+            let cache = self.compile_cache()?;
             split_cached_target_results(&cache, targets)
         };
 
@@ -201,10 +193,10 @@ impl CompiledSourceRoot {
             }
         }
         if missing.is_empty() {
-            return;
+            return Ok(());
         }
 
-        self.compile_missing_targets_streaming_with_cache(missing, max_in_flight_results, consume);
+        self.compile_missing_targets_streaming_with_cache(missing, max_in_flight_results, consume)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -213,19 +205,19 @@ impl CompiledSourceRoot {
         missing: Vec<String>,
         _max_in_flight_results: usize,
         mut consume: F,
-    ) where
+    ) -> Result<()>
+    where
         F: FnMut(String, PhaseResult) + Send,
     {
         let tree = &self.resolved_tree().0;
         for name in missing {
             let result = compile_model_internal(tree, &name);
-            self.compile_cache
-                .lock()
-                .expect("compiled source-root cache poisoned")
+            self.compile_cache()?
                 .entry(name.clone())
                 .or_insert_with(|| result.clone());
             consume(name, result);
         }
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -234,7 +226,8 @@ impl CompiledSourceRoot {
         missing: Vec<String>,
         max_in_flight_results: usize,
         consume: F,
-    ) where
+    ) -> Result<()>
+    where
         F: FnMut(String, PhaseResult) + Send,
     {
         let queue_bound = max_in_flight_results.max(1);
@@ -243,11 +236,13 @@ impl CompiledSourceRoot {
 
         std::thread::scope(|scope| {
             let consumer = scope.spawn(move || drain_compile_results(result_rx, consume));
-            self.compile_missing_targets_parallel(&missing, result_tx);
-            consumer
+            let producer_result = self.compile_missing_targets_parallel(&missing, result_tx);
+            let consumer_result = consumer
                 .join()
-                .expect("bulk compile result consumer panicked");
-        });
+                .map_err(|_| anyhow::anyhow!("bulk compile result consumer panicked"))?;
+            producer_result?;
+            consumer_result
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -255,17 +250,24 @@ impl CompiledSourceRoot {
         &self,
         missing: &[String],
         result_tx: std::sync::mpsc::SyncSender<(String, PhaseResult)>,
-    ) {
+    ) -> Result<()> {
         let tree = &self.resolved_tree().0;
-        missing.par_iter().for_each_with(result_tx, |tx, name| {
-            let result = compile_model_internal(tree, name);
-            self.compile_cache
-                .lock()
-                .expect("compiled source-root cache poisoned")
-                .entry(name.clone())
-                .or_insert_with(|| result.clone());
-            let _ = tx.send((name.clone(), result));
-        });
+        let results = missing
+            .par_iter()
+            .map_with(result_tx, |tx, name| -> Result<()> {
+                let result = compile_model_internal(tree, name);
+                self.compile_cache()?
+                    .entry(name.clone())
+                    .or_insert_with(|| result.clone());
+                tx.send((name.clone(), result))
+                    .map_err(|_| anyhow::anyhow!("bulk compile result consumer disconnected"))?;
+                Ok(())
+            })
+            .collect::<Vec<_>>();
+        for result in results {
+            result?;
+        }
+        Ok(())
     }
 
     /// Compile the requested model strictly against its reachable closure while
@@ -273,7 +275,7 @@ impl CompiledSourceRoot {
     pub fn compile_model_strict_reachable_with_recovery(
         &self,
         model_name: &str,
-    ) -> StrictCompileReport {
+    ) -> Result<StrictCompileReport> {
         let tree = &self.resolved_tree().0;
         let closure = self.reachable_model_closure(model_name);
         let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
@@ -285,16 +287,18 @@ impl CompiledSourceRoot {
         // Resolve errors in the target's own files make every later phase a
         // cascade, so stop here: one user error, one diagnostic.
         if !failures.is_empty() {
-            return StrictCompileReport {
+            return Ok(StrictCompileReport {
                 requested_model: model_name.to_string(),
                 requested_result: None,
                 summary: CompilationSummary::default(),
                 failures,
                 source_map: Some(tree.source_map.clone()),
-            };
+            });
         }
-        let results = self.compile_targets_with_cache(&closure.compile_targets);
-        finalize_strict_compile_report(tree, model_name, failures, results)
+        let results = self.compile_targets_with_cache(&closure.compile_targets)?;
+        Ok(finalize_strict_compile_report(
+            tree, model_name, failures, results,
+        ))
     }
 
     /// Compile the requested model strictly against its reachable closure
@@ -378,7 +382,7 @@ impl CompiledSourceRoot {
     ///
     /// Uses the new phase order: Instantiate -> Typecheck -> Flatten -> ToDae
     pub fn compile_model(&self, model_name: &str) -> Result<CompilationResult> {
-        match self.cached_phase_result(model_name) {
+        match self.cached_phase_result(model_name)? {
             PhaseResult::Success(result) => Ok(*result),
             PhaseResult::NeedsInner { missing_inners, .. } => Err(anyhow::anyhow!(
                 "Missing inner declarations: {:?}",
@@ -392,13 +396,17 @@ impl CompiledSourceRoot {
 
     /// Compile a model with phase-level tracking.
     ///
-    /// Returns PhaseResult directly (infallible for pre-built source roots).
-    pub fn compile_model_phases(&self, model_name: &str) -> PhaseResult {
+    /// Returns phase-level status, or an infrastructure error if cached state
+    /// cannot be read.
+    pub fn compile_model_phases(&self, model_name: &str) -> Result<PhaseResult> {
         self.cached_phase_result(model_name)
     }
 
     /// Compile multiple models in parallel.
-    pub fn compile_models_parallel(&self, model_names: &[&str]) -> Vec<(String, PhaseResult)> {
+    pub fn compile_models_parallel(
+        &self,
+        model_names: &[&str],
+    ) -> Result<Vec<(String, PhaseResult)>> {
         let names = model_names
             .iter()
             .map(|name| (*name).to_string())
@@ -418,40 +426,80 @@ impl CompiledSourceRoot {
         model_names: &[&str],
         max_in_flight_results: usize,
         consume: F,
-    ) where
+    ) -> Result<()>
+    where
         F: FnMut(String, PhaseResult) + Send,
     {
         let names = model_names
             .iter()
             .map(|name| (*name).to_string())
             .collect::<Vec<_>>();
-        self.compile_targets_streaming_with_cache(&names, max_in_flight_results, consume);
+        self.compile_targets_streaming_with_cache(&names, max_in_flight_results, consume)
     }
 
     /// Compile all models in parallel.
-    pub fn compile_all_parallel(&self) -> Vec<(String, PhaseResult)> {
+    pub fn compile_all_parallel(&self) -> Result<Vec<(String, PhaseResult)>> {
         self.compile_targets_with_cache(&self.model_names)
     }
 
     /// Compile all models in parallel and stream each result to `consume`.
-    pub fn compile_all_streaming<F>(&self, max_in_flight_results: usize, consume: F)
+    pub fn compile_all_streaming<F>(&self, max_in_flight_results: usize, consume: F) -> Result<()>
     where
         F: FnMut(String, PhaseResult) + Send,
     {
-        self.compile_targets_streaming_with_cache(
-            &self.model_names,
-            max_in_flight_results,
-            consume,
-        );
+        self.compile_targets_streaming_with_cache(&self.model_names, max_in_flight_results, consume)
     }
 
     /// Compile all models and return summary.
     pub fn compile_all_parallel_with_summary(
         &self,
-    ) -> (Vec<(String, PhaseResult)>, CompilationSummary) {
-        let results = self.compile_all_parallel();
+    ) -> Result<(Vec<(String, PhaseResult)>, CompilationSummary)> {
+        let results = self.compile_all_parallel()?;
         let summary = CompilationSummary::from_results(&results);
-        (results, summary)
+        Ok((results, summary))
+    }
+}
+
+fn stored_definition_source_name(definition: &ast::StoredDefinition) -> Option<String> {
+    let mut source_name = None;
+    for class in definition.classes.values() {
+        collect_single_class_source_name(class, &mut source_name)?;
+    }
+    source_name
+}
+
+fn collect_single_class_source_name(
+    class: &ast::ClassDef,
+    source_name: &mut Option<String>,
+) -> Option<()> {
+    for candidate in class_source_name_candidates(class) {
+        remember_single_source_name(source_name, candidate)?;
+    }
+    for nested in class.classes.values() {
+        collect_single_class_source_name(nested, source_name)?;
+    }
+    Some(())
+}
+
+fn class_source_name_candidates(class: &ast::ClassDef) -> [&str; 3] {
+    [
+        class.location.file_name.as_str(),
+        class.name.location.file_name.as_str(),
+        class.class_type_token.location.file_name.as_str(),
+    ]
+}
+
+fn remember_single_source_name(source_name: &mut Option<String>, candidate: &str) -> Option<()> {
+    if candidate.is_empty() {
+        return Some(());
+    }
+    match source_name {
+        Some(existing) if existing != candidate => None,
+        Some(_) => Some(()),
+        None => {
+            *source_name = Some(candidate.to_string());
+            Some(())
+        }
     }
 }
 
@@ -459,10 +507,12 @@ impl CompiledSourceRoot {
 fn drain_compile_results<F>(
     result_rx: std::sync::mpsc::Receiver<(String, PhaseResult)>,
     mut consume: F,
-) where
+) -> Result<()>
+where
     F: FnMut(String, PhaseResult),
 {
     for (name, result) in result_rx {
         consume(name, result);
     }
+    Ok(())
 }

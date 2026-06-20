@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::HashSet;
 
+const I64_TEXT_CAPACITY: usize = 20;
+
 struct RootRuntime<'a> {
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     clock_intervals: &'a IndexMap<String, f64>,
@@ -20,17 +22,16 @@ pub(super) fn lower_root_conditions(
         triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
         variable_starts: &dae_model.metadata.variable_starts,
     };
-    let mut rows = Vec::with_capacity(
-        dae_model.conditions.relations.len()
-            + dae_model.events.synthetic_root_conditions.len()
-            + dae_model.clocks.triggered_conditions.len(),
-    );
+    let span = root_condition_context_span(dae_model);
+    let row_count = root_condition_count(dae_model, span)?;
+    let mut rows = root_vec_with_capacity(row_count, "root condition row count", span)?;
     for condition in &dae_model.conditions.relations {
         if root_condition_is_inactive(dae_model, condition) {
             rows.push(lower_inactive_root_row(
+                condition,
                 layout,
                 &dae_model.symbols.functions,
-            ));
+            )?);
         } else {
             rows.push(lower_root_condition_row(condition, layout, &runtime)?);
         }
@@ -38,9 +39,10 @@ pub(super) fn lower_root_conditions(
     for condition in &dae_model.events.synthetic_root_conditions {
         if root_condition_is_inactive(dae_model, condition) {
             rows.push(lower_inactive_root_row(
+                condition,
                 layout,
                 &dae_model.symbols.functions,
-            ));
+            )?);
         } else {
             rows.push(lower_synthetic_root_condition_row(
                 condition, layout, &runtime,
@@ -59,11 +61,10 @@ pub(super) fn lower_root_relation_memory_targets(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Option<rumoca_ir_solve::ScalarSlot>>, LowerError> {
-    let mut targets = Vec::with_capacity(
-        dae_model.conditions.relations.len()
-            + dae_model.events.synthetic_root_conditions.len()
-            + dae_model.clocks.triggered_conditions.len(),
-    );
+    let span = root_condition_context_span(dae_model);
+    let target_count = root_condition_count(dae_model, span)?;
+    let mut targets =
+        root_vec_with_capacity(target_count, "root relation memory target count", span)?;
     for relation_idx in 0..dae_model.conditions.relations.len() {
         targets.push(condition_memory_slot_for_relation(
             dae_model,
@@ -71,12 +72,99 @@ pub(super) fn lower_root_relation_memory_targets(
             relation_idx,
         )?);
     }
-    targets.extend(vec![
-        None;
-        dae_model.events.synthetic_root_conditions.len()
-            + dae_model.clocks.triggered_conditions.len()
-    ]);
+    let synthetic_target_count = checked_root_count_add(
+        dae_model.events.synthetic_root_conditions.len(),
+        dae_model.clocks.triggered_conditions.len(),
+        span,
+        "synthetic root relation memory target count",
+    )?;
+    for _ in 0..synthetic_target_count {
+        targets.push(None);
+    }
     Ok(targets)
+}
+
+fn root_condition_count(
+    dae_model: &dae::Dae,
+    span: Option<rumoca_core::Span>,
+) -> Result<usize, LowerError> {
+    let relation_count = dae_model.conditions.relations.len();
+    let synthetic_count = dae_model.events.synthetic_root_conditions.len();
+    let triggered_count = dae_model.clocks.triggered_conditions.len();
+    let root_count = checked_root_count_add(
+        relation_count,
+        synthetic_count,
+        span,
+        "root relation and synthetic condition count",
+    )?;
+    checked_root_count_add(
+        root_count,
+        triggered_count,
+        span,
+        "root condition and triggered clock count",
+    )
+}
+
+fn checked_root_count_add(
+    lhs: usize,
+    rhs: usize,
+    span: Option<rumoca_core::Span>,
+    context: &'static str,
+) -> Result<usize, LowerError> {
+    lhs.checked_add(rhs)
+        .ok_or_else(|| root_contract_error(format!("{context} overflows host index range"), span))
+}
+
+fn root_contract_error(
+    reason: impl Into<String>,
+    span: impl Into<Option<rumoca_core::Span>>,
+) -> LowerError {
+    let reason = reason.into();
+    match span.into().filter(|span| !span.is_dummy()) {
+        Some(span) => LowerError::ContractViolation { reason, span },
+        None => LowerError::UnspannedContractViolation { reason },
+    }
+}
+
+fn root_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+    span: impl Into<Option<rumoca_core::Span>>,
+) -> Result<Vec<T>, LowerError> {
+    let span = span.into();
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|_| {
+        root_contract_error(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })?;
+    Ok(values)
+}
+
+fn root_condition_context_span(dae_model: &dae::Dae) -> Option<rumoca_core::Span> {
+    for condition in &dae_model.conditions.relations {
+        if let Some(span) = condition.span()
+            && !span.is_dummy()
+        {
+            return Some(span);
+        }
+    }
+    for condition in &dae_model.events.synthetic_root_conditions {
+        if let Some(span) = condition.span()
+            && !span.is_dummy()
+        {
+            return Some(span);
+        }
+    }
+    for condition in &dae_model.clocks.triggered_conditions {
+        if let Some(span) = condition.span()
+            && !span.is_dummy()
+        {
+            return Some(span);
+        }
+    }
+    None
 }
 
 fn lower_root_condition_row(
@@ -94,17 +182,18 @@ fn lower_root_condition_row(
         false,
     );
     let scope = Scope::new();
+    let span = root_condition_span(condition)?;
     let root_value = match condition {
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => match op {
             rumoca_core::OpBinary::Lt | rumoca_core::OpBinary::Le => {
                 let l = builder.lower_expr(lhs, &scope, 0)?;
                 let r = builder.lower_expr(rhs, &scope, 0)?;
-                builder.emit_binary(BinaryOp::Sub, l, r)
+                builder.emit_binary_at(BinaryOp::Sub, l, r, span)?
             }
             rumoca_core::OpBinary::Gt | rumoca_core::OpBinary::Ge => {
                 let l = builder.lower_expr(lhs, &scope, 0)?;
                 let r = builder.lower_expr(rhs, &scope, 0)?;
-                builder.emit_binary(BinaryOp::Sub, r, l)
+                builder.emit_binary_at(BinaryOp::Sub, r, l, span)?
             }
             _ => lower_bool_condition_as_root(condition, &mut builder, &scope)?,
         },
@@ -121,7 +210,8 @@ fn condition_memory_expr_for_relation(
     let mut offset = 0usize;
     for eq in &dae_model.conditions.equations {
         let scalar_count = eq.scalar_count.max(1);
-        if relation_idx < offset + scalar_count {
+        let end = checked_relation_offset_end(offset, scalar_count, eq.span)?;
+        if relation_idx < end {
             let Some(lhs) = eq.lhs.as_ref() else {
                 return Ok(None);
             };
@@ -134,9 +224,22 @@ fn condition_memory_expr_for_relation(
                 eq.span,
             )?));
         }
-        offset += scalar_count;
+        offset = end;
     }
     Ok(None)
+}
+
+fn checked_relation_offset_end(
+    offset: usize,
+    scalar_count: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    offset.checked_add(scalar_count).ok_or_else(|| {
+        root_contract_error(
+            "condition relation scalar offset overflows host index range",
+            span,
+        )
+    })
 }
 
 fn condition_memory_slot_for_relation(
@@ -154,39 +257,75 @@ fn condition_memory_slot_for_relation(
     else {
         return Ok(None);
     };
-    let key = if subscripts.is_empty() {
-        name.to_string()
-    } else {
-        let indices = generated_index_subscripts(&subscripts)?;
-        format!(
-            "{}[{}]",
-            name,
-            indices
-                .into_iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        )
-    };
+    let key = relation_memory_key(name.as_str(), &subscripts)?;
     Ok(layout.binding(&key))
+}
+
+fn relation_memory_key(
+    name: &str,
+    subscripts: &[rumoca_core::Subscript],
+) -> Result<String, LowerError> {
+    let span = first_subscript_span(subscripts);
+    let mut key = String::new();
+    let reserve = if subscripts.is_empty() {
+        name.len()
+    } else {
+        name.len()
+            .checked_add(2)
+            .and_then(|base| {
+                subscripts
+                    .len()
+                    .checked_mul(I64_TEXT_CAPACITY + 2)
+                    .and_then(|suffix| base.checked_add(suffix))
+            })
+            .ok_or_else(|| {
+                root_contract_error("relation memory key capacity exceeds host limits", span)
+            })?
+    };
+    key.try_reserve(reserve).map_err(|_| {
+        root_contract_error(
+            "relation memory key capacity exceeds host memory limits",
+            span,
+        )
+    })?;
+    key.push_str(name);
+    if subscripts.is_empty() {
+        return Ok(key);
+    }
+
+    let indices = generated_index_subscripts(subscripts)?;
+    key.push('[');
+    for (idx, value) in indices.iter().enumerate() {
+        if idx > 0 {
+            key.push(',');
+        }
+        key.push_str(value.to_string().as_str());
+    }
+    key.push(']');
+    Ok(key)
 }
 
 fn generated_index_subscripts(
     subscripts: &[rumoca_core::Subscript],
 ) -> Result<Vec<i64>, LowerError> {
-    subscripts
-        .iter()
-        .map(|subscript| match subscript {
-            rumoca_core::Subscript::Index { value, .. } => Ok(*value),
+    let span = first_subscript_span(subscripts);
+    let mut indices = root_vec_with_capacity(
+        subscripts.len(),
+        "relation memory generated subscript count",
+        span,
+    )?;
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Index { value, .. } => indices.push(*value),
             rumoca_core::Subscript::Colon { span } | rumoca_core::Subscript::Expr { span, .. } => {
-                Err(LowerError::ContractViolation {
-                    reason: "relation memory target contains a non-index generated subscript"
-                        .to_string(),
-                    span: *span,
-                })
+                return Err(root_contract_error(
+                    "relation memory target contains a non-index generated subscript",
+                    *span,
+                ));
             }
-        })
-        .collect()
+        }
+    }
+    Ok(indices)
 }
 
 fn condition_memory_scalar_expr(
@@ -210,30 +349,62 @@ fn condition_memory_scalar_expr(
         .or_else(|| dae_model.variables.discrete_reals.get(lhs))
         .map(|var| var.dims.as_slice())
     else {
-        return Err(LowerError::ContractViolation {
-            reason: format!(
+        return Err(root_contract_error(
+            format!(
                 "relation memory target `{lhs}` has scalar_count={scalar_count} but no DAE variable metadata"
             ),
             span,
-        });
+        ));
     };
     let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) else {
-        return Err(LowerError::ContractViolation {
-            reason: format!(
+        return Err(root_contract_error(
+            format!(
                 "relation memory target `{lhs}` cannot map flat index {flat_index} of {scalar_count} through dims {dims:?}"
             ),
             span,
-        });
+        ));
     };
-    let subscripts = indices
-        .into_iter()
-        .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
-        .collect();
+    let mut subscripts =
+        root_vec_with_capacity(indices.len(), "relation memory subscript count", span)?;
+    for index in indices {
+        subscripts.push(checked_relation_subscript(index, span)?);
+    }
     Ok(rumoca_core::Expression::VarRef {
         name: lhs.clone().into(),
         subscripts,
         span,
     })
+}
+
+fn first_subscript_span(subscripts: &[rumoca_core::Subscript]) -> Option<rumoca_core::Span> {
+    for subscript in subscripts {
+        let span = match subscript {
+            rumoca_core::Subscript::Index { span, .. }
+            | rumoca_core::Subscript::Colon { span }
+            | rumoca_core::Subscript::Expr { span, .. } => *span,
+        };
+        if !span.is_dummy() {
+            return Some(span);
+        }
+    }
+    None
+}
+
+fn checked_relation_subscript(
+    index: usize,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Subscript, LowerError> {
+    let index = i64::try_from(index).map_err(|_| {
+        root_contract_error(
+            format!("condition relation subscript index {index} exceeds i64 range"),
+            span,
+        )
+    })?;
+    Ok(rumoca_core::Subscript::try_generated_index(
+        index,
+        span,
+        "condition relation subscript",
+    )?)
 }
 
 fn lower_synthetic_root_condition_row(
@@ -281,6 +452,12 @@ fn lower_triggered_clock_condition_row(
     Ok(builder.ops)
 }
 
+fn root_condition_span(
+    condition: &rumoca_core::Expression,
+) -> Result<rumoca_core::Span, LowerError> {
+    Ok(condition.require_span("root condition")?.span())
+}
+
 fn is_relational_root_condition(condition: &rumoca_core::Expression) -> bool {
     matches!(
         condition,
@@ -293,20 +470,22 @@ fn lower_bool_condition_as_root(
     builder: &mut LowerBuilder<'_>,
     scope: &Scope,
 ) -> Result<Reg, LowerError> {
+    let span = root_condition_span(condition)?;
     let cond = builder.lower_expr(condition, scope, 0)?;
-    let neg_one = builder.emit_const(-1.0);
-    let pos_one = builder.emit_const(1.0);
-    Ok(builder.emit_select(cond, neg_one, pos_one))
+    let neg_one = builder.emit_const_at(-1.0, span)?;
+    let pos_one = builder.emit_const_at(1.0, span)?;
+    builder.emit_select_at(cond, neg_one, pos_one, span)
 }
 
 fn lower_inactive_root_row(
+    condition: &rumoca_core::Expression,
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-) -> Vec<LinearOp> {
+) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = LowerBuilder::new(layout, functions);
-    let positive = builder.emit_const(1.0);
+    let positive = builder.emit_const_at(1.0, root_condition_span(condition)?)?;
     builder.ops.push(LinearOp::StoreOutput { src: positive });
-    builder.ops
+    Ok(builder.ops)
 }
 
 fn root_condition_is_inactive(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {
@@ -490,4 +669,72 @@ fn is_runtime_discrete_clock_call(name: &rumoca_core::Reference) -> bool {
             | "previous"
             | "hold"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_relation_offset_end_rejects_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(41), 3, 9);
+        let err = checked_relation_offset_end(usize::MAX, 1, span)
+            .expect_err("relation offset overflow must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: condition relation scalar offset overflows host index range"
+        );
+    }
+
+    #[test]
+    fn checked_relation_offset_end_rejects_overflow_without_dummy_span() {
+        let err = checked_relation_offset_end(usize::MAX, 1, rumoca_core::Span::DUMMY)
+            .expect_err("relation offset overflow must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: condition relation scalar offset overflows host index range"
+        );
+    }
+
+    #[test]
+    fn root_vec_with_capacity_rejects_impossible_capacity_without_dummy_span() {
+        let err = root_vec_with_capacity::<LinearOp>(
+            usize::MAX,
+            "root condition row count",
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("impossible root vector capacity must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: root condition row count capacity exceeds host memory limits"
+        );
+    }
+
+    #[test]
+    fn checked_relation_subscript_rejects_i64_overflow_with_span() {
+        let Some(index) = usize::try_from(i64::MAX)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+        else {
+            return;
+        };
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(43), 7, 15);
+
+        let err = checked_relation_subscript(index, span)
+            .expect_err("relation subscript must fit in Modelica integer range");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            format!(
+                "invalid IR contract: condition relation subscript index {index} exceeds i64 range"
+            )
+        );
+    }
 }

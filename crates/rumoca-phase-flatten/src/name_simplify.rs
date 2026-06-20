@@ -10,10 +10,17 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn simplify_flat_names(
     flat: &mut flat::Model,
 ) -> Result<(), crate::errors::FlattenError> {
+    let mut working = flat.clone();
+    simplify_flat_names_in_place(&mut working)?;
+    *flat = working;
+    Ok(())
+}
+
+fn simplify_flat_names_in_place(flat: &mut flat::Model) -> Result<(), crate::errors::FlattenError> {
     let protected_prefixes = protected_semantic_prefixes(flat);
     let rename_map = build_rename_map(flat, &protected_prefixes);
     let ctx = RenameContext {
-        projection_map: build_projection_map(flat, &rename_map),
+        projection_map: build_projection_map(flat, &rename_map)?,
         rename_map: &rename_map,
     };
     if rename_map
@@ -25,19 +32,24 @@ pub(crate) fn simplify_flat_names(
     }
 
     remap_variables(flat, &ctx)?;
-    remap_equations(&mut flat.equations, &ctx);
-    remap_equations(&mut flat.initial_equations, &ctx);
-    remap_assert_equations(&mut flat.assert_equations, &ctx);
-    remap_assert_equations(&mut flat.initial_assert_equations, &ctx);
-    remap_algorithms(&mut flat.algorithms, &ctx);
-    remap_algorithms(&mut flat.initial_algorithms, &ctx);
-    remap_when_clauses(&mut flat.when_clauses, &ctx);
+    remap_equations(&mut flat.equations, &ctx)?;
+    remap_equations(&mut flat.initial_equations, &ctx)?;
+    remap_assert_equations(&mut flat.assert_equations, &ctx)?;
+    remap_assert_equations(&mut flat.initial_assert_equations, &ctx)?;
+    remap_algorithms(&mut flat.algorithms, &ctx)?;
+    remap_algorithms(&mut flat.initial_algorithms, &ctx)?;
+    remap_when_clauses(&mut flat.when_clauses, &ctx)?;
     Ok(())
 }
 
 struct RenameContext<'a> {
     rename_map: &'a HashMap<String, String>,
-    projection_map: HashMap<String, rumoca_core::Expression>,
+    projection_map: HashMap<String, Vec<ProjectionElement>>,
+}
+
+struct ProjectionElement {
+    name: String,
+    span: rumoca_core::Span,
 }
 
 fn protected_semantic_prefixes(flat: &flat::Model) -> HashSet<String> {
@@ -77,51 +89,74 @@ fn build_rename_map(
 fn build_projection_map(
     flat: &flat::Model,
     rename_map: &HashMap<String, String>,
-) -> HashMap<String, rumoca_core::Expression> {
-    let mut groups: HashMap<String, Vec<(Vec<i64>, String)>> = HashMap::new();
+) -> Result<HashMap<String, Vec<ProjectionElement>>, crate::errors::FlattenError> {
+    let mut groups: HashMap<String, Vec<(Vec<i64>, String, rumoca_core::Span)>> = HashMap::new();
 
-    for name in flat.variables.keys() {
+    for (name, variable) in &flat.variables {
         let Some((projection, indices)) = projection_key(name.as_str()) else {
             continue;
         };
         if indices.len() != 1 || projection == name.as_str() {
             continue;
         }
-        groups
-            .entry(projection)
-            .or_default()
-            .push((indices, remap_name_string(name.as_str(), rename_map)));
+        groups.entry(projection).or_default().push((
+            indices,
+            remap_name_string(name.as_str(), rename_map),
+            variable.source_span,
+        ));
     }
 
-    groups
-        .into_iter()
-        .filter_map(|(projection, mut entries)| {
-            if entries.len() <= 1 || has_duplicate_projection_index(&entries) {
-                return None;
+    let mut projection_map = HashMap::new();
+    for (projection, mut entries) in groups {
+        if entries.len() <= 1 || has_duplicate_projection_index(&entries) {
+            continue;
+        }
+        entries.sort_by(|(lhs, _, _), (rhs, _, _)| lhs.cmp(rhs));
+        let mut elements = Vec::with_capacity(entries.len());
+        for (_, name, span) in entries {
+            if span.is_dummy() {
+                return Err(crate::errors::FlattenError::missing_source_context(
+                    format!(
+                        "cannot build projection `{projection}` from `{name}` without a variable source span"
+                    ),
+                ));
             }
-            entries.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
-            Some((
-                projection,
-                rumoca_core::Expression::Array {
-                    elements: entries
-                        .into_iter()
-                        .map(|(_, name)| rumoca_core::Expression::VarRef {
-                            name: rumoca_core::Reference::new(name),
-                            subscripts: Vec::new(),
-                            span: rumoca_core::Span::DUMMY,
-                        })
-                        .collect(),
-                    is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ))
-        })
-        .collect()
+            elements.push(ProjectionElement { name, span });
+        }
+        projection_map.insert(projection, elements);
+    }
+    Ok(projection_map)
 }
 
-fn has_duplicate_projection_index(entries: &[(Vec<i64>, String)]) -> bool {
+fn has_duplicate_projection_index(entries: &[(Vec<i64>, String, rumoca_core::Span)]) -> bool {
     let mut seen = HashSet::new();
-    entries.iter().any(|(indices, _)| !seen.insert(indices))
+    entries.iter().any(|(indices, _, _)| !seen.insert(indices))
+}
+
+fn projection_expression(
+    projection: &str,
+    entries: &[ProjectionElement],
+    owner_span: rumoca_core::Span,
+) -> Result<rumoca_core::Expression, crate::errors::FlattenError> {
+    if owner_span.is_dummy() {
+        return Err(crate::errors::FlattenError::missing_source_context(
+            format!(
+                "cannot replace projection reference `{projection}` without the reference source span"
+            ),
+        ));
+    }
+    Ok(rumoca_core::Expression::Array {
+        elements: entries
+            .iter()
+            .map(|element| rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(element.name.clone()),
+                subscripts: Vec::new(),
+                span: element.span,
+            })
+            .collect(),
+        is_matrix: false,
+        span: owner_span,
+    })
 }
 
 fn projection_key(name: &str) -> Option<(String, Vec<i64>)> {
@@ -296,28 +331,32 @@ fn remap_variables(
     flat: &mut flat::Model,
     ctx: &RenameContext<'_>,
 ) -> Result<(), crate::errors::FlattenError> {
-    let variables = std::mem::take(&mut flat.variables);
-    let variable_count = variables.len();
-    flat.variables = variables
-        .into_iter()
-        .map(|(old_name, mut var)| {
-            let new_name = remap_var_name(&old_name, ctx.rename_map);
-            var.name = new_name.clone();
-            remap_variable(&mut var, ctx);
-            (new_name, var)
-        })
-        .collect();
+    let variable_count = flat.variables.len();
+    let remapped_variables: flat::VarNameIndexMap<_> = flat
+        .variables
+        .iter()
+        .map(
+            |(old_name, var)| -> Result<_, crate::errors::FlattenError> {
+                let mut var = var.clone();
+                let new_name = remap_var_name(old_name, ctx.rename_map);
+                var.name = new_name.clone();
+                remap_variable(&mut var, ctx)?;
+                Ok((new_name, var))
+            },
+        )
+        .collect::<Result<_, _>>()?;
     // Downstream phases treat flat names as globally unique (semantic VarRef
     // equality compares names only), so a rename collision that collapses two
     // variables into one map entry must fail here, not corrupt the model.
-    if flat.variables.len() != variable_count {
+    if remapped_variables.len() != variable_count {
         return Err(crate::errors::FlattenError::Internal(format!(
             "name simplification collapsed {} variables into {}: rename map produced \
              duplicate flat names",
             variable_count,
-            flat.variables.len()
+            remapped_variables.len()
         )));
     }
+    flat.variables = remapped_variables;
     flat.variable_type_names = remap_index_map_keys(
         std::mem::take(&mut flat.variable_type_names),
         ctx.rename_map,
@@ -342,66 +381,89 @@ where
         .collect()
 }
 
-fn remap_variable(var: &mut flat::Variable, ctx: &RenameContext<'_>) {
-    remap_optional_expression(&mut var.start, ctx);
-    remap_optional_expression(&mut var.min, ctx);
-    remap_optional_expression(&mut var.max, ctx);
-    remap_optional_expression(&mut var.nominal, ctx);
-    remap_optional_expression(&mut var.binding, ctx);
+fn remap_variable(
+    var: &mut flat::Variable,
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
+    remap_optional_expression(&mut var.start, ctx)?;
+    remap_optional_expression(&mut var.min, ctx)?;
+    remap_optional_expression(&mut var.max, ctx)?;
+    remap_optional_expression(&mut var.nominal, ctx)?;
+    remap_optional_expression(&mut var.binding, ctx)?;
+    Ok(())
 }
 
-fn remap_equations(equations: &mut [flat::Equation], ctx: &RenameContext<'_>) {
+fn remap_equations(
+    equations: &mut [flat::Equation],
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     for equation in equations {
-        remap_expression(&mut equation.residual, ctx);
+        remap_expression(&mut equation.residual, ctx)?;
         remap_equation_origin(&mut equation.origin, ctx.rename_map);
     }
+    Ok(())
 }
 
-fn remap_assert_equations(equations: &mut [flat::AssertEquation], ctx: &RenameContext<'_>) {
+fn remap_assert_equations(
+    equations: &mut [flat::AssertEquation],
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     for equation in equations {
-        remap_expression(&mut equation.condition, ctx);
-        remap_expression(&mut equation.message, ctx);
-        remap_optional_expression(&mut equation.level, ctx);
+        remap_expression(&mut equation.condition, ctx)?;
+        remap_expression(&mut equation.message, ctx)?;
+        remap_optional_expression(&mut equation.level, ctx)?;
     }
+    Ok(())
 }
 
-fn remap_algorithms(algorithms: &mut [flat::Algorithm], ctx: &RenameContext<'_>) {
+fn remap_algorithms(
+    algorithms: &mut [flat::Algorithm],
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     for algorithm in algorithms {
-        remap_statements(&mut algorithm.statements, ctx, &HashSet::new());
+        remap_statements(&mut algorithm.statements, ctx, &HashSet::new())?;
         algorithm.outputs = algorithm
             .outputs
             .iter()
             .map(|name| remap_reference(name, ctx.rename_map))
             .collect();
     }
+    Ok(())
 }
 
-fn remap_when_clauses(clauses: &mut [flat::WhenClause], ctx: &RenameContext<'_>) {
+fn remap_when_clauses(
+    clauses: &mut [flat::WhenClause],
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     for clause in clauses {
-        remap_expression(&mut clause.condition, ctx);
-        remap_when_equations(&mut clause.equations, ctx);
+        remap_expression(&mut clause.condition, ctx)?;
+        remap_when_equations(&mut clause.equations, ctx)?;
     }
+    Ok(())
 }
 
-fn remap_when_equations(equations: &mut [flat::WhenEquation], ctx: &RenameContext<'_>) {
+fn remap_when_equations(
+    equations: &mut [flat::WhenEquation],
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     for equation in equations {
         match equation {
             flat::WhenEquation::Assign { target, value, .. } => {
                 *target = remap_var_name(target, ctx.rename_map);
-                remap_expression(value, ctx);
+                remap_expression(value, ctx)?;
             }
             flat::WhenEquation::Reinit { state, value, .. } => {
                 *state = remap_var_name(state, ctx.rename_map);
-                remap_expression(value, ctx);
+                remap_expression(value, ctx)?;
             }
             flat::WhenEquation::Assert {
                 condition, message, ..
             } => {
-                remap_expression(condition, ctx);
-                remap_expression(message, ctx);
+                remap_expression(condition, ctx)?;
+                remap_expression(message, ctx)?;
             }
             flat::WhenEquation::Terminate { message, .. } => {
-                remap_expression(message, ctx);
+                remap_expression(message, ctx)?;
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -409,10 +471,10 @@ fn remap_when_equations(equations: &mut [flat::WhenEquation], ctx: &RenameContex
                 ..
             } => {
                 for (condition, branch) in branches {
-                    remap_expression(condition, ctx);
-                    remap_when_equations(branch, ctx);
+                    remap_expression(condition, ctx)?;
+                    remap_when_equations(branch, ctx)?;
                 }
-                remap_when_equations(else_branch, ctx);
+                remap_when_equations(else_branch, ctx)?;
             }
             flat::WhenEquation::FunctionCallOutputs {
                 outputs, function, ..
@@ -420,53 +482,63 @@ fn remap_when_equations(equations: &mut [flat::WhenEquation], ctx: &RenameContex
                 for output in outputs {
                     *output = remap_var_name(output, ctx.rename_map);
                 }
-                remap_expression(function, ctx);
+                remap_expression(function, ctx)?;
             }
         }
     }
+    Ok(())
 }
 
-fn remap_optional_expression(expr: &mut Option<rumoca_core::Expression>, ctx: &RenameContext<'_>) {
+fn remap_optional_expression(
+    expr: &mut Option<rumoca_core::Expression>,
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
     if let Some(expr) = expr {
-        remap_expression(expr, ctx);
+        remap_expression(expr, ctx)?;
     }
+    Ok(())
 }
 
-fn remap_expression(expr: &mut rumoca_core::Expression, ctx: &RenameContext<'_>) {
-    remap_expression_with_locals(expr, ctx, &HashSet::new());
+fn remap_expression(
+    expr: &mut rumoca_core::Expression,
+    ctx: &RenameContext<'_>,
+) -> Result<(), crate::errors::FlattenError> {
+    remap_expression_with_locals(expr, ctx, &HashSet::new())
 }
 
 fn remap_expression_with_locals(
     expr: &mut rumoca_core::Expression,
     ctx: &RenameContext<'_>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), crate::errors::FlattenError> {
     match expr {
         rumoca_core::Expression::Binary { lhs, rhs, .. } => {
-            remap_expression_with_locals(lhs, ctx, locals);
-            remap_expression_with_locals(rhs, ctx, locals);
+            remap_expression_with_locals(lhs, ctx, locals)?;
+            remap_expression_with_locals(rhs, ctx, locals)?;
         }
         rumoca_core::Expression::Unary { rhs, .. } => {
-            remap_expression_with_locals(rhs, ctx, locals);
+            remap_expression_with_locals(rhs, ctx, locals)?;
         }
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
+            name,
+            subscripts,
+            span,
         } => {
             if !locals.contains(name.as_str()) {
                 if subscripts.is_empty()
                     && let Some(projection) = ctx.projection_map.get(name.as_str())
                 {
-                    *expr = projection.clone();
-                    return;
+                    *expr = projection_expression(name.as_str(), projection, *span)?;
+                    return Ok(());
                 }
                 *name = remap_reference(name, ctx.rename_map);
             }
-            remap_subscripts(subscripts, ctx, locals);
+            remap_subscripts(subscripts, ctx, locals)?;
         }
         rumoca_core::Expression::BuiltinCall { args, .. }
         | rumoca_core::Expression::FunctionCall { args, .. } => {
             for arg in args {
-                remap_expression_with_locals(arg, ctx, locals);
+                remap_expression_with_locals(arg, ctx, locals)?;
             }
         }
         rumoca_core::Expression::Literal { value: _, .. }
@@ -477,25 +549,25 @@ fn remap_expression_with_locals(
             ..
         } => {
             for (condition, value) in branches {
-                remap_expression_with_locals(condition, ctx, locals);
-                remap_expression_with_locals(value, ctx, locals);
+                remap_expression_with_locals(condition, ctx, locals)?;
+                remap_expression_with_locals(value, ctx, locals)?;
             }
-            remap_expression_with_locals(else_branch, ctx, locals);
+            remap_expression_with_locals(else_branch, ctx, locals)?;
         }
         rumoca_core::Expression::Array { elements, .. }
         | rumoca_core::Expression::Tuple { elements, .. } => {
             for element in elements {
-                remap_expression_with_locals(element, ctx, locals);
+                remap_expression_with_locals(element, ctx, locals)?;
             }
         }
         rumoca_core::Expression::Range {
             start, step, end, ..
         } => {
-            remap_expression_with_locals(start, ctx, locals);
+            remap_expression_with_locals(start, ctx, locals)?;
             if let Some(step) = step {
-                remap_expression_with_locals(step, ctx, locals);
+                remap_expression_with_locals(step, ctx, locals)?;
             }
-            remap_expression_with_locals(end, ctx, locals);
+            remap_expression_with_locals(end, ctx, locals)?;
         }
         rumoca_core::Expression::ArrayComprehension {
             expr,
@@ -505,64 +577,66 @@ fn remap_expression_with_locals(
         } => {
             let mut nested_locals = locals.clone();
             for index in indices {
-                remap_expression_with_locals(&mut index.range, ctx, locals);
+                remap_expression_with_locals(&mut index.range, ctx, locals)?;
                 nested_locals.insert(index.name.clone());
             }
-            remap_expression_with_locals(expr, ctx, &nested_locals);
+            remap_expression_with_locals(expr, ctx, &nested_locals)?;
             if let Some(filter) = filter {
-                remap_expression_with_locals(filter, ctx, &nested_locals);
+                remap_expression_with_locals(filter, ctx, &nested_locals)?;
             }
         }
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
-            remap_expression_with_locals(base, ctx, locals);
-            remap_subscripts(subscripts, ctx, locals);
+            remap_expression_with_locals(base, ctx, locals)?;
+            remap_subscripts(subscripts, ctx, locals)?;
         }
         rumoca_core::Expression::FieldAccess { base, .. } => {
-            remap_expression_with_locals(base, ctx, locals);
+            remap_expression_with_locals(base, ctx, locals)?;
         }
     }
+    Ok(())
 }
 
 fn remap_subscripts(
     subscripts: &mut [rumoca_core::Subscript],
     ctx: &RenameContext<'_>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), crate::errors::FlattenError> {
     for subscript in subscripts {
         if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-            remap_expression_with_locals(expr, ctx, locals);
+            remap_expression_with_locals(expr, ctx, locals)?;
         }
     }
+    Ok(())
 }
 
 fn remap_statements(
     statements: &mut [rumoca_core::Statement],
     ctx: &RenameContext<'_>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), crate::errors::FlattenError> {
     for statement in statements {
         match statement {
             rumoca_core::Statement::Empty { .. }
             | rumoca_core::Statement::Return { .. }
             | rumoca_core::Statement::Break { .. } => {}
             rumoca_core::Statement::Assignment { comp, value, .. } => {
-                remap_component_reference(comp, ctx, locals);
-                remap_expression_with_locals(value, ctx, locals);
+                remap_component_reference(comp, ctx, locals)?;
+                remap_expression_with_locals(value, ctx, locals)?;
             }
             rumoca_core::Statement::For {
                 indices, equations, ..
             } => {
                 let mut nested_locals = locals.clone();
                 for index in indices {
-                    remap_expression_with_locals(&mut index.range, ctx, locals);
+                    remap_expression_with_locals(&mut index.range, ctx, locals)?;
                     nested_locals.insert(index.ident.clone());
                 }
-                remap_statements(equations, ctx, &nested_locals);
+                remap_statements(equations, ctx, &nested_locals)?;
             }
             rumoca_core::Statement::While { block, .. } => {
-                remap_statement_block(block, ctx, locals)
+                remap_statement_block(block, ctx, locals)?
             }
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -570,15 +644,15 @@ fn remap_statements(
                 ..
             } => {
                 for block in cond_blocks {
-                    remap_statement_block(block, ctx, locals);
+                    remap_statement_block(block, ctx, locals)?;
                 }
                 if let Some(block) = else_block {
-                    remap_statements(block, ctx, locals);
+                    remap_statements(block, ctx, locals)?;
                 }
             }
             rumoca_core::Statement::When { blocks, .. } => {
                 for block in blocks {
-                    remap_statement_block(block, ctx, locals);
+                    remap_statement_block(block, ctx, locals)?;
                 }
             }
             rumoca_core::Statement::FunctionCall {
@@ -587,19 +661,19 @@ fn remap_statements(
                 outputs,
                 ..
             } => {
-                remap_component_reference(comp, ctx, locals);
+                remap_component_reference(comp, ctx, locals)?;
                 for arg in args {
-                    remap_expression_with_locals(arg, ctx, locals);
+                    remap_expression_with_locals(arg, ctx, locals)?;
                 }
                 for output in outputs {
-                    remap_component_reference(output, ctx, locals);
+                    remap_component_reference(output, ctx, locals)?;
                 }
             }
             rumoca_core::Statement::Reinit {
                 variable, value, ..
             } => {
-                remap_component_reference(variable, ctx, locals);
-                remap_expression_with_locals(value, ctx, locals);
+                remap_component_reference(variable, ctx, locals)?;
+                remap_expression_with_locals(value, ctx, locals)?;
             }
             rumoca_core::Statement::Assert {
                 condition,
@@ -607,43 +681,45 @@ fn remap_statements(
                 level,
                 ..
             } => {
-                remap_expression_with_locals(condition, ctx, locals);
-                remap_expression_with_locals(message, ctx, locals);
+                remap_expression_with_locals(condition, ctx, locals)?;
+                remap_expression_with_locals(message, ctx, locals)?;
                 if let Some(level) = level {
-                    remap_expression_with_locals(level, ctx, locals);
+                    remap_expression_with_locals(level, ctx, locals)?;
                 }
             }
         }
     }
+    Ok(())
 }
 
 fn remap_statement_block(
     block: &mut rumoca_core::StatementBlock,
     ctx: &RenameContext<'_>,
     locals: &HashSet<String>,
-) {
-    remap_expression_with_locals(&mut block.cond, ctx, locals);
-    remap_statements(&mut block.stmts, ctx, locals);
+) -> Result<(), crate::errors::FlattenError> {
+    remap_expression_with_locals(&mut block.cond, ctx, locals)?;
+    remap_statements(&mut block.stmts, ctx, locals)?;
+    Ok(())
 }
 
 fn remap_component_reference(
     comp: &mut rumoca_core::ComponentReference,
     ctx: &RenameContext<'_>,
     locals: &HashSet<String>,
-) {
+) -> Result<(), crate::errors::FlattenError> {
     for part in &mut comp.parts {
-        remap_subscripts(&mut part.subs, ctx, locals);
+        remap_subscripts(&mut part.subs, ctx, locals)?;
     }
 
     let old_name = comp.to_var_name();
     if locals.contains(old_name.as_str()) {
-        return;
+        return Ok(());
     }
     let Some(new_name) = ctx.rename_map.get(old_name.as_str()) else {
-        return;
+        return Ok(());
     };
     if new_name == old_name.as_str() {
-        return;
+        return Ok(());
     }
 
     let trailing_subs = comp
@@ -656,6 +732,7 @@ fn remap_component_reference(
         span: comp.span,
         subs: trailing_subs,
     }];
+    Ok(())
 }
 
 fn remap_equation_origin(origin: &mut flat::EquationOrigin, rename_map: &HashMap<String, String>) {
@@ -739,10 +816,15 @@ mod tests {
     use super::*;
     use rumoca_core::Span;
 
+    fn test_span() -> Span {
+        Span::from_offsets(rumoca_core::SourceId(7), 0, 1)
+    }
+
     fn var(name: &str) -> flat::Variable {
         flat::Variable {
             name: rumoca_core::VarName::new(name),
-            ..Default::default()
+            source_span: test_span(),
+            ..flat::Variable::empty_with_span(test_span())
         }
     }
 
@@ -750,7 +832,7 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -845,7 +927,7 @@ mod tests {
             flat::Variable {
                 name: rumoca_core::VarName::new("plant.omega_cmd"),
                 causality: rumoca_core::Causality::Input(Default::default()),
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.add_variable(rumoca_core::VarName::new("body.x"), var("body.x"));
@@ -871,7 +953,7 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 }),
                 binding_from_modification: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.add_variable(rumoca_core::VarName::new("other.a"), var("other.a"));
@@ -966,6 +1048,36 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["motor_1_omega", "motor_2_omega"]);
+    }
+
+    #[test]
+    fn rejects_projection_without_reference_span() {
+        let mut flat = flat::Model::new();
+        flat.add_variable(
+            rumoca_core::VarName::new("motor[1].omega"),
+            var("motor[1].omega"),
+        );
+        flat.add_variable(
+            rumoca_core::VarName::new("motor[2].omega"),
+            var("motor[2].omega"),
+        );
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("motor.omega"),
+                subscripts: Vec::new(),
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "motor".to_string(),
+            },
+        ));
+
+        let err = simplify_flat_names(&mut flat).expect_err("missing span should be rejected");
+        assert!(matches!(
+            err,
+            crate::errors::FlattenError::MissingSourceContext { .. }
+        ));
     }
 
     #[test]

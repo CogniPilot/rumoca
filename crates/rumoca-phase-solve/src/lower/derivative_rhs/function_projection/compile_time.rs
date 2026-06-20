@@ -20,7 +20,9 @@ pub(super) fn compile_time_var_key(
     let indices = subscripts
         .iter()
         .map(|subscript| match subscript {
-            rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value as usize),
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => {
+                usize::try_from(*value).ok()
+            }
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;

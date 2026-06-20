@@ -34,14 +34,14 @@ fn content_hash(source: &str) -> String {
     blake3::hash(source.as_bytes()).to_hex().to_string()
 }
 
-fn artifact_cache_key(file_name: &str, source_hash: &str) -> String {
+fn artifact_cache_key(file_name: &str, source_hash: &str) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(format!("schema={PARSED_ARTIFACT_CACHE_SCHEMA_VERSION}\n").as_bytes());
-    hasher.update(format!("compiler={}\n", source_root_cache_compiler_version()).as_bytes());
+    hasher.update(format!("compiler={}\n", source_root_cache_compiler_version()?).as_bytes());
     hasher.update(file_name.as_bytes());
     hasher.update(b"\n");
     hasher.update(source_hash.as_bytes());
-    hasher.finalize().to_hex().to_string()
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn cache_file_path(cache_dir: &Path, cache_key: &str) -> PathBuf {
@@ -73,19 +73,21 @@ fn write_cache(path: &Path, definition: &StoredDefinition) -> Result<()> {
     Ok(())
 }
 
-fn get_in_memory(cache_key: &str) -> Option<StoredDefinition> {
+fn get_in_memory(cache_key: &str) -> Result<Option<StoredDefinition>> {
     let mut cache = in_memory_parsed_artifacts()
         .lock()
-        .expect("parsed artifact cache poisoned");
-    let definition = cache.shift_remove(cache_key)?;
+        .map_err(|_| anyhow::anyhow!("parsed artifact cache poisoned"))?;
+    let Some(definition) = cache.shift_remove(cache_key) else {
+        return Ok(None);
+    };
     cache.insert(cache_key.to_string(), definition.clone());
-    Some(definition)
+    Ok(Some(definition))
 }
 
-fn insert_in_memory(cache_key: String, definition: StoredDefinition) {
+fn insert_in_memory(cache_key: String, definition: StoredDefinition) -> Result<()> {
     let mut cache = in_memory_parsed_artifacts()
         .lock()
-        .expect("parsed artifact cache poisoned");
+        .map_err(|_| anyhow::anyhow!("parsed artifact cache poisoned"))?;
     cache.shift_remove(&cache_key);
     cache.insert(cache_key, definition);
     while cache.len() > MAX_IN_MEMORY_PARSED_ARTIFACTS {
@@ -96,6 +98,7 @@ fn insert_in_memory(cache_key: String, definition: StoredDefinition) {
             break;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn resolve_parsed_artifact_cache_dir_from_root(root: Option<&Path>) -> Option<PathBuf> {
@@ -130,9 +133,9 @@ pub(crate) fn parse_file_with_precomputed_hash_status(
     cache_dir: Option<&Path>,
 ) -> Result<(String, StoredDefinition, ParsedArtifactCacheStatus)> {
     let file_name = path.to_string_lossy().to_string();
-    let cache_key = artifact_cache_key(&file_name, source_hash);
+    let cache_key = artifact_cache_key(&file_name, source_hash)?;
 
-    if let Some(definition) = get_in_memory(&cache_key) {
+    if let Some(definition) = get_in_memory(&cache_key)? {
         record_parsed_file_artifact_cache_hit();
         return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
     }
@@ -143,7 +146,7 @@ pub(crate) fn parse_file_with_precomputed_hash_status(
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(definition) = try_read_cache(&cache_file) {
             crate::cache::record_cache_file_access(&cache_file);
-            insert_in_memory(cache_key, definition.clone());
+            insert_in_memory(cache_key, definition.clone())?;
             record_parsed_file_artifact_cache_hit();
             return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
         }
@@ -160,9 +163,9 @@ fn parse_file_with_preloaded_source_status(
     cache_dir: Option<&Path>,
 ) -> Result<(String, StoredDefinition, ParsedArtifactCacheStatus)> {
     let file_name = path.to_string_lossy().to_string();
-    let cache_key = artifact_cache_key(&file_name, &content_hash(&source));
+    let cache_key = artifact_cache_key(&file_name, &content_hash(&source))?;
 
-    if let Some(definition) = get_in_memory(&cache_key) {
+    if let Some(definition) = get_in_memory(&cache_key)? {
         record_parsed_file_artifact_cache_hit();
         return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
     }
@@ -173,7 +176,7 @@ fn parse_file_with_preloaded_source_status(
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(definition) = try_read_cache(&cache_file) {
             crate::cache::record_cache_file_access(&cache_file);
-            insert_in_memory(cache_key, definition.clone());
+            insert_in_memory(cache_key, definition.clone())?;
             record_parsed_file_artifact_cache_hit();
             return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
         }
@@ -187,7 +190,7 @@ fn parse_file_with_preloaded_source_status(
     if let Some(elapsed) = rumoca_core::maybe_elapsed_duration(parse_started) {
         record_parsed_file_parse_duration(elapsed);
     }
-    insert_in_memory(cache_key.clone(), definition.clone());
+    insert_in_memory(cache_key.clone(), definition.clone())?;
 
     if let Some(cache_dir) = cache_dir
         && fs::create_dir_all(cache_dir).is_ok()

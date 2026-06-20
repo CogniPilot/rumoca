@@ -518,10 +518,13 @@ mod tests {
 
     #[test]
     fn subscript_match_rejects_real_literal_indices() {
-        let subscript = Subscript::generated_expr(Box::new(Expression::Literal {
-            value: Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
-        }));
+        let subscript = Subscript::generated_expr(
+            Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rumoca_core::Span::DUMMY,
+        );
         assert!(!subscripts_all_one(std::slice::from_ref(&subscript)));
         assert!(!subscripts_match_indices(&[subscript], &[1]));
     }

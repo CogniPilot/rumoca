@@ -9,6 +9,11 @@
 //! - Input parameters (values passed in)
 //! - Output parameters (values returned)
 //! - An algorithm section (the function body)
+//!
+//! SPEC_0021 file-size exception: function collection still coordinates AST
+//! function conversion, constructor signatures, lexical aliases, and call
+//! canonicalization. split plan: move lexical alias discovery and collected-call
+//! canonicalization into focused modules with imports at the top.
 
 use indexmap::IndexSet;
 #[cfg(test)]
@@ -20,18 +25,28 @@ use rumoca_ir_flat as flat;
 use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
 
+mod call_args;
+mod constructor_signature;
 mod function_metadata;
+mod function_output_validation;
+#[cfg(test)]
+mod tests;
+pub(crate) use call_args::validate_flat_function_call_args;
+use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
 use function_metadata::*;
 pub(crate) use function_metadata::{
     lower_record_function_params, specialize_static_function_params,
 };
+use function_output_validation::validate_function_outputs_assigned;
 
 use crate::algorithms;
 use crate::ast_lower;
 use crate::errors::FlattenError;
+use crate::function_lowering::rewrite_record_field_access_in_body;
 use crate::path_utils;
 use crate::pipeline::{collect_package_chain, rewrite_function_extends_aliases_in_function};
 use crate::qualify;
+use crate::source_spans::required_location_span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionRequest {
@@ -42,10 +57,15 @@ pub(crate) struct FunctionRequest {
 
 impl FunctionRequest {
     fn from_reference(reference: &rumoca_core::Reference) -> Self {
+        let component_ref = reference.component_ref().cloned();
+        let name = component_ref
+            .as_ref()
+            .map(component_ref_name)
+            .unwrap_or_else(|| reference.as_str().to_string());
         Self {
-            name: reference.as_str().to_string(),
+            name,
             target_def_id: reference.target_def_id(),
-            component_ref: reference.component_ref().cloned(),
+            component_ref,
         }
     }
 
@@ -419,13 +439,14 @@ pub(crate) fn collect_functions(
     flat: &mut flat::Model,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    caller_scope: Option<&str>,
 ) -> Result<(), FlattenError> {
     let mut member_cache = qualify::MemberDefIdCache::default();
     let initial_calls = collect_function_call_requests(flat);
     let mut pending: Vec<(FunctionRequest, Option<String>)> = initial_calls
         .iter()
         .cloned()
-        .map(|request| (request, None))
+        .map(|request| (request, caller_scope.map(str::to_string)))
         .collect();
     pending.extend(
         flat.functions
@@ -628,15 +649,20 @@ pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), 
 }
 
 pub(crate) fn canonicalize_collected_function_calls(flat: &mut flat::Model) {
-    let canonical_names = flat
+    let canonical_functions = flat
         .functions
-        .keys()
-        .map(|name| name.as_str().to_string())
+        .values()
+        .map(|function| CanonicalFunction {
+            name: function.name.as_str().to_string(),
+            def_id: function.def_id,
+        })
         .collect::<Vec<_>>();
-    if canonical_names.is_empty() {
+    if canonical_functions.is_empty() {
         return;
     }
-    let mut rewriter = CollectedFunctionCallCanonicalizer { canonical_names };
+    let mut rewriter = CollectedFunctionCallCanonicalizer {
+        canonical_functions,
+    };
 
     for var in flat.variables.values_mut() {
         if let Some(binding) = &mut var.binding {
@@ -755,26 +781,51 @@ fn canonicalize_function_param_default(
     }
 }
 
+struct CanonicalFunction {
+    name: String,
+    def_id: Option<rumoca_core::DefId>,
+}
+
 struct CollectedFunctionCallCanonicalizer {
-    canonical_names: Vec<String>,
+    canonical_functions: Vec<CanonicalFunction>,
 }
 
 impl CollectedFunctionCallCanonicalizer {
+    fn canonical_name_for_reference(&self, reference: &rumoca_core::Reference) -> Option<String> {
+        if let Some(component_name) = reference.component_ref().map(component_ref_name)
+            && self
+                .canonical_functions
+                .iter()
+                .any(|function| function.name == component_name)
+        {
+            return (component_name != reference.as_str()).then_some(component_name);
+        }
+        if let Some(def_id) = reference.target_def_id()
+            && let Some(function) = self
+                .canonical_functions
+                .iter()
+                .find(|function| function.def_id == Some(def_id))
+        {
+            return (function.name != reference.as_str()).then(|| function.name.clone());
+        }
+        self.canonical_name_for(reference.as_str())
+    }
+
     fn canonical_name_for(&self, name: &str) -> Option<String> {
         if self
-            .canonical_names
+            .canonical_functions
             .iter()
-            .any(|candidate| candidate == name)
+            .any(|candidate| candidate.name == name)
         {
             return None;
         }
         let suffix = format!(".{name}");
         let mut matches = self
-            .canonical_names
+            .canonical_functions
             .iter()
-            .filter(|candidate| candidate.ends_with(&suffix));
+            .filter(|candidate| candidate.name.ends_with(&suffix));
         let first = matches.next()?;
-        matches.next().is_none().then(|| first.clone())
+        matches.next().is_none().then(|| first.name.clone())
     }
 }
 
@@ -790,9 +841,9 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
             return self.walk_expression(expr);
         };
         let args = self.rewrite_expressions(args);
-        if let Some(canonical_name) = self.canonical_name_for(name.as_str()) {
+        if let Some(canonical_name) = self.canonical_name_for_reference(name) {
             return rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::new(canonical_name),
+                name: name.with_var_name(rumoca_core::VarName::new(canonical_name)),
                 args,
                 is_constructor: *is_constructor,
                 span: *span,
@@ -1315,6 +1366,9 @@ pub(crate) fn collect_function_dep_requests(func: &rumoca_core::Function) -> Vec
         .chain(func.outputs.iter())
         .chain(func.locals.iter())
     {
+        if func.is_constructor && param.type_class == Some(rumoca_core::ClassType::Record) {
+            deps.insert(FunctionRequest::from_name(param.type_name.clone()));
+        }
         if let Some(default) = &param.default {
             collect_from_expression(default, &mut deps);
         }
@@ -1565,12 +1619,7 @@ fn convert_function<'tree>(
     def_map: &crate::ResolveDefMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
 ) -> Result<rumoca_core::Function, FlattenError> {
-    // Use the location from class definition
-    let span = source_map.location_to_span(
-        &class_def.location.file_name,
-        class_def.location.start as usize,
-        class_def.location.end as usize,
-    );
+    let span = required_location_span(source_map, &class_def.location, "function definition")?;
     let mut func = rumoca_core::Function::new(qualified_name, span);
     func.def_id = class_def.def_id;
     let context = collect_function_context(tree, class_index, class_def, member_cache);
@@ -1719,119 +1768,6 @@ fn function_initial_import_map<'tree>(
     import_map
 }
 
-fn validate_function_outputs_assigned(
-    function: &rumoca_core::Function,
-) -> Result<(), FlattenError> {
-    if function.external.is_some() || function.outputs.is_empty() {
-        return Ok(());
-    }
-
-    let output_names: IndexSet<&str> = function
-        .outputs
-        .iter()
-        .map(|output| output.name.as_str())
-        .collect();
-    let mut assigned: IndexSet<&str> = function
-        .outputs
-        .iter()
-        .filter(|output| output.default.is_some())
-        .map(|output| output.name.as_str())
-        .collect();
-    collect_assigned_outputs_before_return(&function.body, &output_names, &mut assigned);
-
-    for output in &function.outputs {
-        if !assigned.contains(output.name.as_str()) {
-            return Err(FlattenError::function_output_unassigned(
-                function.name.as_str(),
-                &output.name,
-                output.span,
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn collect_assigned_outputs_before_return<'a>(
-    statements: &'a [rumoca_core::Statement],
-    outputs: &IndexSet<&'a str>,
-    assigned: &mut IndexSet<&'a str>,
-) {
-    for statement in statements {
-        if collect_statement_assigned_outputs(statement, outputs, assigned) {
-            return;
-        }
-    }
-}
-
-fn collect_statement_assigned_outputs<'a>(
-    statement: &'a rumoca_core::Statement,
-    outputs: &IndexSet<&'a str>,
-    assigned: &mut IndexSet<&'a str>,
-) -> bool {
-    match statement {
-        rumoca_core::Statement::Assignment { comp, .. } => {
-            collect_assigned_output_from_component_reference(comp, outputs, assigned);
-            false
-        }
-        rumoca_core::Statement::FunctionCall {
-            outputs: targets, ..
-        } => {
-            for target in targets {
-                collect_assigned_output_from_component_reference(target, outputs, assigned);
-            }
-            false
-        }
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                collect_assigned_outputs_before_return(&block.stmts, outputs, assigned);
-            }
-            if let Some(else_stmts) = else_block {
-                collect_assigned_outputs_before_return(else_stmts, outputs, assigned);
-            }
-            false
-        }
-        rumoca_core::Statement::For { equations, .. } => {
-            collect_assigned_outputs_before_return(equations, outputs, assigned);
-            false
-        }
-        rumoca_core::Statement::While { block, .. } => {
-            collect_assigned_outputs_before_return(&block.stmts, outputs, assigned);
-            false
-        }
-        rumoca_core::Statement::When { blocks, .. } => {
-            for block in blocks {
-                collect_assigned_outputs_before_return(&block.stmts, outputs, assigned);
-            }
-            false
-        }
-        rumoca_core::Statement::Return { .. } => true,
-        rumoca_core::Statement::Empty { .. }
-        | rumoca_core::Statement::Break { .. }
-        | rumoca_core::Statement::Reinit { .. }
-        | rumoca_core::Statement::Assert { .. } => false,
-    }
-}
-
-fn collect_assigned_output_from_component_reference<'a>(
-    comp: &'a rumoca_core::ComponentReference,
-    outputs: &IndexSet<&'a str>,
-    assigned: &mut IndexSet<&'a str>,
-) {
-    let Some(first) = comp.parts.first() else {
-        return;
-    };
-    let output = first.ident.as_str();
-    if outputs.contains(output) {
-        assigned.insert(output);
-    }
-}
-
-use crate::function_lowering::rewrite_record_field_access_in_body;
-
 fn extend_imports_if_absent(imports: &mut qualify::ImportMap, aliases: qualify::ImportMap) {
     for (name, target) in aliases {
         imports.entry(name).or_insert(target);
@@ -1960,12 +1896,3 @@ fn active_constant_def_overrides(
         })
         .collect()
 }
-
-mod call_args;
-pub(crate) use call_args::validate_flat_function_call_args;
-
-mod constructor_signature;
-use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
-
-#[cfg(test)]
-mod tests;

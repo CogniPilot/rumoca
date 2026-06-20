@@ -51,7 +51,7 @@ impl ClockPartitions {
 ///
 /// "A set of equations and variables which must be executed together in one task."
 /// Different base-partitions can execute asynchronously with respect to each other.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseClockPartition {
     /// Unique identifier for this partition.
     pub id: u32,
@@ -74,7 +74,10 @@ impl BaseClockPartition {
         Self {
             id,
             clock,
-            ..Default::default()
+            variables: IndexSet::new(),
+            equations: Vec::new(),
+            sub_partitions: Vec::new(),
+            is_discretized: false,
         }
     }
 
@@ -98,7 +101,7 @@ impl BaseClockPartition {
 ///
 /// "A subset of equations and variables of a base-partition which are
 /// partially synchronized with other sub-partitions of the same base-partition."
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubClockPartition {
     /// Unique identifier within the base partition.
     pub id: u32,
@@ -116,7 +119,8 @@ impl SubClockPartition {
         Self {
             id,
             sub_clock,
-            ..Default::default()
+            variables: IndexSet::new(),
+            equations: Vec::new(),
         }
     }
 }
@@ -147,27 +151,21 @@ pub struct BaseClock {
     pub base_interval: Option<ClockInterval>,
 }
 
-impl Default for BaseClock {
-    fn default() -> Self {
+impl BaseClock {
+    /// Create a new inferred clock.
+    pub fn inferred(source_span: Span) -> Self {
         Self {
             kind: ClockKind::Inferred,
-            source_span: Span::DUMMY,
+            source_span,
             base_interval: None,
         }
     }
-}
-
-impl BaseClock {
-    /// Create a new inferred clock.
-    pub fn inferred() -> Self {
-        Self::default()
-    }
 
     /// Create a new periodic clock.
-    pub fn periodic(interval: f64) -> Self {
+    pub fn periodic(interval: f64, source_span: Span) -> Self {
         Self {
             kind: ClockKind::Periodic { interval },
-            source_span: Span::DUMMY,
+            source_span,
             base_interval: Some(ClockInterval::Seconds(interval)),
         }
     }
@@ -210,7 +208,7 @@ pub enum ClockKind {
 /// MLS §16.5.2: Sub-Clock.
 ///
 /// Defines the relationship between a sub-clock and its base clock.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubClock {
     /// Source span for the sub-clock expression.
     pub source_span: Span,
@@ -234,19 +232,32 @@ pub struct SubClock {
 }
 
 impl SubClock {
+    pub fn empty_with_span(source_span: Span) -> Self {
+        Self {
+            source_span,
+            sub_factor: None,
+            super_factor: None,
+            shift_counter: None,
+            shift_resolution: None,
+            back_counter: None,
+            back_resolution: None,
+            no_clock: bool::default(),
+        }
+    }
+
     /// Create a sub-sampled clock.
-    pub fn sub_sample(factor: i64) -> Self {
+    pub fn sub_sample(factor: i64, source_span: Span) -> Self {
         Self {
             sub_factor: Some(factor),
-            ..Default::default()
+            ..Self::empty_with_span(source_span)
         }
     }
 
     /// Create a super-sampled clock.
-    pub fn super_sample(factor: i64) -> Self {
+    pub fn super_sample(factor: i64, source_span: Span) -> Self {
         Self {
             super_factor: Some(factor),
-            ..Default::default()
+            ..Self::empty_with_span(source_span)
         }
     }
 }

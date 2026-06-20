@@ -140,7 +140,7 @@ fn span_from_location(location: &Location) -> Option<Span> {
     let start = location.start as usize;
     let end = (location.end as usize).max(start.saturating_add(1));
     Some(Span::from_offsets(
-        source_id_for(&location.file_name)?,
+        source_id_for(&location.file_name),
         start,
         end,
     ))
@@ -159,9 +159,7 @@ fn label_from_token(token: &Token, context: &str, message: impl Into<String>) ->
     let _ = context;
     let start = token.location.start as usize;
     let end = (token.location.end as usize).max(start.saturating_add(1));
-    let span = source_id_for(&token.location.file_name)
-        .map(|source_id| Span::from_offsets(source_id, start, end))
-        .unwrap_or(Span::DUMMY);
+    let span = Span::from_offsets(source_id_for(&token.location.file_name), start, end);
     PrimaryLabel::new(span).with_message(message)
 }
 

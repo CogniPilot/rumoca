@@ -9,7 +9,10 @@ fn seed_conditional_residual_alias_chain_params(dae_model: &mut dae::Dae) {
         ("shiftSample1.resolution", 2.0),
         ("threshold", 3.0),
     ] {
-        let mut p = dae::Variable::new(rumoca_core::VarName::new(name));
+        let mut p = dae::Variable::new(
+            rumoca_core::VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         p.start = Some(lit(value));
         dae_model
             .variables
@@ -155,22 +158,30 @@ fn test_runtime_precompute_resolves_clock_alias_chain_from_conditional_residual_
 fn test_runtime_precompute_resolves_clock_resolution_factor_from_table_lookup() {
     let mut dae_model = dae::Dae::default();
 
-    let mut factor = dae::Variable::new(rumoca_core::VarName::new("periodicClock.factor"));
+    let mut factor = dae::Variable::new(
+        rumoca_core::VarName::new("periodicClock.factor"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     factor.start = Some(lit(20.0));
     dae_model
         .variables
         .parameters
         .insert(rumoca_core::VarName::new("periodicClock.factor"), factor);
 
-    let mut resolution = dae::Variable::new(rumoca_core::VarName::new("periodicClock.resolution"));
+    let mut resolution = dae::Variable::new(
+        rumoca_core::VarName::new("periodicClock.resolution"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     resolution.start = Some(lit(2.0));
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("periodicClock.resolution"),
         resolution,
     );
 
-    let mut conversion_table =
-        dae::Variable::new(rumoca_core::VarName::new("periodicClock.conversionTable"));
+    let mut conversion_table = dae::Variable::new(
+        rumoca_core::VarName::new("periodicClock.conversionTable"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     conversion_table.start = Some(rumoca_core::Expression::Array {
         elements: vec![lit(1.0), lit(1000.0)],
         is_matrix: false,
@@ -181,18 +192,21 @@ fn test_runtime_precompute_resolves_clock_resolution_factor_from_table_lookup() 
         conversion_table,
     );
 
-    let mut resolution_factor =
-        dae::Variable::new(rumoca_core::VarName::new("periodicClock.resolutionFactor"));
+    let mut resolution_factor = dae::Variable::new(
+        rumoca_core::VarName::new("periodicClock.resolutionFactor"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     resolution_factor.start = Some(rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new("periodicClock.conversionTable").into(),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-            rumoca_core::Expression::FunctionCall {
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::VarName::new("Integer").into(),
                 args: vec![var("periodicClock.resolution")],
                 is_constructor: false,
                 span: rumoca_core::Span::DUMMY,
-            },
-        ))],
+            }),
+            rumoca_core::Span::DUMMY,
+        )],
         span: rumoca_core::Span::DUMMY,
     });
     dae_model.variables.parameters.insert(
@@ -235,21 +249,33 @@ fn test_runtime_precompute_uses_else_clock_timing_when_condition_is_false() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("u"),
-        dae::Variable::new(rumoca_core::VarName::new("u")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
-    let mut infer_factor = dae::Variable::new(rumoca_core::VarName::new("inferFactor"));
+    let mut infer_factor = dae::Variable::new(
+        rumoca_core::VarName::new("inferFactor"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     infer_factor.start = Some(lit(0.0));
     dae_model
         .variables
         .parameters
         .insert(rumoca_core::VarName::new("inferFactor"), infer_factor);
 
-    let mut factor = dae::Variable::new(rumoca_core::VarName::new("factor"));
+    let mut factor = dae::Variable::new(
+        rumoca_core::VarName::new("factor"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     factor.start = Some(lit(3.0));
     dae_model
         .variables
@@ -363,7 +389,14 @@ fn add_discrete_real_vars(dae_model: &mut dae::Dae, names: &[&str]) {
     for name in names {
         dae_model.variables.discrete_reals.insert(
             rumoca_core::VarName::new(*name),
-            dae::Variable::new(rumoca_core::VarName::new(*name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(*name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 }
@@ -486,15 +519,24 @@ fn test_runtime_precompute_uses_unique_static_clock_for_no_argument_clock_guard(
     add_discrete_real_vars(&mut dae_model, &["u"]);
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("y2"),
-        dae::Variable::new(rumoca_core::VarName::new("y2")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("y2"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("__pre__.y2"),
-        dae::Variable::new(rumoca_core::VarName::new("__pre__.y2")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("__pre__.y2"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     push_real_update(&mut dae_model, "u", clock_call(0.02), "source_clock");
     dae_model
@@ -565,7 +607,10 @@ fn test_runtime_precompute_skips_event_clock_constructor_without_static_schedule
     let mut dae_model = dae::Dae::default();
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("tick"),
-        dae::Variable::new(rumoca_core::VarName::new("tick")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("tick"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model
         .discrete

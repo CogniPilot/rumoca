@@ -8,8 +8,9 @@
 //     --base-url http://127.0.0.1:8731 --browser-binary google-chrome
 //
 // Verifies: widgets mount with Monaco editors, Simulate produces a plot,
-// LSP diagnostics produce markers, Show DAE renders Modelica text, and the
-// editable turkey visualization animates to "done".
+// LSP diagnostics produce markers, Show DAE renders Modelica text, the
+// editable turkey visualization animates to "done", and the Wave2D GPU widget
+// renders a surface.
 import { chromium } from "playwright-core";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -31,7 +32,7 @@ if (!browserExecutablePath) {
 const browser = await chromium.launch({
   executablePath: browserExecutablePath,
   headless: true,
-  args: ["--no-sandbox", "--disable-gpu"],
+  args: ["--no-sandbox", "--enable-unsafe-webgpu"],
 });
 
 let failures = 0;
@@ -44,13 +45,13 @@ try {
   const page = await browser.newPage();
   page.on("pageerror", (e) => console.error("[pageerror]", e.message));
 
-  // --- Live examples page: Monaco editors, simulate, diagnostics, DAE ---
-  await page.goto(`${base}/docs/user-guide/book/examples/live.html`, {
+  // --- Introduction page: Monaco editor, simulate, diagnostics, DAE ---
+  await page.goto(`${base}/docs/user-guide/book/introduction.html`, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForSelector(".rumoca-live", { timeout: 30000 });
   const widgets = await page.locator(".rumoca-live").count();
-  check(widgets >= 4, `live.html has ${widgets} widgets (>=4)`);
+  check(widgets >= 1, `introduction.html has ${widgets} widget(s) (>=1)`);
 
   const monacoLoaded = await page
     .waitForSelector(".rumoca-live .monaco-editor", { timeout: 30000 })
@@ -64,6 +65,15 @@ try {
     .then(() => true)
     .catch(() => false);
   check(plot, "Simulate produced an SVG plot");
+
+  // Show DAE before the diagnostics mutation below; dae-modelica renders a
+  // `class <Name> ... end <Name>;` document.
+  await page.locator(".rumoca-live button:has-text('Show DAE')").first().click();
+  const dae = await page
+    .waitForSelector(".rumoca-live-dae", { timeout: 120000 })
+    .then((el) => el.textContent())
+    .catch(() => null);
+  check(!!dae && dae.includes("class"), "Show DAE rendered Modelica text");
 
   if (monacoLoaded) {
     // LSP diagnostics: inject a syntax error into the first editor and
@@ -81,20 +91,13 @@ try {
     check(markerCount > 0, `LSP diagnostics produced ${markerCount} markers`);
   }
 
-  // Show DAE on the second (untouched) widget; dae-modelica renders a
-  // `class <Name> ... end <Name>;` document.
-  await page.locator(".rumoca-live button:has-text('Show DAE')").nth(1).click();
-  const dae = await page
-    .waitForSelector(".rumoca-live-dae", { timeout: 120000 })
-    .then((el) => el.textContent())
-    .catch(() => null);
-  check(!!dae && dae.includes("class"), "Show DAE rendered Modelica text");
-
   // --- Turkey page: editable visualization scripts ---
   await page.goto(`${base}/docs/user-guide/book/language/arrays-pde.html`, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForSelector(".rumoca-live", { timeout: 30000 });
+  const arrayWidgets = await page.locator(".rumoca-live").count();
+  check(arrayWidgets >= 3, `arrays-pde.html has ${arrayWidgets} widgets (>=3)`);
   const vizEditors = await page.locator(".rumoca-live-viz").count();
   check(vizEditors >= 2, `arrays-pde.html has ${vizEditors} editable viz scripts (>=2)`);
 
@@ -118,6 +121,22 @@ try {
       ).textContent;
     });
     check(/t = /.test(label), `scrubbed to end: "${label}"`);
+  }
+
+  const gpuStates = await page
+    .locator(".rumoca-live input[type='checkbox']")
+    .evaluateAll((nodes) => nodes.map((node) => node.checked));
+  const waveIndex = gpuStates.findIndex(Boolean);
+  check(waveIndex >= 0, "Wave2D GPU widget present");
+  if (waveIndex >= 0) {
+    const waveWidget = page.locator(".rumoca-live").nth(waveIndex);
+    await waveWidget.locator(".rumoca-live-run").click();
+    const surface = await waveWidget
+      .locator(".rumoca-live-surface canvas")
+      .waitFor({ timeout: 180000 })
+      .then(() => true)
+      .catch(() => false);
+    check(surface, "Wave2D GPU widget rendered a surface canvas");
   }
 } finally {
   await browser.close();

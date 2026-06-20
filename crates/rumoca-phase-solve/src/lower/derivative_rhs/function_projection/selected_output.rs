@@ -20,10 +20,10 @@ pub(super) fn selected_function_output_call(
         return Ok(None);
     }
     let projection_map = build_function_output_projection_map(dae_model).map_err(|err| {
-        LowerError::ContractViolation {
-            reason: format!("function output projection map failed: {err}"),
-            span: *span,
-        }
+        LowerError::contract_violation(
+            format!("function output projection map failed: {err}"),
+            *span,
+        )
     })?;
     let selected_name = name.as_str();
     for (function_name, _) in &dae_model.symbols.functions {
@@ -35,12 +35,12 @@ pub(super) fn selected_function_output_call(
                 continue;
             }
             let zero_based_index = scalar_index.checked_sub(1).ok_or_else(|| {
-                LowerError::ContractViolation {
-                    reason: format!(
+                LowerError::contract_violation(
+                    format!(
                         "function output projection for `{selected_name}` used zero scalar index"
                     ),
-                    span: *span,
-                }
+                    *span,
+                )
             })?;
             return Ok(Some((
                 rumoca_core::Expression::FunctionCall {

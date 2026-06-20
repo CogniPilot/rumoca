@@ -202,6 +202,15 @@ pub enum FlattenError {
         #[label("class used here")]
         span: SourceSpan,
     },
+
+    /// Source location metadata could not be mapped to the source text needed
+    /// for a diagnostic span.
+    #[error("missing source context: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF017),
+        help("earlier phases must preserve source-map entries and non-empty source locations")
+    )]
+    MissingSourceContext { reason: String },
 }
 
 impl FlattenError {
@@ -331,6 +340,13 @@ impl FlattenError {
             name: name.into(),
             context: context.into(),
             span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create a MissingSourceContext error.
+    pub fn missing_source_context(reason: impl Into<String>) -> Self {
+        Self::MissingSourceContext {
+            reason: reason.into(),
         }
     }
 }

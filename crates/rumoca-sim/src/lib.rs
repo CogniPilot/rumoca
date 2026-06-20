@@ -57,8 +57,8 @@ pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     SimulationDiagnosticError, SingularityDiagnosis, StructuralReport, TearingReport,
     UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis, diagnose_structural_singularity,
-    eval_dae_at, jacobian_for_dae, lower_dae_for_simulation, structural_report_for_dae,
-    structurally_lowered_dae_for_simulation_artifact,
+    eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation, lower_dae_for_simulation,
+    structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
 };
 
 #[cfg(feature = "solver-rk45")]
@@ -206,12 +206,28 @@ fn simulate_with_auto_diagnostics(
 mod solver_mode_tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("solver_mode_test.mo"),
+            0,
+            8,
+        )
+    }
+
     #[test]
     fn auto_mode_uses_rk45_when_diffsol_is_not_built() {
+        let span = test_span();
         let mut model = dae::Dae::new();
         model.variables.states.insert(
             rumoca_core::VarName::new("x"),
-            dae::Variable::new(rumoca_core::VarName::new("x")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         model.continuous.equations.push(dae::Equation {
             lhs: None,
@@ -222,17 +238,17 @@ mod solver_mode_tests {
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::VarName::new("x"),
                         subscripts: Vec::new(),
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 rhs: Box::new(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            span: rumoca_core::Span::DUMMY,
+            span,
             origin: "test".to_string(),
             scalar_count: 1,
         });
@@ -615,7 +631,10 @@ mod tests {
     #[test]
     fn build_variable_meta_resolves_scalarized_names_back_to_array_variable() {
         let mut dae_model = dae::Dae::default();
-        let mut state = Variable::new(rumoca_core::VarName::new("x"));
+        let mut state = Variable::new(
+            rumoca_core::VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         state.dims = vec![2];
         state.unit = Some("m".to_string());
         dae_model

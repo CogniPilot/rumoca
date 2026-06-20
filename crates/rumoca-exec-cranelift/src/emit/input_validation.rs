@@ -1,4 +1,4 @@
-use super::{CompileError, LinearOp, RowPlan, input_compile_error};
+use super::{CompileError, LinearOp, RowPlan};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct InputRequirements {
@@ -30,37 +30,59 @@ pub(super) fn row_input_requirements(row: &RowPlan) -> InputRequirements {
     }
 }
 
-pub(super) fn input_requirements_for_linear_ops(row: &[LinearOp]) -> InputRequirements {
+pub(super) fn input_requirements_for_linear_ops(
+    row: &[LinearOp],
+) -> Result<InputRequirements, CompileError> {
     row.iter()
         .copied()
         .map(input_requirements_for_linear_op)
-        .fold(InputRequirements::default(), InputRequirements::merge)
+        .try_fold(InputRequirements::default(), |requirements, op| {
+            op.map(|op_requirements| requirements.merge(op_requirements))
+        })
 }
 
-fn input_requirements_for_linear_op(op: LinearOp) -> InputRequirements {
+fn input_requirements_for_linear_op(op: LinearOp) -> Result<InputRequirements, CompileError> {
     match op {
-        LinearOp::LoadY { index, .. } => InputRequirements {
-            y_len: index.saturating_add(1),
+        LinearOp::LoadY { index, .. } => Ok(InputRequirements {
+            y_len: checked_required_len("y", index)?,
             ..Default::default()
-        },
-        LinearOp::LoadP { index, .. } => InputRequirements {
-            p_len: index.saturating_add(1),
+        }),
+        LinearOp::LoadP { index, .. } => Ok(InputRequirements {
+            p_len: checked_required_len("p", index)?,
             ..Default::default()
-        },
-        LinearOp::LoadIndexedP { base, count, .. } => InputRequirements {
-            p_len: base.saturating_add(count),
+        }),
+        LinearOp::LoadIndexedP { base, count, .. } => Ok(InputRequirements {
+            p_len: checked_required_indexed_len("p", base, count)?,
             ..Default::default()
-        },
-        LinearOp::LoadSeed { index, .. } => InputRequirements {
-            seed_len: index.saturating_add(1),
+        }),
+        LinearOp::LoadSeed { index, .. } => Ok(InputRequirements {
+            seed_len: checked_required_len("seed", index)?,
             ..Default::default()
-        },
-        LinearOp::LoadIndexedSeed { base, count, .. } => InputRequirements {
-            seed_len: base.saturating_add(count),
+        }),
+        LinearOp::LoadIndexedSeed { base, count, .. } => Ok(InputRequirements {
+            seed_len: checked_required_indexed_len("seed", base, count)?,
             ..Default::default()
-        },
-        _ => InputRequirements::default(),
+        }),
+        _ => Ok(InputRequirements::default()),
     }
+}
+
+fn checked_required_len(vector: &'static str, index: usize) -> Result<usize, CompileError> {
+    index
+        .checked_add(1)
+        .ok_or_else(|| CompileError::Backend(format!("{vector} input requirement overflow")))
+}
+
+fn checked_required_indexed_len(
+    vector: &'static str,
+    base: usize,
+    count: usize,
+) -> Result<usize, CompileError> {
+    if count == 0 {
+        return checked_required_len(vector, base);
+    }
+    base.checked_add(count)
+        .ok_or_else(|| CompileError::Backend(format!("{vector} input requirement overflow")))
 }
 
 pub(super) fn validate_output_len(out: &[f64], row_count: usize) -> Result<(), CompileError> {
@@ -100,9 +122,11 @@ fn validate_input_len(
     if actual_len >= required_len {
         return Ok(());
     }
-    Err(input_compile_error(
-        vector,
-        required_len.saturating_sub(1),
-        actual_len,
+    Err(input_compile_error(vector, required_len - 1, actual_len))
+}
+
+pub(super) fn input_compile_error(vector: &'static str, index: usize, len: usize) -> CompileError {
+    CompileError::Input(format!(
+        "missing {vector}[{index}] while evaluating Cranelift row; vector length is {len}"
     ))
 }

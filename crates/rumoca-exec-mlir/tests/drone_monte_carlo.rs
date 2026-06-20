@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 /// Phase 5.4 — Drone Monte Carlo simulation on NVIDIA RTX 3090.
 ///
 /// Planar quadrotor — small-angle linearisation (valid near hover, θ << 1 rad):
@@ -40,6 +41,13 @@ use rumoca_ir_solve::{
     SolverNameIndexMaps,
     UnaryOp, // Neg still used
 };
+
+fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+    )
+}
 
 fn compile_to_gpu_blob(
     solve: &SolveProblem,
@@ -118,17 +126,21 @@ fn drone_solve() -> SolveProblem {
     // Row 5: der(omega) = 0
     let row5 = vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }];
 
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row0, row1, row2, row3, row4, row5]),
-    ))
+    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
+        vec![row0, row1, row2, row3, row4, row5],
+        "drone_monte_carlo_derivative.mo",
+    )))
 }
 
 fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::SolveModel {
     let solve = drone_solve();
-    let zero_rb = ScalarProgramBlock::new(vec![vec![
-        LinearOp::Const { dst: 0, value: 0.0 },
-        LinearOp::StoreOutput { src: 0 },
-    ]]);
+    let zero_rb = spb(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        "drone_monte_carlo_zero.mo",
+    );
     let zero_block = ComputeBlock::from_scalar_program_block(zero_rb.clone());
     let names: Vec<String> = ["x", "y", "theta", "vx", "vy", "omega"]
         .iter()
@@ -144,7 +156,7 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 implicit_row_targets: (0..6)
                     .map(|i| Some(rumoca_ir_solve::scalar_slot_y(i)))
                     .collect(),
-                residual: zero_rb.clone(),
+                residual: zero_block.clone(),
                 derivative_rhs: solve.continuous.derivative_rhs.clone(),
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },

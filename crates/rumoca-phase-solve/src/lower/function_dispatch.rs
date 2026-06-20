@@ -41,7 +41,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(reg);
         }
 
-        if let Some(reg) = self.try_lower_qualified_standard_numeric_intrinsic(
+        if let Some(reg) = self.lower_qualified_standard_numeric_intrinsic(
             name,
             args,
             span,
@@ -53,7 +53,7 @@ impl<'a> LowerBuilder<'a> {
 
         if call_depth >= MAX_FUNCTION_INLINE_DEPTH {
             if let Some(reg) =
-                self.try_lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?
+                self.lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?
             {
                 return Ok(reg);
             }
@@ -65,7 +65,7 @@ impl<'a> LowerBuilder<'a> {
 
         let function = if let Some(function) = self.lookup_function(name).cloned() {
             function
-        } else if let Some(projection) = self.lookup_function_output_projection(name) {
+        } else if let Some(projection) = self.lookup_function_output_projection(name, span)? {
             return self.lower_projected_function_call(
                 &projection,
                 args,
@@ -82,7 +82,7 @@ impl<'a> LowerBuilder<'a> {
                 call_depth,
             );
         } else if let Some(reg) =
-            self.try_lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?
+            self.lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?
         {
             return Ok(reg);
         } else {
@@ -93,16 +93,17 @@ impl<'a> LowerBuilder<'a> {
 
         if function.external.is_some() {
             if let Some(reg) =
-                self.try_lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?
+                self.lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?
             {
                 return Ok(reg);
             }
-            return Err(LowerError::Unsupported {
-                reason: format!(
+            return Err(unsupported_at(
+                format!(
                     "external function call `{}` cannot be inlined",
                     name.as_str()
                 ),
-            });
+                span,
+            ));
         }
 
         self.with_local_lower_frame(|this| {
@@ -114,7 +115,7 @@ impl<'a> LowerBuilder<'a> {
 
             let _returned = this.lower_statements(&function.body, &mut scope, call_depth + 1)?;
 
-            this.lower_scalar_function_output_value(name.as_str(), &function, &scope)
+            this.lower_scalar_function_output_value(name.as_str(), &function, &scope, span)
         })
     }
 
@@ -155,14 +156,15 @@ impl<'a> LowerBuilder<'a> {
                 name: closure.target_name.as_str().to_string(),
             });
         };
-        self.ensure_pure_inline_function(closure.target_name.as_str(), &function)?;
+        self.ensure_pure_inline_function(closure.target_name.as_str(), &function, span)?;
         if function.external.is_some() {
-            return Err(LowerError::Unsupported {
-                reason: format!(
+            return Err(unsupported_at(
+                format!(
                     "external function call `{}` cannot be inlined",
                     closure.target_name.as_str()
                 ),
-            });
+                span,
+            ));
         }
 
         self.with_local_lower_frame(|this| {
@@ -180,8 +182,12 @@ impl<'a> LowerBuilder<'a> {
 
             let _returned = this.lower_statements(&function.body, &mut scope, call_depth + 1)?;
 
-            this.lower_scalar_function_output_value(closure.target_name.as_str(), &function, &scope)
-                .map_err(|err| err.with_fallback_span(span))
+            this.lower_scalar_function_output_value(
+                closure.target_name.as_str(),
+                &function,
+                &scope,
+                span,
+            )
         })
     }
 
@@ -190,6 +196,7 @@ impl<'a> LowerBuilder<'a> {
         function_name: &str,
         function: &rumoca_core::Function,
         scope: &Scope,
+        span: rumoca_core::Span,
     ) -> Result<Reg, LowerError> {
         let Some(output) = function.outputs.first() else {
             return Err(LowerError::InvalidFunction {
@@ -204,13 +211,14 @@ impl<'a> LowerBuilder<'a> {
                 name: function_name.to_string(),
                 reason: format!("output `{}` was not assigned", output.name),
             }),
-            values => Err(LowerError::Unsupported {
-                reason: format!(
+            values => Err(unsupported_at(
+                format!(
                     "array-valued output `{}` of function `{function_name}` has {} scalar values in scalar context",
                     output.name,
                     values.len()
                 ),
-            }),
+                span,
+            )),
         }
     }
 

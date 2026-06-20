@@ -141,7 +141,7 @@ pub enum ParseError {
         message: String,
         expected: Vec<String>,
         unexpected: Option<String>,
-        span: Span,
+        span: Option<Span>,
     },
     /// No AST was produced despite successful parse.
     NoAstProduced,
@@ -158,16 +158,15 @@ fn default_parse_span() -> Span {
 }
 
 fn normalize_span(span: Span) -> Span {
-    let span = if span == Span::DUMMY {
-        default_parse_span()
-    } else {
-        span
-    };
     if span.end.0 <= span.start.0 {
         Span::from_offsets(span.source, span.start.0, span.start.0.saturating_add(1))
     } else {
         span
     }
+}
+
+fn diagnostic_span(span: Option<Span>) -> Span {
+    span.map(normalize_span).unwrap_or_else(default_parse_span)
 }
 
 fn fallback_span_from_source(source: &str) -> Span {
@@ -200,7 +199,7 @@ impl PhaseError for ParseError {
                 let mut diag = Diagnostic::error(
                     EP001_SYNTAX_ERROR,
                     message,
-                    PrimaryLabel::new(normalize_span(*span)).with_message(label_msg),
+                    PrimaryLabel::new(diagnostic_span(*span)).with_message(label_msg),
                 );
 
                 // Add expected tokens as a note
@@ -233,7 +232,7 @@ pub fn convert_parol_error(err: ParolError, source: &str) -> Vec<ParseError> {
                 message: format!("lexer error: {}", lexer_err),
                 expected: vec![],
                 unexpected: None,
-                span: fallback_span_from_source(source),
+                span: Some(fallback_span_from_source(source)),
             }]
         }
         ParolError::UserError(user_err) => {
@@ -242,14 +241,14 @@ pub fn convert_parol_error(err: ParolError, source: &str) -> Vec<ParseError> {
                     message: format!("parse error: {}", semantic_error.message),
                     expected: vec![],
                     unexpected: None,
-                    span: semantic_error.span,
+                    span: Some(semantic_error.span),
                 }];
             }
             vec![ParseError::SyntaxError {
                 message: format!("parse error: {}", user_err),
                 expected: vec![],
                 unexpected: None,
-                span: fallback_span_from_source(source),
+                span: Some(fallback_span_from_source(source)),
             }]
         }
     }
@@ -267,7 +266,7 @@ fn convert_parser_error(err: ParserError, source: &str) -> Vec<ParseError> {
                 message: "unexpected input after end of file".to_string(),
                 expected: vec!["end of input".to_string()],
                 unexpected: None,
-                span,
+                span: Some(span),
             }]
         }
         ParserError::PredictionError { cause } => {
@@ -275,7 +274,7 @@ fn convert_parser_error(err: ParserError, source: &str) -> Vec<ParseError> {
                 message: format!("syntax error: {}", cause),
                 expected: vec![],
                 unexpected: None,
-                span: fallback_span_from_source(source),
+                span: Some(fallback_span_from_source(source)),
             }]
         }
         other => {
@@ -283,7 +282,7 @@ fn convert_parser_error(err: ParserError, source: &str) -> Vec<ParseError> {
                 message: format!("parse error: {}", other),
                 expected: vec![],
                 unexpected: None,
-                span: fallback_span_from_source(source),
+                span: Some(fallback_span_from_source(source)),
             }]
         }
     }
@@ -410,7 +409,7 @@ fn convert_syntax_error(err: SyntaxError, source: &str) -> ParseError {
         message,
         expected,
         unexpected,
-        span,
+        span: Some(span),
     }
 }
 
@@ -669,7 +668,7 @@ mod tests {
             message: "unexpected token".to_string(),
             expected: vec!["SEMICOLON".to_string(), "END".to_string()],
             unexpected: Some("COMMA".to_string()),
-            span,
+            span: Some(span),
         };
         let diag = err.to_diagnostic();
         assert!(diag.is_error());

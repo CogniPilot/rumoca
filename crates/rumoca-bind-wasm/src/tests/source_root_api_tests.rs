@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_compile_with_workspace_sources_resolves_workspace_package_imports() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let compiled = compile_with_workspace_sources(
         USES_WORKSPACE_PACKAGE_SOURCE,
@@ -23,13 +23,13 @@ fn test_compile_with_workspace_sources_resolves_workspace_package_imports() {
         "expected compile_with_workspace_sources to resolve workspace-local packages, got: {compiled_result:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_sync_workspace_sources_enables_workspace_package_completion_and_diagnostics() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     sync_workspace_sources("{}").expect("empty workspace sync should succeed");
 
     sync_workspace_sources(&workspace_package_sources_json())
@@ -74,7 +74,7 @@ fn test_sync_workspace_sources_enables_workspace_package_completion_and_diagnost
         "workspace package diagnostics should resolve NewFolder.Test, got: {diagnostics:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     sync_workspace_sources("{}").expect("empty workspace sync should succeed");
 }
 
@@ -82,7 +82,7 @@ fn test_sync_workspace_sources_enables_workspace_package_completion_and_diagnost
 #[cfg(not(target_arch = "wasm32"))]
 fn test_sync_workspace_sources_writes_workspace_semantic_summary_cache_when_cache_root_exists() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     let cache_root = unique_test_cache_root();
 
     sync_workspace_sources_with_cache_root_for_tests(
@@ -101,7 +101,7 @@ fn test_sync_workspace_sources_writes_workspace_semantic_summary_cache_when_cach
         "workspace source sync should populate the generic source-root summary cache"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     sync_workspace_sources_with_cache_root_for_tests(
         &workspace_package_sources_json(),
         &cache_root,
@@ -122,13 +122,13 @@ fn test_sync_workspace_sources_writes_workspace_semantic_summary_cache_when_cach
 
     let _ = std::fs::remove_dir_all(&cache_root);
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_sync_workspace_sources_removes_stale_workspace_package_roots() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let initial_sources = serde_json::json!({
         "PkgA/package.mo": "within ; package PkgA end PkgA;",
@@ -173,5 +173,5 @@ fn test_sync_workspace_sources_removes_stale_workspace_package_roots() {
         "removed package root should stop resolving after sync, got: {trimmed_diagnostics:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }

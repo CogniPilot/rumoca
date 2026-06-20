@@ -102,6 +102,7 @@ required-features = ["msl-sim-tests"]
 
 [dev-dependencies]
 crossterm = "0.28"
+indexmap = { workspace = true }
 tungstenite = "0.26"
 tempfile = { workspace = true }
 mimalloc = { workspace = true }

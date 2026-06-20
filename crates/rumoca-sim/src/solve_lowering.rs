@@ -13,20 +13,26 @@ use std::time::Instant;
 pub enum SimulationDiagnosticError {
     SolveLowering(rumoca_phase_solve::SolveModelLowerError),
     Solver(String),
+    RuntimePreparation {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl SimulationDiagnosticError {
     pub fn diagnostic_code(&self) -> &'static str {
         match self {
             Self::SolveLowering(_) => "lowering",
-            Self::Solver(_) => "simulation",
+            Self::Solver(_) | Self::RuntimePreparation { .. } => "simulation",
         }
     }
 
     pub fn diagnostic_label(&self) -> String {
         match self {
             Self::SolveLowering(error) => error.diagnostic_label(),
-            Self::Solver(_) => "simulation failure originates here".to_string(),
+            Self::Solver(_) | Self::RuntimePreparation { .. } => {
+                "simulation failure originates here".to_string()
+            }
         }
     }
 
@@ -34,6 +40,7 @@ impl SimulationDiagnosticError {
         match self {
             Self::SolveLowering(error) => error.source_span(),
             Self::Solver(_) => None,
+            Self::RuntimePreparation { span, .. } => *span,
         }
     }
 }
@@ -43,17 +50,38 @@ impl std::fmt::Display for SimulationDiagnosticError {
         match self {
             Self::SolveLowering(error) => write!(f, "{error}"),
             Self::Solver(error) => write!(f, "{error}"),
+            Self::RuntimePreparation { message, .. } => write!(f, "{message}"),
         }
     }
 }
 
 impl std::error::Error for SimulationDiagnosticError {}
 
+impl From<rumoca_eval_solve::EvalSolveError> for SimulationDiagnosticError {
+    fn from(value: rumoca_eval_solve::EvalSolveError) -> Self {
+        Self::RuntimePreparation {
+            message: value.to_string(),
+            span: value.source_span(),
+        }
+    }
+}
+
 pub fn lower_dae_for_simulation(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
     lower_dae_for_simulation_with_stage_timing(dae_model, opts, |_| {}).map(|(model, _)| model)
+}
+
+pub fn lower_dae_for_gpu_preparation(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
+    let structurally_lowered = structurally_lower_dae_for_simulation(dae_model, opts)?;
+    rumoca_phase_solve::lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata(
+        structurally_lowered.dae,
+        &structurally_lowered.metadata_dae,
+    )
 }
 
 /// Tolerance / iteration budget for the `--inspect eval` algebraic refresh, matching
@@ -95,7 +123,8 @@ pub fn eval_dae_at(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect eval --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model);
+    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_at(
         t,
         &state_used,
@@ -173,7 +202,8 @@ pub fn jacobian_for_dae(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model);
+    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_state_jacobian(
         t,
         &state_used,
@@ -216,6 +246,7 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
     timings.structural_dae_seconds = stage_timer_elapsed_seconds(structural_start);
 
     begin_stage("ir_solve");
+    log_solve_lowering_start("solve_ir.lower_dae_to_solve_model");
     let solve_ir_start = stage_timer_start();
     let solve_model =
         rumoca_phase_solve::lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata(
@@ -224,6 +255,7 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
             &structurally_lowered.metadata_dae,
         )?;
     timings.solve_ir_seconds = stage_timer_elapsed_seconds(solve_ir_start);
+    log_solve_lowering_done("solve_ir.lower_dae_to_solve_model", solve_ir_start);
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
         let layout = &solve_model.problem.layout;
         let mut names_by_y: std::collections::HashMap<usize, &str> =
@@ -320,42 +352,78 @@ pub(crate) fn prepare_dae_for_structural_analysis(
     opts: &SimOptions,
 ) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
     if opts.scalarize {
+        log_solve_lowering_start("prepare.scalarize_equations");
+        let timer = stage_timer_start();
         rumoca_phase_structural::scalarize::scalarize_equations(lowered)
             .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+        log_solve_lowering_done("prepare.scalarize_equations", timer);
     }
-    rumoca_phase_structural::dae_prepare::demote_exact_alias_component_states(lowered);
-    rumoca_phase_structural::dae_prepare::demote_direct_assigned_states(lowered);
-    rumoca_phase_structural::dae_prepare::reduce_constrained_dummy_derivatives(lowered);
+    log_solve_lowering_start("prepare.demote_exact_alias_component_states");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::demote_exact_alias_component_states(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("prepare.demote_exact_alias_component_states", timer);
+    log_solve_lowering_start("prepare.demote_direct_assigned_states");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::demote_direct_assigned_states(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("prepare.demote_direct_assigned_states", timer);
+    log_solve_lowering_start("prepare.reduce_constrained_dummy_derivatives");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::reduce_constrained_dummy_derivatives(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("prepare.reduce_constrained_dummy_derivatives", timer);
+    log_solve_lowering_start("prepare.index_reduce_missing_state_derivatives");
+    let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::index_reduce_missing_state_derivatives(lowered)
         .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("prepare.index_reduce_missing_state_derivatives", timer);
+    log_solve_lowering_start("prepare.demote_states_without_assignable_derivative_rows");
+    let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::demote_states_without_assignable_derivative_rows(lowered);
-    rumoca_phase_structural::dae_prepare::eliminate_derivative_aliases(lowered);
+    log_solve_lowering_done(
+        "prepare.demote_states_without_assignable_derivative_rows",
+        timer,
+    );
+    log_solve_lowering_start("prepare.eliminate_derivative_aliases");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::eliminate_derivative_aliases(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("prepare.eliminate_derivative_aliases", timer);
+    log_solve_lowering_start("prepare.demote_states_without_retained_derivative_rows");
+    let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(lowered)
         .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(
+        "prepare.demote_states_without_retained_derivative_rows",
+        timer,
+    );
     // After demotion, any `der(<algebraic>)` (a differentiated algebraic such as
     // `a_rel = der(w_rel)`, or successive `Der` blocks) is expanded symbolically
     // via the chain rule, leaving only `der(state)`. Running this after demotion
     // is essential: a `der`'d algebraic with its own defining equation is first
     // demoted from a spurious state, then its derivative is expanded here rather
     // than left as an orphan column (which the matcher reports as singular).
+    log_solve_lowering_start("prepare.expand_compound_derivatives");
+    let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::expand_compound_derivatives(lowered);
+    log_solve_lowering_done("prepare.expand_compound_derivatives", timer);
     // Rewrite `y = der(x)` (e.g. a `Modelica.Blocks.Continuous.Der` block reading
     // a state derivative) into `y = <x's ODE rhs>` so `y` is matchable. Without
     // this, the standalone `der(x)` reference in a non-ODE row has no column to
     // match and the system reports a spurious structural singularity.
+    log_solve_lowering_start("prepare.substitute_standalone_state_derivatives_in_non_ode_rows");
+    let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::substitute_standalone_state_derivatives_in_non_ode_rows(
         lowered,
     );
+    log_solve_lowering_done(
+        "prepare.substitute_standalone_state_derivatives_in_non_ode_rows",
+        timer,
+    );
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
         for (index, eq) in lowered.continuous.equations.iter().enumerate() {
-            let summary = format!(
-                "{}{}",
-                eq.lhs
-                    .as_ref()
-                    .map(|lhs| format!("{} = ", lhs.as_str()))
-                    .unwrap_or_default(),
-                debug_render_expr(&eq.rhs)
-            );
+            let summary = format!("{}{}", equation_lhs_prefix(eq), debug_render_expr(&eq.rhs));
             tracing::debug!(
                 target: "rumoca_phase_structural",
                 "[sim-trace] prepared f_x[{index}] origin='{}' {}",
@@ -413,14 +481,7 @@ pub fn diagnose_structural_singularity(
     };
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
         for (index, eq) in prepared.continuous.equations.iter().enumerate() {
-            let mut summary = format!(
-                "{}{:?}",
-                eq.lhs
-                    .as_ref()
-                    .map(|lhs| format!("{} = ", lhs.as_str()))
-                    .unwrap_or_default(),
-                eq.rhs
-            );
+            let mut summary = format!("{}{:?}", equation_lhs_prefix(eq), eq.rhs);
             summary.truncate(200);
             tracing::debug!(
                 target: "rumoca_phase_structural",
@@ -479,12 +540,7 @@ fn unmatched_equation_diagnosis(dae: &dae::Dae, name: &str) -> UnmatchedEquation
     let (origin, summary) = equation.map_or_else(
         || ("<not an f_x row>".to_string(), String::new()),
         |eq| {
-            let lhs = eq
-                .lhs
-                .as_ref()
-                .map(|lhs| format!("{} = ", lhs.as_str()))
-                .unwrap_or_default();
-            let mut summary = format!("{}{:?}", lhs, eq.rhs);
+            let mut summary = format!("{}{:?}", equation_lhs_prefix(eq), eq.rhs);
             summary.truncate(220);
             (eq.origin.clone(), summary)
         },
@@ -576,47 +632,117 @@ fn stage_timer_elapsed_seconds(_start: StageTimer) -> f64 {
     0.0
 }
 
+fn log_solve_lowering_start(_label: &str) {}
+
+fn log_solve_lowering_done(_label: &str, _start: StageTimer) {}
+
 pub(crate) struct StructurallyLoweredDae {
     dae: dae::Dae,
     metadata_dae: dae::Dae,
     visible_expressions: Vec<rumoca_phase_solve::VisibleExpression>,
 }
 
+struct PreparedStructuralDaes {
+    source_dae: dae::Dae,
+    lowered: dae::Dae,
+    metadata_dae: dae::Dae,
+}
+
 pub(crate) fn structurally_lower_dae_for_simulation(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<StructurallyLoweredDae, rumoca_phase_solve::SolveModelLowerError> {
-    let mut source_dae = dae_model.clone();
-    rumoca_phase_dae::attach_dae_reference_metadata(&mut source_dae).map_err(|err| {
-        rumoca_phase_solve::SolveModelLowerError::Lower(
-            rumoca_phase_solve::lower::LowerError::ContractViolation {
-                reason: format!("DAE reference metadata attachment failed: {err}"),
-                span: rumoca_core::Span::DUMMY,
-            },
-        )
-    })?;
-    let mut lowered = source_dae.clone();
-    prepare_dae_for_structural_analysis(&mut lowered, opts)?;
-    remove_duplicate_continuous_equations(&mut lowered);
-    let mut metadata_dae = lowered.clone();
+    let PreparedStructuralDaes {
+        source_dae,
+        mut lowered,
+        mut metadata_dae,
+    } = prepare_structural_daes(dae_model, opts)?;
+
+    log_solve_lowering_start("structural.eliminate_trivial");
+    let timer = stage_timer_start();
     let elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
         .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("structural.eliminate_trivial", timer);
     if let Some(source) = elimination.blt_error {
         if dae_model.variables.states.is_empty() {
             validate_residual_shapes_for_simulation(dae_model)?;
         }
         return Err(rumoca_phase_solve::SolveModelLowerError::Structural { source });
     }
-    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(
-        &mut lowered,
+
+    apply_simulation_elimination(&mut lowered, &elimination.substitutions)?;
+    trace_simulation_elimination(&lowered, &elimination.substitutions);
+    mark_state_selection_metadata(&mut metadata_dae, &elimination.substitutions)?;
+    let visible_expressions =
+        visible_expressions_after_elimination(&source_dae, &elimination.substitutions, opts)?;
+
+    Ok(StructurallyLoweredDae {
+        dae: lowered,
+        metadata_dae,
+        visible_expressions,
+    })
+}
+
+fn prepare_structural_daes(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<PreparedStructuralDaes, rumoca_phase_solve::SolveModelLowerError> {
+    log_solve_lowering_start("structural.attach_dae_reference_metadata");
+    let timer = stage_timer_start();
+    let mut source_dae = dae_model.clone();
+    rumoca_phase_dae::attach_dae_reference_metadata(&mut source_dae)
+        .map_err(metadata_attachment_lower_error)?;
+    log_solve_lowering_done("structural.attach_dae_reference_metadata", timer);
+    log_solve_lowering_start("structural.clone_source_for_lowered");
+    let timer = stage_timer_start();
+    let mut lowered = source_dae.clone();
+    log_solve_lowering_done("structural.clone_source_for_lowered", timer);
+    prepare_dae_for_structural_analysis(&mut lowered, opts)?;
+    log_solve_lowering_start("structural.remove_duplicate_continuous_equations");
+    let timer = stage_timer_start();
+    remove_duplicate_continuous_equations(&mut lowered);
+    log_solve_lowering_done("structural.remove_duplicate_continuous_equations", timer);
+    log_solve_lowering_start("structural.clone_metadata_dae");
+    let timer = stage_timer_start();
+    let metadata_dae = lowered.clone();
+    log_solve_lowering_done("structural.clone_metadata_dae", timer);
+
+    Ok(PreparedStructuralDaes {
+        source_dae,
+        lowered,
+        metadata_dae,
+    })
+}
+
+fn apply_simulation_elimination(
+    lowered: &mut dae::Dae,
+    substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    log_solve_lowering_start("structural.demote_states_without_retained_derivative_rows");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(
+        "structural.demote_states_without_retained_derivative_rows",
+        timer,
+    );
+    log_solve_lowering_start("structural.apply_elimination_substitutions_to_dae");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::eliminate::apply_elimination_substitutions_to_dae(
+        lowered,
+        substitutions,
     )
     .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
-    rumoca_phase_structural::eliminate::apply_elimination_substitutions_to_dae(
-        &mut lowered,
-        &elimination.substitutions,
-    );
+    log_solve_lowering_done("structural.apply_elimination_substitutions_to_dae", timer);
+    Ok(())
+}
+
+fn trace_simulation_elimination(
+    lowered: &dae::Dae,
+    substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+) {
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
-        for sub in &elimination.substitutions {
+        for sub in substitutions {
             tracing::debug!(
                 target: "rumoca_phase_structural",
                 "[sim-trace] substitution {} := {}",
@@ -629,52 +755,116 @@ pub(crate) fn structurally_lower_dae_for_simulation(
                 target: "rumoca_phase_structural",
                 "[sim-trace] post-elim f_x[{index}] origin='{}' {}{}",
                 eq.origin,
-                eq.lhs
-                    .as_ref()
-                    .map(|lhs| format!("{} = ", lhs.as_str()))
-                    .unwrap_or_default(),
+                equation_lhs_prefix(eq),
                 debug_render_expr(&eq.rhs)
             );
         }
     }
+}
+
+fn mark_state_selection_metadata(
+    metadata_dae: &mut dae::Dae,
+    substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    log_solve_lowering_start("structural.clone_state_selection_dae");
+    let timer = stage_timer_start();
     let mut state_selection_dae = metadata_dae.clone();
+    log_solve_lowering_done("structural.clone_state_selection_dae", timer);
+    log_solve_lowering_start("structural.apply_state_selection_substitutions");
+    let timer = stage_timer_start();
     rumoca_phase_structural::eliminate::apply_elimination_substitutions_to_dae(
         &mut state_selection_dae,
-        &elimination.substitutions,
-    );
+        substitutions,
+    )
+    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("structural.apply_state_selection_substitutions", timer);
+    log_solve_lowering_start("structural.demote_state_selection_dae");
+    let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(
         &mut state_selection_dae,
     )
     .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
-    mark_constrained_dummy_states_in_metadata(&state_selection_dae, &mut metadata_dae);
+    log_solve_lowering_done("structural.demote_state_selection_dae", timer);
+    log_solve_lowering_start("structural.mark_constrained_dummy_states_in_metadata");
+    let timer = stage_timer_start();
+    mark_constrained_dummy_states_in_metadata(&state_selection_dae, metadata_dae);
+    log_solve_lowering_done(
+        "structural.mark_constrained_dummy_states_in_metadata",
+        timer,
+    );
+    Ok(())
+}
+
+fn visible_expressions_after_elimination(
+    source_dae: &dae::Dae,
+    substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+    opts: &SimOptions,
+) -> Result<Vec<rumoca_phase_solve::VisibleExpression>, rumoca_phase_solve::SolveModelLowerError> {
+    log_solve_lowering_start("structural.clone_observation_dae");
+    let timer = stage_timer_start();
     let mut observation_dae = source_dae.clone();
+    log_solve_lowering_done("structural.clone_observation_dae", timer);
     if opts.scalarize {
+        log_solve_lowering_start("structural.scalarize_observation_dae");
+        let timer = stage_timer_start();
         rumoca_phase_structural::scalarize::scalarize_equations(&mut observation_dae)
             .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+        log_solve_lowering_done("structural.scalarize_observation_dae", timer);
     }
-    if !elimination.substitutions.is_empty() {
+    if !substitutions.is_empty() {
+        log_solve_lowering_start("structural.resolve_observation_substitutions");
+        let timer = stage_timer_start();
         for eq in &mut observation_dae.continuous.equations {
             eq.rhs = rumoca_phase_structural::eliminate::resolve_substitutions_in_expr(
                 &eq.rhs,
-                &elimination.substitutions,
-            );
+                substitutions,
+            )
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
         }
+        log_solve_lowering_done("structural.resolve_observation_substitutions", timer);
     }
+    log_solve_lowering_start("structural.visible_expressions_for_dae");
+    let timer = stage_timer_start();
     let mut visible_expressions = rumoca_phase_solve::visible_expressions_for_dae(&observation_dae)
         .map_err(rumoca_phase_solve::SolveModelLowerError::Lower)?;
-    if !elimination.substitutions.is_empty() {
+    log_solve_lowering_done("structural.visible_expressions_for_dae", timer);
+    if !substitutions.is_empty() {
+        log_solve_lowering_start("structural.resolve_visible_expression_substitutions");
+        let timer = stage_timer_start();
         for visible in &mut visible_expressions {
             visible.expr = rumoca_phase_structural::eliminate::resolve_substitutions_in_expr(
                 &visible.expr,
-                &elimination.substitutions,
-            );
+                substitutions,
+            )
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+        }
+        log_solve_lowering_done("structural.resolve_visible_expression_substitutions", timer);
+    }
+    Ok(visible_expressions)
+}
+
+fn metadata_attachment_lower_error(
+    err: rumoca_phase_dae::ToDaeError,
+) -> rumoca_phase_solve::SolveModelLowerError {
+    let reason = format!("DAE reference metadata attachment failed: {err}");
+    rumoca_phase_solve::SolveModelLowerError::Lower(lower_contract_error_from_optional_span(
+        reason,
+        err.source_span(),
+    ))
+}
+
+fn lower_contract_error_from_optional_span(
+    reason: String,
+    span: Option<rumoca_core::Span>,
+) -> rumoca_phase_solve::lower::LowerError {
+    match span {
+        Some(span) if !span.is_dummy() => {
+            rumoca_phase_solve::lower::LowerError::ContractViolation { reason, span }
+        }
+        Some(_) | None => {
+            rumoca_phase_solve::lower::LowerError::UnspannedContractViolation { reason }
         }
     }
-    Ok(StructurallyLoweredDae {
-        dae: lowered,
-        metadata_dae,
-        visible_expressions,
-    })
 }
 
 fn remove_duplicate_continuous_equations(dae: &mut dae::Dae) {
@@ -773,6 +963,13 @@ fn mark_constrained_dummy_states_in_metadata(
     }
 }
 
+fn equation_lhs_prefix(eq: &dae::Equation) -> String {
+    match eq.lhs.as_ref() {
+        Some(lhs) => format!("{} = ", lhs.as_str()),
+        None => String::new(),
+    }
+}
+
 /// Compact Modelica-ish rendering for `--trace` diagnostics only.
 pub(crate) fn debug_render_expr(expr: &rumoca_core::Expression) -> String {
     use rumoca_core::Expression as E;
@@ -823,7 +1020,7 @@ pub(crate) fn debug_render_expr(expr: &rumoca_core::Expression) -> String {
 
 #[cfg(test)]
 mod tests {
-    use rumoca_core::{BuiltinFunction, Expression, OpBinary, Span, Subscript, VarName};
+    use rumoca_core::{BuiltinFunction, Expression, OpBinary, SourceId, Span, Subscript, VarName};
 
     use super::*;
 
@@ -841,21 +1038,37 @@ mod tests {
     #[test]
     fn simulation_structural_lowering_reports_blt_singularity() {
         let mut dae = dae::Dae::new();
-        dae.variables
-            .algebraics
-            .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
-        dae.variables
-            .algebraics
-            .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        dae.variables.algebraics.insert(
+            VarName::new("a"),
+            dae::Variable::new(
+                VarName::new("a"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            VarName::new("b"),
+            dae::Variable::new(
+                VarName::new("b"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         dae.continuous.equations.push(dae::Equation {
             lhs: None,
             rhs: Expression::Binary {
                 op: OpBinary::Add,
                 lhs: Box::new(var("a")),
                 rhs: Box::new(var("b")),
-                span: Span::DUMMY,
+                span: fixture_span(),
             },
-            span: Span::DUMMY,
+            span: fixture_span(),
             origin: "singular test".to_string(),
             scalar_count: 1,
         });
@@ -874,6 +1087,49 @@ mod tests {
     }
 
     #[test]
+    fn metadata_attachment_lower_error_preserves_dae_source_span() {
+        let span = Span::from_offsets(SourceId(9), 21, 34);
+        let err = metadata_attachment_lower_error(
+            rumoca_phase_dae::ToDaeError::runtime_metadata_violation_at(
+                "missing reference metadata",
+                span,
+            ),
+        );
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            matches!(
+                err,
+                rumoca_phase_solve::SolveModelLowerError::Lower(
+                    rumoca_phase_solve::lower::LowerError::ContractViolation {
+                        span: actual,
+                        ..
+                    }
+                ) if actual == span
+            ),
+            "metadata attachment error should preserve the DAE error span"
+        );
+    }
+
+    #[test]
+    fn metadata_attachment_lower_error_keeps_unspanned_dae_error_unspanned() {
+        let err = metadata_attachment_lower_error(
+            rumoca_phase_dae::ToDaeError::runtime_metadata_violation("metadata-only corruption"),
+        );
+
+        assert_eq!(err.source_span(), None);
+        assert!(
+            matches!(
+                err,
+                rumoca_phase_solve::SolveModelLowerError::Lower(
+                    rumoca_phase_solve::lower::LowerError::UnspannedContractViolation { .. }
+                )
+            ),
+            "metadata-only error must not receive fabricated provenance"
+        );
+    }
+
+    #[test]
     fn simulation_structural_singularity_carries_unmatched_variable_span() {
         let span = Span::from_offsets(rumoca_core::SourceId(7), 100, 110);
         let mut dae = dae::Dae::new();
@@ -882,7 +1138,14 @@ mod tests {
                 VarName::new(name),
                 dae::Variable {
                     source_span: span,
-                    ..dae::Variable::new(VarName::new(name))
+                    ..dae::Variable::new(
+                        VarName::new(name),
+                        rumoca_core::Span::from_offsets(
+                            rumoca_core::SourceId::from_source_name(file!()),
+                            1,
+                            2,
+                        ),
+                    )
                 },
             );
         }
@@ -892,7 +1155,7 @@ mod tests {
             op: OpBinary::Add,
             lhs: Box::new(var("a")),
             rhs: Box::new(var("b")),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }));
 
         let mut dae = dae;
@@ -1038,20 +1301,35 @@ mod tests {
             VarName::new("A"),
             dae::Variable {
                 dims: vec![3, 3],
-                ..dae::Variable::new(VarName::new("A"))
+                ..dae::Variable::new(
+                    VarName::new("A"),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                )
             },
         );
         model.variables.algebraics.insert(
             VarName::new("b"),
             dae::Variable {
                 dims: vec![2],
-                ..dae::Variable::new(VarName::new("b"))
+                ..dae::Variable::new(
+                    VarName::new("b"),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                )
             },
         );
         let span = Span::from_offsets(rumoca_core::SourceId(4), 40, 45);
+        let rhs = sub(var("A").with_span(span), var("b").with_span(span));
         model.continuous.equations.push(dae::Equation {
             lhs: None,
-            rhs: sub(var("A"), var("b")),
+            rhs,
             span,
             origin: "shape mismatch".to_string(),
             scalar_count: 9,
@@ -1071,13 +1349,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn simulation_diagnostic_preserves_runtime_preparation_span() {
+        let span = Span::from_offsets(rumoca_core::SourceId(8), 12, 18);
+        let error = rumoca_eval_solve::EvalSolveError::Scalarization {
+            message: "invalid native map metadata".to_string(),
+            span: Some(span),
+        };
+        let diagnostic = SimulationDiagnosticError::from(error);
+
+        assert_eq!(diagnostic.diagnostic_code(), "simulation");
+        assert_eq!(diagnostic.source_span(), Some(span));
+        assert_eq!(
+            diagnostic.to_string(),
+            "Solve-IR scalarization failed: invalid native map metadata"
+        );
+    }
+
     fn symbolic_loop_dae() -> dae::Dae {
         let mut model = dae::Dae::new();
         for name in ["a", "b", "c"] {
-            model
-                .variables
-                .algebraics
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            model.variables.algebraics.insert(
+                VarName::new(name),
+                dae::Variable::new(
+                    VarName::new(name),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                ),
+            );
         }
         model.continuous.equations.push(eq(sub(var("a"), var("b"))));
         model.continuous.equations.push(eq(sub(var("b"), var("c"))));
@@ -1086,7 +1388,7 @@ mod tests {
             Expression::BuiltinCall {
                 function: BuiltinFunction::Sin,
                 args: vec![var("a")],
-                span: Span::DUMMY,
+                span: fixture_span(),
             },
         )));
         model
@@ -1094,14 +1396,28 @@ mod tests {
 
     fn derivative_alias_state_dae() -> dae::Dae {
         let mut model = dae::Dae::new();
-        model
-            .variables
-            .states
-            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
-        model
-            .variables
-            .algebraics
-            .insert(VarName::new("dx"), dae::Variable::new(VarName::new("dx")));
+        model.variables.states.insert(
+            VarName::new("x"),
+            dae::Variable::new(
+                VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        model.variables.algebraics.insert(
+            VarName::new("dx"),
+            dae::Variable::new(
+                VarName::new("dx"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         model.continuous.equations.push(eq(sub(var("x"), time())));
         model
             .continuous
@@ -1113,10 +1429,17 @@ mod tests {
     fn oscillator_dae() -> dae::Dae {
         let mut model = dae::Dae::new();
         for name in ["x", "v"] {
-            model
-                .variables
-                .states
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            model.variables.states.insert(
+                VarName::new(name),
+                dae::Variable::new(
+                    VarName::new(name),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                ),
+            );
         }
         model
             .continuous
@@ -1127,7 +1450,7 @@ mod tests {
             Expression::Unary {
                 op: rumoca_core::OpUnary::Minus,
                 rhs: Box::new(var("x")),
-                span: Span::DUMMY,
+                span: fixture_span(),
             },
         )));
         model
@@ -1136,15 +1459,29 @@ mod tests {
     fn exact_alias_state_dae() -> dae::Dae {
         let mut model = dae::Dae::new();
         for name in ["x", "y"] {
-            model
-                .variables
-                .states
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            model.variables.states.insert(
+                VarName::new(name),
+                dae::Variable::new(
+                    VarName::new(name),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                ),
+            );
         }
-        model
-            .variables
-            .algebraics
-            .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        model.variables.algebraics.insert(
+            VarName::new("a"),
+            dae::Variable::new(
+                VarName::new("a"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         model.continuous.equations.push(eq(sub(var("x"), var("a"))));
         model.continuous.equations.push(eq(sub(var("y"), var("a"))));
         model
@@ -1164,17 +1501,38 @@ mod tests {
             VarName::new("imc.is"),
             dae::Variable {
                 dims: vec![3],
-                ..dae::Variable::new(VarName::new("imc.is"))
+                ..dae::Variable::new(
+                    VarName::new("imc.is"),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                )
             },
         );
-        model
-            .variables
-            .states
-            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        model.variables.states.insert(
+            VarName::new("x"),
+            dae::Variable::new(
+                VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         for idx in 1..=3 {
             model.variables.algebraics.insert(
                 VarName::new(format!("imc.plug_sp.pin[{idx}].i")),
-                dae::Variable::new(VarName::new(format!("imc.plug_sp.pin[{idx}].i"))),
+                dae::Variable::new(
+                    VarName::new(format!("imc.plug_sp.pin[{idx}].i")),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                ),
             );
             model.continuous.equations.push(eq(sub(
                 var_idx("imc.is", idx),
@@ -1191,15 +1549,29 @@ mod tests {
     fn constrained_state_dae() -> dae::Dae {
         let mut model = dae::Dae::new();
         for name in ["x1", "x2", "x3"] {
-            model
-                .variables
-                .states
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            model.variables.states.insert(
+                VarName::new(name),
+                dae::Variable::new(
+                    VarName::new(name),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                ),
+            );
         }
-        model
-            .variables
-            .algebraics
-            .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        model.variables.algebraics.insert(
+            VarName::new("a"),
+            dae::Variable::new(
+                VarName::new("a"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         model
             .continuous
@@ -1230,7 +1602,14 @@ mod tests {
             VarName::new("Q"),
             dae::Variable {
                 dims: vec![4],
-                ..dae::Variable::new(VarName::new("Q"))
+                ..dae::Variable::new(
+                    VarName::new("Q"),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                )
             },
         );
         model.symbols.functions.insert(
@@ -1251,28 +1630,33 @@ mod tests {
     }
 
     fn orientation_constraint_function() -> rumoca_core::Function {
-        let mut function = rumoca_core::Function::new("orientationConstraint", Span::DUMMY);
+        let span = fixture_span();
+        let mut function = rumoca_core::Function::new("orientationConstraint", span);
         function
             .inputs
-            .push(rumoca_core::FunctionParam::new("Q", "Orientation"));
-        let mut output = rumoca_core::FunctionParam::new("residue", "Real");
+            .push(rumoca_core::FunctionParam::new("Q", "Orientation", span));
+        let mut output = rumoca_core::FunctionParam::new("residue", "Real", span);
         output.dims = vec![1];
         function.outputs.push(output);
         function.body.push(rumoca_core::Statement::Assignment {
             comp: rumoca_core::ComponentReference {
                 local: false,
-                span: Span::DUMMY,
+                span,
                 parts: vec![rumoca_core::ComponentRefPart {
                     ident: "residue".to_string(),
-                    span: Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 }],
                 def_id: None,
             },
             value: array(vec![sub(mul(var("Q"), var("Q")), int(1))]),
-            span: Span::DUMMY,
+            span,
         });
         function
+    }
+
+    fn fixture_span() -> Span {
+        Span::from_offsets(SourceId(10_001), 1, 2)
     }
 
     fn eq(rhs: Expression) -> dae::Equation {
@@ -1283,7 +1667,7 @@ mod tests {
         dae::Equation {
             lhs: None,
             rhs,
-            span: Span::DUMMY,
+            span: fixture_span(),
             origin: "test".to_string(),
             scalar_count,
         }
@@ -1294,7 +1678,7 @@ mod tests {
             op: OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -1303,7 +1687,7 @@ mod tests {
             op: OpBinary::Mul,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -1311,7 +1695,7 @@ mod tests {
         Expression::Unary {
             op: rumoca_core::OpUnary::Minus,
             rhs: Box::new(rhs),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -1319,7 +1703,7 @@ mod tests {
         Expression::Array {
             elements,
             is_matrix: false,
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -1328,17 +1712,18 @@ mod tests {
             name: reference(name),
             args,
             is_constructor: false,
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
     fn component_ref(name: &str) -> rumoca_core::ComponentReference {
+        let span = fixture_span();
         rumoca_core::ComponentReference {
             local: false,
-            span: Span::DUMMY,
+            span,
             parts: vec![rumoca_core::ComponentRefPart {
                 ident: name.to_string(),
-                span: Span::DUMMY,
+                span,
                 subs: Vec::new(),
             }],
             def_id: None,
@@ -1352,23 +1737,25 @@ mod tests {
     fn int(value: i64) -> Expression {
         Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
     fn var(name: &str) -> Expression {
+        let span = fixture_span();
         Expression::VarRef {
             name: reference(name),
             subscripts: Vec::new(),
-            span: Span::DUMMY,
+            span,
         }
     }
 
     fn var_idx(name: &str, idx: i64) -> Expression {
+        let span = fixture_span();
         Expression::VarRef {
             name: reference(name),
-            subscripts: vec![Subscript::generated_index(idx, Span::DUMMY)],
-            span: Span::DUMMY,
+            subscripts: vec![Subscript::generated_index(idx, span)],
+            span,
         }
     }
 
@@ -1380,14 +1767,14 @@ mod tests {
         Expression::BuiltinCall {
             function: BuiltinFunction::Der,
             args: vec![arg],
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
     fn real(value: f64) -> Expression {
         Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -1396,7 +1783,7 @@ mod tests {
             op: OpBinary::Div,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -1406,9 +1793,17 @@ mod tests {
         // and the probe must name it so a NaN/inf is one command away.
         let mut dae = dae::Dae::new();
         for name in ["x", "y"] {
-            dae.variables
-                .states
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            dae.variables.states.insert(
+                VarName::new(name),
+                dae::Variable::new(
+                    VarName::new(name),
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ),
+                ),
+            );
         }
         dae.continuous
             .equations

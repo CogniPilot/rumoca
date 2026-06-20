@@ -1,14 +1,169 @@
 use super::*;
 
 #[test]
+fn test_elimination_substitution_differentiates_scalar_alias_in_derivative_call() {
+    let mut dae = Dae::new();
+    let span = Span::from_offsets(rumoca_core::SourceId(17), 10, 42);
+    dae.variables
+        .states
+        .insert(VarName::new("w2"), test_dae_variable("w2"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("w1"), test_dae_variable("w1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("force"), test_dae_variable("force"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("ratio"), test_dae_variable("ratio"));
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: binary(sub_op(), der(var_ref("w2")), var_ref("force")),
+        span,
+        origin: "state derivative".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: binary(sub_op(), der(var_ref("w1")), var_ref("force")),
+        span,
+        origin: "alias derivative".to_string(),
+        scalar_count: 1,
+    });
+
+    let substitutions = [Substitution {
+        var_name: VarName::new("w1"),
+        var_ref: Some(reference("w1")),
+        expr: binary(rumoca_core::OpBinary::Mul, var_ref("ratio"), var_ref("w2")),
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: vec!["w1".to_string()],
+    }];
+
+    structural_ok(apply_elimination_substitutions_to_dae(
+        &mut dae,
+        &substitutions,
+    ));
+
+    let rewritten = &dae.continuous.equations[1].rhs;
+    assert!(
+        !expr_contains_der_of(rewritten, &VarName::new("w1")),
+        "eliminated alias derivative should not remain: {rewritten:?}"
+    );
+    assert!(
+        contains_exact_var_ref(rewritten, "ratio") && contains_exact_var_ref(rewritten, "force"),
+        "der(w1) should rewrite through d/dt(ratio*w2) and resolve der(w2): {rewritten:?}"
+    );
+}
+
+#[test]
+fn test_scalar_substitution_stamps_source_free_replacement_root() {
+    let owner_span =
+        Span::from_offsets(rumoca_core::SourceId::from_source_name("visible.mo"), 4, 9);
+    let expr = Expression::VarRef {
+        name: reference("x"),
+        subscripts: Vec::new(),
+        span: owner_span,
+    };
+    let replacement = Expression::Array {
+        elements: vec![Expression::Unary {
+            op: OpUnary::Minus,
+            rhs: Box::new(lit(1.0)),
+            span: Span::DUMMY,
+        }],
+        is_matrix: false,
+        span: Span::DUMMY,
+    };
+    let substitution = Substitution {
+        var_name: VarName::new("x"),
+        var_ref: Some(reference("x")),
+        expr: replacement,
+        var_dims: Vec::new(),
+        replacement_dims: vec![1],
+        env_keys: vec!["x".to_string()],
+    };
+
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &[substitution]));
+
+    assert_eq!(result.span(), Some(owner_span));
+}
+
+#[test]
+fn test_apply_substitutions_rejects_short_eliminated_flags_without_panic()
+-> Result<(), Box<dyn std::error::Error>> {
+    let span = Span::from_offsets(rumoca_core::SourceId(17), 50, 80);
+    let mut dae = Dae::new();
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: binary(sub_op(), var_ref("x"), real(1.0)),
+        span,
+        origin: "short flags regression".to_string(),
+        scalar_count: 1,
+    });
+    let substitutions = [test_substitution("x", real(1.0))];
+
+    match apply_substitutions_to_remaining_once(&mut dae, &[], &substitutions) {
+        Err(StructuralError::ContractViolation {
+            reason,
+            span: err_span,
+        }) => {
+            assert!(
+                reason.contains("eliminated equation flags have length 0"),
+                "unexpected reason: {reason}"
+            );
+            assert_eq!(err_span, span);
+            Ok(())
+        }
+        Err(other) => Err(Box::new(other)),
+        Ok(()) => Err(Box::new(std::io::Error::other(
+            "short eliminated-equation flags were accepted",
+        ))),
+    }
+}
+
+#[test]
+fn test_equation_analysis_expr_preserves_equation_span() -> Result<(), Box<dyn std::error::Error>> {
+    let span = Span::from_offsets(rumoca_core::SourceId(17), 90, 120);
+    let eq = dae::Equation {
+        lhs: Some(reference("x")),
+        rhs: real(1.0),
+        span,
+        origin: "analysis span regression".to_string(),
+        scalar_count: 1,
+    };
+
+    let analysis = equation_analysis_expr(&eq);
+
+    let Expression::Binary {
+        lhs,
+        span: analysis_span,
+        ..
+    } = analysis
+    else {
+        return Err(Box::new(std::io::Error::other(
+            "equation analysis did not produce a binary residual",
+        )));
+    };
+    assert_eq!(analysis_span, span);
+    let Expression::VarRef { span: lhs_span, .. } = *lhs else {
+        return Err(Box::new(std::io::Error::other(
+            "equation analysis lhs was not a variable reference",
+        )));
+    };
+    assert_eq!(lhs_span, span);
+    Ok(())
+}
+
+#[test]
 fn test_eliminate_trivial_keeps_runtime_partition_defined_output() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -50,13 +205,13 @@ fn test_eliminate_trivial_keeps_runtime_partition_defined_output() {
 fn test_eliminate_trivial_keeps_branch_local_analog_helper_unknown() {
     let mut dae = Dae::new();
 
-    let mut node = dae::Variable::new(VarName::new("node"));
+    let mut node = test_dae_variable("node");
     node.fixed = Some(true);
     node.start = Some(lit(0.0));
     dae.variables.algebraics.insert(VarName::new("node"), node);
     dae.variables
         .algebraics
-        .insert(VarName::new("vAK"), dae::Variable::new(VarName::new("vAK")));
+        .insert(VarName::new("vAK"), test_dae_variable("vAK"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -121,10 +276,10 @@ fn test_eliminate_trivial_keeps_lhs_homotopy_unknown() {
 
     dae.variables
         .algebraics
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_dae_variable("x"));
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: Some(VarName::new("z").into()),
@@ -163,10 +318,10 @@ fn test_eliminate_trivial_applies_substitutions_to_initial_equations() {
 
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_dae_variable("b"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: Some(VarName::new("a").into()),
@@ -207,11 +362,11 @@ fn test_eliminate_trivial_applies_substitutions_to_initial_equations() {
 fn test_eliminate_trivial_blt_keeps_fixed_alias_unknown_against_state() {
     let mut dae = Dae::new();
 
-    let mut state = dae::Variable::new(VarName::new("x"));
+    let mut state = test_dae_variable("x");
     state.start = Some(lit(0.0));
     dae.variables.states.insert(VarName::new("x"), state);
 
-    let mut fixed = dae::Variable::new(VarName::new("y"));
+    let mut fixed = test_dae_variable("y");
     fixed.fixed = Some(true);
     fixed.start = Some(lit(0.0));
     dae.variables.algebraics.insert(VarName::new("y"), fixed);
@@ -264,15 +419,15 @@ fn test_eliminate_trivial_blt_keeps_fixed_alias_unknown_against_state() {
 fn test_eliminate_trivial_direct_assignment_with_multiple_live_unknowns() {
     let mut dae = Dae::new();
 
-    let mut var_x = dae::Variable::new(VarName::new("x"));
+    let mut var_x = test_dae_variable("x");
     var_x.start = Some(lit(0.0));
     dae.variables.states.insert(VarName::new("x"), var_x);
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
     // Keep `a` coupled to dynamics so it is not trivially removable.
     dae.continuous.equations.push(dae::Equation {
@@ -327,10 +482,10 @@ fn test_eliminate_trivial_allows_output_if_assignment() {
 
     dae.variables
         .algebraics
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_dae_variable("x"));
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     // 0 = x - 1
     dae.continuous.equations.push(dae::Equation {
@@ -392,14 +547,14 @@ fn test_eliminate_trivial_allows_output_if_assignment() {
 #[test]
 fn test_eliminate_trivial_handles_singleton_array_alias_equation() {
     let mut dae = Dae::new();
-    let mut aux = dae::Variable::new(VarName::new("aux"));
+    let mut aux = test_dae_variable("aux");
     aux.dims = vec![1];
     dae.variables.algebraics.insert(VarName::new("aux"), aux);
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
-    let mut p = dae::Variable::new(VarName::new("p"));
+    let mut p = test_dae_variable("p");
     p.start = Some(lit(2.0));
     dae.variables.parameters.insert(VarName::new("p"), p);
 
@@ -464,7 +619,7 @@ fn test_eliminate_trivial_handles_singleton_array_alias_equation() {
 fn test_eliminate_trivial_derstate_kept() {
     let mut dae = Dae::new();
 
-    let mut var_x = dae::Variable::new(VarName::new("x"));
+    let mut var_x = test_dae_variable("x");
     var_x.start = Some(Expression::Literal {
         value: Literal::Real(1.0),
         span: rumoca_core::Span::DUMMY,
@@ -498,11 +653,11 @@ fn test_eliminate_trivial_derstate_kept() {
 fn test_eliminate_trivial_eliminates_array_alias_equations() {
     let mut dae = Dae::new();
 
-    let mut arr = dae::Variable::new(VarName::new("arr"));
+    let mut arr = test_dae_variable("arr");
     arr.dims = vec![3];
     dae.variables.algebraics.insert(VarName::new("arr"), arr);
 
-    let mut pin = dae::Variable::new(VarName::new("plug.pin.i"));
+    let mut pin = test_dae_variable("plug.pin.i");
     pin.dims = vec![3];
     dae.variables
         .algebraics
@@ -537,11 +692,11 @@ fn test_eliminate_trivial_eliminates_array_alias_equations() {
 fn test_eliminate_trivial_keeps_discrete_path_connection_array_alias() {
     let mut dae = Dae::new();
 
-    let mut arr = dae::Variable::new(VarName::new("arr"));
+    let mut arr = test_dae_variable("arr");
     arr.dims = vec![3];
     dae.variables.algebraics.insert(VarName::new("arr"), arr);
 
-    let mut pin = dae::Variable::new(VarName::new("plug.pin.i"));
+    let mut pin = test_dae_variable("plug.pin.i");
     pin.dims = vec![3];
     dae.variables
         .algebraics
@@ -582,13 +737,13 @@ fn test_eliminate_trivial_keeps_discrete_path_connection_array_alias() {
 fn test_eliminate_trivial_preserves_event_referenced_array_alias() {
     let mut dae = Dae::new();
 
-    let mut event_signal = dae::Variable::new(VarName::new("eventSignal"));
+    let mut event_signal = test_dae_variable("eventSignal");
     event_signal.dims = vec![2];
     dae.variables
         .algebraics
         .insert(VarName::new("eventSignal"), event_signal);
 
-    let mut source = dae::Variable::new(VarName::new("source"));
+    let mut source = test_dae_variable("source");
     source.dims = vec![2];
     dae.variables
         .algebraics
@@ -635,13 +790,13 @@ fn test_eliminate_trivial_preserves_event_referenced_array_alias() {
 fn test_eliminate_trivial_eliminates_output_array_alias_equations() {
     let mut dae = Dae::new();
 
-    let mut source = dae::Variable::new(VarName::new("source"));
+    let mut source = test_dae_variable("source");
     source.dims = vec![3];
     dae.variables
         .algebraics
         .insert(VarName::new("source"), source);
 
-    let mut out = dae::Variable::new(VarName::new("out"));
+    let mut out = test_dae_variable("out");
     out.dims = vec![3];
     dae.variables.outputs.insert(VarName::new("out"), out);
 
@@ -808,13 +963,17 @@ fn test_eliminate_trivial_preserves_indexed_flow_reference() {
     let Expression::VarRef {
         name: rhs_name,
         subscripts,
-        span: rumoca_core::Span::DUMMY,
+        span,
     } = rhs.as_ref()
     else {
         panic!("flow rhs should remain a VarRef");
     };
     assert_eq!(rhs_name.as_str(), "sineVoltage.i");
     assert_eq!(subscripts.len(), 1);
+    assert!(
+        !span.is_dummy(),
+        "flow rhs substitution should preserve source provenance"
+    );
 }
 
 #[test]
@@ -910,13 +1069,13 @@ fn test_eliminate_trivial_skips_substitution_to_unsliced_multiscalar_solution() 
 
     dae.variables.algebraics.insert(
         VarName::new("source.pin[1].i"),
-        dae::Variable::new(VarName::new("source.pin[1].i")),
+        test_dae_variable("source.pin[1].i"),
     );
     dae.variables.algebraics.insert(
         VarName::new("branch.pin.i"),
-        dae::Variable::new(VarName::new("branch.pin.i")),
+        test_dae_variable("branch.pin.i"),
     );
-    let mut source_pin = dae::Variable::new(VarName::new("source.pin.i"));
+    let mut source_pin = test_dae_variable("source.pin.i");
     source_pin.dims = vec![3];
     dae.variables
         .algebraics
@@ -961,13 +1120,17 @@ fn test_eliminate_trivial_skips_substitution_to_unsliced_multiscalar_solution() 
     let Expression::VarRef {
         name: rhs_name,
         subscripts,
-        span: rumoca_core::Span::DUMMY,
+        span,
     } = rhs.as_ref()
     else {
         panic!("flow rhs should remain a VarRef");
     };
     assert_eq!(rhs_name.as_str(), "source.pin[1].i");
     assert!(subscripts.is_empty());
+    assert!(
+        !span.is_dummy(),
+        "flow rhs substitution should preserve source provenance"
+    );
 }
 
 #[test]
@@ -989,7 +1152,7 @@ fn test_eliminate_trivial_rewrites_eliminated_indexed_record_field_aggregate() {
         })
         .collect::<Vec<_>>();
 
-    let rewritten = apply_substitutions_to_expr(&expr, &substitutions);
+    let rewritten = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
     assert!(
         !contains_exact_var_ref(&rewritten, "pin.LossPower"),
         "aggregate record-field reference should be rewritten after scalar substitutions"
@@ -1024,7 +1187,7 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
         })
         .collect::<Vec<_>>();
 
-    let rewritten = apply_substitutions_to_expr(&expr, &substitutions);
+    let rewritten = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
     assert!(
         !contains_exact_var_ref(&rewritten, "z"),
         "parent Complex reference should be rewritten when eliminated fields define the full value"
@@ -1076,7 +1239,10 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
         replacement_dims: Vec::new(),
         env_keys: vec!["alias".to_string()],
     }];
-    apply_elimination_substitutions_to_dae(&mut dae, &substitutions);
+    structural_ok(apply_elimination_substitutions_to_dae(
+        &mut dae,
+        &substitutions,
+    ));
 
     assert!(contains_exact_var_ref(
         &dae.discrete.real_updates[0].rhs,
@@ -1115,10 +1281,10 @@ fn test_eliminate_structurally_singular_boundary_resolution() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_dae_variable("b"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,

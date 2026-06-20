@@ -199,13 +199,7 @@ fn singular_from_matching(
             .iter()
             .enumerate()
             .filter(|(_, m)| m.is_none())
-            .map(|(i, _)| {
-                incidence
-                    .unknown_spans
-                    .get(i)
-                    .copied()
-                    .unwrap_or(rumoca_core::Span::DUMMY)
-            })
+            .map(|(i, _)| incidence.unknown_spans.get(i).copied().flatten())
             .collect(),
     }
 }
@@ -449,9 +443,17 @@ mod tests {
         let mut dae = dae::Dae::new();
 
         let x_name = rumoca_core::VarName::from("x");
-        dae.variables
-            .states
-            .insert(x_name.clone(), dae::Variable::new(x_name.clone()));
+        dae.variables.states.insert(
+            x_name.clone(),
+            dae::Variable::new(
+                x_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         let span = Span::from_offsets(SourceId(0), 0, 10);
         let der_x = rumoca_core::Expression::BuiltinCall {
@@ -494,12 +496,28 @@ mod tests {
 
         let y_name = rumoca_core::VarName::from("y");
         let z_name = rumoca_core::VarName::from("z");
-        dae.variables
-            .algebraics
-            .insert(y_name.clone(), dae::Variable::new(y_name.clone()));
-        dae.variables
-            .algebraics
-            .insert(z_name.clone(), dae::Variable::new(z_name.clone()));
+        dae.variables.algebraics.insert(
+            y_name.clone(),
+            dae::Variable::new(
+                y_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            z_name.clone(),
+            dae::Variable::new(
+                z_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         let span = Span::from_offsets(SourceId(0), 0, 10);
 
@@ -571,12 +589,28 @@ mod tests {
         let mut dae = dae::Dae::new();
         let y_name = rumoca_core::VarName::from("y");
         let z_name = rumoca_core::VarName::from("z");
-        dae.variables
-            .algebraics
-            .insert(y_name.clone(), dae::Variable::new(y_name.clone()));
-        dae.variables
-            .algebraics
-            .insert(z_name.clone(), dae::Variable::new(z_name.clone()));
+        dae.variables.algebraics.insert(
+            y_name.clone(),
+            dae::Variable::new(
+                y_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            z_name.clone(),
+            dae::Variable::new(
+                z_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
         let span = Span::from_offsets(SourceId(0), 0, 10);
         let y_ref = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::from_var_name(y_name),
@@ -650,12 +684,28 @@ mod tests {
 
         let y_name = rumoca_core::VarName::from("y");
         let z_name = rumoca_core::VarName::from("z");
-        dae.variables
-            .algebraics
-            .insert(y_name.clone(), dae::Variable::new(y_name.clone()));
-        dae.variables
-            .algebraics
-            .insert(z_name.clone(), dae::Variable::new(z_name.clone()));
+        dae.variables.algebraics.insert(
+            y_name.clone(),
+            dae::Variable::new(
+                y_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            z_name.clone(),
+            dae::Variable::new(
+                z_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         let span = Span::from_offsets(SourceId(0), 0, 10);
 
@@ -711,9 +761,17 @@ mod tests {
         let mut dae = dae::Dae::new();
 
         let x_name = rumoca_core::VarName::from("x");
-        dae.variables
-            .states
-            .insert(x_name.clone(), dae::Variable::new(x_name.clone()));
+        dae.variables.states.insert(
+            x_name.clone(),
+            dae::Variable::new(
+                x_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         let span = Span::from_offsets(SourceId(0), 0, 10);
         let der_x = rumoca_core::Expression::BuiltinCall {
@@ -752,12 +810,28 @@ mod tests {
 
         let y_name = rumoca_core::VarName::from("y");
         let z_name = rumoca_core::VarName::from("z");
-        dae.variables
-            .algebraics
-            .insert(y_name.clone(), dae::Variable::new(y_name.clone()));
-        dae.variables
-            .algebraics
-            .insert(z_name.clone(), dae::Variable::new(z_name.clone()));
+        dae.variables.algebraics.insert(
+            y_name.clone(),
+            dae::Variable::new(
+                y_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.variables.algebraics.insert(
+            z_name.clone(),
+            dae::Variable::new(
+                z_name.clone(),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         let span = Span::from_offsets(SourceId(0), 0, 10);
         let y_ref = rumoca_core::Expression::VarRef {

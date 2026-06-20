@@ -1,7 +1,12 @@
-use rumoca_core::{ExpressionRewriter, Literal, OpUnary};
-use rumoca_ir_dae::DaeExpressionRewriter;
+use std::collections::HashMap;
 
-use super::{Dae, Expression, OpBinary, Substitution, apply_substitutions_to_expr};
+use rumoca_core::{Literal, OpUnary};
+
+use super::{
+    Dae, Expression, OpBinary, Substitution, VarName, apply_substitutions_to_expr,
+    apply_substitutions_to_expr_with_derivatives,
+};
+use crate::StructuralError;
 
 pub(super) fn equation_analysis_expr(eq: &rumoca_ir_dae::Equation) -> Expression {
     let Some(lhs) = eq.lhs.as_ref() else {
@@ -11,9 +16,10 @@ pub(super) fn equation_analysis_expr(eq: &rumoca_ir_dae::Equation) -> Expression
         Expression::VarRef {
             name: lhs.clone(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: eq.span,
         },
         eq.rhs.clone(),
+        eq.span,
     )
 }
 
@@ -21,18 +27,30 @@ pub(super) fn apply_substitutions_to_remaining_once(
     dae: &mut Dae,
     eliminated_eq_flags: &[bool],
     substitutions: &[Substitution],
-) {
+) -> Result<(), StructuralError> {
     if substitutions.is_empty() {
-        return;
+        return Ok(());
     }
+    let derivative_source = dae.clone();
+    let mut derivative_replacements = DerivativeReplacementCache::new(&derivative_source);
     for (i, eq) in dae.continuous.equations.iter_mut().enumerate() {
-        if *eliminated_eq_flags
-            .get(i)
-            .expect("eliminated equation flags must cover every continuous equation")
-        {
+        let eliminated = eliminated_eq_flags.get(i).ok_or_else(|| {
+            StructuralError::ContractViolation {
+                reason: format!(
+                    "eliminated equation flags have length {} but continuous equation {i} exists",
+                    eliminated_eq_flags.len()
+                ),
+                span: eq.span,
+            }
+        })?;
+        if *eliminated {
             continue;
         }
-        let rhs = apply_substitutions_in_order(&eq.rhs, substitutions);
+        let rhs = apply_substitutions_in_order_with_derivatives(
+            &eq.rhs,
+            substitutions,
+            &mut derivative_replacements,
+        )?;
         let Some(lhs) = eq.lhs.as_ref() else {
             eq.rhs = rhs;
             continue;
@@ -40,31 +58,55 @@ pub(super) fn apply_substitutions_to_remaining_once(
         let lhs_expr = Expression::VarRef {
             name: lhs.clone(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: eq.span,
         };
-        let substituted_lhs = apply_substitutions_in_order(&lhs_expr, substitutions);
+        let substituted_lhs = apply_substitutions_in_order_with_derivatives(
+            &lhs_expr,
+            substitutions,
+            &mut derivative_replacements,
+        )?;
         if substituted_lhs == lhs_expr {
             eq.rhs = rhs;
         } else {
             eq.lhs = None;
-            eq.rhs = subtraction(substituted_lhs, rhs);
+            eq.rhs = subtraction(substituted_lhs, rhs, eq.span);
         }
     }
+    Ok(())
 }
 
-pub(super) fn apply_substitutions_to_dae_partitions(dae: &mut Dae, substitutions: &[Substitution]) {
+pub(super) fn apply_substitutions_to_dae_partitions(
+    dae: &mut Dae,
+    substitutions: &[Substitution],
+) -> Result<(), StructuralError> {
     if substitutions.is_empty() {
-        return;
+        return Ok(());
     }
-    SubstitutionDaeRewriter { substitutions }.rewrite_dae(dae);
+    let derivative_source = dae.clone();
+    SubstitutionDaeRewriter {
+        substitutions,
+        derivative_replacements: DerivativeReplacementCache::new(&derivative_source),
+    }
+    .rewrite_dae(dae)
 }
 
 pub(super) fn apply_substitutions_in_order(
     expr: &Expression,
     substitutions: &[Substitution],
-) -> Expression {
-    let substituted = apply_substitutions_to_expr(expr, substitutions);
-    simplify_arithmetic_identities(substituted)
+) -> Result<Expression, StructuralError> {
+    let substituted = apply_substitutions_to_expr(expr, substitutions)?;
+    Ok(simplify_arithmetic_identities(substituted))
+}
+
+fn apply_substitutions_in_order_with_derivatives(
+    expr: &Expression,
+    substitutions: &[Substitution],
+    derivative_replacements: &mut DerivativeReplacementCache<'_>,
+) -> Result<Expression, StructuralError> {
+    let substituted = apply_substitutions_to_expr_with_derivatives(expr, substitutions, |sub| {
+        derivative_replacements.replacement_for(sub)
+    })?;
+    Ok(simplify_arithmetic_identities(substituted))
 }
 
 /// Fold exact arithmetic identities introduced by substitution.
@@ -199,47 +241,146 @@ fn zero_literal(span: rumoca_core::Span) -> Expression {
 fn apply_substitutions_to_equation(
     eq: &mut rumoca_ir_dae::Equation,
     substitutions: &[Substitution],
-) {
-    let rhs = apply_substitutions_in_order(&eq.rhs, substitutions);
+    derivative_replacements: &mut DerivativeReplacementCache<'_>,
+) -> Result<(), StructuralError> {
+    let rhs = apply_substitutions_in_order_with_derivatives(
+        &eq.rhs,
+        substitutions,
+        derivative_replacements,
+    )?;
     let Some(lhs) = eq.lhs.as_ref() else {
         eq.rhs = rhs;
-        return;
+        return Ok(());
     };
     let lhs_expr = Expression::VarRef {
         name: lhs.clone(),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span: eq.span,
     };
-    let substituted_lhs = apply_substitutions_in_order(&lhs_expr, substitutions);
+    let substituted_lhs = apply_substitutions_in_order_with_derivatives(
+        &lhs_expr,
+        substitutions,
+        derivative_replacements,
+    )?;
     if substituted_lhs == lhs_expr {
         eq.rhs = rhs;
     } else {
         eq.lhs = None;
-        eq.rhs = subtraction(substituted_lhs, rhs);
+        eq.rhs = subtraction(substituted_lhs, rhs, eq.span);
     }
+    Ok(())
 }
 
 struct SubstitutionDaeRewriter<'a> {
     substitutions: &'a [Substitution],
+    derivative_replacements: DerivativeReplacementCache<'a>,
 }
 
-impl ExpressionRewriter for SubstitutionDaeRewriter<'_> {
-    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-        apply_substitutions_in_order(expr, self.substitutions)
+impl SubstitutionDaeRewriter<'_> {
+    fn rewrite_dae(&mut self, dae: &mut Dae) -> Result<(), StructuralError> {
+        self.rewrite_equations(&mut dae.continuous.equations)?;
+        self.rewrite_equations(&mut dae.initialization.equations)?;
+        self.rewrite_equations(&mut dae.discrete.real_updates)?;
+        self.rewrite_equations(&mut dae.discrete.valued_updates)?;
+        self.rewrite_equations(&mut dae.conditions.equations)?;
+        self.rewrite_expression_slots(&mut dae.conditions.relations)?;
+        self.rewrite_expression_slots(&mut dae.events.synthetic_root_conditions)?;
+        self.rewrite_event_actions(&mut dae.events.event_actions)?;
+        self.rewrite_expression_slots(&mut dae.clocks.constructor_exprs)?;
+        self.rewrite_expression_slots(&mut dae.clocks.triggered_conditions)?;
+        Ok(())
+    }
+
+    fn rewrite_equations(
+        &mut self,
+        equations: &mut [rumoca_ir_dae::Equation],
+    ) -> Result<(), StructuralError> {
+        for equation in equations {
+            self.rewrite_equation(equation)?;
+        }
+        Ok(())
+    }
+
+    fn rewrite_equation(
+        &mut self,
+        equation: &mut rumoca_ir_dae::Equation,
+    ) -> Result<(), StructuralError> {
+        apply_substitutions_to_equation(
+            equation,
+            self.substitutions,
+            &mut self.derivative_replacements,
+        )
+    }
+
+    fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, StructuralError> {
+        apply_substitutions_in_order_with_derivatives(
+            expr,
+            self.substitutions,
+            &mut self.derivative_replacements,
+        )
+    }
+
+    fn rewrite_expression_slots(
+        &mut self,
+        expressions: &mut [Expression],
+    ) -> Result<(), StructuralError> {
+        for expression in expressions {
+            *expression = self.rewrite_expression(expression)?;
+        }
+        Ok(())
+    }
+
+    fn rewrite_event_actions(
+        &mut self,
+        actions: &mut [rumoca_ir_dae::DaeEventAction],
+    ) -> Result<(), StructuralError> {
+        for action in actions {
+            action.condition = self.rewrite_expression(&action.condition)?;
+        }
+        Ok(())
     }
 }
 
-impl DaeExpressionRewriter for SubstitutionDaeRewriter<'_> {
-    fn rewrite_equation(&mut self, equation: &mut rumoca_ir_dae::Equation) {
-        apply_substitutions_to_equation(equation, self.substitutions);
+struct DerivativeReplacementCache<'a> {
+    dae: &'a Dae,
+    replacements: HashMap<VarName, Option<Expression>>,
+}
+
+impl<'a> DerivativeReplacementCache<'a> {
+    fn new(dae: &'a Dae) -> Self {
+        Self {
+            dae,
+            replacements: HashMap::new(),
+        }
+    }
+
+    fn replacement_for(
+        &mut self,
+        substitution: &Substitution,
+    ) -> Result<Option<Expression>, StructuralError> {
+        if !substitution.var_dims.is_empty() {
+            return Ok(None);
+        }
+        if !self.replacements.contains_key(&substitution.var_name) {
+            let derivative = crate::dae_prepare::symbolic_time_derivative_for_expr(
+                self.dae,
+                &substitution.expr,
+            )?;
+            self.replacements
+                .insert(substitution.var_name.clone(), derivative);
+        }
+        Ok(self
+            .replacements
+            .get(&substitution.var_name)
+            .and_then(Clone::clone))
     }
 }
 
-fn subtraction(lhs: Expression, rhs: Expression) -> Expression {
+fn subtraction(lhs: Expression, rhs: Expression, span: rumoca_core::Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }

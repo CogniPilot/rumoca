@@ -126,21 +126,21 @@ impl OdeModel {
             implicit_rhs: PreparedComputeBlock::new_with_label(
                 &model.problem.continuous.implicit_rhs,
                 "ode_implicit_rhs",
-            ),
+            )?,
             implicit_scalar_rhs: PreparedScalarProgramBlock::new(
-                solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs),
-            ),
+                solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs)?,
+            )?,
             initial_residual: PreparedScalarProgramBlock::new(
                 model.problem.initialization.residual.clone(),
-            ),
+            )?,
             initial_targets: model.problem.initialization.row_targets.clone(),
             implicit_jacobian_v: PreparedComputeBlock::new_with_label(
                 &model.artifacts.continuous.implicit_jacobian_v,
                 "ode_implicit_jacobian_v",
-            ),
+            )?,
             root_conditions: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
-            ),
+            )?,
             implicit_targets: model.problem.continuous.implicit_row_targets.clone(),
             algebraic_projection_plan: model.problem.continuous.algebraic_projection_plan.clone(),
             solver_names: model.problem.solve_layout.solver_maps.names.clone(),
@@ -238,7 +238,7 @@ impl AlgebraicProjectionModel for OdeModel {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         OdeModel::eval_residual(self, y, p, t, out)
-            .map_err(|err| RuntimeSolveError::SolveIr(err.to_string()))
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
     fn eval_initial_residual(
@@ -249,7 +249,7 @@ impl AlgebraicProjectionModel for OdeModel {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         OdeModel::eval_initial_residual(self, y, p, t, out)
-            .map_err(|err| RuntimeSolveError::SolveIr(err.to_string()))
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
     fn eval_jacobian_v(
@@ -261,7 +261,7 @@ impl AlgebraicProjectionModel for OdeModel {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         OdeModel::eval_jacobian_v(self, y, p, t, v, out)
-            .map_err(|err| RuntimeSolveError::SolveIr(err.to_string()))
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
     fn eval_implicit_target_value(
@@ -281,7 +281,7 @@ impl AlgebraicProjectionModel for OdeModel {
                 t,
                 self.row_eval_context(None),
             )
-            .map_err(|err| RuntimeSolveError::SolveIr(err.to_string()))
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
     fn initial_residual_len(&self) -> usize {

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 /// Evaluate all parameter/state/constant start expressions to typed literals
 /// where possible. Modifies the DAE in place.
-pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
+pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeError> {
     // Phase 1: build a name→value map from constants, enum ordinals, and
     // parameter start expressions (fixed-point iteration).
     let mut values: HashMap<String, ConstValue> = HashMap::new();
@@ -73,7 +73,11 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
 
     // Phase 2: rewrite start expressions to literals where we found values.
     // Also clear self-referencing defaults (start = VarRef(self_name)).
+    let mut rewrite_error = Ok(());
     let rewrite = |var: &mut Variable, is_parameter: bool| {
+        if rewrite_error.is_err() {
+            return;
+        }
         if let Some(ref start) = var.start {
             // Check for self-reference: start = VarRef(own_name)
             if let Expression::VarRef {
@@ -115,23 +119,32 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
             {
                 return;
             }
-            if let Some(val) = values.get(var.name.as_str()).cloned() {
-                let mut refs: Vec<VarName> = Vec::new();
-                start.collect_var_refs(&mut refs);
-                consumed_params.extend(
-                    refs.iter()
-                        .map(|name| name.as_str().to_string())
-                        .filter(|name| param_names.contains(name)),
-                );
-                var.start = Some(Expression::Literal {
-                    value: val.into_literal(),
-                    span: rumoca_core::Span::DUMMY,
-                });
-            }
+            let Some(val) = values.get(var.name.as_str()).cloned() else {
+                return;
+            };
+            let mut refs: Vec<VarName> = Vec::new();
+            start.collect_var_refs(&mut refs);
+            consumed_params.extend(
+                refs.iter()
+                    .map(|name| name.as_str().to_string())
+                    .filter(|name| param_names.contains(name)),
+            );
+            let span = match folded_start_span(var, start) {
+                Ok(span) => span,
+                Err(err) => {
+                    rewrite_error = Err(err);
+                    return;
+                }
+            };
+            var.start = Some(Expression::Literal {
+                value: val.into_literal(),
+                span,
+            });
         }
     };
 
     StartRewriter { rewrite }.visit_variables_mut(&mut dae.variables);
+    rewrite_error?;
 
     // Evaluated-parameter lock (MLS 3.7 §4.5.2): parameters whose values
     // were folded into literals above must reject post-translation overrides.
@@ -140,6 +153,19 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
             var.is_tunable = false;
         }
     }
+    Ok(())
+}
+
+fn folded_start_span(var: &Variable, start: &Expression) -> Result<Span, ToDaeError> {
+    var.start_attribute_span()
+        .or_else(|| start.span())
+        .filter(|span| !span.is_dummy())
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "folded start literal for `{}` is missing source provenance",
+                var.name.as_str()
+            ))
+        })
 }
 
 /// True when the expression contains a String literal or references a name
@@ -429,21 +455,21 @@ fn topo_sort_by_eq_deps(
         return Ok(map.clone());
     }
 
-    let name_list: Vec<String> = map.keys().map(|k| k.as_str().to_string()).collect();
+    let entries: Vec<_> = map.iter().collect();
+    let name_list: Vec<String> = entries
+        .iter()
+        .map(|(name, _)| name.as_str().to_string())
+        .collect();
     let name_set: HashSet<&str> = name_list.iter().map(|s| s.as_str()).collect();
 
     // Build adjacency
     let mut deps_idx: Vec<HashSet<usize>> = Vec::with_capacity(map.len());
-    for name in &name_list {
+    for (idx, name) in name_list.iter().enumerate() {
         let dep_names = eq_deps.get(name).ok_or_else(|| {
-            let span = map
-                .get(&VarName::new(name))
-                .map(|var| var.source_span)
-                .unwrap_or(Span::DUMMY);
-            ToDaeError::RuntimeContractViolation {
-                detail: format!("start-value dependency set missing for `{name}`"),
-                span: rumoca_core::span_to_source_span(span),
-            }
+            ToDaeError::runtime_contract_violation_at(
+                format!("start-value dependency set missing for `{name}`"),
+                entries[idx].1.source_span,
+            )
         })?;
         let dep_indices: HashSet<usize> = dep_names
             .iter()
@@ -516,37 +542,44 @@ mod tests {
     use super::*;
     use rumoca_core::{BuiltinFunction, Literal, OpBinary};
 
+    fn test_span(start: usize, end: usize) -> Span {
+        Span::from_offsets(rumoca_core::SourceId(11), start, end)
+    }
+
     fn var(name: &str) -> Expression {
         Expression::VarRef {
             name: VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(1, 2),
         }
     }
 
     fn real(value: f64) -> Expression {
         Expression::Literal {
             value: Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(3, 4),
         }
     }
 
     fn integer(value: i64) -> Expression {
         Expression::Literal {
             value: Literal::Integer(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(5, 6),
         }
     }
 
     fn string(value: &str) -> Expression {
         Expression::Literal {
             value: Literal::String(value.to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(7, 8),
         }
     }
 
     fn parameter(name: &str, start: Expression) -> Variable {
-        let mut var = Variable::new(VarName::new(name));
+        let mut var = Variable::new(
+            VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         var.start = Some(start);
         var.is_tunable = false;
         var
@@ -576,7 +609,17 @@ mod tests {
     #[test]
     fn reorder_by_index_order_reports_invalid_topological_index() {
         let mut variables = indexmap::IndexMap::new();
-        variables.insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        variables.insert(
+            VarName::new("x"),
+            Variable::new(
+                VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
 
         let err = reorder_by_index_order(&variables, &[1]).expect_err("invalid index");
 
@@ -600,7 +643,7 @@ mod tests {
                     name: VarName::new("Modelica.Utilities.Strings.substring").into(),
                     args: vec![var("transformer1.VectorGroup"), integer(1), integer(1)],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(9, 10),
                 },
             ),
         );
@@ -621,23 +664,24 @@ mod tests {
                                 op: OpBinary::Eq,
                                 lhs: Box::new(var("transformerData1.C1")),
                                 rhs: Box::new(string("D")),
-                                span: rumoca_core::Span::DUMMY,
+                                span: test_span(11, 12),
                             },
                             integer(1),
                         )],
                         else_branch: Box::new(Expression::BuiltinCall {
                             function: BuiltinFunction::Sqrt,
                             args: vec![integer(3)],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(13, 14),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(15, 16),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(17, 18),
                 },
             ),
         );
 
-        fold_start_values_to_literals(&mut dae);
+        fold_start_values_to_literals(&mut dae)
+            .unwrap_or_else(|err| panic!("start folding should succeed: {err}"));
 
         let c1 = &dae.variables.parameters[&VarName::new("transformerData1.C1")];
         assert!(matches!(
@@ -675,12 +719,13 @@ mod tests {
                     op: OpBinary::Mul,
                     lhs: Box::new(var("Isp")),
                     rhs: Box::new(var("g0")),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(19, 20),
                 },
             ),
         );
 
-        fold_start_values_to_literals(&mut dae);
+        fold_start_values_to_literals(&mut dae)
+            .unwrap_or_else(|err| panic!("start folding should succeed: {err}"));
 
         // A runtime override of `Isp` must propagate to `ve`, so the computed
         // start keeps its expression instead of folding to 2943.0.
@@ -690,5 +735,92 @@ mod tests {
             "expected preserved expression start for ve, got {:?}",
             ve.start
         );
+    }
+
+    #[test]
+    fn folded_start_literal_preserves_start_attribute_span() {
+        let mut dae = Dae::new();
+        let span = test_span(10, 20);
+        let mut parameter = parameter(
+            "ratio",
+            Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(real(2.0)),
+                rhs: Box::new(real(3.0)),
+                span: test_span(1, 8),
+            },
+        );
+        parameter.start_span = Some(span);
+        dae.variables
+            .parameters
+            .insert(VarName::new("ratio"), parameter);
+
+        fold_start_values_to_literals(&mut dae)
+            .unwrap_or_else(|err| panic!("start folding should succeed: {err}"));
+
+        assert_eq!(
+            dae.variables.parameters[&VarName::new("ratio")]
+                .start
+                .as_ref()
+                .and_then(Expression::span),
+            Some(span)
+        );
+    }
+
+    #[test]
+    fn folded_start_literal_preserves_expression_span_without_attribute_span() {
+        let mut dae = Dae::new();
+        let span = test_span(30, 40);
+        dae.variables.parameters.insert(
+            VarName::new("ratio"),
+            parameter(
+                "ratio",
+                Expression::Binary {
+                    op: OpBinary::Add,
+                    lhs: Box::new(real(2.0)),
+                    rhs: Box::new(real(3.0)),
+                    span,
+                },
+            ),
+        );
+
+        fold_start_values_to_literals(&mut dae)
+            .unwrap_or_else(|err| panic!("start folding should succeed: {err}"));
+
+        assert_eq!(
+            dae.variables.parameters[&VarName::new("ratio")]
+                .start
+                .as_ref()
+                .and_then(Expression::span),
+            Some(span)
+        );
+    }
+
+    #[test]
+    fn folded_start_literal_rejects_missing_provenance() {
+        let mut dae = Dae::new();
+        dae.variables.parameters.insert(
+            VarName::new("ratio"),
+            parameter(
+                "ratio",
+                Expression::Binary {
+                    op: OpBinary::Add,
+                    lhs: Box::new(Expression::Literal {
+                        value: Literal::Real(2.0),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Real(3.0),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ),
+        );
+
+        let err = fold_start_values_to_literals(&mut dae)
+            .expect_err("unspanned folded start should fail");
+
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
     }
 }

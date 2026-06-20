@@ -9,7 +9,7 @@ use super::render_expr::{
     get_binop_string, get_field, get_unop_string, is_exp_op, is_mul_elem_op, is_variant,
     render_args, render_expression,
 };
-use super::{ExprConfig, IfStyle, RenderResult};
+use super::{ExprConfig, IfStyle, RenderResult, render_vec_with_capacity};
 use crate::errors::render_err;
 use minijinja::Value;
 
@@ -241,7 +241,7 @@ fn try_extract_array_elements(
         && let Ok(elements) = get_field(&array, "elements")
         && let Some(len) = elements.len()
     {
-        let mut strs = Vec::with_capacity(len);
+        let mut strs = render_vec_with_capacity(len, "array element render count")?;
         for i in 0..len {
             if let Ok(elem) = elements.get_item(&Value::from(i)) {
                 // Try DAE IR renderer first, fall back to AST renderer

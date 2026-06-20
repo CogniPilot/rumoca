@@ -5,14 +5,14 @@
 //! zero-size placeholder variable for every dangling reference so reductions
 //! lower to their identity values instead of failing as unresolved.
 
-use crate::Context;
+use crate::{Context, FlattenError};
 use rumoca_core::ExpressionVisitor;
 use rumoca_ir_flat as flat;
 
 pub(crate) fn materialize_referenced_zero_sized_array_variables(
     flat: &mut flat::Model,
     ctx: &Context,
-) {
+) -> Result<(), FlattenError> {
     let mut collector = MissingZeroSizedArrayRefCollector {
         flat,
         ctx,
@@ -28,20 +28,28 @@ pub(crate) fn materialize_referenced_zero_sized_array_variables(
         if flat.variables.contains_key(&var_name) {
             continue;
         }
+        let source_span = name.span().ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "zero-sized array reference `{}` is missing source provenance",
+                name.as_str()
+            ))
+        })?;
         let variable = flat::Variable {
             name: var_name.clone(),
             component_ref: name.component_ref().cloned(),
+            source_span,
             dims,
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
             is_protected: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(source_span)
         };
         flat.variable_type_names
             .entry(var_name.clone())
             .or_insert_with(|| "Real".to_string());
         flat.add_variable(var_name, variable);
     }
+    Ok(())
 }
 
 struct MissingZeroSizedArrayRefCollector<'a> {

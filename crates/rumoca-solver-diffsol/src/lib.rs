@@ -79,7 +79,7 @@ pub fn build_simulation(
     let state = if model.state_scalar_count() == 0 {
         tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
         PreparedSimulationState::NoState
-    } else if opts.diffsol_method == DiffsolMethod::Bdf && can_use_state_only_bdf(model) {
+    } else if opts.diffsol_method == DiffsolMethod::Bdf && can_use_state_only_bdf(model)? {
         // SDIRK tableaus are wired only on the general/implicit path, so a
         // non-BDF request routes through `General` even when the model is
         // state-only eligible.
@@ -90,7 +90,7 @@ pub fn build_simulation(
         );
         PreparedSimulationState::StateOnly {
             equilibrium_model: Arc::new(OdeModel::new(model)?),
-            runtime: Arc::new(SolveRuntime::new(model)),
+            runtime: Arc::new(SolveRuntime::new(model)?),
         }
     } else {
         tracing::debug!(
@@ -100,7 +100,7 @@ pub fn build_simulation(
         );
         PreparedSimulationState::General {
             equilibrium_model: Arc::new(OdeModel::new(model)?),
-            runtime: Arc::new(SolveRuntime::new(model)),
+            runtime: Arc::new(SolveRuntime::new(model)?),
         }
     };
     Ok(PreparedSimulation {
@@ -132,7 +132,7 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
     initialize_state_runtime_values(
         model,
         opts,
-        &SolveRuntime::new(model),
+        &SolveRuntime::new(model)?,
         &equilibrium_model,
         &mut current_y,
         &mut params,
@@ -859,9 +859,22 @@ fn trace_bdf_state_root(
     if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
         return;
     }
-    let roots = runtime
-        .eval_root_conditions(root_t, state, params, 1.0e-10, EVENT_UPDATE_MAX_ITERS)
-        .unwrap_or_default();
+    let roots = match runtime.eval_root_conditions(
+        root_t,
+        state,
+        params,
+        1.0e-10,
+        EVENT_UPDATE_MAX_ITERS,
+    ) {
+        Ok(roots) => roots,
+        Err(error) => {
+            tracing::debug!(
+                target: "rumoca_solver_diffsol::bdf",
+                "state-root t={root_t:.12} root_idx={root_idx} root-condition evaluation failed: {error}"
+            );
+            return;
+        }
+    };
     let near = roots
         .iter()
         .enumerate()

@@ -11,9 +11,9 @@ fn lower_residual_lowers_explicit_algebraic_equation_as_lhs_minus_rhs() {
         rumoca_core::VarName::new("y"),
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(2.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
-        Default::default(),
+        rumoca_core::Span::DUMMY,
         "y = 2",
     ));
 

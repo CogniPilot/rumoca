@@ -230,10 +230,7 @@ pub(crate) fn run_eval_at(
         } else {
             "alg"
         };
-        let flag = slot
-            .nonfinite_kind()
-            .map(|kind| format!("  <-- {kind}"))
-            .unwrap_or_default();
+        let flag = nonfinite_flag_suffix(slot.nonfinite_kind());
         println!(
             "  [{index:>4}] {:<40} = {:<24} [{role}]{flag}",
             slot.name, slot.value
@@ -242,10 +239,7 @@ pub(crate) fn run_eval_at(
 
     println!("\nderivatives ({}):", report.derivatives.len());
     for slot in &report.derivatives {
-        let flag = slot
-            .nonfinite_kind()
-            .map(|kind| format!("  <-- {kind}"))
-            .unwrap_or_default();
+        let flag = nonfinite_flag_suffix(slot.nonfinite_kind());
         println!("  {:<46} = {:<24}{flag}", slot.name, slot.value);
     }
 
@@ -265,11 +259,17 @@ pub(crate) fn run_eval_at(
 
     println!("\nNON-FINITE ({}):", nonfinite.len());
     for (section, slot) in &nonfinite {
-        println!(
-            "  {section}: `{}` = {}",
-            slot.name,
-            slot.nonfinite_kind().unwrap_or("?")
-        );
+        let kind = slot.nonfinite_kind().ok_or_else(|| {
+            anyhow::anyhow!("non-finite slot `{}` did not report a kind", slot.name)
+        })?;
+        println!("  {section}: `{}` = {}", slot.name, kind);
     }
     bail!("eval found {} non-finite value(s)", nonfinite.len());
+}
+
+fn nonfinite_flag_suffix(kind: Option<&str>) -> String {
+    match kind {
+        Some(kind) => format!("  <-- {kind}"),
+        None => String::new(),
+    }
 }

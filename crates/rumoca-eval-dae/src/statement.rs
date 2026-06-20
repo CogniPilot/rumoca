@@ -686,7 +686,10 @@ mod tests {
                 comp: comp_ref(&["y"]),
                 value: rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("tbl"),
-                    subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(var("i")))],
+                    subscripts: vec![rumoca_core::Subscript::generated_expr(
+                        Box::new(var("i")),
+                        rumoca_core::Span::DUMMY,
+                    )],
                     span: rumoca_core::Span::DUMMY,
                 },
                 span: rumoca_core::Span::DUMMY,
@@ -874,10 +877,22 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
-        let mut f = rumoca_core::Function::new("Pkg.multi", Default::default());
-        f.add_input(rumoca_core::FunctionParam::new("u", "Real"));
-        f.add_output(rumoca_core::FunctionParam::new("y1", "Real"));
-        f.add_output(rumoca_core::FunctionParam::new("y2", "Real"));
+        let mut f = rumoca_core::Function::new("Pkg.multi", rumoca_core::Span::DUMMY);
+        f.add_input(rumoca_core::FunctionParam::new(
+            "u",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y1",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y2",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
         f.body = vec![
             rumoca_core::Statement::Assignment {
                 comp: comp_ref(&["y1"]),
@@ -924,10 +939,25 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
-        let mut f = rumoca_core::Function::new("Pkg.pickTable", Default::default());
-        f.add_input(rumoca_core::FunctionParam::new("table", "Real").with_dims(vec![2, 2]));
-        f.add_output(rumoca_core::FunctionParam::new("y1", "Real"));
-        f.add_output(rumoca_core::FunctionParam::new("y2", "Real"));
+        let mut f = rumoca_core::Function::new("Pkg.pickTable", rumoca_core::Span::DUMMY);
+        f.add_input(
+            rumoca_core::FunctionParam::new(
+                "table",
+                "Real",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![2, 2]),
+        );
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y1",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y2",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
         f.body = vec![
             rumoca_core::Statement::Assignment {
                 comp: comp_ref(&["y1"]),
@@ -983,10 +1013,25 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
-        let mut f = rumoca_core::Function::new("Pkg.pickSeedTail", Default::default());
-        f.add_input(rumoca_core::FunctionParam::new("seedIn", "Integer").with_dims(vec![3]));
-        f.add_output(rumoca_core::FunctionParam::new("y2", "Integer"));
-        f.add_output(rumoca_core::FunctionParam::new("y3", "Integer"));
+        let mut f = rumoca_core::Function::new("Pkg.pickSeedTail", rumoca_core::Span::DUMMY);
+        f.add_input(
+            rumoca_core::FunctionParam::new(
+                "seedIn",
+                "Integer",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![3]),
+        );
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y2",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y3",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
         f.body = vec![
             rumoca_core::Statement::Assignment {
                 comp: comp_ref(&["y2"]),
@@ -1053,9 +1098,20 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
-        let mut f = rumoca_core::Function::new("Pkg.sumArray", Default::default());
-        f.add_output(rumoca_core::FunctionParam::new("y", "Real"));
-        f.add_local(rumoca_core::FunctionParam::new("x", "Real").with_dims(vec![3]));
+        let mut f = rumoca_core::Function::new("Pkg.sumArray", rumoca_core::Span::DUMMY);
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_local(
+            rumoca_core::FunctionParam::new(
+                "x",
+                "Real",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![3]),
+        );
         f.body = vec![
             rumoca_core::Statement::Assignment {
                 comp: comp_ref(&["x"]),
@@ -1095,9 +1151,10 @@ mod tests {
                         lhs: Box::new(var("y")),
                         rhs: Box::new(rumoca_core::Expression::VarRef {
                             name: rumoca_core::Reference::new("x"),
-                            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                                var("i"),
-                            ))],
+                            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                                Box::new(var("i")),
+                                rumoca_core::Span::DUMMY,
+                            )],
                             span: rumoca_core::Span::DUMMY,
                         }),
                         span: rumoca_core::Span::DUMMY,
@@ -1130,10 +1187,22 @@ mod tests {
         let mut functions = indexmap::IndexMap::new();
 
         // function f(a) -> o:  x := a; if x < 0 then x := -x; end if; o := x;
-        let mut f = rumoca_core::Function::new("Pkg.f", Default::default());
-        f.add_input(rumoca_core::FunctionParam::new("a", "Real"));
-        f.add_output(rumoca_core::FunctionParam::new("o", "Real"));
-        f.add_local(rumoca_core::FunctionParam::new("x", "Real"));
+        let mut f = rumoca_core::Function::new("Pkg.f", rumoca_core::Span::DUMMY);
+        f.add_input(rumoca_core::FunctionParam::new(
+            "a",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
+            "o",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_local(rumoca_core::FunctionParam::new(
+            "x",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
         f.body = vec![
             rumoca_core::Statement::Assignment {
                 comp: comp_ref(&["x"]),
@@ -1206,8 +1275,12 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
-        let mut f = rumoca_core::Function::new("Pkg.bad", Default::default());
-        f.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        let mut f = rumoca_core::Function::new("Pkg.bad", rumoca_core::Span::DUMMY);
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
         f.body = vec![rumoca_core::Statement::Assignment {
             comp: comp_ref(&["y"]),
             value: var("missing"),

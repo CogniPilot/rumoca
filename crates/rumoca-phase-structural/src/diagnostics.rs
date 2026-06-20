@@ -10,29 +10,43 @@ use crate::types::UnknownId;
 const ES001_STRUCTURAL_SINGULARITY: &str = "ES001";
 const ES002_ALGEBRAIC_LOOP: &str = "ES002";
 
-fn default_solve_span() -> Span {
-    Span::from_offsets(Span::DUMMY.source, 0, 1)
-}
-
-fn normalize_span(span: Span) -> Span {
-    if span == Span::DUMMY {
-        return default_solve_span();
+fn label_span(span: Span) -> Option<Span> {
+    if span.is_dummy() {
+        return None;
     }
     if span.end.0 <= span.start.0 {
-        Span::from_offsets(span.source, span.start.0, span.start.0.saturating_add(1))
+        Some(Span::from_offsets(
+            span.source,
+            span.start.0,
+            span.start.0.saturating_add(1),
+        ))
     } else {
-        span
+        Some(span)
     }
 }
 
-fn pick_primary_span(spans: &[Span]) -> Span {
-    spans
-        .iter()
-        .copied()
-        .find(|span| *span != Span::DUMMY && span.end.0 > span.start.0)
-        .or_else(|| spans.first().copied())
-        .map(normalize_span)
-        .unwrap_or_else(default_solve_span)
+fn pick_primary_span(spans: &[Span]) -> Option<Span> {
+    spans.iter().copied().find_map(label_span)
+}
+
+fn structural_warning(
+    code: &'static str,
+    message: String,
+    primary_span: Option<Span>,
+    primary_message: &'static str,
+) -> Diagnostic {
+    if let Some(span) = primary_span {
+        Diagnostic::warning(
+            code,
+            message,
+            PrimaryLabel::new(span).with_message(primary_message),
+        )
+    } else {
+        Diagnostic::global_warning(code, message).with_note(
+            "no source span was available for this structural diagnostic; preserve upstream \
+             equation or variable spans to make this warning directly traceable",
+        )
+    }
 }
 
 /// Result of structural analysis on a DAE system.
@@ -113,7 +127,7 @@ impl MatchingContext<'_> {
             .map(|&i| self.equations[i].span)
             .chain(self.equations.iter().map(|eq| eq.span))
             .collect();
-        let mut diag = Diagnostic::warning(
+        let mut diag = structural_warning(
             ES001_STRUCTURAL_SINGULARITY,
             format!(
                 "structurally singular system: matching size {} < {} (equations={}, unknowns={})",
@@ -122,15 +136,14 @@ impl MatchingContext<'_> {
                 n_eq,
                 n_var,
             ),
-            PrimaryLabel::new(pick_primary_span(&primary_candidates))
-                .with_message("structural issue detected here"),
+            pick_primary_span(&primary_candidates),
+            "structural issue detected here",
         );
 
         for &eq_idx in &unmatched_eq_indices {
-            diag = diag.with_label(
-                Label::secondary(normalize_span(self.equations[eq_idx].span))
-                    .with_message("unmatched equation"),
-            );
+            if let Some(span) = label_span(self.equations[eq_idx].span) {
+                diag = diag.with_label(Label::secondary(span).with_message("unmatched equation"));
+            }
         }
 
         if !result.unmatched_unknowns.is_empty() {
@@ -169,21 +182,21 @@ impl MatchingContext<'_> {
                 .collect();
             let eq_spans: Vec<Span> = scc
                 .iter()
-                .map(|&i| normalize_span(self.equations[i].span))
+                .filter_map(|&i| label_span(self.equations[i].span))
                 .collect();
             let loop_unknowns: Vec<String> = scc
                 .iter()
                 .filter_map(|&i| self.match_eq[i].map(|v| self.unknown_names[v].to_string()))
                 .collect();
 
-            let mut diag = Diagnostic::warning(
+            let mut diag = structural_warning(
                 ES002_ALGEBRAIC_LOOP,
                 format!(
                     "algebraic loop detected: {} equations must be solved simultaneously",
                     scc.len(),
                 ),
-                PrimaryLabel::new(pick_primary_span(&eq_spans))
-                    .with_message("part of algebraic loop"),
+                pick_primary_span(&eq_spans),
+                "part of algebraic loop",
             );
             for span in &eq_spans {
                 diag =
@@ -226,20 +239,21 @@ pub(crate) fn collect_warnings(
         let eq_origins: Vec<String> = scc.iter().map(|&i| equations[i].origin.clone()).collect();
         let eq_spans: Vec<Span> = scc
             .iter()
-            .map(|&i| normalize_span(equations[i].span))
+            .filter_map(|&i| label_span(equations[i].span))
             .collect();
         let loop_unknowns: Vec<String> = scc
             .iter()
             .filter_map(|&i| match_eq[i].map(|v| incidence.unknown_names[v].to_string()))
             .collect();
 
-        let mut diag = Diagnostic::warning(
+        let mut diag = structural_warning(
             ES002_ALGEBRAIC_LOOP,
             format!(
                 "algebraic loop detected: {} equations must be solved simultaneously",
                 scc.len(),
             ),
-            PrimaryLabel::new(pick_primary_span(&eq_spans)).with_message("part of algebraic loop"),
+            pick_primary_span(&eq_spans),
+            "part of algebraic loop",
         );
         for span in &eq_spans {
             diag = diag.with_label(Label::secondary(*span).with_message("part of algebraic loop"));
@@ -257,4 +271,88 @@ pub(crate) fn collect_warnings(
     }
 
     warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use rumoca_core::{BytePos, DiagnosticSeverity, Expression, Literal, SourceId, VarName};
+
+    use super::*;
+
+    fn residual_equation(span: Span) -> dae::Equation {
+        dae::Equation::residual(
+            Expression::Literal {
+                value: Literal::Real(0.0),
+                span,
+            },
+            span,
+            "test residual",
+        )
+    }
+
+    #[test]
+    fn singularity_without_source_span_stays_unlabeled() {
+        let equation = residual_equation(Span::DUMMY);
+        let equations = vec![&equation];
+        let unknown_names = vec![UnknownId::Variable(VarName::new("x"))];
+        let eq_unknowns = vec![HashSet::new()];
+        let match_eq = vec![None];
+        let match_var = vec![None];
+        let ctx = MatchingContext {
+            equations: &equations,
+            unknown_names: &unknown_names,
+            eq_unknowns: &eq_unknowns,
+            match_eq: &match_eq,
+            match_var: &match_var,
+        };
+        let mut result = StructuralDiagnostics::default();
+
+        ctx.check_singularity(&mut result, 1, 1, 0);
+
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
+        assert!(diagnostic.labels.is_empty());
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("no source span was available"))
+        );
+    }
+
+    #[test]
+    fn singularity_with_source_span_keeps_primary_label() {
+        let span = Span {
+            source: SourceId(7),
+            start: BytePos(11),
+            end: BytePos(11),
+        };
+        let equation = residual_equation(span);
+        let equations = vec![&equation];
+        let unknown_names = vec![UnknownId::Variable(VarName::new("x"))];
+        let eq_unknowns = vec![HashSet::new()];
+        let match_eq = vec![None];
+        let match_var = vec![None];
+        let ctx = MatchingContext {
+            equations: &equations,
+            unknown_names: &unknown_names,
+            eq_unknowns: &eq_unknowns,
+            match_eq: &match_eq,
+            match_var: &match_var,
+        };
+        let mut result = StructuralDiagnostics::default();
+
+        ctx.check_singularity(&mut result, 1, 1, 0);
+
+        let labels = &result.diagnostics[0].labels;
+        assert!(labels.iter().any(|label| label.primary));
+        assert!(
+            labels
+                .iter()
+                .all(|label| label.span.source == span.source
+                    && label.span.end.0 > label.span.start.0)
+        );
+    }
 }

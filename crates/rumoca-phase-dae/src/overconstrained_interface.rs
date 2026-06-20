@@ -45,12 +45,12 @@ pub(crate) fn count_overconstrained_interface(
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let eq_constraint_size = var.oc_eq_constraint_size.ok_or_else(|| {
-                    ToDaeError::RuntimeContractViolation {
-                        detail: format!(
+                    ToDaeError::runtime_contract_violation_at(
+                        format!(
                             "overconstrained variable `{name}` is missing equalityConstraint size"
                         ),
-                        span: rumoca_core::span_to_source_span(var.source_span),
-                    }
+                        var.source_span,
+                    )
                 })?;
                 entry.insert(OcRecordGroup {
                     total_scalar_size: 0,
@@ -292,7 +292,7 @@ pub(crate) fn validate_connection_graph(flat: &flat::Model) -> Result<(), ToDaeE
                 detail: format!(
                     "Connections.branch({a}, {b}) closes a cycle among required spanning-tree edges"
                 ),
-                span: connection_graph_span(flat, a),
+                span: connection_graph_span(flat, a)?,
             });
         }
         parent.insert(root_a, root_b);
@@ -318,7 +318,7 @@ pub(crate) fn validate_connection_graph(flat: &flat::Model) -> Result<(), ToDaeE
                 detail: format!(
                     "definite roots '{previous}' and '{root}' are connected through required spanning-tree edges"
                 ),
-                span: connection_graph_span(flat, root),
+                span: connection_graph_span(flat, root)?,
             });
         }
     }
@@ -327,14 +327,23 @@ pub(crate) fn validate_connection_graph(flat: &flat::Model) -> Result<(), ToDaeE
 
 /// Span of a variable under the given connector path, for pointing the user
 /// at the offending part of the connection graph.
-fn connection_graph_span(flat: &flat::Model, path: &str) -> SourceSpan {
-    let span = flat
+fn connection_graph_span(flat: &flat::Model, path: &str) -> Result<SourceSpan, ToDaeError> {
+    let variable = flat
         .variables
         .values()
         .find(|var| var.name.as_str().starts_with(path))
-        .map(|var| var.source_span)
-        .unwrap_or(rumoca_core::Span::DUMMY);
-    rumoca_core::span_to_source_span(span)
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "connection graph path `{path}` has no matching flat variable"
+            ))
+        })?;
+    if variable.source_span.is_dummy() {
+        return Err(ToDaeError::runtime_metadata_violation(format!(
+            "connection graph path `{path}` matched flat variable `{}` with no source provenance",
+            variable.name
+        )));
+    }
+    Ok(rumoca_core::span_to_source_span(variable.source_span))
 }
 
 #[cfg(test)]
@@ -355,7 +364,11 @@ mod tests {
                     is_overconstrained: true,
                     oc_record_path: Some(rec_path.to_string()),
                     oc_eq_constraint_size: Some(3),
-                    ..Default::default()
+                    ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ))
                 },
             );
         }

@@ -15,12 +15,14 @@
 //!   SIL_UDP_SEND=192.0.2.1:4242   — send flight_snapshot to Cerebri
 //!   SIL_DT=0.004                   — simulation timestep in seconds
 
+use std::env::{self, VarError};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, UdpSocket};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, bail};
 use rumoca_sim::web::three_js;
 use rumoca_sim::{SimOptions, SimStepper};
 use tungstenite::{Message, accept};
@@ -28,6 +30,7 @@ use tungstenite::{Message, accept};
 const HTTP_PORT: u16 = 8080;
 const WS_PORT: u16 = 8081;
 const MAX_SUB_DT: f64 = 0.002;
+const DEFAULT_SIL_DT: f64 = 0.004;
 
 const MODEL_SOURCE: &str = include_str!("../../../examples/interactive/quadrotor/QuadrotorSIL.mo");
 // Physical constants matching the Modelica model
@@ -299,46 +302,50 @@ impl QuadrotorSil {
                 self.stepper.step(sub_dt)?;
             }
         }
-        Ok(self.read_sensors())
+        self.read_sensors()
     }
 
-    pub fn read_sensors(&self) -> SensorOutput {
-        let get = |name: &str| self.stepper.get(name).unwrap_or(0.0);
-        SensorOutput {
+    pub fn read_sensors(&self) -> anyhow::Result<SensorOutput> {
+        let get = |name: &str| -> anyhow::Result<f64> {
+            self.stepper
+                .get(name)?
+                .ok_or_else(|| anyhow::anyhow!("stepper variable '{name}' is not visible"))
+        };
+        Ok(SensorOutput {
             clock_sec: self.stepper.time(),
-            accel: [get("accel_x"), get("accel_y"), get("accel_z")],
-            gyro: [get("gyro_x"), get("gyro_y"), get("gyro_z")],
-            mag: [get("mag_x"), get("mag_y"), get("mag_z")],
-            position_ned: [get("px"), get("py"), get("pz")],
-            velocity_ned: [get("vx"), get("vy"), get("vz")],
-            quaternion: [
-                self.stepper.get("q0").unwrap_or(1.0),
-                get("q1"),
-                get("q2"),
-                get("q3"),
-            ],
-        }
+            accel: [get("accel_x")?, get("accel_y")?, get("accel_z")?],
+            gyro: [get("gyro_x")?, get("gyro_y")?, get("gyro_z")?],
+            mag: [get("mag_x")?, get("mag_y")?, get("mag_z")?],
+            position_ned: [get("px")?, get("py")?, get("pz")?],
+            velocity_ned: [get("vx")?, get("vy")?, get("vz")?],
+            quaternion: [get("q0")?, get("q1")?, get("q2")?, get("q3")?],
+        })
     }
 
-    pub fn state_json(&self) -> String {
-        let get = |name: &str| self.stepper.get(name).unwrap_or(0.0);
-        serde_json::json!({
+    pub fn state_json(&self, mode: &str) -> anyhow::Result<String> {
+        let get = |name: &str| -> anyhow::Result<f64> {
+            self.stepper
+                .get(name)?
+                .ok_or_else(|| anyhow::anyhow!("stepper variable '{name}' is not visible"))
+        };
+        let value = serde_json::json!({
+            "mode": mode,
             "t": self.stepper.time(),
-            "px": get("px"), "py": get("py"), "pz": get("pz"),
-            "vx": get("vx"), "vy": get("vy"), "vz": get("vz"),
-            "q0": self.stepper.get("q0").unwrap_or(1.0),
-            "q1": get("q1"), "q2": get("q2"), "q3": get("q3"),
-            "R11": get("R11"), "R12": get("R12"), "R13": get("R13"),
-            "R21": get("R21"), "R22": get("R22"), "R23": get("R23"),
-            "R31": get("R31"), "R32": get("R32"), "R33": get("R33"),
-            "omega_m1": get("omega_m1"), "omega_m2": get("omega_m2"),
-            "omega_m3": get("omega_m3"), "omega_m4": get("omega_m4"),
-            "T": get("T"),
-            "accel_x": get("accel_x"), "accel_y": get("accel_y"), "accel_z": get("accel_z"),
-            "gyro_x": get("gyro_x"), "gyro_y": get("gyro_y"), "gyro_z": get("gyro_z"),
-            "mag_x": get("mag_x"), "mag_y": get("mag_y"), "mag_z": get("mag_z"),
-        })
-        .to_string()
+            "px": get("px")?, "py": get("py")?, "pz": get("pz")?,
+            "vx": get("vx")?, "vy": get("vy")?, "vz": get("vz")?,
+            "q0": get("q0")?,
+            "q1": get("q1")?, "q2": get("q2")?, "q3": get("q3")?,
+            "R11": get("R11")?, "R12": get("R12")?, "R13": get("R13")?,
+            "R21": get("R21")?, "R22": get("R22")?, "R23": get("R23")?,
+            "R31": get("R31")?, "R32": get("R32")?, "R33": get("R33")?,
+            "omega_m1": get("omega_m1")?, "omega_m2": get("omega_m2")?,
+            "omega_m3": get("omega_m3")?, "omega_m4": get("omega_m4")?,
+            "T": get("T")?,
+            "accel_x": get("accel_x")?, "accel_y": get("accel_y")?, "accel_z": get("accel_z")?,
+            "gyro_x": get("gyro_x")?, "gyro_y": get("gyro_y")?, "gyro_z": get("gyro_z")?,
+            "mag_x": get("mag_x")?, "mag_y": get("mag_y")?, "mag_z": get("mag_z")?,
+        });
+        serde_json::to_string(&value).map_err(Into::into)
     }
 
     pub fn reset(&mut self) -> anyhow::Result<()> {
@@ -602,12 +609,31 @@ animate();
 fn serve_http(listener: TcpListener, html: String) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let reader_stream = match stream.try_clone() {
+            Ok(reader_stream) => reader_stream,
+            Err(error) => {
+                eprintln!("HTTP stream clone failed: {error}");
+                continue;
+            }
+        };
+        let mut reader = BufReader::new(reader_stream);
         let mut request_line = String::new();
-        let _ = reader.read_line(&mut request_line);
+        if let Err(error) = reader.read_line(&mut request_line) {
+            eprintln!("HTTP request read failed: {error}");
+            continue;
+        }
         loop {
             let mut line = String::new();
-            let _ = reader.read_line(&mut line);
+            let read = match reader.read_line(&mut line) {
+                Ok(read) => read,
+                Err(error) => {
+                    eprintln!("HTTP header read failed: {error}");
+                    break;
+                }
+            };
+            if read == 0 {
+                break;
+            }
             if line.trim().is_empty() {
                 break;
             }
@@ -617,8 +643,33 @@ fn serve_http(listener: TcpListener, html: String) {
             html.len(),
             html
         );
-        let _ = stream.write_all(response.as_bytes());
+        if let Err(error) = stream.write_all(response.as_bytes()) {
+            eprintln!("HTTP response write failed: {error}");
+        }
     }
+}
+
+fn optional_env_value(name: &str) -> anyhow::Result<String> {
+    match env::var(name) {
+        Ok(value) => Ok(value),
+        Err(VarError::NotPresent) => Ok(String::new()),
+        Err(VarError::NotUnicode(_)) => bail!("environment variable `{name}` is not valid Unicode"),
+    }
+}
+
+fn f64_env_or_default(name: &str, default: f64) -> anyhow::Result<f64> {
+    let raw = optional_env_value(name)?;
+    if raw.is_empty() {
+        return Ok(default);
+    }
+
+    let value = raw.parse::<f64>().with_context(|| {
+        format!("environment variable `{name}` must be a floating-point number")
+    })?;
+    if !value.is_finite() || value <= 0.0 {
+        bail!("environment variable `{name}` must be finite and positive, got {value}");
+    }
+    Ok(value)
 }
 
 // ===========================================================================
@@ -627,12 +678,9 @@ fn serve_http(listener: TcpListener, html: String) {
 
 fn main() -> anyhow::Result<()> {
     // Configuration from environment
-    let udp_listen = std::env::var("SIL_UDP_LISTEN").unwrap_or_default();
-    let udp_send = std::env::var("SIL_UDP_SEND").unwrap_or_default();
-    let dt: f64 = std::env::var("SIL_DT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.004); // 250 Hz default
+    let udp_listen = optional_env_value("SIL_UDP_LISTEN")?;
+    let udp_send = optional_env_value("SIL_UDP_SEND")?;
+    let dt = f64_env_or_default("SIL_DT", DEFAULT_SIL_DT)?;
 
     let udp_mode = !udp_listen.is_empty() && !udp_send.is_empty();
 
@@ -671,7 +719,13 @@ fn main() -> anyhow::Result<()> {
     // WebSocket thread for viz
     let (state_tx, state_rx) = mpsc::channel::<String>();
     thread::spawn(move || {
-        let ws_listener = TcpListener::bind(format!("0.0.0.0:{WS_PORT}")).unwrap();
+        let ws_listener = match TcpListener::bind(format!("0.0.0.0:{WS_PORT}")) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("WebSocket bind failed: {error}");
+                return;
+            }
+        };
         eprintln!("WebSocket: ws://localhost:{WS_PORT}");
         eprintln!("\nOpen http://localhost:{HTTP_PORT} in your browser!\n");
         for stream in ws_listener.incoming() {
@@ -768,13 +822,12 @@ fn main() -> anyhow::Result<()> {
                         }
 
                         // Stream to viz
-                        let mut json = sil.state_json();
-                        // Inject mode into JSON
-                        json.pop(); // remove trailing }
-                        json.push_str(&format!(
-                            r#","mode":"UDP ({})"}}""#,
-                            if armed { "ARMED" } else { "disarmed" }
-                        ));
+                        let mode = if armed {
+                            "UDP (ARMED)"
+                        } else {
+                            "UDP (disarmed)"
+                        };
+                        let json = sil.state_json(mode)?;
                         let _ = state_tx.send(json);
                     } else if n > 0 {
                         eprintln!(
@@ -822,9 +875,7 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => eprintln!("[sil] Step error: {e}"),
             }
 
-            let mut json = sil.state_json();
-            json.pop();
-            json.push_str(r#","mode":"Self-test (hover)"}"#);
+            let json = sil.state_json("Self-test (hover)")?;
             let _ = state_tx.send(json);
 
             let elapsed = frame_start.elapsed();

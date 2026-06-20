@@ -115,7 +115,14 @@ mod tests {
         let mut dae = dae::Dae::new();
         dae.variables.inputs.insert(
             rumoca_core::VarName::new("u"),
-            dae::Variable::new(rumoca_core::VarName::new("u")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("u"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         assert!(is_dae_input_name(&dae, &rumoca_core::VarName::new("u[1]")));
     }

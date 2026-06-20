@@ -1,4 +1,13 @@
 use super::*;
+use rumoca_core::Span;
+
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("postprocess_record_alias_test.mo"),
+        1,
+        2,
+    )
+}
 
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
@@ -81,7 +90,7 @@ fn def_id_canonicalization_rewrites_class_qualified_ref_by_owner_scope() {
                 name: rumoca_core::VarName::new(name),
                 component_ref: Some(component_ref_with_def_id(name, def_id)),
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
@@ -102,7 +111,7 @@ fn def_id_canonicalization_rewrites_class_qualified_ref_by_owner_scope() {
                 span: rumoca_core::Span::DUMMY,
             }),
             is_primitive: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -135,7 +144,7 @@ fn def_id_canonicalization_resolves_descendant_from_component_equation_owner() {
                 name: rumoca_core::VarName::new(name),
                 component_ref: Some(component_ref_path(name)),
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
@@ -188,7 +197,7 @@ fn def_id_canonicalization_preserves_resolved_package_constant_refs() {
                 span: rumoca_core::Span::DUMMY,
             }),
             is_primitive: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -214,7 +223,7 @@ fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
         flat::Variable {
             name: rumoca_core::VarName::new("pipe.port_a.p"),
             is_primitive: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     let mut when_clause = flat::WhenClause::new(
@@ -265,7 +274,7 @@ fn invalid_field_access_drop_handles_indexed_bases() {
         rumoca_core::VarName::new("someArray[1].existing"),
         flat::Variable {
             name: rumoca_core::VarName::new("someArray[1].existing"),
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     model.add_variable(
@@ -284,7 +293,7 @@ fn invalid_field_access_drop_handles_indexed_bases() {
                 field: "missing".to_string(),
                 span: Span::DUMMY,
             }),
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 

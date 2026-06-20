@@ -1,12 +1,16 @@
 use super::*;
 
+fn test_span() -> Span {
+    Span::from_offsets(rumoca_core::SourceId(1), 1, 2)
+}
+
 fn test_comp_ref(name: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
             subs: vec![],
         }],
         def_id: None,
@@ -18,7 +22,7 @@ fn explicit(lhs: &str, rhs: Expression, origin: &str) -> rumoca_ir_dae::Equation
     rumoca_ir_dae::Equation::explicit(
         flat_to_dae_var_name(&lhs),
         flat_to_dae_expression(&rhs),
-        Span::DUMMY,
+        test_span(),
         origin.to_string(),
     )
 }
@@ -58,7 +62,10 @@ fn lower_algorithm_uses_statement_span_for_main_assignment_equations() {
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         VarName::new("x"),
-        rumoca_ir_dae::Variable::new(VarName::new("x")),
+        rumoca_ir_dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     let algorithm = flat::Algorithm::new(
         vec![
@@ -99,7 +106,10 @@ fn lower_algorithm_uses_statement_span_for_when_assignment_equations() {
     let mut dae = Dae::new();
     dae.variables.discrete_valued.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     let algorithm = flat::Algorithm::new(
         vec![
@@ -137,9 +147,13 @@ fn lower_algorithm_uses_statement_span_for_when_assignment_equations() {
 fn lower_algorithm_rejects_reinit_outside_when_statement() {
     let flat = flat::Model::new();
     let mut dae = Dae::new();
-    dae.variables
-        .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
     let algorithm = flat::Algorithm::new(
         vec![rumoca_core::Statement::Reinit {
             variable: test_comp_ref("x"),
@@ -176,6 +190,7 @@ fn guarded_expr_prepends_to_existing_if_without_nesting_fallback() {
             value: Literal::Integer(0),
             span: rumoca_core::Span::DUMMY,
         },
+        Span::DUMMY,
     );
     let merged = guarded_expr(
         Expression::VarRef {
@@ -188,6 +203,7 @@ fn guarded_expr_prepends_to_existing_if_without_nesting_fallback() {
             span: rumoca_core::Span::DUMMY,
         },
         first,
+        Span::DUMMY,
     );
 
     let Expression::If {
@@ -249,9 +265,13 @@ fn expression_exceeds_node_budget_counts_nested_expression_nodes() {
 #[test]
 fn lower_for_if_branches_do_not_share_current_value_state() {
     let mut dae = Dae::new();
-    dae.variables
-        .discrete_valued
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+    dae.variables.discrete_valued.insert(
+        VarName::new("z"),
+        dae::Variable::new(
+            VarName::new("z"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
     let flat = flat::Model::new();
     let statements = vec![rumoca_core::Statement::If {
         cond_blocks: vec![
@@ -259,22 +279,22 @@ fn lower_for_if_branches_do_not_share_current_value_state() {
                 cond: Expression::VarRef {
                     name: VarName::new("c1").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: test_comp_ref("z"),
                     value: Expression::Literal {
                         value: Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             },
             rumoca_core::StatementBlock {
                 cond: Expression::VarRef {
                     name: VarName::new("c2").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: test_comp_ref("z"),
@@ -283,34 +303,34 @@ fn lower_for_if_branches_do_not_share_current_value_state() {
                         lhs: Box::new(Expression::VarRef {
                             name: VarName::new("z").into(),
                             subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         }),
                         rhs: Box::new(Expression::Literal {
                             value: Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         }),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }],
             },
         ],
         else_block: None,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }];
     let indices = vec![rumoca_core::ForIndex {
         ident: "i".to_string(),
         range: Expression::Range {
             start: Box::new(Expression::Literal {
                 value: Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             step: None,
             end: Box::new(Expression::Literal {
                 value: Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
     }];
 
@@ -321,6 +341,7 @@ fn lower_for_if_branches_do_not_share_current_value_state() {
         &statements,
         &IndexMap::new(),
         &HashSet::new(),
+        test_span(),
     )
     .expect("for-if should lower");
     let (_, rhs, _, _) = lowered
@@ -347,14 +368,14 @@ fn lower_for_if_branches_do_not_share_current_value_state() {
 fn integer_literal(value: i64) -> Expression {
     Expression::Literal {
         value: Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn real_literal(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -362,7 +383,7 @@ fn array_literal(elements: Vec<Expression>) -> Expression {
     Expression::Array {
         elements,
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -371,19 +392,26 @@ fn parameter_array(name: &str, elements: Vec<Expression>) -> dae::Variable {
         name: VarName::new(name),
         dims: vec![4],
         start: Some(array_literal(elements)),
-        ..Default::default()
+        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     }
 }
 
 fn indexed_var_ref(name: &str, index_name: &str) -> Expression {
     Expression::VarRef {
         name: VarName::new(name).into(),
-        subscripts: vec![Subscript::generated_expr(Box::new(Expression::VarRef {
-            name: VarName::new(index_name).into(),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        }))],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![Subscript::generated_expr(
+            Box::new(Expression::VarRef {
+                name: VarName::new(index_name).into(),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            test_span(),
+        )],
+        span: test_span(),
     }
 }
 
@@ -395,28 +423,32 @@ fn table_pattern_if_statement() -> rumoca_core::Statement {
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("time").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 rhs: Box::new(indexed_var_ref("t", "i")),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             stmts: vec![rumoca_core::Statement::Assignment {
                 comp: test_comp_ref("y"),
                 value: indexed_var_ref("x", "i"),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
         }],
         else_block: None,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 #[test]
 fn lower_for_table_pattern_folds_static_parameter_array_indices() {
     let mut dae = Dae::new();
-    dae.variables
-        .discrete_valued
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+    dae.variables.discrete_valued.insert(
+        VarName::new("y"),
+        dae::Variable::new(
+            VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
     dae.variables.parameters.insert(
         VarName::new("x"),
         parameter_array(
@@ -449,7 +481,7 @@ fn lower_for_table_pattern_folds_static_parameter_array_indices() {
             start: Box::new(integer_literal(1)),
             step: None,
             end: Box::new(integer_literal(4)),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
     }];
 
@@ -460,6 +492,7 @@ fn lower_for_table_pattern_folds_static_parameter_array_indices() {
         &statements,
         &IndexMap::new(),
         &HashSet::new(),
+        test_span(),
     )
     .expect("table-like for loop should lower");
     let (_, rhs, _, _) = lowered
@@ -478,12 +511,37 @@ fn lower_for_table_pattern_folds_static_parameter_array_indices() {
 }
 
 #[test]
+fn lower_for_statement_assignments_rejects_dummy_owner_span() {
+    let dae = Dae::new();
+    let flat = flat::Model::new();
+    let err = lower_for_statement_assignments(
+        &dae,
+        &flat,
+        &[],
+        &[],
+        &IndexMap::new(),
+        &HashSet::new(),
+        Span::DUMMY,
+    )
+    .expect_err("dummy owner span should fail fast");
+
+    assert_eq!(err, "ForLoopMissingSpan");
+}
+
+#[test]
 fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_target() {
     let mut dae = Dae::new();
     for name in ["y", "u", "v"] {
         dae.variables.discrete_valued.insert(
             rumoca_core::VarName::new(name),
-            dae::Variable::new(rumoca_core::VarName::new(name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -567,7 +625,14 @@ fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
     for name in ["y", "u", "v"] {
         dae.variables.discrete_valued.insert(
             rumoca_core::VarName::new(name),
-            dae::Variable::new(rumoca_core::VarName::new(name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -655,7 +720,14 @@ fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
     for name in ["src", "a", "b", "c"] {
         dae.variables.discrete_valued.insert(
             rumoca_core::VarName::new(name),
-            dae::Variable::new(rumoca_core::VarName::new(name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -751,7 +823,10 @@ fn canonicalize_discrete_assignments_preserves_conflicting_same_target_rows() {
     let mut dae = Dae::new();
     dae.variables.discrete_valued.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     dae.discrete.valued_updates.push(explicit(

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
@@ -178,15 +178,15 @@ impl SimStepper {
         self.inner.time()
     }
 
-    pub(crate) fn get(&self, name: &str) -> Option<f64> {
+    pub(crate) fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         self.inner.get(name)
     }
 
-    pub(crate) fn state(&self) -> StepperState {
+    pub(crate) fn state(&self) -> Result<StepperState, SimError> {
         self.inner.state()
     }
 
-    pub(crate) fn values_for(&self, names: &[String]) -> HashMap<String, f64> {
+    pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
         self.inner.values_for(names)
     }
 
@@ -229,7 +229,7 @@ impl InteractiveStepper for SimStepper {
         Self::time(self)
     }
 
-    fn get(&self, name: &str) -> Option<f64> {
+    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
         Self::get(self, name)
     }
 

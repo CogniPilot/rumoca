@@ -34,8 +34,8 @@ pub struct RuntimeContext<'a> {
     pub input_mode: InputMode,
     pub input_message: Option<&'a str>,
     pub stepper_time: f64,
-    /// Read a named stepper variable. Return `None` if unknown.
-    pub stepper_get: &'a dyn Fn(&str) -> Option<f64>,
+    /// Read a named stepper variable. Return `Ok(None)` if unknown.
+    pub stepper_get: &'a dyn Fn(&str) -> Result<Option<f64>>,
 }
 
 #[derive(Debug)]
@@ -96,22 +96,26 @@ impl SignalMapper {
     }
 
     /// Build the outgoing `SignalFrame` (f64-valued) for the codec.
-    pub fn build_send(&self, engine: &InputEngine, rt: &RuntimeContext<'_>) -> SignalFrame {
+    pub fn build_send(&self, engine: &InputEngine, rt: &RuntimeContext<'_>) -> Result<SignalFrame> {
         let mut frame = SignalFrame::with_capacity(self.send.len());
         for (key, spec) in &self.send {
-            let v = eval(spec, engine, rt);
-            frame.insert(key.clone(), json_to_f64(&v));
+            let v = eval(key, spec, engine, rt)?;
+            frame.insert(key.clone(), json_to_f64(key, &v)?);
         }
-        frame
+        Ok(frame)
     }
 
     /// Build the browser-viewer JSON object.
-    pub fn build_viewer_json(&self, engine: &InputEngine, rt: &RuntimeContext<'_>) -> String {
+    pub fn build_viewer_json(
+        &self,
+        engine: &InputEngine,
+        rt: &RuntimeContext<'_>,
+    ) -> Result<String> {
         let mut obj = JsonMap::with_capacity(self.viewer.len());
         for (key, spec) in &self.viewer {
-            obj.insert(key.clone(), eval(spec, engine, rt));
+            obj.insert(key.clone(), eval(key, spec, engine, rt)?);
         }
-        JsonValue::Object(obj).to_string()
+        Ok(JsonValue::Object(obj).to_string())
     }
 
     /// Resolve `[signals.stepper_inputs]` into `(stepper_input_name, value)`
@@ -121,10 +125,13 @@ impl SignalMapper {
         &self,
         engine: &InputEngine,
         rt: &RuntimeContext<'_>,
-    ) -> Vec<(String, f64)> {
+    ) -> Result<Vec<(String, f64)>> {
         self.stepper_inputs
             .iter()
-            .map(|(key, spec)| (key.clone(), json_to_f64(&eval(spec, engine, rt))))
+            .map(|(key, spec)| {
+                let value = eval(key, spec, engine, rt)?;
+                Ok((key.clone(), json_to_f64(key, &value)?))
+            })
             .collect()
     }
 
@@ -306,16 +313,18 @@ fn toml_to_json(v: &toml::Value) -> Option<JsonValue> {
 
 // ── Evaluation ─────────────────────────────────────────────────────────────
 
-fn eval(spec: &CompiledSpec, engine: &InputEngine, rt: &RuntimeContext<'_>) -> JsonValue {
+fn eval(
+    key: &str,
+    spec: &CompiledSpec,
+    engine: &InputEngine,
+    rt: &RuntimeContext<'_>,
+) -> Result<JsonValue> {
     match spec {
-        CompiledSpec::Const(v) => v.clone(),
-        // Direct: fall back to 0.0 for missing sources (matches the
-        // behavior of the pre-generification quadrotor adapter).
-        CompiledSpec::Direct(source) => {
-            resolve_source(source, engine, rt).unwrap_or(JsonValue::from(0.0))
-        }
+        CompiledSpec::Const(v) => Ok(v.clone()),
+        CompiledSpec::Direct(source) => resolve_source(source, engine, rt)?
+            .ok_or_else(|| anyhow!("signal '{key}' source did not resolve")),
         CompiledSpec::WithDefault { source, default } => {
-            resolve_source(source, engine, rt).unwrap_or_else(|| default.clone())
+            Ok(resolve_source(source, engine, rt)?.unwrap_or_else(|| default.clone()))
         }
         CompiledSpec::Conditional {
             source,
@@ -323,14 +332,16 @@ fn eval(spec: &CompiledSpec, engine: &InputEngine, rt: &RuntimeContext<'_>) -> J
             when_false,
         } => {
             let b = match source {
-                ValueSource::LocalBool(p) => engine.get_bool(&fmt_path(p)).unwrap_or(false),
+                ValueSource::LocalBool(p) => engine
+                    .get_bool(&fmt_path(p))
+                    .ok_or_else(|| anyhow!("conditional signal '{key}' source did not resolve"))?,
                 ValueSource::RuntimeInputConnected => rt.input_connected,
                 _ => false,
             };
             if b {
-                when_true.clone()
+                Ok(when_true.clone())
             } else {
-                when_false.clone()
+                Ok(when_false.clone())
             }
         }
     }
@@ -340,24 +351,21 @@ fn resolve_source(
     source: &ValueSource,
     engine: &InputEngine,
     rt: &RuntimeContext<'_>,
-) -> Option<JsonValue> {
+) -> Result<Option<JsonValue>> {
     match source {
-        ValueSource::StepperTime => Some(JsonValue::from(rt.stepper_time)),
-        // Report None when the stepper doesn't know the variable, so
-        // `WithDefault` can substitute — `Direct` handles None at the top
-        // layer by falling back to 0.0 for parity with the old adapter.
-        ValueSource::StepperVar(name) => (rt.stepper_get)(name).map(JsonValue::from),
-        ValueSource::LocalFloat(p) => engine.get(&fmt_path(p)).map(JsonValue::from),
-        ValueSource::LocalInt(p) => engine.get(&fmt_path(p)).map(|f| JsonValue::from(f as i64)),
-        ValueSource::LocalBool(p) => engine.get_bool(&fmt_path(p)).map(JsonValue::from),
-        ValueSource::RuntimeFrameNum => Some(JsonValue::from(rt.frame_num)),
-        ValueSource::RuntimeWallMs => Some(JsonValue::from(rt.wall_ms)),
-        ValueSource::RuntimeInputConnected => Some(JsonValue::from(rt.input_connected)),
-        ValueSource::RuntimeInputMode => Some(JsonValue::from(match rt.input_mode {
+        ValueSource::StepperTime => Ok(Some(JsonValue::from(rt.stepper_time))),
+        ValueSource::StepperVar(name) => Ok((rt.stepper_get)(name)?.map(JsonValue::from)),
+        ValueSource::LocalFloat(p) => Ok(engine.get(&fmt_path(p)).map(JsonValue::from)),
+        ValueSource::LocalInt(p) => Ok(engine.get(&fmt_path(p)).map(|f| JsonValue::from(f as i64))),
+        ValueSource::LocalBool(p) => Ok(engine.get_bool(&fmt_path(p)).map(JsonValue::from)),
+        ValueSource::RuntimeFrameNum => Ok(Some(JsonValue::from(rt.frame_num))),
+        ValueSource::RuntimeWallMs => Ok(Some(JsonValue::from(rt.wall_ms))),
+        ValueSource::RuntimeInputConnected => Ok(Some(JsonValue::from(rt.input_connected))),
+        ValueSource::RuntimeInputMode => Ok(Some(JsonValue::from(match rt.input_mode {
             InputMode::Gamepad => "gamepad",
             InputMode::Keyboard => "keyboard",
-        })),
-        ValueSource::RuntimeInputMessage => rt.input_message.map(JsonValue::from),
+        }))),
+        ValueSource::RuntimeInputMessage => Ok(rt.input_message.map(JsonValue::from)),
     }
 }
 
@@ -368,12 +376,14 @@ fn fmt_path(p: &Path) -> String {
     }
 }
 
-fn json_to_f64(v: &JsonValue) -> f64 {
+fn json_to_f64(key: &str, v: &JsonValue) -> Result<f64> {
     match v {
-        JsonValue::Number(n) => n.as_f64().unwrap_or(0.0),
-        JsonValue::Bool(true) => 1.0,
-        JsonValue::Bool(false) => 0.0,
-        _ => 0.0,
+        JsonValue::Number(n) => n
+            .as_f64()
+            .ok_or_else(|| anyhow!("signal '{key}' number is not representable as f64")),
+        JsonValue::Bool(true) => Ok(1.0),
+        JsonValue::Bool(false) => Ok(0.0),
+        _ => Err(anyhow!("signal '{key}' value is not numeric or boolean")),
     }
 }
 
@@ -451,11 +461,14 @@ t = "stepper:time"
         InputEngine::from_parts_for_test(defaults, compiled)
     }
 
-    fn stepper_get_fn(map: &HashMap<String, f64>) -> impl Fn(&str) -> Option<f64> + '_ {
-        move |name: &str| map.get(name).copied()
+    fn stepper_get_fn(map: &HashMap<String, f64>) -> impl Fn(&str) -> Result<Option<f64>> + '_ {
+        move |name: &str| Ok(map.get(name).copied())
     }
 
-    fn make_rt<'a>(time: f64, stepper_get: &'a dyn Fn(&str) -> Option<f64>) -> RuntimeContext<'a> {
+    fn make_rt<'a>(
+        time: f64,
+        stepper_get: &'a dyn Fn(&str) -> Result<Option<f64>>,
+    ) -> RuntimeContext<'a> {
         RuntimeContext {
             frame_num: 42,
             wall_ms: 123_456.0,
@@ -489,7 +502,7 @@ t = "stepper:time"
 
         let mapper =
             SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).expect("compile");
-        let frame = mapper.build_send(&engine, &rt);
+        let frame = mapper.build_send(&engine, &rt).expect("send frame");
 
         assert_eq!(frame.get("gyro_x"), Some(&0.1));
         assert_eq!(frame.get("accel_z"), Some(&-9.81));
@@ -507,13 +520,23 @@ t = "stepper:time"
         let cfg = load_cfg();
         let mut engine = build_engine(&cfg);
         engine.apply_derive_for_test();
-        let stepper_vars: HashMap<String, f64> = HashMap::new();
+        let stepper_vars: HashMap<String, f64> = [
+            ("gyro[1]", 0.1),
+            ("gyro[2]", 0.2),
+            ("gyro[3]", 0.3),
+            ("accel[1]", 1.0),
+            ("accel[2]", 2.0),
+            ("accel[3]", -9.81),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
         let get = stepper_get_fn(&stepper_vars);
         let mut rt = make_rt(0.0, &get);
         rt.input_connected = false;
 
         let mapper = SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).unwrap();
-        let frame = mapper.build_send(&engine, &rt);
+        let frame = mapper.build_send(&engine, &rt).expect("send frame");
         assert_eq!(frame.get("rc_valid"), Some(&0.0));
         assert_eq!(frame.get("rc_link_quality"), Some(&0.0));
     }
@@ -531,7 +554,7 @@ t = "stepper:time"
         let rt = make_rt(1.25, &get);
 
         let mapper = SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).unwrap();
-        let text = mapper.build_viewer_json(&engine, &rt);
+        let text = mapper.build_viewer_json(&engine, &rt).expect("viewer json");
         let v: JsonValue = serde_json::from_str(&text).expect("valid json");
         assert_eq!(v["t"], 1.25);
         assert_eq!(v["frame"], 42);
@@ -555,13 +578,8 @@ t = "stepper:time"
         let rt = make_rt(0.0, &get);
 
         let mapper = SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).unwrap();
-        let text = mapper.build_viewer_json(&engine, &rt);
+        let text = mapper.build_viewer_json(&engine, &rt).expect("viewer json");
         let v: JsonValue = serde_json::from_str(&text).unwrap();
-        // stepper_get returns None for "q0", default is 1.0 — but WithDefault
-        // is only invoked when the source itself returns None. Our StepperVar
-        // always returns Some(0.0) when missing, so the default path needs
-        // stepper_get to return None, which it does here (not in the map).
-        // Verify: q0 comes back as 1.0 (default).
         assert_eq!(v["q0"], 1.0);
     }
 

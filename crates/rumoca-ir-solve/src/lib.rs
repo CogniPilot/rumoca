@@ -3,13 +3,21 @@
 //! This crate contains data consumed by simulation backends after DAE-level
 //! structural/lowering phases. It must stay free of DAE evaluation and phase
 //! logic.
+//!
+//! SPEC_0021 file-size exception: Solve IR still defines scalar rows, tensor
+//! nodes, validation, and visitor contracts in one facade. split plan: move
+//! tensor contracts, validation errors, and visitors into focused modules.
 
+#[cfg(test)]
+mod compute_block_tests;
 mod layout;
 mod linear_op;
 pub mod visitor;
 
 use indexmap::IndexMap;
-use rumoca_core::{ExternalTableData, Span};
+use rumoca_core::{
+    ExternalTableData, SourceId, Span, StructuredIndexDomain, StructuredIndexDomainError,
+};
 use serde::{Deserialize, Serialize};
 
 pub use layout::{
@@ -25,7 +33,11 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 10;
+pub const SOLVE_SCHEMA_VERSION: u16 = 13;
+
+pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
+    Span::from_offsets(SourceId(source), start, end)
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ExternalTables {
@@ -71,25 +83,69 @@ impl ExternalTables {
 pub struct ScalarProgramBlock {
     pub programs: Vec<Vec<LinearOp>>,
     pub program_spans: Vec<Span>,
+    pub output_indices: Vec<usize>,
 }
 
 impl ScalarProgramBlock {
-    pub fn new(programs: Vec<Vec<LinearOp>>) -> Self {
-        Self::with_program_spans(programs, Vec::new())
+    pub fn with_program_spans(
+        programs: Vec<Vec<LinearOp>>,
+        program_spans: Vec<Span>,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let output_indices = (0..stored_output_count(&programs)).collect();
+        Self::with_output_indices(programs, program_spans, output_indices)
     }
 
-    pub fn with_program_spans(programs: Vec<Vec<LinearOp>>, mut program_spans: Vec<Span>) -> Self {
-        program_spans.truncate(programs.len());
-        program_spans.resize(programs.len(), Span::DUMMY);
+    pub fn with_output_indices(
+        programs: Vec<Vec<LinearOp>>,
+        program_spans: Vec<Span>,
+        output_indices: Vec<usize>,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        validate_scalar_program_metadata_lengths(
+            "ScalarProgramBlock",
+            0,
+            programs.len(),
+            program_spans.len(),
+            stored_output_count(&programs),
+            output_indices.len(),
+            first_span(&program_spans),
+        )?;
+        Ok(Self::from_valid_parts(
+            programs,
+            program_spans,
+            output_indices,
+        ))
+    }
+
+    fn from_valid_parts(
+        programs: Vec<Vec<LinearOp>>,
+        program_spans: Vec<Span>,
+        output_indices: Vec<usize>,
+    ) -> Self {
         Self {
             programs,
             program_spans,
+            output_indices,
         }
+    }
+
+    pub fn with_contiguous_output_indices(
+        programs: Vec<Vec<LinearOp>>,
+        program_spans: Vec<Span>,
+        start: usize,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let end = start
+            .checked_add(stored_output_count(&programs))
+            .ok_or_else(|| {
+                output_index_overflow("ScalarProgramBlock", 0, first_span(&program_spans))
+            })?;
+        let output_indices = (start..end).collect();
+        Self::with_output_indices(programs, program_spans, output_indices)
     }
 
     pub fn with_source_span(programs: Vec<Vec<LinearOp>>, span: Span) -> Self {
         let program_spans = vec![span; programs.len()];
-        Self::with_program_spans(programs, program_spans)
+        let output_indices = (0..stored_output_count(&programs)).collect();
+        Self::from_valid_parts(programs, program_spans, output_indices)
     }
 
     pub fn program_span(&self, row: usize) -> Option<Span> {
@@ -99,12 +155,18 @@ impl ScalarProgramBlock {
             .filter(|span| !span.is_dummy())
     }
 
+    pub fn first_source_span(&self) -> Option<Span> {
+        self.program_spans
+            .iter()
+            .copied()
+            .find(|span| !span.is_dummy())
+    }
+
     /// Number of `StoreOutput` ops in a single program.
     ///
     /// A program may emit more than one output: matmul/linsolve nodes lower to
     /// one self-contained program that computes its operands once and stores
-    /// every result via consecutive `StoreOutput` ops (see the running-counter
-    /// invariant on [`ScalarProgramBlock::output_count`]).
+    /// every result via consecutive `StoreOutput` ops.
     pub fn program_output_count(program: &[LinearOp]) -> usize {
         program
             .iter()
@@ -112,28 +174,23 @@ impl ScalarProgramBlock {
             .count()
     }
 
-    /// Total number of outputs produced by the block.
-    ///
-    /// Running-counter invariant: the i-th `StoreOutput` op encountered when
-    /// iterating `programs` in order, then ops within each program in order,
-    /// writes output `i`. Therefore `output_count` equals the total number of
-    /// `StoreOutput` ops across all programs, and must equal the owning
-    /// [`ComputeBlock::len`] that this block was scalarized from.
-    ///
-    /// Note this differs from [`ScalarProgramBlock::len`], which counts
-    /// *programs* (one per matmul/linsolve node, possibly many outputs each).
-    pub fn output_count(&self) -> usize {
+    /// Total number of `StoreOutput` ops produced by this block.
+    pub fn stored_output_count(&self) -> usize {
         self.programs
             .iter()
             .map(|program| Self::program_output_count(program))
             .sum()
     }
 
-    /// Map a global output index to the program that produces it.
+    /// Map a dense output slot to the program that produces it.
     ///
-    /// Returns `None` if `output` is out of range.
+    /// `output_indices` may be sparse, so this first maps the output slot to
+    /// its stored-output ordinal and then finds the owning program.
     pub fn program_index_for_output(&self, output: usize) -> Option<usize> {
-        let mut remaining = output;
+        let mut remaining = self
+            .output_indices
+            .iter()
+            .position(|output_index| *output_index == output)?;
         for (idx, program) in self.programs.iter().enumerate() {
             let count = Self::program_output_count(program);
             if remaining < count {
@@ -144,7 +201,7 @@ impl ScalarProgramBlock {
         None
     }
 
-    /// Source span for a global output index, looked up via its owning program.
+    /// Source span for a dense output slot, looked up via its owning program.
     ///
     /// All outputs of a matmul/linsolve program share the node's span, matching
     /// the pre-existing per-node span attribution.
@@ -154,11 +211,84 @@ impl ScalarProgramBlock {
     }
 
     pub fn len(&self) -> usize {
+        self.output_count()
+    }
+
+    pub fn row_count(&self) -> usize {
         self.programs.len()
+    }
+
+    pub fn output_count(&self) -> usize {
+        self.output_indices
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |index| index + 1)
+    }
+
+    pub fn uses_local_contiguous_output_indices(&self) -> bool {
+        self.output_indices
+            .iter()
+            .copied()
+            .eq(0..self.stored_output_count())
+    }
+
+    pub fn compute_block_output_indices(
+        &self,
+        context: &str,
+        node_index: usize,
+        output_cursor: usize,
+    ) -> Result<Vec<usize>, SolveProblemShapeContractError> {
+        if self.uses_local_contiguous_output_indices() {
+            let end = output_cursor
+                .checked_add(self.stored_output_count())
+                .ok_or_else(|| {
+                    output_index_overflow(context, node_index, self.first_program_span())
+                })?;
+            Ok((output_cursor..end).collect())
+        } else {
+            Ok(self.output_indices.clone())
+        }
+    }
+
+    pub fn placed_in_compute_block(
+        &self,
+        context: &str,
+        node_index: usize,
+        output_cursor: usize,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        Self::with_output_indices(
+            self.programs.clone(),
+            self.program_spans.clone(),
+            self.compute_block_output_indices(context, node_index, output_cursor)?,
+        )
+    }
+
+    pub fn advance_compute_block_output_cursor(
+        &self,
+        context: &str,
+        node_index: usize,
+        output_cursor: usize,
+    ) -> Result<usize, SolveProblemShapeContractError> {
+        let Some(max_index) = self
+            .compute_block_output_indices(context, node_index, output_cursor)?
+            .into_iter()
+            .max()
+        else {
+            return Ok(output_cursor);
+        };
+        let next = max_index
+            .checked_add(1)
+            .ok_or_else(|| output_index_overflow(context, node_index, self.first_program_span()))?;
+        Ok(output_cursor.max(next))
     }
 
     pub fn is_empty(&self) -> bool {
         self.programs.is_empty()
+    }
+
+    fn first_program_span(&self) -> Option<Span> {
+        self.first_source_span()
     }
 
     pub fn validate_shape_contract(
@@ -172,11 +302,66 @@ impl ScalarProgramBlock {
                 node_index: 0,
                 programs: self.programs.len(),
                 spans: self.program_spans.len(),
-                span: self.program_span(0).unwrap_or(Span::DUMMY),
+                span: self.first_program_span(),
             });
+        }
+        if self.output_indices.len() != self.stored_output_count() {
+            return Err(
+                SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
+                    context,
+                    node_index: 0,
+                    programs: self.stored_output_count(),
+                    output_indices: self.output_indices.len(),
+                    span: self.first_program_span(),
+                },
+            );
         }
         Ok(())
     }
+}
+
+fn first_span(spans: &[Span]) -> Option<Span> {
+    spans.iter().copied().find(|span| !span.is_dummy())
+}
+
+fn stored_output_count(programs: &[Vec<LinearOp>]) -> usize {
+    programs
+        .iter()
+        .map(|program| ScalarProgramBlock::program_output_count(program))
+        .sum()
+}
+
+fn validate_scalar_program_metadata_lengths(
+    context: impl Into<String>,
+    node_index: usize,
+    programs: usize,
+    spans: usize,
+    stored_outputs: usize,
+    output_indices: usize,
+    span: Option<Span>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let context = context.into();
+    if spans != programs {
+        return Err(SolveProblemShapeContractError::ScalarProgramSpanMismatch {
+            context,
+            node_index,
+            programs,
+            spans,
+            span,
+        });
+    }
+    if output_indices != stored_outputs {
+        return Err(
+            SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
+                context,
+                node_index,
+                programs: stored_outputs,
+                output_indices,
+                span,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Sparsity annotation for a tensor operand in a `ComputeNode`.
@@ -221,26 +406,176 @@ pub struct TensorNodeMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AffineStencilIndexStrideTerm {
+    pub dimension: usize,
+    pub stride: isize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AffineStencilConstStrideTerm {
+    pub dimension: usize,
+    pub stride: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AffineStencilLoadStride {
     pub op_position: usize,
-    pub stride: usize,
+    pub terms: Vec<AffineStencilIndexStrideTerm>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AffineStencilConstStride {
     pub op_position: usize,
-    pub stride: f64,
+    pub terms: Vec<AffineStencilConstStrideTerm>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AffineStencilIteration {
-    pub index_values: Vec<i64>,
+pub struct TensorOutputMap {
+    pub start: usize,
+    pub strides: Vec<AffineStencilIndexStrideTerm>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AffineStencilDomain {
-    pub index_names: Vec<String>,
-    pub iterations: Vec<AffineStencilIteration>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TensorOutputMapError {
+    Dimension {
+        output_dimension: usize,
+        domain_rank: usize,
+    },
+    StructuredIndexDomain {
+        error: StructuredIndexDomainError,
+    },
+    NegativeIndex {
+        value: isize,
+    },
+    OutputIndexOverflow,
+}
+
+impl TensorOutputMap {
+    pub fn dense_contiguous(
+        start: usize,
+        domain: &StructuredIndexDomain,
+    ) -> Result<Self, TensorOutputMapError> {
+        Ok(Self {
+            start,
+            strides: dense_domain_output_strides(domain)?,
+        })
+    }
+
+    pub fn output_indices(
+        &self,
+        domain: &StructuredIndexDomain,
+    ) -> Result<Vec<usize>, TensorOutputMapError> {
+        let index_tuples = domain
+            .index_tuples()
+            .map_err(|error| TensorOutputMapError::StructuredIndexDomain { error })?;
+        let Some(base_tuple) = index_tuples.first().cloned() else {
+            return Ok(Vec::new());
+        };
+        index_tuples
+            .iter()
+            .map(|index_tuple| self.output_index(domain, &base_tuple, index_tuple))
+            .collect()
+    }
+
+    pub fn output_count(
+        &self,
+        domain: &StructuredIndexDomain,
+    ) -> Result<usize, TensorOutputMapError> {
+        let Some(max_index) = self.output_indices(domain)?.into_iter().max() else {
+            return Ok(0);
+        };
+        max_index
+            .checked_add(1)
+            .ok_or(TensorOutputMapError::OutputIndexOverflow)
+    }
+
+    fn output_index(
+        &self,
+        domain: &StructuredIndexDomain,
+        base_tuple: &[i64],
+        index_tuple: &[i64],
+    ) -> Result<usize, TensorOutputMapError> {
+        let mut value =
+            isize::try_from(self.start).map_err(|_| TensorOutputMapError::OutputIndexOverflow)?;
+        for term in &self.strides {
+            if term.dimension >= domain.binders.len() {
+                return Err(TensorOutputMapError::Dimension {
+                    output_dimension: term.dimension,
+                    domain_rank: domain.binders.len(),
+                });
+            }
+            let delta = isize::try_from(output_ordinal_delta(
+                term.dimension,
+                domain,
+                base_tuple,
+                index_tuple,
+            ))
+            .map_err(|_| TensorOutputMapError::OutputIndexOverflow)?;
+            let offset = delta
+                .checked_mul(term.stride)
+                .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+            value = value
+                .checked_add(offset)
+                .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        }
+        usize::try_from(value).map_err(|_| TensorOutputMapError::NegativeIndex { value })
+    }
+}
+
+fn dense_domain_output_strides(
+    domain: &StructuredIndexDomain,
+) -> Result<Vec<AffineStencilIndexStrideTerm>, TensorOutputMapError> {
+    let mut later_count = 1usize;
+    let mut terms = Vec::new();
+    for (dimension, binder) in domain.binders.iter().enumerate().rev() {
+        let value_count =
+            binder_value_count(binder).ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        if value_count > 1 {
+            terms.push(AffineStencilIndexStrideTerm {
+                dimension,
+                stride: isize::try_from(later_count)
+                    .map_err(|_| TensorOutputMapError::OutputIndexOverflow)?,
+            });
+        }
+        later_count = later_count
+            .checked_mul(value_count)
+            .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+    }
+    terms.reverse();
+    Ok(terms)
+}
+
+fn output_ordinal_delta(
+    dimension: usize,
+    domain: &StructuredIndexDomain,
+    base_tuple: &[i64],
+    index_tuple: &[i64],
+) -> i64 {
+    let step = domain.binders[dimension].step;
+    (index_tuple[dimension] - base_tuple[dimension]) / step
+}
+
+fn binder_value_count(binder: &rumoca_core::StructuredIndexBinder) -> Option<usize> {
+    if binder.step == 0 {
+        return Some(0);
+    }
+    if binder.step > 0 {
+        if binder.lower > binder.upper {
+            return Some(0);
+        }
+        usize::try_from(
+            ((i128::from(binder.upper) - i128::from(binder.lower)) / i128::from(binder.step)) + 1,
+        )
+        .ok()
+    } else {
+        if binder.lower < binder.upper {
+            return Some(0);
+        }
+        usize::try_from(
+            ((i128::from(binder.lower) - i128::from(binder.upper)) / -i128::from(binder.step)) + 1,
+        )
+        .ok()
+    }
 }
 
 /// A single tensor-level compute node.
@@ -289,13 +624,28 @@ pub enum ComputeNode {
         span: Span,
     },
 
-    /// Consecutive scalar rows whose load indices advance affinely with row offset.
+    /// Elementwise tensor map over a compact index domain.
     ///
-    /// Expands to `count` scalar programs by cloning `base_ops` and adding
-    /// `row_offset * stride` to each load at `load_strides[*].op_position`.
+    /// Expands to one scalar row per domain point by cloning `base_ops` and
+    /// applying affine register-independent strides to loads and constants.
+    Map {
+        domain: StructuredIndexDomain,
+        output_map: TensorOutputMap,
+        base_ops: Vec<LinearOp>,
+        load_strides: Vec<AffineStencilLoadStride>,
+        const_strides: Vec<AffineStencilConstStride>,
+        metadata: TensorNodeMetadata,
+        span: Span,
+    },
+
+    /// Consecutive scalar rows whose load indices advance affinely over a compact domain.
+    ///
+    /// Expands to one scalar row per compact domain point by cloning `base_ops`
+    /// and applying each load/constant stride term to the corresponding domain
+    /// coordinate offset.
     AffineStencil {
-        count: usize,
-        domain: AffineStencilDomain,
+        domain: StructuredIndexDomain,
+        output_map: TensorOutputMap,
         base_ops: Vec<LinearOp>,
         load_strides: Vec<AffineStencilLoadStride>,
         const_strides: Vec<AffineStencilConstStride>,
@@ -309,18 +659,20 @@ pub struct ComputeNodeCounts {
     pub scalar_programs: usize,
     pub matmul: usize,
     pub linsolve: usize,
+    pub map: usize,
     pub affine_stencil: usize,
 }
 
 impl ComputeNodeCounts {
     pub fn tensor_nodes(self) -> usize {
-        self.matmul + self.linsolve + self.affine_stencil
+        self.matmul + self.linsolve + self.map + self.affine_stencil
     }
 
     pub fn add_assign(&mut self, rhs: Self) {
         self.scalar_programs += rhs.scalar_programs;
         self.matmul += rhs.matmul;
         self.linsolve += rhs.linsolve;
+        self.map += rhs.map;
         self.affine_stencil += rhs.affine_stencil;
     }
 }
@@ -347,26 +699,62 @@ impl ComputeBlock {
         }
     }
 
-    /// Total output count across all nodes.
-    ///
-    /// Each `StoreOutput` is one output. A `ScalarPrograms` node contributes its
-    /// block's [`ScalarProgramBlock::output_count`] (which may exceed the program
-    /// count when a program emits several outputs), and matmul/linsolve nodes
-    /// contribute `m*n` / `n` respectively.
-    pub fn len(&self) -> usize {
-        self.nodes
-            .iter()
-            .map(|n| match n {
-                ComputeNode::ScalarPrograms(b) => b.output_count(),
-                ComputeNode::MatMul { m, n, .. } => m * n,
-                ComputeNode::LinSolve { n, .. } => *n,
-                ComputeNode::AffineStencil { count, .. } => *count,
-            })
-            .sum()
+    /// Total output slot count across all nodes.
+    pub fn len(&self) -> Result<usize, SolveProblemShapeContractError> {
+        self.output_count("ComputeBlock::len")
+    }
+
+    pub fn output_count(
+        &self,
+        context: &'static str,
+    ) -> Result<usize, SolveProblemShapeContractError> {
+        let mut output_cursor = 0usize;
+        for (node_index, node) in self.nodes.iter().enumerate() {
+            match node {
+                ComputeNode::ScalarPrograms(block) => {
+                    output_cursor = block.advance_compute_block_output_cursor(
+                        context,
+                        node_index,
+                        output_cursor,
+                    )?;
+                }
+                ComputeNode::Map {
+                    domain, output_map, ..
+                }
+                | ComputeNode::AffineStencil {
+                    domain, output_map, ..
+                } => {
+                    output_cursor = output_cursor.max(tensor_output_count_for_node(
+                        context, node_index, node, domain, output_map,
+                    )?);
+                }
+                ComputeNode::MatMul { m, n, span, .. } => {
+                    let output_count = m
+                        .checked_mul(*n)
+                        .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
+                    output_cursor = output_cursor
+                        .checked_add(output_count)
+                        .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
+                }
+                ComputeNode::LinSolve { n, span, .. } => {
+                    output_cursor = output_cursor
+                        .checked_add(*n)
+                        .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
+                }
+            }
+        }
+        Ok(output_cursor)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.nodes.iter().all(|node| match node {
+            ComputeNode::ScalarPrograms(block) => block.is_empty(),
+            ComputeNode::Map { domain, .. } | ComputeNode::AffineStencil { domain, .. } => {
+                domain.scalar_count().is_ok_and(|count| count == 0)
+            }
+            ComputeNode::MatMul { m, n, .. } => *m == 0 || *n == 0,
+            ComputeNode::LinSolve { n, .. } => *n == 0,
+        })
     }
 
     pub fn compute_node_counts(&self) -> ComputeNodeCounts {
@@ -376,6 +764,7 @@ impl ComputeBlock {
                 ComputeNode::ScalarPrograms(_) => counts.scalar_programs += 1,
                 ComputeNode::MatMul { .. } => counts.matmul += 1,
                 ComputeNode::LinSolve { .. } => counts.linsolve += 1,
+                ComputeNode::Map { .. } => counts.map += 1,
                 ComputeNode::AffineStencil { .. } => counts.affine_stencil += 1,
             }
         }
@@ -395,6 +784,80 @@ impl ComputeBlock {
             node.validate_shape_contract(&context, index)?;
         }
         Ok(())
+    }
+}
+
+fn tensor_output_count_for_node(
+    context: &'static str,
+    node_index: usize,
+    node: &ComputeNode,
+    domain: &StructuredIndexDomain,
+    output_map: &TensorOutputMap,
+) -> Result<usize, SolveProblemShapeContractError> {
+    let (dimension, span) = match node {
+        ComputeNode::Map { span, .. } => ("Map", *span),
+        ComputeNode::AffineStencil { span, .. } => ("AffineStencil", *span),
+        ComputeNode::ScalarPrograms(_)
+        | ComputeNode::MatMul { .. }
+        | ComputeNode::LinSolve { .. } => unreachable!("tensor output count requires tensor node"),
+    };
+    output_map
+        .output_count(domain)
+        .map_err(|error| tensor_output_map_error(context, node_index, dimension, error, span))
+}
+
+fn tensor_output_map_error(
+    context: &'static str,
+    node_index: usize,
+    dimension: &'static str,
+    error: TensorOutputMapError,
+    span: Span,
+) -> SolveProblemShapeContractError {
+    match error {
+        TensorOutputMapError::Dimension {
+            output_dimension,
+            domain_rank,
+        } => SolveProblemShapeContractError::TensorOutputMapDimension {
+            context: context.to_string(),
+            node_index,
+            dimension,
+            output_dimension,
+            domain_rank,
+            span,
+        },
+        TensorOutputMapError::StructuredIndexDomain { error } => {
+            SolveProblemShapeContractError::StructuredIndexDomain {
+                context: context.to_string(),
+                node_index,
+                dimension,
+                error,
+                span,
+            }
+        }
+        TensorOutputMapError::NegativeIndex { value } => {
+            SolveProblemShapeContractError::TensorOutputMapNegativeIndex {
+                context: context.to_string(),
+                node_index,
+                dimension,
+                value,
+                span,
+            }
+        }
+        TensorOutputMapError::OutputIndexOverflow => {
+            output_index_overflow(context, node_index, Some(span))
+        }
+    }
+}
+
+fn output_index_overflow(
+    context: impl Into<String>,
+    node_index: usize,
+    span: Option<Span>,
+) -> SolveProblemShapeContractError {
+    SolveProblemShapeContractError::OutputIndexOverflow {
+        context: context.into(),
+        node_index,
+        span,
     }
 }
 
@@ -418,7 +881,18 @@ impl ComputeNode {
                             node_index,
                             programs,
                             spans,
-                            span: block.program_span(0).unwrap_or(Span::DUMMY),
+                            span: block.first_program_span(),
+                        },
+                        SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
+                            programs,
+                            output_indices,
+                            ..
+                        } => SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
+                            context: context.to_string(),
+                            node_index,
+                            programs,
+                            output_indices,
+                            span: block.first_program_span(),
                         },
                         other => other,
                     })?;
@@ -443,13 +917,32 @@ impl ComputeNode {
                     });
                 }
             }
-            ComputeNode::AffineStencil {
-                count,
+            ComputeNode::Map {
                 domain,
+                output_map,
                 span,
                 ..
             } => {
-                if *count == 0 {
+                let count = validate_tensor_domain(context, node_index, "Map", domain, *span)?;
+                if count == 0 {
+                    return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+                        context: context.to_string(),
+                        node_index,
+                        dimension: "Map",
+                        span: *span,
+                    });
+                }
+                validate_tensor_output_map(context, node_index, "Map", domain, output_map, *span)?;
+            }
+            ComputeNode::AffineStencil {
+                domain,
+                output_map,
+                span,
+                ..
+            } => {
+                let count =
+                    validate_tensor_domain(context, node_index, "AffineStencil", domain, *span)?;
+                if count == 0 {
                     return Err(SolveProblemShapeContractError::ZeroTensorDimension {
                         context: context.to_string(),
                         node_index,
@@ -457,22 +950,108 @@ impl ComputeNode {
                         span: *span,
                     });
                 }
-                if domain.iterations.len() != *count {
-                    return Err(SolveProblemShapeContractError::ZeroTensorDimension {
-                        context: format!(
-                            "{context}: AffineStencil domain iteration count {} does not match count {}",
-                            domain.iterations.len(),
-                            count
-                        ),
-                        node_index,
-                        dimension: "AffineStencilDomain",
-                        span: *span,
-                    });
-                }
+                validate_tensor_output_map(
+                    context,
+                    node_index,
+                    "AffineStencil",
+                    domain,
+                    output_map,
+                    *span,
+                )?;
             }
         }
         Ok(())
     }
+}
+
+fn validate_tensor_domain(
+    context: &str,
+    node_index: usize,
+    dimension: &'static str,
+    domain: &StructuredIndexDomain,
+    span: Span,
+) -> Result<usize, SolveProblemShapeContractError> {
+    domain.validate().map_err(
+        |err| SolveProblemShapeContractError::StructuredIndexDomain {
+            context: context.to_string(),
+            node_index,
+            dimension,
+            error: err,
+            span,
+        },
+    )
+}
+
+fn validate_tensor_output_map(
+    context: &str,
+    node_index: usize,
+    dimension: &'static str,
+    domain: &StructuredIndexDomain,
+    output_map: &TensorOutputMap,
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    for term in &output_map.strides {
+        if term.dimension >= domain.binders.len() {
+            return Err(SolveProblemShapeContractError::TensorOutputMapDimension {
+                context: context.to_string(),
+                node_index,
+                dimension,
+                output_dimension: term.dimension,
+                domain_rank: domain.binders.len(),
+                span,
+            });
+        }
+    }
+    if domain
+        .index_tuples()
+        .map_err(
+            |error| SolveProblemShapeContractError::StructuredIndexDomain {
+                context: context.to_string(),
+                node_index,
+                dimension,
+                error,
+                span,
+            },
+        )?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    output_map.output_indices(domain).map_err(|err| match err {
+        TensorOutputMapError::Dimension {
+            output_dimension,
+            domain_rank,
+        } => SolveProblemShapeContractError::TensorOutputMapDimension {
+            context: context.to_string(),
+            node_index,
+            dimension,
+            output_dimension,
+            domain_rank,
+            span,
+        },
+        TensorOutputMapError::StructuredIndexDomain { error } => {
+            SolveProblemShapeContractError::StructuredIndexDomain {
+                context: context.to_string(),
+                node_index,
+                dimension,
+                error,
+                span,
+            }
+        }
+        TensorOutputMapError::NegativeIndex { value } => {
+            SolveProblemShapeContractError::TensorOutputMapNegativeIndex {
+                context: context.to_string(),
+                node_index,
+                dimension,
+                value,
+                span,
+            }
+        }
+        TensorOutputMapError::OutputIndexOverflow => {
+            output_index_overflow(context, node_index, Some(span))
+        }
+    })?;
+    Ok(())
 }
 
 impl Serialize for ComputeBlock {
@@ -546,584 +1125,7 @@ impl VarLayout {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use indexmap::IndexMap;
-
-    const REPRESENTATIVE_SOLVE_PROBLEM_GOLDEN: &str =
-        include_str!("../tests/golden/representative_solve_problem.solve.json");
-
-    fn test_stencil_domain(count: usize) -> AffineStencilDomain {
-        AffineStencilDomain {
-            index_names: vec!["i".to_string()],
-            iterations: (0..count)
-                .map(|idx| AffineStencilIteration {
-                    index_values: vec![idx as i64 + 1],
-                })
-                .collect(),
-        }
-    }
-
-    fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)]) -> VarLayout {
-        let mut bindings = IndexMap::new();
-        let mut shapes = IndexMap::new();
-        let mut y_offset = 0usize;
-        let mut p_offset = 0usize;
-        for (name, shape) in y_shapes {
-            let size: usize = shape.iter().product();
-            bindings.insert(name.to_string(), scalar_slot_y(y_offset));
-            shapes.insert(name.to_string(), shape.clone());
-            y_offset += size;
-        }
-        for (name, shape) in p_shapes {
-            let size: usize = shape.iter().product();
-            bindings.insert(name.to_string(), scalar_slot_p(p_offset));
-            shapes.insert(name.to_string(), shape.clone());
-            p_offset += size;
-        }
-        VarLayout::from_parts_with_shapes(bindings, shapes, y_offset, p_offset)
-    }
-
-    fn representative_solve_problem_fixture() -> SolveProblem {
-        SolveProblem {
-            schema_version: SOLVE_SCHEMA_VERSION,
-            layout: make_layout(
-                &[("x", vec![1]), ("y", vec![1]), ("hold.y", vec![1])],
-                &[("p", vec![1]), ("__pre__.hold.y", vec![1])],
-            ),
-            solve_layout: representative_solve_layout(),
-            continuous: representative_continuous_system(),
-            initialization: representative_initialization_system(),
-            discrete: representative_discrete_system(),
-            events: representative_event_partition(),
-            clocks: representative_clock_partition(),
-        }
-    }
-
-    fn representative_solver_maps() -> SolverNameIndexMaps {
-        let mut name_to_idx = IndexMap::new();
-        name_to_idx.insert("x".to_string(), 0);
-        name_to_idx.insert("y".to_string(), 1);
-        name_to_idx.insert("hold.y".to_string(), 2);
-
-        let mut base_to_indices = IndexMap::new();
-        base_to_indices.insert("x".to_string(), vec![0]);
-        base_to_indices.insert("y".to_string(), vec![1]);
-        base_to_indices.insert("hold.y".to_string(), vec![2]);
-
-        SolverNameIndexMaps {
-            names: vec!["x".to_string(), "y".to_string(), "hold.y".to_string()],
-            name_to_idx,
-            base_to_indices,
-        }
-    }
-
-    fn representative_solve_layout() -> SolveLayout {
-        SolveLayout {
-            solver_maps: representative_solver_maps(),
-            state_scalar_count: 1,
-            algebraic_scalar_count: 1,
-            output_scalar_count: 1,
-            parameter_count: 1,
-            compiled_parameter_len: 2,
-            discrete_real_scalar_names: vec!["hold.y".to_string()],
-            relation_memory_parameter_indices: vec![1],
-            initial_event_parameter_index: Some(1),
-            pre_param_bindings: vec![PreParamBinding {
-                dest_p_index: 1,
-                source: PreParamSource::Y { index: 2 },
-            }],
-            ..SolveLayout::default()
-        }
-    }
-
-    fn representative_continuous_system() -> ContinuousSolveSystem {
-        ContinuousSolveSystem {
-            implicit_rhs: ComputeBlock {
-                nodes: vec![ComputeNode::ScalarPrograms(ScalarProgramBlock::new(vec![
-                    vec![
-                        LinearOp::LoadY { dst: 0, index: 0 },
-                        LinearOp::LoadP { dst: 1, index: 0 },
-                        LinearOp::Binary {
-                            dst: 2,
-                            op: BinaryOp::Sub,
-                            lhs: 0,
-                            rhs: 1,
-                        },
-                        LinearOp::StoreOutput { src: 2 },
-                    ],
-                ]))],
-            },
-            implicit_row_targets: vec![Some(scalar_slot_y(1))],
-            algebraic_projection_plan: AlgebraicProjectionPlan {
-                blocks: vec![AlgebraicProjectionBlock {
-                    rows: vec![1],
-                    y_indices: vec![1],
-                    causal_steps: Vec::new(),
-                }],
-            },
-            residual: ScalarProgramBlock::new(vec![vec![
-                LinearOp::LoadY { dst: 0, index: 1 },
-                LinearOp::StoreOutput { src: 0 },
-            ]]),
-            derivative_rhs: representative_derivative_rhs(),
-        }
-    }
-
-    fn representative_derivative_rhs() -> ComputeBlock {
-        ComputeBlock {
-            nodes: vec![ComputeNode::MatMul {
-                lhs_ops: vec![LinearOp::LoadP { dst: 0, index: 0 }],
-                lhs_start: 0,
-                rhs_ops: vec![LinearOp::LoadY { dst: 1, index: 0 }],
-                rhs_start: 1,
-                m: 1,
-                k: 1,
-                n: 1,
-                lhs_sparsity: SparsityPattern::Diagonal,
-                rhs_sparsity: SparsityPattern::Dense,
-                metadata: TensorNodeMetadata::default(),
-                span: Span::DUMMY,
-            }],
-        }
-    }
-
-    fn representative_initialization_system() -> InitializationSolveSystem {
-        InitializationSolveSystem {
-            row_targets: vec![Some(scalar_slot_y(1))],
-            residual: ScalarProgramBlock::new(vec![vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                LinearOp::StoreOutput { src: 0 },
-            ]]),
-            projection_indices: Vec::new(),
-            projection_plan: AlgebraicProjectionPlan::default(),
-            update_rhs: ScalarProgramBlock::default(),
-            update_targets: Vec::new(),
-        }
-    }
-
-    fn representative_discrete_system() -> DiscreteSolveSystem {
-        DiscreteSolveSystem {
-            runtime_assignment_rhs: ScalarProgramBlock::new(vec![vec![
-                LinearOp::LoadY { dst: 0, index: 2 },
-                LinearOp::StoreOutput { src: 0 },
-            ]]),
-            runtime_assignment_targets: vec![scalar_slot_p(1)],
-            rhs: ScalarProgramBlock::new(vec![vec![
-                LinearOp::LoadY { dst: 0, index: 1 },
-                LinearOp::Const { dst: 1, value: 0.0 },
-                LinearOp::Compare {
-                    dst: 2,
-                    op: CompareOp::Gt,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                LinearOp::StoreOutput { src: 2 },
-            ]]),
-            update_targets: vec![scalar_slot_y(2)],
-            pre_modes: vec![DiscreteEventPreMode::Fixed],
-            observation_refresh: vec![true],
-        }
-    }
-
-    fn representative_event_partition() -> SolveEventPartition {
-        SolveEventPartition {
-            root_conditions: ScalarProgramBlock::new(vec![vec![
-                LinearOp::LoadTime { dst: 0 },
-                LinearOp::LoadP { dst: 1, index: 0 },
-                LinearOp::Compare {
-                    dst: 2,
-                    op: CompareOp::Ge,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                LinearOp::StoreOutput { src: 2 },
-            ]]),
-            scheduled_time_events: vec![0.1],
-            ..SolveEventPartition::default()
-        }
-    }
-
-    fn representative_clock_partition() -> SolveClockPartition {
-        SolveClockPartition {
-            periodic_event_schedules: vec![PeriodicEventSchedule {
-                period_seconds: 0.1,
-                phase_seconds: 0.0,
-            }],
-        }
-    }
-
-    fn assert_same_json_shape<T: serde::Serialize>(actual: &T, expected: &T) {
-        assert_eq!(
-            serde_json::to_value(actual).expect("serialize actual"),
-            serde_json::to_value(expected).expect("serialize expected")
-        );
-    }
-
-    #[test]
-    fn y_slice_returns_some_for_y_array_variable() {
-        let layout = make_layout(&[("x", vec![3, 3])], &[]);
-        let src = layout
-            .y_slice("x")
-            .expect("3×3 Y-slot variable should yield YSlice");
-        assert!(matches!(src, TensorSource::YSlice { start: 0, shape } if shape == [3, 3]));
-    }
-
-    #[test]
-    fn p_slice_returns_some_for_p_array_variable() {
-        let layout = make_layout(&[], &[("A", vec![2, 4])]);
-        let src = layout
-            .p_slice("A")
-            .expect("2×4 P-slot variable should yield PSlice");
-        assert!(matches!(src, TensorSource::PSlice { start: 0, shape } if shape == [2, 4]));
-    }
-
-    #[test]
-    fn indexed_bindings_are_derived_from_shape_metadata() {
-        let layout = make_layout(&[("body.frame.R.T", vec![3, 3])], &[]);
-        let entries = layout
-            .indexed_bindings()
-            .get(&ComponentReferenceKey::generated("body.frame.R.T"))
-            .expect("array layout should expose structured scalar slots");
-
-        assert_eq!(entries.len(), 9);
-        assert_eq!(entries[0].indices, vec![1, 1]);
-        assert!(matches!(entries[0].slot, ScalarSlot::Y { index: 0, .. }));
-        assert_eq!(entries[8].indices, vec![3, 3]);
-        assert!(matches!(entries[8].slot, ScalarSlot::Y { index: 8, .. }));
-    }
-
-    #[test]
-    fn y_slice_returns_none_for_p_slot_variable() {
-        let layout = make_layout(&[], &[("p", vec![2])]);
-        assert!(
-            layout.y_slice("p").is_none(),
-            "P-slot variable must not yield YSlice"
-        );
-    }
-
-    #[test]
-    fn p_slice_returns_none_for_y_slot_variable() {
-        let layout = make_layout(&[("x", vec![2])], &[]);
-        assert!(
-            layout.p_slice("x").is_none(),
-            "Y-slot variable must not yield PSlice"
-        );
-    }
-
-    #[test]
-    fn y_slice_returns_none_for_scalar_variable_without_shape() {
-        let mut bindings = IndexMap::new();
-        bindings.insert("s".to_string(), scalar_slot_y(0));
-        let layout = VarLayout::from_parts_with_shapes(bindings, IndexMap::new(), 1, 0);
-        assert!(
-            layout.y_slice("s").is_none(),
-            "scalar variable with no recorded shape must not yield YSlice"
-        );
-    }
-
-    #[test]
-    fn y_slice_returns_none_for_unknown_variable() {
-        let layout = make_layout(&[("x", vec![2])], &[]);
-        assert!(layout.y_slice("unknown").is_none());
-    }
-
-    fn serde_roundtrip_tensor_block_fixture() -> ComputeBlock {
-        ComputeBlock {
-            nodes: vec![
-                serde_roundtrip_scalar_node(),
-                serde_roundtrip_matmul_node(),
-                serde_roundtrip_linsolve_node(),
-                serde_roundtrip_affine_stencil_node(),
-            ],
-        }
-    }
-
-    fn serde_roundtrip_scalar_node() -> ComputeNode {
-        ComputeNode::ScalarPrograms(ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]))
-    }
-
-    fn serde_roundtrip_matmul_node() -> ComputeNode {
-        ComputeNode::MatMul {
-            lhs_ops: vec![
-                LinearOp::Const { dst: 0, value: 2.0 },
-                LinearOp::Move { dst: 1, src: 0 },
-            ],
-            lhs_start: 1,
-            rhs_ops: vec![
-                LinearOp::LoadSeed { dst: 2, index: 0 },
-                LinearOp::Move { dst: 3, src: 2 },
-            ],
-            rhs_start: 3,
-            m: 1,
-            k: 1,
-            n: 1,
-            lhs_sparsity: SparsityPattern::Diagonal,
-            rhs_sparsity: SparsityPattern::Dense,
-            metadata: TensorNodeMetadata::default(),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn serde_roundtrip_linsolve_node() -> ComputeNode {
-        ComputeNode::LinSolve {
-            setup_ops: vec![
-                LinearOp::LoadP { dst: 0, index: 0 },
-                LinearOp::LoadP { dst: 1, index: 1 },
-                LinearOp::LoadP { dst: 2, index: 2 },
-                LinearOp::LoadY { dst: 3, index: 0 },
-            ],
-            matrix_start: 0,
-            rhs_start: 3,
-            n: 2,
-            next_reg: 4,
-            metadata: TensorNodeMetadata::default(),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn serde_roundtrip_affine_stencil_node() -> ComputeNode {
-        ComputeNode::AffineStencil {
-            count: 8,
-            domain: test_stencil_domain(8),
-            base_ops: vec![
-                LinearOp::LoadY { dst: 0, index: 0 },
-                LinearOp::StoreOutput { src: 0 },
-            ],
-            load_strides: vec![AffineStencilLoadStride {
-                op_position: 0,
-                stride: 1,
-            }],
-            const_strides: Vec::new(),
-            metadata: TensorNodeMetadata::default(),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn assert_tensor_node_tags_survive_json(json: &str) {
-        for tag in [
-            "MatMul",
-            "LinSolve",
-            "AffineStencil",
-            "lhs_sparsity",
-            "metadata",
-        ] {
-            assert!(json.contains(tag), "{tag} must appear in JSON: {json}");
-        }
-    }
-
-    fn assert_tensor_nodes_survive_roundtrip(back: &ComputeBlock) {
-        assert_eq!(
-            back.nodes.len(),
-            4,
-            "all four compute nodes must survive round-trip"
-        );
-        assert!(matches!(&back.nodes[0], ComputeNode::ScalarPrograms(_)));
-        assert!(matches!(&back.nodes[2], ComputeNode::LinSolve { n: 2, .. }));
-        assert!(matches!(
-            &back.nodes[3],
-            ComputeNode::AffineStencil { count: 8, .. }
-        ));
-        assert_roundtrip_matmul_shape(&back.nodes[1]);
-    }
-
-    fn assert_roundtrip_matmul_shape(node: &ComputeNode) {
-        assert!(matches!(
-            node,
-            ComputeNode::MatMul {
-                m: 1,
-                k: 1,
-                n: 1,
-                lhs_sparsity: SparsityPattern::Diagonal,
-                metadata: TensorNodeMetadata {
-                    element_type: TensorElementType::Real64,
-                    layout: TensorLayout::RowMajorDense,
-                    scalar_fallback: ScalarFallback::Exact,
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn compute_block_tensor_nodes_survive_serde_roundtrip() {
-        let block = serde_roundtrip_tensor_block_fixture();
-        let json = serde_json::to_string(&block).expect("serialize ComputeBlock");
-        assert_tensor_node_tags_survive_json(&json);
-
-        let back: ComputeBlock = serde_json::from_str(&json).expect("deserialize ComputeBlock");
-        assert_tensor_nodes_survive_roundtrip(&back);
-    }
-
-    #[test]
-    fn compute_node_counts_cover_blocks_and_problem() {
-        let scalar = ComputeNode::ScalarPrograms(ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]));
-        let matmul = ComputeNode::MatMul {
-            lhs_ops: vec![LinearOp::Const { dst: 0, value: 1.0 }],
-            lhs_start: 0,
-            rhs_ops: vec![LinearOp::Const { dst: 1, value: 2.0 }],
-            rhs_start: 1,
-            m: 1,
-            k: 1,
-            n: 1,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
-            metadata: TensorNodeMetadata::default(),
-            span: Span::DUMMY,
-        };
-        let linsolve = ComputeNode::LinSolve {
-            setup_ops: vec![
-                LinearOp::Const { dst: 0, value: 1.0 },
-                LinearOp::Const { dst: 1, value: 2.0 },
-            ],
-            matrix_start: 0,
-            rhs_start: 1,
-            n: 1,
-            next_reg: 2,
-            metadata: TensorNodeMetadata::default(),
-            span: Span::DUMMY,
-        };
-        let stencil = ComputeNode::AffineStencil {
-            count: 8,
-            domain: test_stencil_domain(8),
-            base_ops: vec![
-                LinearOp::LoadY { dst: 0, index: 0 },
-                LinearOp::StoreOutput { src: 0 },
-            ],
-            load_strides: vec![AffineStencilLoadStride {
-                op_position: 0,
-                stride: 1,
-            }],
-            const_strides: Vec::new(),
-            metadata: TensorNodeMetadata::default(),
-            span: Span::DUMMY,
-        };
-        let block = ComputeBlock {
-            nodes: vec![scalar, matmul.clone(), linsolve.clone(), stencil.clone()],
-        };
-
-        let counts = block.compute_node_counts();
-        assert_eq!(counts.scalar_programs, 1);
-        assert_eq!(counts.matmul, 1);
-        assert_eq!(counts.linsolve, 1);
-        assert_eq!(counts.affine_stencil, 1);
-        assert_eq!(block.tensor_node_count(), 3);
-
-        let mut problem = SolveProblem::default();
-        problem.continuous.implicit_rhs = block;
-        problem.continuous.derivative_rhs = ComputeBlock {
-            nodes: vec![matmul, linsolve, stencil],
-        };
-        let problem_counts = problem.compute_node_counts();
-        assert_eq!(problem_counts.scalar_programs, 1);
-        assert_eq!(problem_counts.matmul, 2);
-        assert_eq!(problem_counts.linsolve, 2);
-        assert_eq!(problem_counts.affine_stencil, 2);
-        assert_eq!(problem_counts.tensor_nodes(), 6);
-    }
-
-    #[test]
-    fn solve_problem_json_has_supported_schema_version() {
-        let value = serde_json::to_value(SolveProblem::default()).expect("serialize SolveProblem");
-        assert_eq!(
-            value
-                .get("schema_version")
-                .and_then(serde_json::Value::as_u64),
-            Some(u64::from(SOLVE_SCHEMA_VERSION))
-        );
-
-        let mut missing = value.clone();
-        missing
-            .as_object_mut()
-            .expect("SolveProblem JSON should be object")
-            .remove("schema_version");
-        assert!(
-            serde_json::from_value::<SolveProblem>(missing).is_err(),
-            "SolveProblem JSON must carry an explicit schema_version"
-        );
-
-        let mut unsupported = value;
-        unsupported["schema_version"] = serde_json::json!(SOLVE_SCHEMA_VERSION + 1);
-        let err = serde_json::from_value::<SolveProblem>(unsupported)
-            .expect_err("unsupported SolveProblem schema version must fail");
-        assert!(err.to_string().contains("unsupported Solve schema_version"));
-    }
-
-    #[test]
-    fn representative_solve_problem_json_roundtrip_preserves_schema_shape() {
-        let problem = representative_solve_problem_fixture();
-        let json = serde_json::to_string_pretty(&problem).expect("serialize SolveProblem");
-        let decoded: SolveProblem = serde_json::from_str(&json).expect("deserialize SolveProblem");
-        assert_same_json_shape(&decoded, &problem);
-    }
-
-    #[test]
-    fn representative_solve_problem_json_matches_committed_golden() {
-        let problem = representative_solve_problem_fixture();
-        let actual = serde_json::to_value(&problem).expect("serialize representative SolveProblem");
-        let expected: serde_json::Value = serde_json::from_str(REPRESENTATIVE_SOLVE_PROBLEM_GOLDEN)
-            .expect("valid SolveProblem golden JSON");
-
-        serde_json::from_value::<SolveProblem>(expected.clone())
-            .expect("golden uses supported Solve schema");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn representative_solve_problem_bincode_roundtrip_preserves_schema_shape() {
-        let problem = representative_solve_problem_fixture();
-        let bytes = bincode::serialize(&problem).expect("serialize SolveProblem as bincode");
-        let decoded: SolveProblem =
-            bincode::deserialize(&bytes).expect("deserialize SolveProblem from bincode");
-        assert_same_json_shape(&decoded, &problem);
-    }
-
-    #[test]
-    fn solve_problem_shape_contract_rejects_bad_schema_version() {
-        let mut problem = representative_solve_problem_fixture();
-        problem.schema_version = SOLVE_SCHEMA_VERSION + 1;
-
-        assert_eq!(
-            problem.validate_shape_contract(),
-            Err(SolveProblemShapeContractError::SchemaVersion {
-                actual: SOLVE_SCHEMA_VERSION + 1,
-                expected: SOLVE_SCHEMA_VERSION,
-            })
-        );
-    }
-
-    #[test]
-    fn solve_problem_shape_contract_rejects_zero_tensor_dimension() {
-        let mut problem = representative_solve_problem_fixture();
-        problem.continuous.derivative_rhs = ComputeBlock {
-            nodes: vec![ComputeNode::LinSolve {
-                setup_ops: Vec::new(),
-                matrix_start: 0,
-                rhs_start: 0,
-                n: 0,
-                next_reg: 0,
-                metadata: TensorNodeMetadata::default(),
-                span: Span::DUMMY,
-            }],
-        };
-
-        assert_eq!(
-            problem.validate_shape_contract(),
-            Err(SolveProblemShapeContractError::ZeroTensorDimension {
-                context: "continuous.derivative_rhs".to_string(),
-                node_index: 0,
-                dimension: "LinSolve",
-                span: Span::DUMMY,
-            })
-        );
-    }
-}
+mod tests;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SolveProblem {
@@ -1204,6 +1206,7 @@ impl SolveProblem {
 
     pub fn compute_node_counts(&self) -> ComputeNodeCounts {
         let mut counts = self.continuous.implicit_rhs.compute_node_counts();
+        counts.add_assign(self.continuous.residual.compute_node_counts());
         counts.add_assign(self.continuous.derivative_rhs.compute_node_counts());
         counts
     }
@@ -1229,7 +1232,9 @@ impl SolveProblem {
             .validate_shape_contract("continuous.derivative_rhs")?;
         validate_count(
             "continuous.implicit_row_targets",
-            self.continuous.implicit_rhs.len(),
+            self.continuous
+                .implicit_rhs
+                .output_count("continuous.implicit_rhs")?,
             self.continuous.implicit_row_targets.len(),
         )?;
         self.initialization
@@ -1303,7 +1308,7 @@ fn validate_count(
         context,
         expected,
         actual,
-        span: Span::DUMMY,
+        span: None,
     })
 }
 
@@ -1320,7 +1325,7 @@ fn validate_indices(
             context,
             index,
             upper_bound,
-            span: Span::DUMMY,
+            span: None,
         });
     }
     Ok(())
@@ -1355,13 +1360,20 @@ pub enum SolveProblemShapeContractError {
         node_index: usize,
         programs: usize,
         spans: usize,
-        span: Span,
+        span: Option<Span>,
+    },
+    ScalarProgramOutputIndexMismatch {
+        context: String,
+        node_index: usize,
+        programs: usize,
+        output_indices: usize,
+        span: Option<Span>,
     },
     ScalarProgramCountMismatch {
         context: &'static str,
         expected: usize,
         actual: usize,
-        span: Span,
+        span: Option<Span>,
     },
     ZeroTensorDimension {
         context: String,
@@ -1369,33 +1381,166 @@ pub enum SolveProblemShapeContractError {
         dimension: &'static str,
         span: Span,
     },
+    StructuredIndexDomain {
+        context: String,
+        node_index: usize,
+        dimension: &'static str,
+        error: StructuredIndexDomainError,
+        span: Span,
+    },
+    TensorOutputMapDimension {
+        context: String,
+        node_index: usize,
+        dimension: &'static str,
+        output_dimension: usize,
+        domain_rank: usize,
+        span: Span,
+    },
+    TensorOutputMapNegativeIndex {
+        context: String,
+        node_index: usize,
+        dimension: &'static str,
+        value: isize,
+        span: Span,
+    },
+    OutputIndexOverflow {
+        context: String,
+        node_index: usize,
+        span: Option<Span>,
+    },
     SolverIndexOutOfBounds {
         context: &'static str,
         index: usize,
         upper_bound: usize,
-        span: Span,
+        span: Option<Span>,
     },
 }
 
 impl SolveProblemShapeContractError {
-    pub fn span(&self) -> Span {
+    pub fn source_span(&self) -> Option<Span> {
         match self {
-            Self::SchemaVersion { .. } => Span::DUMMY,
-            Self::Layout(err) => err.span(),
+            Self::SchemaVersion { .. } => None,
+            Self::Layout(err) => err.source_span(),
             Self::ScalarProgramSpanMismatch { span, .. }
+            | Self::ScalarProgramOutputIndexMismatch { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
-            | Self::ZeroTensorDimension { span, .. }
+            | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. } => *span,
+            Self::ZeroTensorDimension { span, .. }
+            | Self::StructuredIndexDomain { span, .. }
+            | Self::TensorOutputMapDimension { span, .. }
+            | Self::TensorOutputMapNegativeIndex { span, .. } => Some(*span),
         }
     }
 }
+
+impl std::fmt::Display for SolveProblemShapeContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SchemaVersion { actual, expected } => {
+                write!(
+                    f,
+                    "Solve schema version {actual} does not match expected {expected}"
+                )
+            }
+            Self::Layout(err) => write!(f, "Solve layout shape contract failed: {err}"),
+            Self::ScalarProgramSpanMismatch {
+                context,
+                node_index,
+                programs,
+                spans,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has {programs} scalar programs but {spans} spans"
+            ),
+            Self::ScalarProgramOutputIndexMismatch {
+                context,
+                node_index,
+                programs,
+                output_indices,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has {programs} scalar programs but \
+                 {output_indices} output indices"
+            ),
+            Self::ScalarProgramCountMismatch {
+                context,
+                expected,
+                actual,
+                ..
+            } => write!(f, "{context} expected {expected} rows, got {actual}"),
+            Self::ZeroTensorDimension {
+                context,
+                node_index,
+                dimension,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has zero {dimension} tensor dimension"
+            ),
+            Self::StructuredIndexDomain {
+                context,
+                node_index,
+                dimension,
+                error,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} {dimension} domain is invalid: {error}"
+            ),
+            Self::TensorOutputMapDimension {
+                context,
+                node_index,
+                dimension,
+                output_dimension,
+                domain_rank,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} {dimension} output map references dimension \
+                 {output_dimension}, but domain rank is {domain_rank}"
+            ),
+            Self::TensorOutputMapNegativeIndex {
+                context,
+                node_index,
+                dimension,
+                value,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} {dimension} output map produced negative output index {value}"
+            ),
+            Self::OutputIndexOverflow {
+                context,
+                node_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} output index arithmetic overflowed"
+            ),
+            Self::SolverIndexOutOfBounds {
+                context,
+                index,
+                upper_bound,
+                ..
+            } => write!(
+                f,
+                "{context} references solver index {index}, but upper bound is {upper_bound}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SolveProblemShapeContractError {}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ContinuousSolveSystem {
     pub implicit_rhs: ComputeBlock,
     pub implicit_row_targets: Vec<Option<ScalarSlot>>,
     pub algebraic_projection_plan: AlgebraicProjectionPlan,
-    pub residual: ScalarProgramBlock,
+    pub residual: ComputeBlock,
     pub derivative_rhs: ComputeBlock,
 }
 
@@ -1435,11 +1580,12 @@ pub struct ContinuousSolveArtifacts {
     pub mass_matrix: Vec<Vec<f64>>,
     pub implicit_jacobian_v: ComputeBlock,
     /// Per-row forward-mode AD JVP of the *scalarized* `implicit_rhs`, row-aligned
-    /// with `to_scalar_program_block(implicit_rhs)` (and hence with the algebraic
-    /// refresh plan's `row_idx`). Used by the state-only path to propagate the
-    /// state seed through the algebraic projection (`d(alg)/d(state)`). Distinct
-    /// from the tensor `implicit_jacobian_v`, whose scalarization is not
-    /// row-aligned when the system has linear (`LinSolve`/`MatMul`) blocks.
+    /// with successful `to_scalar_program_block(implicit_rhs)` output (and hence
+    /// with the algebraic refresh plan's `row_idx`). Used by the state-only path
+    /// to propagate the state seed through the algebraic projection
+    /// (`d(alg)/d(state)`). Distinct from the tensor `implicit_jacobian_v`, whose
+    /// scalarization is not row-aligned when the system has linear
+    /// (`LinSolve`/`MatMul`) blocks.
     #[serde(default)]
     pub implicit_jacobian_v_scalar: ScalarProgramBlock,
     pub full_jacobian_v: ScalarProgramBlock,
@@ -1635,7 +1781,7 @@ impl SolveLayout {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SolveVariableMeta {
     pub name: String,
     pub source_span: Span,
@@ -1651,6 +1797,27 @@ pub struct SolveVariableMeta {
     pub nominal: Option<String>,
     pub fixed: Option<bool>,
     pub description: Option<String>,
+}
+
+impl SolveVariableMeta {
+    pub fn empty_with_span(source_span: Span) -> Self {
+        Self {
+            name: String::new(),
+            source_span,
+            role: String::new(),
+            is_state: bool::default(),
+            value_type: None,
+            variability: None,
+            time_domain: None,
+            unit: None,
+            start: None,
+            min: None,
+            max: None,
+            nominal: None,
+            fixed: None,
+            description: None,
+        }
+    }
 }
 
 /// Solver-facing Solve IR package.

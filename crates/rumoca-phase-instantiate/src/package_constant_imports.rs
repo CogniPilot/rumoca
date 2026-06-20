@@ -6,8 +6,8 @@ pub(super) fn resolved_imports_with_active_package_constants(
     active_aliases: &[(String, rumoca_core::DefId)],
 ) -> Vec<(String, String)> {
     let mut imports = base_imports.to_vec();
-    for (alias, target_def_id) in active_aliases {
-        append_type_override_constant_imports(tree, alias, *target_def_id, &mut imports);
+    for (_, target_def_id) in active_aliases {
+        append_type_override_constant_imports(tree, *target_def_id, &mut imports);
     }
     imports
 }
@@ -43,7 +43,14 @@ fn append_enclosing_package_constant_imports(
     // enclosing-class names; an enclosing-class alias for them would
     // misresolve local references to the enclosing instance's member.
     let shadowed = class_member_names_with_bases(tree, class);
-    append_package_constant_imports_shadowed(tree, parent_class, parent_name, imports, &shadowed);
+    append_package_constant_imports_shadowed(
+        tree,
+        parent_class,
+        parent_name,
+        imports,
+        &shadowed,
+        false,
+    );
 }
 
 fn class_member_names_with_bases(
@@ -105,7 +112,6 @@ fn enclosing_class_def_id_in_class(
 
 fn append_type_override_constant_imports(
     tree: &ast::ClassTree,
-    alias: &str,
     target_def_id: rumoca_core::DefId,
     imports: &mut Vec<(String, String)>,
 ) {
@@ -115,7 +121,10 @@ fn append_type_override_constant_imports(
     if !matches!(package_class.class_type, rumoca_core::ClassType::Package) {
         return;
     }
-    append_package_constant_imports(tree, package_class, alias, imports);
+    let Some(package_name) = tree.def_map.get(&target_def_id) else {
+        return;
+    };
+    append_package_constant_imports(tree, package_class, package_name, imports, true);
 }
 
 fn append_package_constant_imports(
@@ -123,6 +132,7 @@ fn append_package_constant_imports(
     package_class: &ast::ClassDef,
     package_name: &str,
     imports: &mut Vec<(String, String)>,
+    replace_existing: bool,
 ) {
     append_package_constant_imports_shadowed(
         tree,
@@ -130,6 +140,7 @@ fn append_package_constant_imports(
         package_name,
         imports,
         &rustc_hash::FxHashSet::default(),
+        replace_existing,
     );
 }
 
@@ -139,9 +150,14 @@ fn append_package_constant_imports_shadowed(
     package_name: &str,
     imports: &mut Vec<(String, String)>,
     shadowed: &rustc_hash::FxHashSet<String>,
+    replace_existing: bool,
 ) {
     let mut package_constant_names = Vec::new();
     let mut visited = rustc_hash::FxHashSet::default();
+    let options = PackageConstantImportOptions {
+        shadowed,
+        replace_existing,
+    };
     append_package_constant_imports_recursive(
         tree,
         package_class,
@@ -149,8 +165,14 @@ fn append_package_constant_imports_shadowed(
         imports,
         &mut package_constant_names,
         &mut visited,
-        shadowed,
+        options,
     );
+}
+
+#[derive(Clone, Copy)]
+struct PackageConstantImportOptions<'a> {
+    shadowed: &'a rustc_hash::FxHashSet<String>,
+    replace_existing: bool,
 }
 
 fn append_package_constant_imports_recursive(
@@ -160,7 +182,7 @@ fn append_package_constant_imports_recursive(
     imports: &mut Vec<(String, String)>,
     package_constant_names: &mut Vec<String>,
     visited: &mut rustc_hash::FxHashSet<rumoca_core::DefId>,
-    shadowed: &rustc_hash::FxHashSet<String>,
+    options: PackageConstantImportOptions<'_>,
 ) {
     if let Some(def_id) = package_class.def_id
         && !visited.insert(def_id)
@@ -180,7 +202,7 @@ fn append_package_constant_imports_recursive(
                 imports,
                 package_constant_names,
                 visited,
-                shadowed,
+                options,
             );
         }
     }
@@ -196,10 +218,13 @@ fn append_package_constant_imports_recursive(
             _ => false,
         };
         if alias_visible {
-            if shadowed.contains(name) || package_constant_names.contains(name) {
+            if options.shadowed.contains(name) || package_constant_names.contains(name) {
                 continue;
             }
             package_constant_names.push(name.clone());
+            if imports.iter().any(|(candidate, _)| candidate == name) && !options.replace_existing {
+                continue;
+            }
             imports.retain(|(candidate, _)| candidate != name);
             imports.push((name.clone(), format!("{package_name}.{name}")));
         }

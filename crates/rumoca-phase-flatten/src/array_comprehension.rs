@@ -246,6 +246,14 @@ mod tests {
     use rumoca_ir_ast::{ComponentRefPart, ComponentReference, TerminalType};
     use std::sync::Arc;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("array_comprehension_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn cref(name: &str) -> ast::Expression {
         let mut parts = Vec::new();
         for seg in crate::path_utils::segments(name) {
@@ -263,7 +271,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })
     }
 
@@ -276,7 +284,7 @@ mod tests {
                 token_number: 0,
                 token_type: 0,
             },
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -295,7 +303,7 @@ mod tests {
         let expr = ast::Expression::Array {
             elements: vec![cref("i"), cref("j")],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let expanded = expand_comprehension(&expr, &[("i", vec![1, 2]), ("j", vec![10, 20])]);
         assert_eq!(expanded.len(), 4);
@@ -313,7 +321,7 @@ mod tests {
         let expanded_array = ast::Expression::Array {
             elements: vec![cref("pi")],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let prefix = ast::QualifiedName::from_dotted("machine.spacePhasorS");
         let mut imports = ImportMap::default();

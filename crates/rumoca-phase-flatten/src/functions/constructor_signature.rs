@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_spans::required_location_span;
 
 fn collect_constructor_params(
     class_index: &ast::ClassDefIndex<'_>,
@@ -39,11 +40,8 @@ fn collect_constructor_params(
         // MLS §12.6.1 / FUNC-029: a record constructor cannot be formed for a
         // record with conditional components.
         if component.condition.is_some() {
-            let span = source_map.location_to_span(
-                &class_def.location.file_name,
-                class_def.location.start as usize,
-                class_def.location.end as usize,
-            );
+            let span =
+                required_location_span(source_map, &class_def.location, "record constructor")?;
             return Err(FlattenError::ConditionalComponentConstructor {
                 record: class_def.name.text.to_string(),
                 component: comp_name.clone(),
@@ -133,11 +131,7 @@ pub(super) fn convert_constructor_signature(
     source_map: &rumoca_core::SourceMap,
     def_map: &crate::ResolveDefMap,
 ) -> Result<rumoca_core::Function, FlattenError> {
-    let span = source_map.location_to_span(
-        &class_def.location.file_name,
-        class_def.location.start as usize,
-        class_def.location.end as usize,
-    );
+    let span = required_location_span(source_map, &class_def.location, "constructor signature")?;
     let mut params = Vec::new();
     let mut param_index = HashMap::new();
     let mut visited_classes = HashSet::new();

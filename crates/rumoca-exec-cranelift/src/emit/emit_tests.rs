@@ -78,6 +78,61 @@ fn compile_residual_rows_accepts_linear_solve_component() {
 }
 
 #[test]
+fn runtime_register_scratch_allocation_failure_is_error() {
+    let plan = RowPlan::Simple(SimpleRowPlan {
+        ops: Box::new([]),
+        reg_count: usize::MAX,
+        output_srcs: Box::new([0]),
+        input_requirements: InputRequirements::default(),
+    });
+    let mut scratch = Vec::new();
+    let mut out = [0.0];
+
+    let err = execute_row(
+        &plan,
+        &mut scratch,
+        row_inputs(&[], &[], 0.0, None, &[]),
+        &mut out,
+    )
+    .expect_err("oversized register scratch should report an error");
+
+    assert!(
+        matches!(&err, CompileError::Backend(message) if message.contains("runtime register scratch allocation overflow")),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn general_runtime_linear_solve_component_rejects_zero_size() {
+    let row = vec![
+        LinearOp::LinearSolveComponent {
+            dst: 0,
+            matrix_start: 0,
+            rhs_start: 0,
+            n: 0,
+            component: 0,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let plan = plan_row(&row).expect("zero-size linear solve plan should prevalidate");
+    let mut scratch = Vec::new();
+    let mut out = [0.0];
+
+    let err = execute_row(
+        &plan,
+        &mut scratch,
+        row_inputs(&[], &[], 0.0, None, &[]),
+        &mut out,
+    )
+    .expect_err("zero-size linear solve should report an error");
+
+    assert!(
+        matches!(&err, CompileError::Backend(message) if message.contains("zero size")),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn compiled_residual_invokes_jit_and_matches_interpreter_for_representative_row() {
     let row = vec![
         LinearOp::LoadY { dst: 0, index: 0 },
@@ -393,6 +448,75 @@ fn general_runtime_missing_seed_input_is_error_not_zero() {
     .expect_err("missing seed vector should report an error");
 
     assert!(matches!(err, CompileError::Input(message) if message.contains("missing seed[0]")));
+}
+
+#[test]
+fn plan_row_rejects_input_requirement_overflow() {
+    let row = vec![
+        LinearOp::LoadY {
+            dst: 0,
+            index: usize::MAX,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let err = match plan_row(&row) {
+        Ok(_) => panic!("input requirement overflow must fail planning"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, CompileError::Backend(ref message) if message.contains("y input requirement overflow")),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn plan_row_rejects_random_state_register_range_overflow() {
+    let row = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::RandomResult {
+            dst: 1,
+            generator: rumoca_ir_solve::RandomGenerator::Xorshift64Star,
+            state_start: u32::MAX,
+            state_len: 2,
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ];
+
+    let err = match plan_row(&row) {
+        Ok(_) => panic!("random state register overflow must fail planning"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, CompileError::Backend(ref message) if message.contains("random state register overflow")),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn plan_row_rejects_linear_solve_register_range_overflow() {
+    let row = vec![
+        LinearOp::LinearSolveComponent {
+            dst: 0,
+            matrix_start: 0,
+            rhs_start: 0,
+            n: usize::MAX,
+            component: 0,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let err = match plan_row(&row) {
+        Ok(_) => panic!("linear solve matrix overflow must fail planning"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, CompileError::Backend(ref message) if message.contains("linear solve matrix size overflow")),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

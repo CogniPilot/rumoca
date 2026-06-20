@@ -1,6 +1,7 @@
 //! Helpers for identifying variables already defined by algorithms/record equations.
 
 use super::variable_analysis::{InternalInputIndex, filter_state_variables, is_continuous_unknown};
+use crate::ToDaeError;
 use crate::path_utils::subscript_fallback_chain;
 use indexmap::IndexSet;
 use rumoca_ir_flat as flat;
@@ -150,15 +151,15 @@ pub(super) fn collect_continuous_algorithm_defined_vars(
 pub(crate) fn collect_record_equation_defined_vars(
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
-) -> HashSet<rumoca_core::VarName> {
+) -> Result<HashSet<rumoca_core::VarName>, ToDaeError> {
     let mut defined = HashSet::default();
-    let internal_inputs = InternalInputIndex::new(flat);
+    let internal_inputs = InternalInputIndex::new(flat)?;
     let state_vars = filter_state_variables(
         super::classification::find_state_variables(flat),
         flat,
         &internal_inputs,
     );
-    let continuous_unknown_prefixes = build_continuous_unknown_prefix_set(flat, &state_vars);
+    let continuous_unknown_prefixes = build_continuous_unknown_prefix_set(flat, &state_vars)?;
 
     for eq in &flat.equations {
         // Extract LHS variable from residual pattern: lhs - rhs = 0.
@@ -200,14 +201,14 @@ pub(crate) fn collect_record_equation_defined_vars(
         }
     }
 
-    defined
+    Ok(defined)
 }
 
 fn is_dominated_field_binding(
     flat: &flat::Model,
     field_name: &rumoca_core::VarName,
     state_vars: &IndexSet<rumoca_core::VarName>,
-    continuous_unknown_prefixes: &HashSet<String>,
+    continuous_unknown_prefixes: &IndexSet<String>,
 ) -> bool {
     let Some(field_var) = flat.variables.get(field_name) else {
         return false;
@@ -226,7 +227,7 @@ fn binding_refs_contain_unknowns(
     refs: &HashSet<rumoca_core::VarName>,
     flat: &flat::Model,
     state_vars: &IndexSet<rumoca_core::VarName>,
-    continuous_unknown_prefixes: &HashSet<String>,
+    continuous_unknown_prefixes: &IndexSet<String>,
 ) -> bool {
     refs.iter().any(|r| {
         is_continuous_unknown_var(flat, state_vars, r)
@@ -245,7 +246,7 @@ fn is_continuous_unknown_var(
 /// Returns true if `name` is a parent record prefix with at least one
 /// continuous unknown field (e.g., `vcf` when unknowns include `vcf.pin_p.v`).
 fn has_continuous_unknown_fields(
-    continuous_unknown_prefixes: &HashSet<String>,
+    continuous_unknown_prefixes: &IndexSet<String>,
     name: &rumoca_core::VarName,
 ) -> bool {
     continuous_unknown_prefixes.contains(name.as_str())
@@ -260,25 +261,31 @@ fn has_continuous_unknown_fields(
 fn build_continuous_unknown_prefix_set(
     flat: &flat::Model,
     state_vars: &IndexSet<rumoca_core::VarName>,
-) -> HashSet<String> {
-    let mut prefixes = HashSet::default();
+) -> Result<IndexSet<String>, ToDaeError> {
+    let mut prefixes = IndexSet::new();
 
-    for name in flat.variables.keys() {
+    for (name, variable) in &flat.variables {
         if !is_continuous_unknown(flat, state_vars, name) {
             continue;
         }
 
         let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
         for i in 1..path.len() {
-            prefixes.insert(
-                path.prefix(i)
-                    .expect("prefix index is in range")
-                    .to_flat_string(),
-            );
+            let Some(prefix) = path.prefix(i) else {
+                return Err(ToDaeError::runtime_contract_violation_at(
+                    format!(
+                        "continuous unknown `{name}` could not produce prefix {i} \
+                         from {} path segments",
+                        path.len()
+                    ),
+                    variable.source_span,
+                ));
+            };
+            prefixes.insert(prefix.to_flat_string());
         }
     }
 
-    prefixes
+    Ok(prefixes)
 }
 
 #[cfg(test)]
@@ -361,12 +368,17 @@ mod tests {
                 name: rumoca_core::VarName::new("bus[data.medium].pin.v"),
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
         let state_vars = IndexSet::new();
-        let prefixes = build_continuous_unknown_prefix_set(&flat, &state_vars);
+        let prefixes = build_continuous_unknown_prefix_set(&flat, &state_vars)
+            .expect("continuous unknown prefix set should build");
         assert!(prefixes.contains("bus[data.medium]"));
         assert!(prefixes.contains("bus[data.medium].pin"));
         assert!(!prefixes.contains("bus[data"));

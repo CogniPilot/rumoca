@@ -18,6 +18,10 @@ use rumoca_ir_flat as flat;
 
 use rumoca_core::{ComponentPath, scoped_component_path_candidates};
 
+mod boolean_eval;
+
+pub use boolean_eval::try_eval_flat_expr_boolean;
+
 const NAMED_CALL_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
 // Conditional tracing support (SPEC_0024)
@@ -164,10 +168,12 @@ pub fn try_eval_integer_with_context(
             debug!(function = ?function, arg_count = args.len(), "evaluating builtin call");
             eval_builtin_integer_with_context(function, args, ctx)
         }
-        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+        rumoca_core::Expression::FunctionCall {
+            name, args, span, ..
+        } => {
             #[cfg(feature = "tracing")]
             debug!(function = %name, arg_count = args.len(), "evaluating user function call");
-            eval_user_func_integer(name, args, ctx)
+            eval_user_func_integer(name, args, ctx, Some(*span))
         }
         _ => {
             #[cfg(feature = "tracing")]
@@ -1519,6 +1525,7 @@ fn eval_user_func_integer(
     name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
     ctx: &ParamEvalContext,
+    call_span: Option<rumoca_core::Span>,
 ) -> Option<i64> {
     let name_str = name.as_str();
 
@@ -1532,6 +1539,7 @@ fn eval_user_func_integer(
     let func = ctx.functions.get(name_str)?;
     let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
+    let span = user_function_eval_span(name, call_span, func)?;
 
     let result = crate::constant::function_eval::eval_function_with_call_args(
         func,
@@ -1539,7 +1547,7 @@ fn eval_user_func_integer(
         &eval_ctx,
         &crate::constant::function_eval::EvalLimits::default(),
         0,
-        rumoca_core::Span::DUMMY,
+        span,
     );
 
     match result {
@@ -1554,10 +1562,20 @@ pub fn eval_user_func_real(
     args: &[rumoca_core::Expression],
     ctx: &ParamEvalContext,
 ) -> Option<f64> {
+    eval_user_func_real_with_span(name, args, ctx, None)
+}
+
+fn eval_user_func_real_with_span(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    ctx: &ParamEvalContext,
+    call_span: Option<rumoca_core::Span>,
+) -> Option<f64> {
     let name_str = name.as_str();
     let func = ctx.functions.get(name_str)?;
     let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
+    let span = user_function_eval_span(name, call_span, func)?;
 
     let result = crate::constant::function_eval::eval_function_with_call_args(
         func,
@@ -1565,7 +1583,7 @@ pub fn eval_user_func_real(
         &eval_ctx,
         &crate::constant::function_eval::EvalLimits::default(),
         0,
-        rumoca_core::Span::DUMMY,
+        span,
     );
 
     match result {
@@ -1574,6 +1592,17 @@ pub fn eval_user_func_real(
             .or_else(|| value.as_integer().map(|i| i as f64)),
         Err(_) => None,
     }
+}
+
+fn user_function_eval_span(
+    name: &rumoca_core::Reference,
+    call_span: Option<rumoca_core::Span>,
+    func: &rumoca_core::Function,
+) -> Option<rumoca_core::Span> {
+    call_span
+        .filter(|span| !span.is_dummy())
+        .or_else(|| name.span())
+        .or_else(|| (!func.span.is_dummy()).then_some(func.span))
 }
 
 /// Build an EvalContext for user function evaluation.
@@ -1869,132 +1898,5 @@ pub fn canonicalize_enum_literal(literal: &str, known_enums: &FxHashMap<String, 
     literal.to_string()
 }
 
-/// Context for boolean expression evaluation.
-struct BoolEvalContext<'a> {
-    known_ints: &'a FxHashMap<String, i64>,
-    known_bools: &'a FxHashMap<String, bool>,
-    known_enums: &'a FxHashMap<String, String>,
-}
-
-/// Try to evaluate a flat expression to a boolean value with context.
-pub fn try_eval_flat_expr_boolean(
-    expr: &rumoca_core::Expression,
-    known_ints: &FxHashMap<String, i64>,
-    known_bools: &FxHashMap<String, bool>,
-    known_enums: &FxHashMap<String, String>,
-) -> Option<bool> {
-    let ctx = BoolEvalContext {
-        known_ints,
-        known_bools,
-        known_enums,
-    };
-    eval_bool_inner(expr, &ctx)
-}
-
-/// Inner boolean evaluation.
-fn eval_bool_inner(expr: &rumoca_core::Expression, ctx: &BoolEvalContext) -> Option<bool> {
-    match expr {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Boolean(b),
-            ..
-        } => Some(*b),
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => ctx.known_bools.get(&name.to_string()).copied(),
-        rumoca_core::Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => eval_bool_inner(rhs, ctx).map(|v| !v),
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => eval_bool_binary(op, lhs, rhs, ctx),
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => eval_bool_if(branches, else_branch, ctx),
-        _ => None,
-    }
-}
-
-/// Evaluate binary boolean operations.
-fn eval_bool_binary(
-    op: &rumoca_core::OpBinary,
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    ctx: &BoolEvalContext,
-) -> Option<bool> {
-    match op {
-        rumoca_core::OpBinary::And => {
-            Some(eval_bool_inner(lhs, ctx)? && eval_bool_inner(rhs, ctx)?)
-        }
-        rumoca_core::OpBinary::Or => Some(eval_bool_inner(lhs, ctx)? || eval_bool_inner(rhs, ctx)?),
-        rumoca_core::OpBinary::Eq => eval_equality(lhs, rhs, ctx, true),
-        rumoca_core::OpBinary::Neq => eval_equality(lhs, rhs, ctx, false),
-        rumoca_core::OpBinary::Lt => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l < r),
-        rumoca_core::OpBinary::Le => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l <= r),
-        rumoca_core::OpBinary::Gt => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l > r),
-        rumoca_core::OpBinary::Ge => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l >= r),
-        _ => None,
-    }
-}
-
-/// Evaluate equality/inequality comparisons across types.
-fn eval_equality(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    ctx: &BoolEvalContext,
-    eq: bool,
-) -> Option<bool> {
-    // Try integer comparison
-    if let (Some(l), Some(r)) = (
-        try_eval_flat_expr_integer_with_dims(lhs, ctx.known_ints, &FxHashMap::default()),
-        try_eval_flat_expr_integer_with_dims(rhs, ctx.known_ints, &FxHashMap::default()),
-    ) {
-        return Some(if eq { l == r } else { l != r });
-    }
-    // Try boolean comparison
-    if let (Some(l), Some(r)) = (eval_bool_inner(lhs, ctx), eval_bool_inner(rhs, ctx)) {
-        return Some(if eq { l == r } else { l != r });
-    }
-    // Try enum comparison
-    if let (Some(l), Some(r)) = (
-        resolve_enum_value(lhs, ctx.known_enums),
-        resolve_enum_value(rhs, ctx.known_enums),
-    ) {
-        let l_norm = canonicalize_enum_literal(&l, ctx.known_enums);
-        let r_norm = canonicalize_enum_literal(&r, ctx.known_enums);
-        let equal = rumoca_core::enum_values_equal(&l_norm, &r_norm);
-        return Some(if eq { equal } else { !equal });
-    }
-    None
-}
-
-/// Evaluate integer comparisons.
-fn eval_int_compare(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    known_ints: &FxHashMap<String, i64>,
-    cmp: fn(i64, i64) -> bool,
-) -> Option<bool> {
-    let l = try_eval_flat_expr_integer_with_dims(lhs, known_ints, &FxHashMap::default())?;
-    let r = try_eval_flat_expr_integer_with_dims(rhs, known_ints, &FxHashMap::default())?;
-    Some(cmp(l, r))
-}
-
-/// Evaluate if-expression branches.
-fn eval_bool_if(
-    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-    else_branch: &rumoca_core::Expression,
-    ctx: &BoolEvalContext,
-) -> Option<bool> {
-    for (cond, then_expr) in branches {
-        match eval_bool_inner(cond, ctx) {
-            Some(true) => return eval_bool_inner(then_expr, ctx),
-            Some(false) => continue,
-            None => return None,
-        }
-    }
-    eval_bool_inner(else_branch, ctx)
-}
 #[cfg(test)]
 mod tests;

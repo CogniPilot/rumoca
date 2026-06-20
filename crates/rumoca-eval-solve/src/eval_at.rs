@@ -5,7 +5,7 @@
 //! can be attributed to a specific model variable in a single command instead
 //! of repeated instrumented rebuilds.
 
-use crate::SolveRuntime;
+use crate::{SolveRuntime, inspect_alloc::filled_f64_values};
 
 /// One named value in an [`EvalAtReport`].
 #[derive(Debug, Clone)]
@@ -118,15 +118,26 @@ impl SolveRuntime {
         // The derivative evaluation fills `out` and *then* rejects non-finite
         // values (see `eval_state_derivatives_with_solver_y`), so a failure
         // still leaves the offending `der(state)` values in place to name.
-        let mut derivative_values = vec![f64::NAN; self.state_count];
-        if let Err(err) = self.eval_state_derivatives_into(
-            t,
-            state,
-            params,
-            tol,
-            max_iters,
-            &mut derivative_values,
-        ) && error.is_none()
+        let mut derivative_values =
+            match filled_f64_values(self.state_count, f64::NAN, "eval-at derivative values") {
+                Ok(values) => values,
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(err);
+                    }
+                    Vec::new()
+                }
+            };
+        if derivative_values.len() == self.state_count
+            && let Err(err) = self.eval_state_derivatives_into(
+                t,
+                state,
+                params,
+                tol,
+                max_iters,
+                &mut derivative_values,
+            )
+            && error.is_none()
         {
             error = Some(err.to_string());
         }
@@ -149,5 +160,18 @@ impl SolveRuntime {
             derivatives,
             error,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_at_derivative_values_reject_impossible_capacity() {
+        let err = filled_f64_values(usize::MAX, f64::NAN, "eval-at derivative values")
+            .expect_err("impossible eval-at derivative capacity should fail");
+
+        assert!(err.contains("eval-at derivative values capacity overflows"));
     }
 }

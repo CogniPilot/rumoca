@@ -3,6 +3,7 @@
 use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
+use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -105,21 +106,48 @@ pub(crate) fn record_cache_file_access(path: &Path) {
 }
 
 fn write_cache_file_access(path: &Path, accessed: SystemTime) -> std::io::Result<()> {
-    let accessed_secs = accessed
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let accessed_secs = system_time_secs_since_unix_epoch(accessed)?;
     fs::write(cache_access_metadata_path(path), accessed_secs.to_string())
+}
+
+fn system_time_secs_since_unix_epoch(time: SystemTime) -> std::io::Result<u64> {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cache timestamp precedes Unix epoch by {:?}",
+                    error.duration()
+                ),
+            )
+        })
 }
 
 pub(crate) fn maybe_prune_cache_after_write(root: Option<&Path>) {
     let options = default_prune_options();
     let prune_root = root.map(Path::to_path_buf).unwrap_or_else(cache_root_dir);
-    let Some(_lock) = try_acquire_cache_prune_lock(&prune_root) else {
-        return;
+    let _lock = match try_acquire_cache_prune_lock(&prune_root) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return,
+        Err(err) => {
+            eprintln!(
+                "failed to acquire cache prune lock under {}: {err}",
+                prune_root.display()
+            );
+            return;
+        }
     };
-    let Ok(Some(report)) = prune_cache_after_write_with_options(Some(&prune_root), &options) else {
-        return;
+    let report = match prune_cache_after_write_with_options(Some(&prune_root), &options) {
+        Ok(Some(report)) => report,
+        Ok(None) => return,
+        Err(err) => {
+            eprintln!(
+                "failed to auto-prune cache under {}: {err:#}",
+                prune_root.display()
+            );
+            return;
+        }
     };
     eprintln!(
         "Rumoca cache auto-prune: removed {} files totaling {} bytes ({} -> {}, limit {} bytes)",
@@ -248,10 +276,7 @@ pub fn prune_cache_with_options(
 
     for budget in &options.family_budgets {
         for entry in files.iter().filter(|entry| entry.family == budget.family) {
-            let family_bytes = projected_family_bytes
-                .get(&budget.family)
-                .copied()
-                .unwrap_or_default();
+            let family_bytes = projected_family_bytes_or_zero(&projected_family_bytes, budget);
             if family_bytes <= budget.max_bytes {
                 break;
             }
@@ -322,6 +347,16 @@ fn family_size_map(status: &CacheStatus) -> HashMap<String, u64> {
         .collect()
 }
 
+fn projected_family_bytes_or_zero(
+    projected_family_bytes: &HashMap<String, u64>,
+    budget: &CacheFamilyBudget,
+) -> u64 {
+    match projected_family_bytes.get(&budget.family) {
+        Some(bytes) => *bytes,
+        None => 0,
+    }
+}
+
 fn cache_file_exceeds_max_age(modified: SystemTime, now: SystemTime, max_age: Duration) -> bool {
     now.duration_since(modified)
         .map(|age| age > max_age)
@@ -383,20 +418,20 @@ impl Drop for CachePruneLock {
     }
 }
 
-fn try_acquire_cache_prune_lock(root: &Path) -> Option<CachePruneLock> {
+fn try_acquire_cache_prune_lock(root: &Path) -> std::io::Result<Option<CachePruneLock>> {
     let path = cache_prune_lock_path(root);
     remove_stale_cache_prune_lock(&path);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok()?;
+        fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .ok()?;
-    let token = cache_prune_lock_token();
-    writeln!(file, "{token}").ok()?;
-    Some(CachePruneLock { path, token })
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let token = cache_prune_lock_token()?;
+    writeln!(file, "{token}")?;
+    Ok(Some(CachePruneLock { path, token }))
 }
 
 fn remove_stale_cache_prune_lock(path: &Path) {
@@ -426,12 +461,20 @@ fn remove_stale_cache_prune_lock(path: &Path) {
     }
 }
 
-fn cache_prune_lock_token() -> String {
+fn cache_prune_lock_token() -> std::io::Result<String> {
     let now_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("pid={} token={now_nanos}", std::process::id())
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cache prune lock timestamp precedes Unix epoch by {:?}",
+                    error.duration()
+                ),
+            )
+        })?;
+    Ok(format!("pid={} token={now_nanos}", std::process::id()))
 }
 
 fn lock_file_matches_token(path: &Path, token: &str) -> bool {
@@ -536,9 +579,10 @@ fn collect_cache_files_inner(
             path: path.to_path_buf(),
             family: cache_family_name(root, path),
             bytes: metadata.len(),
-            last_used: read_cache_file_access(path)
-                .or_else(|| metadata.modified().ok())
-                .unwrap_or(SystemTime::UNIX_EPOCH),
+            last_used: match read_cache_file_access(path)? {
+                Some(accessed) => accessed,
+                None => metadata.modified()?,
+            },
         });
     }
     Ok(())
@@ -551,10 +595,25 @@ fn cache_access_metadata_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{file_name}{CACHE_ACCESS_METADATA_SUFFIX}"))
 }
 
-fn read_cache_file_access(path: &Path) -> Option<SystemTime> {
-    let raw = fs::read_to_string(cache_access_metadata_path(path)).ok()?;
-    let accessed_secs = raw.trim().parse::<u64>().ok()?;
-    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(accessed_secs))
+fn read_cache_file_access(path: &Path) -> std::io::Result<Option<SystemTime>> {
+    let access_path = cache_access_metadata_path(path);
+    let raw = match fs::read_to_string(&access_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let accessed_secs = raw.trim().parse::<u64>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid cache access timestamp in {}: {error}",
+                access_path.display()
+            ),
+        )
+    })?;
+    Ok(Some(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(accessed_secs),
+    ))
 }
 
 fn is_cache_access_metadata_file(path: &Path) -> bool {
@@ -702,6 +761,30 @@ mod tests {
     }
 
     #[test]
+    fn cache_access_metadata_rejects_malformed_timestamps() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let artifact = root.join("artifact.bin");
+        write_file(&artifact, 5);
+        fs::write(cache_access_metadata_path(&artifact), "not-a-timestamp")
+            .expect("write malformed access metadata");
+
+        let error = prune_cache(Some(root), 1, true).expect_err("malformed metadata should fail");
+        assert!(format!("{error:#}").contains("invalid cache access timestamp"));
+    }
+
+    #[test]
+    fn cache_access_metadata_rejects_pre_epoch_time() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let artifact = temp.path().join("artifact.bin");
+
+        let error =
+            write_cache_file_access(&artifact, SystemTime::UNIX_EPOCH - Duration::from_secs(1))
+                .expect_err("pre-epoch cache access should fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
     fn prune_cache_after_write_reports_only_when_it_removes_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
@@ -790,15 +873,21 @@ mod tests {
         let root = temp.path().join("cache");
         fs::create_dir_all(&root).expect("mkdir cache");
 
-        let first = try_acquire_cache_prune_lock(&root).expect("first lock");
+        let first = try_acquire_cache_prune_lock(&root)
+            .expect("first lock attempt")
+            .expect("first lock");
         assert!(
-            try_acquire_cache_prune_lock(&root).is_none(),
+            try_acquire_cache_prune_lock(&root)
+                .expect("second lock attempt")
+                .is_none(),
             "second owner should skip while prune lock is held"
         );
         drop(first);
 
         assert!(
-            try_acquire_cache_prune_lock(&root).is_some(),
+            try_acquire_cache_prune_lock(&root)
+                .expect("reusable lock attempt")
+                .is_some(),
             "lock should be reusable after owner drops it"
         );
     }

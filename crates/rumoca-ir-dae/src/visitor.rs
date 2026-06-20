@@ -636,7 +636,10 @@ mod tests {
     fn var_ref_with_subscripts_collector_recurses_into_subscript_exprs() {
         let expr = Expression::VarRef {
             name: Reference::from("x"),
-            subscripts: vec![Subscript::generated_expr(Box::new(var("i")))],
+            subscripts: vec![Subscript::generated_expr(
+                Box::new(var("i")),
+                rumoca_core::Span::DUMMY,
+            )],
             span: rumoca_core::Span::DUMMY,
         };
 

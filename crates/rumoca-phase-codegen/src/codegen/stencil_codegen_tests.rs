@@ -1,23 +1,34 @@
 use super::*;
 use rumoca_ir_solve as solve;
 
+fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
+    rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: count as i64,
+            step: 1,
+        }],
+    }
+}
+
+fn fixture_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("stencil_codegen_fixture.mo"),
+        1,
+        2,
+    )
+}
+
 fn solve_problem_with_stencil_and_scalar_derivative() -> solve::SolveProblem {
     let mut problem = solve::SolveProblem::default();
     problem.continuous.derivative_rhs = solve::ComputeBlock {
         nodes: vec![
             solve::ComputeNode::AffineStencil {
-                count: 2,
-                domain: solve::AffineStencilDomain {
-                    index_names: vec!["i".to_string()],
-                    iterations: vec![
-                        solve::AffineStencilIteration {
-                            index_values: vec![1],
-                        },
-                        solve::AffineStencilIteration {
-                            index_values: vec![2],
-                        },
-                    ],
-                },
+                domain: tensor_domain(2),
+                output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(2))
+                    .expect("valid dense output map"),
                 base_ops: vec![
                     solve::LinearOp::Const { dst: 0, value: 1.0 },
                     solve::LinearOp::StoreOutput { src: 0 },
@@ -25,15 +36,21 @@ fn solve_problem_with_stencil_and_scalar_derivative() -> solve::SolveProblem {
                 load_strides: Vec::new(),
                 const_strides: vec![solve::AffineStencilConstStride {
                     op_position: 0,
-                    stride: 1.0,
+                    terms: vec![solve::AffineStencilConstStrideTerm {
+                        dimension: 0,
+                        stride: 1.0,
+                    }],
                 }],
                 metadata: Default::default(),
-                span: Default::default(),
+                span: fixture_span(),
             },
-            solve::ComputeNode::ScalarPrograms(solve::ScalarProgramBlock::new(vec![vec![
-                solve::LinearOp::Const { dst: 0, value: 3.0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ]])),
+            solve::ComputeNode::ScalarPrograms(solve::ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    solve::LinearOp::Const { dst: 0, value: 3.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_span(),
+            )),
         ],
     };
     problem

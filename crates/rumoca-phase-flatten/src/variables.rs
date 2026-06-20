@@ -6,7 +6,7 @@
 //! Per SPEC_0022 §3.19-3.20, type prefixes (variability, causality, flow, stream)
 //! are preserved from the component declaration through to the flat model.
 
-use rumoca_core::TypeId;
+use rumoca_core::{ProvenanceSpan, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -14,6 +14,7 @@ use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::functions;
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
+use crate::source_spans::required_location_span;
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Default)]
@@ -62,17 +63,41 @@ fn modification_binding_prefix(
     instance: &ast::InstanceData,
     tree: &ast::ClassTree,
 ) -> Result<ast::QualifiedName, FlattenError> {
-    instance.binding_source_scope.clone().ok_or_else(|| {
-        FlattenError::missing_source_scope(
+    instance
+        .binding_source_scope
+        .clone()
+        .ok_or_else(|| missing_instance_source_scope_error(instance, tree, "modifier binding"))
+}
+
+fn missing_instance_source_scope_error(
+    instance: &ast::InstanceData,
+    tree: &ast::ClassTree,
+    context: &str,
+) -> FlattenError {
+    match instance_source_span(instance, tree, context) {
+        Ok(span) => FlattenError::missing_source_scope(
             instance.qualified_name.to_flat_string(),
-            "modifier binding",
-            tree.source_map.location_to_span(
-                &instance.source_location.file_name,
-                instance.source_location.start as usize,
-                instance.source_location.end as usize,
-            ),
-        )
-    })
+            context,
+            span,
+        ),
+        Err(error) => error,
+    }
+}
+
+fn instance_source_span(
+    instance: &ast::InstanceData,
+    tree: &ast::ClassTree,
+    context: &str,
+) -> Result<rumoca_core::Span, FlattenError> {
+    required_location_span(&tree.source_map, &instance.source_location, context)
+}
+
+fn require_component_ref_provenance(
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<ProvenanceSpan, FlattenError> {
+    span.require_provenance(context)
+        .map_err(|err| FlattenError::missing_source_context(err.to_string()))
 }
 
 fn attribute_prefix(
@@ -133,11 +158,7 @@ pub(crate) fn flat_output_type_name(
         return Ok(type_name);
     }
 
-    let span = tree.source_map.location_to_span(
-        &instance.source_location.file_name,
-        instance.source_location.start as usize,
-        instance.source_location.end as usize,
-    );
+    let span = instance_source_span(instance, tree, "flat output type")?;
     Err(FlattenError::unresolved_variable_type(
         instance.qualified_name.to_flat_string(),
         span,
@@ -167,11 +188,7 @@ pub(crate) fn create_flat_variable(
     imports: &VariableImportContext,
 ) -> Result<flat::Variable, FlattenError> {
     let name = rumoca_core::VarName::new(instance.qualified_name.to_flat_string());
-    let source_span = tree.source_map.location_to_span(
-        &instance.source_location.file_name,
-        instance.source_location.start as usize,
-        instance.source_location.end as usize,
-    );
+    let source_span = instance_source_span(instance, tree, "flat variable")?;
 
     // Get the parent prefix for qualifying attribute expressions.
     // For "filter.m", the prefix is "filter" so that references like "n"
@@ -213,7 +230,7 @@ pub(crate) fn create_flat_variable(
 
     let component_ref = Some(ast::instance::component_reference_for_instance(
         &instance.qualified_name,
-        source_span,
+        require_component_ref_provenance(source_span, "flat instance component reference")?,
         instance
             .component_ref
             .as_ref()
@@ -385,6 +402,35 @@ mod tests {
     use rumoca_ir_ast as ast;
     use std::sync::Arc;
 
+    fn test_tree() -> ast::ClassTree {
+        let mut tree = ast::ClassTree::default();
+        tree.source_map.add(
+            "variable_fixture.mo",
+            "model M\n  Real d;\n  Real m_flow;\nend M;\n",
+        );
+        tree
+    }
+
+    fn test_location(start: u32, end: u32) -> rumoca_core::Location {
+        rumoca_core::Location {
+            start_line: 1,
+            start_column: start + 1,
+            end_line: 1,
+            end_column: end + 1,
+            start,
+            end,
+            file_name: "variable_fixture.mo".to_string(),
+        }
+    }
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("variable_fixture.mo"),
+            10,
+            16,
+        )
+    }
+
     fn comp_ref(path: &[&str]) -> ast::Expression {
         ast::Expression::ComponentReference(ast::ComponentReference {
             local: false,
@@ -399,39 +445,44 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })
     }
 
     #[test]
-    fn test_create_flat_variable_uses_modifier_source_scope_for_nested_field_binding() {
+    fn test_create_flat_variable_uses_modifier_source_scope_for_nested_field_binding()
+    -> Result<(), FlattenError> {
         let component_def_id = rumoca_core::DefId::new(42);
         let qualified_name = ast::QualifiedName::from_dotted("aimc.airGap.L0.d");
         let instance = ast::InstanceData {
             component_ref: Some(ast::instance::component_reference_for_instance(
                 &qualified_name,
-                rumoca_core::Span::DUMMY,
+                require_component_ref_provenance(test_span(), "flat test component reference")?,
                 Some(component_def_id),
             )),
             qualified_name,
+            source_location: test_location(10, 16),
             binding_source: Some(comp_ref(&["L0", "d"])),
             binding_from_modification: true,
             binding_source_scope: Some(ast::QualifiedName::from_dotted("aimc")),
             is_primitive: true,
             ..ast::InstanceData::default()
         };
-        let tree = ast::ClassTree::default();
+        let tree = test_tree();
         let imports = VariableImportContext::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat =
-            create_flat_variable(&instance, &tree, &class_index, &imports).expect("flat variable");
+        let flat = create_flat_variable(&instance, &tree, &class_index, &imports)?;
         assert_eq!(
             flat.component_ref
                 .as_ref()
                 .and_then(|reference| reference.def_id),
             Some(component_def_id)
         );
-        let binding = flat.binding.expect("binding");
+        let Some(binding) = flat.binding else {
+            return Err(FlattenError::missing_source_context(
+                "test flat variable binding missing",
+            ));
+        };
         match binding {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
@@ -439,8 +490,13 @@ mod tests {
                 assert_eq!(name.as_str(), "aimc.L0.d");
                 assert!(subscripts.is_empty());
             }
-            _ => panic!("expected binding to become a qualified VarRef"),
+            _ => {
+                return Err(FlattenError::missing_source_context(
+                    "expected binding to become a qualified VarRef",
+                ));
+            }
         }
+        Ok(())
     }
 
     #[test]
@@ -452,12 +508,13 @@ mod tests {
         );
         let instance = ast::InstanceData {
             qualified_name: ast::QualifiedName::from_dotted("leftBoundary1.ports.m_flow"),
+            source_location: test_location(20, 31),
             max: Some(comp_ref(&["flowDirection"])),
             attribute_source_scopes,
             is_primitive: true,
             ..ast::InstanceData::default()
         };
-        let tree = ast::ClassTree::default();
+        let tree = test_tree();
         let imports = VariableImportContext::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
         let flat =

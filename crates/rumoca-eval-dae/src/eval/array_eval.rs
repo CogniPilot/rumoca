@@ -88,8 +88,8 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
             rumoca_core::Expression::BuiltinCall { function, args, .. } => {
                 try_eval_builtin_array_like_values(expr, *function, args, env)
             }
-            rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-                try_eval_binary_array_values(op, lhs, rhs, env)
+            rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+                try_eval_binary_array_values(op, lhs, rhs, *span, env)
             }
             rumoca_core::Expression::Unary { op, rhs, .. } => {
                 try_eval_unary_array_values(op, rhs, env)
@@ -98,8 +98,8 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
                 name,
                 args,
                 is_constructor: false,
-                ..
-            } => try_eval_function_call_array_values(name, args, env),
+                span,
+            } => try_eval_function_call_array_values(name, args, *span, env),
             rumoca_core::Expression::Array { .. }
             | rumoca_core::Expression::Tuple { .. }
             | rumoca_core::Expression::Range { .. }
@@ -512,8 +512,8 @@ pub fn eval_matrix_values<T: SimFloat>(
                 name,
                 args,
                 is_constructor: false,
-                ..
-            } => eval_function_call_matrix_values(name, args, env),
+                span,
+            } => eval_function_call_matrix_values(name, args, *span, env),
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => {
@@ -592,6 +592,7 @@ fn eval_binary_matrix_values<T: SimFloat>(
 fn eval_function_call_matrix_values<T: SimFloat>(
     name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
+    source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<Vec<T>>>, EvalError> {
     let Some(function) = env.functions.get(name.as_str()) else {
@@ -615,7 +616,7 @@ fn eval_function_call_matrix_values<T: SimFloat>(
         .ok_or(EvalError::UnsupportedExpression {
             kind: "function output shape",
         })?;
-    let values = try_eval_function_call_array_values(name, args, env)?;
+    let values = try_eval_function_call_array_values(name, args, source_span, env)?;
     let expected = rows
         .checked_mul(cols)
         .ok_or(EvalError::UnsupportedExpression {
@@ -862,6 +863,7 @@ fn try_eval_binary_array_values<T: SimFloat>(
     op: &OpBinary,
     lhs: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
+    source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
     match op {
@@ -892,7 +894,7 @@ fn try_eval_binary_array_values<T: SimFloat>(
                 op: op.clone(),
                 lhs: Box::new(lhs.clone()),
                 rhs: Box::new(rhs.clone()),
-                span: rumoca_core::Span::DUMMY,
+                span: source_span,
             },
             env,
         )?]),
@@ -1103,6 +1105,7 @@ fn constructor_dim<T: SimFloat>(
 fn try_eval_function_call_array_values<T: SimFloat>(
     name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
+    source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
     if let Some((resolved_name, Some(selection))) = resolve_runtime_special_target(name.as_str())
@@ -1141,7 +1144,7 @@ fn try_eval_function_call_array_values<T: SimFloat>(
     }
     let size = function_param_size(output)?;
     if size <= 1 {
-        if let Some(values) = eval_vectorized_scalar_function_call(name, args, env)? {
+        if let Some(values) = eval_vectorized_scalar_function_call(name, args, source_span, env)? {
             return Ok(values);
         }
         return Ok(vec![eval_expr(
@@ -1149,7 +1152,7 @@ fn try_eval_function_call_array_values<T: SimFloat>(
                 name: name.clone(),
                 args: args.to_vec(),
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: source_span,
             },
             env,
         )?]);
@@ -1177,6 +1180,7 @@ fn try_eval_function_call_array_values<T: SimFloat>(
 fn eval_vectorized_scalar_function_call<T: SimFloat>(
     name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
+    source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<T>>, EvalError> {
     let arg_values = args
@@ -1201,14 +1205,16 @@ fn eval_vectorized_scalar_function_call<T: SimFloat>(
             .map(|idx| {
                 let scalar_args = arg_values
                     .iter()
-                    .map(|values| scalar_literal_expr(vectorized_arg_value(values, idx)))
+                    .map(|values| {
+                        scalar_literal_expr(vectorized_arg_value(values, idx), source_span)
+                    })
                     .collect::<Vec<_>>();
                 eval_expr(
                     &rumoca_core::Expression::FunctionCall {
                         name: name.clone(),
                         args: scalar_args,
                         is_constructor: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: source_span,
                     },
                     env,
                 )
@@ -1221,10 +1227,13 @@ fn vectorized_arg_value<T: SimFloat>(values: &[T], idx: usize) -> T {
     values[if values.len() == 1 { 0 } else { idx }]
 }
 
-fn scalar_literal_expr<T: SimFloat>(value: T) -> rumoca_core::Expression {
+fn scalar_literal_expr<T: SimFloat>(
+    value: T,
+    source_span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value.real()),
-        span: rumoca_core::Span::DUMMY,
+        span: source_span,
     }
 }
 

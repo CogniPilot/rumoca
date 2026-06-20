@@ -4,7 +4,7 @@
 //! which handles conversion from parser AST to rumoca_ir::ast.
 
 use super::definitions::{ElementList, validate_annotation_modifiers};
-use super::helpers::{loc_info, span_location};
+use super::helpers::{loc_info, location_span, span_location};
 use crate::errors::{semantic_error_from_component_reference, semantic_error_from_token};
 use crate::generated::modelica_grammar_trait;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -109,7 +109,10 @@ fn extract_type_level_shape(
 }
 
 /// Get default start value for a type name.
-fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
+fn default_start_value(
+    type_name: &str,
+    owner_span: rumoca_core::Span,
+) -> rumoca_ir_ast::Expression {
     use std::sync::Arc;
     match type_name {
         "Real" => rumoca_ir_ast::Expression::Terminal {
@@ -118,7 +121,7 @@ fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
                 text: Arc::from("0.0"),
                 ..Default::default()
             },
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         },
         "Integer" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
@@ -126,7 +129,7 @@ fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
                 text: Arc::from("0"),
                 ..Default::default()
             },
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         },
         "Boolean" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::Bool,
@@ -134,11 +137,9 @@ fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
                 text: Arc::from("false"),
                 ..Default::default()
             },
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         },
-        _ => rumoca_ir_ast::Expression::Empty {
-            span: rumoca_core::Span::DUMMY,
-        },
+        _ => rumoca_ir_ast::Expression::Empty { span: owner_span },
     }
 }
 
@@ -512,6 +513,13 @@ fn process_single_component(
         .first()
         .map(|start_tok| span_location(start_tok, &c.declaration.ident))
         .unwrap_or_else(|| c.declaration.ident.location.clone());
+    let comp_span = location_span(&comp_location).map_err(|err| {
+        anyhow::anyhow!(
+            "component '{}' has no source span{}: {err}",
+            c.declaration.ident.text,
+            loc_info(&c.declaration.ident)
+        )
+    })?;
     let condition = c
         .component_declaration_opt
         .as_ref()
@@ -528,7 +536,7 @@ fn process_single_component(
         causality: ctx.causality.clone(),
         connection: ctx.connection.clone(),
         description: c.description.description_string.tokens.clone(),
-        start: default_start_value(&ctx.type_name.to_string()),
+        start: default_start_value(&ctx.type_name.to_string(), comp_span),
         start_is_modification: false,
         start_has_each: false,
         has_explicit_binding: false,

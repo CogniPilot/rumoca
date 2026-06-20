@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 use rumoca_ir_solve::{
     BinaryOp, ComputeBlock, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp,
 };
@@ -20,6 +21,13 @@ fn mlir_template() -> &'static str {
         .expect("built-in mlir target must provide mlir.mlir.jinja")
 }
 
+fn scalar_program_block(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+    )
+}
+
 fn decay_solve() -> SolveProblem {
     let row: Vec<LinearOp> = vec![
         LinearOp::LoadY { dst: 0, index: 0 },
@@ -38,7 +46,7 @@ fn decay_solve() -> SolveProblem {
         LinearOp::StoreOutput { src: 3 },
     ];
     SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row]),
+        scalar_program_block(vec![row], "render_mlir_decay.mo"),
     ))
 }
 
@@ -72,7 +80,7 @@ fn mlir_template_renders_loadtime() {
         LinearOp::StoreOutput { src: 0 },
     ];
     let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row]),
+        scalar_program_block(vec![row], "render_mlir_time.mo"),
     ));
 
     let mlir = render_solve_template_with_name(&solve, "time_dep").expect("template should render");
@@ -99,7 +107,7 @@ fn mlir_template_emits_root_conditions_when_present() {
         LinearOp::StoreOutput { src: 0 },
     ];
     let mut solve = decay_solve();
-    solve.events.root_conditions = ScalarProgramBlock::new(vec![root_row]);
+    solve.events.root_conditions = scalar_program_block(vec![root_row], "render_mlir_root.mo");
 
     let mlir = render_solve_template_with_name(&solve, "decay").expect("template should render");
 

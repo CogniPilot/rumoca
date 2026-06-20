@@ -1,3 +1,7 @@
+// SPEC_0021 file-size exception: wasm binding coverage still combines cache,
+// source sync, compile, and LSP behaviors. split plan: move each behavior
+// family into dedicated test modules under src/tests/.
+
 use super::*;
 use rumoca_compile::compile::{reset_session_cache_stats, session_cache_stats};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -5,9 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::source_root_api::sync_workspace_sources_with_cache_root_for_tests;
 
 mod lsp_diagnostics_tests;
-mod scenario_config_tests;
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-mod simulation_tests;
+mod simulation_runtime_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
 mod wasm_cache_tests;
@@ -236,19 +238,25 @@ fn test_init_start_hook_is_safe_to_call() {
 #[test]
 fn test_wasm_init_is_a_noop() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     assert!(!wasm_init(4));
-    assert_eq!(get_source_root_document_count(), 0);
+    assert_eq!(
+        get_source_root_document_count().expect("source-root document count"),
+        0
+    );
 }
 
 #[test]
 #[cfg(target_arch = "wasm32")]
 fn test_parse_wrapper_serializes_success_and_error_shape() {
-    let valid: ParseResult = decode_wasm_value(parse("model M\n  Real x;\nend M;\n"));
+    let valid: ParseResult = decode_wasm_value(
+        parse("model M\n  Real x;\nend M;\n").expect("parse payload should serialize"),
+    );
     assert!(valid.success, "expected successful parse wrapper payload");
     assert_eq!(valid.error, None);
 
-    let invalid: ParseResult = decode_wasm_value(parse("model M Real x end M;"));
+    let invalid: ParseResult =
+        decode_wasm_value(parse("model M Real x end M;").expect("parse error should serialize"));
     assert!(
         !invalid.success,
         "expected invalid Modelica source to fail parse wrapper"
@@ -262,14 +270,15 @@ fn test_parse_wrapper_serializes_success_and_error_shape() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn test_parse_validation_still_distinguishes_valid_and_invalid_sources_on_native() {
-    assert!(validate_source_syntax("model M\n  Real x;\nend M;\n", "input.mo").is_ok());
-    assert!(validate_source_syntax("model M Real x end M;", "input.mo").is_err());
+    assert!(parse_source_to_ast_with_errors("model M\n  Real x;\nend M;\n", "input.mo").is_ok());
+    assert!(parse_source_to_ast_with_errors("model M Real x end M;", "input.mo").is_err());
 }
 
 #[test]
 #[cfg(target_arch = "wasm32")]
 fn test_lint_wrapper_returns_naming_convention_message_shape() {
-    let messages: Vec<WasmLintMessage> = decode_wasm_value(lint("model m Real x; end m;"));
+    let messages: Vec<WasmLintMessage> =
+        decode_wasm_value(lint("model m Real x; end m;").expect("lint payload should serialize"));
     let message = messages
         .iter()
         .find(|message| message.rule == "naming-convention")
@@ -297,11 +306,12 @@ fn test_lint_wrapper_returns_naming_convention_message_shape() {
 #[test]
 #[cfg(target_arch = "wasm32")]
 fn test_check_wrapper_reports_syntax_errors_and_valid_lint_messages() {
-    let syntax_messages: Vec<WasmLintMessage> = decode_wasm_value(check("model M Real x end M;"));
-    assert_eq!(
-        syntax_messages.len(),
-        1,
-        "syntax errors should short-circuit to one wrapper payload"
+    let syntax_messages: Vec<WasmLintMessage> = decode_wasm_value(
+        check("model M Real x end M;").expect("syntax diagnostics should serialize"),
+    );
+    assert!(
+        !syntax_messages.is_empty(),
+        "syntax errors should short-circuit to syntax diagnostics"
     );
     let syntax_message = &syntax_messages[0];
     assert_eq!(syntax_message.rule, "syntax-error");
@@ -310,8 +320,11 @@ fn test_check_wrapper_reports_syntax_errors_and_valid_lint_messages() {
         !syntax_message.message.is_empty(),
         "expected syntax error text in check wrapper payload"
     );
+    assert!(syntax_message.line >= 1);
+    assert!(syntax_message.column >= 1);
 
-    let lint_messages: Vec<WasmLintMessage> = decode_wasm_value(check("model m Real x; end m;"));
+    let lint_messages: Vec<WasmLintMessage> =
+        decode_wasm_value(check("model m Real x; end m;").expect("check payload should serialize"));
     assert!(
         lint_messages
             .iter()
@@ -476,7 +489,7 @@ fn test_compile_to_json_valid_model() {
 #[test]
 fn test_compile_to_json_matches_compile_wrapper_output() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"
     model Ball
@@ -509,13 +522,13 @@ fn test_compile_to_json_matches_compile_wrapper_output() {
         "compile_to_json should remain an exact alias of compile"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_compile_to_json_qualifies_unqualified_within_model_name() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"
     within Outer;
@@ -538,13 +551,13 @@ fn test_compile_to_json_qualifies_unqualified_within_model_name() {
         "expected within-qualified model to compile successfully, got: {compiled_result:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_load_source_roots_creates_usable_source_root_source_set() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let result_json = load_source_roots(&mini_modelica_source_root_json())
         .expect("load_source_roots should succeed");
@@ -572,7 +585,10 @@ fn test_load_source_roots_creates_usable_source_root_source_set() {
             .unwrap_or_default(),
         0
     );
-    assert_eq!(get_source_root_document_count(), 1);
+    assert_eq!(
+        get_source_root_document_count().expect("source-root document count"),
+        1
+    );
 
     let compiled = compile(USES_MODELICA_SOURCE, "UsesModelica")
         .expect("compile should succeed with preloaded source root");
@@ -587,13 +603,13 @@ fn test_load_source_roots_creates_usable_source_root_source_set() {
         "expected source-root-backed model to compile successfully, got: {compiled_result:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_compile_with_source_roots_uses_supplied_source_root_sources() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let compiled = compile_with_source_roots(
         USES_MODELICA_SOURCE,
@@ -613,17 +629,17 @@ fn test_compile_with_source_roots_uses_supplied_source_root_sources() {
         "expected compile_with_source_roots to honor supplied source roots, got: {compiled_result:?}"
     );
     assert!(
-        get_source_root_document_count() >= 1,
+        get_source_root_document_count().expect("source-root document count") >= 1,
         "expected compile_with_source_roots to populate at least one cached source-root document"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_compile_with_source_roots_preserves_cached_source_roots_when_given_empty_object() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
     let compiled = compile_with_source_roots(USES_MODELICA_SOURCE, "UsesModelica", "{}")
@@ -640,17 +656,17 @@ fn test_compile_with_source_roots_preserves_cached_source_roots_when_given_empty
         "expected compile_with_source_roots to preserve cached source roots for '{{}}', got: {compiled_result:?}"
     );
     assert!(
-        get_source_root_document_count() >= 1,
+        get_source_root_document_count().expect("source-root document count") >= 1,
         "expected cached source-root documents to remain available after compile_with_source_roots('{{}}')"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let ast_json = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
         .expect("parse_source_root_file should serialize an AST");
@@ -669,7 +685,10 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
         merged, 1,
         "expected one parsed source-root definition to merge"
     );
-    assert_eq!(get_source_root_document_count(), 1);
+    assert_eq!(
+        get_source_root_document_count().expect("source-root document count"),
+        1
+    );
 
     let compiled = compile(USES_MODELICA_SOURCE, "UsesModelica")
         .expect("merged parsed source roots should be visible to compile");
@@ -684,20 +703,23 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
         "expected merged source-root definitions to support successful compilation, got: {compiled_result:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_clear_source_root_cache_clears_the_singleton_session() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
-    assert_eq!(get_source_root_document_count(), 1);
+    assert_eq!(
+        get_source_root_document_count().expect("source-root document count"),
+        1
+    );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     assert_eq!(
-        get_source_root_document_count(),
+        get_source_root_document_count().expect("source-root document count"),
         0,
         "clear_source_root_cache should remove loaded source-root documents"
     );
@@ -706,7 +728,7 @@ fn test_clear_source_root_cache_clears_the_singleton_session() {
 #[test]
 fn test_compile_with_source_roots_ignores_unrelated_session_parse_errors() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     {
         let mut lock = SESSION.lock().expect("session lock");
@@ -732,13 +754,13 @@ fn test_compile_with_source_roots_ignores_unrelated_session_parse_errors() {
         "expected compile_with_source_roots to ignore unrelated parse errors, got: {compiled_result:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_completion_uses_loaded_source_root_completion_cache() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
 
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
@@ -798,13 +820,13 @@ fn test_lsp_completion_uses_loaded_source_root_completion_cache() {
         "warm source-root namespace completion should hit the source-root completion cache"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_completion_with_timing_reports_cache_breakdown() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
 
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
@@ -845,13 +867,13 @@ fn test_lsp_completion_with_timing_reports_cache_breakdown() {
         0
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_completion_keeps_local_member_lookup_on_ast_fast_path() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = r#"model Plane
   Real x, y, theta;
@@ -894,13 +916,13 @@ end Sim;
         "warm completion should still expose local semantic members"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_completion_includes_inherited_source_root_members() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     load_source_roots(&mini_modelica_pid_source_root_json())
         .expect("load_source_roots should succeed");
@@ -926,13 +948,13 @@ end PIDMSL;
         "expected PID member completion to include local parameter y_start, got: {items:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source = "model Active\n  Real x;\nequation\n  der(x) = -x;\nend Active;\n";
 
@@ -960,13 +982,13 @@ fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
         "warm diagnostics should reuse cached semantic diagnostics for clean models"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_wasm_lsp_hover_uses_parsed_source_root_fast_path_for_imported_class() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
 
     let source_roots = serde_json::json!({
@@ -1019,13 +1041,13 @@ end M;
         "warm hover should continue avoiding the standard resolved session"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_wasm_lsp_hover_uses_parsed_source_root_fast_path_for_qualified_class() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
 
@@ -1053,13 +1075,13 @@ end UsesModelica;
         "qualified source-root hover should avoid populating the standard resolved session"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_wasm_lsp_definition_uses_parsed_source_root_fast_path_for_imported_class() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
 
     let source_roots = serde_json::json!({
@@ -1123,13 +1145,13 @@ end M;
         "warm goto-definition should continue avoiding the standard resolved session"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_wasm_lsp_definition_uses_parsed_source_root_fast_path_for_qualified_class() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
 
@@ -1163,13 +1185,13 @@ end UsesModelica;
         "qualified source-root goto-definition should avoid populating the standard resolved session"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_completion_rebuilds_ast_local_members_after_source_edit() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source_v1 = r#"model Plane
   Real x, y, theta;
@@ -1228,13 +1250,13 @@ end Sim;
         "edited completion must not reuse stale AST-local members: {second_labels:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_list_classes_wrapper_serializes_singleton_class_tree() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     with_singleton_document(
         r#"
         package Lib
@@ -1266,13 +1288,13 @@ fn test_list_classes_wrapper_serializes_singleton_class_tree() {
         "expected top-level package in list_classes payload: {tree:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_list_classes_wrapper_tolerates_resolve_failures() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     with_singleton_document(
         r#"
         package BrokenLib
@@ -1310,13 +1332,13 @@ fn test_list_classes_wrapper_tolerates_resolve_failures() {
         "expected parsed class tree to include BrokenLib.Broken despite resolve errors: {tree:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_get_class_info_wrapper_serializes_documentation_and_components() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     with_singleton_document(DOC_MODEL_SOURCE);
 
     let json = get_class_info("DocModel").expect("get_class_info should succeed");
@@ -1346,13 +1368,13 @@ fn test_get_class_info_wrapper_serializes_documentation_and_components() {
         "expected documentation_revisions_html in get_class_info payload: {info:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_get_class_info_wrapper_uses_parsed_within_source_root_docs() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 
     let source_roots = serde_json::json!({
         "Lib/package.mo": "within ;\npackage Lib\nend Lib;\n",
@@ -1378,13 +1400,13 @@ fn test_get_class_info_wrapper_uses_parsed_within_source_root_docs() {
         "expected parsed class source for within-loaded source-root class: {info:?}"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_lsp_completion_reuses_loaded_source_root_namespace_cache_after_local_edit() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
 
     let source_v1 = "model UsesModelica\n  Modelica.\nend UsesModelica;\n";
@@ -1422,7 +1444,7 @@ fn test_lsp_completion_reuses_loaded_source_root_namespace_cache_after_local_edi
         );
     }
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]

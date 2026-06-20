@@ -22,6 +22,13 @@ pub enum LowerError {
         reason: String,
         span: rumoca_core::Span,
     },
+    UnspannedContractViolation {
+        reason: String,
+    },
+    Scalarization {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
     /// A function projection produced an expression larger than the inline
     /// node budget. Recoverable only at the outermost projection boundary,
     /// where the original runtime call is the semantically equivalent
@@ -46,6 +53,7 @@ pub enum LowerError {
         /// "record constructor field".
         what: &'static str,
         input: String,
+        span: rumoca_core::Span,
     },
     /// A dynamic-binding path rooted in an expression form that has no
     /// binding key. Observation lowering declines on this.
@@ -75,8 +83,12 @@ impl std::fmt::Display for LowerError {
             Self::InvalidFunction { name, reason } => {
                 write!(f, "invalid function `{name}`: {reason}")
             }
-            Self::ContractViolation { reason, .. } => {
+            Self::ContractViolation { reason, .. }
+            | Self::UnspannedContractViolation { reason } => {
                 write!(f, "invalid IR contract: {reason}")
+            }
+            Self::Scalarization { message, .. } => {
+                write!(f, "Solve-IR scalarization failed: {message}")
             }
             Self::ProjectionBudgetExceeded { function, .. } => write!(
                 f,
@@ -96,7 +108,43 @@ impl std::fmt::Display for LowerError {
 
 impl std::error::Error for LowerError {}
 
+impl From<rumoca_eval_solve::ScalarizeError> for LowerError {
+    fn from(value: rumoca_eval_solve::ScalarizeError) -> Self {
+        Self::Scalarization {
+            message: value.to_string(),
+            span: value.source_span(),
+        }
+    }
+}
+
+impl From<rumoca_ir_solve::SolveProblemShapeContractError> for LowerError {
+    fn from(value: rumoca_ir_solve::SolveProblemShapeContractError) -> Self {
+        let reason = value.to_string();
+        match value.source_span() {
+            Some(span) if !span.is_dummy() => Self::ContractViolation { reason, span },
+            Some(_) | None => Self::UnspannedContractViolation { reason },
+        }
+    }
+}
+
+impl From<rumoca_core::MissingProvenanceSpan> for LowerError {
+    fn from(value: rumoca_core::MissingProvenanceSpan) -> Self {
+        Self::UnspannedContractViolation {
+            reason: value.to_string(),
+        }
+    }
+}
+
 impl LowerError {
+    pub(crate) fn contract_violation(reason: impl Into<String>, span: rumoca_core::Span) -> Self {
+        let reason = reason.into();
+        if span.is_dummy() {
+            Self::UnspannedContractViolation { reason }
+        } else {
+            Self::ContractViolation { reason, span }
+        }
+    }
+
     pub fn reason(&self) -> String {
         match self {
             Self::Unsupported { reason } => reason.clone(),
@@ -108,7 +156,13 @@ impl LowerError {
             Self::InvalidFunction { name, reason } => {
                 format!("invalid function `{name}`: {reason}")
             }
-            Self::ContractViolation { reason, .. } => format!("invalid IR contract: {reason}"),
+            Self::ContractViolation { reason, .. }
+            | Self::UnspannedContractViolation { reason } => {
+                format!("invalid IR contract: {reason}")
+            }
+            Self::Scalarization { message, .. } => {
+                format!("Solve-IR scalarization failed: {message}")
+            }
             Self::ProjectionBudgetExceeded { function, .. } => {
                 format!("function `{function}` projection exceeded the inline node budget")
             }
@@ -120,6 +174,7 @@ impl LowerError {
                 function,
                 what,
                 input,
+                ..
             } => format!(
                 "invalid function `{function}`: {what} `{input}` has no actual argument or default binding"
             ),
@@ -139,7 +194,13 @@ impl LowerError {
             Self::InvalidFunction { name, reason } => {
                 format!("invalid function `{name}`: {reason}")
             }
-            Self::ContractViolation { reason, .. } => format!("invalid IR contract: {reason}"),
+            Self::ContractViolation { reason, .. }
+            | Self::UnspannedContractViolation { reason } => {
+                format!("invalid IR contract: {reason}")
+            }
+            Self::Scalarization { message, .. } => {
+                format!("Solve-IR scalarization failed: {message}")
+            }
             Self::ProjectionBudgetExceeded { function, .. } => {
                 format!("function `{function}` projection exceeded the inline node budget")
             }
@@ -156,7 +217,9 @@ impl LowerError {
         match self {
             Self::UnsupportedAt { span, .. } if !span.is_dummy() => Some(*span),
             Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
+            Self::Scalarization { span, .. } => *span,
             Self::ProjectionBudgetExceeded { span, .. } if !span.is_dummy() => Some(*span),
+            Self::MissingActualArgument { span, .. } if !span.is_dummy() => Some(*span),
             Self::Spanned { source, span } => source
                 .source_span()
                 .or_else(|| (!span.is_dummy()).then_some(*span)),
@@ -225,6 +288,9 @@ impl LowerError {
                 reason: format!("{context}: {reason}"),
                 span,
             },
+            Self::UnspannedContractViolation { reason } => Self::UnspannedContractViolation {
+                reason: format!("{context}: {reason}"),
+            },
             Self::WithContext {
                 source,
                 mut contexts,
@@ -272,6 +338,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn contract_violation_preserves_real_span() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(3), 4, 9);
+        let err = LowerError::contract_violation("metadata mismatch", span);
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(err.reason(), "invalid IR contract: metadata mismatch");
+    }
+
+    #[test]
+    fn contract_violation_does_not_fabricate_dummy_span() {
+        let err = LowerError::contract_violation("metadata mismatch", rumoca_core::Span::DUMMY);
+
+        assert_eq!(err.source_span(), None);
+        assert_eq!(err.reason(), "invalid IR contract: metadata mismatch");
+    }
+
+    #[test]
     fn fallback_span_preserves_invalid_function_context() {
         let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 19);
         let err = LowerError::InvalidFunction {
@@ -284,6 +367,24 @@ mod tests {
         assert_eq!(
             err.reason(),
             "invalid function `Pkg.f`: required input `x` has no actual argument"
+        );
+    }
+
+    #[test]
+    fn scalarization_error_preserves_source_span() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 21, 34);
+        let err: LowerError = rumoca_eval_solve::ScalarizeError::InvalidStrideDimension {
+            kind: "map",
+            dimension: 3,
+            dimension_count: 2,
+            span,
+        }
+        .into();
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "Solve-IR scalarization failed: native map family stride dimension 3 out of bounds for 2 dimensions"
         );
     }
 }

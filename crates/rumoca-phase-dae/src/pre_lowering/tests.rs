@@ -3,11 +3,15 @@ use rumoca_ir_dae as dae;
 use super::lower_pre_operator;
 use crate::ToDaeError;
 
+fn test_span(start: usize, end: usize) -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(rumoca_core::SourceId(83), start, end)
+}
+
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(10, 10 + name.len()),
     }
 }
 
@@ -15,7 +19,7 @@ fn pre_call(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Pre,
         args: vec![var_ref(name)],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(20, 25 + name.len()),
     }
 }
 
@@ -24,7 +28,7 @@ fn previous_call(name: &str) -> rumoca_core::Expression {
         name: rumoca_core::VarName::new("previous").into(),
         args: vec![var_ref(name)],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(30, 40 + name.len()),
     }
 }
 
@@ -34,19 +38,19 @@ fn indexed_field_access(base_name: &str, index: i64, field: &str) -> rumoca_core
             base: Box::new(var_ref(base_name)),
             subscripts: vec![rumoca_core::Subscript::generated_index(
                 index,
-                rumoca_core::Span::DUMMY,
+                test_span(45, 48),
             )],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(40, 50 + base_name.len()),
         }),
         field: field.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(40, 55 + base_name.len() + field.len()),
     }
 }
 
 fn integer_literal(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(60, 63),
     }
 }
 
@@ -59,10 +63,10 @@ fn sample_with_clock_call(name: &str) -> rumoca_core::Expression {
                 name: rumoca_core::VarName::new("Clock").into(),
                 args: vec![],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(80, 87),
             },
         ],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(70, 88 + name.len()),
     }
 }
 
@@ -70,7 +74,7 @@ fn inferred_clock_sample_call(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Sample,
         args: vec![var_ref(name)],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(90, 99 + name.len()),
     }
 }
 
@@ -108,7 +112,7 @@ fn test_lower_pre_rewrites_inferred_clock_sample_to_left_limit() -> Result<(), T
     dae.discrete.valued_updates.push(dae::Equation::explicit(
         rumoca_core::VarName::new("sampled.y"),
         inferred_clock_sample_call("sampled.u"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "inferred clock sample update".to_string(),
     ));
 
@@ -140,7 +144,7 @@ fn test_lower_pre_is_idempotent_for_generated_pre_parameters() -> Result<(), ToD
     dae.discrete.real_updates.push(dae::Equation::explicit(
         rumoca_core::VarName::new("y"),
         pre_call("x"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "pre value update".to_string(),
     ));
 
@@ -181,7 +185,7 @@ fn test_lower_pre_allocates_sampled_value_parameter_without_rewriting_call()
     dae.discrete.valued_updates.push(dae::Equation::explicit(
         rumoca_core::VarName::new("sampled.y"),
         sample_with_clock_call("sampled.u"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "clocked sample update".to_string(),
     ));
 
@@ -218,7 +222,7 @@ fn test_lower_pre_does_not_allocate_sampled_time_parameter() -> Result<(), ToDae
             }],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "clocked time sample".to_string(),
     ));
 
@@ -253,7 +257,7 @@ fn test_lower_pre_does_not_rewrite_memoryless_time_edge_to_raw_relation() -> Res
             args: vec![time_guard],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "time-event guard".to_string(),
     ));
 
@@ -292,7 +296,7 @@ fn test_lower_pre_preserves_pre_time_threshold_condition_memory() -> Result<(), 
     dae.conditions.equations.push(dae::Equation::explicit(
         rumoca_core::VarName::new("c"),
         time_guard.clone(),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "condition variable".to_string(),
     ));
     dae.discrete.real_updates.push(dae::Equation::explicit(
@@ -302,7 +306,7 @@ fn test_lower_pre_preserves_pre_time_threshold_condition_memory() -> Result<(), 
             args: vec![time_guard],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "pre time-event guard".to_string(),
     ));
 
@@ -474,7 +478,7 @@ fn test_lower_pre_creates_parameter() -> Result<(), ToDaeError> {
     );
     dae.continuous.equations.push(dae::Equation::residual(
         pre_call("pulse_count"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -515,7 +519,7 @@ fn test_lower_pre_allocates_previous_parameter_without_rewriting_call() -> Resul
     dae.discrete.valued_updates.push(dae::Equation::explicit(
         rumoca_core::VarName::new("unitDelay.y"),
         previous_call("unitDelay.u"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "clocked previous update".to_string(),
     ));
 
@@ -546,7 +550,7 @@ fn test_lower_pre_no_pre_calls_is_noop() -> Result<(), ToDaeError> {
     let mut dae = dae::Dae::new();
     dae.continuous.equations.push(dae::Equation::residual(
         var_ref("x"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -554,6 +558,33 @@ fn test_lower_pre_no_pre_calls_is_noop() -> Result<(), ToDaeError> {
 
     assert!(dae.variables.parameters.is_empty());
     Ok(())
+}
+
+#[test]
+fn test_lower_pre_rejects_missing_source_provenance() {
+    let mut dae = dae::Dae::new();
+    dae.variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("x"), discrete_valued_var("x"));
+    dae.continuous.equations.push(dae::Equation::residual(
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Pre,
+            args: vec![rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("x").into(),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        "unspanned pre".to_string(),
+    ));
+
+    let err = lower_pre_operator(&mut dae)
+        .expect_err("source-free pre targets should fail before rewriting");
+
+    assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    assert!(err.to_string().contains("source provenance"));
 }
 
 #[test]
@@ -607,7 +638,7 @@ fn test_lower_pre_normalizes_encoded_integer_subscript_target() -> Result<(), To
     );
     dae.continuous.equations.push(dae::Equation::residual(
         pre_call("buf[1]"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -628,7 +659,7 @@ fn test_lower_pre_normalizes_encoded_integer_subscript_target() -> Result<(), To
                 subscripts,
                 &[rumoca_core::Subscript::generated_index(
                     1,
-                    rumoca_core::Span::DUMMY
+                    test_span(10, 16)
                 )]
             );
         }
@@ -642,7 +673,7 @@ fn test_lower_pre_rejects_missing_target_variable() -> Result<(), ToDaeError> {
     let mut dae = dae::Dae::new();
     dae.continuous.equations.push(dae::Equation::residual(
         pre_call("missing"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -679,7 +710,7 @@ fn test_lower_pre_ignores_enum_literals_in_edge_relations() -> Result<(), ToDaeE
             args: vec![relation],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -723,7 +754,7 @@ fn test_lower_pre_rejects_continuous_state_target() {
         .insert(rumoca_core::VarName::new("x"), discrete_valued_var("x"));
     dae.continuous.equations.push(dae::Equation::residual(
         pre_call("x"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -794,7 +825,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
     );
     dae.continuous.equations.push(dae::Equation::residual(
         pre_call("x"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -827,7 +858,7 @@ fn test_lower_pre_preserves_unhandled_pre_shape() -> Result<(), ToDaeError> {
             }],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -887,7 +918,7 @@ fn test_lower_pre_rewrites_expression_variables_to_pre_parameters() -> Result<()
             }],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -1023,13 +1054,13 @@ fn test_lower_pre_preserves_index_subscripts() -> Result<(), ToDaeError> {
                 base: Box::new(var_ref("sampled")),
                 subscripts: vec![rumoca_core::Subscript::generated_index(
                     2,
-                    rumoca_core::Span::DUMMY,
+                    test_span(120, 123),
                 )],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(110, 124),
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(100, 125),
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -1046,7 +1077,7 @@ fn test_lower_pre_preserves_index_subscripts() -> Result<(), ToDaeError> {
                 subscripts,
                 &[rumoca_core::Subscript::generated_index(
                     2,
-                    rumoca_core::Span::DUMMY
+                    test_span(120, 123)
                 )]
             );
         }
@@ -1070,9 +1101,10 @@ fn test_lower_pre_rewrites_var_ref_subscript_expressions() -> Result<(), ToDaeEr
         rumoca_core::VarName::new("target"),
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("table").into(),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(pre_call(
-                "selector",
-            )))],
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(pre_call("selector")),
+                rumoca_core::Span::DUMMY,
+            )],
             span: rumoca_core::Span::DUMMY,
         },
         rumoca_core::Span::DUMMY,
@@ -1123,9 +1155,10 @@ fn test_lower_pre_rewrites_index_subscript_expressions() -> Result<(), ToDaeErro
         rumoca_core::VarName::new("target"),
         rumoca_core::Expression::Index {
             base: Box::new(var_ref("table")),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(pre_call(
-                "selector",
-            )))],
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(pre_call("selector")),
+                rumoca_core::Span::DUMMY,
+            )],
             span: rumoca_core::Span::DUMMY,
         },
         rumoca_core::Span::DUMMY,
@@ -1190,11 +1223,11 @@ fn test_lower_pre_rewrites_record_field_target() -> Result<(), ToDaeError> {
             args: vec![rumoca_core::Expression::FieldAccess {
                 base: Box::new(var_ref("recorded")),
                 field: "value".to_string(),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(130, 144),
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(126, 145),
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -1230,7 +1263,7 @@ fn test_lower_pre_rewrites_indexed_record_field_target() -> Result<(), ToDaeErro
             args: vec![indexed_field_access("step.outPort", 1, "reset")],
             span: rumoca_core::Span::DUMMY,
         },
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "test".to_string(),
     ));
 
@@ -1340,7 +1373,7 @@ fn test_lower_pre_resolves_encoded_matrix_element_to_declared_array() -> Result<
         .insert(rumoca_core::VarName::new("dLATRAM.mem"), memory);
     dae.discrete.valued_updates.push(dae::Equation::residual(
         pre_call("dLATRAM.mem[1,1]"),
-        rumoca_core::Span::default(),
+        rumoca_core::Span::DUMMY,
         "matrix memory read".to_string(),
     ));
 

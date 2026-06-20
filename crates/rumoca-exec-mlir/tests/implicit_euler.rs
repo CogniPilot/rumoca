@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 /// Phase 6.7: Implicit Euler integration driven by MLIR eval_implicit_rhs + eval_jacobian_v.
 ///
 /// Each implicit Euler step solves  G(y_new) = 0  via scalar Newton iteration:
@@ -30,6 +31,13 @@ fn compile_or_skip(solve: &SolveProblem, name: &str) -> Option<CompiledMlirResid
         }
         Err(e) => panic!("compile failed: {e}"),
     }
+}
+
+fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+    )
 }
 
 /// Implicit Euler integrator using MLIR-compiled residual + JVP.
@@ -121,12 +129,14 @@ fn decay_solve() -> SolveProblem {
     ];
     SolveProblem {
         continuous: ContinuousSolveSystem {
-            derivative_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
-                rhs_row.clone(),
-            ])),
-            implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
-                rhs_row,
-            ])),
+            derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
+                vec![rhs_row.clone()],
+                "implicit_euler_decay_derivative.mo",
+            )),
+            implicit_rhs: ComputeBlock::from_scalar_program_block(spb(
+                vec![rhs_row],
+                "implicit_euler_decay_implicit.mo",
+            )),
             ..Default::default()
         },
         ..Default::default()
@@ -159,12 +169,14 @@ fn logistic_solve() -> SolveProblem {
     ];
     SolveProblem {
         continuous: ContinuousSolveSystem {
-            derivative_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
-                rhs_row.clone(),
-            ])),
-            implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
-                rhs_row,
-            ])),
+            derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
+                vec![rhs_row.clone()],
+                "implicit_euler_logistic_derivative.mo",
+            )),
+            implicit_rhs: ComputeBlock::from_scalar_program_block(spb(
+                vec![rhs_row],
+                "implicit_euler_logistic_implicit.mo",
+            )),
             ..Default::default()
         },
         ..Default::default()

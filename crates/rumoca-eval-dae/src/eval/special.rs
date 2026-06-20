@@ -264,6 +264,9 @@ fn bind_user_function_inputs<T: SimFloat>(
             if bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env)? {
                 continue;
             }
+            if copy_record_constructor_input_fields(local_env, param, arg_expr, caller_env)? {
+                continue;
+            }
             if let Ok(value) = eval_expr::<T>(arg_expr, caller_env) {
                 bind_function_scalar_input(local_env, function_name, &param.name, value);
             }
@@ -287,6 +290,152 @@ fn bind_user_function_inputs<T: SimFloat>(
         bind_function_scalar_input(local_env, function_name, &param.name, val);
     }
     Ok(())
+}
+
+fn copy_record_constructor_input_fields<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    param: &FunctionParam,
+    arg_expr: &Expression,
+    caller_env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    if param.type_class != Some(rumoca_core::ClassType::Record) {
+        return Ok(false);
+    }
+    let Expression::FunctionCall {
+        args,
+        is_constructor,
+        ..
+    } = arg_expr
+    else {
+        return Ok(false);
+    };
+    if !is_constructor {
+        return Ok(false);
+    }
+
+    let mut explicit_fields = IndexMap::new();
+    for arg in args {
+        let Some((field, value_expr)) = decode_named_constructor_arg(arg) else {
+            continue;
+        };
+        let value = eval_expr::<T>(value_expr, caller_env)?;
+        local_env.set(&format!("{}.{field}", param.name), value);
+        explicit_fields.insert(field.to_string(), value);
+    }
+    let copied_start_fields =
+        copy_record_constructor_start_fields(local_env, param, &explicit_fields, caller_env)?;
+    Ok(!explicit_fields.is_empty() || copied_start_fields)
+}
+
+fn copy_record_constructor_start_fields<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    param: &FunctionParam,
+    explicit_fields: &IndexMap<String, T>,
+    caller_env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    if explicit_fields.is_empty() {
+        return Ok(false);
+    }
+    let prefixes = matching_record_constructor_prefixes(explicit_fields, caller_env)?;
+    let fields = consensus_start_fields(&prefixes, explicit_fields, caller_env)?;
+    let mut copied = false;
+    for (field, value) in fields {
+        local_env.set(&format!("{}.{field}", param.name), value);
+        copied = true;
+    }
+    Ok(copied)
+}
+
+fn matching_record_constructor_prefixes<T: SimFloat>(
+    explicit_fields: &IndexMap<String, T>,
+    env: &VarEnv<T>,
+) -> Result<Vec<String>, EvalError> {
+    let Some((field, value)) = explicit_fields.first() else {
+        return Ok(Vec::new());
+    };
+    let mut candidates = Vec::new();
+    let suffix = format!(".{field}");
+    for key in env.start_exprs.keys() {
+        let Some(prefix) = key.strip_suffix(suffix.as_str()) else {
+            continue;
+        };
+        if record_prefix_matches_constructor_fields(prefix, explicit_fields, env)?
+            && eval_record_start_field(prefix, field, env)?
+                .is_some_and(|field_value| field_value.eq_approx(*value))
+        {
+            candidates.push(prefix.to_string());
+        }
+    }
+    Ok(candidates)
+}
+
+fn record_prefix_matches_constructor_fields<T: SimFloat>(
+    prefix: &str,
+    explicit_fields: &IndexMap<String, T>,
+    env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    for (field, expected) in explicit_fields {
+        let Some(actual) = eval_record_start_field(prefix, field, env)? else {
+            return Ok(false);
+        };
+        if !actual.eq_approx(*expected) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn consensus_start_fields<T: SimFloat>(
+    prefixes: &[String],
+    explicit_fields: &IndexMap<String, T>,
+    env: &VarEnv<T>,
+) -> Result<IndexMap<String, T>, EvalError> {
+    let mut fields: IndexMap<String, T> = IndexMap::new();
+    for prefix in prefixes {
+        let start_prefix = format!("{prefix}.");
+        for key in env.start_exprs.keys() {
+            let Some(field) = key.strip_prefix(start_prefix.as_str()) else {
+                continue;
+            };
+            if explicit_fields.contains_key(field) {
+                continue;
+            }
+            let Some(value) = eval_record_start_field(prefix, field, env)? else {
+                continue;
+            };
+            if let Some(existing) = fields.get(field)
+                && !existing.eq_approx(value)
+            {
+                return Err(EvalError::InvalidShape {
+                    context: "record constructor start field",
+                    reason: format!(
+                        "ambiguous flattened defaults for omitted constructor field `{field}`"
+                    ),
+                });
+            }
+            fields.insert(field.to_string(), value);
+        }
+    }
+    Ok(fields)
+}
+
+fn eval_record_start_field<T: SimFloat>(
+    prefix: &str,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    let key = format!("{prefix}.{field}");
+    if let Some(value) = env.get_optional(key.as_str()) {
+        return Ok(Some(value));
+    }
+    let Some(start_expr) = env.start_exprs.get(key.as_str()) else {
+        return Ok(None);
+    };
+    match eval_expr::<T>(start_expr, env) {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if err.missing_binding_name().is_some() => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn copy_array_literal_vector_entries<T: SimFloat>(

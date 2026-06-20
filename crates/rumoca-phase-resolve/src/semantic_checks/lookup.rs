@@ -91,11 +91,13 @@ fn with_active_lookup<T>(
     })
 }
 
-pub(super) fn source_id_for(file_name: &str) -> Option<SourceId> {
+pub(super) fn source_id_for(file_name: &str) -> SourceId {
     ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
         let ids_ref = slot.borrow();
-        let ids = ids_ref.as_ref()?;
-        ids.get(file_name).copied()
+        ids_ref
+            .as_ref()
+            .and_then(|ids| ids.get(file_name).copied())
+            .unwrap_or_else(|| SourceId::from_source_name(file_name))
     })
 }
 

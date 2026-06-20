@@ -9,7 +9,11 @@ fn test_classify_equations_embedded_range_zero_dimension_is_elided() {
             name: VarName::new("ports_mXi_flow"),
             dims: vec![1, 0],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -33,7 +37,10 @@ fn test_classify_equations_embedded_range_zero_dimension_is_elided() {
     let mut dae = Dae::new();
     dae.variables.algebraics.insert(
         rumoca_core::VarName::new("ports_mXi_flow"),
-        Variable::new(rumoca_core::VarName::new("ports_mXi_flow")),
+        Variable::new(
+            rumoca_core::VarName::new("ports_mXi_flow"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let prefix_counts = build_prefix_counts(&flat);

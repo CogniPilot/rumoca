@@ -626,7 +626,7 @@ fn extract_assignment_target(
             // LHS must be a simple variable reference
             Err(FlattenError::unsupported_equation(
                 "when-equation LHS must be a simple variable reference",
-                rumoca_core::Span::DUMMY,
+                lhs.span(),
             ))
         }
     }
@@ -634,7 +634,10 @@ fn extract_assignment_target(
 
 #[cfg(test)]
 mod tests {
-    use super::{flatten_when_for_equation, is_known_streams_side_effect_call};
+    use super::{
+        extract_assignment_target, flatten_when_for_equation, is_known_streams_side_effect_call,
+    };
+    use crate::errors::FlattenError;
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::TerminalType;
     use rumoca_ir_flat as flat;
@@ -669,6 +672,14 @@ mod tests {
             token: token(&value.to_string()),
             span: rumoca_core::Span::DUMMY,
         }
+    }
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("when_equations_test.mo"),
+            10,
+            14,
+        )
     }
 
     fn range_expr(start: i64, end: i64) -> ast::Expression {
@@ -706,6 +717,28 @@ mod tests {
             def_id: None,
             span: rumoca_core::Span::DUMMY,
         })
+    }
+
+    #[test]
+    fn assignment_target_error_uses_invalid_lhs_span() {
+        let span = test_span();
+        let lhs = ast::Expression::Terminal {
+            terminal_type: TerminalType::UnsignedInteger,
+            token: token("1"),
+            span,
+        };
+
+        let err = extract_assignment_target(&lhs, &ast::QualifiedName::new())
+            .expect_err("non-reference LHS should fail");
+
+        assert!(
+            matches!(
+                err,
+                FlattenError::UnsupportedEquation { span: error_span, .. }
+                    if error_span == rumoca_core::span_to_source_span(span)
+            ),
+            "invalid LHS diagnostic should use the LHS source span: {err:?}"
+        );
     }
 
     #[test]

@@ -2,8 +2,9 @@ use super::*;
 
 pub(super) fn static_singleton_subscript_index(
     expr: &rumoca_core::Expression,
+    owner_span: rumoca_core::Span,
 ) -> Result<Option<usize>, LowerError> {
-    lower_static_index_expr(expr)
+    lower_static_index_expr_with_owner(expr, owner_span)
 }
 
 pub(super) fn direct_assignment_component(
@@ -47,6 +48,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         value: Reg,
         expression: &rumoca_core::Expression,
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
@@ -65,13 +67,20 @@ impl<'a> LowerBuilder<'a> {
             return Ok(value);
         };
 
-        let time = self.emit_load_time();
-        let phase = self.emit_const(phase_seconds);
-        let tol = self.emit_const(1.0e-9);
-        let first_tick_boundary = self.emit_binary(BinaryOp::Sub, phase, tol);
-        let before_first_tick = self.emit_compare(CompareOp::Lt, time, first_tick_boundary);
+        let span = expression
+            .span()
+            .or_else(|| owner_span.filter(|span| !span.is_dummy()))
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: "current update start guard requires source span".to_string(),
+            })?;
+        let time = self.emit_load_time_at(span)?;
+        let phase = self.emit_const_at(phase_seconds, span)?;
+        let tol = self.emit_const_at(1.0e-9, span)?;
+        let first_tick_boundary = self.emit_binary_at(BinaryOp::Sub, phase, tol, span)?;
+        let before_first_tick =
+            self.emit_compare_at(CompareOp::Lt, time, first_tick_boundary, span)?;
         let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
-        Ok(self.emit_select(before_first_tick, start_value, value))
+        self.emit_select_at(before_first_tick, start_value, value, span)
     }
 
     fn current_update_target_start_guard_name(&self) -> Option<String> {
@@ -101,22 +110,23 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         dims: &[usize],
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         let dim_reg = if args.len() > 1 {
             let raw = self.lower_expr(&args[1], scope, call_depth)?;
-            self.emit_round(raw)
+            self.emit_round_at(raw, args[1].span().unwrap_or(span))?
         } else {
-            self.emit_const(1.0)
+            self.emit_const_at(1.0, span)?
         };
 
-        let mut value = self.emit_const(1.0);
+        let mut value = self.emit_const_at(1.0, span)?;
         for (idx, dim) in dims.iter().enumerate().rev() {
-            let dim_idx = self.emit_const((idx + 1) as f64);
-            let cond = self.emit_compare(CompareOp::Eq, dim_reg, dim_idx);
-            let dim_val = self.emit_const(*dim as f64);
-            value = self.emit_select(cond, dim_val, value);
+            let dim_idx = self.emit_const_at((idx + 1) as f64, span)?;
+            let cond = self.emit_compare_at(CompareOp::Eq, dim_reg, dim_idx, span)?;
+            let dim_val = self.emit_const_at(*dim as f64, span)?;
+            value = self.emit_select_at(cond, dim_val, value, span)?;
         }
         Ok(value)
     }

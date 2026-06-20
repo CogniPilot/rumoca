@@ -316,15 +316,21 @@ where
     }
 }
 
-pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> bool {
+pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> Result<bool, SimError> {
     let state_count = model.state_scalar_count();
-    if model.problem.continuous.derivative_rhs.len() != state_count {
-        return false;
+    let derivative_rhs_len = model
+        .problem
+        .continuous
+        .derivative_rhs
+        .len()
+        .map_err(|err| SimError::SolveIr(err.to_string()))?;
+    if derivative_rhs_len != state_count {
+        return Ok(false);
     }
     let derivative_rows =
-        solve_eval::to_scalar_program_block(&model.problem.continuous.derivative_rhs);
+        solve_eval::to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
     let direct_deps = derivative_non_state_loads(model, &derivative_rows);
-    direct_deps.is_empty() || projection_plan_covers_non_state_loads(model, direct_deps)
+    Ok(direct_deps.is_empty() || projection_plan_covers_non_state_loads(model, direct_deps)?)
 }
 
 fn derivative_non_state_loads(
@@ -344,15 +350,16 @@ fn derivative_non_state_loads(
 fn projection_plan_covers_non_state_loads(
     model: &solve::SolveModel,
     direct_deps: BTreeSet<usize>,
-) -> bool {
+) -> Result<bool, SimError> {
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
-    let implicit_rows = solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs);
+    let implicit_rows =
+        solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs)?;
     // The projection plan references residual rows by OUTPUT index; a program may
     // now emit several outputs, so the producer map is bounded by output count
     // and resolved to its producing program.
     let Some(producer_rows) = projection_producer_rows(model, implicit_rows.output_count()) else {
-        return false;
+        return Ok(false);
     };
     let mut needed = BTreeSet::new();
     let mut stack = direct_deps.into_iter().collect::<Vec<_>>();
@@ -361,17 +368,17 @@ fn projection_plan_covers_non_state_loads(
             continue;
         }
         let Some(output_idx) = producer_rows.get(&index).copied() else {
-            return false;
+            return Ok(false);
         };
         let Some(program_idx) = implicit_rows.program_index_for_output(output_idx) else {
-            return false;
+            return Ok(false);
         };
         let Some(row) = implicit_rows.programs.get(program_idx) else {
-            return false;
+            return Ok(false);
         };
         stack.extend(non_state_y_loads(row, state_count, solver_count));
     }
-    true
+    Ok(true)
 }
 
 fn projection_producer_rows(
