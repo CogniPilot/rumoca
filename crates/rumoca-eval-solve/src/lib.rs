@@ -32,6 +32,7 @@ mod random_runtime;
 mod refresh_plan;
 mod runtime;
 mod runtime_events;
+pub mod sim_driver;
 mod sparsity;
 mod table_runtime;
 mod update_rows;
