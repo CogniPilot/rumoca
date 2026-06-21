@@ -132,6 +132,15 @@ pub struct SimOptions {
     /// `solver_mode` resolves to the explicit rk45 backend. Defaults to `Bdf`.
     pub diffsol_method: DiffsolMethod,
     pub pacing_mode: SimPacingMode,
+    /// Tunable parameter overrides applied after lowering, keyed by scalar
+    /// parameter name (e.g. `"k"`, `"gear.ratio"`). Empty by default — a plain
+    /// simulation uses the model's declared values. Only tunable parameters with
+    /// a runtime slot may be overridden; structural/folded/depended-upon names
+    /// are rejected so an override is never silently dropped.
+    pub param_overrides: Vec<(String, f64)>,
+    /// State start-value overrides applied after lowering, keyed by scalar state
+    /// name. These seed the initialization solve.
+    pub start_overrides: Vec<(String, f64)>,
 }
 
 impl Default for SimOptions {
@@ -147,6 +156,8 @@ impl Default for SimOptions {
             solver_mode: SimSolverMode::Auto,
             diffsol_method: DiffsolMethod::Bdf,
             pacing_mode: SimPacingMode::AsFastAsPossible,
+            param_overrides: Vec::new(),
+            start_overrides: Vec::new(),
         }
     }
 }

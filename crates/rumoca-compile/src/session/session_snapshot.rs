@@ -82,7 +82,7 @@ impl Session {
         let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
             fresh_session_snapshot_caches();
         Session {
-            instantiation_options: self.instantiation_options,
+            instantiation_options: self.instantiation_options.clone(),
             documents,
             detached_document_uris,
             detached_source_root_documents,
@@ -280,7 +280,7 @@ impl Session {
         let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
             fresh_session_snapshot_caches();
         let snapshot = Session {
-            instantiation_options: self.instantiation_options,
+            instantiation_options: self.instantiation_options.clone(),
             documents: self.documents.clone(),
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: self.detached_source_root_documents.clone(),
@@ -370,7 +370,7 @@ impl Session {
         let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
             fresh_session_snapshot_caches();
         let snapshot = Session {
-            instantiation_options: self.instantiation_options,
+            instantiation_options: self.instantiation_options.clone(),
             documents: detached_documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),
@@ -439,7 +439,7 @@ impl Session {
         let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
             fresh_session_snapshot_caches();
         let snapshot = Session {
-            instantiation_options: self.instantiation_options,
+            instantiation_options: self.instantiation_options.clone(),
             documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),

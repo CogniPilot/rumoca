@@ -1107,12 +1107,15 @@ jobs:
       - name: Smoke test installed wheel
         shell: bash
         run: |
-          # Install with the `notebook` extra so the %%modelica magic smoke test
-          # exercises the real IPython integration (not the import-only fallback).
+          # Install the `notebook` extra (real %%modelica magic) plus `data` so
+          # the smoke test exercises numpy/pandas-backed Result paths. The export
+          # test skips casadi/jax/sympy gracefully when those extras are absent.
           WHEEL=$(ls crates/rumoca-bind-python/dist/*.whl | head -1)
-          python -m pip install --force-reinstall "${WHEEL}[notebook]"
+          python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
           python crates/rumoca-bind-python/tests/smoke_test.py
+          python crates/rumoca-bind-python/tests/api_test.py
           python crates/rumoca-bind-python/tests/magic_test.py
+          python crates/rumoca-bind-python/tests/export_test.py
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6

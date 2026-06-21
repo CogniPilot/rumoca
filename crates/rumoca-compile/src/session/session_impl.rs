@@ -1314,8 +1314,11 @@ impl Session {
             ));
         }
 
-        let requested_result =
-            compile_model_dae_internal_with_options(tree, model_name, self.instantiation_options);
+        let requested_result = compile_model_dae_internal_with_options(
+            tree,
+            model_name,
+            self.instantiation_options.clone(),
+        );
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
         failures.extend(dae_phase_result_to_failures(
             tree,
@@ -1400,7 +1403,7 @@ impl Session {
                 model_name,
                 failures,
                 &closure.compile_targets,
-                self.instantiation_options,
+                self.instantiation_options.clone(),
             );
         }
 
@@ -1496,13 +1499,14 @@ impl Session {
             })
             .collect();
 
+        let instantiation_options = self.instantiation_options.clone();
         let compiled_misses: Vec<(String, Fingerprint, PhaseResult)> = misses
             .par_iter()
             .map(|(name, fingerprint)| {
                 (
                     name.clone(),
                     *fingerprint,
-                    compile_model_internal_with_options(tree, name, self.instantiation_options),
+                    compile_model_internal_with_options(tree, name, instantiation_options.clone()),
                 )
             })
             .collect();

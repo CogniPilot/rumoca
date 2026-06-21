@@ -24,12 +24,20 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 
-# IPython is only needed for the `%%modelica` Jupyter cell magic, which only runs
-# inside an IPython/Jupyter kernel anyway. Keep it optional so `import rumoca`
-# (e.g. in a plain script) never drags in the notebook stack: install with
-# `pip install rumoca[notebook]` for the magic.
+# Every optional dependency is genuinely optional: `import rumoca` and the typed
+# object graph never need them. Each extra unlocks one convenience —
+# `result.to_numpy()`/`to_dataframe()` (data), `result.plot()` (plot),
+# `model.to_casadi()` (casadi), the `%%modelica` magic (notebook), etc. The
+# returned objects degrade gracefully (e.g. `result["x"]` is a plain list without
+# numpy) or raise a message naming the extra to install.
 [project.optional-dependencies]
+data = ["numpy", "pandas"]
+plot = ["matplotlib"]
+casadi = ["casadi"]
+jax = ["jax"]
+sympy = ["sympy"]
 notebook = ["ipython"]
+all = ["numpy", "pandas", "matplotlib", "casadi", "jax", "sympy", "ipython"]
 
 [project.urls]
 Homepage = "https://github.com/cognipilot/rumoca"

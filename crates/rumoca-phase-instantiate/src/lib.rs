@@ -157,15 +157,23 @@ struct InnerDeclaration {
 /// Conservative because each level creates multiple Rust stack frames.
 pub const DEFAULT_INSTANTIATION_DEPTH_LIMIT: usize = 30;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct InstantiateOptions {
     pub depth_limit: usize,
+    /// Synthetic root modifications (`parameter = <literal>`) injected into the
+    /// root model's modification environment before instantiation. This is how
+    /// structural parameter overrides re-evaluate array dimensions and
+    /// conditional-component activation — the modification flows down to nested
+    /// components via the normal `shift_modifications_down` mechanism, exactly as
+    /// a source-level modification would. Empty by default.
+    pub root_modifications: Vec<(ast::QualifiedName, ast::ModificationValue)>,
 }
 
 impl Default for InstantiateOptions {
     fn default() -> Self {
         Self {
             depth_limit: DEFAULT_INSTANTIATION_DEPTH_LIMIT,
+            root_modifications: Vec::new(),
         }
     }
 }
@@ -848,8 +856,17 @@ pub fn instantiate_model_with_outcome_options(
     model_name: &str,
     options: InstantiateOptions,
 ) -> InstantiationOutcome {
-    let mut ctx = InstantiateContext::with_options(options);
+    // `options` is still needed below for the missing-inner retry, so clone it
+    // into the context (the inner Vec is empty on the common path).
+    let mut ctx = InstantiateContext::with_options(options.clone());
     ctx.index_source_scopes(tree);
+
+    // Seed the root modification environment with any synthetic structural
+    // overrides. These flow down to nested components exactly like source-level
+    // modifications, so array dimensions and conditional components re-evaluate.
+    for (target, value) in options.root_modifications.iter().cloned() {
+        ctx.mod_env_mut().add(target, value);
+    }
 
     // Find the model to instantiate using qualified name lookup
     let model = match find_class_in_tree(tree, model_name) {

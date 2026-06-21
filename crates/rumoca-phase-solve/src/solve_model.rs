@@ -17,6 +17,7 @@ use crate::LowerError;
 use crate::initial_values::apply_initial_equations_to_start_values;
 #[cfg(test)]
 use rumoca_eval_dae::build_runtime_parameter_tail_env_with_runtime;
+use rumoca_eval_dae::constant::eval_scalar_const_expr;
 use rumoca_eval_dae::eval::{
     EvalError, EvalRuntimeState, eval_matrix_values, eval_shaped_array_values,
     external_table_data_for_parameter_values_in,
@@ -26,6 +27,7 @@ use rumoca_eval_dae::{
     build_runtime_parameter_tail_env_with_declared_slots_and_runtime, can_broadcast_start_value,
     eval_array_values, eval_expr, start_expr_is_nonnumeric,
 };
+use std::collections::{HashMap, HashSet};
 
 mod variable_meta;
 use variable_meta::{
@@ -831,6 +833,165 @@ fn default_parameter_values(
     }
     refine_parameter_start_values(dae_model, metadata_dae_model, &mut params, &slots, runtime)?;
     Ok(params)
+}
+
+/// Error from propagating a tunable parameter override to its dependents.
+#[derive(Debug, Clone)]
+pub enum ParameterOverrideError {
+    /// `dependent`'s binding references an overridden parameter but could not be
+    /// const-evaluated, so the override could not be propagated. The caller
+    /// rejects the override rather than running with a stale dependent value.
+    UnpropagatableDependent { dependent: String },
+}
+
+impl std::fmt::Display for ParameterOverrideError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnpropagatableDependent { dependent } => write!(
+                f,
+                "parameter `{dependent}` depends on an overridden parameter but its binding could \
+                 not be re-evaluated, so the override could not be propagated — recompile instead"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ParameterOverrideError {}
+
+/// Propagate tunable parameter overrides to dependent parameters in place.
+///
+/// The overridden (`pinned`) parameters' P-slots must already hold their new
+/// values in `solve_model.parameters`. Any parameter whose binding (transitively)
+/// references a pinned parameter is re-evaluated from the current values and its
+/// P-slot updated — so `parameter b = 2*a; ... a` overridden re-derives `b`
+/// instead of leaving it at the value folded during lowering.
+///
+/// Returns [`ParameterOverrideError::UnpropagatableDependent`] if such a
+/// dependent's binding cannot be const-evaluated, so the caller can reject the
+/// override rather than silently run with a stale value. Solver-neutral and
+/// only invoked on the override path — the default lowering is unaffected.
+///
+/// Only scalar dependents are propagated. A dependent that is not a scalar
+/// runtime parameter — e.g. an array binding `arr = {a, 2*a}`, or one using a
+/// non-const-foldable construct — is reported as `UnpropagatableDependent`
+/// (recompile instead) rather than re-derived.
+pub fn propagate_parameter_overrides(
+    dae_model: &dae::Dae,
+    solve_model: &mut solve::SolveModel,
+    pinned: &HashSet<String>,
+) -> Result<(), ParameterOverrideError> {
+    let param_names: HashSet<&str> = dae_model
+        .variables
+        .parameters
+        .keys()
+        .map(rumoca_core::VarName::as_str)
+        .collect();
+
+    // Seed the value map (parameters + folded constants) and the P-slot map from
+    // the solve layout. Both borrows end before `parameters` is mutated below.
+    let mut values: HashMap<String, f64> = HashMap::new();
+    let mut slot_index: HashMap<String, usize> = HashMap::new();
+    for (name, slot) in solve_model.problem.layout.bindings() {
+        match slot {
+            solve::ScalarSlot::P { index, .. } => {
+                slot_index.insert(name.clone(), *index);
+                if let Some(value) = solve_model.parameters.get(*index) {
+                    values.insert(name.clone(), *value);
+                }
+            }
+            solve::ScalarSlot::Constant(value) => {
+                values.insert(name.clone(), *value);
+            }
+            _ => {}
+        }
+    }
+
+    // Dependent parameters: those with a runtime P-slot and a binding that
+    // references other parameters (and that are not themselves pinned).
+    struct Dependent<'a> {
+        name: String,
+        index: usize,
+        refs: Vec<String>,
+        binding: &'a rumoca_core::Expression,
+    }
+    let mut deps: Vec<Dependent<'_>> = Vec::new();
+    for (name, var) in &dae_model.variables.parameters {
+        let name = name.as_str();
+        if pinned.contains(name) {
+            continue;
+        }
+        let (Some(&index), Some(binding)) = (slot_index.get(name), var.start.as_ref()) else {
+            continue;
+        };
+        let mut refs_collected: Vec<rumoca_core::VarName> = Vec::new();
+        binding.collect_var_refs(&mut refs_collected);
+        let refs: Vec<String> = refs_collected
+            .into_iter()
+            .filter(|candidate| param_names.contains(candidate.as_str()))
+            .map(|candidate| candidate.as_str().to_string())
+            .collect();
+        if refs.is_empty() {
+            continue;
+        }
+        deps.push(Dependent {
+            name: name.to_string(),
+            index,
+            refs,
+            binding,
+        });
+    }
+
+    // Fixpoint: re-evaluate every dependent that references a changed parameter,
+    // until nothing changes. `changed` seeds from the overridden parameters.
+    let mut changed: HashSet<String> = pinned.clone();
+    let max_iterations = deps.len().saturating_add(1).clamp(1, 256);
+    for _ in 0..max_iterations {
+        let mut progressed = false;
+        for dep in &deps {
+            if !dep.refs.iter().any(|reference| changed.contains(reference)) {
+                continue;
+            }
+            if reevaluate_dependent_parameter(
+                dep.binding,
+                &dep.name,
+                dep.index,
+                &mut values,
+                &mut solve_model.parameters,
+            )? {
+                changed.insert(dep.name.clone());
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Re-evaluate one dependent parameter's binding against the current values,
+/// writing it back to `values` and its P-slot. Returns whether the value
+/// changed; errors if the binding can't be const-evaluated to a finite number.
+fn reevaluate_dependent_parameter(
+    binding: &rumoca_core::Expression,
+    name: &str,
+    index: usize,
+    values: &mut HashMap<String, f64>,
+    parameters: &mut [f64],
+) -> Result<bool, ParameterOverrideError> {
+    match eval_scalar_const_expr(binding, values) {
+        Some(value) if value.is_finite() => {
+            if values.get(name) == Some(&value) {
+                return Ok(false);
+            }
+            values.insert(name.to_string(), value);
+            parameters[index] = value;
+            Ok(true)
+        }
+        _ => Err(ParameterOverrideError::UnpropagatableDependent {
+            dependent: name.to_string(),
+        }),
+    }
 }
 
 fn refine_parameter_start_values(

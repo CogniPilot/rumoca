@@ -1,6 +1,7 @@
 /target
 /crates/rumoca/target/rumoca-library-cache
 __pycache__/
+/.venv-pyapi/
 tests/notebooks/python/.venv/
 tests/notebooks/python/poetry.lock
 examples/.venv/
