@@ -18,6 +18,9 @@ Two notebook-only flags are layered on top of the CLI flags:
                                 module, returning it (real file ⇒ real
                                 tracebacks). Binds to ``VAR`` when paired with
                                 ``--name``.
+* ``--quiet`` / ``-q``        — return ``None`` so the cell renders no output;
+                                the ``--name`` binding (and ``--load`` import)
+                                still happen as a side effect.
 
 Examples::
 
@@ -89,6 +92,7 @@ def _split_notebook_flags(line: str) -> tuple[list[str], argparse.Namespace]:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--name", "-n", default=None)
     parser.add_argument("--load", action="store_true")
+    parser.add_argument("--quiet", "-q", action="store_true")
     notebook, cli_args = parser.parse_known_args(shlex.split(line))
     return cli_args, notebook
 
@@ -182,6 +186,9 @@ def run_modelica_cell(user_ns: dict[str, Any], line: str, cell: str) -> Any:
 
     if notebook.name:
         user_ns[notebook.name] = result
+
+    if notebook.quiet:
+        return None
 
     return result
 

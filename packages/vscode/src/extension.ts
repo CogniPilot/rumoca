@@ -78,7 +78,8 @@ function findModelicaBlocks(document: vscode.TextDocument): ModelicaBlock[] {
     const text = document.getText();
     const lines = text.split('\n');
 
-    // Pattern 1: %%modelica_rumoca cell magic
+    // Pattern 1: %%modelica cell magic (the name registered by the rumoca
+    // Python package).
     let inBlock = false;
     let blockStartLine = 0;
     let blockLines: string[] = [];
@@ -87,7 +88,7 @@ function findModelicaBlocks(document: vscode.TextDocument): ModelicaBlock[] {
         const line = lines[i];
         const trimmed = line.trim();
 
-        if (trimmed.startsWith('%%modelica_rumoca')) {
+        if (trimmed.startsWith('%%modelica')) {
             // Start of a new block
             inBlock = true;
             blockStartLine = i;
