@@ -125,7 +125,10 @@ fn write_release_edits(paths: &ReleasePaths, edits: &ReleaseEdits) -> Result<()>
         .with_context(|| format!("failed to write {}", paths.cargo_toml.display()))?;
     fs::write(&paths.pyproject, &edits.pyproject)
         .with_context(|| format!("failed to write {}", paths.pyproject.display()))?;
-    fs::write(&paths.package_json, format!("{}\n", edits.package_json))
+    // `edits.package_json` already ends in a trailing newline; writing it
+    // verbatim keeps the release idempotent (an extra "\n" here appended a
+    // blank line to the file on every release run).
+    fs::write(&paths.package_json, &edits.package_json)
         .with_context(|| format!("failed to write {}", paths.package_json.display()))?;
     Ok(())
 }
@@ -261,7 +264,10 @@ fn validate_semver(version: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_release_flags, replace_json_version_line};
+    use super::{
+        ReleaseEdits, ReleasePaths, normalize_release_flags, replace_json_version_line,
+        write_release_edits,
+    };
     use crate::ReleaseArgs;
 
     fn args() -> ReleaseArgs {
@@ -301,5 +307,32 @@ mod tests {
 }
 "#;
         assert_eq!(updated, expected);
+    }
+
+    #[test]
+    fn write_release_edits_is_idempotent_for_package_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = ReleasePaths {
+            cargo_toml: dir.path().join("Cargo.toml"),
+            pyproject: dir.path().join("pyproject.toml"),
+            package_json: dir.path().join("package.json"),
+        };
+        // `replace_json_version_line` output ends in a single trailing newline.
+        let edits = ReleaseEdits {
+            cargo_toml: "version = \"1.2.3\"\n".to_string(),
+            pyproject: "version = \"1.2.3\"\n".to_string(),
+            package_json: "{\n  \"version\": \"1.2.3\"\n}\n".to_string(),
+        };
+
+        write_release_edits(&paths, &edits).expect("first write");
+        let first = std::fs::read_to_string(&paths.package_json).expect("read first");
+        write_release_edits(&paths, &edits).expect("second write");
+        let second = std::fs::read_to_string(&paths.package_json).expect("read second");
+
+        assert_eq!(first, second, "writing the same edits twice must be stable");
+        assert!(
+            first.ends_with("}\n") && !first.ends_with("}\n\n"),
+            "package.json must keep exactly one trailing newline, got: {first:?}"
+        );
     }
 }
