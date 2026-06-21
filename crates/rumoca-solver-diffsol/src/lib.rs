@@ -261,6 +261,7 @@ fn simulate_with_states(
                     current_t: &mut current_t,
                     current_y: &mut current_y,
                     runtime,
+                    mode: BdfMode::General,
                 },
             )
         }
@@ -284,6 +285,7 @@ fn simulate_with_states(
                     current_t: &mut current_t,
                     current_y: &mut current_y,
                     runtime,
+                    mode: BdfMode::General,
                 },
             )
         }
@@ -382,7 +384,7 @@ fn simulate_state_only_bdf(
         &mut params,
         current_t,
     )?;
-    let mut current_state = current_y[..model.state_scalar_count()].to_vec();
+    let current_state = current_y[..model.state_scalar_count()].to_vec();
     record_sample_if_new(
         Some(runtime),
         model,
@@ -410,247 +412,43 @@ fn simulate_state_only_bdf(
     let mut solver = solver_call("BDF new", || {
         diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
     })?;
-    let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
 
-    run_state_only_bdf_samples(StateOnlyBdfLoop {
+    // Drive the reduced state-only solver through the *same* output / event /
+    // root loop as the general path; `BdfMode::StateOnly` projects the solver's
+    // reduced state to the full solver_y for recording and event evaluation.
+    let result = simulate_state_targets(
         model,
         opts,
-        runtime,
-        equilibrium_model,
-        runtime_params: &runtime_params,
-        solver: &mut solver,
-        current_state: &mut current_state,
-        current_y: &mut current_y,
-        params: &mut params,
-        current_t: &mut current_t,
-        stop_schedule: &mut stop_schedule,
-        recorded_times: &mut recorded_times,
-        data: &mut data,
         times,
-    })?;
+        equilibrium_model,
+        &runtime_params,
+        &mut solver,
+        StateTrajectory {
+            params: &mut params,
+            data: &mut data,
+            recorded_times: &mut recorded_times,
+            current_t: &mut current_t,
+            current_y: &mut current_y,
+            runtime,
+            mode: BdfMode::StateOnly,
+        },
+    );
 
     trace_bdf_eval_counter_snapshot("state-only-bdf", &eval_counters);
 
-    Ok(build_sim_result_from_solve_model(
-        model,
-        recorded_times,
-        data,
-        None,
-    ))
-}
-
-struct StateOnlyBdfLoop<'a, S> {
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    runtime: &'a SolveRuntime,
-    equilibrium_model: &'a OdeModel,
-    runtime_params: &'a RuntimeParameters,
-    solver: &'a mut S,
-    current_state: &'a mut Vec<f64>,
-    current_y: &'a mut Vec<f64>,
-    params: &'a mut Vec<f64>,
-    current_t: &'a mut f64,
-    stop_schedule: &'a mut SolveStopSchedule,
-    recorded_times: &'a mut Vec<f64>,
-    data: &'a mut Vec<Vec<f64>>,
-    times: &'a [f64],
-}
-
-fn run_state_only_bdf_samples<'a, Eqn, S>(mut ctx: StateOnlyBdfLoop<'_, S>) -> Result<(), SimError>
-where
-    Eqn: OdeEquations<T = f64> + 'a,
-    Eqn::V: VectorHost<T = f64>,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    for &target in ctx.times {
-        if ctx
-            .recorded_times
-            .last()
-            .is_some_and(|last| sample_time_match_with_tol(*last, target))
-        {
-            continue;
-        }
-        advance_state_only_bdf_sample(&mut ctx, target)?;
-    }
-    Ok(())
-}
-
-fn advance_state_only_bdf_sample<'a, Eqn, S>(
-    ctx: &mut StateOnlyBdfLoop<'_, S>,
-    target: f64,
-) -> Result<(), SimError>
-where
-    Eqn: OdeEquations<T = f64> + 'a,
-    Eqn::V: VectorHost<T = f64>,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    let tol = ctx.opts.atol.max(1.0e-12);
-    while target > *ctx.current_t + tol {
-        let (stop_time, event_stop) = next_runtime_event_stop(
-            ctx.model,
-            &ctx.equilibrium_model.runtime_state,
-            ctx.current_y,
-            ctx.params,
-            ctx.stop_schedule,
-            *ctx.current_t,
-            target,
-        )
-        .map_err(|err| SimError::SolveIr(err.to_string()))?;
-        advance_state_only_to_target(StateOnlyAdvance {
-            model: ctx.model,
-            opts: ctx.opts,
-            runtime: ctx.runtime,
-            equilibrium_model: ctx.equilibrium_model,
-            runtime_params: ctx.runtime_params,
-            solver: ctx.solver,
-            current_state: ctx.current_state,
-            current_y: ctx.current_y,
-            params: ctx.params,
-            current_t: ctx.current_t,
-            target: stop_time,
-            recorded_times: ctx.recorded_times,
-            data: ctx.data,
-        })?;
-        if apply_state_only_bdf_event_if_due(ctx, event_stop, stop_time, target)? {
-            continue;
-        }
-        if event_stop.is_none() {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn apply_state_only_bdf_event_if_due<'a, Eqn, S>(
-    ctx: &mut StateOnlyBdfLoop<'_, S>,
-    event_stop: Option<RuntimeEventStop>,
-    stop_time: f64,
-    target: f64,
-) -> Result<bool, SimError>
-where
-    Eqn: OdeEquations<T = f64> + 'a,
-    Eqn::V: VectorHost<T = f64>,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    let Some(event) = event_stop else {
-        return Ok(false);
-    };
-    if !sample_time_match_with_tol(*ctx.current_t, stop_time) {
-        return Ok(false);
-    }
-    apply_state_only_scheduled_time_event(
-        StateOnlyEventContext {
-            model: ctx.model,
-            opts: ctx.opts,
-            runtime: ctx.runtime,
-            equilibrium_model: ctx.equilibrium_model,
-            runtime_params: ctx.runtime_params,
-            solver: ctx.solver,
-            current_state: ctx.current_state,
-            current_y: ctx.current_y,
-            params: ctx.params,
-            current_t: ctx.current_t,
+    finalize_state_simulation(
+        result,
+        StateSimFinalize {
+            model,
+            opts,
+            equilibrium_model,
+            runtime,
+            runtime_params: &runtime_params,
+            params,
+            data,
+            recorded_times,
+            current_y,
         },
-        event,
-        target,
-        ObservationBuffers {
-            recorded_times: ctx.recorded_times,
-            data: ctx.data,
-        },
-    )?;
-    ctx.stop_schedule.advance_past(*ctx.current_t);
-    Ok(true)
-}
-
-struct StateOnlyEventContext<'a, S> {
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    runtime: &'a SolveRuntime,
-    equilibrium_model: &'a OdeModel,
-    runtime_params: &'a RuntimeParameters,
-    solver: &'a mut S,
-    current_state: &'a mut Vec<f64>,
-    current_y: &'a mut Vec<f64>,
-    params: &'a mut Vec<f64>,
-    current_t: &'a mut f64,
-}
-
-fn apply_state_only_scheduled_time_event<'a, Eqn, S>(
-    ctx: StateOnlyEventContext<'_, S>,
-    event: RuntimeEventStop,
-    target: f64,
-    observations: ObservationBuffers<'_>,
-) -> Result<(), SimError>
-where
-    Eqn: OdeEquations<T = f64> + 'a,
-    Eqn::V: VectorHost<T = f64>,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    let tol = ctx.opts.atol.max(1.0e-10);
-    prepare_fixed_event_left_limit(
-        ctx.model,
-        ctx.equilibrium_model,
-        ctx.current_y,
-        ctx.params,
-        *ctx.current_t,
-        tol,
-        event,
-    )?;
-    let event_pre_y = ctx.current_y.to_vec();
-    let event_pre_p = ctx.params.to_vec();
-    apply_event_updates(
-        ctx.runtime,
-        ctx.equilibrium_model,
-        ctx.current_y,
-        ctx.params,
-        *ctx.current_t,
-        tol,
-    )?;
-    *ctx.current_t = EventObservation {
-        runtime: ctx.runtime,
-        model: ctx.model,
-        equilibrium_model: ctx.equilibrium_model,
-        y: ctx.current_y,
-        params: ctx.params,
-        tol,
-        recorded_times: observations.recorded_times,
-        data: observations.data,
-        event_pre_y: &event_pre_y,
-        event_pre_p: &event_pre_p,
-    }
-    .record_time_event(
-        *ctx.current_t,
-        runtime_event_horizon(event, target, ctx.opts.t_end),
-        event,
-    )?;
-    commit_pre_params_after_event(ctx.model, ctx.current_y, ctx.params, tol);
-    let t_right = *ctx.current_t;
-    settle_algebraics_and_relation_memory(
-        ctx.runtime,
-        ctx.equilibrium_model,
-        ctx.current_y,
-        ctx.params,
-        t_right,
-        ctx.model.state_scalar_count(),
-        tol,
-    )?;
-    ctx.current_state
-        .copy_from_slice(&ctx.current_y[..ctx.model.state_scalar_count()]);
-    let dy = ctx.runtime.eval_state_derivatives(
-        t_right,
-        ctx.current_state,
-        ctx.params,
-        tol,
-        EVENT_UPDATE_MAX_ITERS,
-    )?;
-    reset_solver_state(
-        ctx.solver,
-        ctx.runtime_params,
-        ctx.current_state,
-        &dy,
-        ctx.params,
-        *ctx.current_t,
-        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
     )
 }
 
@@ -682,209 +480,6 @@ where
     Ok(state)
 }
 
-struct StateOnlyAdvance<'a, S> {
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    runtime: &'a SolveRuntime,
-    equilibrium_model: &'a OdeModel,
-    runtime_params: &'a RuntimeParameters,
-    solver: &'a mut S,
-    current_state: &'a mut Vec<f64>,
-    current_y: &'a mut Vec<f64>,
-    params: &'a mut Vec<f64>,
-    current_t: &'a mut f64,
-    target: f64,
-    recorded_times: &'a mut Vec<f64>,
-    data: &'a mut Vec<Vec<f64>>,
-}
-
-fn advance_state_only_to_target<'a, Eqn, S>(ctx: StateOnlyAdvance<'_, S>) -> Result<(), SimError>
-where
-    Eqn: OdeEquations<T = f64> + 'a,
-    Eqn::V: VectorHost<T = f64>,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    if ctx.target <= *ctx.current_t {
-        return Ok(());
-    }
-    set_solver_stop_time(ctx.solver, ctx.target)?;
-    loop {
-        match solver_call("BDF step", || ctx.solver.step()) {
-            Ok(OdeSolverStopReason::TstopReached) => {
-                ctx.current_state
-                    .copy_from_slice(ctx.solver.state().y.as_slice());
-                *ctx.current_t = ctx.solver.state().t;
-                *ctx.current_y = ctx.runtime.full_solver_y(
-                    *ctx.current_t,
-                    ctx.current_state,
-                    ctx.params,
-                    ctx.opts.atol.max(1.0e-10),
-                    256,
-                )?;
-                refresh_observation_discrete_rows(
-                    ctx.model,
-                    &ctx.equilibrium_model.runtime_state,
-                    ctx.current_y,
-                    ctx.params,
-                    *ctx.current_t,
-                    ctx.opts.atol.max(1.0e-10),
-                )?;
-                record_sample_if_new(
-                    Some(ctx.runtime),
-                    ctx.model,
-                    ctx.current_y,
-                    ctx.params,
-                    ctx.recorded_times,
-                    ctx.data,
-                    *ctx.current_t,
-                )?;
-                return Ok(());
-            }
-            Ok(OdeSolverStopReason::InternalTimestep) => continue,
-            Ok(OdeSolverStopReason::RootFound(t_root, root_idx)) => {
-                trace_bdf_state_root(ctx.runtime, ctx.current_state, ctx.params, t_root, root_idx);
-                handle_state_only_root(ctx, t_root)?;
-                return Ok(());
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-fn handle_state_only_root<'a, Eqn, S>(
-    ctx: StateOnlyAdvance<'_, S>,
-    t_root: f64,
-) -> Result<(), SimError>
-where
-    Eqn: OdeEquations<T = f64> + 'a,
-    Eqn::V: VectorHost<T = f64>,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    let tol = ctx.opts.atol.max(1.0e-10);
-    ctx.solver
-        .state_mut_back(t_root)
-        .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
-    ctx.current_state
-        .copy_from_slice(ctx.solver.state().y.as_slice());
-    *ctx.current_t = ctx.solver.state().t;
-    *ctx.current_y =
-        ctx.runtime
-            .full_solver_y(*ctx.current_t, ctx.current_state, ctx.params, tol, 256)?;
-    record_sample_if_new(
-        Some(ctx.runtime),
-        ctx.model,
-        ctx.current_y,
-        ctx.params,
-        ctx.recorded_times,
-        ctx.data,
-        *ctx.current_t,
-    )?;
-
-    let event_pre_y = ctx.current_y.clone();
-    let event_pre_p = ctx.params.clone();
-    let right_t = runtime_root_event_application_time(*ctx.current_t, ctx.target);
-    let dt = right_t - *ctx.current_t;
-    if dt > 0.0 {
-        let dy = ctx.runtime.eval_state_derivatives(
-            *ctx.current_t,
-            ctx.current_state,
-            ctx.params,
-            tol,
-            256,
-        )?;
-        for (slot, derivative) in ctx.current_state.iter_mut().zip(dy) {
-            *slot += dt * derivative;
-        }
-        *ctx.current_t = right_t;
-    }
-    *ctx.current_y =
-        ctx.runtime
-            .full_solver_y(*ctx.current_t, ctx.current_state, ctx.params, tol, 256)?;
-    apply_event_updates_with_event_pre(EventUpdateInput {
-        runtime: ctx.runtime,
-        ode_model: ctx.equilibrium_model,
-        y: ctx.current_y,
-        p: ctx.params,
-        t: *ctx.current_t,
-        tol,
-        event_pre_y: &event_pre_y,
-        event_pre_p: &event_pre_p,
-    })?;
-    settle_prepared_state(
-        ctx.runtime,
-        ctx.model,
-        ctx.equilibrium_model,
-        ctx.current_y,
-        ctx.params,
-        *ctx.current_t,
-        ctx.opts,
-    )?;
-    commit_pre_params_after_event(ctx.model, ctx.current_y, ctx.params, tol);
-    ctx.current_state
-        .copy_from_slice(&ctx.current_y[..ctx.model.state_scalar_count()]);
-    let dy = ctx.runtime.eval_state_derivatives(
-        *ctx.current_t,
-        ctx.current_state,
-        ctx.params,
-        tol,
-        256,
-    )?;
-    reset_solver_state(
-        ctx.solver,
-        ctx.runtime_params,
-        ctx.current_state,
-        &dy,
-        ctx.params,
-        *ctx.current_t,
-        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
-    )?;
-    record_sample_if_new(
-        Some(ctx.runtime),
-        ctx.model,
-        ctx.current_y,
-        ctx.params,
-        ctx.recorded_times,
-        ctx.data,
-        *ctx.current_t,
-    )
-}
-
-fn trace_bdf_state_root(
-    runtime: &SolveRuntime,
-    state: &[f64],
-    params: &[f64],
-    root_t: f64,
-    root_idx: usize,
-) {
-    if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
-        return;
-    }
-    let roots = match runtime.eval_root_conditions(
-        root_t,
-        state,
-        params,
-        1.0e-10,
-        EVENT_UPDATE_MAX_ITERS,
-    ) {
-        Ok(roots) => roots,
-        Err(error) => {
-            tracing::debug!(
-                target: "rumoca_solver_diffsol::bdf",
-                "state-root t={root_t:.12} root_idx={root_idx} root-condition evaluation failed: {error}"
-            );
-            return;
-        }
-    };
-    let near = roots
-        .iter()
-        .enumerate()
-        .filter(|(_, value)| value.abs() <= 1.0e-5)
-        .map(|(idx, value)| format!("{idx}:{value:.3e}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    tracing::debug!(target: "rumoca_solver_diffsol::bdf", "state-root t={root_t:.12} root_idx={root_idx} near=[{near}]");
-}
-
 struct StateTrajectory<'a> {
     params: &'a mut Vec<f64>,
     data: &'a mut Vec<Vec<f64>>,
@@ -892,6 +487,9 @@ struct StateTrajectory<'a> {
     current_t: &'a mut f64,
     current_y: &'a mut Vec<f64>,
     runtime: &'a SolveRuntime,
+    /// Which system the solver integrates (`General` full solver_y vs `StateOnly`
+    /// reduced state), selecting how native↔full conversions behave in the loop.
+    mode: BdfMode,
 }
 
 // SPEC_0021: Exception - central BDF event loop keeps step advancement,
@@ -911,6 +509,7 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
+    let mode = state.mode;
     let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
     let mut pending_root_t: Option<f64> = None;
 
@@ -932,6 +531,7 @@ where
                     equilibrium_model,
                     runtime_params,
                     state.runtime,
+                    mode,
                 ),
                 AdvanceState {
                     current_y: state.current_y,
@@ -964,6 +564,7 @@ where
                     equilibrium_model,
                     runtime_params,
                     state.runtime,
+                    mode,
                 ),
                 AdvanceState {
                     current_y: state.current_y,
@@ -988,6 +589,7 @@ where
                         equilibrium_model,
                         runtime_params,
                         state.runtime,
+                        mode,
                     ),
                     AdvanceState {
                         current_y: state.current_y,
@@ -1186,6 +788,85 @@ fn visible_values(
     .map_err(|err| SimError::SolveIr(err.to_string()))
 }
 
+/// Which system the BDF solver integrates. Both modes share the single output /
+/// event / root driver (`simulate_state_targets`); they differ only in how the
+/// solver's native state vector maps to the full `solver_y` used for recording,
+/// observation, and event evaluation, and in the vector loaded back when the
+/// solver is reset after an event.
+///
+/// `General` integrates the full augmented `solver_y` (states + algebraics with a
+/// mass matrix), so the native vector *is* the `solver_y` and every conversion is
+/// the identity — `General` models therefore behave bit-for-bit as before this
+/// driver was unified. `StateOnly` integrates only the reduced state vector and
+/// recovers the algebraics by the projection, so the conversions project /
+/// restrict between the native (state) and full (`solver_y`) representations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BdfMode {
+    General,
+    StateOnly,
+}
+
+impl BdfMode {
+    /// Map the solver's native state vector at time `t` (from `state().y` or
+    /// `interpolate()`) into the full `solver_y` written to `current_y`.
+    fn write_full_y(
+        self,
+        ctx: &AdvanceContext<'_>,
+        native: &[f64],
+        t: f64,
+        current_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<(), SimError> {
+        match self {
+            BdfMode::General => {
+                current_y.copy_from_slice(native);
+                Ok(())
+            }
+            BdfMode::StateOnly => {
+                let state_count = ctx.model.state_scalar_count().min(native.len());
+                let full = ctx.runtime.full_solver_y(
+                    t,
+                    &native[..state_count],
+                    params,
+                    ctx.opts.atol.max(1.0e-10),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+                current_y.copy_from_slice(&full);
+                Ok(())
+            }
+        }
+    }
+
+    /// Native state + derivative guess to reload into the solver after an event,
+    /// derived from the post-event full `solver_y` at time `t`.
+    fn reset_native_vectors(
+        self,
+        ctx: &AdvanceContext<'_>,
+        current_y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), SimError> {
+        match self {
+            BdfMode::General => {
+                let dy = bdf_derivative_guess(ctx.model, ctx.equilibrium_model, current_y, params, t)?;
+                Ok((current_y.to_vec(), dy))
+            }
+            BdfMode::StateOnly => {
+                let state_count = ctx.model.state_scalar_count().min(current_y.len());
+                let native = current_y[..state_count].to_vec();
+                let dy = ctx.runtime.eval_state_derivatives(
+                    t,
+                    &native,
+                    params,
+                    ctx.opts.atol.max(1.0e-10),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+                Ok((native, dy))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct AdvanceContext<'a> {
     model: &'a solve::SolveModel,
@@ -1193,6 +874,7 @@ struct AdvanceContext<'a> {
     equilibrium_model: &'a OdeModel,
     runtime_params: &'a RuntimeParameters,
     runtime: &'a SolveRuntime,
+    mode: BdfMode,
 }
 
 struct AdvanceState<'a> {
@@ -1207,6 +889,7 @@ fn advance_context<'a>(
     equilibrium_model: &'a OdeModel,
     runtime_params: &'a RuntimeParameters,
     runtime: &'a SolveRuntime,
+    mode: BdfMode,
 ) -> AdvanceContext<'a> {
     AdvanceContext {
         model,
@@ -1214,6 +897,7 @@ fn advance_context<'a>(
         equilibrium_model,
         runtime_params,
         runtime,
+        mode,
     }
 }
 
@@ -1248,11 +932,12 @@ where
         let y_at = solver
             .interpolate(target)
             .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
-        state.current_y.copy_from_slice(y_at.as_slice());
         *state.current_t = target;
         state
             .params
             .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        ctx.mode
+            .write_full_y(&ctx, y_at.as_slice(), target, state.current_y, state.params)?;
         refresh_interpolated_sample_state(ctx, state, target)?;
         return Ok(PendingRootAction::Break);
     }
@@ -1366,18 +1051,14 @@ where
         ctx.model.state_scalar_count(),
         tol,
     )?;
-    let dy_sched = bdf_derivative_guess(
-        ctx.model,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        t_right,
-    )?;
+    let (native_y, native_dy) =
+        ctx.mode
+            .reset_native_vectors(&ctx, state.current_y, state.params, t_right)?;
     reset_solver_state(
         solver,
         ctx.runtime_params,
-        state.current_y,
-        &dy_sched,
+        &native_y,
+        &native_dy,
         state.params,
         *state.current_t,
         rumoca_solver::event_solver_step_cap(ctx.opts.dt),
@@ -1422,21 +1103,26 @@ where
     }
     if sample_time_match_with_tol(solver.state().t, target) {
         *state.current_t = target;
-        state.current_y.copy_from_slice(solver.state().y.as_slice());
         state
             .params
             .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        let native = solver.state().y.as_slice().to_vec();
+        ctx.mode
+            .write_full_y(&ctx, &native, target, state.current_y, state.params)?;
         return Ok(false);
     }
     set_solver_stop_time(solver, target)?;
     loop {
         match solver_call("BDF step", || solver.step()) {
             Ok(OdeSolverStopReason::TstopReached) => {
-                *state.current_t = solver.state().t;
-                state.current_y.copy_from_slice(solver.state().y.as_slice());
+                let stop_t = solver.state().t;
+                *state.current_t = stop_t;
                 state
                     .params
                     .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+                let native = solver.state().y.as_slice().to_vec();
+                ctx.mode
+                    .write_full_y(&ctx, &native, stop_t, state.current_y, state.params)?;
                 return Ok(false);
             }
             Ok(OdeSolverStopReason::InternalTimestep) => continue,
@@ -1452,6 +1138,18 @@ where
     }
 }
 
+/// True when the model has no discontinuities (zero-crossing roots, scheduled
+/// time events, or discrete `when` updates), so the BDF solution is smooth and
+/// safe to dense-output / interpolate at arbitrary times.
+fn model_is_event_free(model: &solve::SolveModel) -> bool {
+    let events = &model.problem.events;
+    let discrete = &model.problem.discrete;
+    events.root_conditions.is_empty()
+        && events.scheduled_time_events.is_empty()
+        && discrete.update_targets.is_empty()
+        && discrete.runtime_assignment_targets.is_empty()
+}
+
 fn advance_output_interval<'a, Eqn, S>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
@@ -1464,16 +1162,28 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
+    // The `General` path integrates the full solver_y, so interpolating it at the
+    // output time is exact. The `StateOnly` path interpolates the reduced state and
+    // *re-projects* the algebraics, which is fragile near discontinuities (the
+    // interpolated state need not be algebraically consistent). For event-bearing
+    // state-only models we therefore step the solver exactly onto each output point
+    // (clamp) and project from that consistent state; smooth state-only models keep
+    // free dense-output stepping so the multi-step BDF controller is never starved
+    // by a fine output grid (the trivial-ODE failure this whole change fixes).
+    if ctx.mode == BdfMode::StateOnly && !model_is_event_free(ctx.model) {
+        return advance_output_interval_clamped(ctx, state, target, solver);
+    }
     loop {
         if solver.state().t >= target {
             let y_at_target = solver
                 .interpolate(target)
                 .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
-            state.current_y.copy_from_slice(y_at_target.as_slice());
             *state.current_t = target;
             state
                 .params
                 .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+            ctx.mode
+                .write_full_y(&ctx, y_at_target.as_slice(), target, state.current_y, state.params)?;
             return Ok(false);
         }
 
@@ -1489,13 +1199,68 @@ where
                 let y_at_target = solver
                     .interpolate(target)
                     .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
-                state.current_y.copy_from_slice(y_at_target.as_slice());
                 *state.current_t = target;
                 state
                     .params
                     .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+                ctx.mode
+                    .write_full_y(&ctx, y_at_target.as_slice(), target, state.current_y, state.params)?;
                 *deferred_root = Some(t_root);
                 return Ok(false);
+            }
+            Err(e) => {
+                trace_bdf_step_failure(ctx, state, solver.state().t, &e.to_string());
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// Output advance that steps the solver exactly onto `target` (no interpolation)
+/// so the recorded sample is projected from a consistent solver state. Used for
+/// event-bearing state-only models where dense-output interpolation + algebraic
+/// re-projection is unreliable near discontinuities.
+fn advance_output_interval_clamped<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    target: f64,
+    solver: &mut S,
+) -> Result<bool, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    if solver.state().t >= target {
+        let y_at_target = solver
+            .interpolate(target)
+            .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
+        *state.current_t = target;
+        state
+            .params
+            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        ctx.mode
+            .write_full_y(&ctx, y_at_target.as_slice(), target, state.current_y, state.params)?;
+        return Ok(false);
+    }
+    set_solver_stop_time(solver, target)?;
+    loop {
+        match solver_call("BDF step", || solver.step()) {
+            Ok(OdeSolverStopReason::TstopReached) => {
+                let stop_t = solver.state().t;
+                *state.current_t = stop_t;
+                state
+                    .params
+                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+                let native = solver.state().y.as_slice().to_vec();
+                ctx.mode
+                    .write_full_y(&ctx, &native, stop_t, state.current_y, state.params)?;
+                return Ok(false);
+            }
+            Ok(OdeSolverStopReason::InternalTimestep) => continue,
+            Ok(OdeSolverStopReason::RootFound(t_root, _)) => {
+                trace_bdf_step_event("output-root-clamped", solver.state().t, Some(t_root));
+                return handle_root_crossing(ctx, state, t_root, target, solver);
             }
             Err(e) => {
                 trace_bdf_step_failure(ctx, state, solver.state().t, &e.to_string());
@@ -1560,15 +1325,21 @@ where
     solver
         .state_mut_back(t_root)
         .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
-    let mut event_pre_y = solver.state().y.as_slice().to_vec();
-    let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
     let root_t = solver.state().t;
+    let native_at_root = solver.state().y.as_slice().to_vec();
+    let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
     let right_t = runtime_root_event_application_time(root_t, target);
     *state.current_t = right_t;
-    state.current_y.copy_from_slice(solver.state().y.as_slice());
     state
         .params
         .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+    // Full solver_y at the root (left limit); for StateOnly this projects the
+    // reduced state through the algebraic projection, mirroring the old
+    // state-only root handler.
+    let mut event_pre_y = vec![0.0; state.current_y.len()];
+    ctx.mode
+        .write_full_y(&ctx, &native_at_root, root_t, &mut event_pre_y, state.params)?;
+    state.current_y.copy_from_slice(&event_pre_y);
     advance_state_to_event_limits(
         ctx.model,
         ctx.equilibrium_model,
@@ -1599,18 +1370,14 @@ where
     )?;
     commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
     trace_bdf_post_event_state(ctx, &state);
-    let dy_post = bdf_derivative_guess(
-        ctx.model,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        *state.current_t,
-    )?;
+    let (native_y, native_dy) =
+        ctx.mode
+            .reset_native_vectors(&ctx, state.current_y, state.params, *state.current_t)?;
     reset_solver_state(
         solver,
         ctx.runtime_params,
-        state.current_y,
-        &dy_post,
+        &native_y,
+        &native_dy,
         state.params,
         *state.current_t,
         rumoca_solver::event_solver_step_cap(ctx.opts.dt),
