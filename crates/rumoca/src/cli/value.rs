@@ -170,7 +170,10 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
     }
 
     let sim_started = Instant::now();
-    let sim = rumoca_sim::simulate_dae(result.dae.as_ref(), &opts)
+    // Dispatch on `opts.solver_mode` (auto / bdf / rk-like) exactly like the
+    // binary's direct-sim path. The plain `simulate_dae` alias resolves to the
+    // diffsol/BDF-only entry, so it would silently ignore `--solver`.
+    let sim = rumoca_sim::simulate_dae_with_diagnostics(result.dae.as_ref(), &opts)
         .map_err(|e| anyhow::anyhow!("Simulation error: {e}"))?;
 
     let request = SimulationRequestSummary {
