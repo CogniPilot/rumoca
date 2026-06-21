@@ -3382,6 +3382,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-solve",
  "rumoca-solver",
+ "thiserror 2.0.17",
  "tracing",
 ]
 

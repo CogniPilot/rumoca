@@ -33,6 +33,10 @@ use rumoca_eval_solve::{
     self as solve_eval, RowEvalContext, SolveRuntime, current_dynamic_time_event_stop,
     next_runtime_event_stop, visible_values_with_context,
 };
+use rumoca_eval_solve::sim_driver::{
+    ScheduledEventRecord, SimDriverError, SolverStepper, StateTrajectory, StepOutcome,
+    simulate_state_targets,
+};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
     DiffsolMethod, EventPreMode, RuntimeEventBoundary, RuntimeEventBoundaryHandler,
@@ -229,7 +233,7 @@ fn simulate_with_states(
     // distinct concrete types, so we build whichever one was requested and box it
     // behind `BdfStepper` to run the single (backend-neutral) driver once. ESDIRK34
     // / TR-BDF2 reuse the same projection-aware consistent IC via `initial_rk_state`.
-    let mut stepper: Box<dyn BdfStepper + '_> = match opts.diffsol_method {
+    let mut stepper: Box<dyn SolverStepper + '_> = match opts.diffsol_method {
         DiffsolMethod::Bdf => {
             let state = initial_bdf_state(model, equilibrium_model, &problem, &current_y, &params)?;
             let nl_solver = NewtonNonlinearSolver::new(
@@ -239,12 +243,15 @@ fn simulate_with_states(
             let solver = solver_call("BDF new", || {
                 diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
             })?;
-            Box::new(DiffsolStepper::new(
+            Box::new(DiffsolStepper::new(DiffsolStepperInputs {
                 solver,
                 model,
                 equilibrium_model,
-                runtime_params.clone(),
-            ))
+                runtime,
+                runtime_params: runtime_params.clone(),
+                opts,
+                mode: DiffsolMode::General,
+            }))
         }
         method @ (DiffsolMethod::Esdirk34 | DiffsolMethod::TrBdf2) => {
             let state = initial_rk_state(model, equilibrium_model, &problem, &current_y, &params)?;
@@ -252,19 +259,21 @@ fn simulate_with_states(
                 DiffsolMethod::Esdirk34 => problem.esdirk34_solver::<LinearSolver>(state),
                 _ => problem.tr_bdf2_solver::<LinearSolver>(state),
             })?;
-            Box::new(DiffsolStepper::new(
+            Box::new(DiffsolStepper::new(DiffsolStepperInputs {
                 solver,
                 model,
                 equilibrium_model,
-                runtime_params.clone(),
-            ))
+                runtime,
+                runtime_params: runtime_params.clone(),
+                opts,
+                mode: DiffsolMode::General,
+            }))
         }
     };
     let result = simulate_state_targets(
         model,
         opts,
         &times,
-        equilibrium_model,
         &runtime_params,
         stepper.as_mut(),
         StateTrajectory {
@@ -273,10 +282,10 @@ fn simulate_with_states(
             recorded_times: &mut recorded_times,
             current_t: &mut current_t,
             current_y: &mut current_y,
-            runtime,
-            mode: BdfMode::General,
+            runtime_state: &equilibrium_model.runtime_state,
         },
-    );
+    )
+    .map_err(SimError::from);
 
     finalize_state_simulation(
         result,
@@ -399,17 +408,23 @@ fn simulate_state_only_bdf(
     let solver = solver_call("BDF new", || {
         diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
     })?;
-    let mut stepper =
-        DiffsolStepper::new(solver, model, equilibrium_model, runtime_params.clone());
+    let mut stepper = DiffsolStepper::new(DiffsolStepperInputs {
+        solver,
+        model,
+        equilibrium_model,
+        runtime,
+        runtime_params: runtime_params.clone(),
+        opts,
+        mode: DiffsolMode::StateOnly,
+    });
 
-    // Drive the reduced state-only solver through the *same* output / event /
-    // root loop as the general path; `BdfMode::StateOnly` projects the solver's
-    // reduced state to the full solver_y for recording and event evaluation.
+    // Drive the reduced state-only solver through the *same* backend-neutral
+    // output / event / root loop as the general path; `DiffsolMode::StateOnly`
+    // (inside the stepper) projects the reduced state to the full solver_y.
     let result = simulate_state_targets(
         model,
         opts,
         times,
-        equilibrium_model,
         &runtime_params,
         &mut stepper,
         StateTrajectory {
@@ -418,10 +433,10 @@ fn simulate_state_only_bdf(
             recorded_times: &mut recorded_times,
             current_t: &mut current_t,
             current_y: &mut current_y,
-            runtime,
-            mode: BdfMode::StateOnly,
+            runtime_state: &equilibrium_model.runtime_state,
         },
-    );
+    )
+    .map_err(SimError::from);
 
     trace_bdf_eval_counter_snapshot("state-only-bdf", &eval_counters);
 
@@ -469,54 +484,59 @@ where
     Ok(state)
 }
 
-/// Result of a single solver step, backend-neutral (mirrors diffsol's
-/// `OdeSolverStopReason` minus the unused `Finished`).
-enum BdfStepOutcome {
-    /// Reached the requested stop time (`set_stop_time`).
-    Stop,
-    /// Took an internal adaptive step (did not reach a stop/root).
-    Internal,
-    /// A zero-crossing root was located at `t_root`.
-    Root { t_root: f64 },
+/// Map an internal diffsol [`SimError`] into the backend-neutral driver error,
+/// preserving `Terminated` so finalization can replay `terminate()` semantics.
+fn sim_to_driver(error: SimError) -> SimDriverError {
+    match error {
+        SimError::Terminated { time, message } => SimDriverError::Terminated { time, message },
+        SimError::SolveIr(message) => SimDriverError::SolveIr(message),
+        other => SimDriverError::Backend(other.to_string()),
+    }
 }
 
-/// The backend-specific stepping operations the shared BDF output/event/root
-/// driver needs. diffsol's `OdeSolverMethod` (and the `OdeModel` it integrates)
-/// are abstracted behind this so the driver itself carries no diffsol types.
-/// The solver native vector is whatever the underlying problem integrates
-/// (reduced state for `StateOnly`, full solver_y for `General`); the driver maps
-/// it to/from the full solver_y via [`BdfMode`].
-trait BdfStepper {
-    fn time(&self) -> f64;
-    fn native_y(&self) -> Vec<f64>;
-    fn step(&mut self) -> Result<BdfStepOutcome, SimError>;
-    fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimError>;
-    fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimError>;
-    fn state_mut_back(&mut self, t: f64) -> Result<(), SimError>;
-    /// Reload the solver state after an event (native state + derivative guess).
-    fn reset(
-        &mut self,
-        native_y: &[f64],
-        native_dy: &[f64],
-        params: &[f64],
-        t: f64,
-        h_cap: f64,
-    ) -> Result<(), SimError>;
-    /// Mass-matrix derivative guess `dy` for a full solver_y (general reset path).
-    fn derivative_guess(&self, y: &[f64], params: &[f64], t: f64) -> Result<Vec<f64>, SimError>;
-    /// Debug-only trace hooks (diffsol resolves these against `OdeModel`).
-    fn trace_step_failure(&self, y: &[f64], params: &[f64], current_t: f64, solver_t: f64, error: &str);
-    fn trace_post_event_state(&self, y: &[f64], params: &[f64], t: f64);
+impl From<SimDriverError> for SimError {
+    fn from(error: SimDriverError) -> Self {
+        match error {
+            SimDriverError::Runtime(err) => SimError::SolveIr(err.to_string()),
+            SimDriverError::Backend(message) => SimError::SolverError(message),
+            SimDriverError::SolveIr(message) => SimError::SolveIr(message),
+            SimDriverError::Terminated { time, message } => SimError::Terminated { time, message },
+        }
+    }
 }
 
-/// diffsol adapter implementing [`BdfStepper`] over an `OdeSolverMethod` plus the
-/// `OdeModel`/runtime context its reset and derivative-guess need.
+/// Which system the diffsol solver integrates (folded behind the stepper so the
+/// shared driver never sees it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffsolMode {
+    /// Full augmented solver_y (identity native↔full conversions).
+    General,
+    /// Reduced state vector; algebraics recovered by projection.
+    StateOnly,
+}
+
+/// diffsol adapter implementing the backend-neutral [`SolverStepper`] over an
+/// `OdeSolverMethod` plus the `OdeModel` / runtime context its projection, reset,
+/// and event kernels need.
 struct DiffsolStepper<'a, Eqn, S> {
     solver: S,
     model: &'a solve::SolveModel,
     equilibrium_model: &'a OdeModel,
+    runtime: &'a SolveRuntime,
     runtime_params: RuntimeParameters,
+    opts: &'a SimOptions,
+    mode: DiffsolMode,
     _eqn: std::marker::PhantomData<fn() -> Eqn>,
+}
+
+struct DiffsolStepperInputs<'a, S> {
+    solver: S,
+    model: &'a solve::SolveModel,
+    equilibrium_model: &'a OdeModel,
+    runtime: &'a SolveRuntime,
+    runtime_params: RuntimeParameters,
+    opts: &'a SimOptions,
+    mode: DiffsolMode,
 }
 
 impl<'a, Eqn, S> DiffsolStepper<'a, Eqn, S>
@@ -525,23 +545,25 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    fn new(
-        solver: S,
-        model: &'a solve::SolveModel,
-        equilibrium_model: &'a OdeModel,
-        runtime_params: RuntimeParameters,
-    ) -> Self {
+    fn new(inputs: DiffsolStepperInputs<'a, S>) -> Self {
         Self {
-            solver,
-            model,
-            equilibrium_model,
-            runtime_params,
+            solver: inputs.solver,
+            model: inputs.model,
+            equilibrium_model: inputs.equilibrium_model,
+            runtime: inputs.runtime,
+            runtime_params: inputs.runtime_params,
+            opts: inputs.opts,
+            mode: inputs.mode,
             _eqn: std::marker::PhantomData,
         }
     }
+
+    fn tol(&self) -> f64 {
+        self.opts.atol.max(1.0e-10)
+    }
 }
 
-impl<'a, Eqn, S> BdfStepper for DiffsolStepper<'a, Eqn, S>
+impl<'a, Eqn, S> SolverStepper for DiffsolStepper<'a, Eqn, S>
 where
     Eqn: OdeEquations<T = f64> + 'a,
     Eqn::V: VectorHost<T = f64>,
@@ -555,29 +577,77 @@ where
         self.solver.state().y.as_slice().to_vec()
     }
 
-    fn step(&mut self) -> Result<BdfStepOutcome, SimError> {
-        match solver_call("BDF step", || self.solver.step())? {
-            OdeSolverStopReason::TstopReached => Ok(BdfStepOutcome::Stop),
-            OdeSolverStopReason::InternalTimestep => Ok(BdfStepOutcome::Internal),
-            OdeSolverStopReason::RootFound(t_root, _) => Ok(BdfStepOutcome::Root { t_root }),
+    fn step(&mut self) -> Result<StepOutcome, SimDriverError> {
+        match solver_call("BDF step", || self.solver.step()).map_err(sim_to_driver)? {
+            OdeSolverStopReason::TstopReached => Ok(StepOutcome::Stop),
+            OdeSolverStopReason::InternalTimestep => Ok(StepOutcome::Internal),
+            OdeSolverStopReason::RootFound(t_root, _) => Ok(StepOutcome::Root { t_root }),
         }
     }
 
-    fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimError> {
-        set_solver_stop_time(&mut self.solver, stop_time)
+    fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimDriverError> {
+        set_solver_stop_time(&mut self.solver, stop_time).map_err(sim_to_driver)
     }
 
-    fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimError> {
+    fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimDriverError> {
         self.solver
             .interpolate(t)
             .map(|v| v.as_slice().to_vec())
-            .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))
+            .map_err(|e| SimDriverError::Backend(format!("interpolate: {e}")))
     }
 
-    fn state_mut_back(&mut self, t: f64) -> Result<(), SimError> {
+    fn state_mut_back(&mut self, t: f64) -> Result<(), SimDriverError> {
         self.solver
             .state_mut_back(t)
-            .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))
+            .map_err(|e| SimDriverError::Backend(format!("state_mut_back: {e}")))
+    }
+
+    fn native_to_full_y(
+        &self,
+        native: &[f64],
+        t: f64,
+        params: &[f64],
+    ) -> Result<Vec<f64>, SimDriverError> {
+        match self.mode {
+            DiffsolMode::General => Ok(native.to_vec()),
+            DiffsolMode::StateOnly => {
+                let state_count = self.model.state_scalar_count().min(native.len());
+                Ok(self.runtime.full_solver_y(
+                    t,
+                    &native[..state_count],
+                    params,
+                    self.tol(),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?)
+            }
+        }
+    }
+
+    fn reset_vectors(
+        &self,
+        current_y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), SimDriverError> {
+        match self.mode {
+            DiffsolMode::General => {
+                let dy = bdf_derivative_guess(self.model, self.equilibrium_model, current_y, params, t)
+                    .map_err(sim_to_driver)?;
+                Ok((current_y.to_vec(), dy))
+            }
+            DiffsolMode::StateOnly => {
+                let state_count = self.model.state_scalar_count().min(current_y.len());
+                let native = current_y[..state_count].to_vec();
+                let dy = self.runtime.eval_state_derivatives(
+                    t,
+                    &native,
+                    params,
+                    self.tol(),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+                Ok((native, dy))
+            }
+        }
     }
 
     fn reset(
@@ -587,7 +657,7 @@ where
         params: &[f64],
         t: f64,
         h_cap: f64,
-    ) -> Result<(), SimError> {
+    ) -> Result<(), SimDriverError> {
         reset_solver_state(
             &mut self.solver,
             &self.runtime_params,
@@ -597,167 +667,175 @@ where
             t,
             h_cap,
         )
+        .map_err(sim_to_driver)
     }
 
-    fn derivative_guess(&self, y: &[f64], params: &[f64], t: f64) -> Result<Vec<f64>, SimError> {
-        bdf_derivative_guess(self.model, self.equilibrium_model, y, params, t)
+    fn prefer_exact_output_steps(&self) -> bool {
+        self.mode == DiffsolMode::StateOnly && !model_is_event_free(self.model)
     }
 
-    fn trace_step_failure(&self, y: &[f64], params: &[f64], current_t: f64, solver_t: f64, error: &str) {
+    fn apply_event_updates_with_event_pre(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        event_pre_y: &[f64],
+        event_pre_p: &[f64],
+    ) -> Result<(), SimDriverError> {
+        apply_event_updates_with_event_pre(EventUpdateInput {
+            runtime: self.runtime,
+            ode_model: self.equilibrium_model,
+            y,
+            p,
+            t,
+            tol,
+            event_pre_y,
+            event_pre_p,
+        })
+        .map_err(sim_to_driver)
+    }
+
+    fn apply_event_updates(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<(), SimDriverError> {
+        apply_event_updates(self.runtime, self.equilibrium_model, y, p, t, tol).map_err(sim_to_driver)
+    }
+
+    fn prepare_fixed_event_left_limit(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), SimDriverError> {
+        prepare_fixed_event_left_limit(self.model, self.equilibrium_model, y, p, t, tol, event)
+            .map_err(sim_to_driver)
+    }
+
+    fn settle_prepared_state(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+    ) -> Result<(), SimDriverError> {
+        settle_prepared_state(self.runtime, self.model, self.equilibrium_model, y, p, t, self.opts)
+            .map_err(sim_to_driver)
+    }
+
+    fn settle_algebraics_and_relation_memory(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        state_count: usize,
+        tol: f64,
+    ) -> Result<(), SimDriverError> {
+        settle_algebraics_and_relation_memory(
+            self.runtime,
+            self.equilibrium_model,
+            y,
+            p,
+            t,
+            state_count,
+            tol,
+        )
+        .map_err(sim_to_driver)
+    }
+
+    fn advance_state_to_event_limits(
+        &self,
+        event_pre_y: &mut [f64],
+        y: &mut [f64],
+        p: &[f64],
+        root_t: f64,
+        right_t: f64,
+    ) -> Result<(), SimDriverError> {
+        advance_state_to_event_limits(
+            self.model,
+            self.equilibrium_model,
+            event_pre_y,
+            y,
+            p,
+            root_t,
+            right_t,
+        )
+        .map_err(sim_to_driver)
+    }
+
+    fn record_time_event(
+        &self,
+        record: ScheduledEventRecord<'_>,
+        y: &mut [f64],
+        p: &mut [f64],
+        recorded_times: &mut Vec<f64>,
+        data: &mut [Vec<f64>],
+    ) -> Result<f64, SimDriverError> {
+        EventObservation {
+            runtime: self.runtime,
+            model: self.model,
+            equilibrium_model: self.equilibrium_model,
+            y,
+            params: p,
+            tol: self.tol(),
+            recorded_times,
+            data,
+            event_pre_y: record.event_pre_y,
+            event_pre_p: record.event_pre_p,
+        }
+        .record_time_event(record.current_t, record.horizon, record.event)
+        .map_err(sim_to_driver)
+    }
+
+    fn record_sample(
+        &self,
+        recorded_times: &mut Vec<f64>,
+        data: &mut [Vec<f64>],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<(), SimDriverError> {
+        record_sample_if_new(Some(self.runtime), self.model, y, p, recorded_times, data, t)
+            .map_err(sim_to_driver)
+    }
+
+    fn refresh_observation(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+    ) -> Result<(), SimDriverError> {
+        refresh_observation_discrete_rows(
+            self.model,
+            &self.equilibrium_model.runtime_state,
+            y,
+            p,
+            t,
+            self.tol(),
+        )
+        .map(|_| ())
+        .map_err(sim_to_driver)
+    }
+
+    fn trace_step_failure(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        current_t: f64,
+        solver_t: f64,
+        error: &str,
+    ) {
         trace_bdf_step_failure(self.equilibrium_model, y, params, current_t, solver_t, error);
     }
 
     fn trace_post_event_state(&self, y: &[f64], params: &[f64], t: f64) {
         trace_bdf_post_event_state(self.equilibrium_model, self.model, y, params, t);
     }
-}
-
-struct StateTrajectory<'a> {
-    params: &'a mut Vec<f64>,
-    data: &'a mut Vec<Vec<f64>>,
-    recorded_times: &'a mut Vec<f64>,
-    current_t: &'a mut f64,
-    current_y: &'a mut Vec<f64>,
-    runtime: &'a SolveRuntime,
-    /// Which system the solver integrates (`General` full solver_y vs `StateOnly`
-    /// reduced state), selecting how native↔full conversions behave in the loop.
-    mode: BdfMode,
-}
-
-// SPEC_0021: Exception - central BDF event loop keeps step advancement,
-// zero-crossing handling, and sample recording in a single ordered routine.
-#[allow(clippy::too_many_lines)]
-fn simulate_state_targets<St: BdfStepper + ?Sized>(
-    model: &solve::SolveModel,
-    opts: &SimOptions,
-    times: &[f64],
-    equilibrium_model: &OdeModel,
-    runtime_params: &RuntimeParameters,
-    stepper: &mut St,
-    state: StateTrajectory<'_>,
-) -> Result<(), SimError> {
-    let mode = state.mode;
-    let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
-    let mut pending_root_t: Option<f64> = None;
-
-    for &target in times {
-        if state
-            .recorded_times
-            .last()
-            .is_some_and(|last| sample_time_match_with_tol(*last, target))
-        {
-            continue;
-        }
-        let tol = opts.atol.max(1.0e-12);
-        while target > *state.current_t + tol {
-            match resolve_pending_root(
-                &mut pending_root_t,
-                advance_context(
-                    model,
-                    opts,
-                    equilibrium_model,
-                    runtime_params,
-                    state.runtime,
-                    mode,
-                ),
-                AdvanceState {
-                    current_y: state.current_y,
-                    params: state.params,
-                    current_t: state.current_t,
-                },
-                target,
-                stepper,
-                &mut stop_schedule,
-            )? {
-                PendingRootAction::Break => break,
-                PendingRootAction::Continue => continue,
-                PendingRootAction::None => {}
-            }
-
-            let (stop_time, event_stop) = next_runtime_event_stop(
-                model,
-                &equilibrium_model.runtime_state,
-                state.current_y,
-                state.params,
-                &mut stop_schedule,
-                *state.current_t,
-                target,
-            )?;
-            let mut deferred_root: Option<f64> = None;
-            let hit_root = advance_to_target_once(
-                advance_context(
-                    model,
-                    opts,
-                    equilibrium_model,
-                    runtime_params,
-                    state.runtime,
-                    mode,
-                ),
-                AdvanceState {
-                    current_y: state.current_y,
-                    params: state.params,
-                    current_t: state.current_t,
-                },
-                stop_time,
-                event_stop,
-                stepper,
-                &mut deferred_root,
-            )?;
-            if let Some(prt) = deferred_root {
-                pending_root_t = Some(prt);
-            }
-            if let Some(event) = event_stop
-                && sample_time_match_with_tol(*state.current_t, stop_time)
-            {
-                apply_scheduled_time_event(
-                    advance_context(
-                        model,
-                        opts,
-                        equilibrium_model,
-                        runtime_params,
-                        state.runtime,
-                        mode,
-                    ),
-                    AdvanceState {
-                        current_y: state.current_y,
-                        params: state.params,
-                        current_t: state.current_t,
-                    },
-                    event,
-                    target,
-                    stepper,
-                    ObservationBuffers {
-                        recorded_times: state.recorded_times,
-                        data: state.data,
-                    },
-                )?;
-                stop_schedule.advance_past(*state.current_t);
-            }
-            if !hit_root && event_stop.is_none() {
-                break;
-            }
-        }
-        refresh_observation_discrete_rows(
-            model,
-            &equilibrium_model.runtime_state,
-            state.current_y,
-            state.params,
-            *state.current_t,
-            opts.atol.max(1.0e-10),
-        )?;
-        runtime_params.borrow_mut().copy_from_slice(state.params);
-        record_sample_if_new(
-            Some(state.runtime),
-            model,
-            state.current_y,
-            state.params,
-            state.recorded_times,
-            state.data,
-            *state.current_t,
-        )?;
-    }
-
-    Ok(())
 }
 
 fn record_sample_if_new(
@@ -915,329 +993,6 @@ fn visible_values(
     .map_err(|err| SimError::SolveIr(err.to_string()))
 }
 
-/// Which system the BDF solver integrates. Both modes share the single output /
-/// event / root driver (`simulate_state_targets`); they differ only in how the
-/// solver's native state vector maps to the full `solver_y` used for recording,
-/// observation, and event evaluation, and in the vector loaded back when the
-/// solver is reset after an event.
-///
-/// `General` integrates the full augmented `solver_y` (states + algebraics with a
-/// mass matrix), so the native vector *is* the `solver_y` and every conversion is
-/// the identity — `General` models therefore behave bit-for-bit as before this
-/// driver was unified. `StateOnly` integrates only the reduced state vector and
-/// recovers the algebraics by the projection, so the conversions project /
-/// restrict between the native (state) and full (`solver_y`) representations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BdfMode {
-    General,
-    StateOnly,
-}
-
-impl BdfMode {
-    /// Map the solver's native state vector at time `t` (from `state().y` or
-    /// `interpolate()`) into the full `solver_y` written to `current_y`.
-    fn write_full_y(
-        self,
-        ctx: &AdvanceContext<'_>,
-        native: &[f64],
-        t: f64,
-        current_y: &mut [f64],
-        params: &[f64],
-    ) -> Result<(), SimError> {
-        match self {
-            BdfMode::General => {
-                current_y.copy_from_slice(native);
-                Ok(())
-            }
-            BdfMode::StateOnly => {
-                let state_count = ctx.model.state_scalar_count().min(native.len());
-                let full = ctx.runtime.full_solver_y(
-                    t,
-                    &native[..state_count],
-                    params,
-                    ctx.opts.atol.max(1.0e-10),
-                    EVENT_UPDATE_MAX_ITERS,
-                )?;
-                current_y.copy_from_slice(&full);
-                Ok(())
-            }
-        }
-    }
-
-    /// Native state + derivative guess to reload into the solver after an event,
-    /// derived from the post-event full `solver_y` at time `t`.
-    fn reset_native_vectors<St: BdfStepper + ?Sized>(
-        self,
-        ctx: &AdvanceContext<'_>,
-        stepper: &St,
-        current_y: &[f64],
-        params: &[f64],
-        t: f64,
-    ) -> Result<(Vec<f64>, Vec<f64>), SimError> {
-        match self {
-            BdfMode::General => {
-                let dy = stepper.derivative_guess(current_y, params, t)?;
-                Ok((current_y.to_vec(), dy))
-            }
-            BdfMode::StateOnly => {
-                let state_count = ctx.model.state_scalar_count().min(current_y.len());
-                let native = current_y[..state_count].to_vec();
-                let dy = ctx.runtime.eval_state_derivatives(
-                    t,
-                    &native,
-                    params,
-                    ctx.opts.atol.max(1.0e-10),
-                    EVENT_UPDATE_MAX_ITERS,
-                )?;
-                Ok((native, dy))
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct AdvanceContext<'a> {
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    equilibrium_model: &'a OdeModel,
-    runtime_params: &'a RuntimeParameters,
-    runtime: &'a SolveRuntime,
-    mode: BdfMode,
-}
-
-struct AdvanceState<'a> {
-    current_y: &'a mut [f64],
-    params: &'a mut [f64],
-    current_t: &'a mut f64,
-}
-
-fn advance_context<'a>(
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    equilibrium_model: &'a OdeModel,
-    runtime_params: &'a RuntimeParameters,
-    runtime: &'a SolveRuntime,
-    mode: BdfMode,
-) -> AdvanceContext<'a> {
-    AdvanceContext {
-        model,
-        opts,
-        equilibrium_model,
-        runtime_params,
-        runtime,
-        mode,
-    }
-}
-
-struct ObservationBuffers<'a> {
-    recorded_times: &'a mut Vec<f64>,
-    data: &'a mut [Vec<f64>],
-}
-
-enum PendingRootAction {
-    None,
-    Break,
-    Continue,
-}
-
-fn resolve_pending_root<St: BdfStepper + ?Sized>(
-    pending_root_t: &mut Option<f64>,
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-    stepper: &mut St,
-    stop_schedule: &mut SolveStopSchedule,
-) -> Result<PendingRootAction, SimError> {
-    let Some(prt) = *pending_root_t else {
-        return Ok(PendingRootAction::None);
-    };
-    if !sample_time_match_with_tol(target, prt) && target < prt {
-        let y_at = stepper.interpolate(target)?;
-        *state.current_t = target;
-        state
-            .params
-            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        ctx.mode
-            .write_full_y(&ctx, &y_at, target, state.current_y, state.params)?;
-        refresh_interpolated_sample_state(ctx, state, target)?;
-        return Ok(PendingRootAction::Break);
-    }
-
-    *pending_root_t = None;
-    handle_root_crossing(ctx, state, prt, target, stepper)?;
-    stop_schedule.advance_past(stepper.time());
-    Ok(PendingRootAction::Continue)
-}
-
-fn refresh_interpolated_sample_state(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-) -> Result<(), SimError> {
-    settle_prepared_state(
-        ctx.runtime,
-        ctx.model,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        target,
-        ctx.opts,
-    )?;
-    refresh_observation_discrete_rows(
-        ctx.model,
-        &ctx.equilibrium_model.runtime_state,
-        state.current_y,
-        state.params,
-        target,
-        ctx.opts.atol.max(1.0e-10),
-    )?;
-    ctx.runtime_params
-        .borrow_mut()
-        .copy_from_slice(state.params);
-    Ok(())
-}
-
-fn apply_scheduled_time_event<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    event: RuntimeEventStop,
-    target: f64,
-    stepper: &mut St,
-    observations: ObservationBuffers<'_>,
-) -> Result<(), SimError> {
-    let tol = ctx.opts.atol.max(1.0e-10);
-    prepare_fixed_event_left_limit(
-        ctx.model,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        *state.current_t,
-        tol,
-        event,
-    )?;
-    let event_pre_y = state.current_y.to_vec();
-    let event_pre_p = state.params.to_vec();
-    apply_event_updates(
-        ctx.runtime,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        *state.current_t,
-        tol,
-    )?;
-    *state.current_t = EventObservation {
-        runtime: ctx.runtime,
-        model: ctx.model,
-        equilibrium_model: ctx.equilibrium_model,
-        y: state.current_y,
-        params: state.params,
-        tol,
-        recorded_times: observations.recorded_times,
-        data: observations.data,
-        event_pre_y: &event_pre_y,
-        event_pre_p: &event_pre_p,
-    }
-    .record_time_event(
-        *state.current_t,
-        runtime_event_horizon(event, target, ctx.opts.t_end),
-        event,
-    )?;
-    commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
-    reinitialize_solver_after_time_event(ctx, state, stepper, tol)
-}
-
-fn reinitialize_solver_after_time_event<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    stepper: &mut St,
-    tol: f64,
-) -> Result<(), SimError> {
-    let t_right = *state.current_t;
-    settle_algebraics_and_relation_memory(
-        ctx.runtime,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        t_right,
-        ctx.model.state_scalar_count(),
-        tol,
-    )?;
-    let (native_y, native_dy) =
-        ctx.mode
-            .reset_native_vectors(&ctx, stepper, state.current_y, state.params, t_right)?;
-    stepper.reset(
-        &native_y,
-        &native_dy,
-        state.params,
-        *state.current_t,
-        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
-    )
-}
-
-fn advance_to_target_once<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-    event_stop: Option<RuntimeEventStop>,
-    stepper: &mut St,
-    deferred_root: &mut Option<f64>,
-) -> Result<bool, SimError> {
-    if event_stop.is_some() {
-        return advance_to_scheduled_stop(ctx, state, target, stepper);
-    }
-
-    advance_output_interval(ctx, state, target, stepper, deferred_root)
-}
-
-fn advance_to_scheduled_stop<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-    stepper: &mut St,
-) -> Result<bool, SimError> {
-    if stepper.time() > target {
-        stepper.state_mut_back(target)?;
-    }
-    if sample_time_match_with_tol(stepper.time(), target) {
-        *state.current_t = target;
-        state
-            .params
-            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        let native = stepper.native_y();
-        ctx.mode
-            .write_full_y(&ctx, &native, target, state.current_y, state.params)?;
-        return Ok(false);
-    }
-    stepper.set_stop_time(target)?;
-    loop {
-        let outcome = match stepper.step() {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                stepper.trace_step_failure(state.current_y, state.params, *state.current_t, stepper.time(), &e.to_string());
-                return Err(e);
-            }
-        };
-        match outcome {
-            BdfStepOutcome::Stop => {
-                let stop_t = stepper.time();
-                *state.current_t = stop_t;
-                state
-                    .params
-                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                let native = stepper.native_y();
-                ctx.mode
-                    .write_full_y(&ctx, &native, stop_t, state.current_y, state.params)?;
-                return Ok(false);
-            }
-            BdfStepOutcome::Internal => continue,
-            BdfStepOutcome::Root { t_root } => {
-                trace_bdf_step_event("scheduled-root", stepper.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, stepper);
-            }
-        }
-    }
-}
-
 /// True when the model has no discontinuities (zero-crossing roots, scheduled
 /// time events, or discrete `when` updates), so the BDF solution is smooth and
 /// safe to dense-output / interpolate at arbitrary times.
@@ -1248,123 +1003,6 @@ fn model_is_event_free(model: &solve::SolveModel) -> bool {
         && events.scheduled_time_events.is_empty()
         && discrete.update_targets.is_empty()
         && discrete.runtime_assignment_targets.is_empty()
-}
-
-fn advance_output_interval<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-    stepper: &mut St,
-    deferred_root: &mut Option<f64>,
-) -> Result<bool, SimError> {
-    // The `General` path integrates the full solver_y, so interpolating it at the
-    // output time is exact. The `StateOnly` path interpolates the reduced state and
-    // *re-projects* the algebraics, which is fragile near discontinuities (the
-    // interpolated state need not be algebraically consistent). For event-bearing
-    // state-only models we therefore step the solver exactly onto each output point
-    // (clamp) and project from that consistent state; smooth state-only models keep
-    // free dense-output stepping so the multi-step BDF controller is never starved
-    // by a fine output grid (the trivial-ODE failure this whole change fixes).
-    if ctx.mode == BdfMode::StateOnly && !model_is_event_free(ctx.model) {
-        return advance_output_interval_clamped(ctx, state, target, stepper);
-    }
-    loop {
-        if stepper.time() >= target {
-            let y_at_target = stepper.interpolate(target)?;
-            *state.current_t = target;
-            state
-                .params
-                .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-            ctx.mode
-                .write_full_y(&ctx, &y_at_target, target, state.current_y, state.params)?;
-            return Ok(false);
-        }
-
-        let outcome = match stepper.step() {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                stepper.trace_step_failure(state.current_y, state.params, *state.current_t, stepper.time(), &e.to_string());
-                return Err(e);
-            }
-        };
-        match outcome {
-            BdfStepOutcome::Stop | BdfStepOutcome::Internal => {}
-            BdfStepOutcome::Root { t_root } => {
-                trace_bdf_step_event("output-root", stepper.time(), Some(t_root));
-                let root_after_target =
-                    t_root > target && !sample_time_match_with_tol(t_root, target);
-                if !root_after_target {
-                    return handle_root_crossing(ctx, state, t_root, target, stepper);
-                }
-                let y_at_target = stepper.interpolate(target)?;
-                *state.current_t = target;
-                state
-                    .params
-                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                ctx.mode
-                    .write_full_y(&ctx, &y_at_target, target, state.current_y, state.params)?;
-                *deferred_root = Some(t_root);
-                return Ok(false);
-            }
-        }
-    }
-}
-
-/// Output advance that steps the solver exactly onto `target` (no interpolation)
-/// so the recorded sample is projected from a consistent solver state. Used for
-/// event-bearing state-only models where dense-output interpolation + algebraic
-/// re-projection is unreliable near discontinuities.
-fn advance_output_interval_clamped<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-    stepper: &mut St,
-) -> Result<bool, SimError> {
-    if stepper.time() >= target {
-        let y_at_target = stepper.interpolate(target)?;
-        *state.current_t = target;
-        state
-            .params
-            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        ctx.mode
-            .write_full_y(&ctx, &y_at_target, target, state.current_y, state.params)?;
-        return Ok(false);
-    }
-    stepper.set_stop_time(target)?;
-    loop {
-        let outcome = match stepper.step() {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                stepper.trace_step_failure(state.current_y, state.params, *state.current_t, stepper.time(), &e.to_string());
-                return Err(e);
-            }
-        };
-        match outcome {
-            BdfStepOutcome::Stop => {
-                let stop_t = stepper.time();
-                *state.current_t = stop_t;
-                state
-                    .params
-                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                let native = stepper.native_y();
-                ctx.mode
-                    .write_full_y(&ctx, &native, stop_t, state.current_y, state.params)?;
-                return Ok(false);
-            }
-            BdfStepOutcome::Internal => continue,
-            BdfStepOutcome::Root { t_root } => {
-                trace_bdf_step_event("output-root-clamped", stepper.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, stepper);
-            }
-        }
-    }
-}
-
-fn trace_bdf_step_event(kind: &str, solver_t: f64, root_t: Option<f64>) {
-    if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
-        return;
-    }
-    tracing::debug!(target: "rumoca_solver_diffsol::bdf", "{kind} solver_t={solver_t:.12} root_t={root_t:?}");
 }
 
 fn trace_bdf_step_failure(
@@ -1393,73 +1031,6 @@ fn trace_bdf_step_failure(
         target: "rumoca_solver_diffsol::bdf",
         "step-fail current_t={current_t:.12} solver_t={solver_t:.12} {root_summary} err={error}"
     );
-}
-
-fn handle_root_crossing<St: BdfStepper + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    t_root: f64,
-    target: f64,
-    stepper: &mut St,
-) -> Result<bool, SimError> {
-    let tol = ctx.opts.atol.max(1.0e-10);
-    stepper.state_mut_back(t_root)?;
-    let root_t = stepper.time();
-    let native_at_root = stepper.native_y();
-    let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
-    let right_t = runtime_root_event_application_time(root_t, target);
-    *state.current_t = right_t;
-    state
-        .params
-        .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-    // Full solver_y at the root (left limit); for StateOnly this projects the
-    // reduced state through the algebraic projection, mirroring the old
-    // state-only root handler.
-    let mut event_pre_y = vec![0.0; state.current_y.len()];
-    ctx.mode
-        .write_full_y(&ctx, &native_at_root, root_t, &mut event_pre_y, state.params)?;
-    state.current_y.copy_from_slice(&event_pre_y);
-    advance_state_to_event_limits(
-        ctx.model,
-        ctx.equilibrium_model,
-        &mut event_pre_y,
-        state.current_y,
-        state.params,
-        root_t,
-        right_t,
-    )?;
-    apply_event_updates_with_event_pre(EventUpdateInput {
-        runtime: ctx.runtime,
-        ode_model: ctx.equilibrium_model,
-        y: state.current_y,
-        p: state.params,
-        t: *state.current_t,
-        tol,
-        event_pre_y: &event_pre_y,
-        event_pre_p: &event_pre_p,
-    })?;
-    settle_prepared_state(
-        ctx.runtime,
-        ctx.model,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        *state.current_t,
-        ctx.opts,
-    )?;
-    commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
-    stepper.trace_post_event_state(state.current_y, state.params, *state.current_t);
-    let (native_y, native_dy) =
-        ctx.mode
-            .reset_native_vectors(&ctx, stepper, state.current_y, state.params, *state.current_t)?;
-    stepper.reset(
-        &native_y,
-        &native_dy,
-        state.params,
-        *state.current_t,
-        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
-    )?;
-    Ok(true)
 }
 
 fn trace_bdf_post_event_state(
