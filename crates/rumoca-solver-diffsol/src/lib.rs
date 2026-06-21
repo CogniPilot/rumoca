@@ -34,8 +34,7 @@ use rumoca_eval_solve::{
     next_runtime_event_stop, visible_values_with_context,
 };
 use rumoca_eval_solve::sim_driver::{
-    ScheduledEventRecord, SimDriverError, SolverStepper, StateTrajectory, StepOutcome,
-    simulate_state_targets,
+    SimDriverError, SolverStepper, StateTrajectory, StepOutcome, simulate_state_targets,
 };
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
@@ -52,9 +51,7 @@ pub(crate) use runtime::{
     apply_post_initial_event_updates, seed_initial_discrete_values,
     settle_algebraics_and_relation_memory,
 };
-use runtime::{
-    check_no_state_initialization, prepare_fixed_event_left_limit, simulate_no_state_solve_ir,
-};
+use runtime::{check_no_state_initialization, simulate_no_state_solve_ir};
 
 type Matrix = FaerSparseMat<f64>;
 type Vector = <Matrix as MatrixCommon>::V;
@@ -69,7 +66,10 @@ pub(crate) use ode::{
 };
 pub use prepared::PreparedSimulation;
 use prepared::PreparedSimulationState;
-use rumoca_solver::{project_algebraics, project_initial_variables_with_plan};
+use rumoca_solver::{
+    RuntimeSolveError, project_algebraics, project_algebraics_and_detect_changes,
+    project_initial_variables_with_plan,
+};
 
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
 
@@ -282,6 +282,7 @@ fn simulate_with_states(
             recorded_times: &mut recorded_times,
             current_t: &mut current_t,
             current_y: &mut current_y,
+            runtime,
             runtime_state: &equilibrium_model.runtime_state,
         },
     )
@@ -433,6 +434,7 @@ fn simulate_state_only_bdf(
             recorded_times: &mut recorded_times,
             current_t: &mut current_t,
             current_y: &mut current_y,
+            runtime,
             runtime_state: &equilibrium_model.runtime_state,
         },
     )
@@ -674,122 +676,25 @@ where
         self.mode == DiffsolMode::StateOnly && !model_is_event_free(self.model)
     }
 
-    fn apply_event_updates_with_event_pre(
+    fn project_algebraics(
         &self,
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
         tol: f64,
-        event_pre_y: &[f64],
-        event_pre_p: &[f64],
-    ) -> Result<(), SimDriverError> {
-        apply_event_updates_with_event_pre(EventUpdateInput {
-            runtime: self.runtime,
-            ode_model: self.equilibrium_model,
-            y,
-            p,
-            t,
-            tol,
-            event_pre_y,
-            event_pre_p,
-        })
-        .map_err(sim_to_driver)
-    }
-
-    fn apply_event_updates(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-    ) -> Result<(), SimDriverError> {
-        apply_event_updates(self.runtime, self.equilibrium_model, y, p, t, tol).map_err(sim_to_driver)
-    }
-
-    fn prepare_fixed_event_left_limit(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), SimDriverError> {
-        prepare_fixed_event_left_limit(self.model, self.equilibrium_model, y, p, t, tol, event)
-            .map_err(sim_to_driver)
-    }
-
-    fn settle_prepared_state(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-    ) -> Result<(), SimDriverError> {
-        settle_prepared_state(self.runtime, self.model, self.equilibrium_model, y, p, t, self.opts)
-            .map_err(sim_to_driver)
-    }
-
-    fn settle_algebraics_and_relation_memory(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        state_count: usize,
-        tol: f64,
-    ) -> Result<(), SimDriverError> {
-        settle_algebraics_and_relation_memory(
-            self.runtime,
+    ) -> Result<bool, RuntimeSolveError> {
+        project_algebraics_and_detect_changes(
             self.equilibrium_model,
             y,
             p,
             t,
-            state_count,
+            self.equilibrium_model.state_count_for_projection(),
             tol,
         )
-        .map_err(sim_to_driver)
     }
 
-    fn advance_state_to_event_limits(
-        &self,
-        event_pre_y: &mut [f64],
-        y: &mut [f64],
-        p: &[f64],
-        root_t: f64,
-        right_t: f64,
-    ) -> Result<(), SimDriverError> {
-        advance_state_to_event_limits(
-            self.model,
-            self.equilibrium_model,
-            event_pre_y,
-            y,
-            p,
-            root_t,
-            right_t,
-        )
-        .map_err(sim_to_driver)
-    }
-
-    fn record_time_event(
-        &self,
-        record: ScheduledEventRecord<'_>,
-        y: &mut [f64],
-        p: &mut [f64],
-        recorded_times: &mut Vec<f64>,
-        data: &mut [Vec<f64>],
-    ) -> Result<f64, SimDriverError> {
-        EventObservation {
-            runtime: self.runtime,
-            model: self.model,
-            equilibrium_model: self.equilibrium_model,
-            y,
-            params: p,
-            tol: self.tol(),
-            recorded_times,
-            data,
-            event_pre_y: record.event_pre_y,
-            event_pre_p: record.event_pre_p,
-        }
-        .record_time_event(record.current_t, record.horizon, record.event)
-        .map_err(sim_to_driver)
+    fn derivative_guess(&self, y: &[f64], p: &[f64], t: f64) -> Result<Vec<f64>, SimDriverError> {
+        bdf_derivative_guess(self.model, self.equilibrium_model, y, p, t).map_err(sim_to_driver)
     }
 
     fn record_sample(
@@ -1061,49 +966,6 @@ fn trace_bdf_post_event_state(
         target: "rumoca_solver_diffsol::bdf",
         "post-event current_t={t:.12} {summary}"
     );
-}
-
-fn advance_state_to_event_limits(
-    solve_model: &solve::SolveModel,
-    model: &OdeModel,
-    event_pre_y: &mut [f64],
-    y: &mut [f64],
-    p: &[f64],
-    root_t: f64,
-    right_t: f64,
-) -> Result<(), SimError> {
-    let dt = right_t - root_t;
-    if dt <= 0.0 || sample_time_match_with_tol(root_t, right_t) {
-        return Ok(());
-    }
-    let dy = bdf_derivative_guess(solve_model, model, y, p, root_t)?;
-    for (slot, derivative) in event_pre_y.iter_mut().zip(dy.iter().copied()) {
-        *slot -= dt * derivative;
-    }
-    for (slot, derivative) in y.iter_mut().zip(dy) {
-        *slot += dt * derivative;
-    }
-    Ok(())
-}
-
-fn settle_prepared_state(
-    runtime: &SolveRuntime,
-    model: &solve::SolveModel,
-    equilibrium_model: &OdeModel,
-    current_y: &mut [f64],
-    params: &mut [f64],
-    current_t: f64,
-    opts: &SimOptions,
-) -> Result<(), SimError> {
-    settle_algebraics_and_relation_memory(
-        runtime,
-        equilibrium_model,
-        current_y,
-        params,
-        current_t,
-        model.state_scalar_count(),
-        opts.atol.max(1.0e-10),
-    )
 }
 
 fn set_solver_stop_time<'a, Eqn, S>(solver: &mut S, stop_time: f64) -> Result<(), SimError>
