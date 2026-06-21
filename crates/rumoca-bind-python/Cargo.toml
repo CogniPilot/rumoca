@@ -22,7 +22,11 @@ rumoca-sim = { workspace = true, features = ["solver-diffsol", "solver-rk45"] }
 rumoca-compile = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-pyo3 = { version = "0.22", features = ["extension-module"] }
+# `abi3-py310` builds against CPython's stable ABI: one wheel per platform works
+# on every CPython >= 3.10 (and future releases), instead of one wheel per
+# Python minor version. Cuts the wheel matrix and avoids source builds when a
+# user is on a Python version we didn't pre-build.
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 serde_json = { workspace = true }
 
 [build-dependencies]

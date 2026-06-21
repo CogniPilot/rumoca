@@ -1,10 +1,11 @@
 /target
 /crates/rumoca/target/rumoca-library-cache
 __pycache__/
-/.venv-pyapi/
-tests/notebooks/python/.venv/
+# Python virtual environments — any name, any location (.venv, venv, .venv-*).
+.venv/
+.venv-*/
+venv/
 tests/notebooks/python/poetry.lock
-examples/.venv/
 res
 .vscode/ros_path
 build/
