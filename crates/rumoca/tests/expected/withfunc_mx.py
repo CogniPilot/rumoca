@@ -236,54 +236,40 @@ def create_model():
         ['f_x'])
 
     # =========================================================================
-    # Integrator Builder
+    # Native CasADi DAE structure
     # =========================================================================
-    def build_integrator(dt, opts=None, method='idas'):
-        """Build a CasADi integrator from the implicit DAE residual.
+    # Rumoca's DAE is an implicit residual f_x(x, xdot, z, p, t) = 0; CasADi's
+    # integrator consumes a *semi-explicit* dict {x, z, p, t, ode, alg}. This
+    # helper performs that bridge once so both `build_integrator` and callers
+    # who want the native structure directly (e.g. ca.integrator(...,
+    # model['dae'], ...)) share the exact same lowering.
+    def build_dae(method='idas'):
+        """Return ``(dae_dict, casadi_method)`` in CasADi's native DAE form.
 
-        For pure ODEs (no algebraics, exactly n_x equations), converts to
-        explicit form via mass-matrix inversion and uses CVODES.
-
-        For DAE systems or over-determined ODEs, uses an augmented-z
-        approach: xdot symbols are included in the algebraic vector so the
-        chosen DAE solver receives the original residual directly.
-
-        Args:
-            dt: Time grid (scalar step or array of output times).
-            opts: Optional dict of integrator options passed to ca.integrator().
-            method: DAE solver — 'idas' (default) or 'collocation'.
-                IDAS is faster but requires consistent initial conditions.
-                Collocation handles structurally singular DAEs where
-                IDACalcIC fails.
-
-        Returns:
-            A CasADi integrator Function.
+        For pure ODEs (exactly n_x equations, no continuous algebraics) the
+        mass matrix is inverted to an explicit ``ode`` (solved by CVODES). For
+        DAE/over-determined systems an augmented-z form carries the implicit
+        residual into ``alg`` (solved by IDAS/collocation).
         """
-        # Discrete variables are treated as fixed parameters during continuous
-        # integration (MLS §8.5). Only continuous algebraics (y, w) are part of
-        # the DAE solved by IDAS. Discrete variables (z, m) are updated at
-        # event boundaries by the simulation driver.
-        # _z_c and _z_d are already pure MX symbols (declared at module level).
+        # Discrete variables are fixed parameters during continuous integration
+        # (MLS §8.5); only continuous algebraics (y, w) join the solved DAE.
         if n_z_discrete > 0:
             _p_full = ca.vertcat(_p, _u, _z_d)
         else:
             _p_full = ca.vertcat(_p, _u)
         _n_eq = f_x.shape[0]
 
-        # Pure ODE: exactly n_x equations, no continuous algebraics → explicit CVODES
+        # Pure ODE → explicit semi-explicit form (no algebraic block).
         if _n_eq == n_x and n_z_continuous == 0:
             _M = ca.jacobian(f_x, _xdot)
             _f0 = ca.substitute(f_x, _xdot, ca.MX.zeros(n_x))
             _ode = ca.solve(_M, -_f0)
-            _dae = {'x': _x, 't': t, 'ode': _ode, 'p': _p_full}
-            return ca.integrator('integrator', 'cvodes', _dae, 0, dt, opts or {})
+            return {'x': _x, 't': t, 'ode': _ode, 'p': _p_full}, 'cvodes'
 
-        # General DAE / over-determined ODE: augmented-z approach.
-        # Include xdot in the algebraic vector so IDAS solves the original
-        # implicit residual f_x(x, xdot, z_c, p, t) = 0 directly.
-        # Only continuous algebraics are in the augmented z vector.
-        # CasADi requires purely symbolic integrator inputs, so we create a
-        # fresh symbol and substitute the original xdot/_z_c references.
+        # General DAE / over-determined ODE: augmented-z approach. xdot symbols
+        # join the algebraic vector so the solver receives the original implicit
+        # residual f_x(x, xdot, z_c, p, t) = 0 directly. CasADi requires purely
+        # symbolic integrator inputs, so substitute onto a fresh symbol.
         _n_z_aug = n_x + n_z_continuous
         _z_aug = ca.MX.sym('z_aug', _n_z_aug)
         _xdot_aug = _z_aug[:n_x]
@@ -295,7 +281,32 @@ def create_model():
             'alg': _f_x_sub,
             'p': _p_full,
         }
-        return ca.integrator('integrator', method, _dae, 0, dt, opts or {})
+        return _dae, (method if method != 'cvodes' else 'idas')
+
+    # The native CasADi DAE dict and its semi-explicit pieces, exposed so callers
+    # can differentiate / integrate directly (e.g. ca.jacobian(model['ode'],
+    # model['p'])).
+    dae, _dae_method = build_dae()
+    ode = dae['ode']
+    alg = dae.get('alg', ca.MX.zeros(0))
+
+    # =========================================================================
+    # Integrator Builder
+    # =========================================================================
+    def build_integrator(dt, opts=None, method='idas'):
+        """Build a CasADi integrator over the native DAE (see ``build_dae``).
+
+        Args:
+            dt: Time grid (scalar step or array of output times).
+            opts: Optional dict of integrator options passed to ca.integrator().
+            method: DAE solver for the augmented form — 'idas' (default) or
+                'collocation'. Pure ODEs always use CVODES.
+
+        Returns:
+            A CasADi integrator Function.
+        """
+        _dae, _method = build_dae(method)
+        return ca.integrator('integrator', _method, _dae, 0, dt, opts or {})
 
     # =========================================================================
     # Default Values
@@ -351,7 +362,11 @@ def create_model():
         'u': _u,
         'p': _p,
         'f_x': f_x,
+        'ode': ode,
+        'alg': alg,
+        'dae': dae,
         'dae_fn': dae_fn,
+        'build_dae': build_dae,
         'build_integrator': build_integrator,
         'functions': {'sq': sq, },
         'x0': x0,

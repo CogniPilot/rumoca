@@ -1,0 +1,17 @@
+# Scenario task file consumed by `rumoca.Session.from_scenario`. Paths are
+# resolved relative to this file's directory. Top-level keys (source_roots)
+# precede the section headers, per TOML.
+source_roots = ["Lib"]
+
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+name = "UsesLib"
+file = "UsesLib.mo"
+
+[sim]
+solver = "auto"
+t_end = 0.2
+dt = 0.1

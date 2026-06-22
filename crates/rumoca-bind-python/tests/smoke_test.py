@@ -1,73 +1,106 @@
-import json
+"""Smoke test for the first-class typed Rumoca Python API.
+
+Run directly (`python tests/smoke_test.py`) against an installed / `maturin
+develop` build. Exercises the happy path end-to-end: load a model, inspect its
+typed metadata, simulate, and generate code — with no `json.loads` anywhere.
+"""
+
 from pathlib import Path
 
-import rumoca
-
+import rumoca as rm
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 MODEL_FILE = FIXTURE_ROOT / "UsesLib.mo"
 SOURCE_ROOT = FIXTURE_ROOT / "Lib"
 
 
-def assert_raw_dae_model(raw_dae: dict) -> None:
-    assert raw_dae.get("metadata", {}).get("class_type") == "Model"
-    assert "x" in raw_dae["x"]
+def test_load_and_metadata() -> None:
+    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    assert m.name == "UsesLib"
+    assert m.states.names == ["x"]
+    assert m.parameters.names == ["gain"]
+
+    # Typed parameter metadata, no magic-key dict access.
+    gain = m.parameters["gain"]
+    assert isinstance(gain, rm.ParameterInfo)
+    assert gain.kind in ("tunable", "structural")
+
+    # By-name and by-index variable lookup.
+    assert m.states["x"].name == "x"
+    assert m.states[0].name == "x"
+
+    struct = m.structure()
+    assert struct.n_states == 1
+    assert struct.is_balanced
+
+
+def test_loads_inline() -> None:
+    src = "model Decay Real x(start=1); equation der(x) = -x; end Decay;"
+    m = rm.loads(src, model="Decay")
+    assert m.name == "Decay"
+    assert m.states.names == ["x"]
+
+
+def test_simulate() -> None:
+    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    r = m.simulate(t=(0.0, 0.2), dt=0.1)
+    assert isinstance(r, rm.Result)
+    assert r.model == "UsesLib"
+    assert "x" in r
+    x = r["x"]
+    assert len(list(x)) == len(list(r.time)) >= 2
+    assert r.metrics["points"] >= 2
+
+
+def test_codegen() -> None:
+    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    cg = m.codegen("sympy")
+    assert cg.target == "sympy"
+    assert any(p.endswith(".py") for p in cg.paths)
+    # Iterable of (path, content).
+    for path, content in cg:
+        assert isinstance(path, str) and isinstance(content, str)
+
+
+def test_render() -> None:
+    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    rendered = m.render("dae-modelica")
+    assert "UsesLib" in rendered
+
+
+def test_session_reuse() -> None:
+    s = rm.Session(roots=[str(SOURCE_ROOT)])
+    m1 = s.load(str(MODEL_FILE))
+    m2 = s.load(str(MODEL_FILE))
+    assert m1.name == m2.name == "UsesLib"
+
+
+def test_targets_and_solvers() -> None:
+    ids = [t.id for t in rm.targets()]
+    assert "sympy" in ids
+    sympy = next(t for t in rm.targets() if t.id == "sympy")
+    assert sympy.ir in ("ast", "flat", "dae", "solve")
+    solver_ids = [s.id for s in rm.solvers()]
+    assert "rk-like" in solver_ids
+
+
+def test_validate() -> None:
+    diags = rm.validate_source("model M Real x end M;")
+    assert any(d.level == "error" for d in diags)
+    clean = rm.validate_source("model M Real x; end M;")
+    assert all(d.rule != "syntax-error" for d in clean)
 
 
 def main() -> None:
-    targets = json.loads(rumoca.get_builtin_targets())
-    sympy_targets = [item for item in targets if item["id"] == "sympy"]
-    assert sympy_targets
-    assert any(path.endswith(".jinja") for path in sympy_targets[0]["templates"])
-
-    raw_dae = json.loads(rumoca.compile_file(str(MODEL_FILE), source_roots=[str(SOURCE_ROOT)]))
-    assert_raw_dae_model(raw_dae)
-
-    compiled = json.loads(
-        rumoca.compile_file_to_json(str(MODEL_FILE), source_roots=[str(SOURCE_ROOT)])
-    )
-    assert "x" in compiled
-    assert "f_x" in compiled
-
-    rendered_files = json.loads(
-        rumoca.render_target_file(
-            str(MODEL_FILE),
-            "dae-modelica",
-            source_roots=[str(SOURCE_ROOT)],
-        )
-    )
-    rendered = rendered_files[0]["content"]
-    assert "class UsesLib" in rendered
-
-    session = rumoca.ProjectSession([str(SOURCE_ROOT)])
-    session_compile = json.loads(session.compile_file(str(MODEL_FILE)))
-    assert_raw_dae_model(session_compile)
-
-    statuses = json.loads(session.source_root_statuses())
-    assert statuses
-
-    sim_options = rumoca.SimulationOptions(t_end=0.2, dt=0.1, solver="auto")
-    sim = json.loads(session.simulate_file(str(MODEL_FILE), options=sim_options))
-    assert sim["model"] == "UsesLib"
-    assert sim["metrics"]["points"] >= 2
-
-    project = rumoca.Project.open(
-        str(FIXTURE_ROOT),
-        model_name="UsesLib",
-        model_file=str(MODEL_FILE),
-        source_roots=[str(SOURCE_ROOT)],
-    )
-    project_compile = project.compile_file()
-    assert project_compile.model_name == "UsesLib"
-    assert_raw_dae_model(project_compile.to_dict())
-
-    project_sim = project.simulate_file(options=sim_options)
-    assert project_sim.model_name == "UsesLib"
-    assert project_sim.metrics["points"] >= 2
-
-    project_codegen = project.codegen_file(target="dae-modelica")
-    assert project_codegen.paths
-    assert "class UsesLib" in project_codegen.to_dict()[0]["content"]
+    test_load_and_metadata()
+    test_loads_inline()
+    test_simulate()
+    test_codegen()
+    test_render()
+    test_session_reuse()
+    test_targets_and_solvers()
+    test_validate()
+    print("smoke_test: OK")
 
 
 if __name__ == "__main__":

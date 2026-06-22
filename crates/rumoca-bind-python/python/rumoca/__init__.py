@@ -1,27 +1,111 @@
-"""Python interface for the Rumoca Modelica compiler.
+"""Rumoca — a first-class Python API for the Rumoca Modelica compiler.
+
+The surface is small and typed. Compile a model and everything hangs off it::
+
+    import rumoca as rm
+
+    m = rm.load("Quadrotor.mo", model="Quadrotor", roots=["libs/CMM"])
+    m.parameters["mass"].value        # typed, autocompletes
+    r = m.simulate(t=(0, 10), dt=0.01)
+    r.plot("body.v[1]"); df = r.to_dataframe()
+
+No ``json.loads`` anywhere: returned objects are real typed classes backed
+directly by the compiler/solver. JSON appears only when you ask for it
+(``m.to_json()`` / ``r.to_json()``).
 
 The compiled extension lives at :mod:`rumoca._native`; this package re-exports
-its full API so ``import rumoca`` works exactly as before, and additionally
-registers the ``%%modelica`` Jupyter cell magic when imported inside IPython.
+the public surface and registers the ``%%modelica`` Jupyter cell magic when
+imported inside IPython.
 """
 
 from __future__ import annotations
 
-# Re-export the entire compiled API (compile, compile_source, simulate,
-# render_target_model, cli, the result classes, ...). The accompanying
-# ``__init__.pyi`` stub + ``py.typed`` marker give editors full autocomplete on
-# these names.
-from ._native import *  # noqa: F401,F403
 from . import _native
-
-try:
-    __all__ = list(_native.__all__)
-except AttributeError:
-    __all__ = [name for name in dir(_native) if not name.startswith("_")]
-
+from ._export import CasadiModel, JaxModel, SolveExport, SympyModel
 from ._magic import load_ipython_extension, unload_ipython_extension
 
-__all__ += ["load_ipython_extension", "unload_ipython_extension"]
+# ── module-level functions ──────────────────────────────────────────────────
+load = _native.load
+loads = _native.loads
+validate = _native.validate
+validate_source = _native.validate_source
+format = _native.format  # noqa: A001 — mirrors `rumoca format`, intentional
+version = _native.version
+targets = _native.targets
+solvers = _native.solvers
+
+# ── the hub & session ───────────────────────────────────────────────────────
+Model = _native.Model
+Session = _native.Session
+SimConfig = _native.SimConfig
+
+# ── views & metadata ────────────────────────────────────────────────────────
+VarView = _native.VarView
+ParamView = _native.ParamView
+VariableInfo = _native.VariableInfo
+ParameterInfo = _native.ParameterInfo
+StructuralInfo = _native.StructuralInfo
+
+# ── results & codegen ───────────────────────────────────────────────────────
+Result = _native.Result
+CodegenResult = _native.CodegenResult
+GeneratedFile = _native.GeneratedFile
+Target = _native.Target
+SolverInfo = _native.SolverInfo
+
+# ── live symbolic exports (returned by Model.to_casadi/to_jax/to_sympy) ──────
+# (defined in Python; imported above from ._export)
+
+# ── diagnostics & errors ────────────────────────────────────────────────────
+Diagnostic = _native.Diagnostic
+RumocaError = _native.RumocaError
+ParseError = _native.ParseError
+CompileError = _native.CompileError
+SimulationError = _native.SimulationError
+StructuralParamError = _native.StructuralParamError
+
+__all__ = [
+    # functions
+    "load",
+    "loads",
+    "validate",
+    "validate_source",
+    "format",
+    "version",
+    "targets",
+    "solvers",
+    # hub & session
+    "Model",
+    "Session",
+    "SimConfig",
+    # views & metadata
+    "VarView",
+    "ParamView",
+    "VariableInfo",
+    "ParameterInfo",
+    "StructuralInfo",
+    # results & codegen
+    "Result",
+    "CodegenResult",
+    "GeneratedFile",
+    "Target",
+    "SolverInfo",
+    # live symbolic exports
+    "CasadiModel",
+    "JaxModel",
+    "SympyModel",
+    "SolveExport",
+    # diagnostics & errors
+    "Diagnostic",
+    "RumocaError",
+    "ParseError",
+    "CompileError",
+    "SimulationError",
+    "StructuralParamError",
+    # jupyter magic hooks
+    "load_ipython_extension",
+    "unload_ipython_extension",
+]
 
 
 def _register_magic_if_in_ipython() -> None:
@@ -35,8 +119,6 @@ def _register_magic_if_in_ipython() -> None:
 
         shell = get_ipython()
     except Exception:
-        # Absent IPython, or any unexpected failure resolving the shell, must
-        # never break a plain ``import rumoca``.
         return
     if shell is not None:
         load_ipython_extension(shell)

@@ -113,12 +113,13 @@ pub mod scenario {
         SimulationModelOverride, clear_model_simulation_preset, codegen_config_from_json,
         codegen_config_to_json, is_rumoca_task_filename, load_codegen_config_for_model,
         load_plot_views_for_model, load_simulation_snapshot_for_model, load_source_roots_for_model,
-        load_source_roots_for_model_task, parse_fallback_simulation, parse_views_payload,
-        scenario_config_full_to_json, scenario_config_response, scenario_config_text_from_json,
-        simulation_override_from_json, simulation_preset_to_json, simulation_settings_to_json,
-        source_roots_from_json, source_roots_to_json, visualization_views_to_json,
-        write_codegen_config_for_model, write_model_simulation_preset, write_plot_views_for_model,
-        write_source_roots_for_model, write_source_roots_for_model_task,
+        load_source_roots_for_model_task, parse_fallback_simulation, parse_scenario_config_file,
+        parse_views_payload, scenario_config_full_to_json, scenario_config_response,
+        scenario_config_text_from_json, simulation_override_from_json, simulation_preset_to_json,
+        simulation_settings_to_json, source_roots_from_json, source_roots_to_json,
+        visualization_views_to_json, write_codegen_config_for_model, write_model_simulation_preset,
+        write_plot_views_for_model, write_source_roots_for_model,
+        write_source_roots_for_model_task,
     };
 }
 
@@ -250,7 +251,7 @@ pub mod compile {
         SessionConfig, SessionSnapshot, SourceRootActivityKind, SourceRootActivityPhase,
         SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind, SourceRootLoadMode,
         SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompileReport,
-        WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
+        StructuralOverride, WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
         compile_phase_timing_stats, install_compile_phase_observer,
         reset_compile_phase_timing_stats,
     };

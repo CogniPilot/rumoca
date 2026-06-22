@@ -1,49 +1,54 @@
-"""Smoke test for the verbatim-CLI `cli()` entry and the `%%modelica` magic.
+"""Smoke test for the `%%modelica` Jupyter cell magic (typed API).
 
-Run directly (`python tests/magic_test.py`) against an installed/`maturin develop`
-build, mirroring tests/smoke_test.py. The IPython magic portion is skipped if
-IPython is not available so the core `cli()` checks still run everywhere.
+Run directly (`python tests/magic_test.py`) against an installed / `maturin
+develop` build. The magic compiles the cell to a typed object — a `Model` by
+default, a `Result` for `sim`, a `CodegenResult` for `export`. The IPython
+portion is skipped when IPython is unavailable so the core dispatch still runs.
 """
 
-import json
-
-import rumoca
+import rumoca as rm
+from rumoca._magic import ModelicaMagicError, run_modelica_cell
 
 BALL = "model Ball\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Ball;\n"
 
 
-def test_cli_compile_returns_dae_dict() -> None:
-    out = json.loads(rumoca.cli(["compile", "-m", "Ball", "Ball.mo"], BALL))
-    # Same raw DAE the one-shot compile_source produces.
-    direct = json.loads(rumoca.compile_source(BALL, "Ball", "Ball.mo"))
-    assert out == direct
-    assert "f_x" in out
+def test_core_compile_returns_model() -> None:
+    ns: dict = {}
+    out = run_modelica_cell(ns, "-m Ball --name m", BALL)
+    assert isinstance(out, rm.Model)
+    assert out.name == "Ball"
+    assert ns["m"] is out
 
 
-def test_cli_emit_and_target() -> None:
-    ir = json.loads(rumoca.cli(["compile", "-m", "Ball", "--emit", "solve-json", "Ball.mo"], BALL))
-    assert isinstance(ir, dict)
-
-    mo = json.loads(rumoca.cli(["compile", "-m", "Ball", "--emit", "dae-mo", "Ball.mo"], BALL))
-    assert mo["format"] == "modelica"
-    assert "Ball" in mo["source"]
-
-    gen = json.loads(rumoca.cli(["compile", "-m", "Ball", "--target", "sympy", "Ball.mo"], BALL))
-    assert gen["target"] == "sympy"
-    assert any(f["path"].endswith(".py") for f in gen["files"])
+def test_core_sim_returns_result() -> None:
+    ns: dict = {}
+    out = run_modelica_cell(ns, "sim -m Ball --t-end 1 --dt 0.5", BALL)
+    assert isinstance(out, rm.Result)
+    assert out.model == "Ball"
+    assert "x" in out
 
 
-def test_cli_sim_returns_payload() -> None:
-    sim = json.loads(rumoca.cli(["sim", "-m", "Ball", "--t-end", "1", "Ball.mo"], BALL))
-    assert sim["model"] == "Ball"
-    assert "payload" in sim and "metrics" in sim
+def test_core_export_returns_codegen() -> None:
+    # A non-symbolic target returns generated files (no optional deps needed);
+    # `export casadi|jax|sympy` instead return live objects (see export_test).
+    ns: dict = {}
+    out = run_modelica_cell(ns, "export dae-modelica -m Ball", BALL)
+    assert isinstance(out, rm.CodegenResult)
+    assert out.target == "dae-modelica"
 
 
-def test_cli_bad_flag_errors() -> None:
+def test_core_quiet_returns_none_but_binds() -> None:
+    ns: dict = {}
+    out = run_modelica_cell(ns, "-m Ball --name m --quiet", BALL)
+    assert out is None
+    assert isinstance(ns["m"], rm.Model)
+
+
+def test_core_bad_flag_errors() -> None:
     try:
-        rumoca.cli(["compile", "--nope", "Ball.mo"], BALL)
-    except RuntimeError as error:
-        assert "--nope" in str(error) or "unexpected" in str(error)
+        run_modelica_cell({}, "-m Ball --nope", BALL)
+    except ModelicaMagicError as error:
+        assert "nope" in str(error)
     else:
         raise AssertionError("unknown flag should raise")
 
@@ -54,7 +59,7 @@ def _ipython_shell():
     except ModuleNotFoundError:
         return None
     shell = InteractiveShell.instance()
-    rumoca.load_ipython_extension(shell)
+    rm.load_ipython_extension(shell)
     return shell
 
 
@@ -64,14 +69,11 @@ def test_magic_paths() -> None:
         print("  (IPython not installed; skipping %%modelica magic checks)")
         return
 
-    out = ip.run_cell_magic("modelica", "-m Ball", BALL)
-    assert isinstance(out, dict) and "f_x" in out
-
-    out = ip.run_cell_magic("modelica", "-m Ball --name dae", BALL)
-    assert "dae" in ip.user_ns and isinstance(out, dict)
+    out = ip.run_cell_magic("modelica", "-m Ball --name m", BALL)
+    assert isinstance(out, rm.Model) and ip.user_ns["m"] is out
 
     sim = ip.run_cell_magic("modelica", "sim -m Ball --t-end 1", BALL)
-    assert sim["model"] == "Ball" and "payload" in sim
+    assert isinstance(sim, rm.Result) and sim.model == "Ball"
 
     from IPython.core.error import UsageError
 
@@ -82,20 +84,13 @@ def test_magic_paths() -> None:
     else:
         raise AssertionError("bad flag should raise UsageError")
 
-    # --load without a --target codegen has no files to import.
-    try:
-        ip.run_cell_magic("modelica", "-m Ball --load", BALL)
-    except UsageError:
-        pass
-    else:
-        raise AssertionError("--load without --target should raise UsageError")
-
 
 def main() -> None:
-    test_cli_compile_returns_dae_dict()
-    test_cli_emit_and_target()
-    test_cli_sim_returns_payload()
-    test_cli_bad_flag_errors()
+    test_core_compile_returns_model()
+    test_core_sim_returns_result()
+    test_core_export_returns_codegen()
+    test_core_quiet_returns_none_but_binds()
+    test_core_bad_flag_errors()
     test_magic_paths()
     print("magic_test: OK")
 

@@ -95,6 +95,8 @@ use class_interface::FileClassInterfaceIndex;
 mod config;
 pub use config::SessionConfig;
 use config::init_rayon_pool;
+mod structural_overrides;
+pub use structural_overrides::StructuralOverride;
 mod namespace_completion;
 use namespace_completion::NamespaceCompletionCache;
 mod compile_phase_timing;

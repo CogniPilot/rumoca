@@ -19,6 +19,7 @@
 # Tools
 
 - [Command-Line Interface](./tools/cli.md)
+- [Python API](./tools/python.md)
 - [VS Code Extension](./tools/vscode.md)
 - [Web Playground](./tools/playground.md)
 - [Formatter and Linter](./tools/fmt-lint.md)

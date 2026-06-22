@@ -17,9 +17,12 @@ path = "src/main.rs"
 default = ["runner"]
 # Pulls in sim's runner module: transports, codecs, input devices,
 # signal-hook, and viz-web so scenario TOMLs with external_web viewers work
-# in the default CLI. Minimal batch-only builds can opt out with
-# `--no-default-features`.
-runner = ["rumoca-sim/runner"]
+# in the default CLI. Also brings the binary-only `mimalloc` global allocator
+# and `zip` (FMU export, used only in the runner-gated `fmu` module) — both
+# compile C and would otherwise force C cross-compilation onto pure-Rust
+# library consumers (the Python binding / wasm). Minimal batch-only builds can
+# opt out with `--no-default-features`.
+runner = ["rumoca-sim/runner", "dep:mimalloc", "dep:zip"]
 examples-smoke-tests = []
 msl-sim-tests = []
 template-runtime-tests = []
@@ -29,17 +32,23 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 # Internal crates: CLI consumes the high-level facades only.
 # rumoca-compile wraps all compilation phases.
 # rumoca-sim wraps simulation primitives, solvers, and (under the
-# `runner` feature here) the interactive simulation runner.
+# `runner` feature here) the interactive simulation runner. The HTML `report`
+# renderer is a CLI concern (used only by the runner-gated `cli` module) and is
+# wasm-incompatible (it pulls the non-wasm `web` module), so it is NOT enabled
+# unconditionally — it arrives transitively through `rumoca-sim/runner` when the
+# `runner` feature below is on. Library consumers (the Python binding, wasm
+# builds) thus get only the batch simulation surface.
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers", "report"] }
+rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 
 # External dependencies
 anyhow = { workspace = true }
-mimalloc = { workspace = true }
+# Binary-only global allocator; gated behind `runner` (see [features]).
+mimalloc = { workspace = true, optional = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 miette = { workspace = true }
@@ -52,7 +61,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 walkdir = { workspace = true }
-zip = { workspace = true }
+# Used only by the runner-gated `fmu` module (FMU export = zip archive); pulls
+# C compression backends (bzip2/lzma/zstd), so gate behind `runner`.
+zip = { workspace = true, optional = true }
 # Reset SIGPIPE to its default disposition so piping into `head` exits cleanly
 # instead of panicking on a broken-pipe write. Encapsulates the one unsafe libc
 # call so this crate keeps `unsafe_code = "deny"`.

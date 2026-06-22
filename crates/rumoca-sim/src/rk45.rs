@@ -11,7 +11,7 @@ pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
+    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
         .map_err(|err| SimError::SolveIr(err.to_string()))?;
     rumoca_solver_rk45::simulate(&solve_model, opts)
 }
@@ -22,8 +22,7 @@ pub fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
     rumoca_solver_rk45::simulate(&solve_model, opts)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
@@ -36,7 +35,9 @@ pub struct SimStepper {
 
 impl SimStepper {
     pub fn new(dae_model: &dae::Dae, opts: rumoca_solver::SimOptions) -> Result<Self, SimError> {
-        let solve_model = lower_dae_for_simulation(dae_model, &opts)
+        let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
+            .map_err(|err| SimError::SolveIr(err.to_string()))?;
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
             .map_err(|err| SimError::SolveIr(err.to_string()))?;
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)?;
         Ok(Self { inner })
@@ -46,8 +47,9 @@ impl SimStepper {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let solve_model = lower_dae_for_simulation(dae_model, &opts)
+        let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
             .map_err(SimulationDiagnosticError::SolveLowering)?;
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)?;
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

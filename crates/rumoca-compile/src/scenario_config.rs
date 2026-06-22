@@ -702,6 +702,14 @@ fn looks_like_rumoca_scenario_config(value: &toml::Value) -> bool {
         .is_some_and(|table| table.contains_key("rumoca"))
 }
 
+/// Parse a single `rumoca-scenario*.toml` file's contents into a
+/// [`ScenarioConfigFile`]. This is the per-file authoritative config (model,
+/// source roots, sim settings); use it when you have the scenario file path
+/// directly rather than discovering a workspace.
+pub fn parse_scenario_config_file(text: &str) -> Result<ScenarioConfigFile> {
+    toml::from_str::<ScenarioConfigFile>(text).context("failed to parse scenario config file")
+}
+
 pub fn load_simulation_snapshot_for_model(
     workspace_root: &Path,
     model: &str,

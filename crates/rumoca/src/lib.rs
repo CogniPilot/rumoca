@@ -28,18 +28,34 @@
 mod compiler;
 mod error;
 
+// The CLI surface — argument parsing/dispatch (`cli`) plus the per-command
+// implementations below — depends on the interactive `runner` feature
+// (transports, signal-hook, anyhow, `rumoca_sim::runner`). Library consumers of
+// this crate (the Python binding, wasm builds) need only the batch compile
+// surface re-exported below, and must build without those native-only deps, so
+// the whole CLI is gated on `runner`. The `rumoca` binary enables `runner`
+// through its package-level `default`, so it always sees the CLI.
+#[cfg(feature = "runner")]
 pub mod cli;
 
 // CLI subcommand implementations. Declared here (rather than in `main.rs`) so
 // both the binary and the reusable `cli` module can reach them; `cli` owns the
 // argument types and dispatch, these own the per-command work.
+#[cfg(feature = "runner")]
 pub(crate) mod cache_cmd;
+#[cfg(feature = "runner")]
 pub(crate) mod fmt_cli;
+#[cfg(feature = "runner")]
 pub(crate) mod fmu;
+#[cfg(feature = "runner")]
 pub(crate) mod main_helpers;
+#[cfg(feature = "runner")]
 pub(crate) mod sim_bench;
+#[cfg(feature = "runner")]
 pub(crate) mod sim_inspect;
+#[cfg(feature = "runner")]
 pub(crate) mod target_manifest;
+#[cfg(feature = "runner")]
 pub(crate) mod targets_cmd;
 
 pub use compiler::{CompilationResult, Compiler, DaeCompilationResult, TemplateIr};

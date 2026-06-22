@@ -1,317 +1,288 @@
+"""Type stubs for the first-class Rumoca Python API (see the package docstring).
+
+This stub is the public contract; the runtime objects are PyO3 classes backed
+directly by the Rust compiler/solver. Optional numpy/pandas/matplotlib returns
+are typed as ``Any`` so the stub never forces those imports.
+"""
+
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from pathlib import Path
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from ._magic import (
     load_ipython_extension as load_ipython_extension,
     unload_ipython_extension as unload_ipython_extension,
 )
 
-ScenarioTask = Literal["simulate", "codegen"]
-Solver = Literal["auto", "rk-like", "bdf"]
+Stage = Literal["ast", "flat", "dae", "solve"]
+Form = Literal["dae", "solve"]
+Solver = Literal["auto", "rk-like", "bdf", "esdirk34", "trbdf2"] | str
+Level = Literal["error", "warning", "note", "help"]
+ParamKind = Literal["tunable", "structural"]
+Input = float | tuple[Any, Any] | Callable[[float], float]
 
 __all__: Sequence[str]
 
+# ── module-level (delegate to a default Session) ────────────────────────────
+def load(
+    path: str | Path,
+    *,
+    model: str | None = ...,
+    roots: Sequence[str | Path] | None = ...,
+) -> Model: ...
+def loads(
+    source: str,
+    *,
+    model: str | None = ...,
+    filename: str | None = ...,
+    roots: Sequence[str | Path] | None = ...,
+) -> Model: ...
+def validate(path: str | Path, *, model: str | None = ...) -> list[Diagnostic]: ...
+def validate_source(
+    source: str, *, model: str | None = ..., filename: str | None = ...
+) -> list[Diagnostic]: ...
+def format(src: str, *, filename: str | None = ...) -> str: ...
+def version() -> str: ...
+def targets() -> list[Target]: ...
+def solvers() -> list[SolverInfo]: ...
 
-class ParseResult:
-    success: bool
-    error: str | None
+# ── session ─────────────────────────────────────────────────────────────────
+class Session:
+    roots: list[str]
+    def __init__(
+        self,
+        roots: Sequence[str | Path] | None = ...,
+        *,
+        workspace: str | Path | None = ...,
+    ) -> None: ...
+    def load(self, path: str | Path, *, model: str | None = ...) -> Model: ...
+    def loads(
+        self, source: str, *, model: str | None = ..., filename: str | None = ...
+    ) -> Model: ...
+    @classmethod
+    def from_scenario(cls, path: str | Path) -> tuple[Session, Model, SimConfig]: ...
+    def clear(self) -> None: ...
 
-    def __bool__(self) -> bool: ...
+# ── the hub ─────────────────────────────────────────────────────────────────
+class Model:
+    name: str
+    states: VarView
+    algebraics: VarView
+    inputs: VarView
+    outputs: VarView
+    parameters: ParamView
+    def summary(self) -> str: ...
+    def structure(self) -> StructuralInfo: ...
+    def to_dict(self, stage: Stage = ...) -> dict[str, Any]: ...
+    def to_json(self, stage: Stage = ..., *, pretty: bool = ...) -> str: ...
+    def save_json(self, path: str | Path, stage: Stage = ...) -> None: ...
+    def render(self, target: str) -> str: ...
+    def codegen(self, target: str) -> CodegenResult: ...
+    def to_casadi(
+        self, form: Form = ..., *, mode: Literal["mx", "sx"] = ...
+    ) -> CasadiModel | SolveExport: ...
+    def to_jax(self, form: Form = ...) -> JaxModel | SolveExport: ...
+    def to_sympy(self) -> SympyModel: ...
+    def with_params(self, *, recompile: bool = ..., **overrides: float) -> Model: ...
+    def with_start(self, **overrides: float) -> Model: ...
+    def simulate(
+        self,
+        t: float | tuple[float, float] | Any = ...,
+        *,
+        dt: float | None = ...,
+        config: SimConfig | None = ...,
+        params: Mapping[str, float] | None = ...,
+        start: Mapping[str, float] | None = ...,
+        inputs: Mapping[str, Input] | None = ...,
+    ) -> Result: ...
     def __repr__(self) -> str: ...
+    def _repr_html_(self) -> str: ...
 
-
-class LintMessage:
-    rule: str
-    level: Literal["error", "warning", "note", "help"]
-    message: str
-    file: str
-    line: int
-    column: int
-    suggestion: str | None
-
-    def __repr__(self) -> str: ...
-
-
-class SimulationOptions:
-    t_start: float
-    t_end: float
-    dt: float | None
+class SimConfig:
     solver: str | None
     rtol: float | None
     atol: float | None
+    dt: float | None
     max_wall_seconds: float | None
-
     def __init__(
         self,
-        t_end: float = 1.0,
-        dt: float | None = None,
-        solver: Solver | str | None = None,
-        t_start: float = 0.0,
-        rtol: float | None = None,
-        atol: float | None = None,
-        max_wall_seconds: float | None = None,
+        *,
+        solver: Solver | None = ...,
+        rtol: float | None = ...,
+        atol: float | None = ...,
+        dt: float | None = ...,
+        max_wall_seconds: float | None = ...,
     ) -> None: ...
-    def __repr__(self) -> str: ...
 
+# ── views ───────────────────────────────────────────────────────────────────
+class VarView(Sequence[VariableInfo]):
+    names: list[str]
+    def __getitem__(self, key: str | int) -> VariableInfo: ...  # type: ignore[override]
+    def __len__(self) -> int: ...
+    def __contains__(self, key: object) -> bool: ...
 
-class CompileResult:
-    model_name: str
+class ParamView(Sequence[ParameterInfo]):
+    names: list[str]
+    def __getitem__(self, key: str | int) -> ParameterInfo: ...  # type: ignore[override]
+    def __len__(self) -> int: ...
+    def __contains__(self, key: object) -> bool: ...
 
-    def __repr__(self) -> str: ...
-    def __getitem__(self, key: str) -> Any: ...
-    def to_dict(self) -> dict[str, Any]: ...
-    def to_json(self, pretty: bool = True) -> str: ...
-    def save_json(self, path: str, pretty: bool = True) -> None: ...
+# ── metadata ────────────────────────────────────────────────────────────────
+class VariableInfo:
+    name: str
+    unit: str | None
+    quantity: str | None
+    min: float | None
+    max: float | None
+    nominal: float | None
+    fixed: bool
+    description: str | None
+    dims: list[int]
 
+# NOTE: `ParameterInfo` mirrors `VariableInfo`'s fields and adds `value`/`kind`,
+# but is a distinct runtime class (not a subclass) — declared standalone so
+# `isinstance`/type checks match reality.
+class ParameterInfo:
+    name: str
+    unit: str | None
+    quantity: str | None
+    min: float | None
+    max: float | None
+    nominal: float | None
+    fixed: bool
+    description: str | None
+    dims: list[int]
+    value: float | None
+    kind: ParamKind
 
-class SimulationResult:
-    model_name: str
+class StructuralInfo:
+    n_states: int
+    n_algebraic: int
+    n_outputs: int
+    n_equations: int
+    n_unknowns: int
+    is_balanced: bool
+    is_matched: bool
+    n_blocks: int
+    n_algebraic_loops: int
+    largest_algebraic_loop: int
+
+# ── results & exports ───────────────────────────────────────────────────────
+class Result:
+    model: str
+    time: Any
+    names: list[str]
+    termination: str | None
     metrics: dict[str, Any]
-    data: dict[str, Any]
-
-    def __repr__(self) -> str: ...
-    def __getitem__(self, key: str) -> Any: ...
+    def __getitem__(self, name: str) -> Any: ...
+    def __len__(self) -> int: ...
+    def __contains__(self, name: object) -> bool: ...
+    def to_numpy(self, names: Sequence[str] | None = ...) -> Any: ...
+    def to_dataframe(self) -> Any: ...
     def to_dict(self) -> dict[str, Any]: ...
-    def to_json(self, pretty: bool = True) -> str: ...
-    def save_json(self, path: str, pretty: bool = True) -> None: ...
+    def to_json(self, *, pretty: bool = ...) -> str: ...
+    def plot(self, *names: str, ax: Any = ...) -> Any: ...
+    def __repr__(self) -> str: ...
 
+class GeneratedFile:
+    path: str
+    content: str
 
 class CodegenResult:
-    model_name: str
     target: str
+    files: list[GeneratedFile]
     paths: list[str]
+    def __iter__(self) -> Any: ...
+    def __len__(self) -> int: ...
+    def save_all(self, out: str | Path) -> list[str]: ...
 
-    def __repr__(self) -> str: ...
-    def to_dict(self) -> list[dict[str, Any]]: ...
-    def to_json(self, pretty: bool = True) -> str: ...
-    def save_json(self, path: str, pretty: bool = True) -> None: ...
-    def save_all(self, output_dir: str) -> list[str]: ...
+# ── targets / solvers ───────────────────────────────────────────────────────
+class Target:
+    id: str
+    ir: Stage
+    description: str | None
+    capabilities: dict[str, Any]
 
+class SolverInfo:
+    id: str
+    family: Literal["explicit", "implicit"]
+    available: bool
 
-class Project:
-    workspace_root: str
-    model_name: str | None
-    model_file: str | None
+# ── live symbolic exports ───────────────────────────────────────────────────
+class CasadiModel:
+    name: str
+    x: Any
+    xdot: Any
+    z: Any
+    u: Any
+    p: Any
+    f_x: Any
+    ode: Any
+    alg: Any
+    dae: dict[str, Any] | None
+    dae_fn: Any
+    x0: Any
+    p0: Any
+    state_names: list[str]
+    algebraic_names: list[str]
+    input_names: list[str]
+    parameter_names: list[str]
+    functions: dict[str, Any]
+    module: Any
+    def integrator(self, dt: Any = ..., *, method: str = ..., **opts: Any) -> Any: ...
+    def jacobian(self, of: str, wrt: str) -> Any: ...
 
-    @classmethod
-    def open(
-        cls,
-        workspace_root: str = ".",
-        model_name: str | None = None,
-        model_file: str | None = None,
-        focus_path: str | None = None,
-        source_roots: list[str] | None = None,
-    ) -> Project: ...
+class JaxModel:
+    name: str
+    x0: Any
+    p0: Any
+    ode_fn: Any
+    state_names: list[str]
+    parameter_names: list[str]
+    input_names: list[str]
+    module: Any
+    def simulate(self, *args: Any, **kwargs: Any) -> Any: ...
 
-    def __repr__(self) -> str: ...
-    def source_roots(self) -> list[str]: ...
-    def load_source_roots(self) -> str: ...
-    def compile_file(
-        self,
-        path: str | None = None,
-        model_name: str | None = None,
-    ) -> CompileResult: ...
-    def compile_source(
-        self,
-        source: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-    ) -> CompileResult: ...
-    def simulate_file(
-        self,
-        path: str | None = None,
-        model_name: str | None = None,
-        options: SimulationOptions | None = None,
-    ) -> SimulationResult: ...
-    def simulate_source(
-        self,
-        source: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-        options: SimulationOptions | None = None,
-    ) -> SimulationResult: ...
-    def codegen_file(
-        self,
-        path: str | None = None,
-        target: str | None = None,
-        model_name: str | None = None,
-    ) -> CodegenResult: ...
+class SympyModel:
+    name: str
+    model: Any
+    module: Any
+    x: Any
+    y: Any
+    u: Any
+    w: Any
+    p: Any
+    f_x: Any
+    def solve_explicit(self) -> Any: ...
+    def summary(self) -> dict[str, Any]: ...
 
+class SolveExport:
+    name: str
+    target: str
+    module: Any
+    rhs: Any
+    state_names: list[str]
+    input_names: list[str]
+    parameter_names: list[str]
+    n_states: int
+    n_inputs: int
+    n_parameters: int
 
-class ProjectSession:
-    """Reusable compiler session with source-root and compile caches."""
+# ── diagnostics & errors ────────────────────────────────────────────────────
+class Diagnostic:
+    rule: str | None
+    level: Level
+    message: str
+    file: str | None
+    line: int | None
+    column: int | None
+    suggestion: str | None
 
-    @classmethod
-    def from_project(
-        cls,
-        workspace_root: str,
-        focus_path: str | None = None,
-        model_name: str | None = None,
-        task: ScenarioTask = "simulate",
-        source_roots: list[str] | None = None,
-    ) -> ProjectSession: ...
+class RumocaError(Exception):
+    diagnostics: list[Diagnostic]
 
-    def __init__(self, source_roots: list[str] | None = None) -> None: ...
-    def __repr__(self) -> str: ...
-    def clear(self) -> None: ...
-    def configure_source_roots(self, source_roots: list[str]) -> None: ...
-    def configure_project(
-        self,
-        workspace_root: str,
-        focus_path: str | None = None,
-        model_name: str | None = None,
-        task: ScenarioTask = "simulate",
-        source_roots: list[str] | None = None,
-    ) -> None: ...
-    def get_source_roots(self) -> list[str]: ...
-    def load_source_roots(self) -> str: ...
-    def source_root_statuses(self) -> str: ...
-    def compile(
-        self,
-        source: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-    ) -> str: ...
-    def compile_to_json(
-        self,
-        source: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-    ) -> str: ...
-    def compile_file(self, path: str, model_name: str | None = None) -> str: ...
-    def compile_file_to_json(self, path: str, model_name: str | None = None) -> str: ...
-    def render_model(
-        self,
-        source: str,
-        template: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-    ) -> str: ...
-    def render_model_file(
-        self,
-        path: str,
-        template: str,
-        model_name: str | None = None,
-    ) -> str: ...
-    def render_target_model(
-        self,
-        source: str,
-        target: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-    ) -> str: ...
-    def render_target_file(
-        self,
-        path: str,
-        target: str,
-        model_name: str | None = None,
-    ) -> str: ...
-    def simulate(
-        self,
-        source: str,
-        model_name: str | None = None,
-        filename: str | None = None,
-        options: SimulationOptions | None = None,
-    ) -> str: ...
-    def simulate_file(
-        self,
-        path: str,
-        model_name: str | None = None,
-        options: SimulationOptions | None = None,
-    ) -> str: ...
-
-
-def version() -> str: ...
-def parse(source: str, filename: str | None = None) -> ParseResult: ...
-def lint(source: str, filename: str | None = None) -> list[LintMessage]: ...
-def check(source: str, filename: str | None = None) -> list[LintMessage]: ...
-def format(source: str, filename: str | None = None) -> str: ...
-def format_or_original(source: str, filename: str | None = None) -> str: ...
-def get_builtin_targets() -> str: ...
-def cli(args: list[str], source: str | None = None) -> str: ...
-def effective_source_roots(
-    source_roots: list[str] | None = None,
-    workspace_root: str | None = None,
-    focus_path: str | None = None,
-    model_name: str | None = None,
-    task: ScenarioTask = "simulate",
-) -> str: ...
-def workspace_source_roots(workspace_root: str, focus_path: str | None = None) -> str: ...
-def scenario_simulation_config(
-    workspace_root: str,
-    model_name: str,
-    solver: Solver | str | None = None,
-    t_end: float | None = None,
-    dt: float | None = None,
-    output_dir: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def scenario_codegen_config(workspace_root: str, model_name: str) -> str: ...
-def compile(
-    source: str,
-    model_name: str | None = None,
-    filename: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def compile_source(
-    source: str,
-    model_name: str | None = None,
-    filename: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def compile_to_json(
-    source: str,
-    model_name: str | None = None,
-    filename: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def compile_file(
-    path: str,
-    model_name: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def compile_file_to_json(
-    path: str,
-    model_name: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def render_model(
-    source: str,
-    template: str,
-    model_name: str | None = None,
-    filename: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def render_model_file(
-    path: str,
-    template: str,
-    model_name: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def render_target_model(
-    source: str,
-    target: str,
-    model_name: str | None = None,
-    filename: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def render_target_file(
-    path: str,
-    target: str,
-    model_name: str | None = None,
-    source_roots: list[str] | None = None,
-) -> str: ...
-def simulate(
-    source: str,
-    model_name: str | None = None,
-    filename: str | None = None,
-    source_roots: list[str] | None = None,
-    options: SimulationOptions | None = None,
-) -> str: ...
-def simulate_file(
-    path: str,
-    model_name: str | None = None,
-    source_roots: list[str] | None = None,
-    options: SimulationOptions | None = None,
-) -> str: ...
+class ParseError(RumocaError): ...
+class CompileError(RumocaError): ...
+class SimulationError(RumocaError): ...
+class StructuralParamError(RumocaError): ...

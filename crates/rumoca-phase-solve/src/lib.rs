@@ -90,12 +90,12 @@ use runtime_assignments::{
     runtime_tail_update_names, static_runtime_tail_equation,
 };
 pub use solve_model::{
-    SolveModelLowerError, VisibleExpression, lower_dae_to_solve_model,
+    ParameterOverrideError, SolveModelLowerError, VisibleExpression, lower_dae_to_solve_model,
     lower_dae_to_solve_model_owned,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata,
     lower_dae_to_solve_model_owned_with_visible_expressions,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata,
-    visible_expressions_for_dae,
+    propagate_parameter_overrides, visible_expressions_for_dae,
 };
 pub(crate) use subscript_indices::{checked_literal_positive_indices, subscript_source_span};
 /// Reset DAE evaluator state used while lowering DAE into Solve IR.

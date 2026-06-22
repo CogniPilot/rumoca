@@ -3223,6 +3223,7 @@ dependencies = [
  "rumoca",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-ir-dae",
  "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
