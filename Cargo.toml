@@ -60,7 +60,13 @@ homepage = "https://github.com/cognipilot/rumoca"
 
 [workspace.dependencies]
 # Internal crates
-rumoca = { path = "crates/rumoca" }
+# Library consumers of the umbrella crate (currently only the Python binding)
+# get the batch compile/codegen surface, not the interactive CLI `runner`
+# (transports, gamepad, signal-hook, tiny_http) — those are native-only and
+# break wasm/Pyodide cross-builds. The `rumoca` *binary* still enables `runner`
+# through its own package-level `default = ["runner"]`; this only governs
+# crates that depend on `rumoca`.
+rumoca = { path = "crates/rumoca", default-features = false }
 rumoca-worker = { path = "crates/rumoca-worker" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }

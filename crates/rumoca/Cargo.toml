@@ -29,11 +29,16 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 # Internal crates: CLI consumes the high-level facades only.
 # rumoca-compile wraps all compilation phases.
 # rumoca-sim wraps simulation primitives, solvers, and (under the
-# `runner` feature here) the interactive simulation runner.
+# `runner` feature here) the interactive simulation runner. The HTML `report`
+# renderer is a CLI concern (used only by the runner-gated `cli` module) and is
+# wasm-incompatible (it pulls the non-wasm `web` module), so it is NOT enabled
+# unconditionally — it arrives transitively through `rumoca-sim/runner` when the
+# `runner` feature below is on. Library consumers (the Python binding, wasm
+# builds) thus get only the batch simulation surface.
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers", "report"] }
+rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 
