@@ -52,6 +52,15 @@ pub fn render_flat_template_with_name(
     rumoca_phase_codegen::render_flat_template_with_name(flat_model, template, model_name)
 }
 
+pub fn render_galec_template_with_name(
+    galec_value: &Value,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mj_value = minijinja::Value::from_serialize(galec_value);
+    rumoca_phase_codegen::render_galec_template_with_name(&mj_value, template, model_name)
+}
+
 pub fn render_ast_template_with_name(
     ast_tree: &ast::ClassTree,
     template: &str,

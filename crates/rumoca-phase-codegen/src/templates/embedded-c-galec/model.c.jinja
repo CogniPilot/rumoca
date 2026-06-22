@@ -1,0 +1,17 @@
+{#- GALEC Embedded C implementation with block structure preservation. -#}
+{%- set model_name = galec.model_name | default("Model") -%}
+#include "{{ model_name }}.h"
+
+#include <math.h>
+
+void {{ model_name }}_init({{ model_name }}_t *m) {
+{{ galec.methods.init.body }}
+}
+
+void {{ model_name }}_recalibrate({{ model_name }}_t *m) {
+{{ galec.methods.recalibrate.body }}
+}
+
+void {{ model_name }}_step({{ model_name }}_t *m) {
+{{ galec.methods.step.body }}
+}

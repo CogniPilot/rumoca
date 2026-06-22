@@ -88,6 +88,66 @@ fn prepare_structured_algorithms(dae: &mut dae::Dae) -> Result<bool, GalecPrepar
         }
 
         found_sampled_algorithm = true;
+
+        // Extract top-level `if initial() then S end` branches into the
+        // initialization equations so the seeding happens exactly once at
+        // startup. The `if initial()` must be processed *before* the
+        // StructuredPreRewriter below would rewrite `initial()` to `false`.
+        let mut filtered = Vec::new();
+        for stmt in runtime_statements.drain(..) {
+            match &stmt {
+                Statement::If {
+                    cond_blocks,
+                    else_block,
+                    span,
+                } => {
+                    if let Some(block) = cond_blocks.first() {
+                        if is_initial_call(&block.cond) {
+                            for s in &block.stmts {
+                                if let Statement::Assignment {
+                                    comp, value, ..
+                                } = s
+                                {
+                                    dae.initialization.equations.push(
+                                        dae::Equation::explicit(
+                                            Reference::from_var_name(comp.to_var_name()),
+                                            value.clone(),
+                                            *span,
+                                            "GALEC initial() seeding",
+                                        ),
+                                    );
+                                }
+                            }
+                            // Keep remaining condition branches and else
+                            let remaining: Vec<StatementBlock> =
+                                cond_blocks[1..].to_vec();
+                            if let Some(else_stmts) = else_block {
+                                if remaining.is_empty() {
+                                    filtered.extend(else_stmts.clone());
+                                } else {
+                                    filtered.push(Statement::If {
+                                        cond_blocks: remaining,
+                                        else_block: Some(else_stmts.clone()),
+                                        span: *span,
+                                    });
+                                }
+                            } else if !remaining.is_empty() {
+                                filtered.push(Statement::If {
+                                    cond_blocks: remaining,
+                                    else_block: None,
+                                    span: *span,
+                                });
+                            }
+                            continue;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            filtered.push(stmt);
+        }
+        runtime_statements = filtered;
+
         let mut assigned = HashSet::new();
         let mut snapshots = StructuredSnapshotPlan::default();
         algorithm.statements =

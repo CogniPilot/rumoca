@@ -96,6 +96,7 @@ fn template_ir_to_cli(value: TargetTemplateIr) -> TemplateIr {
         TargetTemplateIr::Solve => TemplateIr::Solve,
         TargetTemplateIr::Flat => TemplateIr::Flat,
         TargetTemplateIr::Ast => TemplateIr::Ast,
+        TargetTemplateIr::Galec => TemplateIr::Galec,
     }
 }
 
@@ -145,7 +146,11 @@ fn validate_target_requirements(
     let Some(capabilities) = &manifest.capabilities else {
         return Ok(());
     };
-    validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
+    // Galec targets have their own admissibility pipeline that normalises
+    // solver-facing artifacts (events, initial(), __pre__) before checking.
+    if manifest.ir != TargetTemplateIr::Galec {
+        validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
+    }
     if manifest.ir == TargetTemplateIr::Solve {
         validate_solve_target_capabilities(result, manifest, capabilities)?;
     }

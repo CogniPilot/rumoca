@@ -1,0 +1,25 @@
+version = 1
+ir = "galec"
+name = "embedded-c-galec"
+description = "Embedded C from GALEC IR with block structure preservation"
+execution_mode = "compiled"
+deployment_class = "cpu"
+completion_message = """GALEC Embedded C sources compiled to: {{ out_dir }}
+Compile: cc -O2 -Wall -c {{ out_dir }}/{{ model_name }}.c"""
+
+[capabilities]
+scalar_fallback = false
+events = false
+runtime_events = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[[files]]
+path = "{{ model_name }}.h"
+template = "model.h.jinja"
+
+[[files]]
+path = "{{ model_name }}.c"
+template = "model.c.jinja"

@@ -1,0 +1,317 @@
+#include "CubControl_FixedWingOuterLoop.h"
+
+#include <math.h>
+
+void CubControl_FixedWingOuterLoop_init(CubControl_FixedWingOuterLoop_t *m) {
+    m->nWaypoints = 6.0;
+    m->aileron = 0.0;
+    m->elevator = 0.0;
+    m->throttle = 0.7;
+    m->rudder = 0.0;
+    m->stabilizer = 2000.0;
+    m->des_v = 0.0;
+    m->des_gamma = 0.0;
+    m->des_heading = 0.0;
+    m->des_a = 0.0;
+    m->phi_cmd = 0.0;
+    m->chi_err = 0.0;
+    m->x_est = 0.0;
+    m->y_est = 0.0;
+    m->z_est = 0.0;
+    m->roll_est = 0.0;
+    m->pitch_est = 0.0;
+    m->yaw_est = 0.0;
+    m->vx_est = 0.0;
+    m->vy_est = 0.0;
+    m->vz_est = 0.0;
+    m->v_est = 0.0;
+    m->gamma_est = 0.0;
+    m->vdot_est = 0.0;
+    m->p_est = 0.0;
+    m->q_est = 0.0;
+    m->r_est = 0.0;
+    m->prev_x = 0.0;
+    m->prev_y = 0.0;
+    m->prev_z = 0.0;
+    m->prev_roll = 0.0;
+    m->prev_pitch = 0.0;
+    m->prev_yaw = 0.0;
+    m->prev_speed = 0.0;
+    m->time_s = 0.0;
+    m->err_norm_es_dot_int = 0.0;
+    m->err_dist_term_int = 0.0;
+    m->err_pitch_int = 0.0;
+    m->err_r_int = 0.0;
+    m->err_r_last = 0.0;
+    m->phi_cmd_state = 0.0;
+    m->alpha = 0.0;
+    m->vx_new = 0.0;
+    m->vy_new = 0.0;
+    m->vz_new = 0.0;
+    m->speed_new = 0.0;
+    m->p_new = 0.0;
+    m->q_new = 0.0;
+    m->r_new = 0.0;
+    m->gamma_new = 0.0;
+    m->vdot_new = 0.0;
+    m->next_wx = 0.0;
+    m->next_wy = 0.0;
+    m->next_wz = 0.0;
+    m->prev_wx = 0.0;
+    m->prev_wy = 0.0;
+    m->prev_wz = 0.0;
+    m->x_err = 0.0;
+    m->y_err = 0.0;
+    m->z_err = 0.0;
+    m->horz_dist_err = 0.0;
+    m->path_vect = 0.0;
+    m->path_len = 0.0;
+    m->path_angle = 0.0;
+    m->unit_along_path = 0.0;
+    m->unit_normal = 0.0;
+    m->pose_vect = 0.0;
+    m->along_track_err_w0 = 0.0;
+    m->along_track_err_w1 = 0.0;
+    m->cross_track_err = 0.0;
+    m->lookahead_nom = 0.0;
+    m->lookahead_eff = 0.0;
+    m->switch_threshold = 0.0;
+    m->weight = 0.0;
+    m->drag = 0.0;
+    m->r_v_dot = 0.0;
+    m->err_norm_es_dot = 0.0;
+    m->thrust_unsat = 0.0;
+    m->ref_thrust = 0.0;
+    m->err_dist_term = 0.0;
+    m->pitch_unsat = 0.0;
+    m->ref_pitch = 0.0;
+    m->pitch_ned = 0.0;
+    m->err_pitch = 0.0;
+    m->q_turn = 0.0;
+    m->err_q = 0.0;
+    m->nz_excess = 0.0;
+    m->ele_ff_phi = 0.0;
+    m->chi = 0.0;
+    m->chi_dot_des = 0.0;
+    m->phi_des = 0.0;
+    m->dphi_max = 0.0;
+    m->err_yaw = 0.0;
+    m->err_r_deriv = 0.0;
+    m->airborne = false;
+    m->current_wp = 1.0;
+    m->g = 9.81;
+    m->waypoints = {{(-4.0), (-5.0), 3.0}, {(-3.0), 2.0, 3.0}, {16.2, 2.0, 3.0}, {16.0, (-4.22), 3.0}, {6.88, (-5.1), 3.0}, {(-4.0), (-5.0), 3.0}};
+    m->filterCutoffHz = 10.0;
+    m->vCruise = 3.0;
+    m->K_h = 3.0;
+    m->K_V = 1.0;
+    m->lookaheadTime = 1.5;
+    m->lookaheadMin = 1.0;
+    m->lookaheadMax = 5.0;
+    m->waypointSwitchingDistance = 4.0;
+    m->mass = 0.057;
+    m->thrMax = 7.5;
+    m->trimThrust = 3.5;
+    m->K_thrustp = 0.01;
+    m->K_thrusti = 0.4215;
+    m->normEsDotIntegralMax = 7.5;
+    m->K_pitchp = 0.075;
+    m->K_pitchi = 0.216;
+    m->distTermIntegralMax = 7.5;
+    m->envelopeDrag = 1.0;
+    m->pitchCmdLim = 0.3490658503988659;
+    m->trimElev = 0.2;
+    m->K_elevp = 0.107;
+    m->K_elevi = 0.2107;
+    m->K_q = 0.2;
+    m->K_phi_elev = 2.5;
+    m->pitchIntegralMax = 0.3;
+    m->trimAil = 0.0;
+    m->K_deltap = 0.4;
+    m->K_deltai = 0.15;
+    m->K_deltad = 0.1;
+    m->rIntegralMax = 0.4;
+    m->kChi = 1.2;
+    m->phiLim = 0.5235987755982988;
+    m->phiDotLim = 1.5707963267948966;
+    m->chiDeadband = 0.017453292519943295;
+    m->takeoffAltitude = 0.4;
+    m->takeoffElev = 0.15;
+    m->stabilizerCmd = 2000.0;
+}
+
+void CubControl_FixedWingOuterLoop_recalibrate(CubControl_FixedWingOuterLoop_t *m) {
+    m->nWaypoints = 6.0;
+}
+
+void CubControl_FixedWingOuterLoop_step(CubControl_FixedWingOuterLoop_t *m) {
+    real_t galec_previous_prev_x;
+    real_t galec_previous_prev_y;
+    real_t galec_previous_prev_z;
+    real_t galec_previous_prev_roll;
+    real_t galec_previous_prev_pitch;
+    real_t galec_previous_prev_yaw;
+    real_t galec_previous_prev_speed;
+    real_t galec_previous_x_est;
+    real_t galec_previous_y_est;
+    real_t galec_previous_z_est;
+    real_t galec_previous_roll_est;
+    real_t galec_previous_pitch_est;
+    real_t galec_previous_yaw_est;
+    galec_previous_prev_x = m->prev_x;
+    galec_previous_prev_y = m->prev_y;
+    galec_previous_prev_z = m->prev_z;
+    galec_previous_prev_roll = m->prev_roll;
+    galec_previous_prev_pitch = m->prev_pitch;
+    galec_previous_prev_yaw = m->prev_yaw;
+    galec_previous_prev_speed = m->prev_speed;
+    galec_previous_x_est = m->x_est;
+    galec_previous_y_est = m->y_est;
+    galec_previous_z_est = m->z_est;
+    galec_previous_roll_est = m->roll_est;
+    galec_previous_pitch_est = m->pitch_est;
+    galec_previous_yaw_est = m->yaw_est;
+    m->alpha = exp((-(((2.0 * 3.141592653589793) * m->filterCutoffHz) * m->dt)));
+    m->weight = (m->mass * m->g);
+    if (false) {
+        m->prev_x = m->x;
+        m->prev_y = m->y;
+        m->prev_z = m->z;
+        m->prev_roll = m->roll;
+        m->prev_pitch = m->pitch;
+        m->prev_yaw = m->yaw;
+        m->prev_speed = 0.0;
+        m->x_est = m->x;
+        m->y_est = m->y;
+        m->z_est = m->z;
+        m->roll_est = m->roll;
+        m->pitch_est = m->pitch;
+        m->yaw_est = m->yaw;
+    }
+    m->vx_new = ((m->x - galec_previous_prev_x) / m->dt);
+    m->vy_new = ((m->y - galec_previous_prev_y) / m->dt);
+    m->vz_new = ((m->z - galec_previous_prev_z) / m->dt);
+    m->speed_new = sqrt((((m->vx_new * m->vx_new) + (m->vy_new * m->vy_new)) + (m->vz_new * m->vz_new)));
+    m->p_new = ((((m->roll - galec_previous_prev_roll) > 3.141592653589793) ? ((m->roll - galec_previous_prev_roll) - (2.0 * 3.141592653589793)) : (((m->roll - galec_previous_prev_roll) <= (-3.141592653589793)) ? ((m->roll - galec_previous_prev_roll) + (2.0 * 3.141592653589793)) : (m->roll - galec_previous_prev_roll))) / m->dt);
+    m->q_new = ((((m->pitch - galec_previous_prev_pitch) > 3.141592653589793) ? ((m->pitch - galec_previous_prev_pitch) - (2.0 * 3.141592653589793)) : (((m->pitch - galec_previous_prev_pitch) <= (-3.141592653589793)) ? ((m->pitch - galec_previous_prev_pitch) + (2.0 * 3.141592653589793)) : (m->pitch - galec_previous_prev_pitch))) / m->dt);
+    m->r_new = ((((m->yaw - galec_previous_prev_yaw) > 3.141592653589793) ? ((m->yaw - galec_previous_prev_yaw) - (2.0 * 3.141592653589793)) : (((m->yaw - galec_previous_prev_yaw) <= (-3.141592653589793)) ? ((m->yaw - galec_previous_prev_yaw) + (2.0 * 3.141592653589793)) : (m->yaw - galec_previous_prev_yaw))) / m->dt);
+    m->gamma_new = asin(min(max((m->vz_new / max(m->speed_new, 0.00001)), (-1.0)), 1.0));
+    m->vdot_new = (m->speed_new - galec_previous_prev_speed);
+    m->x_est = ((m->alpha * m->x) + ((1.0 - m->alpha) * galec_previous_x_est));
+    m->y_est = ((m->alpha * m->y) + ((1.0 - m->alpha) * galec_previous_y_est));
+    m->z_est = ((m->alpha * m->z) + ((1.0 - m->alpha) * galec_previous_z_est));
+    m->roll_est = ((m->alpha * m->roll) + ((1.0 - m->alpha) * galec_previous_roll_est));
+    m->pitch_est = ((m->alpha * m->pitch) + ((1.0 - m->alpha) * galec_previous_pitch_est));
+    m->yaw_est = ((m->alpha * m->yaw) + ((1.0 - m->alpha) * galec_previous_yaw_est));
+    m->vx_est = ((m->alpha * m->vx_new) + ((1.0 - m->alpha) * m->vx_est));
+    m->vy_est = ((m->alpha * m->vy_new) + ((1.0 - m->alpha) * m->vy_est));
+    m->vz_est = ((m->alpha * m->vz_new) + ((1.0 - m->alpha) * m->vz_est));
+    m->v_est = ((m->alpha * m->speed_new) + ((1.0 - m->alpha) * m->v_est));
+    m->gamma_est = ((m->alpha * m->gamma_new) + ((1.0 - m->alpha) * m->gamma_est));
+    m->vdot_est = ((m->alpha * m->vdot_new) + ((1.0 - m->alpha) * m->vdot_est));
+    m->p_est = ((m->alpha * m->p_new) + ((1.0 - m->alpha) * m->p_est));
+    m->q_est = ((m->alpha * m->q_new) + ((1.0 - m->alpha) * m->q_est));
+    m->r_est = ((m->alpha * m->r_new) + ((1.0 - m->alpha) * m->r_est));
+    m->airborne = (m->z > m->takeoffAltitude);
+    m->time_s = (m->time_s + m->dt);
+    if ((!m->airborne)) {
+        m->throttle = 1.0;
+        m->elevator = m->takeoffElev;
+        m->aileron = 0.0;
+        m->rudder = 0.0;
+        m->des_v = 0.0;
+        m->des_gamma = 0.0;
+        m->des_heading = 0.0;
+        m->des_a = 0.0;
+        m->current_wp = m->current_wp;
+    } else {
+        m->current_wp = m->current_wp;
+        m->next_wx = index(index(m->waypoints, m->current_wp), 1);
+        m->next_wy = index(index(m->waypoints, m->current_wp), 2);
+        m->next_wz = index(index(m->waypoints, m->current_wp), 3);
+        if ((m->current_wp == 1)) {
+            m->prev_wx = 0.0;
+            m->prev_wy = 0.0;
+            m->prev_wz = 0.0;
+        } else {
+            m->prev_wx = index(index(m->waypoints, (m->current_wp - 1)), 1);
+            m->prev_wy = index(index(m->waypoints, (m->current_wp - 1)), 2);
+            m->prev_wz = index(index(m->waypoints, (m->current_wp - 1)), 3);
+        }
+        m->x_err = (m->next_wx - m->x_est);
+        m->y_err = (m->next_wy - m->y_est);
+        m->z_err = (m->next_wz - m->z_est);
+        m->horz_dist_err = sqrt(((m->x_err * m->x_err) + (m->y_err * m->y_err)));
+        m->des_v = m->vCruise;
+        m->des_gamma = ((m->horz_dist_err <= 0.0) ? 0.0 : ((m->K_h * m->z_err) / m->horz_dist_err));
+        m->path_vect = {(m->next_wx - m->prev_wx), (m->next_wy - m->prev_wy), (m->next_wz - m->prev_wz)};
+        m->path_len = max(sqrt(((pow(index(m->path_vect, 1), 2) + pow(index(m->path_vect, 2), 2)) + pow(index(m->path_vect, 3), 2))), 0.000001);
+        m->path_angle = atan2(index(m->path_vect, 2), index(m->path_vect, 1));
+        m->unit_along_path = {(index(m->path_vect, 1) / m->path_len), (index(m->path_vect, 2) / m->path_len)};
+        m->unit_normal = {(-(index(m->path_vect, 2) / m->path_len)), (index(m->path_vect, 1) / m->path_len)};
+        m->pose_vect = {(m->x_est - m->prev_wx), (m->y_est - m->prev_wy)};
+        m->along_track_err_w0 = ((index(m->pose_vect, 1) * index(m->unit_along_path, 1)) + (index(m->pose_vect, 2) * index(m->unit_along_path, 2)));
+        m->along_track_err_w1 = max(0.0, (m->path_len - min(max(m->along_track_err_w0, 0.0), m->path_len)));
+        m->cross_track_err = ((index(m->pose_vect, 1) * index(m->unit_normal, 1)) + (index(m->pose_vect, 2) * index(m->unit_normal, 2)));
+        m->lookahead_nom = min(max((sqrt((pow(m->vx_est, 2) + pow(m->vy_est, 2))) * m->lookaheadTime), m->lookaheadMin), m->lookaheadMax);
+        m->lookahead_eff = min(m->lookahead_nom, m->along_track_err_w1);
+        m->des_heading = (((m->path_angle + atan2((-m->cross_track_err), max(m->lookahead_eff, 0.000001))) > 3.141592653589793) ? ((m->path_angle + atan2((-m->cross_track_err), max(m->lookahead_eff, 0.000001))) - (2.0 * 3.141592653589793)) : (((m->path_angle + atan2((-m->cross_track_err), max(m->lookahead_eff, 0.000001))) <= (-3.141592653589793)) ? ((m->path_angle + atan2((-m->cross_track_err), max(m->lookahead_eff, 0.000001))) + (2.0 * 3.141592653589793)) : (m->path_angle + atan2((-m->cross_track_err), max(m->lookahead_eff, 0.000001)))));
+        m->des_a = (m->K_V * (m->des_v - abs(m->v_est)));
+        m->drag = m->envelopeDrag;
+        m->r_v_dot = min(max(m->des_a, (-(m->drag / m->weight))), ((m->thrMax - m->drag) / m->weight));
+        m->err_norm_es_dot = ((m->des_gamma - m->gamma_est) + ((m->r_v_dot - m->vdot_est) / m->g));
+        m->thrust_unsat = (m->trimThrust + (m->weight * ((m->K_thrustp * (m->gamma_est + (m->vdot_est / m->g))) + (m->K_thrusti * m->err_norm_es_dot_int))));
+        m->ref_thrust = min(max(m->thrust_unsat, 0.0), m->thrMax);
+        if ((!(((m->ref_thrust >= (m->thrMax - 0.000000001)) && (m->err_norm_es_dot > 0.0)) || ((m->ref_thrust <= 0.000000001) && (m->err_norm_es_dot < 0.0))))) {
+            m->err_norm_es_dot_int = min(max((m->err_norm_es_dot_int + (m->err_norm_es_dot * m->dt)), (-m->normEsDotIntegralMax)), m->normEsDotIntegralMax);
+        } else {
+            m->err_norm_es_dot_int = m->err_norm_es_dot_int;
+        }
+        m->err_dist_term = ((m->des_gamma - m->gamma_est) - ((m->r_v_dot - m->vdot_est) / m->g));
+        m->pitch_unsat = ((m->K_pitchi * m->err_dist_term_int) - (m->K_pitchp * (m->gamma_est - (m->vdot_est / m->g))));
+        m->ref_pitch = min(max(m->pitch_unsat, (-m->pitchCmdLim)), m->pitchCmdLim);
+        if ((!(((m->ref_pitch >= (m->pitchCmdLim - 0.000000001)) && (m->err_dist_term > 0.0)) || ((m->ref_pitch <= ((-m->pitchCmdLim) + 0.000000001)) && (m->err_dist_term < 0.0))))) {
+            m->err_dist_term_int = min(max((m->err_dist_term_int + (m->err_dist_term * m->dt)), (-m->distTermIntegralMax)), m->distTermIntegralMax);
+        } else {
+            m->err_dist_term_int = m->err_dist_term_int;
+        }
+        m->pitch_ned = (-m->pitch_est);
+        m->err_pitch = (((m->ref_pitch - m->pitch_ned) > 3.141592653589793) ? ((m->ref_pitch - m->pitch_ned) - (2.0 * 3.141592653589793)) : (((m->ref_pitch - m->pitch_ned) <= (-3.141592653589793)) ? ((m->ref_pitch - m->pitch_ned) + (2.0 * 3.141592653589793)) : (m->ref_pitch - m->pitch_ned)));
+        m->q_turn = ((((sin(m->roll_est) * cos(m->pitch_ned)) * tan(m->roll_est)) * m->g) / max(m->v_est, 0.00001));
+        m->err_q = (((m->q_turn - m->q_est) > 3.141592653589793) ? ((m->q_turn - m->q_est) - (2.0 * 3.141592653589793)) : (((m->q_turn - m->q_est) <= (-3.141592653589793)) ? ((m->q_turn - m->q_est) + (2.0 * 3.141592653589793)) : (m->q_turn - m->q_est)));
+        m->nz_excess = ((1.0 / max(cos(m->roll_est), 0.00001)) - 1.0);
+        m->ele_ff_phi = (m->K_phi_elev * m->nz_excess);
+        m->err_pitch_int = min(max((m->err_pitch_int + (m->err_pitch * m->dt)), (-m->pitchIntegralMax)), m->pitchIntegralMax);
+        m->elevator = min(max(((((m->trimElev + (m->K_elevp * m->err_pitch)) + (m->K_elevi * m->err_pitch_int)) + (m->K_q * m->err_q)) + m->ele_ff_phi), (-1.0)), 1.0);
+        m->throttle = min(max((m->ref_thrust / m->thrMax), 0.0), 1.0);
+        m->chi = atan2(m->vy_est, m->vx_est);
+        m->chi_err = (-(((m->des_heading - m->chi) > 3.141592653589793) ? ((m->des_heading - m->chi) - (2.0 * 3.141592653589793)) : (((m->des_heading - m->chi) <= (-3.141592653589793)) ? ((m->des_heading - m->chi) + (2.0 * 3.141592653589793)) : (m->des_heading - m->chi))));
+        if ((abs(m->chi_err) < m->chiDeadband)) {
+            m->chi_err = 0.0;
+        }
+        m->chi_dot_des = (m->kChi * m->chi_err);
+        m->phi_des = min(max(atan2((max(m->v_est, 0.05) * m->chi_dot_des), m->g), (-m->phiLim)), m->phiLim);
+        m->dphi_max = (m->phiDotLim * m->dt);
+        m->phi_des = (min(max((m->phi_des - m->phi_cmd_state), (-m->dphi_max)), m->dphi_max) + m->phi_cmd_state);
+        m->phi_cmd_state = min(max(m->phi_des, (-m->phiLim)), m->phiLim);
+        m->phi_cmd = m->phi_cmd_state;
+        m->err_yaw = (((m->des_heading - m->yaw_est) > 3.141592653589793) ? ((m->des_heading - m->yaw_est) - (2.0 * 3.141592653589793)) : (((m->des_heading - m->yaw_est) <= (-3.141592653589793)) ? ((m->des_heading - m->yaw_est) + (2.0 * 3.141592653589793)) : (m->des_heading - m->yaw_est)));
+        m->err_r_deriv = ((m->err_yaw - m->err_r_last) / m->dt);
+        m->err_r_last = m->err_yaw;
+        m->err_r_int = min(max((m->err_r_int + (m->err_yaw * m->dt)), (-m->rIntegralMax)), m->rIntegralMax);
+        m->aileron = min(max((((m->trimAil + (m->K_deltap * m->err_yaw)) + (m->K_deltai * m->err_r_int)) + (m->K_deltad * m->err_r_deriv)), (-1.0)), 1.0);
+        m->rudder = 0.0;
+        m->switch_threshold = max(m->waypointSwitchingDistance, m->lookahead_nom);
+        if ((m->along_track_err_w1 < m->switch_threshold)) {
+            m->current_wp = ((m->current_wp >= m->nWaypoints) ? 1 : (m->current_wp + 1));
+        }
+    }
+    m->stabilizer = m->stabilizerCmd;
+    m->prev_x = m->x;
+    m->prev_y = m->y;
+    m->prev_z = m->z;
+    m->prev_roll = m->roll;
+    m->prev_pitch = m->pitch;
+    m->prev_yaw = m->yaw;
+    m->prev_speed = m->v_est;
+}

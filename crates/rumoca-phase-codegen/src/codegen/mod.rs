@@ -36,7 +36,7 @@ use render_stmt::{render_equation, render_flat_equation, render_statement, rende
 pub(crate) type RenderResult = Result<String, minijinja::Error>;
 
 /// Supported IR roots for template rendering.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum CodegenInput<'a> {
     Dae(&'a dae::Dae),
     Solve {
@@ -45,6 +45,7 @@ pub enum CodegenInput<'a> {
     },
     Flat(&'a flat::Model),
     Ast(&'a ast::ClassTree),
+    Galec(Value),
 }
 
 pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
@@ -780,8 +781,31 @@ fn render_with_input_context(
         }
         (CodegenInput::Flat(flat_model), name) => render_flat_context(tmpl, flat_model, name)?,
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
+        (CodegenInput::Galec(galec_value), name) => {
+            render_galec_context(tmpl, &galec_value, name)?
+        }
     };
     Ok(rendered)
+}
+
+fn render_galec_context(
+    tmpl: &minijinja::Template<'_, '_>,
+    galec_value: &Value,
+    model_name: Option<&str>,
+) -> RenderResult {
+    match model_name {
+        Some(name) => tmpl.render(minijinja::context! {
+            galec => galec_value.clone(),
+            ir => galec_value.clone(),
+            ir_kind => "galec",
+            model_name => name,
+        }),
+        None => tmpl.render(minijinja::context! {
+            galec => galec_value.clone(),
+            ir => galec_value.clone(),
+            ir_kind => "galec",
+        }),
+    }
 }
 
 fn render_dae_context(
@@ -955,7 +979,7 @@ pub fn render_template_for_input(
     input: CodegenInput<'_>,
     template: &str,
 ) -> Result<String, CodegenError> {
-    if let CodegenInput::Dae(dae_model) = input {
+    if let CodegenInput::Dae(dae_model) = &input {
         reject_external_functions_for_simulation_template(dae_model, template)?;
     }
     let mut env = create_environment();
@@ -970,7 +994,7 @@ pub fn render_template_with_name_for_input(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    if let CodegenInput::Dae(dae_model) = input {
+    if let CodegenInput::Dae(dae_model) = &input {
         reject_external_functions_for_simulation_template(dae_model, template)?;
     }
     let mut env = create_environment();
@@ -1245,6 +1269,18 @@ pub fn render_flat_template_with_name(
     model_name: &str,
 ) -> Result<String, CodegenError> {
     render_template_with_name_for_input(CodegenInput::Flat(flat), template, model_name)
+}
+
+/// Render a GALEC context using a template string and model name.
+///
+/// The template receives `galec` (the serialized GALEC context) and `model_name`.
+/// The context contains pre-rendered C strings for struct fields and method bodies.
+pub fn render_galec_template_with_name(
+    galec_value: &Value,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    render_template_with_name_for_input(CodegenInput::Galec(galec_value.clone()), template, model_name)
 }
 
 /// Reusable solve-template renderer.

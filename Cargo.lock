@@ -3293,6 +3293,7 @@ dependencies = [
  "blake3",
  "indexmap",
  "miette",
+ "minijinja",
  "rayon",
  "rumoca-core",
  "rumoca-ir-ast",

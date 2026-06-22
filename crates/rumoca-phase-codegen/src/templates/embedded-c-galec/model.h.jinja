@@ -1,0 +1,21 @@
+{#- GALEC Embedded C header with named fields and block structure. -#}
+{%- set model_name = galec.model_name | default("Model") -%}
+#pragma once
+
+#include <stddef.h>
+#include <stdbool.h>
+
+// RTOS scheduler metadata — use these to configure the timer/thread that
+// calls {{ model_name }}_step() at the correct interval.
+#define {{ model_name | upper }}_PERIOD_S  {{ galec.period_s }}
+#define {{ model_name | upper }}_PERIOD_NS {{ galec.period_ns }}
+
+typedef double real_t;
+
+typedef struct {
+{{ galec.struct_fields }}
+} {{ model_name }}_t;
+
+void {{ model_name }}_init({{ model_name }}_t *m);
+void {{ model_name }}_recalibrate({{ model_name }}_t *m);
+void {{ model_name }}_step({{ model_name }}_t *m);

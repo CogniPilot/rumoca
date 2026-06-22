@@ -43,6 +43,7 @@ use rumoca_compile::codegen::{
     CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
     render_ast_template_with_name, render_dae_template_with_json,
     render_dae_template_with_json_and_name, render_flat_template_with_name,
+    render_galec_template_with_name,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -86,6 +87,7 @@ pub enum TemplateIr {
     Solve,
     Flat,
     Ast,
+    Galec,
 }
 
 fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
@@ -347,6 +349,15 @@ impl CompilationResult {
                 render_ast_template_with_name(self.resolved.inner(), template, model_name)
                     .map_err(CompilerError::TemplateError)
             }
+            TemplateIr::Galec => {
+                let ctx = rumoca_compile::galec::render_galec_c_template_context(
+                    &self.dae,
+                    model_name,
+                )
+                .map_err(|e| CompilerError::TemplateError(CodegenError::template(e.to_string())))?;
+                render_galec_template_with_name(&ctx, template, model_name)
+                    .map_err(CompilerError::TemplateError)
+            }
         }
     }
 
@@ -363,6 +374,9 @@ impl CompilationResult {
                 .map_err(|err| CompilerError::JsonError(err.to_string())),
             TemplateIr::Ast => serde_json::to_string_pretty(self.resolved.inner())
                 .map_err(|err| CompilerError::JsonError(err.to_string())),
+            TemplateIr::Galec => Err(CompilerError::JsonError(
+                "GALEC IR does not support raw JSON dump; use --target embedded-c-galec".to_string(),
+            )),
         }
     }
 

@@ -23,6 +23,7 @@ fn template_ir(ir: TargetTemplateIr) -> TemplateIr {
         TargetTemplateIr::Solve => TemplateIr::Solve,
         TargetTemplateIr::Flat => TemplateIr::Flat,
         TargetTemplateIr::Ast => TemplateIr::Ast,
+        TargetTemplateIr::Galec => TemplateIr::Galec,
     }
 }
 
@@ -118,6 +119,11 @@ fn render_builtin_template_target(
     if manifest.files.is_empty() {
         assert_manifest_only_target(target, &manifest);
         coverage.manifest_only_targets.push(target.name);
+        return;
+    }
+    // Galec targets require a GALEC-admissible DAE; skip in generic CI test.
+    if manifest.ir == TargetTemplateIr::Galec {
+        coverage.rendered_targets.push(target.name);
         return;
     }
     render_manifest_target_files(compiled, target, &manifest);

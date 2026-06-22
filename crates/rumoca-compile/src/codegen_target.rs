@@ -16,6 +16,7 @@ pub enum TargetTemplateIr {
     Solve,
     Flat,
     Ast,
+    Galec,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -305,9 +306,10 @@ fn target_compatibility_entry(id: &str, manifest: &TargetManifest) -> TargetComp
 fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
     match ir {
         TargetTemplateIr::Solve => TargetFeatureSupport::Native,
-        TargetTemplateIr::Dae | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
-            TargetFeatureSupport::Unsupported
-        }
+        TargetTemplateIr::Dae
+        | TargetTemplateIr::Flat
+        | TargetTemplateIr::Ast
+        | TargetTemplateIr::Galec => TargetFeatureSupport::Unsupported,
     }
 }
 
@@ -316,7 +318,7 @@ fn tensor_feature_support(
     scalar_fallback: bool,
     capability: Option<TensorCapability>,
 ) -> TargetFeatureSupport {
-    if ir != TargetTemplateIr::Solve {
+    if !matches!(ir, TargetTemplateIr::Solve) {
         return TargetFeatureSupport::Unsupported;
     }
     match capability {
