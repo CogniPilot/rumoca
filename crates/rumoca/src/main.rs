@@ -25,6 +25,10 @@
 //! a thin wrapper that sets up the allocator and the miette error hook, parses
 //! the arguments, runs [`rumoca::cli::run`], and renders any error.
 
+// mimalloc is gated behind `runner` (the binary's feature set) so pure-Rust
+// library consumers of this crate don't pull a C allocator. The binary always
+// builds with `runner` via the package default.
+#[cfg(feature = "runner")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
