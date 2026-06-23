@@ -224,13 +224,20 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 /* =========================================================================
  * Enumeration literal constants
  * ========================================================================= */
+{% set runtime_field_macro_names = ["time", "x", "xdot", "y", "u", "w", "p", "z", "pre_z", "m", "pre_m", "constants", "event_indicators", "event_indicators_prev", "state", "fmu_type", "dirty_values", "is_new_event_iteration"] %}
 {% for name, ordinal in dae.enum_literal_ordinals | items %}
-#define {{ symbol(symbols, name) }} {{ ordinal }}
+{% set enum_symbol = symbol(symbols, name) %}
+{% if enum_symbol not in runtime_field_macro_names %}
+#define {{ enum_symbol }} {{ ordinal }}
+{% endif %}
 {% endfor %}
 
 /* Enumeration type constructors — identity macros for enum type casts */
 {% for type_name in dae.enum_type_names | default([]) %}
-#define {{ symbol(symbols, type_name) }}(x) (x)
+{% set enum_type_symbol = symbol(symbols, type_name) %}
+{% if enum_type_symbol not in runtime_field_macro_names %}
+#define {{ enum_type_symbol }}(x) (x)
+{% endif %}
 {% endfor %}
 
 {#- Macro: compute total scalar size of a variable map -#}

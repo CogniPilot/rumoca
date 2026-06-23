@@ -1040,6 +1040,45 @@ fn test_fmi_templates_apply_explicit_state_initial_equations() {
     }
 }
 
+#[test]
+fn test_fmi_templates_do_not_emit_runtime_field_name_enum_macros() {
+    let dae_json = serde_json::json!({
+        "symbol_refs": ["y"],
+        "symbol_aliases": [],
+        "enum_literal_ordinals": {"y": 1},
+        "enum_type_names": [],
+        "x": {},
+        "y": {},
+        "u": {},
+        "w": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {},
+        "f_x": [],
+        "f_z": [],
+        "f_m": [],
+        "relation": [],
+        "scheduled_time_events": [],
+        "functions": {},
+        "metadata": {}
+    });
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "RuntimeFieldMacroRegression",
+        )
+        .unwrap();
+
+        assert!(
+            !rendered.contains("#define y 1"),
+            "{target} enum literal macro must not collide with ModelInstance.y"
+        );
+    }
+}
+
 fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
     template
         .split(marker)
