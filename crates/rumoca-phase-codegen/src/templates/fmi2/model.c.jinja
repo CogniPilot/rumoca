@@ -38,6 +38,7 @@
 {% set solve_derivative_rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else [] %}
 {% set solve_derivative_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else [] %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
+{% set solve_visible_names = solve.visible_names if solve is defined and solve.visible_names is defined else [] %}
 {% set c_builtin_function_names = ["abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "cosh", "exp", "floor", "log", "log10", "round", "sin", "sinh", "sqrt", "tan", "tanh", "trunc"] %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
@@ -245,6 +246,59 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 {{ ns.total }}
 {%- endmacro %}
 
+{#- Generate Solve IR y-slot accessors from solve.visible_names and actual
+    target storage layout. This keeps zero-extent variables from shifting the
+    runtime solver index space away from generated FMI arrays. #}
+{% macro solve_y_get_cases_for_vars(vars, storage) -%}
+{%- set ns = namespace(offset=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) -%}
+{%- set scalar_name = source_ref(name, var.dims, i + 1) -%}
+{%- for visible in solve_visible_names -%}
+{%- if visible == scalar_name %}
+        case {{ loop.index0 }}: return {{ storage }}[{{ ns.offset }}];  /* {{ scalar_name }} */
+{%- endif -%}
+{%- endfor -%}
+{%- set ns.offset = ns.offset + 1 -%}
+{%- endfor -%}
+{%- else -%}
+{%- for visible in solve_visible_names -%}
+{%- if visible == name %}
+        case {{ loop.index0 }}: return {{ storage }}[{{ ns.offset }}];  /* {{ name }} */
+{%- endif -%}
+{%- endfor -%}
+{%- set ns.offset = ns.offset + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
+
+{% macro solve_y_set_cases_for_vars(vars, storage) -%}
+{%- set ns = namespace(offset=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) -%}
+{%- set scalar_name = source_ref(name, var.dims, i + 1) -%}
+{%- for visible in solve_visible_names -%}
+{%- if visible == scalar_name %}
+        case {{ loop.index0 }}: {{ storage }}[{{ ns.offset }}] = value; return;  /* {{ scalar_name }} */
+{%- endif -%}
+{%- endfor -%}
+{%- set ns.offset = ns.offset + 1 -%}
+{%- endfor -%}
+{%- else -%}
+{%- for visible in solve_visible_names -%}
+{%- if visible == name %}
+        case {{ loop.index0 }}: {{ storage }}[{{ ns.offset }}] = value; return;  /* {{ name }} */
+{%- endif -%}
+{%- endfor -%}
+{%- set ns.offset = ns.offset + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
+
 {#- Macro: unpack variables from a ModelInstance array into local C aliases.
     Parameters:
       vars       - variable map (e.g., dae.x)
@@ -380,6 +434,12 @@ typedef struct {
 } ModelInstance;
 
 static double __rumoca_solve_y(const ModelInstance* m, int index) {
+    switch (index) {
+{{ solve_y_get_cases_for_vars(dae.x, "m->x") }}
+{{ solve_y_get_cases_for_vars(dae.y, "m->y") }}
+{{ solve_y_get_cases_for_vars(dae.w, "m->w") }}
+        default: break;
+    }
     if (index < N_STATES) {
         return m->x[index];
     }
@@ -414,6 +474,12 @@ static double __rumoca_solve_p(const ModelInstance* m, int index) {
 }
 
 static void __rumoca_solve_set_y(ModelInstance* m, int index, double value) {
+    switch (index) {
+{{ solve_y_set_cases_for_vars(dae.x, "m->x") }}
+{{ solve_y_set_cases_for_vars(dae.y, "m->y") }}
+{{ solve_y_set_cases_for_vars(dae.w, "m->w") }}
+        default: break;
+    }
     if (index < N_STATES) {
         m->x[index] = value;
         return;

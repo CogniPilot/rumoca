@@ -900,6 +900,51 @@ fn test_fmi_cosimulation_refreshes_discrete_updates_before_derivatives() {
     );
 }
 
+#[test]
+fn test_fmi_solve_y_runtime_cases_do_not_count_zero_length_arrays() {
+    let mut dae = dae::Dae::new();
+    let mut empty = dae::Variable::new("empty".into(), fixture_span());
+    empty.dims = vec![0];
+    dae.variables.algebraics.insert("empty".into(), empty);
+    dae.variables.algebraics.insert(
+        "after_empty".into(),
+        dae::Variable::new("after_empty".into(), fixture_span()),
+    );
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should serialize");
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "visible_names": ["empty[1]", "after_empty"]
+        }),
+    );
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .unwrap();
+
+        assert!(
+            rendered.contains("#define N_ALGEBRAICS     1"),
+            "{target} zero-length algebraic arrays must not contribute to N_ALGEBRAICS:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("case 1: return m->y[0];  /* after_empty */"),
+            "{target} solve_y runtime mapping must use the same zero-length array layout as N_ALGEBRAICS:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("case 1: m->y[0] = value; return;  /* after_empty */"),
+            "{target} solve_y assignment mapping must use the same zero-length array layout as N_ALGEBRAICS:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("m->y[1]"),
+            "{target} zero-length algebraic arrays must not shift later runtime slots out of bounds:\n{rendered}"
+        );
+    }
+}
+
 fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
     template
         .split(marker)
