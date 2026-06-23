@@ -249,6 +249,19 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         {
             return Ok(value.clone());
         }
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name) {
+            return Ok(symbol);
+        }
+        if let Some(source_name) = one_based_serialized_component_name(&raw_name)
+            && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_name)
+        {
+            return Ok(symbol);
+        }
+        if cfg.symbols.is_none()
+            && let Some(source_name) = zero_component_name_to_one_based(&raw_name)
+        {
+            return super::emitted_symbol(&source_name, cfg);
+        }
         super::emitted_symbol(&raw_name, cfg)
     } else if cfg.subscript_underscore {
         // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
@@ -263,6 +276,62 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}[{}]", name, subscripts))
     }
+}
+
+fn one_based_serialized_component_name(name: &str) -> Option<String> {
+    canonicalize_serialized_component_indices(name, false)
+}
+
+fn zero_component_name_to_one_based(name: &str) -> Option<String> {
+    canonicalize_serialized_component_indices(name, true)
+}
+
+fn canonicalize_serialized_component_indices(name: &str, zeros_only: bool) -> Option<String> {
+    let bytes = name.as_bytes();
+    let mut rendered = String::with_capacity(name.len());
+    let mut cursor = 0;
+    let mut changed = false;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'[' {
+            let next = name[cursor..]
+                .find('[')
+                .map(|offset| cursor + offset)
+                .unwrap_or(bytes.len());
+            rendered.push_str(&name[cursor..next]);
+            cursor = next;
+            continue;
+        }
+
+        let index_start = cursor + 1;
+        let mut index_end = index_start;
+        while index_end < bytes.len() && bytes[index_end].is_ascii_digit() {
+            index_end += 1;
+        }
+        if index_end == index_start || index_end >= bytes.len() || bytes[index_end] != b']' {
+            rendered.push('[');
+            cursor += 1;
+            continue;
+        }
+
+        let index_text = &name[index_start..index_end];
+        let Ok(index) = index_text.parse::<u64>() else {
+            rendered.push_str(&name[cursor..=index_end]);
+            cursor = index_end + 1;
+            continue;
+        };
+        if zeros_only && index != 0 {
+            rendered.push_str(&name[cursor..=index_end]);
+        } else {
+            rendered.push('[');
+            rendered.push_str(&(index + 1).to_string());
+            rendered.push(']');
+            changed = true;
+        }
+        cursor = index_end + 1;
+    }
+
+    changed.then_some(rendered)
 }
 
 fn var_ref_source_ref(raw_name: &str, var_ref: &Value) -> RenderResult {

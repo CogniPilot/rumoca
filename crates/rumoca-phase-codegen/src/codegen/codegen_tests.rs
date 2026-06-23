@@ -1376,6 +1376,44 @@ fn test_render_component_ref_canonicalizes_zero_based_source_without_symbol_map(
 }
 
 #[test]
+fn test_render_var_ref_uses_one_based_symbol_for_serialized_component_index() {
+    let expr = serde_json::json!({
+        "VarRef": {
+            "name": {"name": "device.cells[0].temperature"},
+            "subscripts": []
+        }
+    });
+    let symbols = serde_json::json!({
+        "device.cells[1].temperature": "device_cells_1_temperature"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "device_cells_1_temperature");
+}
+
+#[test]
+fn test_render_var_ref_canonicalizes_serialized_component_index_without_symbol_map() {
+    let expr = serde_json::json!({
+        "VarRef": {
+            "name": {"name": "device.cells[0].temperature"},
+            "subscripts": []
+        }
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "device_cells_1_temperature");
+}
+
+#[test]
 fn test_fmi3_initialize_defaults_uses_allocated_symbols_for_start_aliases() {
     let mut dae = dae::Dae::new();
     for (name, start) in [
