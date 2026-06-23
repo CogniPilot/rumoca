@@ -1335,6 +1335,37 @@ fn test_render_expr_uses_symbol_map_for_structured_indexed_var_ref() {
 }
 
 #[test]
+fn test_render_expr_uses_component_ref_when_var_ref_name_string_is_missing() {
+    let expr = serde_json::json!({
+        "VarRef": {
+            "name": {
+                "component_ref": {
+                    "local": false,
+                    "parts": [
+                        {"ident": "system", "subs": []},
+                        {"ident": "loop", "subs": []},
+                        {"ident": "pressure", "subs": []}
+                    ],
+                    "def_id": 2
+                }
+            },
+            "subscripts": []
+        }
+    });
+    let symbols = serde_json::json!({
+        "system.loop.pressure": "system_loop_pressure"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "system_loop_pressure");
+}
+
+#[test]
 fn test_render_component_ref_uses_symbol_map_before_c_bracket_fallback() {
     let component_ref = serde_json::json!({
         "parts": [

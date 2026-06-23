@@ -423,10 +423,34 @@ fn condition_source_ref(condition: &Value) -> Result<String, minijinja::Error> {
 fn render_name_field(value: &Value, field: &str, context: &str) -> RenderResult {
     let name = get_field(value, field)
         .map_err(|err| render_err(format!("{context} missing '{field}' field: {err}")))?;
+    if get_field(&name, "name").is_err()
+        && let Ok(component_ref) = get_field(&name, "component_ref")
+    {
+        return render_component_ref_source_name(&component_ref, context, field);
+    }
     let rendered = render_serialized_name(&name);
     if rendered.is_empty() {
         return Err(render_err(format!(
             "{context} '{field}' field resolved to an empty name"
+        )));
+    }
+    Ok(rendered)
+}
+
+fn render_component_ref_source_name(
+    component_ref: &Value,
+    context: &str,
+    field: &str,
+) -> RenderResult {
+    let cfg = ExprConfig {
+        one_based_index: true,
+        sanitize_dots: false,
+        ..ExprConfig::default()
+    };
+    let rendered = super::render_stmt::render_component_ref(component_ref, &cfg)?;
+    if rendered.is_empty() {
+        return Err(render_err(format!(
+            "{context} '{field}' component_ref resolved to an empty name"
         )));
     }
     Ok(rendered)
