@@ -53,6 +53,84 @@ fn test_embedded_c_alg_rhs_indexes_common_array_binary_rhs() {
 }
 
 #[test]
+fn test_alg_rhs_indexes_structured_residual_equations_for_indexed_var() {
+    let dae_json = serde_json::json!({
+        "f_x": [{
+            "lhs": null,
+            "rhs": {
+                "Binary": {
+                    "op": "Sub",
+                    "lhs": {
+                        "VarRef": {
+                            "name": {
+                                "name": "network.heat",
+                                "component_ref": {
+                                    "local": false,
+                                    "parts": [
+                                        {"ident": "network", "subs": []},
+                                        {"ident": "heat", "subs": []}
+                                    ],
+                                    "def_id": 1
+                                }
+                            },
+                            "subscripts": [{"Index": {"value": 2}}]
+                        }
+                    },
+                    "rhs": {
+                        "Binary": {
+                            "op": "Add",
+                            "lhs": {
+                                "VarRef": {
+                                    "name": {"name": "floor_heat"},
+                                    "subscripts": [
+                                        {"Index": {"value": 1}},
+                                        {"Index": {"value": 2}}
+                                    ]
+                                }
+                            },
+                            "rhs": {
+                                "VarRef": {
+                                    "name": {"name": "internal_gain"},
+                                    "subscripts": [
+                                        {"Index": {"value": 1}},
+                                        {"Index": {"value": 2}}
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "origin": "top-level model equation",
+            "scalar_count": 1
+        }],
+        "w": {},
+        "y": {
+            "network.heat[2]": {},
+            "floor_heat[1,2]": {},
+            "internal_gain[1,2]": {}
+        },
+        "x": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{{ alg_rhs_for_var_with_dae("network.heat[2]", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(
+        rendered.trim(),
+        "(floor_heat_1_2 + internal_gain_1_2)",
+        "indexed residual equations must be discoverable through the generic algebraic RHS path:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_c_alg_rhs_prefers_direct_array_connection_over_rearranged_equation() {
     fn var(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
@@ -162,6 +240,66 @@ fn test_c_alg_rhs_prefers_direct_indexed_equation_for_array_element() {
 }
 
 #[test]
+fn test_c_alg_rhs_prefers_direct_conditional_equation_over_indirect_alias() {
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn int(value: i64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn mul(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let indirect_alias_equation = sub(var("fan_demand"), mul(var("fan_enable"), var("fan_gain")));
+    let direct_enable_equation = sub(
+        var("fan_enable"),
+        rumoca_core::Expression::If {
+            branches: vec![(var("unoccupied_mode"), int(1))],
+            else_branch: Box::new(int(0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {"rhs": serde_json::to_value(indirect_alias_equation).unwrap()},
+            {"rhs": serde_json::to_value(direct_enable_equation).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "if_style": "ternary", "subscript_underscore": true} %}
+{{ alg_rhs_for_var("fan_enable", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "(unoccupied_mode ? 1 : 0)");
+    assert!(
+        !rendered.contains("fan_demand"),
+        "direct conditional equation should win over an earlier indirect alias:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_c_alg_rhs_projects_whole_array_assignment_for_indexed_scalar_target() {
     fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
@@ -199,6 +337,46 @@ fn test_c_alg_rhs_projects_whole_array_assignment_for_indexed_scalar_target() {
     assert!(
         !rendered.trim().ends_with("setpoint_u"),
         "indexed scalar assignment targets must project whole-array RHS by index:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_keeps_structurally_indexed_component_rhs_scalar() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "plant.power[1]": "plant_power_1",
+            "plant.module[1].power": "plant_module_1_power"
+        },
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("plant.power", vec![1])).unwrap(),
+                "rhs": serde_json::to_value(var("plant.module[1].power", vec![])).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("plant.power[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "plant_module_1_power");
+    assert!(
+        !rendered.contains("plant_module_1_power_1"),
+        "structurally indexed component fields are scalar RHS values and must not be re-indexed:\n{rendered}"
     );
 }
 
