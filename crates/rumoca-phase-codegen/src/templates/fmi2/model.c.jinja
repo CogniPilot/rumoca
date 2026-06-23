@@ -240,6 +240,16 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 {% endif %}
 {% endfor %}
 
+/* Source-reference aliases: renderers may emit sanitized full source refs
+ * while local unpack aliases use the allocated target symbol. */
+{% for name in dae.symbol_refs %}
+{% set source_alias = name | sanitize %}
+{% set target_symbol = symbol(symbols, name) %}
+{% if source_alias != target_symbol and source_alias not in runtime_field_macro_names and source_alias not in c_symbol_policy.reserved %}
+#define {{ source_alias }} {{ target_symbol }}
+{% endif %}
+{% endfor %}
+
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}

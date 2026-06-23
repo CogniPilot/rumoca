@@ -1079,6 +1079,47 @@ fn test_fmi_templates_do_not_emit_runtime_field_name_enum_macros() {
     }
 }
 
+#[test]
+fn test_fmi_templates_emit_source_reference_alias_macros() {
+    let dae_json = serde_json::json!({
+        "symbol_refs": ["controlSemantics.initialOverrideActive[1]"],
+        "symbol_aliases": [],
+        "enum_literal_ordinals": {},
+        "enum_type_names": [],
+        "x": {},
+        "y": {},
+        "u": {},
+        "w": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {},
+        "f_x": [],
+        "f_z": [],
+        "f_m": [],
+        "relation": [],
+        "scheduled_time_events": [],
+        "functions": {},
+        "metadata": {}
+    });
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "SourceReferenceAliasRegression",
+        )
+        .unwrap();
+
+        assert!(
+            rendered.contains(
+                "#define controlSemantics_initialOverrideActive_1 initialOverrideActive_1"
+            ),
+            "{target} template must bridge sanitized source refs to allocated local symbols:\n{rendered}"
+        );
+    }
+}
+
 fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
     template
         .split(marker)
