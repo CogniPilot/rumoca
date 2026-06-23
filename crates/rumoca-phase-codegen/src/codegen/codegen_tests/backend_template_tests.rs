@@ -1114,6 +1114,50 @@ fn test_fmi_model_description_escapes_expression_attributes() {
 }
 
 #[test]
+fn test_fmi_model_description_renders_string_start_without_c_quotes() {
+    let mut dae = dae::Dae::new();
+    dae.variables.parameters.insert(
+        "metadata.provenance".into(),
+        rumoca_ir_dae::Variable {
+            name: "metadata.provenance".into(),
+            start: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("metadata_ready_state".into()),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+
+    let fmi2_xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi2", "modelDescription.xml.jinja"),
+        "M",
+    )
+    .expect("render FMI2 modelDescription");
+    let fmi3_xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi3", "modelDescription.xml.jinja"),
+        "M",
+    )
+    .expect("render FMI3 modelDescription");
+
+    for xml in [fmi2_xml, fmi3_xml] {
+        assert!(
+            xml.contains(r#"start="metadata_ready_state""#),
+            "string start values must render as XML attribute values:\n{xml}"
+        );
+        assert!(
+            !xml.contains(r#"start="&quot;metadata_ready_state&quot;""#),
+            "string starts must not keep C string quotes in XML attributes:\n{xml}"
+        );
+    }
+}
+
+#[test]
 fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
     assert!(
         builtin_template("fmi3", "CMakeLists.txt.jinja")
