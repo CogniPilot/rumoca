@@ -448,6 +448,7 @@ fn copy_array_literal_vector_entries<T: SimFloat>(
         return Ok(false);
     }
     if param.shape_expr.is_empty()
+        && param.dims.iter().all(|dim| *dim > 0)
         && let Some(expected) = concrete_param_size(&param.dims)
         && expected != elements.len()
     {
@@ -636,6 +637,11 @@ fn source_array_dims<T: SimFloat>(
     if let Some(dims) = caller_env.dims.get(source_name).cloned() {
         return Ok(dims);
     }
+    if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim <= 0) {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "function array input argument shape",
+        });
+    }
     if concrete_param_size(&param.dims).is_some() {
         return Ok(param.dims.clone());
     }
@@ -758,11 +764,14 @@ fn resolved_array_input_dims<T: SimFloat>(
         )
         .map(Some);
     }
-    if concrete_param_size(&param.dims).is_some() {
-        return Ok(Some(param.dims.clone()));
-    }
     if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim < 0) {
         return infer_dynamic_array_input_dims_from_declared(&param.dims, value_count).map(Some);
+    }
+    if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim == 0) && value_count > 0 {
+        return infer_dynamic_array_input_dims_from_declared(&param.dims, value_count).map(Some);
+    }
+    if concrete_param_size(&param.dims).is_some() {
+        return Ok(Some(param.dims.clone()));
     }
     Ok(None)
 }

@@ -175,8 +175,9 @@ fn materialize_constructor_assignment<T: SimFloat>(
             env.set(&field, value);
         } else {
             let values = eval::eval_array_values(arg, env)?;
+            let field_dims = resolve_constructor_field_dims(&input.dims, values.len())?;
             let expected =
-                concrete_array_size(&input.dims).ok_or(EvalError::UnsupportedExpression {
+                concrete_array_size(&field_dims).ok_or(EvalError::UnsupportedExpression {
                     kind: "constructor field with dynamic shape",
                 })?;
             if values.len() != expected {
@@ -186,12 +187,50 @@ fn materialize_constructor_assignment<T: SimFloat>(
                     actual: values.len(),
                 });
             }
-            std::sync::Arc::make_mut(&mut env.dims).insert(field.clone(), input.dims.clone());
-            eval::set_array_entries(env, &field, &input.dims, &values);
+            std::sync::Arc::make_mut(&mut env.dims).insert(field.clone(), field_dims.clone());
+            eval::set_array_entries(env, &field, &field_dims, &values);
         }
         wrote = true;
     }
     Ok(wrote)
+}
+
+fn resolve_constructor_field_dims(dims: &[i64], value_count: usize) -> Result<Vec<i64>, EvalError> {
+    if dims.iter().all(|dim| *dim > 0) || value_count == 0 {
+        return Ok(dims.to_vec());
+    }
+    let dynamic_indices = dims
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, dim)| (*dim <= 0).then_some(idx))
+        .collect::<Vec<_>>();
+    if dynamic_indices.len() != 1 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "constructor field with dynamic shape",
+        });
+    }
+    let known_product = dims
+        .iter()
+        .enumerate()
+        .filter(|(idx, dim)| !dynamic_indices.contains(idx) && **dim > 0)
+        .try_fold(1usize, |acc, (_, dim)| {
+            usize::try_from(*dim)
+                .ok()
+                .and_then(|dim| acc.checked_mul(dim))
+        })
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "constructor field with dynamic shape",
+        })?;
+    if known_product == 0 || !value_count.is_multiple_of(known_product) {
+        return Err(EvalError::ShapeMismatch {
+            context: "constructor field array value",
+            expected: known_product,
+            actual: value_count,
+        });
+    }
+    let mut resolved = dims.to_vec();
+    resolved[dynamic_indices[0]] = (value_count / known_product) as i64;
+    Ok(resolved)
 }
 
 fn concrete_array_size(dims: &[i64]) -> Option<usize> {

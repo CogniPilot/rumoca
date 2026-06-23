@@ -342,6 +342,65 @@ fn test_eval_function_record_field_array_uses_first_element_in_scalar_context() 
 }
 
 #[test]
+fn test_eval_function_record_field_array_infers_unknown_shape_from_named_arg() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+
+    let mut state = rumoca_core::Function::new("Pkg.State", rumoca_core::Span::DUMMY);
+    state.is_constructor = true;
+    state.add_input(
+        rumoca_core::FunctionParam::new(
+            "X",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![0]),
+    );
+    funcs.insert("Pkg.State".to_string(), state);
+
+    let mut make_state = rumoca_core::Function::new("Pkg.makeState", rumoca_core::Span::DUMMY);
+    make_state.add_input(
+        rumoca_core::FunctionParam::new(
+            "X",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![0]),
+    );
+    make_state.add_output(
+        rumoca_core::FunctionParam::new(
+            "out",
+            "State",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record),
+    );
+    make_state.body = vec![rumoca_core::Statement::Assignment {
+        comp: comp_ref("out"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Pkg.State"),
+            args: vec![named_ctor_arg("X", var("X"))],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    }];
+    funcs.insert("Pkg.makeState".to_string(), make_state);
+    env.functions = std::sync::Arc::new(funcs);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(fn_call(
+            "Pkg.makeState",
+            vec![arr(vec![lit(0.2), lit(0.8)], false)],
+        )),
+        field: "X".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_array_values::<f64>(&expr, &env), Ok(vec![0.2, 0.8]));
+}
+
+#[test]
 fn test_eval_function_call_unknown_user_function_returns_error() {
     let env = VarEnv::<f64>::new();
     let expr = rumoca_core::Expression::FunctionCall {

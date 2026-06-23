@@ -460,6 +460,15 @@ fn try_eval_function_record_field_array_values<T: SimFloat>(
         kind: "record function output field shape",
     })?;
     let output_name = format!("{}.{}", output.name, field);
+    if total == 0 {
+        return eval_unknown_size_function_record_field_array_values(
+            name,
+            args,
+            &output_name,
+            &field_param.dims,
+            env,
+        );
+    }
     let mut values = Vec::with_capacity(total);
     for flat_index in 0..total {
         let output_path = function_output_path(&output_name, &field_param.dims, flat_index).ok_or(
@@ -473,6 +482,29 @@ fn try_eval_function_record_field_array_values<T: SimFloat>(
             output_path.as_str(),
             env,
         )?);
+    }
+    Ok(values)
+}
+
+fn eval_unknown_size_function_record_field_array_values<T: SimFloat>(
+    name: &rumoca_core::Reference,
+    args: &[Expression],
+    output_name: &str,
+    dims: &[i64],
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    if !matches!(dims, [0]) {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::new();
+    for flat_index in 0.. {
+        let output_path = dae::format_subscript_key(output_name, &[flat_index + 1]);
+        match eval_user_function_output_path_pub(name.var_name(), args, output_path.as_str(), env) {
+            Ok(value) => values.push(value),
+            Err(EvalError::MissingBinding { .. }) => break,
+            Err(err) => return Err(err),
+        }
     }
     Ok(values)
 }
