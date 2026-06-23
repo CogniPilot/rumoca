@@ -1383,6 +1383,20 @@ fn try_eval_field_access<T: SimFloat>(
         return Err(EvalError::MissingBinding { name: key });
     }
 
+    if let rumoca_core::Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = base
+    {
+        for (cond, then_expr) in branches {
+            if eval_expr::<T>(cond, env)?.real() != 0.0 {
+                return try_eval_field_access(then_expr, field, env);
+            }
+        }
+        return try_eval_field_access(else_branch, field, env);
+    }
+
     if let rumoca_core::Expression::FunctionCall {
         name,
         args,

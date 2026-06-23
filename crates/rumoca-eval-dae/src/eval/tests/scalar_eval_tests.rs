@@ -239,6 +239,42 @@ fn test_eval_if_false() {
 }
 
 #[test]
+fn test_checked_eval_field_access_projects_selected_if_branch() {
+    let mut record_ctor = rumoca_core::Function::new("Pkg.Record", rumoca_core::Span::DUMMY);
+    record_ctor.add_input(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    let mut env = VarEnv::<f64>::new();
+    env.functions = Arc::new(IndexMap::from([("Pkg.Record".to_string(), record_ctor)]));
+
+    let then_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Record"),
+        args: vec![named_ctor_arg("x", lit(1.25))],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let else_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Record"),
+        args: vec![named_ctor_arg("x", lit(2.5))],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::If {
+            branches: vec![(bool_lit(false), then_record)],
+            else_branch: Box::new(else_record),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "x".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(2.5));
+}
+
+#[test]
 fn test_eval_comparison() {
     let lt = binop(rumoca_core::OpBinary::Lt, lit(1.0), lit(2.0));
     assert_eq!(eval_expr_value::<f64>(&lt, &VarEnv::new()), 1.0);

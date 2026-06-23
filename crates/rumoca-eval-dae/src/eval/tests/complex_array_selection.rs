@@ -164,6 +164,33 @@ fn test_eval_array_values_record_field_varref_reads_indexed_record_elements() {
 }
 
 #[test]
+fn test_eval_array_values_nested_indexed_record_field_path() {
+    let mut env = VarEnv::<f64>::new();
+    std::sync::Arc::make_mut(&mut env.dims).insert("source[1].medium.X".to_string(), vec![2]);
+    env.set("source[1].medium.X[1]", 0.73);
+    env.set("source[1].medium.X[2]", 0.27);
+
+    let expr = Expression::FieldAccess {
+        base: Box::new(Expression::FieldAccess {
+            base: Box::new(Expression::VarRef {
+                name: Reference::new("source"),
+                subscripts: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "medium".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "X".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &env).expect("nested indexed record field evaluates"),
+        vec![0.73, 0.27]
+    );
+}
+
+#[test]
 fn test_eval_builtin_sum_record_field_varref_reads_indexed_record_elements() {
     let mut env = VarEnv::<f64>::new();
     std::sync::Arc::make_mut(&mut env.dims).insert("cellData.rcData.R".to_string(), vec![2]);

@@ -277,6 +277,11 @@ pub(super) fn try_eval_field_access_array_values<T: SimFloat>(
     field: &str,
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
+    if let Some(name) = eval_field_access_array_path(base, field, env)?
+        && let Some(values) = array_values_from_env_name_generic(name.as_str(), env)?
+    {
+        return Ok(values);
+    }
     if let Some(name) = flattened_field_access_name(base, field)
         && let Some(values) = array_values_from_env_name_generic(name.as_str(), env)?
     {
@@ -353,6 +358,79 @@ pub(super) fn try_eval_field_access_array_values<T: SimFloat>(
             kind: "field access array value",
         }),
     }
+}
+
+fn eval_field_access_array_path<T: SimFloat>(
+    base: &Expression,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<String>, EvalError> {
+    let Some(prefix) = eval_array_field_base_path(base, env)? else {
+        return Ok(None);
+    };
+    Ok(Some(format!("{prefix}.{field}")))
+}
+
+fn eval_array_field_base_path<T: SimFloat>(
+    expr: &Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<String>, EvalError> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if subscripts.is_empty() {
+                return Ok(Some(name.as_str().to_string()));
+            }
+            if subscripts
+                .iter()
+                .any(|subscript| matches!(subscript, Subscript::Colon { .. }))
+            {
+                return Ok(None);
+            }
+            let indices = eval_array_field_subscripts(subscripts, env)?;
+            Ok(Some(dae::format_subscript_key(name.as_str(), &indices)))
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let Some(prefix) = eval_array_field_base_path(base, env)? else {
+                return Ok(None);
+            };
+            Ok(Some(format!("{prefix}.{field}")))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn eval_array_field_subscripts<T: SimFloat>(
+    subscripts: &[Subscript],
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    subscripts
+        .iter()
+        .map(|subscript| eval_array_field_subscript(subscript, env))
+        .collect()
+}
+
+fn eval_array_field_subscript<T: SimFloat>(
+    subscript: &Subscript,
+    env: &VarEnv<T>,
+) -> Result<usize, EvalError> {
+    match subscript {
+        Subscript::Index { value, .. } => positive_array_field_index(*value as f64),
+        Subscript::Expr { expr, .. } => {
+            positive_array_field_index(eval_expr::<T>(expr, env)?.real())
+        }
+        Subscript::Colon { .. } => unreachable!("colon subscripts are filtered before indexing"),
+    }
+}
+
+fn positive_array_field_index(value: f64) -> Result<usize, EvalError> {
+    if !value.is_finite() || value.fract() != 0.0 || value <= 0.0 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "field access array subscript",
+        });
+    }
+    Ok(value as usize)
 }
 
 fn try_eval_function_record_field_array_values<T: SimFloat>(
