@@ -1209,6 +1209,7 @@ fn create_environment() -> Environment<'static> {
     env.add_function("allocate_symbols", allocate_symbols_function);
     env.add_function("target_symbols", target_symbols_function);
     env.add_function("symbol", symbol_function);
+    env.add_function("resolve_modelica_uri", resolve_modelica_uri_function);
     env.add_function("source_ref", source_ref_function);
 
     // Custom functions for expression rendering
@@ -1406,6 +1407,49 @@ fn value_to_string(value: &Value) -> String {
         .as_str()
         .map(str::to_owned)
         .unwrap_or_else(|| value.to_string().trim_matches('"').to_string())
+}
+
+fn resolve_modelica_uri_function(uri: Value) -> String {
+    resolve_modelica_uri(&value_to_string(&uri))
+}
+
+fn resolve_modelica_uri(uri: &str) -> String {
+    let Some(source_roots) = std::env::var_os("RUMOCA_MODELICA_SOURCE_ROOTS") else {
+        return uri.to_string();
+    };
+    resolve_modelica_uri_with_roots(uri, std::env::split_paths(&source_roots))
+}
+
+fn resolve_modelica_uri_with_roots<I, P>(uri: &str, source_roots: I) -> String
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let Some(rest) = uri.strip_prefix("modelica://") else {
+        return uri.to_string();
+    };
+    let Some((package, relative)) = rest.split_once('/') else {
+        return uri.to_string();
+    };
+    for root in source_roots {
+        let root = root.as_ref();
+        let direct = root.join(relative);
+        if direct.exists() {
+            return direct.to_string_lossy().into_owned();
+        }
+        let nested = root.join(package).join(relative);
+        if nested.exists() {
+            return nested.to_string_lossy().into_owned();
+        }
+        let root_name_matches_package = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == package || name.starts_with(&format!("{package} ")));
+        if root_name_matches_package && direct.parent().is_some_and(Path::exists) {
+            return direct.to_string_lossy().into_owned();
+        }
+    }
+    uri.to_string()
 }
 
 fn dims_from_value(value: &Value) -> Result<Vec<usize>, minijinja::Error> {

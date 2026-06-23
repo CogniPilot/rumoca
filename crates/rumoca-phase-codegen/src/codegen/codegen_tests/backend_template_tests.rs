@@ -852,6 +852,29 @@ fn test_fmi_build_scripts_package_only_needed_external_libraries() {
 }
 
 #[test]
+fn test_fmi_external_include_directories_resolve_modelica_uris() {
+    let root =
+        std::env::temp_dir().join(format!("rumoca-modelica-uri-test-{}", std::process::id()));
+    let include_dir = root.join("Buildings").join("Resources").join("Include");
+    std::fs::create_dir_all(&include_dir).expect("create temporary Modelica include dir");
+
+    let resolved = resolve_modelica_uri_with_roots(
+        "modelica://Buildings/Resources/Include",
+        std::iter::once(root.as_path()),
+    );
+    assert_eq!(resolved, include_dir.to_string_lossy());
+    for target in ["fmi2", "fmi3"] {
+        assert!(
+            builtin_template(target, "externalIncludeDirectories.txt.jinja")
+                .contains("resolve_modelica_uri(directory)"),
+            "{target} external include directories template should resolve modelica:// URIs"
+        );
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn test_fmi3_initial_builtin_tracks_initialization_mode() {
     assert!(
         builtin_template("fmi3", "model.c.jinja").contains("modelInitializationMode"),
