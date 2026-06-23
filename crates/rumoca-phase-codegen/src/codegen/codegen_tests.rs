@@ -108,6 +108,123 @@ fn test_render_simple_template() {
 }
 
 #[test]
+fn test_fmi_templates_render_json_function_body_key() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "UserFunction": {
+                "name": "UserFunction",
+                "inputs": [],
+                "outputs": [{"name": "y", "dims": [], "default": null}],
+                "locals": [],
+                "body": ["Return"],
+                "is_constructor": false,
+                "pure": true,
+                "external": null,
+                "derivatives": [],
+                "span": null
+            }
+        }),
+    );
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .unwrap_or_else(|err| panic!("{target} template should render function body: {err}"));
+
+        assert!(
+            rendered.contains("return y;"),
+            "{target} template should render the body key from JSON-backed functions:\n{rendered}"
+        );
+    }
+}
+
+#[test]
+fn test_fmi_function_body_renders_bare_component_reference_expression() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "ForwardInput": {
+                "name": "ForwardInput",
+                "inputs": [{"name": "x", "dims": [], "default": null}],
+                "outputs": [{"name": "y", "dims": [], "default": null}],
+                "locals": [],
+                "body": [{
+                    "Assignment": {
+                        "comp": {"local": false, "parts": [{"ident": "y", "subs": []}]},
+                        "value": {"local": false, "parts": [{"ident": "x", "subs": []}]}
+                    }
+                }],
+                "is_constructor": false,
+                "pure": true,
+                "external": null,
+                "derivatives": [],
+                "span": null
+            }
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .expect("FMI2 template should render component-reference expression values");
+
+    assert!(
+        rendered.contains("y = x;"),
+        "function body should render bare ComponentReference expressions:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_function_body_renders_spanned_expression_wrapper() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "ForwardSpannedInput": {
+                "name": "ForwardSpannedInput",
+                "inputs": [{"name": "x", "dims": [], "default": null}],
+                "outputs": [{"name": "y", "dims": [], "default": null}],
+                "locals": [],
+                "body": [{
+                    "Assignment": {
+                        "comp": {"local": false, "parts": [{"ident": "y", "subs": []}]},
+                        "value": {"expr": {"VarRef": {"name": {"name": "x"}, "subscripts": []}}, "span": null}
+                    }
+                }],
+                "is_constructor": false,
+                "pure": true,
+                "external": null,
+                "derivatives": [],
+                "span": null
+            }
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .expect("FMI2 template should render spanned expression wrappers");
+
+    assert!(
+        rendered.contains("y = x;"),
+        "function body should render expression wrappers:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_record_param_template_skip_uses_type_class_metadata() {
     let dae_json = serde_json::json!({
         "functions": {

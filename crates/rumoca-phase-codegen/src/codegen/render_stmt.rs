@@ -146,7 +146,7 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     if let Some(s) = stmt.as_str() {
         return match s {
             "Empty" => Ok(String::new()),
-            "Return" => Ok(format!("{indent}return")),
+            "Return" => Ok(render_return_statement(cfg, indent)),
             "Break" => Ok(format!("{indent}break")),
             _ => Err(render_err(format!("unhandled statement variant: {s}"))),
         };
@@ -163,7 +163,7 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     }
     if let Ok(ret) = get_field(stmt, "Return") {
         let _ = ret;
-        return Ok(format!("{indent}return"));
+        return Ok(render_return_statement(cfg, indent));
     }
     if let Ok(brk) = get_field(stmt, "Break") {
         let _ = brk;
@@ -192,6 +192,14 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     }
 
     Err(render_err(format!("unhandled statement: {stmt}")))
+}
+
+fn render_return_statement(cfg: &ExprConfig, indent: &str) -> String {
+    if let Some(return_value) = &cfg.return_value {
+        format!("{indent}return {return_value};")
+    } else {
+        format!("{indent}return")
+    }
 }
 
 /// Render an assignment statement: comp := value

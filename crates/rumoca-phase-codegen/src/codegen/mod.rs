@@ -916,23 +916,24 @@ pub fn render_template_with_dae_json(
     template: &str,
 ) -> Result<String, CodegenError> {
     reject_external_functions_in_json_for_simulation_template(dae_json, template)?;
+    let dae_json = dae_json_with_template_symbol_refs(dae_json)?;
     let mut env = create_environment();
     env.add_template("inline", template)?;
 
-    let dae_value = Value::from_serialize(dae_json);
+    let dae_value = Value::from_serialize(&dae_json);
     let tmpl = env.get_template("inline")?;
     let solve_value = optional_object_field(&dae_value, "solve");
-    let ir_kind = template_ir_kind_from_dae_json(dae_json);
+    let ir_kind = template_ir_kind_from_dae_json(&dae_json);
     let ir_value = if ir_kind == "solve" {
         solve_value.clone()
     } else {
         dae_value.clone()
     };
-    let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
-    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
+    let solve_blocks = solve_blocks_from_dae_json(&dae_json)?;
+    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(&dae_json)?;
+    let solve_implicit_rows = solve_implicit_rows_from_dae_json(&dae_json);
+    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(&dae_json, &solve_implicit_rows);
+    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(&dae_json);
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
         solve => solve_value,
@@ -954,22 +955,23 @@ pub fn render_template_with_dae_json_and_name(
     model_name: &str,
 ) -> Result<String, CodegenError> {
     reject_external_functions_in_json_for_simulation_template(dae_json, template)?;
+    let dae_json = dae_json_with_template_symbol_refs(dae_json)?;
     let mut env = create_environment();
     env.add_template("inline", template)?;
 
-    let dae_value = Value::from_serialize(dae_json);
+    let dae_value = Value::from_serialize(&dae_json);
     let solve_value = optional_object_field(&dae_value, "solve");
-    let ir_kind = template_ir_kind_from_dae_json(dae_json);
+    let ir_kind = template_ir_kind_from_dae_json(&dae_json);
     let ir_value = if ir_kind == "solve" {
         solve_value.clone()
     } else {
         dae_value.clone()
     };
-    let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
-    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
+    let solve_blocks = solve_blocks_from_dae_json(&dae_json)?;
+    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(&dae_json)?;
+    let solve_implicit_rows = solve_implicit_rows_from_dae_json(&dae_json);
+    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(&dae_json, &solve_implicit_rows);
+    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(&dae_json);
     let tmpl = env.get_template("inline")?;
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
@@ -989,6 +991,125 @@ pub fn render_template_with_dae_json_and_name(
 
 fn optional_object_field(value: &Value, name: &str) -> Value {
     get_field(value, name).unwrap_or_else(|_| Value::from_serialize(serde_json::Map::new()))
+}
+
+fn dae_json_with_template_symbol_refs(
+    dae_json: &serde_json::Value,
+) -> Result<serde_json::Value, CodegenError> {
+    let mut normalized = dae_json.clone();
+    let mut refs = IndexSet::<String>::new();
+    if let Some(existing) = normalized
+        .get("symbol_refs")
+        .and_then(serde_json::Value::as_array)
+    {
+        for value in existing {
+            if let Some(reference) = value.as_str() {
+                refs.insert(reference.to_string());
+            }
+        }
+    }
+    add_json_function_symbol_refs(&normalized, &mut refs)?;
+
+    let Some(object) = normalized.as_object_mut() else {
+        return Ok(normalized);
+    };
+    object.insert(
+        "symbol_refs".to_string(),
+        serde_json::to_value(refs.into_iter().collect::<Vec<_>>()).map_err(|err| {
+            CodegenError::SerializationFailed {
+                message: format!("json symbol_refs: {err}"),
+            }
+        })?,
+    );
+    Ok(normalized)
+}
+
+fn add_json_function_symbol_refs(
+    dae_json: &serde_json::Value,
+    refs: &mut IndexSet<String>,
+) -> Result<(), CodegenError> {
+    let Some(functions) = dae_json
+        .get("functions")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(());
+    };
+    for (func_name, func) in functions {
+        refs.insert(func_name.clone());
+        if let Some(outputs) = func.get("outputs").and_then(serde_json::Value::as_array) {
+            for output in outputs {
+                let name = json_named_item_name(output, "function output")?;
+                let dims = json_dims(output, name)?;
+                let count = source_ref_scalar_count(name, &dims)?;
+                for element_idx in 1..=count {
+                    let selector = if count == 1 {
+                        name.to_string()
+                    } else {
+                        format!("{name}[{element_idx}]")
+                    };
+                    refs.insert(format!("{func_name}.{selector}"));
+                }
+            }
+        }
+        for section in ["inputs", "outputs", "locals"] {
+            let Some(items) = func.get(section).and_then(serde_json::Value::as_array) else {
+                continue;
+            };
+            for item in items {
+                let name = json_named_item_name(item, section)?;
+                let dims = json_dims(item, name)?;
+                add_source_refs_for_var(name, &dims_to_i64(&dims)?, refs)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn json_named_item_name<'a>(
+    item: &'a serde_json::Value,
+    context: &str,
+) -> Result<&'a str, CodegenError> {
+    item.get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CodegenError::SerializationFailed {
+            message: format!("{context} missing string name"),
+        })
+}
+
+fn json_dims(item: &serde_json::Value, name: &str) -> Result<Vec<usize>, CodegenError> {
+    let Some(dims) = item.get("dims").and_then(serde_json::Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut converted = codegen_vec_with_capacity(dims.len(), "json symbol dimension count")?;
+    for dim in dims {
+        let Some(dim) = dim.as_i64() else {
+            return Err(CodegenError::SerializationFailed {
+                message: format!("json symbol dimension for `{name}` is not an integer"),
+            });
+        };
+        if dim > 0 {
+            converted.push(usize::try_from(dim).map_err(|_| {
+                CodegenError::SerializationFailed {
+                    message: format!(
+                        "json symbol dimension {dim} for `{name}` exceeds host index range"
+                    ),
+                }
+            })?);
+        }
+    }
+    Ok(converted)
+}
+
+fn dims_to_i64(dims: &[usize]) -> Result<Vec<i64>, CodegenError> {
+    let mut converted = codegen_vec_with_capacity(dims.len(), "json i64 dimension count")?;
+    for dim in dims {
+        converted.push(
+            i64::try_from(*dim).map_err(|_| CodegenError::SerializationFailed {
+                message: format!("json dimension {dim} exceeds i64 range"),
+            })?,
+        );
+    }
+    Ok(converted)
 }
 
 fn template_ir_kind_from_dae_json(dae_json: &serde_json::Value) -> &'static str {
@@ -1279,6 +1400,10 @@ fn create_environment() -> Environment<'static> {
     // Custom functions for statement rendering (MLS §12: function bodies)
     env.add_function("render_statement", render_statement_function);
     env.add_function("render_statements", render_statements_function);
+    env.add_function(
+        "render_function_statements",
+        render_function_statements_function,
+    );
 
     // Custom function for flat equation rendering (Model residual equations)
     env.add_function("render_flat_equation", render_flat_equation_function);
@@ -1809,6 +1934,19 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     render_statements(&stmts, &cfg, indent_str)
 }
 
+fn render_function_statements_function(
+    stmts: Value,
+    config: Value,
+    indent: Value,
+    return_value: Value,
+) -> RenderResult {
+    let mut cfg = ExprConfig::from_value(&config);
+    cfg.subscript_underscore = false;
+    cfg.return_value = return_value.as_str().map(ToString::to_string);
+    let indent_str = indent.as_str().unwrap_or("    ");
+    render_statements(&stmts, &cfg, indent_str)
+}
+
 // ── ExprConfig and helpers ───────────────────────────────────────────
 
 /// Configuration for expression rendering.
@@ -1858,6 +1996,9 @@ pub(crate) struct ExprConfig {
     pub(crate) condition_aliases: Option<Value>,
     /// Render-time substitutions for expression-level unrolling.
     pub(crate) substitutions: Vec<(String, String)>,
+    /// Function return expression used when rendering `return` statements in
+    /// backends where the output variable is the canonical return value.
+    pub(crate) return_value: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1896,6 +2037,7 @@ impl Default for ExprConfig {
             symbols: None,
             condition_aliases: None,
             substitutions: Vec::new(),
+            return_value: None,
         }
     }
 }
