@@ -275,6 +275,51 @@ fn test_checked_eval_field_access_projects_selected_if_branch() {
 }
 
 #[test]
+fn test_checked_eval_field_access_projects_nested_constructor_field() {
+    let mut inner_ctor = rumoca_core::Function::new("Pkg.Inner", rumoca_core::Span::DUMMY);
+    inner_ctor.add_input(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    let mut outer_ctor = rumoca_core::Function::new("Pkg.Outer", rumoca_core::Span::DUMMY);
+    outer_ctor.add_input(rumoca_core::FunctionParam::new(
+        "inner",
+        "Pkg.Inner",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    let mut env = VarEnv::<f64>::new();
+    env.functions = Arc::new(IndexMap::from([
+        ("Pkg.Inner".to_string(), inner_ctor),
+        ("Pkg.Outer".to_string(), outer_ctor),
+    ]));
+
+    let inner_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Inner"),
+        args: vec![named_ctor_arg("x", lit(2.5))],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let outer_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Outer"),
+        args: vec![named_ctor_arg("inner", inner_record)],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(outer_record),
+            field: "inner".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "x".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(2.5));
+}
+
+#[test]
 fn test_eval_comparison() {
     let lt = binop(rumoca_core::OpBinary::Lt, lit(1.0), lit(2.0));
     assert_eq!(eval_expr_value::<f64>(&lt, &VarEnv::new()), 1.0);

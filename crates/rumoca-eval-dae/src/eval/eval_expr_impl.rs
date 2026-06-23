@@ -1397,6 +1397,10 @@ fn try_eval_field_access<T: SimFloat>(
         return try_eval_field_access(else_branch, field, env);
     }
 
+    if let Some(projected) = projected_record_field_expr(base) {
+        return try_eval_field_access(&projected, field, env);
+    }
+
     if let rumoca_core::Expression::FunctionCall {
         name,
         args,
@@ -1423,6 +1427,34 @@ fn try_eval_field_access<T: SimFloat>(
 
     Err(EvalError::UnsupportedExpression {
         kind: "field access",
+    })
+}
+
+fn projected_record_field_expr(expr: &rumoca_core::Expression) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::FieldAccess { base, field, .. } = expr else {
+        return None;
+    };
+    constructor_named_field_expr(base, field)
+}
+
+fn constructor_named_field_expr(
+    expr: &rumoca_core::Expression,
+    field: &str,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::FunctionCall {
+        args,
+        is_constructor,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if !is_constructor {
+        return None;
+    }
+    args.iter().find_map(|arg| {
+        let (name, value) = decode_named_constructor_arg(arg)?;
+        (name == field).then(|| value.clone())
     })
 }
 
