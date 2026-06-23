@@ -639,6 +639,54 @@ fn lower_residual_lowers_sum_of_nested_scalarized_record_field_array() {
 }
 
 #[test]
+fn lower_residual_lowers_sum_of_indexed_record_nested_field_array() {
+    let mut dae_model = dae::Dae::default();
+    for idx in 1..=3 {
+        let name = format!("source[{idx}].medium.X");
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(&name), scalar_var(&name));
+    }
+    dae_model.continuous.equations.push(residual(sub(
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(6.0),
+            span: lower_test_span(),
+        },
+        source_builtin(
+            rumoca_core::BuiltinFunction::Sum,
+            vec![rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("source.medium.X").into(),
+                subscripts: vec![],
+                span: lower_test_span(),
+            }],
+        ),
+    )));
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("sum over indexed record nested field array should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    for idx in 1..=3 {
+        set_y_value(
+            &layout,
+            &mut y,
+            &format!("source[{idx}].medium.X"),
+            idx as f64,
+        );
+    }
+
+    let (_, output) = eval_linear_ops(
+        rows.last().expect("indexed nested field sum row"),
+        &y,
+        &[],
+        0.0,
+    );
+
+    assert_eq!(output, Some(0.0));
+}
+
+#[test]
 fn lower_residual_lowers_sum_of_assignment_only_scalarized_record_field_array() {
     let mut dae_model = dae::Dae::default();
     for idx in 1..=3 {

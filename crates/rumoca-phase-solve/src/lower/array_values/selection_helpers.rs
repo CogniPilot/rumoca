@@ -97,10 +97,19 @@ pub(in crate::lower) fn indexed_record_field_key_indices(
     base_key: &str,
     field: &str,
 ) -> Option<Vec<usize>> {
-    let suffix = format!(".{field}");
-    let indexed_base_key = key.strip_suffix(suffix.as_str())?;
-    let (candidate_base, indices) = parse_indexed_binding_key(indexed_base_key)?;
-    (candidate_base == base_key).then_some(indices)
+    let requested_key = format!("{base_key}.{field}");
+    let mut candidate = key;
+    let mut fields = Vec::new();
+    while let Some((prefix, candidate_field)) = rumoca_core::split_last_top_level(candidate) {
+        fields.push(candidate_field);
+        if let Some((candidate_base, indices)) = parse_indexed_binding_key(prefix) {
+            fields.reverse();
+            let candidate_key = format!("{}.{}", candidate_base, fields.join("."));
+            return (candidate_key == requested_key).then_some(indices);
+        }
+        candidate = prefix;
+    }
+    None
 }
 
 /// Cartesian product of per-dimension index selections into one-based
