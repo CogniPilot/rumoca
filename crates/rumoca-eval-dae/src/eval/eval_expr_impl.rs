@@ -1249,6 +1249,15 @@ pub(super) fn try_eval_field_access_path<T: SimFloat>(
             };
             Ok(Some(format!("{prefix}.{field}")))
         }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Some(prefix) = try_eval_field_access_path(base, env)? else {
+                return Ok(None);
+            };
+            let indices = eval_subscript_indices(subscripts, env)?;
+            Ok(Some(dae::format_subscript_key(&prefix, &indices)))
+        }
         _ => Ok(None),
     }
 }

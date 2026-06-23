@@ -320,6 +320,30 @@ fn test_checked_eval_field_access_projects_nested_constructor_field() {
 }
 
 #[test]
+fn test_checked_eval_field_access_resolves_indexed_component_path() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("unit[1].settings.tolerance", 1.0e-6);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::Index {
+                base: Box::new(var("unit")),
+                subscripts: vec![rumoca_core::Subscript::generated_index(
+                    1,
+                    rumoca_core::Span::DUMMY,
+                )],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "settings".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "tolerance".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(1.0e-6));
+}
+
+#[test]
 fn test_checked_eval_var_ref_singleton_range_slice_as_scalar() {
     let mut env = VarEnv::<f64>::new();
     env.vars.insert("x[1]".to_string(), 0.42);
