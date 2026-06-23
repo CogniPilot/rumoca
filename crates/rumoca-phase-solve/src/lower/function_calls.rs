@@ -13,7 +13,8 @@ use helpers::{
     FlattenedRecordPositionalInputRequest, NamedOrPositionalArg, append_complex_projection_values,
     checked_usize_dims_to_i64, complex_projection_vec_with_capacity, flattened_input_has_prefix,
     function_input_actual_dim, missing_intrinsic_argument, missing_required_function_input,
-    record_constructor_field, split_flattened_record_input_name, validate_complex_component_width,
+    record_constructor_field, split_flattened_record_input_name,
+    synthesize_missing_flattened_record_field_arg, validate_complex_component_width,
 };
 pub(super) use runtime_intrinsics::*;
 
@@ -696,6 +697,27 @@ impl<'a> LowerBuilder<'a> {
                     input,
                     default,
                     &local_scope,
+                    call_depth + 1,
+                )?;
+                continue;
+            }
+            if let Some(synthesized) = synthesize_missing_flattened_record_field_arg(
+                input,
+                inputs,
+                input_idx,
+                &positional_args,
+                positional_idx,
+            ) {
+                self.bind_function_input_arg_or_closure(
+                    FunctionInputBindState {
+                        scope: &mut scope,
+                        const_scope: &mut const_scope,
+                        const_bindings: &mut const_bindings,
+                    },
+                    function_name,
+                    input,
+                    &synthesized,
+                    caller_scope,
                     call_depth + 1,
                 )?;
                 continue;

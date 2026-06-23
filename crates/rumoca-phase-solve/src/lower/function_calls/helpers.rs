@@ -57,6 +57,62 @@ pub(super) fn missing_required_function_input<T>(
     })
 }
 
+pub(super) fn synthesize_missing_flattened_record_field_arg(
+    input: &rumoca_core::FunctionParam,
+    inputs: &[rumoca_core::FunctionParam],
+    input_idx: usize,
+    positional_args: &[&rumoca_core::Expression],
+    positional_idx: usize,
+) -> Option<rumoca_core::Expression> {
+    let (prefix, field) = split_flattened_record_input_name(&input.name)?;
+    let search_len = positional_idx.min(positional_args.len()).min(input_idx);
+    for previous_idx in (0..search_len).rev() {
+        let (previous_prefix, previous_field) =
+            split_flattened_record_input_name(&inputs.get(previous_idx)?.name)?;
+        if previous_prefix != prefix {
+            continue;
+        }
+        let base =
+            flattened_record_field_actual_base(positional_args[previous_idx], previous_field)?;
+        return Some(record_field_access_expr(base, field));
+    }
+    None
+}
+
+fn flattened_record_field_actual_base(
+    expr: &rumoca_core::Expression,
+    field: &str,
+) -> Option<rumoca_core::Expression> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } if subscripts.is_empty() => {
+            let base = name.as_str().strip_suffix(&format!(".{field}"))?;
+            Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(base),
+                subscripts: Vec::new(),
+                span: *span,
+            })
+        }
+        rumoca_core::Expression::FieldAccess {
+            base,
+            field: actual_field,
+            ..
+        } if actual_field == field => Some((**base).clone()),
+        _ => None,
+    }
+}
+
+fn record_field_access_expr(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::FieldAccess {
+        span: base.span().unwrap_or(rumoca_core::Span::DUMMY),
+        base: Box::new(base),
+        field: field.to_string(),
+    }
+}
+
 pub(super) fn missing_intrinsic_argument(
     function_name: &str,
     argument: &'static str,

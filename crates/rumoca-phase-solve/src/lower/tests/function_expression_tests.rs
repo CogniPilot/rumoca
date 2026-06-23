@@ -1651,6 +1651,47 @@ fn lower_expression_binds_projected_real_component_to_complex_input() {
 }
 
 #[test]
+fn lower_expression_synthesizes_sibling_flattened_record_input_field() {
+    let mut dae_model = dae::Dae::default();
+    let mut use_complex = rumoca_core::Function::new("My.useComplex", lower_test_span());
+    use_complex.inputs.push(function_param("c1_re"));
+    use_complex.inputs.push(function_param("c1_im"));
+    use_complex.outputs.push(function_param("y"));
+    use_complex.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: var("c1_im"),
+        span: lower_test_span(),
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(use_complex.name.clone(), use_complex);
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u.re"), scalar_var("u.re"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u.im"), scalar_var("u.im"));
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.useComplex",
+        )),
+        args: vec![source_var("u.re")],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("flattened record sibling field should be projected from the same actual base");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[4.5, -2.0], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) + 2.0).abs() < 1e-12);
+}
+
+#[test]
 fn lower_expression_rebinds_flattened_record_input_components() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();
