@@ -162,6 +162,138 @@ fn test_c_alg_rhs_prefers_direct_indexed_equation_for_array_element() {
 }
 
 #[test]
+fn test_c_alg_rhs_projects_whole_array_assignment_for_indexed_scalar_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "setpoint_u": "setpoint_u",
+            "setpoint_u[1]": "setpoint_u_1",
+            "setpoint_y": "setpoint_y"
+        },
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("setpoint_y", vec![])).unwrap(),
+                "rhs": serde_json::to_value(var("setpoint_u", vec![])).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("setpoint_y[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "setpoint_u_1");
+    assert!(
+        !rendered.trim().ends_with("setpoint_u"),
+        "indexed scalar assignment targets must project whole-array RHS by index:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_render_expr_at_index_projects_structurally_indexed_array_field() {
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "coil.ele[1].x_start": "coil_ele_1_x_start",
+            "coil.ele[1].x_start[1]": "coil_ele_1_x_start_1"
+        }
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ render_expr_at_index({"VarRef": {"name": "coil.ele[1].x_start", "subscripts": []}}, 1, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "coil_ele_1_x_start_1");
+    assert!(
+        !rendered.contains("coil_ele_1_x_start\n"),
+        "structurally indexed array fields must still project their own field index:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_discrete_rhs_keeps_guarded_when_ternary_for_non_sample_conditions() {
+    let dae_json = serde_json::json!({
+        "f_z": [{
+            "lhs": "z",
+            "rhs": {
+                "If": {
+                    "branches": [[
+                        {"VarRef": {"name": "trigger", "subscripts": []}},
+                        {"Literal": {"value": {"Real": 1.0}}}
+                    ]],
+                    "else_branch": {
+                        "BuiltinCall": {
+                            "function": "Pre",
+                            "args": [{"VarRef": {"name": "z", "subscripts": []}}]
+                        }
+                    }
+                }
+            }
+        }],
+        "f_m": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "subscript_underscore": true} %}
+z={{ discrete_rhs_for_var("z", dae.f_z, dae.f_m, dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("z=(trigger ? 1.0 : pre(z))"),
+        "ordinary guarded when RHS must render as C ternary, not unconditional update:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_discrete_rhs_sample_guard_keeps_event_update_value() {
+    let dae_json = serde_json::json!({
+        "f_z": [{
+            "lhs": "z",
+            "rhs": {
+                "If": {
+                    "branches": [[
+                        {
+                            "BuiltinCall": {
+                                "function": "Sample",
+                                "args": [{"VarRef": {"name": "clocked", "subscripts": []}}]
+                            }
+                        },
+                        {"Literal": {"value": {"Real": 1.0}}}
+                    ]],
+                    "else_branch": {
+                        "BuiltinCall": {
+                            "function": "Pre",
+                            "args": [{"VarRef": {"name": "z", "subscripts": []}}]
+                        }
+                    }
+                }
+            }
+        }],
+        "f_m": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "subscript_underscore": true} %}
+z={{ discrete_rhs_for_var("z", dae.f_z, dae.f_m, dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "z=1.0");
+}
+
+#[test]
 fn test_c_ode_rhs_solves_preserved_matrix_vector_derivative_equation() {
     let residual = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,

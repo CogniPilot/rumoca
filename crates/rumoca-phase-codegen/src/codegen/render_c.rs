@@ -1071,7 +1071,11 @@ fn find_algebraic_rhs_assignment(
         {
             // branches is a list of [condition, expression] pairs.
             let items: Vec<_> = branch_array.take(2).collect();
-            if let Some(update_expr) = items.get(1) {
+            if items
+                .first()
+                .is_some_and(|condition| is_sample_guard(condition))
+                && let Some(update_expr) = items.get(1)
+            {
                 return render_expression(update_expr, cfg).map(Some);
             }
         }
@@ -1108,6 +1112,16 @@ fn find_algebraic_rhs_assignment(
         return no_render_match();
     };
     render_expression(&elem, cfg).map(Some)
+}
+
+fn is_sample_guard(expr: &Value) -> bool {
+    let Ok(builtin) = get_field(expr, "BuiltinCall") else {
+        return false;
+    };
+    let Ok(function) = get_field(&builtin, "function") else {
+        return false;
+    };
+    matches!(function.to_string().trim_matches('"'), "Sample" | "sample")
 }
 
 /// Try subtraction form: 0 = var - expr, 0 = expr - var, 0 = -(A - B)
