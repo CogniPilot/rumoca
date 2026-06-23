@@ -799,7 +799,7 @@ pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
     for i in 0..len {
         match args.get_item(&Value::from(i)) {
             Ok(arg) if !arg.is_undefined() && !arg.is_none() => {
-                arg_strs.push(render_expression(&arg, cfg)?);
+                arg_strs.push(render_function_argument(&arg, cfg)?);
             }
             Ok(_) => return Err(render_err(format!("function argument {i} is missing"))),
             Err(err) => {
@@ -811,6 +811,19 @@ pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 
     Ok(arg_strs.join(", "))
+}
+
+fn render_function_argument(arg: &Value, cfg: &ExprConfig) -> RenderResult {
+    if let Ok(call) = get_field(arg, "FunctionCall")
+        && let Ok(name) = render_name_field(&call, "name", "FunctionCall")
+        && name.starts_with("__rumoca_named_arg__.")
+    {
+        let args = get_field(&call, "args")
+            .map_err(|err| render_err(format!("named function argument missing args: {err}")))?;
+        let value = required_arg(&args, 0, "named function argument")?;
+        return render_expression(&value, cfg);
+    }
+    render_expression(arg, cfg)
 }
 
 fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {

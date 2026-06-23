@@ -262,6 +262,36 @@ fn test_render_function_args_reject_unrenderable_item() {
 }
 
 #[test]
+fn test_render_function_call_strips_named_argument_markers() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_expr({
+    "FunctionCall": {
+        "name": "f",
+        "args": [
+            {
+                "FunctionCall": {
+                    "name": "__rumoca_named_arg__.x",
+                    "args": [{"VarRef": {"name": "r_N", "subscripts": []}}]
+                }
+            },
+            {
+                "FunctionCall": {
+                    "name": "__rumoca_named_arg__.x1",
+                    "args": [{"Literal": {"value": {"Real": 0.0}}}]
+                }
+            }
+        ]
+    }
+}, {}) }}
+"#;
+
+    let rendered = render_template(&dae, template).unwrap();
+
+    assert_eq!("f(r_N, 0.0)", rendered.trim());
+}
+
+#[test]
 fn test_render_equation_rejects_unrenderable_explicit_rhs() {
     let dae = dae::Dae::new();
     let template = r#"
