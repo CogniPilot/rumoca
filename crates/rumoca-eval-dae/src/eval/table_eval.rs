@@ -1,4 +1,5 @@
 use super::*;
+use std::path::{Path, PathBuf};
 
 pub(super) fn eval_table_matrix_arg<T: SimFloat>(
     expr: &rumoca_core::Expression,
@@ -119,6 +120,182 @@ fn richer_table_start_matrix<T: SimFloat>(
     };
     let start_len = start_matrix.iter().map(Vec::len).sum::<usize>();
     Ok((start_len > flat_len).then_some(start_matrix))
+}
+
+pub(super) fn eval_external_table_data_matrix<T: SimFloat>(
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+    is_time_table: bool,
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
+    let table_arg_idx = 2usize;
+    let Some(table_arg) = external_table_constructor_arg(args, "table", table_arg_idx) else {
+        return Ok(None);
+    };
+    let table_matrix = eval_table_matrix_arg(table_arg, env)?;
+    if table_matrix
+        .as_ref()
+        .is_some_and(|matrix| !matrix.is_empty())
+    {
+        return Ok(table_matrix);
+    }
+
+    let file_name = external_table_constructor_arg(args, "fileName", 1)
+        .and_then(|expr| eval_string_expr(expr, env))
+        .filter(|name| name != "NoName" && !name.trim().is_empty());
+    let Some(file_name) = file_name else {
+        return Ok(table_matrix);
+    };
+
+    let table_name = external_table_constructor_arg(args, "tableName", 0)
+        .and_then(|expr| eval_string_expr(expr, env))
+        .filter(|name| name != "NoName" && !name.trim().is_empty())
+        .unwrap_or_else(|| {
+            if is_time_table {
+                "tab".to_string()
+            } else {
+                "tab1".to_string()
+            }
+        });
+
+    Ok(read_modelica_text_table(&file_name, &table_name)?)
+}
+
+fn eval_string_expr<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value),
+            ..
+        } => Some(value.clone()),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => env
+            .start_exprs
+            .get(name.as_str())
+            .and_then(|start| eval_string_expr(start, env)),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                if eval_expr::<T>(condition, env).ok()?.to_bool() {
+                    return eval_string_expr(value, env);
+                }
+            }
+            eval_string_expr(else_branch, env)
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if rumoca_core::top_level_last_segment(name.as_str()) == "loadResource" =>
+        {
+            let raw = args.first().and_then(|arg| eval_string_expr(arg, env))?;
+            resolve_modelica_resource_path(&raw)
+                .map(|path| path.to_string_lossy().into_owned())
+                .or(Some(raw))
+        }
+        _ => None,
+    }
+}
+
+fn read_modelica_text_table(
+    file_name: &str,
+    table_name: &str,
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
+    let Some(path) = resolve_modelica_resource_path(file_name) else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path).map_err(|_| EvalError::UnsupportedExpression {
+        kind: "external table file",
+    })?;
+    parse_modelica_text_table(&text, table_name)
+}
+
+fn parse_modelica_text_table(
+    text: &str,
+    table_name: &str,
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
+    let needle = format!("double {table_name}(");
+    let mut lines = text.lines();
+    let Some(header) = lines.find(|line| line.trim_start().starts_with(&needle)) else {
+        return Ok(None);
+    };
+    let dims = header
+        .split_once('(')
+        .and_then(|(_, tail)| tail.split_once(')'))
+        .map(|(dims, _)| dims)
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "external table header",
+        })?
+        .split(',')
+        .map(|part| part.trim().parse::<usize>().ok())
+        .collect::<Option<Vec<_>>>()
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "external table header",
+        })?;
+    if dims.len() != 2 || dims[0] == 0 || dims[1] < 2 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "external table header",
+        });
+    }
+
+    let mut rows = Vec::with_capacity(dims[0]);
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let row = trimmed
+            .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse::<f64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "external table row",
+            })?;
+        if row.len() != dims[1] {
+            return Err(EvalError::UnsupportedExpression {
+                kind: "external table row",
+            });
+        }
+        rows.push(row);
+        if rows.len() == dims[0] {
+            return Ok(Some(rows));
+        }
+    }
+    Err(EvalError::UnsupportedExpression {
+        kind: "external table data",
+    })
+}
+
+pub(super) fn resolve_modelica_resource_path(raw: &str) -> Option<PathBuf> {
+    let raw_path = Path::new(raw);
+    if raw_path.is_file() {
+        return Some(raw_path.to_path_buf());
+    }
+    let (package, rest) = raw.strip_prefix("modelica://")?.split_once('/')?;
+    for root in modelica_resource_source_roots() {
+        if let Some(path) = resolve_modelica_uri_against_root(&root, package, rest) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn modelica_resource_source_roots() -> Vec<PathBuf> {
+    std::env::var_os("RUMOCA_MODELICA_SOURCE_ROOTS")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+fn resolve_modelica_uri_against_root(root: &Path, package: &str, rest: &str) -> Option<PathBuf> {
+    let direct = root.join(rest);
+    if root.file_name().and_then(|name| name.to_str()) == Some(package) && direct.is_file() {
+        return Some(direct);
+    }
+    let nested = root.join(package).join(rest);
+    nested.is_file().then_some(nested)
 }
 
 fn map_selected_table_column(
@@ -296,20 +473,13 @@ pub(super) fn eval_table_constructor<T: SimFloat>(
     env: &VarEnv<T>,
     is_time_table: bool,
 ) -> Result<Option<T>, EvalError> {
-    let table_arg_idx = 2usize;
     let columns_arg_idx = if is_time_table { 4 } else { 3 };
     let smoothness_idx = if is_time_table { 5 } else { 4 };
     let extrapolation_idx = if is_time_table { 6 } else { 5 };
 
-    let Some(table_arg) = external_table_constructor_arg(args, "table", table_arg_idx) else {
+    let Some(table_matrix) = eval_external_table_data_matrix(args, env, is_time_table)? else {
         return Ok(None);
     };
-    let Some(table_matrix) = eval_table_matrix_arg(table_arg, env)? else {
-        return Ok(None);
-    };
-    if table_matrix.is_empty() {
-        return Ok(None);
-    }
 
     let columns = eval_columns_arg(
         external_table_constructor_arg(args, "columns", columns_arg_idx),

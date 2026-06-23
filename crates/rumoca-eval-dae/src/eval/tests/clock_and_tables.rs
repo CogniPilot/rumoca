@@ -607,6 +607,57 @@ fn test_table1d_constructor_uses_start_expr_fallback_for_dynamic_dims() {
 }
 
 #[test]
+fn test_table1d_constructor_loads_modelica_text_table_file() {
+    let mut env = VarEnv::<f64>::new();
+    let path = std::env::temp_dir().join(format!(
+        "rumoca-table-{}-{}.txt",
+        std::process::id(),
+        "table1d"
+    ));
+    std::fs::write(
+        &path,
+        "#1\n\
+double tab1(3,2)\n\
+0,10\n\
+1,12\n\
+2,14\n",
+    )
+    .expect("write table fixture");
+
+    let constructor = fn_call(
+        "ExternalCombiTable1D",
+        vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("tab1".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(path.to_string_lossy().into_owned()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Empty {
+                span: rumoca_core::Span::DUMMY,
+            },
+            columns_expr(),
+            int_lit(1),
+            int_lit(1),
+        ],
+    );
+    let table_id = eval_expr::<f64>(&constructor, &env).expect("file table should register");
+    assert!(table_id > 0.0);
+
+    env.set("table_id", table_id);
+    let lookup = fn_call(
+        "getTable1DValueNoDer",
+        vec![var("table_id"), int_lit(1), lit(1.5)],
+    );
+    let y = eval_expr::<f64>(&lookup, &env).expect("file table lookup should evaluate");
+    std::fs::remove_file(path).ok();
+
+    assert!((y - 13.0).abs() < 1e-12);
+}
+
+#[test]
 fn test_table1d_constructor_accepts_flattened_field_access_matrix() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([(

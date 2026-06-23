@@ -79,8 +79,8 @@ use clock_eval::{
     infer_clock_timing_from_expr,
 };
 use table_eval::{
-    eval_table_1d_lookup, eval_table_1d_lookup_with_runtime, eval_table_constructor,
-    eval_table_matrix_arg, table_x_bounds,
+    eval_external_table_data_matrix, eval_table_1d_lookup, eval_table_1d_lookup_with_runtime,
+    eval_table_constructor, table_x_bounds,
 };
 
 macro_rules! warn_once {

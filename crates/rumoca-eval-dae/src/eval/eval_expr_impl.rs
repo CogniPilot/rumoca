@@ -403,8 +403,14 @@ fn validate_external_table_constructor<T: SimFloat>(
             kind: "external table constructor",
         },
     )?;
-    validate_array_argument(table_arg, env)?;
-    let table_matrix = validate_external_table_data_arg(table_arg, env)?;
+    if !matches!(table_arg, rumoca_core::Expression::Empty { .. }) {
+        validate_array_argument(table_arg, env)?;
+    }
+    let table_matrix = validate_external_table_constructor_data(args, env, is_time_table)?.ok_or(
+        EvalError::UnsupportedExpression {
+            kind: "external table data",
+        },
+    )?;
 
     let columns_idx = if is_time_table { 4 } else { 3 };
     if let Some(columns) = external_table_constructor_arg(args, "columns", columns_idx) {
@@ -624,15 +630,15 @@ fn copy_selected_input_fields_for_validation<T: SimFloat>(
     Ok(copied)
 }
 
-fn validate_external_table_data_arg<T: SimFloat>(
-    table_arg: &rumoca_core::Expression,
+fn validate_external_table_constructor_data<T: SimFloat>(
+    args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> Result<Vec<Vec<f64>>, EvalError> {
-    let table_matrix =
-        eval_table_matrix_arg(table_arg, env)?.ok_or(EvalError::UnsupportedExpression {
-            kind: "external table data",
-        })?;
-    validate_external_table_matrix(&table_matrix)?;
+    is_time_table: bool,
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
+    let table_matrix = eval_external_table_data_matrix(args, env, is_time_table)?;
+    if let Some(table_matrix) = &table_matrix {
+        validate_external_table_matrix(table_matrix)?;
+    }
     Ok(table_matrix)
 }
 
