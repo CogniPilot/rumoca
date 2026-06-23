@@ -2106,6 +2106,7 @@ static void rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Flo
     memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
     m->time = t;
     m->dirty_values = 1;
+    compute_discrete_updates(m);
     compute_derivatives(m);
     memcpy(dxdt, m->xdot, N_STATES * sizeof(fmi3Float64));
 #else

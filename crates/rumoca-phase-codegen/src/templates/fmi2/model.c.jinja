@@ -1431,6 +1431,7 @@ FMI2_EXPORT fmi2Status fmi2DoStep(
 
         m->time = t;
         m->dirty_values = 1;
+        compute_discrete_updates(m);
         compute_derivatives(m);
 
 #if N_STATES > 0
@@ -1444,6 +1445,7 @@ FMI2_EXPORT fmi2Status fmi2DoStep(
 
     m->time = t_end;
     m->dirty_values = 1;
+    compute_discrete_updates(m);
     compute_derivatives(m);
 
     return fmi2OK;

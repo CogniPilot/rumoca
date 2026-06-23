@@ -880,6 +880,26 @@ fn test_fmi_real_setters_mark_values_dirty() {
     );
 }
 
+#[test]
+fn test_fmi_cosimulation_refreshes_discrete_updates_before_derivatives() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let do_step = template_section(fmi2, "FMI2_EXPORT fmi2Status fmi2DoStep");
+    assert!(
+        do_step.contains("m->dirty_values = 1;\n        compute_discrete_updates(m);\n        compute_derivatives(m);")
+            && do_step.contains("m->dirty_values = 1;\n    compute_discrete_updates(m);\n    compute_derivatives(m);"),
+        "FMI 2 Co-Simulation steps must refresh input-driven discrete gates before derivative evaluation:\n{do_step}"
+    );
+
+    let fmi3 = builtin_template("fmi3", "model.c.jinja");
+    let rk45_eval = template_section(fmi3, "static void rk45_eval");
+    assert!(
+        rk45_eval.contains(
+            "m->dirty_values = 1;\n    compute_discrete_updates(m);\n    compute_derivatives(m);"
+        ),
+        "FMI 3 Co-Simulation RK derivative evaluations must refresh input-driven discrete gates before derivative evaluation:\n{rk45_eval}"
+    );
+}
+
 fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
     template
         .split(marker)
