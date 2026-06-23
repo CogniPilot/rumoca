@@ -44,6 +44,7 @@ fn left_limit_time_value(time: f64) -> f64 {
 fn eval_var_ref_from_pre_store<T: SimFloat>(
     name: &rumoca_core::VarName,
     subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
     let mut pre_env = env.clone();
@@ -54,7 +55,7 @@ fn eval_var_ref_from_pre_store<T: SimFloat>(
         }
         pre_env.set(key.as_str(), T::from_f64(value));
     }
-    match try_eval_var_ref(name, subscripts, &pre_env) {
+    match try_eval_var_ref(name, subscripts, span, &pre_env) {
         Ok(value) => Ok(Some(value)),
         Err(EvalError::MissingBinding { .. }) => Ok(None),
         Err(err) => Err(err),
@@ -182,7 +183,9 @@ pub(in crate::eval) fn eval_builtin_pre<T: SimFloat>(
     }
 
     if let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
+        name,
+        subscripts,
+        span,
     } = arg0
     {
         if subscripts.is_empty()
@@ -190,7 +193,7 @@ pub(in crate::eval) fn eval_builtin_pre<T: SimFloat>(
         {
             return Ok(T::from_f64(value));
         }
-        if let Some(value) = eval_var_ref_from_pre_store(name.var_name(), subscripts, env)? {
+        if let Some(value) = eval_var_ref_from_pre_store(name.var_name(), subscripts, *span, env)? {
             return Ok(value);
         }
     }
@@ -214,7 +217,9 @@ pub(in crate::eval) fn eval_builtin_previous<T: SimFloat>(
     };
 
     if let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
+        name,
+        subscripts,
+        span,
     } = arg0
     {
         if subscripts.is_empty()
@@ -222,7 +227,7 @@ pub(in crate::eval) fn eval_builtin_previous<T: SimFloat>(
         {
             return Ok(T::from_f64(value));
         }
-        if let Some(value) = eval_var_ref_from_pre_store(name.var_name(), subscripts, env)? {
+        if let Some(value) = eval_var_ref_from_pre_store(name.var_name(), subscripts, *span, env)? {
             return Ok(value);
         }
         // MLS §16.5.1 / §16.4: at the first clock tick, previous(v) reads the

@@ -386,7 +386,7 @@ fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
 
 #[cfg(test)]
 mod tests {
-    use rumoca_ir_solve::{BinaryOp, ExternalFunctionKind, LinearOp, UnaryOp};
+    use rumoca_ir_solve::{BinaryOp, LinearOp, UnaryOp};
     use wasmparser::FunctionBody;
     use wasmparser::Parser;
     use wasmparser::Payload;

@@ -363,11 +363,12 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
 
     if matches!(lhs.as_ref(), Expression::FieldAccess { .. })
         && let Some(var_name) = render_lhs_path(lhs)
+        && let Some(span) = lhs.span()
         && let Some(size) = extract_lhs_var_size_from_var_name(
             &Expression::VarRef {
                 name: var_name.into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
             flat,
             prefix_counts,

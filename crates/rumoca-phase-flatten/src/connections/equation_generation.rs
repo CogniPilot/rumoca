@@ -339,8 +339,9 @@ pub(crate) fn process_connections(
         collect_interface_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
 
     // Build connection sets (variables connected together)
-    let (connection_sets, raw_stream_groups) =
+    let (connection_sets, raw_stream_groups, stream_interface_equation_count) =
         build_connection_sets(&all_connections, flat, &prefix_children, &var_index)?;
+    flat.stream_interface_equation_count = stream_interface_equation_count;
 
     // Generate equations for each connection set
     for set in connection_sets {

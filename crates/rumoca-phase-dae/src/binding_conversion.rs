@@ -901,9 +901,9 @@ mod tests {
                 is_discrete_type: true,
                 binding: Some(Expression::Literal {
                     value: rumoca_core::Literal::Boolean(false),
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                ..Default::default()
+                ..flat::Variable::empty_with_span(crate::test_support::test_span())
             },
         );
         flat.add_variable(
@@ -913,7 +913,7 @@ mod tests {
                 variability: rumoca_core::Variability::Empty,
                 is_primitive: true,
                 is_discrete_type: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(crate::test_support::test_span())
             },
         );
 

@@ -86,9 +86,15 @@ fn external_call_runtime_fails_closed_without_native_bridge() {
     ];
     let plan = plan_row(&row).expect("general plan");
     let mut scratch = Vec::new();
+    let mut out = [0.0];
 
-    let err = execute_row(&plan, &mut scratch, &[3.0], &[5.0], 0.0, None, &[])
-        .expect_err("external calls require an explicit native bridge");
+    let err = execute_row(
+        &plan,
+        &mut scratch,
+        row_inputs(&[3.0], &[5.0], 0.0, None, &[]),
+        &mut out,
+    )
+    .expect_err("external calls require an explicit native bridge");
 
     assert!(
         matches!(err, CompileError::Backend(message) if message.contains("external function BuildingsEnergyPlusExchange")),

@@ -118,18 +118,12 @@ fn validate_expr<T: SimFloat>(
     match expr {
         rumoca_core::Expression::Literal { value, .. } => validate_literal(value),
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
+            name,
+            subscripts,
+            span,
         } => {
-            for subscript in subscripts {
-                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                    if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
-                        validate_array_argument(expr, env)?;
-                    } else {
-                        validate_expr(expr, env)?;
-                    }
-                }
-            }
-            try_eval_var_ref(name.var_name(), subscripts, env).map(|_| ())
+            validate_subscript_exprs(subscripts, env)?;
+            try_eval_var_ref(name.var_name(), subscripts, *span, env).map(|_| ())
         }
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             validate_binary_expr(op, lhs, rhs, env)
@@ -179,6 +173,23 @@ fn validate_expr<T: SimFloat>(
             })
         }
     }
+}
+
+fn validate_subscript_exprs<T: SimFloat>(
+    subscripts: &[rumoca_core::Subscript],
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    for subscript in subscripts {
+        let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+            continue;
+        };
+        if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
+            validate_array_argument(expr, env)?;
+            continue;
+        }
+        validate_expr(expr, env)?;
+    }
+    Ok(())
 }
 
 fn validate_function_call_expr<T: SimFloat>(
@@ -1576,6 +1587,7 @@ pub(super) fn eval_literal<T: SimFloat>(lit: &rumoca_core::Literal) -> T {
 fn try_eval_var_ref<T: SimFloat>(
     name: &rumoca_core::VarName,
     subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
     if subscripts.is_empty() {
@@ -1601,7 +1613,7 @@ fn try_eval_var_ref<T: SimFloat>(
             &rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new(name.as_str()),
                 subscripts: subscripts.to_vec(),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
             env,
         )?;

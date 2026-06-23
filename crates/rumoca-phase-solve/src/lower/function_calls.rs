@@ -10,11 +10,12 @@ mod random;
 mod runtime_intrinsics;
 use helpers::{
     ComplexProjectionComprehensionCtx, FlattenedRecordInputRequest,
-    FlattenedRecordPositionalInputRequest, NamedOrPositionalArg, append_complex_projection_values,
-    checked_usize_dims_to_i64, complex_projection_vec_with_capacity, flattened_input_has_prefix,
-    function_input_actual_dim, missing_intrinsic_argument, missing_required_function_input,
-    record_constructor_field, split_flattened_record_input_name,
-    synthesize_missing_flattened_record_field_arg, validate_complex_component_width,
+    FlattenedRecordPositionalInputRequest, FunctionInputRequest, NamedOrPositionalArg,
+    append_complex_projection_values, checked_usize_dims_to_i64,
+    complex_projection_vec_with_capacity, flattened_input_has_prefix, function_input_actual_dim,
+    missing_intrinsic_argument, missing_required_function_input, record_constructor_field,
+    split_flattened_record_input_name, synthesize_missing_flattened_record_field_arg,
+    validate_complex_component_width,
 };
 pub(super) use runtime_intrinsics::*;
 
@@ -614,112 +615,24 @@ impl<'a> LowerBuilder<'a> {
         let mut positional_idx = 0usize;
 
         for (input_idx, input) in inputs.iter().enumerate() {
-            if let Some(arg_expr) = named_args.get(input.name.as_str()) {
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    arg_expr,
-                    caller_scope,
-                    call_depth + 1,
-                )?;
-                continue;
-            }
-            if self.bind_flattened_record_positional_input(
+            if self.try_bind_function_input(
                 FunctionInputBindState {
                     scope: &mut scope,
                     const_scope: &mut const_scope,
                     const_bindings: &mut const_bindings,
                 },
-                FlattenedRecordPositionalInputRequest {
+                FunctionInputRequest {
                     function_name,
                     input,
                     inputs,
                     input_idx,
+                    named_args: &named_args,
                     positional_args: &positional_args,
                     positional_idx: &mut positional_idx,
                     caller_scope,
                     call_depth: call_depth + 1,
                 },
             )? {
-                continue;
-            }
-            if positional_args.len() > inputs.len()
-                && let Some(fields) = self.record_constructor_fields(&input.type_name)
-                && self.bind_flattened_record_function_input(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    FlattenedRecordInputRequest {
-                        input,
-                        fields: &fields,
-                        positional_args: &positional_args,
-                        positional_idx: &mut positional_idx,
-                        caller_scope,
-                        call_depth: call_depth + 1,
-                    },
-                )?
-            {
-                continue;
-            }
-            if let Some(arg_expr) =
-                next_positional_function_input_arg(input, &positional_args, &mut positional_idx)
-            {
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    arg_expr,
-                    caller_scope,
-                    call_depth + 1,
-                )?;
-                continue;
-            }
-            if let Some(default) = input.default.as_ref() {
-                let local_scope = scope.clone();
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    default,
-                    &local_scope,
-                    call_depth + 1,
-                )?;
-                continue;
-            }
-            if let Some(synthesized) = synthesize_missing_flattened_record_field_arg(
-                input,
-                inputs,
-                input_idx,
-                &positional_args,
-                positional_idx,
-            ) {
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    &synthesized,
-                    caller_scope,
-                    call_depth + 1,
-                )?;
                 continue;
             }
 
@@ -730,6 +643,128 @@ impl<'a> LowerBuilder<'a> {
             scope,
             const_bindings,
         })
+    }
+
+    fn try_bind_function_input(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        request: FunctionInputRequest<'_, '_>,
+    ) -> Result<bool, LowerError> {
+        if let Some(arg_expr) = request.named_args.get(request.input.name.as_str()) {
+            return self
+                .bind_function_input_arg_or_closure(
+                    state,
+                    request.function_name,
+                    request.input,
+                    arg_expr,
+                    request.caller_scope,
+                    request.call_depth,
+                )
+                .map(|()| true);
+        }
+        self.try_bind_non_named_function_input(state, request)
+    }
+
+    fn try_bind_non_named_function_input(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        request: FunctionInputRequest<'_, '_>,
+    ) -> Result<bool, LowerError> {
+        if self.bind_flattened_record_positional_input(
+            FunctionInputBindState {
+                scope: state.scope,
+                const_scope: state.const_scope,
+                const_bindings: state.const_bindings,
+            },
+            FlattenedRecordPositionalInputRequest {
+                function_name: request.function_name,
+                input: request.input,
+                inputs: request.inputs,
+                input_idx: request.input_idx,
+                positional_args: request.positional_args,
+                positional_idx: request.positional_idx,
+                caller_scope: request.caller_scope,
+                call_depth: request.call_depth,
+            },
+        )? {
+            return Ok(true);
+        }
+        if request.positional_args.len() > request.inputs.len()
+            && let Some(fields) = self.record_constructor_fields(&request.input.type_name)
+            && self.bind_flattened_record_function_input(
+                FunctionInputBindState {
+                    scope: state.scope,
+                    const_scope: state.const_scope,
+                    const_bindings: state.const_bindings,
+                },
+                FlattenedRecordInputRequest {
+                    input: request.input,
+                    fields: &fields,
+                    positional_args: request.positional_args,
+                    positional_idx: request.positional_idx,
+                    caller_scope: request.caller_scope,
+                    call_depth: request.call_depth,
+                },
+            )?
+        {
+            return Ok(true);
+        }
+        self.try_bind_simple_function_input(state, request)
+    }
+
+    fn try_bind_simple_function_input(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        request: FunctionInputRequest<'_, '_>,
+    ) -> Result<bool, LowerError> {
+        if let Some(arg_expr) = next_positional_function_input_arg(
+            request.input,
+            request.positional_args,
+            request.positional_idx,
+        ) {
+            return self
+                .bind_function_input_arg_or_closure(
+                    state,
+                    request.function_name,
+                    request.input,
+                    arg_expr,
+                    request.caller_scope,
+                    request.call_depth,
+                )
+                .map(|()| true);
+        }
+        if let Some(default) = request.input.default.as_ref() {
+            let local_scope = state.scope.clone();
+            return self
+                .bind_function_input_arg_or_closure(
+                    state,
+                    request.function_name,
+                    request.input,
+                    default,
+                    &local_scope,
+                    request.call_depth,
+                )
+                .map(|()| true);
+        }
+        if let Some(synthesized) = synthesize_missing_flattened_record_field_arg(
+            request.input,
+            request.inputs,
+            request.input_idx,
+            request.positional_args,
+            *request.positional_idx,
+        ) {
+            return self
+                .bind_function_input_arg_or_closure(
+                    state,
+                    request.function_name,
+                    request.input,
+                    &synthesized,
+                    request.caller_scope,
+                    request.call_depth,
+                )
+                .map(|()| true);
+        }
+        Ok(false)
     }
 
     fn bind_flattened_record_positional_input(

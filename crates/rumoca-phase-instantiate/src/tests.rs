@@ -813,17 +813,18 @@ fn test_multiple_late_outer_refs_share_single_inner_instance() {
     let uses_outer_id = DefId::new(111);
     let root_id = DefId::new(112);
 
+    let mut state_x = make_component("x", "Real", None);
+    state_x.location = make_location("outer.mo", 20, 21);
     let state = ast::ClassDef {
         def_id: Some(state_id),
         name: make_token("State"),
-        components: [("x".to_string(), make_component("x", "Real", None))]
-            .into_iter()
-            .collect(),
-        equations: vec![make_simple_equation("x", 1)],
+        components: [("x".to_string(), state_x)].into_iter().collect(),
+        equations: vec![make_simple_equation_at("x", 1, "outer.mo", 0, 1)],
         ..Default::default()
     };
 
     let mut outer_shared = make_component("shared", "State", Some(state_id));
+    outer_shared.location = make_location("outer.mo", 6, 12);
     outer_shared.outer = true;
     let uses_outer = ast::ClassDef {
         def_id: Some(uses_outer_id),
@@ -832,9 +833,12 @@ fn test_multiple_late_outer_refs_share_single_inner_instance() {
         ..Default::default()
     };
 
-    let child_a = make_component("childA", "UsesOuter", Some(uses_outer_id));
-    let child_b = make_component("childB", "UsesOuter", Some(uses_outer_id));
+    let mut child_a = make_component("childA", "UsesOuter", Some(uses_outer_id));
+    child_a.location = make_location("outer.mo", 22, 28);
+    let mut child_b = make_component("childB", "UsesOuter", Some(uses_outer_id));
+    child_b.location = make_location("outer.mo", 29, 35);
     let mut inner_shared = make_component("shared", "State", Some(state_id));
+    inner_shared.location = make_location("outer.mo", 13, 19);
     inner_shared.inner = true;
     let root = ast::ClassDef {
         def_id: Some(root_id),
@@ -850,6 +854,8 @@ fn test_multiple_late_outer_refs_share_single_inner_instance() {
     };
 
     let mut tree = ast::ClassTree::new();
+    tree.source_map
+        .add("outer.mo", "x = 1; shared shared x childA childB");
     tree.definitions.classes.insert("State".to_string(), state);
     tree.definitions
         .classes
@@ -861,7 +867,7 @@ fn test_multiple_late_outer_refs_share_single_inner_instance() {
 
     let outcome = instantiate_model_with_outcome(&tree, "Root");
     let InstantiationOutcome::Success(overlay) = outcome else {
-        panic!("multiple late outer refs should resolve to the declared inner");
+        panic!("multiple late outer refs should resolve to the declared inner: {outcome:?}");
     };
 
     assert_eq!(

@@ -676,33 +676,13 @@ fn solve_op_expr(
     dialect: SolveRowDialect,
     regs: &[String],
 ) -> Result<SolveOpEffect, minijinja::Error> {
+    if let Some(effect) = solve_load_or_move_effect(op, cfg, dialect, regs)? {
+        return Ok(effect);
+    }
     if let Ok(value) = get_field(op, "Const") {
         let dst = solve_field_usize(&value, "dst")?;
         let expr = dialect.format_const(solve_const_value_string(&value, dialect.infinity())?);
         return Ok(SolveOpEffect::Compute { dst, expr });
-    }
-    if let Ok(value) = get_field(op, "LoadTime") {
-        let dst = solve_field_usize(&value, "dst")?;
-        return Ok(SolveOpEffect::Compute {
-            dst,
-            expr: cfg.time.clone(),
-        });
-    }
-    if let Ok(value) = get_field(op, "LoadY") {
-        let dst = solve_field_usize(&value, "dst")?;
-        let index = solve_field_usize(&value, "index")?;
-        return Ok(SolveOpEffect::Compute {
-            dst,
-            expr: cfg.y_access(index),
-        });
-    }
-    if let Ok(value) = get_field(op, "LoadP") {
-        let dst = solve_field_usize(&value, "dst")?;
-        let index = solve_field_usize(&value, "index")?;
-        return Ok(SolveOpEffect::Compute {
-            dst,
-            expr: cfg.p_access(index),
-        });
     }
     if let Ok(value) = get_field(op, "LoadIndexedP") {
         return solve_indexed_effect(&value, cfg, dialect, regs, false);
@@ -710,59 +690,11 @@ fn solve_op_expr(
     if let Ok(value) = get_field(op, "LoadIndexedSeed") {
         return solve_indexed_effect(&value, cfg, dialect, regs, true);
     }
-    if let Ok(value) = get_field(op, "LoadSeed") {
-        let dst = solve_field_usize(&value, "dst")?;
-        let index = solve_field_usize(&value, "index")?;
-        let Some(seed) = cfg.seed_access(index) else {
-            return Err(render_err(
-                "LoadSeed requires a `seed` access pattern in solve-row C output",
-            ));
-        };
-        return Ok(SolveOpEffect::Compute { dst, expr: seed });
-    }
-    if let Ok(value) = get_field(op, "Move") {
-        let dst = solve_field_usize(&value, "dst")?;
-        let src = solve_reg(regs, solve_field_usize(&value, "src")?)?;
-        return Ok(SolveOpEffect::Compute { dst, expr: src });
-    }
     if let Ok(value) = get_field(op, "LinearSolveComponent") {
         return solve_linsolve_effect(&value, dialect, regs);
     }
     if let Ok(value) = get_field(op, "ExternalCall") {
-        let dst = solve_field_usize(&value, "dst")?;
-        let function = solve_variant_name(&get_field(&value, "function")?)?;
-        let output_index = solve_field_usize(&value, "output_index")?;
-        let arg_count = solve_field_usize(&value, "arg_count")?;
-        let args =
-            get_field(&value, "args").map_err(|_| render_err("ExternalCall missing args field"))?;
-        let args_len = args
-            .len()
-            .ok_or_else(|| render_err("ExternalCall args field is not a sequence"))?;
-        if arg_count > args_len {
-            return Err(render_err(format!(
-                "ExternalCall arg_count {arg_count} exceeds args length {args_len}"
-            )));
-        }
-        let mut rendered_args = Vec::with_capacity(arg_count);
-        for i in 0..arg_count {
-            let reg = args
-                .get_item(&Value::from(i))
-                .map_err(|err| render_err(format!("ExternalCall arg {i} inaccessible: {err}")))?
-                .as_usize()
-                .ok_or_else(|| render_err(format!("ExternalCall arg {i} is not a register")))?;
-            rendered_args.push(solve_reg(regs, reg)?);
-        }
-        let args_expr = if rendered_args.is_empty() {
-            "NULL".to_string()
-        } else {
-            format!("(double[]){{{}}}", rendered_args.join(", "))
-        };
-        return Ok(SolveOpEffect::Compute {
-            dst,
-            expr: format!(
-                "RUMOCA_SOLVE_EXTERNAL_CALL(\"{function}\", {output_index}, {arg_count}, {args_expr})"
-            ),
-        });
+        return solve_external_call_effect(&value, regs);
     }
     if let Ok(value) = get_field(op, "Unary") {
         let dst = solve_field_usize(&value, "dst")?;
@@ -808,6 +740,97 @@ fn solve_op_expr(
         return Ok(SolveOpEffect::Store { src });
     }
     Err(render_err(format!("unsupported solve LinearOp: {op}")))
+}
+
+fn solve_load_or_move_effect(
+    op: &Value,
+    cfg: &SolveRowCConfig,
+    _dialect: SolveRowDialect,
+    regs: &[String],
+) -> Result<Option<SolveOpEffect>, minijinja::Error> {
+    if let Ok(value) = get_field(op, "LoadTime") {
+        let dst = solve_field_usize(&value, "dst")?;
+        return Ok(Some(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.time.clone(),
+        }));
+    }
+    if let Ok(value) = get_field(op, "LoadY") {
+        let dst = solve_field_usize(&value, "dst")?;
+        let index = solve_field_usize(&value, "index")?;
+        return Ok(Some(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.y_access(index),
+        }));
+    }
+    if let Ok(value) = get_field(op, "LoadP") {
+        let dst = solve_field_usize(&value, "dst")?;
+        let index = solve_field_usize(&value, "index")?;
+        return Ok(Some(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.p_access(index),
+        }));
+    }
+    if let Ok(value) = get_field(op, "LoadSeed") {
+        let dst = solve_field_usize(&value, "dst")?;
+        let index = solve_field_usize(&value, "index")?;
+        let Some(seed) = cfg.seed_access(index) else {
+            return Err(render_err(
+                "LoadSeed requires a `seed` access pattern in solve-row C output",
+            ));
+        };
+        return Ok(Some(SolveOpEffect::Compute { dst, expr: seed }));
+    }
+    if let Ok(value) = get_field(op, "Move") {
+        let dst = solve_field_usize(&value, "dst")?;
+        let src = solve_reg(regs, solve_field_usize(&value, "src")?)?;
+        return Ok(Some(SolveOpEffect::Compute { dst, expr: src }));
+    }
+    Ok(no_solve_load_or_move_effect())
+}
+
+fn no_solve_load_or_move_effect() -> Option<SolveOpEffect> {
+    None
+}
+
+fn solve_external_call_effect(
+    value: &Value,
+    regs: &[String],
+) -> Result<SolveOpEffect, minijinja::Error> {
+    let dst = solve_field_usize(value, "dst")?;
+    let function = solve_variant_name(&get_field(value, "function")?)?;
+    let output_index = solve_field_usize(value, "output_index")?;
+    let arg_count = solve_field_usize(value, "arg_count")?;
+    let args =
+        get_field(value, "args").map_err(|_| render_err("ExternalCall missing args field"))?;
+    let args_len = args
+        .len()
+        .ok_or_else(|| render_err("ExternalCall args field is not a sequence"))?;
+    if arg_count > args_len {
+        return Err(render_err(format!(
+            "ExternalCall arg_count {arg_count} exceeds args length {args_len}"
+        )));
+    }
+    let mut rendered_args = Vec::with_capacity(arg_count);
+    for i in 0..arg_count {
+        let reg = args
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("ExternalCall arg {i} inaccessible: {err}")))?
+            .as_usize()
+            .ok_or_else(|| render_err(format!("ExternalCall arg {i} is not a register")))?;
+        rendered_args.push(solve_reg(regs, reg)?);
+    }
+    let args_expr = if rendered_args.is_empty() {
+        "NULL".to_string()
+    } else {
+        format!("(double[]){{{}}}", rendered_args.join(", "))
+    };
+    Ok(SolveOpEffect::Compute {
+        dst,
+        expr: format!(
+            "RUMOCA_SOLVE_EXTERNAL_CALL(\"{function}\", {output_index}, {arg_count}, {args_expr})"
+        ),
+    })
 }
 
 fn render_solve_op_for(

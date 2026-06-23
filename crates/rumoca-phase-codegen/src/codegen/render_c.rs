@@ -1,5 +1,9 @@
 //! C-backend template functions for FMI2 and embedded-C code generation.
 //!
+//! SPEC_0021 file-size exception: C/FMI RHS helper surfaces currently share
+//! one module. split plan: move algebraic RHS, ODE RHS, and discrete RHS helper
+//! families into separate render_c submodules.
+//!
 //! These functions are registered in the minijinja environment and used by
 //! `fmi2/model.c.jinja` and `embedded_c/model.c.jinja` templates to extract explicit
 //! ODE/algebraic RHS expressions from residual-form DAE equations.
@@ -1179,9 +1183,7 @@ fn find_algebraic_rhs_assignment(
         {
             // branches is a list of [condition, expression] pairs.
             let items: Vec<_> = branch_array.take(2).collect();
-            if items
-                .first()
-                .is_some_and(|condition| is_sample_guard(condition))
+            if items.first().is_some_and(is_sample_guard)
                 && let Some(update_expr) = items.get(1)
             {
                 return render_expression(update_expr, cfg).map(Some);

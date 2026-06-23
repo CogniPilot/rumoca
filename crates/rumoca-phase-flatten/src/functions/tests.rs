@@ -1125,7 +1125,8 @@ fn test_external_object_constructor_signature_uses_local_external_constructor() 
                     def_id: Some(idf_def),
                     type_name: ast::Name::from_string("String"),
                     causality: rumoca_core::Causality::Input(token("input")),
-                    ..Default::default()
+                    location: test_location(0, 12),
+                    ..ast::Component::empty_with_span(test_span())
                 },
             ),
             (
@@ -1135,7 +1136,8 @@ fn test_external_object_constructor_signature_uses_local_external_constructor() 
                     def_id: Some(adapter_def),
                     type_name: ast::Name::from_string("Pkg.SpawnExternalObject"),
                     causality: rumoca_core::Causality::Output(token("output")),
-                    ..Default::default()
+                    location: test_location(0, 12),
+                    ..ast::Component::empty_with_span(test_span())
                 },
             ),
         ]),
@@ -1158,6 +1160,7 @@ fn test_external_object_constructor_signature_uses_local_external_constructor() 
                 },
             )],
         }),
+        location: test_location(0, 12),
         ..Default::default()
     };
     let class_def = ast::ClassDef {
@@ -1165,6 +1168,7 @@ fn test_external_object_constructor_signature_uses_local_external_constructor() 
         name: token("SpawnExternalObject"),
         class_type: rumoca_core::ClassType::Class,
         classes: ast::AstIndexMap::from_iter([("constructor".to_string(), constructor)]),
+        location: test_location(0, 12),
         ..Default::default()
     };
     let mut tree = ast::ClassTree::default();
@@ -1182,7 +1186,7 @@ fn test_external_object_constructor_signature_uses_local_external_constructor() 
         adapter_def,
         "Pkg.SpawnExternalObject.constructor.adapter".to_string(),
     );
-    let source_map = rumoca_core::SourceMap::new();
+    let source_map = test_source_map();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mut member_cache = qualify::MemberDefIdCache::default();
 

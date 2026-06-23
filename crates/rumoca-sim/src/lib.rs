@@ -13,9 +13,7 @@ use serde::{Deserialize, Serialize};
 /// [`rumoca_eval_solve::nan_trace`].
 pub use rumoca_eval_solve::nan_trace;
 use rumoca_ir_dae as dae;
-pub use rumoca_phase_solve::{
-    lower_dae_to_solve_model_owned, lower_solve_artifacts, lower_solve_problem,
-};
+pub use rumoca_phase_solve::{lower_solve_artifacts, lower_solve_problem};
 pub use rumoca_solver::{
     BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,
     RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
@@ -30,6 +28,14 @@ pub use rumoca_solver::{
 
 pub mod bulk;
 mod interactive_stepper;
+
+/// Lower a DAE model into the runtime Solve model through the simulation facade.
+pub fn lower_dae_to_solve_model_owned(
+    dae_model: dae::Dae,
+) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
+    rumoca_phase_solve::lower_dae_to_solve_model_owned(dae_model)
+}
+
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod sim_stepper;
 pub mod sim_trace_compare;

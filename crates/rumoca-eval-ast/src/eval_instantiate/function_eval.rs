@@ -1351,7 +1351,7 @@ mod tests {
             tree: &tree,
             mod_env: &ast::ModificationEnvironment::new(),
             effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
+            resolve_class_components: &no_op_resolve_class_components,
         };
         let expr = if_expr(
             vec![(

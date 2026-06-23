@@ -1,5 +1,9 @@
 //! DAE-level lowering passes for code generation.
 //!
+//! SPEC_0021 file-size exception: DAE pre-codegen lowering still hosts record,
+//! array-size, dependency, and vector-equation passes together. split plan:
+//! move each pass family into focused dae_lowering submodules.
+//!
 //! This module contains record function parameter decomposition, array size
 //! argument insertion, parameter dependency sorting, and vector equation
 //! scalarization that operate on the DAE IR before code generation.
@@ -335,7 +339,7 @@ fn append_inferred_flattened_prefix(
     for (field, dims) in fields {
         let name = format!("{prefix}_{field}");
         if seen_inputs.insert(name.clone()) {
-            push_flat_record_input(func, name, rumoca_core::Span::DUMMY, dims.clone());
+            push_flat_record_input(func, name, func.span, dims.clone());
         }
     }
 }

@@ -30,6 +30,18 @@ pub(super) struct FlattenedRecordPositionalInputRequest<'a, 'b> {
     pub(super) call_depth: usize,
 }
 
+pub(super) struct FunctionInputRequest<'a, 'b> {
+    pub(super) function_name: &'a str,
+    pub(super) input: &'a rumoca_core::FunctionParam,
+    pub(super) inputs: &'a [rumoca_core::FunctionParam],
+    pub(super) input_idx: usize,
+    pub(super) named_args: &'a IndexMap<String, &'a rumoca_core::Expression>,
+    pub(super) positional_args: &'a [&'a rumoca_core::Expression],
+    pub(super) positional_idx: &'b mut usize,
+    pub(super) caller_scope: &'a Scope,
+    pub(super) call_depth: usize,
+}
+
 pub(super) struct NamedOrPositionalArg<'a> {
     pub(super) name: &'a str,
     pub(super) idx: usize,
@@ -74,7 +86,7 @@ pub(super) fn synthesize_missing_flattened_record_field_arg(
         }
         let base =
             flattened_record_field_actual_base(positional_args[previous_idx], previous_field)?;
-        return Some(record_field_access_expr(base, field));
+        return record_field_access_expr(base, field);
     }
     None
 }
@@ -105,12 +117,16 @@ fn flattened_record_field_actual_base(
     }
 }
 
-fn record_field_access_expr(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expression {
-    rumoca_core::Expression::FieldAccess {
-        span: base.span().unwrap_or(rumoca_core::Span::DUMMY),
+fn record_field_access_expr(
+    base: rumoca_core::Expression,
+    field: &str,
+) -> Option<rumoca_core::Expression> {
+    let span = base.span()?;
+    Some(rumoca_core::Expression::FieldAccess {
+        span,
         base: Box::new(base),
         field: field.to_string(),
-    }
+    })
 }
 
 pub(super) fn missing_intrinsic_argument(

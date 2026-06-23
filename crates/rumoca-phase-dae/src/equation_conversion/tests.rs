@@ -6,8 +6,9 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
 use super::{
-    EqFilterContext, classify_equations, collect_discrete_valued_lhs_target_counts,
-    collect_explicit_discrete_assignments, expand_record_field_equation,
+    EqFilterContext, classify_equations, collect_discrete_valued_binding_targets,
+    collect_discrete_valued_lhs_target_counts, collect_explicit_discrete_assignments,
+    collect_explicit_discrete_assignments_with_binding_targets, expand_record_field_equation,
     explicit_lhs_reference_from_target, output_alias_skip_reason, output_has_component_equation,
 };
 use crate::ToDaeError;
@@ -541,7 +542,7 @@ fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
     ] {
         dae_model.variables.discrete_valued.insert(
             rumoca_core::VarName::new(name),
-            dae::Variable::new(rumoca_core::VarName::new(name)),
+            dae::Variable::new(rumoca_core::VarName::new(name), fixture_span()),
         );
     }
 
@@ -554,9 +555,9 @@ fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
             is_discrete_type: true,
             binding: Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(false),
-                span: Span::DUMMY,
+                span: fixture_span(),
             }),
-            ..Default::default()
+            ..flat::Variable::empty_with_span(fixture_span())
         },
     );
     flat_model.add_variable(
@@ -565,7 +566,7 @@ fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
             name: rumoca_core::VarName::new("stateGraphRoot.subgraphStatePort.suspend"),
             is_primitive: true,
             is_discrete_type: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(fixture_span())
         },
     );
     flat_model.equations.push(flat::Equation::new(
@@ -573,7 +574,7 @@ fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
             var_ref("stateGraphRoot.suspend"),
             var_ref("stateGraphRoot.subgraphStatePort.suspend"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "stateGraphRoot".to_string(),
         },
@@ -585,6 +586,7 @@ fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
         &flat_model.equations[0].residual,
         &dae_model,
         &counts,
+        flat_model.equations[0].span,
         &binding_targets,
     )
     .unwrap()

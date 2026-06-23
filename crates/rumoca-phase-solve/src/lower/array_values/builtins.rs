@@ -232,16 +232,9 @@ impl<'a> LowerBuilder<'a> {
             }
             _ => {
                 if let Some(op) = unary_array_builtin_op(&function) {
-                    let arg = required_array_builtin_arg(args, function, 0, call_span)?;
-                    let span = expression_or_call_span(arg, call_span);
-                    let values = self.lower_array_like_values(arg, scope, call_depth)?;
-                    let mut lowered = Vec::new();
-                    let context = format!("{} array value count", function.name());
-                    reserve_reg_capacity(&mut lowered, values.len(), &context, Some(span))?;
-                    for value in values {
-                        lowered.push(self.emit_unary_at(op, value, span)?);
-                    }
-                    Ok(lowered)
+                    self.lower_unary_array_builtin_values(
+                        op, function, args, scope, call_depth, call_span,
+                    )
                 } else {
                     Err(array_builtin_contract_error(
                         format!(
@@ -255,6 +248,27 @@ impl<'a> LowerBuilder<'a> {
                 }
             }
         }
+    }
+
+    fn lower_unary_array_builtin_values(
+        &mut self,
+        op: rumoca_ir_solve::UnaryOp,
+        function: rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+        call_span: rumoca_core::Span,
+    ) -> Result<Vec<Reg>, LowerError> {
+        let arg = required_array_builtin_arg(args, function, 0, call_span)?;
+        let span = expression_or_call_span(arg, call_span);
+        let values = self.lower_array_like_values(arg, scope, call_depth)?;
+        let mut lowered = Vec::new();
+        let context = format!("{} array value count", function.name());
+        reserve_reg_capacity(&mut lowered, values.len(), &context, Some(span))?;
+        for value in values {
+            lowered.push(self.emit_unary_at(op, value, span)?);
+        }
+        Ok(lowered)
     }
 
     fn lower_der_array_like_values(

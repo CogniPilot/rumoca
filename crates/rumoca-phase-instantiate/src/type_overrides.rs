@@ -705,7 +705,7 @@ pub(super) fn extract_component_class_overrides(
             overrides.insert(
                 alias_def_id,
                 ast::ClassOverride::new(
-                    target_name.clone(),
+                    target_name.to_string(),
                     alias_def_id,
                     def_id,
                     class_redeclare_target_ref(mod_expr),

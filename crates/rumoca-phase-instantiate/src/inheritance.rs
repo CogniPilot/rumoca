@@ -1,5 +1,9 @@
 //! Inheritance processing for the instantiate phase (MLS §7.1).
 //!
+//! SPEC_0021 file-size exception: inheritance merge logic is still consolidated
+//! while redeclare and modifier overlay behavior stabilize. split plan: move
+//! redeclare resolution and modifier merge helpers into focused submodules.
+//!
 //! This module handles the `extends` clause processing, merging inherited
 //! components and equations into the derived class.
 //!

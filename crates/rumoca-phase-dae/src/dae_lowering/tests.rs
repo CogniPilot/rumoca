@@ -905,11 +905,11 @@ fn test_scalarize_vector_equation_projects_indexed_record_field_slice() {
     for name in ["T1[1]", "T1[2]", "ele[1].vol1.T", "ele[2].vol1.T"] {
         dae.variables.algebraics.insert(
             rumoca_core::VarName::new(name),
-            dae::Variable::new(name.into()),
+            dae::Variable::new(name.into(), test_span()),
         );
     }
 
-    let mut ele = dae::Variable::new(rumoca_core::VarName::new("ele"));
+    let mut ele = dae::Variable::new(rumoca_core::VarName::new("ele"), test_span());
     ele.dims = vec![2];
     dae.variables
         .algebraics
@@ -917,23 +917,21 @@ fn test_scalarize_vector_equation_projects_indexed_record_field_slice() {
 
     let ele_slice = rumoca_core::Expression::Index {
         base: Box::new(var_ref("ele")),
-        subscripts: vec![rumoca_core::Subscript::Colon {
-            span: rumoca_core::Span::DUMMY,
-        }],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::Colon { span: test_span() }],
+        span: test_span(),
     };
     let rhs = rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::FieldAccess {
             base: Box::new(ele_slice),
             field: "vol1".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }),
         field: "T".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     dae.continuous.equations.push(dae::Equation::residual_array(
         sub(var_ref("T1"), rhs),
-        Span::DUMMY,
+        test_span(),
         "record field slice vector equation",
         2,
     ));

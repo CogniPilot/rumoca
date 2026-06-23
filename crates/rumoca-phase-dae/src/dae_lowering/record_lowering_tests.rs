@@ -44,13 +44,15 @@ fn function_with_array_input() -> rumoca_core::Function {
 }
 
 fn block_like_constructor() -> rumoca_core::Function {
-    let mut constructor = rumoca_core::Function::new("Pkg.Divide", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("Pkg.Divide", test_span(1));
     constructor.is_constructor = true;
     constructor.add_input(
-        rumoca_core::FunctionParam::new("u1", "RealInput").with_type_class(ClassType::Connector),
+        rumoca_core::FunctionParam::new("u1", "RealInput", test_span(1))
+            .with_type_class(ClassType::Connector),
     );
     constructor.add_input(
-        rumoca_core::FunctionParam::new("u2", "RealInput").with_type_class(ClassType::Connector),
+        rumoca_core::FunctionParam::new("u2", "RealInput", test_span(1))
+            .with_type_class(ClassType::Connector),
     );
     constructor
 }
@@ -59,16 +61,16 @@ fn assignment_to(name: &str, value: rumoca_core::Expression) -> rumoca_core::Sta
     rumoca_core::Statement::Assignment {
         comp: rumoca_core::ComponentReference {
             local: false,
-            span: Span::DUMMY,
+            span: test_span(1),
             parts: vec![rumoca_core::ComponentRefPart {
                 ident: name.to_string(),
-                span: Span::DUMMY,
+                span: test_span(1),
                 subs: vec![],
             }],
             def_id: None,
         },
         value,
-        span: Span::DUMMY,
+        span: test_span(1),
     }
 }
 
@@ -84,19 +86,19 @@ fn prepare_dae_for_codegen_unwraps_block_constructor_value_wrapper() {
             name: VarName::new("Pkg.f").into(),
             args: vec![rumoca_core::Expression::FunctionCall {
                 name: VarName::new("Pkg.Divide").into(),
-                args: vec![var_ref("u")],
+                args: vec![var_ref("u", test_span(1))],
                 is_constructor: true,
-                span: Span::DUMMY,
+                span: test_span(1),
             }],
             is_constructor: false,
-            span: Span::DUMMY,
+            span: test_span(1),
         },
-        span: Span::DUMMY,
+        span: test_span(1),
         origin: "test".to_string(),
         scalar_count: 1,
     });
 
-    let prepared = prepare_dae_for_codegen(&dae);
+    let prepared = prepare_dae_for_codegen(&dae).expect("codegen preparation");
 
     let rumoca_core::Expression::FunctionCall { args, .. } =
         &prepared.as_dae().continuous.equations[0].rhs
@@ -119,16 +121,16 @@ fn prepare_dae_for_codegen_keeps_record_constructor_value() {
         lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.Record").into(),
-            args: vec![var_ref("u")],
+            args: vec![var_ref("u", test_span(1))],
             is_constructor: true,
-            span: Span::DUMMY,
+            span: test_span(1),
         },
-        span: Span::DUMMY,
+        span: test_span(1),
         origin: "test".to_string(),
         scalar_count: 1,
     });
 
-    let prepared = prepare_dae_for_codegen(&dae);
+    let prepared = prepare_dae_for_codegen(&dae).expect("codegen preparation");
 
     assert!(matches!(
         &prepared.as_dae().continuous.equations[0].rhs,
@@ -344,19 +346,19 @@ fn dae_record_param_lowering_infers_fields_from_already_lowered_body() {
         "y",
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(var_ref("r_T")),
+            lhs: Box::new(var_ref("r_T", test_span(1))),
             rhs: Box::new(rumoca_core::Expression::Index {
-                base: Box::new(var_ref("r_X")),
+                base: Box::new(var_ref("r_X", test_span(1))),
                 subscripts: vec![rumoca_core::Subscript::Expr {
                     expr: Box::new(rumoca_core::Expression::Literal {
                         value: Literal::Integer(1),
-                        span: Span::DUMMY,
+                        span: test_span(1),
                     }),
-                    span: Span::DUMMY,
+                    span: test_span(1),
                 }],
-                span: Span::DUMMY,
+                span: test_span(1),
             }),
-            span: Span::DUMMY,
+            span: test_span(1),
         },
     ));
     dae.symbols
@@ -366,16 +368,16 @@ fn dae_record_param_lowering_infers_fields_from_already_lowered_body() {
         lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.f").into(),
-            args: vec![var_ref("rec")],
+            args: vec![var_ref("rec", test_span(1))],
             is_constructor: false,
-            span: Span::DUMMY,
+            span: test_span(1),
         },
-        span: Span::DUMMY,
+        span: test_span(1),
         origin: "test".to_string(),
         scalar_count: 1,
     });
 
-    lower_record_function_params_dae(&mut dae);
+    lower_record_function_params_dae(&mut dae).expect("record params lower");
 
     let function = dae
         .symbols
@@ -406,10 +408,10 @@ fn dae_record_param_lowering_infers_fields_from_already_lowered_body() {
 #[test]
 fn dae_record_param_lowering_merges_metadata_and_body_inferred_fields() {
     let mut dae = Dae::default();
-    let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("Pkg.Record", test_span(1));
     constructor.is_constructor = true;
-    constructor.add_input(rumoca_core::FunctionParam::new("p", "Real"));
-    constructor.add_input(rumoca_core::FunctionParam::new("T", "Real"));
+    constructor.add_input(rumoca_core::FunctionParam::new("p", "Real", test_span(1)));
+    constructor.add_input(rumoca_core::FunctionParam::new("T", "Real", test_span(1)));
     dae.symbols
         .functions
         .insert(VarName::new("Pkg.Record"), constructor);
@@ -419,16 +421,16 @@ fn dae_record_param_lowering_merges_metadata_and_body_inferred_fields() {
         "y",
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(var_ref("r_T")),
-            rhs: Box::new(var_ref("r_X")),
-            span: Span::DUMMY,
+            lhs: Box::new(var_ref("r_T", test_span(1))),
+            rhs: Box::new(var_ref("r_X", test_span(1))),
+            span: test_span(1),
         },
     ));
     dae.symbols
         .functions
         .insert(VarName::new("Pkg.f"), function);
 
-    lower_record_function_params_dae(&mut dae);
+    lower_record_function_params_dae(&mut dae).expect("record params lower");
 
     let function = dae
         .symbols
@@ -446,39 +448,43 @@ fn dae_record_param_lowering_merges_metadata_and_body_inferred_fields() {
 #[test]
 fn dae_record_param_lowering_propagates_nested_callee_field_requirements() {
     let mut dae = Dae::default();
-    let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("Pkg.Record", test_span(1));
     constructor.is_constructor = true;
-    constructor.add_input(rumoca_core::FunctionParam::new("p", "Real"));
-    constructor.add_input(rumoca_core::FunctionParam::new("T", "Real"));
+    constructor.add_input(rumoca_core::FunctionParam::new("p", "Real", test_span(1)));
+    constructor.add_input(rumoca_core::FunctionParam::new("T", "Real", test_span(1)));
     dae.symbols
         .functions
         .insert(VarName::new("Pkg.Record"), constructor);
 
-    let mut callee = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
+    let mut callee = rumoca_core::Function::new("Pkg.g", test_span(1));
     callee.add_input(
-        rumoca_core::FunctionParam::new("state", "Pkg.Record").with_type_class(ClassType::Record),
+        rumoca_core::FunctionParam::new("state", "Pkg.Record", test_span(1))
+            .with_type_class(ClassType::Record),
     );
-    callee.add_output(rumoca_core::FunctionParam::new("y", "Real"));
-    callee.body.push(assignment_to("y", var_ref("state_X")));
+    callee.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span(1)));
+    callee
+        .body
+        .push(assignment_to("y", var_ref("state_X", test_span(1))));
     dae.symbols.functions.insert(VarName::new("Pkg.g"), callee);
 
-    let mut caller = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    let mut caller = rumoca_core::Function::new("Pkg.f", test_span(1));
     caller.add_input(
-        rumoca_core::FunctionParam::new("state", "Pkg.Record").with_type_class(ClassType::Record),
+        rumoca_core::FunctionParam::new("state", "Pkg.Record", test_span(1))
+            .with_type_class(ClassType::Record),
     );
-    caller.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    caller.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span(1)));
     caller.body.push(assignment_to(
         "y",
         rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.g").into(),
-            args: vec![var_ref("state")],
+            args: vec![var_ref("state", test_span(1))],
             is_constructor: false,
-            span: Span::DUMMY,
+            span: test_span(1),
         },
     ));
     dae.symbols.functions.insert(VarName::new("Pkg.f"), caller);
 
-    lower_record_function_params_dae(&mut dae);
+    lower_record_function_params_dae(&mut dae).expect("record params lower");
 
     let caller = dae
         .symbols
@@ -498,10 +504,13 @@ fn dae_record_param_lowering_propagates_nested_callee_field_requirements() {
         panic!("expected function call");
     };
     assert_eq!(args.len(), 3);
-    assert!(matches!(
-        &args[2],
-        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "state_X"
-    ));
+    assert!(
+        matches!(
+            &args[2],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "state.X"
+        ),
+        "unexpected propagated callee args: {args:#?}"
+    );
 }
 
 #[test]
@@ -509,28 +518,34 @@ fn dae_record_param_lowering_infers_air_state_x_width_from_indexed_body_use() {
     let mut dae = Dae::default();
 
     let mut function =
-        rumoca_core::Function::new("Buildings.Media.Air.specificHeatCapacityCp", Span::DUMMY);
+        rumoca_core::Function::new("Buildings.Media.Air.specificHeatCapacityCp", test_span(1));
     function.add_input(rumoca_core::FunctionParam::new(
         "state_p",
         "AbsolutePressure",
+        test_span(1),
     ));
-    function.add_input(rumoca_core::FunctionParam::new("state_T", "Temperature"));
+    function.add_input(rumoca_core::FunctionParam::new(
+        "state_T",
+        "Temperature",
+        test_span(1),
+    ));
     function.add_output(rumoca_core::FunctionParam::new(
         "cp",
         "SpecificHeatCapacity",
+        test_span(1),
     ));
     function.body.push(assignment_to(
         "cp",
         rumoca_core::Expression::Index {
-            base: Box::new(var_ref("state_X")),
+            base: Box::new(var_ref("state_X", test_span(1))),
             subscripts: vec![rumoca_core::Subscript::Expr {
                 expr: Box::new(rumoca_core::Expression::Literal {
                     value: Literal::Integer(1),
-                    span: Span::DUMMY,
+                    span: test_span(1),
                 }),
-                span: Span::DUMMY,
+                span: test_span(1),
             }],
-            span: Span::DUMMY,
+            span: test_span(1),
         },
     ));
     dae.symbols.functions.insert(
@@ -538,7 +553,7 @@ fn dae_record_param_lowering_infers_air_state_x_width_from_indexed_body_use() {
         function,
     );
 
-    lower_record_function_params_dae(&mut dae);
+    lower_record_function_params_dae(&mut dae).expect("record params lower");
 
     let function = dae
         .symbols

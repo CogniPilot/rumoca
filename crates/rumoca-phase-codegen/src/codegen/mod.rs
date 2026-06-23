@@ -1037,19 +1037,7 @@ fn add_json_function_symbol_refs(
     for (func_name, func) in functions {
         refs.insert(func_name.clone());
         if let Some(outputs) = func.get("outputs").and_then(serde_json::Value::as_array) {
-            for output in outputs {
-                let name = json_named_item_name(output, "function output")?;
-                let dims = json_dims(output, name)?;
-                let count = source_ref_scalar_count(name, &dims)?;
-                for element_idx in 1..=count {
-                    let selector = if count == 1 {
-                        name.to_string()
-                    } else {
-                        format!("{name}[{element_idx}]")
-                    };
-                    refs.insert(format!("{func_name}.{selector}"));
-                }
-            }
+            add_json_function_output_refs(func_name, outputs, refs)?;
         }
         for section in ["inputs", "outputs", "locals"] {
             let Some(items) = func.get(section).and_then(serde_json::Value::as_array) else {
@@ -1060,6 +1048,27 @@ fn add_json_function_symbol_refs(
                 let dims = json_dims(item, name)?;
                 add_source_refs_for_var(name, &dims_to_i64(&dims)?, refs)?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn add_json_function_output_refs(
+    func_name: &str,
+    outputs: &[serde_json::Value],
+    refs: &mut IndexSet<String>,
+) -> Result<(), CodegenError> {
+    for output in outputs {
+        let name = json_named_item_name(output, "function output")?;
+        let dims = json_dims(output, name)?;
+        let count = source_ref_scalar_count(name, &dims)?;
+        for element_idx in 1..=count {
+            let selector = if count == 1 {
+                name.to_string()
+            } else {
+                format!("{name}[{element_idx}]")
+            };
+            refs.insert(format!("{func_name}.{selector}"));
         }
     }
     Ok(())
@@ -1319,6 +1328,14 @@ fn create_environment() -> Environment<'static> {
     // Fail fast on missing fields/variables in templates.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
 
+    add_basic_template_helpers(&mut env);
+    add_solve_template_helpers(&mut env);
+    add_statement_template_helpers(&mut env);
+    add_rhs_template_helpers(&mut env);
+    env
+}
+
+fn add_basic_template_helpers(env: &mut Environment<'static>) {
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
@@ -1341,6 +1358,18 @@ fn create_environment() -> Environment<'static> {
         render_xml_attr_expr_at_index_function,
     );
     env.add_function("render_event_indicator", render_event_indicator_function);
+    env.add_function("render_matmul_c", render_matmul_c_function);
+    env.add_function("render_matmul_mlir", render_matmul_mlir_function);
+    env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
+    env.add_function("render_equation", render_equation_function);
+    env.add_function(
+        "render_dae_equations",
+        render_dae_modelica::render_dae_equations_function,
+    );
+    env.add_function("fail", fail_function);
+}
+
+fn add_solve_template_helpers(env: &mut Environment<'static>) {
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
     env.add_function("render_solve_block_c", render_solve_block_c_function);
@@ -1388,15 +1417,9 @@ fn create_environment() -> Environment<'static> {
         "render_solve_pre_param_binding_c",
         render_solve_pre_param_binding_c_function,
     );
-    env.add_function("render_matmul_c", render_matmul_c_function);
-    env.add_function("render_matmul_mlir", render_matmul_mlir_function);
-    env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
-    env.add_function("render_equation", render_equation_function);
-    env.add_function(
-        "render_dae_equations",
-        render_dae_modelica::render_dae_equations_function,
-    );
+}
 
+fn add_statement_template_helpers(env: &mut Environment<'static>) {
     // Custom functions for statement rendering (MLS §12: function bodies)
     env.add_function("render_statement", render_statement_function);
     env.add_function("render_statements", render_statements_function);
@@ -1410,8 +1433,9 @@ fn create_environment() -> Environment<'static> {
 
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
-    env.add_function("fail", fail_function);
+}
 
+fn add_rhs_template_helpers(env: &mut Environment<'static>) {
     // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
     env.add_function("ode_rhs", render_c::ode_rhs_function);
     // Find derivative expression for a specific state variable
@@ -1447,8 +1471,6 @@ fn create_environment() -> Environment<'static> {
 
     // Check if a function has record-typed parameters
     env.add_function("has_complex_params", render_c::has_complex_params_function);
-
-    env
 }
 
 /// Sanitize a name for use as a simple emitted identifier.
@@ -1543,12 +1565,10 @@ fn resolve_modelica_uri_function(uri: Value) -> String {
 }
 
 fn resolve_modelica_uri(uri: &str) -> String {
-    let Some(source_roots) = std::env::var_os("RUMOCA_MODELICA_SOURCE_ROOTS") else {
-        return uri.to_string();
-    };
-    resolve_modelica_uri_with_roots(uri, std::env::split_paths(&source_roots))
+    uri.to_string()
 }
 
+#[cfg(test)]
 fn resolve_modelica_uri_with_roots<I, P>(uri: &str, source_roots: I) -> String
 where
     I: IntoIterator<Item = P>,

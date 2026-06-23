@@ -341,6 +341,8 @@ struct ConnectionSet {
     span: rumoca_core::Span,
 }
 
+type ConnectionBuildResult = (Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>, usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionKind {
     Flow,
@@ -1671,7 +1673,7 @@ fn build_connection_sets(
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> Result<(Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>), FlattenError> {
+) -> Result<ConnectionBuildResult, FlattenError> {
     let mut potential_uf = UnionFind::new();
     let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
@@ -1780,7 +1782,7 @@ fn build_connection_sets(
         }
     }
 
-    Ok((result, raw_stream_groups))
+    Ok((result, raw_stream_groups, stream_interface_equation_count))
 }
 
 fn representative_connection_span(

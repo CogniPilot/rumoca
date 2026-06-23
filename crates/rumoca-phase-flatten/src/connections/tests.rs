@@ -13,6 +13,11 @@ fn test_span() -> Span {
     )
 }
 
+fn test_provenance_span() -> rumoca_core::ProvenanceSpan {
+    rumoca_core::ProvenanceSpan::new(test_span(), "phase flatten connection test")
+        .expect("test span has source context")
+}
+
 fn create_test_model() -> flat::Model {
     let mut flat = flat::Model::new();
 
@@ -226,17 +231,21 @@ fn test_stream_interface_alias_generated_when_anchor_is_defined() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new("component.port.h_outflow")),
+            var_to_expr(
+                &rumoca_core::VarName::new("component.port.h_outflow"),
+                test_provenance_span(),
+            ),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: Span::DUMMY,
             },
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -288,17 +297,21 @@ fn test_stream_interface_alias_expands_collapsed_stream_endpoint() {
                 stream: true,
                 is_primitive: true,
                 dims: vec![2],
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new("component.port.h_outflow")),
+            var_to_expr(
+                &rumoca_core::VarName::new("component.port.h_outflow"),
+                test_provenance_span(),
+            ),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: Span::DUMMY,
             },
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -343,17 +356,21 @@ fn test_stream_non_interface_alias_generated_for_explicit_connector_port() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new("wrapper.source.port.h_outflow")),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.source.port.h_outflow"),
+                test_provenance_span(),
+            ),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: Span::DUMMY,
             },
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -394,7 +411,7 @@ fn test_outside_stream_connectors_are_counted_without_equality_aliases() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
@@ -442,17 +459,21 @@ fn test_stream_internal_dynbal_port_alias_is_not_generated() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new("wrapper.source.port.Xi_outflow")),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.source.port.Xi_outflow"),
+                test_provenance_span(),
+            ),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: Span::DUMMY,
             },
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -493,17 +514,21 @@ fn test_stream_internal_dynbal_energy_port_alias_is_generated() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new("wrapper.source.port.h_outflow")),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.source.port.h_outflow"),
+                test_provenance_span(),
+            ),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: Span::DUMMY,
             },
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -549,16 +574,21 @@ fn test_stream_pass_through_alias_generated_from_defined_dynbal_port() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new(
-                "wrapper.vol.dynBal.ports[1].h_outflow",
-            )),
-            var_to_expr(&rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h")),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.vol.dynBal.ports[1].h_outflow"),
+                test_provenance_span(),
+            ),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h"),
+                test_provenance_span(),
+            ),
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -627,17 +657,24 @@ fn test_stream_pass_through_alias_generated_for_all_array_ports() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     for idx in 1..=2 {
         flat.add_equation(flat::Equation::new(
             create_equality_residual(
-                var_to_expr(&rumoca_core::VarName::new(format!(
-                    "wrapper.vol.dynBal.ports[{idx}].h_outflow"
-                ))),
-                var_to_expr(&rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h")),
+                var_to_expr(
+                    &rumoca_core::VarName::new(format!(
+                        "wrapper.vol.dynBal.ports[{idx}].h_outflow"
+                    )),
+                    test_provenance_span(),
+                ),
+                var_to_expr(
+                    &rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h"),
+                    test_provenance_span(),
+                ),
+                test_provenance_span(),
             ),
             Span::DUMMY,
             flat::EquationOrigin::ComponentEquation {
@@ -713,16 +750,21 @@ fn test_stream_pass_through_alias_survives_top_level_boundary_port() {
                 name: rumoca_core::VarName::new(name),
                 stream: true,
                 is_primitive: true,
-                ..Default::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
     }
     flat.add_equation(flat::Equation::new(
         create_equality_residual(
-            var_to_expr(&rumoca_core::VarName::new(
-                "wrapper.vol.dynBal.ports[1].h_outflow",
-            )),
-            var_to_expr(&rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h")),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.vol.dynBal.ports[1].h_outflow"),
+                test_provenance_span(),
+            ),
+            var_to_expr(
+                &rumoca_core::VarName::new("wrapper.vol.dynBal.medium.h"),
+                test_provenance_span(),
+            ),
+            test_provenance_span(),
         ),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -1468,12 +1510,15 @@ fn test_validate_dimension_compatibility_mismatch() {
 fn test_validate_dimension_compatibility_scalar_accepts_length_one_array() {
     let mut flat = flat::Model::new();
 
-    flat.add_variable(rumoca_core::VarName::new("y"), flat::Variable::default());
+    flat.add_variable(
+        rumoca_core::VarName::new("y"),
+        flat::Variable::empty_with_span(test_span()),
+    );
     flat.add_variable(
         rumoca_core::VarName::new("u"),
         flat::Variable {
             dims: vec![1],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 
@@ -1497,14 +1542,14 @@ fn test_validate_dimension_compatibility_accepts_full_reduced_composition_pair()
         rumoca_core::VarName::new("src.X_in_internal"),
         flat::Variable {
             dims: vec![2],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("src.Xi_in_internal"),
         flat::Variable {
             dims: vec![1],
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 

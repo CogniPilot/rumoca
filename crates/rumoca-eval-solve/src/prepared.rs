@@ -817,7 +817,19 @@ fn reg_depends_on_y_index_memo(
     // Guard against accidental cycles (register programs are acyclic in
     // practice): seed `false` before recursing so a back-edge terminates.
     memo.insert(reg, false);
-    let result = producer(row, reg).is_some_and(|op| match *op {
+    let result =
+        producer(row, reg).is_some_and(|op| op_depends_on_y_index(row, op, target_y_index, memo));
+    memo.insert(reg, result);
+    result
+}
+
+fn op_depends_on_y_index(
+    row: &[LinearOp],
+    op: &LinearOp,
+    target_y_index: usize,
+    memo: &mut std::collections::HashMap<u32, bool>,
+) -> bool {
+    match *op {
         LinearOp::LoadY { index, .. } => index == target_y_index,
         // Indexed loads structurally depend on y exactly when their index
         // register does — preserving the sparsity the equivalent select chain
@@ -918,9 +930,7 @@ fn reg_depends_on_y_index_memo(
         | LinearOp::LoadP { .. }
         | LinearOp::LoadSeed { .. }
         | LinearOp::StoreOutput { .. } => false,
-    });
-    memo.insert(reg, result);
-    result
+    }
 }
 
 fn reg_range_depends_on_y_index(

@@ -1,5 +1,10 @@
 use super::*;
 
+// SPEC_0021 file-size exception: this root regression bucket temporarily
+// groups DAE lowering regressions that share root-level fixtures. split plan:
+// move member-call, scalar-count, and discrete-alias regressions into focused
+// modules under tests_regressions/.
+
 #[test]
 fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
     // Reproduces Electrical.Cell bus pattern:
@@ -1602,7 +1607,7 @@ fn test_infer_equation_scalar_count_indexed_component_field_lhs_uses_field_width
                 flat::Variable {
                     name: VarName::new(name),
                     is_primitive: true,
-                    ..Default::default()
+                    ..flat::Variable::empty_with_span(crate::test_support::test_span())
                 },
             );
         }
@@ -1614,28 +1619,28 @@ fn test_infer_equation_scalar_count_indexed_component_field_lhs_uses_field_width
                 base: Box::new(Expression::VarRef {
                     name: VarName::new("src").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
                 subscripts: vec![rumoca_core::Subscript::Index {
                     value: 1,
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
             field: "ports".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         field: "C_outflow".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let residual = Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(Expression::Literal {
             value: rumoca_core::Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);

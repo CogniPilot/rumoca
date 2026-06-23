@@ -157,7 +157,7 @@ pub(super) fn eval_external_table_data_matrix<T: SimFloat>(
             }
         });
 
-    Ok(read_modelica_text_table(&file_name, &table_name)?)
+    read_modelica_text_table(&file_name, &table_name)
 }
 
 fn eval_string_expr<T: SimFloat>(
@@ -188,7 +188,7 @@ fn eval_string_expr<T: SimFloat>(
             eval_string_expr(else_branch, env)
         }
         rumoca_core::Expression::FunctionCall { name, args, .. }
-            if rumoca_core::top_level_last_segment(name.as_str()) == "loadResource" =>
+            if name.last_segment() == "loadResource" =>
         {
             let raw = args.first().and_then(|arg| eval_string_expr(arg, env))?;
             resolve_modelica_resource_path(&raw)
@@ -274,28 +274,7 @@ pub(super) fn resolve_modelica_resource_path(raw: &str) -> Option<PathBuf> {
     if raw_path.is_file() {
         return Some(raw_path.to_path_buf());
     }
-    let (package, rest) = raw.strip_prefix("modelica://")?.split_once('/')?;
-    for root in modelica_resource_source_roots() {
-        if let Some(path) = resolve_modelica_uri_against_root(&root, package, rest) {
-            return Some(path);
-        }
-    }
     None
-}
-
-fn modelica_resource_source_roots() -> Vec<PathBuf> {
-    std::env::var_os("RUMOCA_MODELICA_SOURCE_ROOTS")
-        .map(|paths| std::env::split_paths(&paths).collect())
-        .unwrap_or_default()
-}
-
-fn resolve_modelica_uri_against_root(root: &Path, package: &str, rest: &str) -> Option<PathBuf> {
-    let direct = root.join(rest);
-    if root.file_name().and_then(|name| name.to_str()) == Some(package) && direct.is_file() {
-        return Some(direct);
-    }
-    let nested = root.join(package).join(rest);
-    nested.is_file().then_some(nested)
 }
 
 fn map_selected_table_column(

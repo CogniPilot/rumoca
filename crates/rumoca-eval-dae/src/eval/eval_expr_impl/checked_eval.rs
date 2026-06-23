@@ -9,8 +9,10 @@ pub fn eval_expr<T: SimFloat>(
     let value = match expr {
         rumoca_core::Expression::Literal { value: lit, .. } => try_eval_literal::<T>(lit),
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => try_eval_var_ref::<T>(name.var_name(), subscripts, env),
+            name,
+            subscripts,
+            span,
+        } => try_eval_var_ref::<T>(name.var_name(), subscripts, *span, env),
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             try_eval_binary::<T>(op, lhs, rhs, env)
         }

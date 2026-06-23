@@ -767,7 +767,7 @@ fn resolved_array_input_dims<T: SimFloat>(
     if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim < 0) {
         return infer_dynamic_array_input_dims_from_declared(&param.dims, value_count).map(Some);
     }
-    if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim == 0) && value_count > 0 {
+    if !param.dims.is_empty() && param.dims.contains(&0) && value_count > 0 {
         return infer_dynamic_array_input_dims_from_declared(&param.dims, value_count).map(Some);
     }
     if concrete_param_size(&param.dims).is_some() {
