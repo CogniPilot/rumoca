@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 type Dae = dae::Dae;
 type RecordArgMap = HashMap<String, Vec<RecordArgDecomposition>>;
+type ArrayParamMap = HashMap<String, Vec<(usize, String)>>;
 
 struct RecordArgDecomposition {
     original_index: usize,
@@ -679,17 +680,17 @@ fn is_obviously_scalar(expr: &rumoca_core::Expression) -> bool {
 /// Insert size arguments for variable-size array params at DAE call sites.
 /// Must NOT be called before simulation — only before codegen rendering.
 pub fn insert_array_size_args_dae(dae: &mut Dae) -> Result<(), ToDaeError> {
-    let array_param_map: HashMap<String, Vec<usize>> = dae
+    let array_param_map: ArrayParamMap = dae
         .symbols
         .functions
         .iter()
         .filter_map(|(name, func)| {
-            let indices: Vec<usize> = func
+            let indices: Vec<(usize, String)> = func
                 .inputs
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| !p.dims.is_empty())
-                .map(|(i, _)| i)
+                .map(|(i, p)| (i, p.name.clone()))
                 .collect();
             if indices.is_empty() {
                 None
@@ -724,7 +725,7 @@ mod record_lowering_tests;
 
 fn insert_size_args_dae_stmt(
     stmt: &mut rumoca_core::Statement,
-    map: &HashMap<String, Vec<usize>>,
+    map: &ArrayParamMap,
 ) -> Result<(), ToDaeError> {
     let mut rewriter = DaeSizeArgInserter { map, error: None };
     *stmt = rewriter.rewrite_statement(stmt);
@@ -735,7 +736,7 @@ fn insert_size_args_dae_stmt(
 }
 
 struct DaeSizeArgInserter<'a> {
-    map: &'a HashMap<String, Vec<usize>>,
+    map: &'a ArrayParamMap,
     error: Option<ToDaeError>,
 }
 
@@ -752,8 +753,8 @@ impl ExpressionRewriter for DaeSizeArgInserter<'_> {
         } = expr
         {
             let mut args = self.rewrite_expressions(args);
-            if let Some(array_indices) = self.map.get(name.as_str())
-                && let Err(error) = insert_dae_size_args(&mut args, array_indices, *span)
+            if let Some(array_params) = self.map.get(name.as_str())
+                && let Err(error) = insert_dae_size_args(&mut args, array_params, *span)
             {
                 return self.record_error(error, expr);
             }
@@ -785,20 +786,38 @@ impl DaeExpressionRewriter for DaeSizeArgInserter<'_> {}
 
 fn insert_dae_size_args(
     args: &mut Vec<rumoca_core::Expression>,
-    array_indices: &[usize],
+    array_params: &[(usize, String)],
     call_span: rumoca_core::Span,
 ) -> Result<(), ToDaeError> {
-    for &param_idx in array_indices.iter().rev() {
-        if param_idx >= args.len() {
+    for (param_idx, param_name) in array_params.iter().rev() {
+        let Some(arg_idx) = argument_index_for_param(args, *param_idx, param_name) else {
             continue;
-        }
+        };
         // If the argument is an Array literal with known element count, use the
         // literal count directly instead of size(), which some backends cannot
         // render for compound literals.
-        let size_expr = array_size_expr_for_arg(&args[param_idx], call_span)?;
-        args.insert(param_idx + 1, size_expr);
+        let size_expr =
+            array_size_expr_for_arg(argument_value_for_size(&args[arg_idx]), call_span)?;
+        args.insert(arg_idx + 1, size_expr);
     }
     Ok(())
+}
+
+fn argument_index_for_param(
+    args: &[rumoca_core::Expression],
+    param_idx: usize,
+    param_name: &str,
+) -> Option<usize> {
+    args.iter()
+        .position(|arg| named_function_arg_value(arg).is_some_and(|(name, _)| name == param_name))
+        .or((param_idx < args.len()).then_some(param_idx))
+}
+
+fn argument_value_for_size(arg: &rumoca_core::Expression) -> &rumoca_core::Expression {
+    if let Some((_, value)) = named_function_arg_value(arg) {
+        return value;
+    }
+    arg
 }
 
 fn array_size_expr_for_arg(
