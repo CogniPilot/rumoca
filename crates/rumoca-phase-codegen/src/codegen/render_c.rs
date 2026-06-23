@@ -1083,6 +1083,12 @@ fn render_direct_rhs_for_lhs(
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
     if is_var_ref_of(lhs, var_name) {
+        if let Some((_base_name, index)) = parse_indexed_ref(var_name) {
+            if rhs_is_structurally_indexed_var_ref(rhs) {
+                return render_expression(rhs, cfg).map(Some);
+            }
+            return render_array_expr_at_index_or_scalar_checked(rhs, index, cfg);
+        }
         return render_expression(rhs, cfg).map(Some);
     }
     if let Some(index) = array_lhs_element_index(lhs, var_name) {
@@ -1092,6 +1098,21 @@ fn render_direct_rhs_for_lhs(
         return render_array_expr_at_index_or_scalar_checked(rhs, index, cfg);
     }
     no_render_match()
+}
+
+fn rhs_is_structurally_indexed_var_ref(rhs: &Value) -> bool {
+    let Ok(var_ref) = get_field(rhs, "VarRef") else {
+        return false;
+    };
+    if get_field(&var_ref, "subscripts")
+        .ok()
+        .and_then(|subscripts| subscripts.len())
+        .is_some_and(|len| len > 0)
+    {
+        return false;
+    }
+    let raw_name = var_ref_base_name(&var_ref);
+    raw_name.contains('[')
 }
 
 fn array_lhs_element_index(lhs: &Value, var_name: &str) -> Option<usize> {
@@ -1538,7 +1559,50 @@ fn render_array_expr_at_index_checked(
         return render_builtin_array_expr_at_index_checked(&builtin, index, cfg);
     }
 
+    if let Ok(function_call) = get_field(expr, "FunctionCall") {
+        return render_function_array_expr_at_index_checked(&function_call, index, cfg);
+    }
+
     no_render_match()
+}
+
+fn render_function_array_expr_at_index_checked(
+    function_call: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(name) = get_field(function_call, "name") else {
+        return no_render_match();
+    };
+    if render_serialized_name(&name) != "linspace" {
+        return no_render_match();
+    }
+    let Ok(args) = get_field(function_call, "args") else {
+        return no_render_match();
+    };
+    if args.len().unwrap_or(0) != 3 {
+        return no_render_match();
+    }
+    let Ok(start) = args.get_item(&Value::from(0)) else {
+        return no_render_match();
+    };
+    let Ok(stop) = args.get_item(&Value::from(1)) else {
+        return no_render_match();
+    };
+    let Ok(count) = args.get_item(&Value::from(2)) else {
+        return no_render_match();
+    };
+
+    let start_rendered = render_expression(&start, cfg)?;
+    if index == 1 {
+        return Ok(Some(start_rendered));
+    }
+    let stop_rendered = render_expression(&stop, cfg)?;
+    let count_rendered = render_expression(&count, cfg)?;
+    let offset = index - 1;
+    Ok(Some(format!(
+        "(({start_rendered}) + ({offset}.0 * ((({stop_rendered}) - ({start_rendered})) / (({count_rendered}) - 1.0))))"
+    )))
 }
 
 fn render_array_expr_at_index_or_scalar_checked(

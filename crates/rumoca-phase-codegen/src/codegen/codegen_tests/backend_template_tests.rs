@@ -131,6 +131,55 @@ fn test_alg_rhs_indexes_structured_residual_equations_for_indexed_var() {
 }
 
 #[test]
+fn test_c_alg_rhs_projects_indexed_function_array_rhs_before_rendering() {
+    let dae_json = serde_json::json!({
+        "f_x": [{
+            "lhs": {
+                "VarRef": {
+                    "name": {"name": "selector.expr"},
+                    "subscripts": [{"Index": {"value": 1}}]
+                }
+            },
+            "rhs": {
+                "FunctionCall": {
+                    "name": {"name": "linspace"},
+                    "args": [
+                        {"Literal": {"value": {"Integer": 0}}},
+                        {"VarRef": {"name": {"name": "selector.n"}, "subscripts": []}},
+                        {"Binary": {
+                            "op": "Add",
+                            "lhs": {"VarRef": {"name": {"name": "selector.n"}, "subscripts": []}},
+                            "rhs": {"Literal": {"value": {"Integer": 1}}}
+                        }}
+                    ]
+                }
+            }
+        }],
+        "w": {
+            "selector.expr[1]": {}
+        },
+        "x": {},
+        "y": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{{ alg_rhs_for_var_with_dae("selector.expr[1]", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(
+        rendered.trim(),
+        "0",
+        "indexed scalar targets should project array-producing RHS expressions before rendering:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_c_alg_rhs_prefers_direct_array_connection_over_rearranged_equation() {
     fn var(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
