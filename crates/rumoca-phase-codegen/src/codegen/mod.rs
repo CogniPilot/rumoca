@@ -1013,6 +1013,8 @@ fn solve_blocks_from_dae_json(dae_json: &serde_json::Value) -> Result<Value, Cod
     let mut problem_json = solve_json.clone();
     if let Some(object) = problem_json.as_object_mut() {
         object.remove("artifacts");
+        object.remove("visible_names");
+        object.remove("visible_value_rows");
     }
     let problem: solve::SolveProblem =
         serde_json::from_value(problem_json).map_err(|err| CodegenError::SerializationFailed {
