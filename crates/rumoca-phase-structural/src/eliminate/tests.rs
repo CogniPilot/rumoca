@@ -18,14 +18,41 @@ fn minus_op() -> OpUnary {
     OpUnary::Minus
 }
 
+fn test_span() -> Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_eliminate_tests_source_1.mo"),
+        1,
+        2,
+    )
+}
+
+fn structural_ok<T>(result: Result<T, StructuralError>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(err) => panic!("unexpected structural error: {err}"),
+    }
+}
+
+fn test_dae_variable(path: &str) -> dae::Variable {
+    let mut var = dae::Variable::new(
+        VarName::new(path),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    var.source_span = test_span();
+    var
+}
+
 fn substitute_var(expr: &Expression, var: &VarName, replacement: &Expression) -> Expression {
     let substitution = test_substitution(var.as_str(), replacement.clone());
-    SubstituteVarRewriter {
-        substitution: &substitution,
-        replacement,
-        replacement_dims: &substitution.replacement_dims,
-    }
-    .rewrite_expression(expr)
+    structural_ok(
+        SubstituteVarRewriter {
+            substitution: &substitution,
+            replacement,
+            replacement_dims: &substitution.replacement_dims,
+            derivative_replacement: None,
+        }
+        .rewrite_expression(expr),
+    )
 }
 
 fn test_substitution(name: &str, expr: Expression) -> Substitution {
@@ -43,25 +70,23 @@ fn var_ref(name: &str) -> Expression {
     Expression::VarRef {
         name: reference(name),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn var_ref_idx(name: &str, idx: i64) -> Expression {
+    let span = test_span();
     Expression::VarRef {
         name: reference(name),
-        subscripts: vec![rumoca_core::Subscript::generated_index(
-            idx,
-            rumoca_core::Span::DUMMY,
-        )],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::generated_index(idx, span)],
+        span,
     }
 }
 
 fn real(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -69,7 +94,7 @@ fn array(elements: Vec<Expression>) -> Expression {
     Expression::Array {
         elements,
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -77,7 +102,7 @@ fn der(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -86,7 +111,7 @@ fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
         op,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -94,7 +119,7 @@ fn residual(lhs: Expression, rhs: Expression, scalar_count: usize, origin: &str)
     dae::Equation {
         lhs: None,
         rhs: binary(OpBinary::Sub, lhs, rhs),
-        span: Span::DUMMY,
+        span: test_span(),
         origin: origin.to_string(),
         scalar_count,
     }
@@ -104,8 +129,12 @@ fn reference(path: &str) -> rumoca_core::Reference {
     rumoca_core::Reference::from_component_reference(component_ref(path))
 }
 
+fn dummy_reference(path: &str) -> rumoca_core::Reference {
+    rumoca_core::Reference::from_component_reference(dummy_component_ref(path))
+}
+
 fn component_var(path: &str) -> dae::Variable {
-    let mut var = dae::Variable::new(VarName::new(path));
+    let mut var = test_dae_variable(path);
     var.component_ref = Some(component_ref(path));
     var
 }
@@ -113,7 +142,7 @@ fn component_var(path: &str) -> dae::Variable {
 fn component_ref(path: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
-        span: Span::DUMMY,
+        span: test_span(),
         parts: rumoca_core::split_path_with_indices(path)
             .into_iter()
             .filter(|part| !part.is_empty())
@@ -124,6 +153,39 @@ fn component_ref(path: &str) -> rumoca_core::ComponentReference {
 }
 
 fn component_ref_part(part: &str) -> rumoca_core::ComponentRefPart {
+    let scalar = rumoca_core::parse_scalar_name(part);
+    rumoca_core::ComponentRefPart {
+        ident: scalar
+            .as_ref()
+            .map_or(part, |scalar| scalar.base)
+            .to_string(),
+        span: test_span(),
+        subs: scalar
+            .map(|scalar| {
+                scalar
+                    .indices
+                    .into_iter()
+                    .map(|index| rumoca_core::Subscript::generated_index(index, test_span()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn dummy_component_ref(path: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: Span::DUMMY,
+        parts: rumoca_core::split_path_with_indices(path)
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .map(dummy_component_ref_part)
+            .collect(),
+        def_id: None,
+    }
+}
+
+fn dummy_component_ref_part(part: &str) -> rumoca_core::ComponentRefPart {
     let scalar = rumoca_core::parse_scalar_name(part);
     rumoca_core::ComponentRefPart {
         ident: scalar
@@ -570,6 +632,70 @@ fn test_substitute_var_projects_embedded_array_alias_component() {
 }
 
 #[test]
+fn substitute_var_subscripted_replacement_uses_reference_span_when_replacement_is_unspanned() {
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("alias_span.mo"),
+        7,
+        13,
+    );
+    let expr = Expression::VarRef {
+        name: reference("arr"),
+        subscripts: vec![rumoca_core::Subscript::generated_index(1, Span::DUMMY)],
+        span,
+    };
+    let substitution = Substitution {
+        var_name: VarName::new("arr"),
+        var_ref: Some(reference("arr")),
+        expr: var_ref("source"),
+        var_dims: vec![2],
+        replacement_dims: vec![2],
+        env_keys: vec!["arr".to_string()],
+    };
+
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &[substitution]));
+
+    assert_eq!(result.span(), Some(span));
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "source"
+                    && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 1, .. }])
+        ),
+        "subscripted alias replacement should retain source reference span"
+    );
+}
+
+#[test]
+fn substitute_var_rejects_unspanned_embedded_array_alias_projection() {
+    let expr = Expression::VarRef {
+        name: dummy_reference("arr[2]"),
+        subscripts: Vec::new(),
+        span: Span::DUMMY,
+    };
+    let substitution = Substitution {
+        var_name: VarName::new("arr"),
+        var_ref: Some(dummy_reference("arr")),
+        expr: Expression::VarRef {
+            name: dummy_reference("source"),
+            subscripts: Vec::new(),
+            span: Span::DUMMY,
+        },
+        var_dims: vec![2],
+        replacement_dims: vec![2],
+        env_keys: vec!["arr".to_string()],
+    };
+
+    match apply_substitutions_to_expr(&expr, &[substitution]) {
+        Err(StructuralError::UnspannedContractViolation { reason }) => assert!(
+            reason.contains("structural substitution projection"),
+            "unexpected reason: {reason}"
+        ),
+        other => panic!("expected unspanned projection error, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_substitute_var_does_not_project_scalarized_alias_as_aggregate() {
     let expr = var_ref(
         "aimc.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[2].abs_V_m",
@@ -623,7 +749,7 @@ fn test_substitute_var_rewrites_exact_indexed_component_without_use_site_compone
         env_keys: Vec::new(),
     }];
 
-    let result = apply_substitutions_to_expr(&expr, &substitutions);
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
 
     assert!(
         matches!(
@@ -704,7 +830,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
             env_keys: Vec::new(),
         },
     ];
-    let result = apply_substitutions_to_expr(&expr, &substitutions);
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
 
     assert!(
         matches!(
@@ -745,7 +871,7 @@ fn test_complete_scalar_alias_group_without_exact_var_ref_rewrites_aggregate_fun
             env_keys: Vec::new(),
         },
     ];
-    let result = apply_substitutions_to_expr(&expr, &substitutions);
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
 
     assert!(
         matches!(
@@ -768,7 +894,7 @@ fn test_single_scalar_alias_does_not_rewrite_aggregate_argument() {
         replacement_dims: Vec::new(),
         env_keys: Vec::new(),
     }];
-    let result = apply_substitutions_to_expr(&expr, &substitutions);
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
 
     assert!(
         matches!(
@@ -791,7 +917,7 @@ fn test_scalarized_alias_without_exact_var_ref_does_not_rewrite_aggregate_argume
         replacement_dims: Vec::new(),
         env_keys: Vec::new(),
     }];
-    let result = apply_substitutions_to_expr(&expr, &substitutions);
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
 
     assert!(
         matches!(
@@ -806,7 +932,7 @@ fn test_scalarized_alias_without_exact_var_ref_does_not_rewrite_aggregate_argume
 #[test]
 fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alias() {
     let expr = var_ref_idx("aimc.rotorCage.electroMagneticConverter.i", 2);
-    let result = apply_substitutions_to_expr(
+    let result = structural_ok(apply_substitutions_to_expr(
         &expr,
         &[Substitution {
             var_name: VarName::new("aimc.rotorCage.electroMagneticConverter.i"),
@@ -816,7 +942,7 @@ fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alia
             replacement_dims: vec![3],
             env_keys: Vec::new(),
         }],
-    );
+    ));
 
     assert!(
         matches!(
@@ -833,8 +959,8 @@ fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alia
 fn test_complete_scalar_alias_group_rewrites_dynamic_aggregate_slice() {
     let expr = Expression::VarRef {
         name: reference("transformerL.i"),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-            Expression::Range {
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(Expression::Range {
                 start: Box::new(Expression::Literal {
                     value: Literal::Integer(1),
                     span: Span::DUMMY,
@@ -842,8 +968,9 @@ fn test_complete_scalar_alias_group_rewrites_dynamic_aggregate_slice() {
                 step: None,
                 end: Box::new(var_ref("m")),
                 span: Span::DUMMY,
-            },
-        ))],
+            }),
+            rumoca_core::Span::DUMMY,
+        )],
         span: Span::DUMMY,
     };
     let substitutions = [
@@ -873,7 +1000,7 @@ fn test_complete_scalar_alias_group_rewrites_dynamic_aggregate_slice() {
         },
     ];
 
-    let result = apply_substitutions_to_expr(&expr, &substitutions);
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
 
     assert!(
         matches!(
@@ -1046,7 +1173,7 @@ fn test_substitute_var_rewrites_regular_builtin_arguments() {
             Expression::BuiltinCall { function: BuiltinFunction::Sin, args, .. }
                 if matches!(
                     args.as_slice(),
-                    [Expression::Literal { value: Literal::Real(v), span: rumoca_core::Span::DUMMY }] if *v == 7.0
+                    [Expression::Literal { value: Literal::Real(v), span }] if *v == 7.0 && *span == test_span()
                 )
         ),
         "regular builtins should still be substituted"
@@ -1099,12 +1226,88 @@ fn test_expr_contains_var_rejects_embedded_non_unity_subscript() {
     assert!(!expr_contains_var(&expr, &VarName::new("z")));
 }
 
+#[test]
+fn aggregate_alias_candidate_uses_replacement_reference_span() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("arr"), test_dae_variable("arr"));
+
+    let result = structural_ok(aggregate_alias_candidate(
+        &dae,
+        &reference("arr"),
+        &reference("source"),
+        Some(test_span()),
+        &IndexSet::new(),
+        &HashSet::new(),
+    ));
+
+    assert!(
+        matches!(
+            result,
+            Some((name, Expression::VarRef { span, .. }))
+                if name.as_str() == "arr" && span == test_span()
+        ),
+        "aggregate alias replacement should retain source provenance"
+    );
+}
+
+#[test]
+fn aggregate_alias_candidate_rejects_unspanned_replacement() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("arr"), test_dae_variable("arr"));
+
+    match aggregate_alias_candidate(
+        &dae,
+        &dummy_reference("arr"),
+        &dummy_reference("source"),
+        None,
+        &IndexSet::new(),
+        &HashSet::new(),
+    ) {
+        Err(StructuralError::UnspannedContractViolation { reason }) => assert!(
+            reason.contains("without source provenance for replacement `source`"),
+            "unexpected reason: {reason}"
+        ),
+        other => panic!("expected unspanned aggregate alias error, got {other:?}"),
+    }
+}
+
+#[test]
+fn choose_solvable_non_unknown_alias_accepts_real_spanned_residual() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("lhs"), test_dae_variable("lhs"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("rhs"), test_dae_variable("rhs"));
+
+    let result = structural_ok(choose_solvable_non_unknown_alias_for_elimination(
+        &dae,
+        &binary(OpBinary::Sub, var_ref("lhs"), var_ref("rhs")),
+        &IndexSet::new(),
+        &HashSet::new(),
+    ));
+
+    assert!(
+        matches!(
+            result,
+            Some((name, Expression::VarRef { name: replacement, .. }))
+                if name.as_str() == "lhs" && replacement.as_str() == "rhs"
+        ),
+        "real-spanned alias residuals should remain eligible for structural elimination"
+    );
+}
+
 // ── eliminate_trivial ─────────────────────────────────────────────
 
 fn build_test_dae_3eq() -> Dae {
     let mut dae = Dae::new();
 
-    let mut var_x = dae::Variable::new(VarName::new("x"));
+    let mut var_x = test_dae_variable("x");
     var_x.start = Some(Expression::Literal {
         value: Literal::Real(1.0),
         span: rumoca_core::Span::DUMMY,
@@ -1113,7 +1316,7 @@ fn build_test_dae_3eq() -> Dae {
 
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
     // ODE: 0 = der(x) - z
     dae.continuous.equations.push(dae::Equation {
@@ -1166,11 +1369,13 @@ fn test_eliminate_trivial_simple() {
 #[test]
 fn test_eliminate_trivial_preserves_scalarized_matrix_derivative_rows() {
     let mut dae = Dae::new();
-    let mut r = dae::Variable::new(VarName::new("R"));
+    let mut r = test_dae_variable("R");
     r.dims = vec![3, 3];
+    r.source_span = test_span();
     dae.variables.states.insert(VarName::new("R"), r);
-    let mut skew = dae::Variable::new(VarName::new("skew"));
+    let mut skew = test_dae_variable("skew");
     skew.dims = vec![3, 3];
+    skew.source_span = test_span();
     dae.variables.algebraics.insert(VarName::new("skew"), skew);
 
     dae.continuous.equations.push(residual(
@@ -1221,7 +1426,7 @@ fn test_eliminate_trivial_reports_missing_replacement_metadata() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: Expression::Binary {
@@ -1238,8 +1443,9 @@ fn test_eliminate_trivial_reports_missing_replacement_metadata() {
     let err = eliminate_trivial(&mut dae).expect_err("missing metadata should fail structural IR");
     assert!(matches!(
         err,
-        StructuralError::ContractViolation { reason, .. }
+        StructuralError::ContractViolation { reason, span }
             if reason.contains("missing DAE variable metadata for `missing`")
+                && span == test_span()
     ));
 }
 
@@ -1248,10 +1454,10 @@ fn test_eliminate_trivial_reports_blt_singularity() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_dae_variable("b"));
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: Expression::Binary {
@@ -1279,7 +1485,7 @@ fn test_eliminate_trivial_reports_blt_singularity() {
 fn test_eliminate_trivial_chain() {
     let mut dae = Dae::new();
 
-    let mut var_x = dae::Variable::new(VarName::new("x"));
+    let mut var_x = test_dae_variable("x");
     var_x.start = Some(Expression::Literal {
         value: Literal::Real(1.0),
         span: rumoca_core::Span::DUMMY,
@@ -1287,10 +1493,10 @@ fn test_eliminate_trivial_chain() {
     dae.variables.states.insert(VarName::new("x"), var_x);
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_dae_variable("b"));
 
     // ODE: 0 = der(x) - b
     dae.continuous.equations.push(dae::Equation {
@@ -1350,10 +1556,10 @@ fn test_eliminate_trivial_alias_pair_two_unknowns() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_dae_variable("b"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -1384,10 +1590,10 @@ fn test_eliminate_trivial_alias_pair_prefers_output_elimination() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -1415,10 +1621,10 @@ fn test_eliminate_trivial_alias_keeps_output_with_own_definition() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -1459,13 +1665,13 @@ fn test_eliminate_trivial_alias_keeps_output_with_own_definition() {
 #[test]
 fn test_eliminate_trivial_keeps_fixed_alias_unknown() {
     let mut dae = Dae::new();
-    let mut fixed = dae::Variable::new(VarName::new("y"));
+    let mut fixed = test_dae_variable("y");
     fixed.fixed = Some(true);
     fixed.start = Some(lit(0.0));
     dae.variables.algebraics.insert(VarName::new("y"), fixed);
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,

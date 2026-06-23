@@ -1,6 +1,15 @@
 use super::*;
 pub(super) use crate::completion_metrics::{CompletionProgressSummary, CompletionTimingSummary};
 use rumoca_compile::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
+// Scenario (`rumoca-scenario.toml`) config command JSON shaping is owned by `rumoca-compile`
+// so the LSP server and the browser editor bindings share one implementation.
+pub(super) use rumoca_compile::scenario::{
+    codegen_config_from_json, codegen_config_to_json, parse_fallback_simulation,
+    parse_views_payload, scenario_config_full_to_json, scenario_config_response,
+    scenario_config_text_from_json, simulation_override_from_json, simulation_preset_to_json,
+    simulation_settings_to_json, source_roots_from_json, source_roots_to_json,
+    visualization_views_to_json,
+};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -33,7 +42,7 @@ pub(super) struct DurableSourceRootLoadTiming {
 }
 
 impl DurableSourceRootLoadTiming {
-    pub(super) fn accumulate_into(self, timing: &mut ProjectReloadTiming) {
+    pub(super) fn accumulate_into(self, timing: &mut ScenarioReloadTiming) {
         timing.durable_collect_files_ms += self.cache.collect_files_ms;
         timing.durable_hash_inputs_ms += self.cache.hash_inputs_ms;
         timing.durable_cache_lookup_ms += self.cache.cache_lookup_ms;
@@ -74,8 +83,8 @@ pub(super) struct StartupTimingSummary {
     pub(super) source_root_paths_changed: bool,
     pub(super) parse_init_options_ms: u64,
     pub(super) workspace_root_ms: u64,
-    pub(super) reload_project_config_ms: u64,
-    pub(super) project_discover_ms: u64,
+    pub(super) reload_scenario_config_ms: u64,
+    pub(super) scenario_discover_ms: u64,
     pub(super) resolve_source_root_paths_ms: u64,
     pub(super) reset_session_ms: u64,
     pub(super) durable_prewarm_ms: u64,
@@ -93,9 +102,9 @@ pub(super) struct StartupTimingSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(super) struct ProjectReloadTiming {
+pub(super) struct ScenarioReloadTiming {
     pub(super) source_root_paths_changed: bool,
-    pub(super) project_discover_ms: u64,
+    pub(super) scenario_discover_ms: u64,
     pub(super) resolve_source_root_paths_ms: u64,
     pub(super) reset_session_ms: u64,
     pub(super) durable_prewarm_ms: u64,
@@ -358,12 +367,13 @@ pub(super) fn source_root_load_error_message(lib_path: &str, err: &anyhow::Error
     format!("Failed to load source root '{}': {}", lib_path, err)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct SimulationRequestSettings {
     pub(super) solver: String,
     pub(super) t_end: f64,
     pub(super) dt: Option<f64>,
     pub(super) source_root_paths: Vec<String>,
+    pub(super) parameter_overrides: Vec<(String, f64)>,
 }
 
 pub(super) fn simulation_request_settings_from_effective(
@@ -374,6 +384,7 @@ pub(super) fn simulation_request_settings_from_effective(
         t_end: settings.t_end,
         dt: settings.dt,
         source_root_paths: settings.source_root_paths.clone(),
+        parameter_overrides: Vec::new(),
     }
 }
 
@@ -406,65 +417,25 @@ pub(super) fn parse_simulation_request_settings(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let parameter_overrides = match obj.get("parameterOverrides") {
+        Some(Value::Object(values)) => values
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .map(|v| (name.clone(), v))
+            })
+            .collect(),
+        Some(_) => return None,
+        None => Vec::new(),
+    };
     Some(SimulationRequestSettings {
         solver,
         t_end,
         dt,
         source_root_paths,
-    })
-}
-
-pub(super) fn parse_fallback_simulation(
-    value: Option<&Value>,
-) -> Option<EffectiveSimulationConfig> {
-    let value = value?;
-    let obj = value.as_object()?;
-    let solver = normalize_solver_opt(
-        obj.get("solver")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    )
-    .unwrap_or_else(|| "auto".to_string());
-    let t_end = obj
-        .get("tEnd")
-        .and_then(Value::as_f64)
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(10.0);
-    let dt = normalize_dt_opt(obj.get("dt").and_then(Value::as_f64));
-    let output_dir = obj
-        .get("outputDir")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let source_root_paths = obj
-        .get("sourceRootPaths")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(EffectiveSimulationConfig {
-        solver,
-        t_end,
-        dt,
-        output_dir,
-        source_root_paths,
-    })
-}
-
-pub(super) fn simulation_settings_to_json(settings: &EffectiveSimulationConfig) -> Value {
-    json!({
-        "solver": settings.solver,
-        "tEnd": settings.t_end,
-        "dt": settings.dt,
-        "outputDir": settings.output_dir,
-        "sourceRootPaths": settings.source_root_paths,
+        parameter_overrides,
     })
 }
 
@@ -474,7 +445,7 @@ pub(super) fn find_open_workspace_document_for_model(
 ) -> Option<Url> {
     for uri in snapshot.document_uris() {
         // Intentionally exclude live overlays on non-workspace source roots here:
-        // this helper is selecting a user workspace document to drive project
+        // this helper is selecting a user workspace document to drive scenario
         // command prewarm, not a generic source-root-backed semantic input.
         if snapshot.is_non_workspace_source_root_document(&uri) {
             continue;
@@ -493,98 +464,6 @@ pub(super) fn find_open_workspace_document_for_model(
         }
     }
     None
-}
-
-pub(super) fn simulation_preset_to_json(preset: &EffectiveSimulationPreset) -> Value {
-    json!({
-        "solver": preset.solver,
-        "tEnd": preset.t_end,
-        "dt": preset.dt,
-        "outputDir": preset.output_dir,
-        "sourceRootOverrides": preset.source_root_overrides,
-    })
-}
-
-pub(super) fn simulation_override_from_json(value: &Value) -> Option<SimulationModelOverride> {
-    let obj = value.as_object()?;
-    let solver = obj
-        .get("solver")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let t_end = obj.get("tEnd").and_then(Value::as_f64);
-    let dt = obj.get("dt").and_then(Value::as_f64);
-    let output_dir = obj
-        .get("outputDir")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let source_root_overrides = obj
-        .get("sourceRootOverrides")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(SimulationModelOverride {
-        solver,
-        t_end,
-        dt,
-        output_dir,
-        source_root_overrides,
-    })
-}
-
-pub(super) fn parse_views_payload(value: &Value) -> Option<Vec<PlotViewConfig>> {
-    serde_json::from_value::<Vec<VisualizationViewPayload>>(value.clone())
-        .ok()
-        .map(|views| views.into_iter().map(PlotViewConfig::from).collect())
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct VisualizationViewPayload {
-    pub(super) id: String,
-    pub(super) title: String,
-    #[serde(rename = "type")]
-    pub(super) view_type: String,
-    pub(super) x: Option<String>,
-    #[serde(default)]
-    pub(super) y: Vec<String>,
-    pub(super) script: Option<String>,
-    pub(super) script_path: Option<String>,
-}
-
-impl From<PlotViewConfig> for VisualizationViewPayload {
-    fn from(view: PlotViewConfig) -> Self {
-        Self {
-            id: view.id,
-            title: view.title,
-            view_type: view.view_type,
-            x: view.x,
-            y: view.y,
-            script: view.script,
-            script_path: view.script_path,
-        }
-    }
-}
-
-impl From<VisualizationViewPayload> for PlotViewConfig {
-    fn from(view: VisualizationViewPayload) -> Self {
-        Self {
-            id: view.id,
-            title: view.title,
-            view_type: view.view_type,
-            x: view.x,
-            y: view.y,
-            script: view.script,
-            script_path: view.script_path,
-        }
-    }
 }
 
 pub(super) fn normalize_solver_opt(value: Option<String>) -> Option<String> {
@@ -729,10 +608,10 @@ pub(super) fn collect_simulation_parsed_docs_snapshot(
     Ok(parsed_docs)
 }
 
-pub(super) fn is_project_config_uri(uri: &Url) -> bool {
-    // Rumoca task-file naming convention (`rum.toml` / `rum.<profile>.toml`) is
+pub(super) fn is_scenario_config_uri(uri: &Url) -> bool {
+    // Rumoca task-file naming convention (`rumoca-scenario.toml` / `rumoca-scenario.<profile>.toml`) is
     // the discovery hook; the `[rumoca]` marker section stays authoritative.
-    let matches = rumoca_compile::project::is_rumoca_task_filename;
+    let matches = rumoca_compile::scenario::is_rumoca_task_filename;
     if let Ok(path) = uri.to_file_path() {
         return path
             .file_name()
@@ -768,24 +647,5 @@ mod tests {
         .expect("parse views payload");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].script_path.as_deref(), Some("viewer_3d.js"));
-    }
-
-    #[test]
-    fn visualization_view_payload_serializes_script_path_as_camel_case() {
-        let payload = VisualizationViewPayload::from(PlotViewConfig {
-            id: "viewer_3d".to_string(),
-            title: "Viewer".to_string(),
-            view_type: "3d".to_string(),
-            x: None,
-            y: Vec::new(),
-            script: None,
-            script_path: Some("viewer_3d.js".to_string()),
-        });
-        let encoded = serde_json::to_value(payload).expect("serialize payload");
-        assert_eq!(
-            encoded.get("scriptPath").and_then(Value::as_str),
-            Some("viewer_3d.js")
-        );
-        assert!(encoded.get("script_path").is_none());
     }
 }

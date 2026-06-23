@@ -642,13 +642,22 @@ pub(crate) fn resolve_embedded_subscript_size(
 mod tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("scalar_size_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn test_compute_subscripted_size_mixed_index_and_colon() {
+        let span = test_span();
         let size = compute_subscripted_size(
             &[2, 3, 4],
             &[
-                rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
-                rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
+                rumoca_core::Subscript::generated_index(1, span),
+                rumoca_core::Subscript::generated_colon(span),
             ],
         );
         assert_eq!(size, 12);
@@ -663,23 +672,24 @@ mod tests {
     #[test]
     fn test_size_call_evaluates_literal_array_shape() {
         let flat = flat::Model::new();
+        let span = test_span();
         let array = rumoca_core::Expression::Array {
             elements: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::String("CO2".to_string()),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::String("H2O".to_string()),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
         let dim = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
 
         assert_eq!(eval_size_call_i64(&array, &dim, &flat, 0), Some(2));

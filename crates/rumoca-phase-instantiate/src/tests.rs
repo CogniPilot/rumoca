@@ -60,12 +60,24 @@ fn make_bool_expr(value: bool) -> ast::Expression {
     }
 }
 
-fn make_string_expr(value: &str) -> ast::Expression {
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_instantiate_tests_source_7.mo"),
+        0,
+        1,
+    )
+}
+
+fn make_string_expr_with_span(value: &str, span: rumoca_core::Span) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::String,
         token: make_token(&format!("\"{value}\"")),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
+}
+
+fn make_string_expr(value: &str) -> ast::Expression {
+    make_string_expr_with_span(value, rumoca_core::Span::DUMMY)
 }
 
 fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
@@ -136,7 +148,7 @@ fn make_component(name: &str, type_name: &str, type_def_id: Option<DefId>) -> as
         name_token: make_token(name),
         type_name: make_name(type_name),
         type_def_id,
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     }
 }
 
@@ -168,9 +180,15 @@ fn context_with_source_scope_tree(classes: Vec<ast::ClassDef>) -> InstantiateCon
     ctx
 }
 
-fn make_simple_equation(lhs: &str, rhs: i64) -> ast::Equation {
+fn make_simple_equation_at(
+    lhs: &str,
+    rhs: i64,
+    file_name: &str,
+    start: u32,
+    end: u32,
+) -> ast::Equation {
     ast::Equation::Simple {
-        lhs: make_comp_ref_expr(&[lhs]),
+        lhs: make_comp_ref_expr_at(&[lhs], file_name, start, end),
         rhs: make_int_expr(rhs),
     }
 }
@@ -318,7 +336,8 @@ fn test_validate_final_type_attribute_rejects_outer_override() {
                     span: rumoca_core::Span::DUMMY,
                 },
                 final_: true,
-                ..Default::default()
+                each: false,
+                redeclare: false,
             }],
             ..Default::default()
         }],
@@ -335,12 +354,67 @@ fn test_validate_final_type_attribute_rejects_outer_override() {
     let mut mod_env = ast::ModificationEnvironment::new();
     mod_env.add(
         ast::QualifiedName::from_dotted("x.unit"),
-        ast::ModificationValue::simple(make_string_expr("kV")),
+        ast::ModificationValue::simple(make_string_expr_with_span("kV", test_span())),
     );
 
     let err = validate_final_type_attribute_overrides(&tree, Some(&voltage), &comp, &mod_env)
         .expect_err("overriding final type attribute should fail");
     assert!(err.to_string().contains("final"));
+}
+
+#[test]
+fn test_validate_final_type_attribute_requires_override_span() {
+    let real_def = rumoca_core::DefId::new(1);
+    let voltage_def = rumoca_core::DefId::new(2);
+    let real = ast::ClassDef {
+        name: make_token("Real"),
+        def_id: Some(real_def),
+        ..Default::default()
+    };
+    let voltage = ast::ClassDef {
+        name: make_token("Voltage"),
+        def_id: Some(voltage_def),
+        extends: vec![ast::Extend {
+            base_name: make_name("Real"),
+            base_def_id: Some(real_def),
+            modifications: vec![ast::ExtendModification {
+                expr: ast::Expression::Modification {
+                    target: match make_comp_ref_expr(&["unit"]) {
+                        ast::Expression::ComponentReference(cref) => cref,
+                        _ => unreachable!(),
+                    },
+                    value: std::sync::Arc::new(make_string_expr("V")),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                final_: true,
+                each: false,
+                redeclare: false,
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut tree = ast::ClassTree::default();
+    tree.def_map.insert(real_def, "Real".to_string());
+    tree.def_map.insert(voltage_def, "Voltage".to_string());
+    tree.definitions.classes.insert("Real".to_string(), real);
+    tree.definitions
+        .classes
+        .insert("Voltage".to_string(), voltage.clone());
+
+    let comp = make_component("x", "Voltage", Some(voltage_def));
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_dotted("x.unit"),
+        ast::ModificationValue::simple(make_string_expr("kV")),
+    );
+
+    let err = validate_final_type_attribute_overrides(&tree, Some(&voltage), &comp, &mod_env)
+        .expect_err("unspanned final type attribute override should fail fast");
+    assert!(matches!(
+        *err,
+        InstantiateError::MissingSourceContext { .. }
+    ));
 }
 
 #[test]
@@ -454,7 +528,8 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
 }
 
 #[test]
-fn test_equations_to_instance_without_connections_filters_connect_equations() {
+fn test_equations_to_instance_without_connections_filters_connect_equations()
+-> InstantiateResult<()> {
     let equations = vec![
         ast::Equation::Connect {
             lhs: ast::ComponentReference {
@@ -477,16 +552,17 @@ fn test_equations_to_instance_without_connections_filters_connect_equations() {
             },
         },
         ast::Equation::Simple {
-            lhs: make_comp_ref_expr(&["x"]),
+            lhs: make_comp_ref_expr_at(&["x"], "test.mo", 0, 1),
             rhs: make_int_expr(1),
         },
     ];
 
-    let source_map = rumoca_core::SourceMap::new();
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add("test.mo", "x = 1;");
     let origin = ast::QualifiedName::from_ident("M");
     let ctx = InstantiateContext::new();
     let converted =
-        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map);
+        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map)?;
 
     assert_eq!(converted.len(), 1);
     assert!(matches!(
@@ -494,6 +570,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations() {
         ast::Equation::Simple { .. }
     ));
     assert_eq!(converted[0].origin, origin);
+    Ok(())
 }
 
 #[test]
@@ -654,18 +731,19 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     let uses_outer_id = DefId::new(101);
     let root_id = DefId::new(102);
 
+    let mut state_x = make_component("x", "Real", None);
+    state_x.location = make_location("late_inner.mo", 20, 21);
     let state = ast::ClassDef {
         def_id: Some(state_id),
         name: make_token("State"),
-        components: [("x".to_string(), make_component("x", "Real", None))]
-            .into_iter()
-            .collect(),
-        equations: vec![make_simple_equation("x", 1)],
+        components: [("x".to_string(), state_x)].into_iter().collect(),
+        equations: vec![make_simple_equation_at("x", 1, "late_inner.mo", 0, 1)],
         ..Default::default()
     };
 
     let mut outer_shared = make_component("shared", "State", Some(state_id));
     outer_shared.outer = true;
+    outer_shared.location = make_location("late_inner.mo", 6, 12);
     let uses_outer = ast::ClassDef {
         def_id: Some(uses_outer_id),
         name: make_token("UsesOuter"),
@@ -673,8 +751,10 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
         ..Default::default()
     };
 
-    let child = make_component("child", "UsesOuter", Some(uses_outer_id));
+    let mut child = make_component("child", "UsesOuter", Some(uses_outer_id));
+    child.location = make_location("late_inner.mo", 0, 5);
     let mut inner_shared = make_component("shared", "State", Some(state_id));
+    inner_shared.location = make_location("late_inner.mo", 13, 19);
     inner_shared.inner = true;
     let root = ast::ClassDef {
         def_id: Some(root_id),
@@ -689,6 +769,8 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     };
 
     let mut tree = ast::ClassTree::new();
+    tree.source_map
+        .add("late_inner.mo", "child shared shared x");
     tree.definitions.classes.insert("State".to_string(), state);
     tree.definitions
         .classes

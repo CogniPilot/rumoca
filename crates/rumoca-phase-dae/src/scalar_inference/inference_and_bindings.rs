@@ -621,7 +621,11 @@ impl ExpressionRewriter for StartRefRewriter<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Expression {
-        let resolved_name = if name.has_structure() {
+        let resolved_name = if let Some(resolved) =
+            crate::path_utils::resolve_known_path_suffix(name.as_str(), self.known_var_names)
+        {
+            VarName::new(resolved).into()
+        } else if name.has_structure() {
             name.clone()
         } else {
             resolve_missing_start_ref(name.var_name(), self.known_var_names).into()
@@ -638,7 +642,7 @@ pub(crate) fn create_dae_variable(
     name: &VarName,
     var: &flat::Variable,
     known_var_names: &HashSet<String>,
-) -> Variable {
+) -> Result<Variable, ToDaeError> {
     // MLS §4.4.1: declaration/modification bindings define parameter/constant values.
     // Start remains an initialization attribute and should not be used as the
     // primary value when a binding exists.
@@ -648,11 +652,32 @@ pub(crate) fn create_dae_variable(
         }
         _ => var.start.as_ref(),
     };
-    let start_span = start_source.and_then(Expression::span);
-    let start = start_source
-        .map(|expr| select_scalar_start_record_alias(name, expr, known_var_names))
-        .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names))
-        .map(|expr| flat_to_dae_expression(&expr));
+    let start_span = start_source
+        .map(|expr| variable_attribute_owner_span(name, "start", expr))
+        .transpose()?;
+    let start = if let Some(expr) = start_source {
+        let owner_span = variable_attribute_owner_span(name, "start", expr)?;
+        let selected = select_scalar_start_record_alias(name, expr, known_var_names, owner_span);
+        let rewritten = rewrite_start_expr_missing_refs(&selected, known_var_names);
+        Some(flat_to_dae_expression(&rewritten))
+    } else {
+        None
+    };
+    let min_span = var
+        .min
+        .as_ref()
+        .map(|expr| variable_attribute_owner_span(name, "min", expr))
+        .transpose()?;
+    let max_span = var
+        .max
+        .as_ref()
+        .map(|expr| variable_attribute_owner_span(name, "max", expr))
+        .transpose()?;
+    let nominal_span = var
+        .nominal
+        .as_ref()
+        .map(|expr| variable_attribute_owner_span(name, "nominal", expr))
+        .transpose()?;
 
     // A parameter is tunable (changeable at runtime in FMI 3.0 ConfigurationMode)
     // unless it is structural: evaluate=true or discrete-typed (Integer/Boolean
@@ -661,7 +686,7 @@ pub(crate) fn create_dae_variable(
         && !var.evaluate
         && !var.is_discrete_type;
 
-    Variable {
+    Ok(Variable {
         name: flat_to_dae_var_name(name),
         component_ref: var.component_ref.clone(),
         source_span: var.source_span,
@@ -670,18 +695,31 @@ pub(crate) fn create_dae_variable(
         start_span,
         fixed: var.fixed,
         min: var.min.as_ref().map(flat_to_dae_expression),
-        min_span: var.min.as_ref().and_then(Expression::span),
+        min_span,
         max: var.max.as_ref().map(flat_to_dae_expression),
-        max_span: var.max.as_ref().and_then(Expression::span),
+        max_span,
         nominal: var.nominal.as_ref().map(flat_to_dae_expression),
-        nominal_span: var.nominal.as_ref().and_then(Expression::span),
+        nominal_span,
         unit: var.unit.clone(),
         state_select: var.state_select,
-        description: None,
+        description: var.description.clone(),
         causality: variable_causality(var, is_tunable),
         is_tunable,
         origin: rumoca_ir_dae::VariableOrigin::Source,
-    }
+    })
+}
+
+fn variable_attribute_owner_span(
+    variable: &VarName,
+    attribute: &str,
+    expr: &Expression,
+) -> Result<rumoca_core::Span, ToDaeError> {
+    expr.span().filter(|span| !span.is_dummy()).ok_or_else(|| {
+        ToDaeError::runtime_metadata_violation(format!(
+            "variable attribute `{}.{attribute}` is missing source provenance",
+            variable.as_str()
+        ))
+    })
 }
 
 fn variable_causality(var: &flat::Variable, is_tunable: bool) -> rumoca_ir_dae::VariableCausality {
@@ -704,23 +742,24 @@ fn select_scalar_start_record_alias(
     lhs_name: &VarName,
     expr: &Expression,
     known_var_names: &HashSet<String>,
+    owner_span: rumoca_core::Span,
 ) -> Expression {
     let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
     let leaf_field = lhs_path.parts().last();
     let Some(lhs_base) = flat::component_base_name(lhs_name.as_str()) else {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
             .unwrap_or_else(|| expr.clone());
     };
     if lhs_base == lhs_name.as_str() {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
             .unwrap_or_else(|| expr.clone());
     }
     let Some(field_suffix) = lhs_name.as_str().strip_prefix(lhs_base.as_str()) else {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
             .unwrap_or_else(|| expr.clone());
     };
     if !field_suffix.starts_with('.') {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
             .unwrap_or_else(|| expr.clone());
     }
 
@@ -744,7 +783,7 @@ fn select_scalar_start_record_alias(
                 return Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
-                    span: *span,
+                    span: real_or_owner_span(*span, owner_span),
                 };
             }
             if let Some(field) = leaf_field {
@@ -755,7 +794,7 @@ fn select_scalar_start_record_alias(
                     return Expression::VarRef {
                         name: VarName::new(selected).into(),
                         subscripts: vec![],
-                        span: *span,
+                        span: real_or_owner_span(*span, owner_span),
                     };
                 }
             }
@@ -783,7 +822,7 @@ fn select_scalar_start_record_alias(
                 return Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
-                    span: *span,
+                    span: real_or_owner_span(*span, owner_span),
                 };
             }
             if let Some(lhs_leaf) = leaf_field {
@@ -794,7 +833,7 @@ fn select_scalar_start_record_alias(
                     return Expression::VarRef {
                         name: VarName::new(selected).into(),
                         subscripts: vec![],
-                        span: *span,
+                        span: real_or_owner_span(*span, owner_span),
                     };
                 }
             }
@@ -808,6 +847,7 @@ fn select_leaf_start_record_alias(
     expr: &Expression,
     leaf_field: Option<&String>,
     known_var_names: &HashSet<String>,
+    owner_span: rumoca_core::Span,
 ) -> Option<Expression> {
     let field = leaf_field?;
     match expr {
@@ -824,7 +864,7 @@ fn select_leaf_start_record_alias(
                 |selected| Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
-                    span: *span,
+                    span: real_or_owner_span(*span, owner_span),
                 },
             )
         }
@@ -845,7 +885,7 @@ fn select_leaf_start_record_alias(
                 |selected| Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
-                    span: *span,
+                    span: real_or_owner_span(*span, owner_span),
                 },
             )
         }
@@ -853,32 +893,50 @@ fn select_leaf_start_record_alias(
     }
 }
 
+fn real_or_owner_span(span: rumoca_core::Span, owner_span: rumoca_core::Span) -> rumoca_core::Span {
+    if span.is_dummy() { owner_span } else { span }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("scalar_inference_test.mo"),
+            4,
+            12,
+        )
+    }
 
     #[test]
     fn create_dae_variable_preserves_component_reference() {
         let component_def_id = rumoca_core::DefId::new(17);
         let name = VarName::new("x");
+        let span = test_span();
         let flat_var = flat::Variable {
             name: name.clone(),
             component_ref: Some(rumoca_core::ComponentReference {
                 local: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
                 parts: vec![rumoca_core::ComponentRefPart {
                     ident: "x".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 }],
                 def_id: Some(component_def_id),
             }),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+            .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(
             dae_var
@@ -893,18 +951,19 @@ mod tests {
     fn create_dae_variable_preserves_structured_binding_references() {
         let record_def_id = rumoca_core::DefId::new(42);
         let name = VarName::new("x");
+        let span = test_span();
         let record_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 },
             ],
@@ -921,17 +980,23 @@ mod tests {
                         record_ref.clone(),
                     ),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
             is_primitive: true,
-            ..Default::default()
+            source_span: span,
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+            .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         let Some(Expression::FunctionCall { args, .. }) = dae_var.start else {
             panic!("expected function-call start");
@@ -948,18 +1013,19 @@ mod tests {
     #[test]
     fn rewrite_start_expr_preserves_top_level_structured_reference_when_not_aliasing() {
         let record_def_id = rumoca_core::DefId::new(43);
+        let span = test_span();
         let record_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![],
                 },
             ],
@@ -971,7 +1037,7 @@ mod tests {
                 record_ref.clone(),
             ),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
         let known_var_names = HashSet::new();
 
@@ -983,6 +1049,47 @@ mod tests {
         };
         assert_eq!(rewritten.component_ref(), Some(&record_ref));
     }
+
+    #[test]
+    fn rewrite_start_expr_rebases_structured_class_qualified_suffix() {
+        let span =
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 3, 4);
+        let class_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: ["Modelica", "Fluid", "PipeFlow", "system", "use_eps_Re"]
+                .into_iter()
+                .map(|ident| rumoca_core::ComponentRefPart {
+                    ident: ident.to_string(),
+                    span,
+                    subs: vec![],
+                })
+                .collect(),
+            def_id: None,
+        };
+        let expr = Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "Modelica.Fluid.PipeFlow.system.use_eps_Re",
+                class_ref,
+            ),
+            subscripts: vec![],
+            span,
+        };
+        let known_var_names = HashSet::from(["system.use_eps_Re".to_string()]);
+
+        let Expression::VarRef {
+            name: rewritten, ..
+        } = rewrite_start_expr_missing_refs(&expr, &known_var_names)
+        else {
+            panic!("expected structured VarRef");
+        };
+        assert_eq!(rewritten.as_str(), "system.use_eps_Re");
+        assert!(
+            rewritten.component_ref().is_none(),
+            "rebased suffix references must drop the stale class-qualified component reference"
+        );
+    }
+
     #[test]
     fn create_dae_variable_surfaces_source_causality() {
         let name = VarName::new("u");
@@ -990,11 +1097,16 @@ mod tests {
             name: name.clone(),
             causality: rumoca_core::Causality::Input(Default::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+            .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(dae_var.causality, rumoca_ir_dae::VariableCausality::Input);
     }
@@ -1006,15 +1118,44 @@ mod tests {
             name: name.clone(),
             variability: Variability::Parameter(Default::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+            .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(
             dae_var.causality,
             rumoca_ir_dae::VariableCausality::Parameter
         );
+    }
+
+    #[test]
+    fn create_dae_variable_rejects_unspanned_start_attribute() {
+        let name = VarName::new("x");
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            start: Some(Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let err = create_dae_variable(&name, &flat_var, &known_var_names)
+            .expect_err("unspanned start attribute should fail");
+
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
     }
 }

@@ -1,6 +1,6 @@
 # rumoca
 
-<img src="editors/icons/rumoca.png" alt="Rumoca Logo" width="128" align="right">
+<img src="assets/brand/rumoca.svg" alt="Rumoca Logo" width="128" align="right">
 
 [![CI](https://github.com/climamind/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/climamind/rumoca/actions/workflows/ci.yml)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-2ea44f?logo=github)](https://climamind.github.io/rumoca/)
@@ -172,17 +172,11 @@ with the developer helper:
 cargo xtask repo modelica-deps ensure
 ```
 
-The repository includes VS Code workspace settings for common open modes:
-
-- `.vscode/settings.json` when opening the repository root
-- `examples/.vscode/settings.json` when opening `examples/`
-- `examples/interactive/quadrotor/.vscode/settings.json` when opening the quadrotor
-  example directly
-
-These settings use repository-relative `rumoca.sourceRootPaths` entries such
-as `target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0` and
-`target/cmm/CMM-v0.0.2`. The extension resolves those paths against the
-workspace root before sending them to the LSP.
+The repository examples declare shared library roots in
+`examples/rumoca-workspace.toml`, using repository-relative paths such as
+`../target/msl/ModelicaStandardLibrary-4.1.0` and
+`../target/cmm/CMM-v0.0.2`. Rumoca loads that visible workspace file in VS Code,
+the playground, docs live examples, and native tooling.
 
 Scenario TOMLs may also declare top-level `source_roots` for dependencies that
 belong only to that run.
@@ -244,25 +238,25 @@ This keeps the compiler’s multi-crate architecture intact (similar to rustc’
 #### Binary installer (GitHub Releases)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash
 ```
 
 Install a specific version (and optionally `rumoca-lsp`):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.ps1 | iex
 ```
 
 The installer defaults to:
 
 - Linux/macOS: `~/.local/bin`
-- Windows: `~/.rumoca/bin`
+- Windows: `%LOCALAPPDATA%\rumoca\bin`
 
 #### Python package
 
@@ -298,7 +292,7 @@ After that, the main command groups are:
 - `cargo xtask verify full` for the full GitHub CI verification suite
 - `cargo xtask verify ...` for repo-wide verification and CI-facing gates
 - `cargo xtask vscode ...` for VS Code extension build, test, and edit workflows
-- `cargo xtask wasm ...` for wasm editor build, test, and edit workflows
+- `cargo xtask playground ...` for browser playground build, test, and edit workflows
 - `cargo xtask coverage ...` for coverage generation, reporting, and gating
 - `cargo xtask repo ...` for hooks, releases, completions, graphs, cached Modelica dependencies, and MSL reference-data maintenance
 
@@ -319,9 +313,9 @@ books as subdirectories from the same CI artifact. Locally, build the same
 pieces with:
 
 ```bash
-cargo xtask wasm build --variant full-web
-mdbook build docs/user-guide
-mdbook build docs/dev-guide
+cargo xtask playground build --variant full-web
+cargo xtask docs build
+cargo xtask docs serve
 ```
 
 Common examples:
@@ -329,13 +323,14 @@ Common examples:
 ```bash
 cargo xtask verify full
 cargo xtask verify quick
+cargo xtask verify docs
 cargo xtask verify template-runtimes
 cargo xtask verify msl-parity
 cargo xtask vscode test
-cargo xtask wasm test
-cargo xtask wasm build --variant core
-cargo xtask wasm build --dev --variant sim-diffsol
-cargo xtask wasm build --variant full-web --rayon --pack
+cargo xtask playground test
+cargo xtask playground build --variant core
+cargo xtask playground build --dev --variant sim-diffsol
+cargo xtask playground build --variant full-web --rayon --pack
 cargo xtask repo msl promote-quality-baseline
 cargo xtask help verify
 ```
@@ -343,10 +338,20 @@ cargo xtask help verify
 For npm-package workflows, use:
 
 ```bash
-cd packaging/npm
+cd packages/rumoca
 npm run build
 npm run build:release:core
 npm run build:release:sim-diffsol:pack
+```
+
+Rust-only workflows such as `cargo build`, `cargo check`, `cargo test`, and
+`cargo xtask --help` do not require Node/npm. Package, playground, VS Code, and
+browser-asset workflows do require Node/npm; CI uses Node 20, so local package
+validation should use Node 20 as well. Check local setup with:
+
+```bash
+node --version
+npm --version
 ```
 
 `cargo xtask verify quick` runs the fast local gates: lint, workspace tests, binary
@@ -354,7 +359,8 @@ builds, and template runtime checks. `cargo xtask verify full` mirrors the main 
 verification suite, including example smoke tests, coverage, docs,
 editor/WASM gates, and the slow full MSL parity gate. The full suite assumes
 the local coverage/editor prerequisites are installed (`cargo-llvm-cov`,
-Node/npm, and wasm Rust tooling). `cargo xtask verify template-runtimes` wraps the
+Node 20/npm for package/web tasks, and wasm Rust tooling).
+`cargo xtask verify template-runtimes` wraps the
 equivalent Cargo command for opt-in example-template runtime checks:
 `cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
 
@@ -399,7 +405,7 @@ On Debian/Ubuntu, the first run can install `musl-tools` for you:
 cargo xtask vscode package --target linux-x64 --install-musl-tools
 ```
 
-- Extension docs: `editors/vscode/README.md`
+- Extension docs: `packages/vscode/README.md`
 - Marketplace: https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica
 
 ## Contributing

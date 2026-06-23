@@ -1,6 +1,7 @@
 //! Helpers for classifying top-level connector members as external inputs.
 
 use super::{collect_continuous_equation_lhs, is_internal_input};
+use crate::ToDaeError;
 use crate::path_utils::{
     is_top_level_member, normalized_top_level_names, subscript_fallback_chain,
 };
@@ -26,11 +27,19 @@ fn normalize_connection_var_name(name: &str, flat: &flat::Model) -> rumoca_core:
     lookup_name
 }
 
-fn peer_is_internal_input_with_fallback(peer: &rumoca_core::VarName, flat: &flat::Model) -> bool {
-    is_internal_input(peer, flat)
-        || subscript_fallback_chain(peer.as_str())
-            .into_iter()
-            .any(|candidate| is_internal_input(&candidate, flat))
+fn peer_is_internal_input_with_fallback(
+    peer: &rumoca_core::VarName,
+    flat: &flat::Model,
+) -> Result<bool, ToDaeError> {
+    if is_internal_input(peer, flat)? {
+        return Ok(true);
+    }
+    for candidate in subscript_fallback_chain(peer.as_str()) {
+        if is_internal_input(&candidate, flat)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Build connected components for the graph induced by connection equations.
@@ -77,7 +86,7 @@ fn build_connection_components(
 pub(super) fn find_top_level_connector_input_members(
     flat: &flat::Model,
     state_vars: &IndexSet<rumoca_core::VarName>,
-) -> HashSet<rumoca_core::VarName> {
+) -> Result<HashSet<rumoca_core::VarName>, ToDaeError> {
     let normalized_top_level_connectors =
         normalized_top_level_names(flat.top_level_connectors.iter());
     let mut peers: FxHashMap<rumoca_core::VarName, HashSet<rumoca_core::VarName>> =
@@ -164,7 +173,7 @@ pub(super) fn find_top_level_connector_input_members(
             if is_top_level_member(peer, &normalized_top_level_connectors) {
                 continue;
             }
-            if peer_is_internal_input_with_fallback(peer, flat) {
+            if peer_is_internal_input_with_fallback(peer, flat)? {
                 saw_internal_input_peer = true;
                 continue;
             }
@@ -182,7 +191,7 @@ pub(super) fn find_top_level_connector_input_members(
         }
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -220,7 +229,11 @@ mod tests {
                 name: rumoca_core::VarName::new("a.b.c"),
                 variability: rumoca_core::Variability::Empty,
                 causality: rumoca_core::Causality::Input(Default::default()),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -237,13 +250,20 @@ mod tests {
                 name: rumoca_core::VarName::new("bus.signal"),
                 variability: rumoca_core::Variability::Empty,
                 causality: rumoca_core::Causality::Input(Default::default()),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
-        assert!(peer_is_internal_input_with_fallback(
-            &rumoca_core::VarName::new("bus[1].signal[2]"),
-            &flat
-        ));
+        assert!(
+            peer_is_internal_input_with_fallback(
+                &rumoca_core::VarName::new("bus[1].signal[2]"),
+                &flat
+            )
+            .expect("internal input fallback should not fail")
+        );
     }
 }

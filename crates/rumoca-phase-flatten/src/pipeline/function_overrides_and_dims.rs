@@ -1,5 +1,6 @@
 use super::*;
 use crate::path_utils::{enclosing_scope, leaf_segment};
+use crate::source_spans::required_location_span;
 use rumoca_core::{ComponentPath, ExpressionRewriter, StatementRewriter, Token};
 use rumoca_ir_ast::ExpressionTransformer;
 use rustc_hash::FxHashSet;
@@ -627,7 +628,7 @@ fn missing_class_instance_override_scope_error(
     tree: &ClassTree,
     context: &str,
 ) -> FlattenError {
-    let span = class_data
+    if let Some(span) = class_data
         .class_def_id
         .and_then(|def_id| class_index_span(tree, def_id))
         .or_else(|| class_data.equations.first().map(|eq| eq.span))
@@ -644,21 +645,28 @@ fn missing_class_instance_override_scope_error(
                 .first()
                 .and_then(|alg| alg.first().map(|stmt| stmt.span))
         })
-        .unwrap_or(rumoca_core::Span::DUMMY);
-    FlattenError::missing_source_scope(class_data.qualified_name.to_flat_string(), context, span)
+        .filter(|span| !span.is_dummy())
+    {
+        return FlattenError::missing_source_scope(
+            class_data.qualified_name.to_flat_string(),
+            context,
+            span,
+        );
+    }
+    FlattenError::missing_source_context(format!(
+        "class instance `{}` for {context} has no source provenance",
+        class_data.qualified_name.to_flat_string()
+    ))
 }
 
 fn class_index_span(tree: &ClassTree, def_id: rumoca_core::DefId) -> Option<rumoca_core::Span> {
     let class_def = tree.get_class_by_def_id(def_id)?;
-    let location = &class_def.location;
-    if location.file_name.is_empty() || location.start >= location.end {
-        return None;
-    }
-    Some(tree.source_map.location_to_span(
-        &location.file_name,
-        location.start as usize,
-        location.end as usize,
-    ))
+    required_location_span(
+        &tree.source_map,
+        &class_def.location,
+        "class instance override scope",
+    )
+    .ok()
 }
 
 fn insert_component_overrides(

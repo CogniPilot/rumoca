@@ -1174,6 +1174,14 @@ mod tests {
         }
     }
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("array_expansion_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn make_int_expr(value: i64) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
@@ -1403,7 +1411,7 @@ mod tests {
         let array_comp = ast::Component {
             name: "arr".to_string(),
             shape: vec![3],
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         parent_components.insert("arr".to_string(), array_comp);
 
@@ -1628,7 +1636,7 @@ mod tests {
             ast::Component {
                 name: "cellData".to_string(),
                 shape: vec![3, 2],
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         tree.definitions
@@ -1647,7 +1655,7 @@ mod tests {
                     def_id: Some(stack_data_id),
                 },
                 type_def_id: Some(stack_data_id),
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 
@@ -1671,7 +1679,7 @@ mod tests {
 
     #[test]
     fn test_distribute_mods_for_element_fill_modifier() {
-        let mut comp = ast::Component::default();
+        let mut comp = ast::Component::empty_with_span(test_span());
         comp.modifications.insert(
             "k".to_string(),
             make_function_call("fill", vec![make_int_expr(5), make_int_expr(2)]),
@@ -1707,7 +1715,7 @@ mod tests {
 
     #[test]
     fn test_distribute_component_ref_mods_for_element_indexes_proven_array_reference() {
-        let mut comp = ast::Component::default();
+        let mut comp = ast::Component::empty_with_span(test_span());
         comp.modifications
             .insert("cellData".to_string(), make_comp_ref_expr(&["arr", "v"]));
 
@@ -1717,7 +1725,7 @@ mod tests {
             ast::Component {
                 name: "arr".to_string(),
                 shape: vec![3],
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
 

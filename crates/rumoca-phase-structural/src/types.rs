@@ -78,8 +78,9 @@ pub enum StructuralError {
         unmatched_equations: Vec<String>,
         unmatched_unknowns: Vec<String>,
         /// Source spans of the unmatched unknowns, parallel to
-        /// `unmatched_unknowns`, so the failure is traceable back to source.
-        unmatched_unknown_spans: Vec<rumoca_core::Span>,
+        /// `unmatched_unknowns`, so the failure is traceable back to source
+        /// when the unknown has source provenance.
+        unmatched_unknown_spans: Vec<Option<rumoca_core::Span>>,
     },
     /// The system has no equations or unknowns.
     #[error("empty system: no equations or unknowns")]
@@ -93,6 +94,10 @@ pub enum StructuralError {
         reason: String,
         span: rumoca_core::Span,
     },
+    /// DAE IR metadata required by structural analysis is missing or
+    /// inconsistent, and the malformed metadata has no honest source span.
+    #[error("invalid structural IR contract without source span: {reason}")]
+    UnspannedContractViolation { reason: String },
 }
 
 impl StructuralError {
@@ -106,12 +111,12 @@ impl StructuralError {
                 ..
             } => unmatched_unknown_spans
                 .iter()
-                .copied()
-                .find(|span| *span != rumoca_core::Span::DUMMY),
+                .find_map(|span| span.and_then(|span| (!span.is_dummy()).then_some(span))),
             Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
             Self::EmptySystem
             | Self::InvalidIcPlanUnknown { .. }
-            | Self::ContractViolation { .. } => None,
+            | Self::ContractViolation { .. }
+            | Self::UnspannedContractViolation { .. } => None,
         }
     }
 }

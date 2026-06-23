@@ -411,6 +411,152 @@ fn test_render_matmul_mlir_rejects_missing_lhs_sparsity() {
 }
 
 #[test]
+fn test_render_matmul_c_rejects_malformed_explicit_sparsity() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_matmul_c({
+    "lhs_ops": [],
+    "lhs_start": 0,
+    "rhs_ops": [],
+    "rhs_start": 0,
+    "m": 1,
+    "k": 1,
+    "n": 1,
+    "lhs_sparsity": {"Explicit": {}}
+}, 0, {}) }}
+"#;
+    let err = render_template(&dae, template).expect_err("malformed Explicit sparsity must fail");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("MatMul Explicit sparsity missing nnz"),
+        "expected strict MatMul C Explicit diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_matmul_mlir_rejects_malformed_explicit_sparsity() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_matmul_mlir({
+    "lhs_ops": [],
+    "lhs_start": 0,
+    "rhs_ops": [],
+    "rhs_start": 0,
+    "m": 1,
+    "k": 1,
+    "n": 1,
+    "lhs_sparsity": {"Explicit": {}}
+}, 0, 0) }}
+"#;
+    let err = render_template(&dae, template).expect_err("malformed Explicit sparsity must fail");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("MatMul Explicit sparsity missing nnz"),
+        "expected strict MatMul MLIR Explicit diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_matmul_c_rejects_oversized_output_count() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_matmul_c({
+    "lhs_ops": [],
+    "lhs_start": 0,
+    "rhs_ops": [],
+    "rhs_start": 0,
+    "m": 1000001,
+    "k": 1,
+    "n": 1,
+    "lhs_sparsity": "Dense"
+}, 0, {}) }}
+"#;
+    let err = render_template(&dae, template).expect_err("oversized MatMul output must fail");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("MatMul output count (1000001) exceeds render enumeration limit 1000000"),
+        "expected strict MatMul C output-count diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_matmul_mlir_rejects_oversized_output_count() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_matmul_mlir({
+    "lhs_ops": [],
+    "lhs_start": 0,
+    "rhs_ops": [],
+    "rhs_start": 0,
+    "m": 1000001,
+    "k": 1,
+    "n": 1,
+    "lhs_sparsity": "Dense"
+}, 0, 0) }}
+"#;
+    let err = render_template(&dae, template).expect_err("oversized MatMul output must fail");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("MatMul output count (1000001) exceeds render enumeration limit 1000000"),
+        "expected strict MatMul MLIR output-count diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_linsolve_mlir_rejects_oversized_matrix_count() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_linsolve_mlir({
+    "setup_ops": [],
+    "matrix_start": 0,
+    "rhs_start": 0,
+    "n": 1001
+}, 0, 0) }}
+"#;
+    let err = render_template(&dae, template).expect_err("oversized LinSolve matrix must fail");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains(
+            "LinSolve matrix element count (1002001) exceeds render enumeration limit 1000000"
+        ),
+        "expected strict LinSolve MLIR matrix-count diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_solve_row_c_rejects_oversized_linear_solve_component() {
+    let template = r#"{{ render_solve_row_c(dae.row, {}) }}"#;
+    let rendered = render_template_with_dae_json(
+        &serde_json::json!({
+            "row": [{
+                "LinearSolveComponent": {
+                    "dst": 0,
+                    "matrix_start": 0,
+                    "rhs_start": 0,
+                    "n": 1001,
+                    "component": 0
+                }
+            }]
+        }),
+        template,
+    );
+    let err = rendered.expect_err("oversized LinearSolveComponent matrix must fail");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains(
+            "LinSolve matrix element count (1002001) exceeds render enumeration limit 1000000"
+        ),
+        "expected strict LinearSolveComponent matrix-count diagnostic, got: {msg}"
+    );
+}
+
+#[test]
 fn test_ode_rhs_rejects_unrenderable_matched_rhs() {
     let dae_json = serde_json::json!({
         "f_x": [{

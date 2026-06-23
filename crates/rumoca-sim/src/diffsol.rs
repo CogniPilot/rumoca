@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
@@ -77,9 +77,11 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     mut begin_stage: impl FnMut(&'static str),
     mut observe_solve_model: impl FnMut(&solve::SolveModel),
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
-    let (solve_model, solve_timings) =
+    let (mut solve_model, solve_timings) =
         lower_dae_for_simulation_with_stage_timing(dae_model, opts, &mut begin_stage)
             .map_err(solve_lowering_sim_error)?;
+    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
+        .map_err(|err| SimError::SolverError(err.to_string()))?;
     observe_solve_model(&solve_model);
     begin_stage("sim_build");
     let backend_build_start = Instant::now();
@@ -110,8 +112,10 @@ pub fn check_initialization(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<(), SimError> {
-    let solve_model =
+    let mut solve_model =
         lower_dae_for_simulation(dae_model, opts).map_err(solve_lowering_sim_error)?;
+    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
+        .map_err(|err| SimError::SolverError(err.to_string()))?;
     rumoca_solver_diffsol::check_initialization(&solve_model, opts)
 }
 
@@ -119,8 +123,8 @@ pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    let solve_model =
-        lower_dae_for_simulation(dae_model, opts).map_err(solve_lowering_sim_error)?;
+    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
+        .map_err(|err| SimError::SolverError(err.to_string()))?;
     rumoca_solver_diffsol::simulate(&solve_model, opts)
 }
 
@@ -130,8 +134,7 @@ pub(crate) fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
     rumoca_solver_diffsol::simulate(&solve_model, opts)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
@@ -145,8 +148,10 @@ impl SimStepper {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimError> {
-        let solve_model =
+        let mut solve_model =
             lower_dae_for_simulation(dae_model, &opts).map_err(solve_lowering_sim_error)?;
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
+            .map_err(|err| SimError::SolverError(err.to_string()))?;
         let inner = rumoca_solver_diffsol::stepper::SimStepper::new(&solve_model, opts)?;
         Ok(Self { inner })
     }
@@ -155,8 +160,9 @@ impl SimStepper {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let solve_model = lower_dae_for_simulation(dae_model, &opts)
+        let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
             .map_err(SimulationDiagnosticError::SolveLowering)?;
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)?;
         let inner = rumoca_solver_diffsol::stepper::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })
@@ -178,15 +184,15 @@ impl SimStepper {
         self.inner.time()
     }
 
-    pub(crate) fn get(&self, name: &str) -> Option<f64> {
+    pub(crate) fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         self.inner.get(name)
     }
 
-    pub(crate) fn state(&self) -> StepperState {
+    pub(crate) fn state(&self) -> Result<StepperState, SimError> {
         self.inner.state()
     }
 
-    pub(crate) fn values_for(&self, names: &[String]) -> HashMap<String, f64> {
+    pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
         self.inner.values_for(names)
     }
 
@@ -229,7 +235,7 @@ impl InteractiveStepper for SimStepper {
         Self::time(self)
     }
 
-    fn get(&self, name: &str) -> Option<f64> {
+    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
         Self::get(self, name)
     }
 

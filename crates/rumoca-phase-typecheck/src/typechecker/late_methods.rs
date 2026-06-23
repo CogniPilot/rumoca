@@ -6,6 +6,7 @@ use rumoca_core::ComponentPath;
 
 #[path = "equation_shape.rs"]
 mod equation_shape;
+mod modifier_spans;
 
 #[derive(Clone, Copy)]
 pub(crate) enum BuiltinModifierExpectedType {
@@ -25,6 +26,11 @@ pub(in crate::typechecker) struct MissingComponentMember {
     member_name: String,
     reference: String,
     span: Span,
+}
+
+pub(in crate::typechecker) enum ComponentReferenceTypeError {
+    MissingMember(MissingComponentMember),
+    MissingSourceContext(TypeCheckError),
 }
 
 impl TypeCheckTraversalCallbacks for TypeChecker {
@@ -86,9 +92,10 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
         let Some(loc) = condition.get_location() else {
             return;
         };
-        let span =
-            self.source_map
-                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
+        let Some(span) = self.diagnostic_location_span(loc, "when-condition type validation")
+        else {
+            return;
+        };
         let found_name = Self::format_type_name(type_table, found);
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET002",
@@ -520,11 +527,6 @@ impl TypeChecker {
         let mut progress = false;
 
         for (_def_id, instance_data) in overlay.components.iter_mut() {
-            // Skip if dimensions are already evaluated
-            if !instance_data.dims.is_empty() {
-                continue;
-            }
-
             // Only handle colon dimensions
             let has_colon = instance_data
                 .dims_expr
@@ -561,9 +563,12 @@ impl TypeChecker {
                 &scope,
             )
         {
-            instance_data.dims = dims.iter().map(|&d| d as i64).collect();
-            self.eval_ctx.add_dimensions(&name, dims);
-            return true;
+            return Self::apply_inferred_instance_dims(
+                instance_data,
+                &mut self.eval_ctx,
+                &name,
+                dims,
+            );
         }
 
         // Fallback: try to infer from start value of a record element binding
@@ -574,12 +579,33 @@ impl TypeChecker {
                 &scope,
             )
         {
-            instance_data.dims = dims.iter().map(|&d| d as i64).collect();
-            self.eval_ctx.add_dimensions(&name, dims);
-            return true;
+            return Self::apply_inferred_instance_dims(
+                instance_data,
+                &mut self.eval_ctx,
+                &name,
+                dims,
+            );
         }
 
         false
+    }
+
+    fn apply_inferred_instance_dims(
+        instance_data: &mut rumoca_ir_ast::InstanceData,
+        eval_ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        name: &str,
+        dims: Vec<usize>,
+    ) -> bool {
+        let inferred: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
+        let dims_changed = instance_data.dims != inferred;
+        let ctx_changed = eval_ctx.get_dimensions(name) != Some(&dims);
+        if dims_changed {
+            instance_data.dims = inferred;
+        }
+        if ctx_changed {
+            eval_ctx.add_dimensions(name, dims);
+        }
+        dims_changed || ctx_changed
     }
 
     /// The first dimension expression that evaluates to a negative value,
@@ -674,11 +700,11 @@ impl TypeChecker {
             let reason = base_reason;
 
             // Emit as error per MLS §10.1.
-            let span = self.source_map.location_to_span(
-                &instance_data.source_location.file_name,
-                instance_data.source_location.start as usize,
-                instance_data.source_location.end as usize,
-            );
+            let Some(span) =
+                self.diagnostic_location_span(&instance_data.source_location, "array dimensions")
+            else {
+                continue;
+            };
             let headline = if invalid_value {
                 "invalid array dimensions"
             } else {
@@ -790,12 +816,9 @@ impl TypeChecker {
     ) {
         let type_name = comp.type_name.to_string();
         let type_id = self.resolve_type_name(&type_name, comp.type_def_id, type_table);
-        if type_id.is_unknown() {
-            let span = self.source_map.location_to_span(
-                &comp.location.file_name,
-                comp.location.start as usize,
-                comp.location.end as usize,
-            );
+        if type_id.is_unknown()
+            && let Some(span) = self.diagnostic_location_span(&comp.location, "component type")
+        {
             self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                 "ET001",
                 format!("undefined type '{}' for component '{}'", type_name, name),
@@ -955,16 +978,14 @@ impl TypeChecker {
         modifier_expr: &Expression,
         span_name: &str,
     ) {
-        let span = self
-            .find_modifier_name_span(comp, span_name)
-            .unwrap_or_else(|| {
-                let location = modifier_expr.get_location().unwrap_or(&comp.location);
-                self.source_map.location_to_span(
-                    &location.file_name,
-                    location.start as usize,
-                    location.end as usize,
-                )
-            });
+        let Some(span) = self.modifier_diagnostic_span(
+            comp,
+            modifier_expr,
+            span_name,
+            "unknown component modifier",
+        ) else {
+            return;
+        };
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET001",
             format!(
@@ -995,16 +1016,14 @@ impl TypeChecker {
             if Self::is_allowed_builtin_modifier(modifier_name) {
                 continue;
             }
-            let span = self
-                .find_modifier_name_span(comp, modifier_name)
-                .unwrap_or_else(|| {
-                    let location = modifier_expr.get_location().unwrap_or(&comp.location);
-                    self.source_map.location_to_span(
-                        &location.file_name,
-                        location.start as usize,
-                        location.end as usize,
-                    )
-                });
+            let Some(span) = self.modifier_diagnostic_span(
+                comp,
+                modifier_expr,
+                modifier_name,
+                "builtin component modifier",
+            ) else {
+                continue;
+            };
             self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                 "ET001",
                 format!(
@@ -1015,6 +1034,23 @@ impl TypeChecker {
                 span,
             ));
         }
+    }
+
+    fn modifier_diagnostic_span(
+        &mut self,
+        comp: &Component,
+        modifier_expr: &Expression,
+        modifier_name: &str,
+        context: &str,
+    ) -> Option<Span> {
+        self.find_modifier_name_span(comp, modifier_name)
+            .or_else(|| {
+                let location = match modifier_expr.get_location() {
+                    Some(location) => location,
+                    None => &comp.location,
+                };
+                self.diagnostic_location_span(location, context)
+            })
     }
 
     pub(crate) fn check_component_modifier_types_in_class(
@@ -1128,11 +1164,9 @@ impl TypeChecker {
         }
 
         let location = modifier_expr.get_location().unwrap_or(&comp.location);
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "builtin modifier value") else {
+            return;
+        };
         let expected = Self::modifier_expected_type_name(expected_desc);
         let found = Self::format_type_name(type_table, found_type);
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
@@ -1164,11 +1198,10 @@ impl TypeChecker {
         };
         let unit = token.text.trim_matches('"');
         if let Err(error) = crate::unit_syntax::validate_unit_expression(unit) {
-            let span = self.source_map.location_to_span(
-                &token.location.file_name,
-                token.location.start as usize,
-                token.location.end as usize,
-            );
+            let Some(span) = self.diagnostic_location_span(&token.location, "unit modifier syntax")
+            else {
+                return;
+            };
             self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                 "ET010",
                 format!("invalid {modifier_name} for `{comp_name}`: {error}"),
@@ -1288,119 +1321,6 @@ impl TypeChecker {
         let root = rumoca_core::split_trailing_subscript_suffix(trimmed)
             .map_or(trimmed, |(prefix, _subscript)| prefix);
         root.trim().to_string()
-    }
-
-    /// Find a precise span for a modifier name inside a component declaration.
-    ///
-    /// Falls back to expression/component spans if source text or byte ranges are unavailable.
-    pub(crate) fn find_modifier_name_span(
-        &self,
-        comp: &Component,
-        modifier_name: &str,
-    ) -> Option<Span> {
-        if modifier_name.is_empty() {
-            return None;
-        }
-        let source_id = self.source_map.get_id(&comp.location.file_name)?;
-        let (_name, source) = self.source_map.get_source(source_id)?;
-        let start = comp.location.start as usize;
-        let mut end = comp.location.end as usize;
-        if start >= source.len() {
-            return None;
-        }
-        end = end.min(source.len());
-        if start >= end {
-            return None;
-        }
-        let snippet = source.get(start..end)?;
-        if let Some(rel) = Self::find_modifier_identifier(snippet, modifier_name) {
-            let abs_start = start + rel;
-            let abs_end = abs_start + modifier_name.len();
-            return Some(self.source_map.location_to_span(
-                &comp.location.file_name,
-                abs_start,
-                abs_end,
-            ));
-        }
-
-        // Some component locations end before class modifications; scan declaration lines.
-        let start_line = comp
-            .location
-            .start_line
-            .max(comp.name_token.location.start_line) as usize;
-        let end_line = comp
-            .location
-            .end_line
-            .max(comp.location.start_line)
-            .max(comp.name_token.location.start_line) as usize;
-        for line in start_line..=end_line {
-            let Some((line_start, line_end)) = Self::line_byte_range(source, line) else {
-                continue;
-            };
-            let line_text = &source[line_start..line_end];
-            if let Some(rel) = Self::find_modifier_identifier(line_text, modifier_name) {
-                let abs_start = line_start + rel;
-                let abs_end = abs_start + modifier_name.len();
-                return Some(self.source_map.location_to_span(
-                    &comp.location.file_name,
-                    abs_start,
-                    abs_end,
-                ));
-            }
-        }
-        None
-    }
-
-    pub(crate) fn line_byte_range(source: &str, line_number: usize) -> Option<(usize, usize)> {
-        if line_number == 0 {
-            return None;
-        }
-        let mut current_line = 1usize;
-        let mut line_start = 0usize;
-        for (idx, ch) in source.char_indices() {
-            if current_line == line_number && ch == '\n' {
-                return Some((line_start, idx));
-            }
-            if ch == '\n' {
-                current_line += 1;
-                line_start = idx + 1;
-            }
-        }
-        (current_line == line_number).then_some((line_start, source.len()))
-    }
-
-    pub(crate) fn find_modifier_identifier(snippet: &str, modifier_name: &str) -> Option<usize> {
-        let mut offset = 0usize;
-        while let Some(found) = snippet[offset..].find(modifier_name) {
-            let idx = offset + found;
-            if !Self::has_identifier_boundaries(snippet, idx, modifier_name.len()) {
-                offset = idx + modifier_name.len();
-                continue;
-            }
-            let after = &snippet[idx + modifier_name.len()..];
-            let after_trimmed = after.trim_start();
-            if after_trimmed.starts_with('=')
-                || after_trimmed.starts_with('(')
-                || after_trimmed.starts_with(',')
-                || after_trimmed.starts_with(')')
-                || after_trimmed.starts_with(';')
-            {
-                return Some(idx);
-            }
-            offset = idx + modifier_name.len();
-        }
-        None
-    }
-
-    pub(crate) fn has_identifier_boundaries(text: &str, start: usize, len: usize) -> bool {
-        let before = text[..start].chars().next_back();
-        let after = text[start + len..].chars().next();
-        !before.is_some_and(Self::is_identifier_char)
-            && !after.is_some_and(Self::is_identifier_char)
-    }
-
-    pub(crate) fn is_identifier_char(ch: char) -> bool {
-        ch.is_ascii_alphanumeric() || ch == '_'
     }
 
     /// Evaluate dimension expressions for a component.
@@ -1531,12 +1451,9 @@ impl TypeChecker {
         let expr_level = rumoca_eval_ast::eval::max_variability_in_expr(expr, class);
 
         if expr_level > comp_level {
-            // Convert location to span for proper error reporting
-            let span = self.source_map.location_to_span(
-                &location.file_name,
-                location.start as usize,
-                location.end as usize,
-            );
+            let Some(span) = self.diagnostic_location_span(location, "binding variability") else {
+                return;
+            };
 
             self.diagnostics.emit(
                 CommonDiagnostic::warning(
@@ -1562,25 +1479,25 @@ impl TypeChecker {
     pub(crate) fn validate_causality_constraints(&mut self, class: &ClassDef) {
         for (name, comp) in &class.components {
             // Check if input has explicit binding
-            if matches!(comp.causality, rumoca_core::Causality::Input(_)) && comp.binding.is_some()
+            if !matches!(comp.causality, rumoca_core::Causality::Input(_)) || comp.binding.is_none()
             {
-                let span = self.source_map.location_to_span(
-                    &comp.location.file_name,
-                    comp.location.start as usize,
-                    comp.location.end as usize,
-                );
+                continue;
+            }
+            let Some(span) = self.diagnostic_location_span(&comp.location, "input causality")
+            else {
+                continue;
+            };
 
-                self.diagnostics.emit(
-                    CommonDiagnostic::warning(
-                        "ET005",
-                        format!(
+            self.diagnostics.emit(
+                CommonDiagnostic::warning(
+                    "ET005",
+                    format!(
                         "input '{}' has explicit binding which may be overwritten by connection (MLS §4.6)",
                         name
                     ),
-                        rumoca_core::PrimaryLabel::new(span).with_message("input with binding"),
-                    ),
-                );
-            }
+                    rumoca_core::PrimaryLabel::new(span).with_message("input with binding"),
+                ),
+            );
         }
     }
 
@@ -1693,11 +1610,9 @@ impl TypeChecker {
         let Some(location) = base.get_location() else {
             return;
         };
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "field access validation") else {
+            return;
+        };
         self.emit_unknown_component_member(
             MissingComponentMember {
                 owner_type: base_type,
@@ -1713,7 +1628,7 @@ impl TypeChecker {
         &self,
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
-    ) -> Result<TypeId, MissingComponentMember> {
+    ) -> Result<TypeId, ComponentReferenceTypeError> {
         let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp) else {
             return Ok(TypeId::UNKNOWN);
         };
@@ -1729,23 +1644,40 @@ impl TypeChecker {
                     return Ok(TypeId::UNKNOWN);
                 }
                 None => {
-                    let location = &part.ident.location;
-                    let span = self.source_map.location_to_span(
-                        &location.file_name,
-                        location.start as usize,
-                        location.end as usize,
-                    );
-                    return Err(MissingComponentMember {
-                        owner_type: current_type,
-                        member_name,
-                        reference: comp.to_string(),
-                        span,
-                    });
+                    let span = self.component_reference_member_span(&part.ident.location)?;
+                    return Err(ComponentReferenceTypeError::MissingMember(
+                        MissingComponentMember {
+                            owner_type: current_type,
+                            member_name,
+                            reference: comp.to_string(),
+                            span,
+                        },
+                    ));
                 }
             }
         }
 
         Ok(current_type)
+    }
+
+    fn component_reference_member_span(
+        &self,
+        location: &rumoca_core::Location,
+    ) -> Result<Span, ComponentReferenceTypeError> {
+        self.source_map
+            .try_location_to_span(
+                &location.file_name,
+                location.start as usize,
+                location.end as usize,
+            )
+            .ok_or_else(|| {
+                ComponentReferenceTypeError::MissingSourceContext(
+                    TypeCheckError::missing_source_context(format!(
+                        "source file `{}` for component reference member was not found",
+                        location.file_name
+                    )),
+                )
+            })
     }
 
     fn find_component_ref_prefix_type(

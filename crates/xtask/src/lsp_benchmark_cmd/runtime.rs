@@ -1318,7 +1318,7 @@ fn validate_get_simulation_models_command(
 ) -> Result<Vec<LspApiValidationEntry>> {
     let (get_models_ms, get_models_response) = execute_lsp_command(
         client,
-        "rumoca.project.getSimulationModels",
+        "rumoca.scenario.getSimulationModels",
         json!({
             "uri": sim_uri,
             "defaultModel": "Decay",
@@ -1354,7 +1354,7 @@ fn validate_get_simulation_config_command(
 
     let (get_sim_ms, get_sim_response) = execute_lsp_command(
         client,
-        "rumoca.project.getSimulationConfig",
+        "rumoca.scenario.getSimulationConfig",
         json!({
             "workspaceRoot": workspace_root,
             "model": "Decay",
@@ -1390,7 +1390,7 @@ fn validate_set_reset_simulation_config_commands(
 
     let (set_sim_ms, set_sim_response) = execute_lsp_command(
         client,
-        "rumoca.project.setSimulationPreset",
+        "rumoca.scenario.setSimulationPreset",
         json!({
             "workspaceRoot": workspace.workspace_root.display().to_string(),
             "model": "Decay",
@@ -1404,7 +1404,7 @@ fn validate_set_reset_simulation_config_commands(
 
     let (reset_sim_ms, reset_sim_response) = execute_lsp_command(
         client,
-        "rumoca.project.resetSimulationPreset",
+        "rumoca.scenario.resetSimulationPreset",
         json!({
             "workspaceRoot": workspace.workspace_root.display().to_string(),
             "model": "Decay",
@@ -1427,7 +1427,7 @@ fn validate_execute_visualization_commands(
 ) -> Result<Vec<LspApiValidationEntry>> {
     let (get_vis_ms, get_vis_response) = execute_lsp_command(
         client,
-        "rumoca.project.getVisualizationConfig",
+        "rumoca.scenario.getVisualizationConfig",
         json!({
             "workspaceRoot": workspace.workspace_root.display().to_string(),
             "model": "Decay",
@@ -1440,7 +1440,7 @@ fn validate_execute_visualization_commands(
 
     let (set_vis_ms, set_vis_response) = execute_lsp_command(
         client,
-        "rumoca.project.setVisualizationConfig",
+        "rumoca.scenario.setVisualizationConfig",
         json!({
             "workspaceRoot": workspace.workspace_root.display().to_string(),
             "model": "Decay",
@@ -1470,7 +1470,7 @@ fn validate_execute_simulate_command(
 ) -> Result<Vec<LspApiValidationEntry>> {
     let (simulate_ms, simulate_response) = execute_lsp_command(
         client,
-        "rumoca.project.simulate",
+        "rumoca.scenario.simulate",
         json!({
             "uri": sim_uri,
             "model": "Decay",
@@ -1699,17 +1699,25 @@ fn validate_initialize_response(
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
     let expected_commands = [
-        "rumoca.project.getSimulationConfig",
-        "rumoca.project.setSimulationPreset",
-        "rumoca.project.resetSimulationPreset",
-        "rumoca.project.getVisualizationConfig",
-        "rumoca.project.setVisualizationConfig",
-        "rumoca.project.getScenarioConfig",
-        "rumoca.project.simulate",
-        "rumoca.project.getSimulationModels",
-        "rumoca.project.setSelectedSimulationModel",
-        "rumoca.project.startSimulation",
-        "rumoca.project.prepareSimulationModels",
+        "rumoca.scenario.getSimulationConfig",
+        "rumoca.scenario.setSimulationPreset",
+        "rumoca.scenario.resetSimulationPreset",
+        "rumoca.scenario.getVisualizationConfig",
+        "rumoca.scenario.setVisualizationConfig",
+        "rumoca.scenario.getCodegenConfig",
+        "rumoca.scenario.setCodegenConfig",
+        "rumoca.scenario.getSourceRoots",
+        "rumoca.scenario.setSourceRoots",
+        "rumoca.scenario.getScenarioConfig",
+        "rumoca.scenario.getScenarioConfigFull",
+        "rumoca.scenario.renderScenarioConfig",
+        "rumoca.scenario.setScenarioConfig",
+        "rumoca.scenario.simulate",
+        "rumoca.scenario.getSimulationModels",
+        "rumoca.scenario.setSelectedSimulationModel",
+        "rumoca.scenario.startSimulation",
+        "rumoca.scenario.prepareSimulationModels",
+        "rumoca.model.parameterMetadata",
         "rumoca.workspace.getBuiltinTargets",
         "rumoca.workspace.renderTarget",
     ];
@@ -1731,8 +1739,8 @@ fn validate_initialize_response(
         timing.total_ms,
         timing.parse_init_options_ms,
         timing.workspace_root_ms,
-        timing.reload_project_config_ms,
-        timing.project_discover_ms,
+        timing.reload_scenario_config_ms,
+        timing.scenario_discover_ms,
         timing.resolve_source_root_paths_ms,
         timing.reset_session_ms,
         timing.durable_prewarm_ms,

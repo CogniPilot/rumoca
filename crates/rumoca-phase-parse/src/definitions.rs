@@ -128,7 +128,7 @@ fn extract_type_class_mods(
 fn collect_named_args(
     named_args: &modelica_grammar_trait::NamedArguments,
     mods: &mut Vec<rumoca_ir_ast::Expression>,
-) {
+) -> anyhow::Result<()> {
     let arg = &named_args.named_argument;
     let lhs = rumoca_ir_ast::Expression::ComponentReference(rumoca_ir_ast::ComponentReference {
         parts: vec![rumoca_ir_ast::ComponentRefPart {
@@ -136,8 +136,8 @@ fn collect_named_args(
             subs: None,
         }],
         local: false,
-        span: token_span(&arg.ident),
-        ..Default::default()
+        span: token_span(&arg.ident)?,
+        def_id: None,
     });
     let rhs = arg.function_argument.clone();
     mods.push(rumoca_ir_ast::Expression::Binary {
@@ -147,20 +147,21 @@ fn collect_named_args(
         rhs: Arc::new(rhs),
     });
     if let Some(opt) = &named_args.named_arguments_opt {
-        collect_named_args(&opt.named_arguments, mods);
+        collect_named_args(&opt.named_arguments, mods)?;
     }
+    Ok(())
 }
 
 /// Extract partial application modifications from FunctionPartialApplicationOpt.
 fn extract_partial_app_mods(
     opt: &Option<modelica_grammar_trait::FunctionPartialApplicationOpt>,
-) -> Vec<rumoca_ir_ast::Expression> {
+) -> anyhow::Result<Vec<rumoca_ir_ast::Expression>> {
     let Some(args_opt) = opt else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut modifications = Vec::new();
-    collect_named_args(&args_opt.named_arguments, &mut modifications);
-    modifications
+    collect_named_args(&args_opt.named_arguments, &mut modifications)?;
+    Ok(modifications)
 }
 
 /// Merge components into composition, checking for duplicates.
@@ -823,7 +824,7 @@ fn convert_type_class_specifier(
 fn convert_function_partial_class_specifier(
     partial_spec: &modelica_grammar_trait::FunctionPartialClassSpecifier,
     ctx: &ClassConversionContext,
-) -> rumoca_ir_ast::ClassDef {
+) -> anyhow::Result<rumoca_ir_ast::ClassDef> {
     let base_func_name = partial_spec
         .function_partial_application
         .type_specifier
@@ -835,7 +836,7 @@ fn convert_function_partial_class_specifier(
         &partial_spec
             .function_partial_application
             .function_partial_application_opt,
-    );
+    )?;
     let modifications: Vec<rumoca_ir_ast::ExtendModification> = raw_mods
         .into_iter()
         .map(|expr| rumoca_ir_ast::ExtendModification {
@@ -856,7 +857,7 @@ fn convert_function_partial_class_specifier(
         annotation: vec![],
     };
 
-    rumoca_ir_ast::ClassDef {
+    Ok(rumoca_ir_ast::ClassDef {
         def_id: None,
         scope_id: None,
         name: partial_spec.ident.clone(),
@@ -895,7 +896,7 @@ fn convert_function_partial_class_specifier(
         constrainedby: None,
         array_subscripts: vec![],
         external: None, // Function partial applications don't have external declarations
-    }
+    })
 }
 
 /// Convert a der class specifier to ClassDef.
@@ -995,10 +996,10 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
                     ),
                     modelica_grammar_trait::ShortClassSpecifier::FunctionPartialClassSpecifier(
                         spec,
-                    ) => Ok(convert_function_partial_class_specifier(
+                    ) => convert_function_partial_class_specifier(
                         &spec.function_partial_class_specifier,
                         &ctx,
-                    )),
+                    ),
                 }
             }
         }

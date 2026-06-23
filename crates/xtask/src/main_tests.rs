@@ -1,9 +1,10 @@
 use super::{
-    Cli, Commands, CoverageCommand, PythonCommand, RepoCliCommand, RepoCommand,
+    Cli, Commands, CoverageCommand, PlaygroundCommand, PythonCommand, RepoCliCommand, RepoCommand,
     RepoCompletionsCommand, RepoGraphCommand, RepoHooksCommand, RepoMslCommand, RepoPolicyCommand,
-    RepoUbuntuCommand, VscodeCommand, WasmCommand, classify_candidate,
+    RepoUbuntuCommand, VscodeCommand, WebCommand, classify_candidate,
     is_line_count_excluded_rust_file,
 };
+use crate::docs_cmd::{DocsBook, DocsCommand};
 use crate::modelica_dependency_cache::{CmmCommand, ModelicaDepsCommand};
 use crate::repo_cli_cmd::{
     ShellKind, completion_install_plan, detect_shell_kind, path_var_contains_dir,
@@ -72,6 +73,47 @@ fn cli_parses_verify_full_job() {
 fn cli_rejects_removed_ci_command() {
     let error = Cli::try_parse_from(["xtask", "ci", "verify"]).expect_err("ci should be removed");
     assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+}
+
+#[test]
+fn cli_parses_docs_build_user_guide() {
+    let cli = Cli::try_parse_from(["xtask", "docs", "build", "--book", "user"])
+        .expect("parse docs build");
+    match cli.command {
+        Commands::Docs(args) => match args.command {
+            DocsCommand::Build(args) => assert_eq!(args.book, DocsBook::User),
+            other => panic!("expected docs build, got {other:?}"),
+        },
+        other => panic!("expected docs command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_docs_serve_dev_guide() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "docs",
+        "serve",
+        "--book",
+        "dev",
+        "--port",
+        "9000",
+        "--skip-build",
+        "--skip-wasm-build",
+    ])
+    .expect("parse docs serve");
+    match cli.command {
+        Commands::Docs(args) => match args.command {
+            DocsCommand::Serve(args) => {
+                assert_eq!(args.book, DocsBook::Dev);
+                assert_eq!(args.port, Some(9000));
+                assert!(args.skip_build);
+                assert!(args.skip_wasm_build);
+            }
+            other => panic!("expected docs serve, got {other:?}"),
+        },
+        other => panic!("expected docs command, got {other:?}"),
+    }
 }
 
 #[test]
@@ -358,68 +400,80 @@ fn cli_parses_vscode_edit() {
 }
 
 #[test]
-fn cli_parses_wasm_build() {
-    let cli = Cli::try_parse_from(["xtask", "wasm", "build"]).expect("parse wasm build");
+fn cli_parses_web_build() {
+    let cli = Cli::try_parse_from(["xtask", "web", "build"]).expect("parse web build");
     match cli.command {
-        Commands::Wasm(args) => match args.command {
-            WasmCommand::Build(args) => assert!(!args.dev),
-            other => panic!("expected wasm build, got {other:?}"),
+        Commands::Web(args) => match args.command {
+            WebCommand::Build => {}
         },
-        other => panic!("expected wasm command, got {other:?}"),
+        other => panic!("expected web command, got {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_wasm_build_dev() {
+fn cli_parses_playground_build() {
     let cli =
-        Cli::try_parse_from(["xtask", "wasm", "build", "--dev"]).expect("parse wasm build --dev");
+        Cli::try_parse_from(["xtask", "playground", "build"]).expect("parse playground build");
     match cli.command {
-        Commands::Wasm(args) => match args.command {
-            WasmCommand::Build(args) => assert!(args.dev),
-            other => panic!("expected wasm build --dev, got {other:?}"),
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Build(args) => assert!(!args.dev),
+            other => panic!("expected playground build, got {other:?}"),
         },
-        other => panic!("expected wasm command, got {other:?}"),
+        other => panic!("expected playground command, got {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_wasm_test() {
-    let cli = Cli::try_parse_from(["xtask", "wasm", "test"]).expect("parse wasm test");
+fn cli_parses_playground_build_dev() {
+    let cli = Cli::try_parse_from(["xtask", "playground", "build", "--dev"])
+        .expect("parse playground build --dev");
     match cli.command {
-        Commands::Wasm(args) => match args.command {
-            WasmCommand::Test => {}
-            other => panic!("expected wasm test, got {other:?}"),
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Build(args) => assert!(args.dev),
+            other => panic!("expected playground build --dev, got {other:?}"),
         },
-        other => panic!("expected wasm command, got {other:?}"),
+        other => panic!("expected playground command, got {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_wasm_edit() {
-    let cli =
-        Cli::try_parse_from(["xtask", "wasm", "edit", "--port", "9001"]).expect("parse wasm edit");
+fn cli_parses_playground_test() {
+    let cli = Cli::try_parse_from(["xtask", "playground", "test"]).expect("parse playground test");
     match cli.command {
-        Commands::Wasm(args) => match args.command {
-            WasmCommand::Edit(args) => {
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Test => {}
+            other => panic!("expected playground test, got {other:?}"),
+        },
+        other => panic!("expected playground command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_playground_edit() {
+    let cli = Cli::try_parse_from(["xtask", "playground", "edit", "--port", "9001"])
+        .expect("parse playground edit");
+    match cli.command {
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Edit(args) => {
                 assert_eq!(args.port, Some(9001));
                 assert!(!args.rayon);
             }
-            other => panic!("expected wasm edit, got {other:?}"),
+            other => panic!("expected playground edit, got {other:?}"),
         },
-        other => panic!("expected wasm command, got {other:?}"),
+        other => panic!("expected playground command, got {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_wasm_edit_rayon() {
-    let cli =
-        Cli::try_parse_from(["xtask", "wasm", "edit", "--rayon"]).expect("parse wasm edit --rayon");
+fn cli_parses_playground_edit_rayon() {
+    let cli = Cli::try_parse_from(["xtask", "playground", "edit", "--rayon"])
+        .expect("parse playground edit --rayon");
     match cli.command {
-        Commands::Wasm(args) => match args.command {
-            WasmCommand::Edit(args) => assert!(args.rayon),
-            other => panic!("expected wasm edit --rayon, got {other:?}"),
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Edit(args) => assert!(args.rayon),
+            other => panic!("expected playground edit --rayon, got {other:?}"),
         },
-        other => panic!("expected wasm command, got {other:?}"),
+        other => panic!("expected playground command, got {other:?}"),
     }
 }
 

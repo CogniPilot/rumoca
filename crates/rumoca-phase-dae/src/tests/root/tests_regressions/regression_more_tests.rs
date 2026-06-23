@@ -30,7 +30,11 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
                 is_primitive: true,
                 connected: true,
                 from_expandable_connector,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -42,7 +46,7 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
         "multiSensor.i",
         Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         },
     );
 
@@ -129,7 +133,11 @@ fn test_infer_scalar_count_arithmetic_subscript_does_not_inflate() {
             crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -137,7 +145,7 @@ fn test_infer_scalar_count_arithmetic_subscript_does_not_inflate() {
     let expr = Expression::VarRef {
         name: VarName::new("pc[((2 * 1) - 1)].i").into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let prefix_counts = build_prefix_counts(&flat);
     let scalar_count = infer_scalar_count_from_varrefs(&expr, &flat, &prefix_counts);
@@ -156,7 +164,11 @@ fn test_extract_lhs_var_size_keeps_symbolic_tail_subscript_scalar_equation() {
             name: VarName::new("medium_T[1].X"),
             dims: vec![2],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -165,13 +177,13 @@ fn test_extract_lhs_var_size_keeps_symbolic_tail_subscript_scalar_equation() {
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("medium_T[1].X[medium_T[1].nX]").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Literal {
             value: rumoca_core::Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -194,7 +206,11 @@ fn test_extract_lhs_var_size_multilayer_subscript_fallback_is_scalar() {
             name: VarName::new("bus.signal"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -203,13 +219,13 @@ fn test_extract_lhs_var_size_multilayer_subscript_fallback_is_scalar() {
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("bus[1].signal[2]").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Literal {
             value: rumoca_core::Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -234,7 +250,11 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             name: VarName::new("add.y"),
             dims: vec![],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -244,7 +264,11 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             dims: vec![2],
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -253,7 +277,11 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             name: VarName::new("add.u"),
             dims: vec![2],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -267,43 +295,43 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
                         Expression::VarRef {
                             name: VarName::new("add.u").into(),
                             subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: crate::test_support::test_span(),
                         },
                         Expression::Literal {
                             value: Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: crate::test_support::test_span(),
                         },
                     ],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
                 rhs: Box::new(Expression::Literal {
                     value: Literal::Integer(0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             },
             Expression::Binary {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("add.y").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
                 rhs: Box::new(Expression::Binary {
                     op: rumoca_core::OpBinary::Mul,
                     lhs: Box::new(Expression::VarRef {
                         name: VarName::new("add.k").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: crate::test_support::test_span(),
                     }),
                     rhs: Box::new(Expression::VarRef {
                         name: VarName::new("add.u").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: crate::test_support::test_span(),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             },
         )],
         else_branch: Box::new(Expression::Binary {
@@ -311,15 +339,15 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             lhs: Box::new(Expression::VarRef {
                 name: VarName::new("add.y").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
             rhs: Box::new(Expression::Literal {
                 value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -357,7 +385,11 @@ fn test_overconstrained_interface_uses_optional_edges_for_rooted_component() {
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -448,7 +480,11 @@ fn test_overconstrained_interface_skips_internally_defined_record_paths() {
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -458,26 +494,26 @@ fn test_overconstrained_interface_skips_internally_defined_record_paths() {
     let lhs = Expression::VarRef {
         name: VarName::new("frame_a.R").into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let rhs = Expression::FunctionCall {
         name: VarName::new("Frames.from_Q").into(),
         args: vec![Expression::VarRef {
             name: VarName::new("Q").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     flat.add_equation(flat::Equation {
         residual: Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         },
-        span: Span::DUMMY,
+        span: crate::test_support::test_span(),
         origin: flat::EquationOrigin::ComponentEquation {
             component: "PointMass".to_string(),
         },
@@ -512,7 +548,11 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -532,7 +572,11 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -559,7 +603,11 @@ fn test_infer_scalar_count_function_lhs_uses_function_output_dims() {
             name: VarName::new("R_b.T"),
             dims: vec![3, 3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -568,7 +616,11 @@ fn test_infer_scalar_count_function_lhs_uses_function_output_dims() {
             name: VarName::new("R_b.w"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -577,13 +629,25 @@ fn test_infer_scalar_count_function_lhs_uses_function_output_dims() {
             name: VarName::new("w_rel_b"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
-    let mut f = rumoca_core::Function::new("Frames.angularVelocity2", Span::DUMMY);
-    f.add_input(rumoca_core::FunctionParam::new("R", "Orientation"));
-    f.add_output(rumoca_core::FunctionParam::new("w", "Real").with_dims(vec![3]));
+    let mut f =
+        rumoca_core::Function::new("Frames.angularVelocity2", crate::test_support::test_span());
+    f.add_input(rumoca_core::FunctionParam::new(
+        "R",
+        "Orientation",
+        crate::test_support::test_span(),
+    ));
+    f.add_output(
+        rumoca_core::FunctionParam::new("w", "Real", crate::test_support::test_span())
+            .with_dims(vec![3]),
+    );
     flat.add_function(f);
 
     let residual = Expression::Binary {
@@ -593,17 +657,17 @@ fn test_infer_scalar_count_function_lhs_uses_function_output_dims() {
             args: vec![Expression::VarRef {
                 name: VarName::new("R_b").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("w_rel_b").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -625,7 +689,11 @@ fn test_infer_scalar_count_single_element_array_lhs_is_scalar() {
             name: VarName::new("body.Q"),
             dims: vec![4],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -634,22 +702,22 @@ fn test_infer_scalar_count_single_element_array_lhs_is_scalar() {
         lhs: Box::new(Expression::Array {
             elements: vec![Expression::Literal {
                 value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::FunctionCall {
             name: VarName::new("Frames.Quaternions.orientationConstraint").into(),
             args: vec![Expression::VarRef {
                 name: VarName::new("body.Q").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -666,13 +734,14 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
     // {{der(x)}, {xn}} = {{x1dot}, {x}}
     // where x is Real[10], so scalar count is 10 + 1 = 11.
     let mut flat = Model::new();
+    let span = crate::test_support::test_span();
     flat.add_variable(
         VarName::new("x"),
         crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             dims: vec![10],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
         }),
     );
     flat.add_variable(
@@ -681,7 +750,7 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
             name: VarName::new("xn"),
             dims: vec![],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
         }),
     );
     flat.add_variable(
@@ -690,7 +759,7 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
             name: VarName::new("x1dot"),
             dims: vec![],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
         }),
     );
 
@@ -702,25 +771,25 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
                     args: vec![Expression::VarRef {
                         name: VarName::new("x").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
             Expression::Array {
                 elements: vec![Expression::VarRef {
                     name: VarName::new("xn").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
     let rhs = Expression::Array {
         elements: vec![
@@ -728,30 +797,30 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
                 elements: vec![Expression::VarRef {
                     name: VarName::new("x1dot").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
             Expression::Array {
                 elements: vec![Expression::VarRef {
                     name: VarName::new("x").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
 
     let residual = Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -771,7 +840,11 @@ fn test_infer_scalar_count_varref_subscripts_use_element_size() {
             name: VarName::new("line.i"),
             dims: vec![4],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -779,8 +852,11 @@ fn test_infer_scalar_count_varref_subscripts_use_element_size() {
     // must not inherit the full base-array size.
     let expr = Expression::VarRef {
         name: VarName::new("line.i").into(),
-        subscripts: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![Subscript::generated_index(
+            1,
+            crate::test_support::test_span(),
+        )],
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -801,14 +877,21 @@ fn test_infer_scalar_count_varref_subscripts_zero_sized_dim_is_zero() {
             name: VarName::new("line.i"),
             dims: vec![0],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
     let expr = Expression::VarRef {
         name: VarName::new("line.i").into(),
-        subscripts: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![Subscript::generated_index(
+            1,
+            crate::test_support::test_span(),
+        )],
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -829,7 +912,11 @@ fn test_infer_varref_form_multilayer_embedded_subscript_is_scalar() {
             name: VarName::new("bus.signal"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -847,14 +934,18 @@ fn test_infer_scalar_count_multilayer_embedded_subscript_varref_is_scalar() {
             name: VarName::new("bus.signal"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
     let expr = Expression::VarRef {
         name: VarName::new("bus[1].signal[2]").into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let prefix_counts = build_prefix_counts(&flat);
     let scalar_count = infer_scalar_count_from_varrefs(&expr, &flat, &prefix_counts);
@@ -870,7 +961,11 @@ fn test_infer_scalar_count_function_lhs_supports_alias_suffix_lookup() {
             name: VarName::new("R_b.T"),
             dims: vec![3, 3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -879,7 +974,11 @@ fn test_infer_scalar_count_function_lhs_supports_alias_suffix_lookup() {
             name: VarName::new("R_b.w"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -888,17 +987,28 @@ fn test_infer_scalar_count_function_lhs_supports_alias_suffix_lookup() {
             name: VarName::new("w_rel_b"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
     // Store function under a fully-qualified name, but call through a short alias.
     let mut f = rumoca_core::Function::new(
         "Modelica.Mechanics.MultiBody.Frames.angularVelocity2",
-        Span::DUMMY,
+        crate::test_support::test_span(),
     );
-    f.add_input(rumoca_core::FunctionParam::new("R", "Orientation"));
-    f.add_output(rumoca_core::FunctionParam::new("w", "Real").with_dims(vec![3]));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "R",
+        "Orientation",
+        crate::test_support::test_span(),
+    ));
+    f.add_output(
+        rumoca_core::FunctionParam::new("w", "Real", crate::test_support::test_span())
+            .with_dims(vec![3]),
+    );
     flat.add_function(f);
 
     let residual = Expression::Binary {
@@ -908,17 +1018,17 @@ fn test_infer_scalar_count_function_lhs_supports_alias_suffix_lookup() {
             args: vec![Expression::VarRef {
                 name: VarName::new("R_b").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("w_rel_b").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -939,7 +1049,11 @@ fn test_infer_scalar_count_function_lhs_uses_rhs_unknown_size_when_signature_is_
             name: VarName::new("R_b.T"),
             dims: vec![3, 3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -948,7 +1062,11 @@ fn test_infer_scalar_count_function_lhs_uses_rhs_unknown_size_when_signature_is_
             name: VarName::new("R_b.w"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -957,7 +1075,11 @@ fn test_infer_scalar_count_function_lhs_uses_rhs_unknown_size_when_signature_is_
             name: VarName::new("w_rel_b"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -971,17 +1093,17 @@ fn test_infer_scalar_count_function_lhs_uses_rhs_unknown_size_when_signature_is_
             args: vec![Expression::VarRef {
                 name: VarName::new("R_b").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("w_rel_b").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1008,7 +1130,11 @@ fn test_infer_scalar_count_function_lhs_skips_rhs_function_arg_records() {
                 name: VarName::new(name),
                 dims,
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1020,10 +1146,10 @@ fn test_infer_scalar_count_function_lhs_skips_rhs_function_arg_records() {
         args: vec![Expression::VarRef {
             name: VarName::new("R_b").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let rhs = Expression::Binary {
         op: rumoca_core::OpBinary::Add,
@@ -1033,34 +1159,34 @@ fn test_infer_scalar_count_function_lhs_skips_rhs_function_arg_records() {
                 Expression::VarRef {
                     name: VarName::new("R_b").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 },
                 Expression::FunctionCall {
                     name: VarName::new("Frames.angularVelocity1").into(),
                     args: vec![Expression::VarRef {
                         name: VarName::new("R_a").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: crate::test_support::test_span(),
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 },
             ],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("w_rel_b").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let residual = Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1081,7 +1207,11 @@ fn test_infer_scalar_count_vector_dot_residual_is_scalar() {
                 name: VarName::new(name),
                 dims: if name == "s" { vec![] } else { vec![3] },
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1091,7 +1221,7 @@ fn test_infer_scalar_count_vector_dot_residual_is_scalar() {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
@@ -1100,23 +1230,23 @@ fn test_infer_scalar_count_vector_dot_residual_is_scalar() {
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("a").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
                 rhs: Box::new(Expression::VarRef {
                     name: VarName::new("b").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
             rhs: Box::new(Expression::VarRef {
                 name: VarName::new("s").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1136,7 +1266,11 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
             name: VarName::new("constraint.ex_a"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -1145,7 +1279,11 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
             name: VarName::new("constraint.R_rel.T"),
             dims: vec![3, 3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -1154,7 +1292,11 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
             name: VarName::new("constraint.e"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -1164,7 +1306,7 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Binary {
             op: rumoca_core::OpBinary::Mul,
@@ -1173,23 +1315,23 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("constraint.ex_a").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
                 rhs: Box::new(Expression::VarRef {
                     name: VarName::new("constraint.R_rel.T").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
             rhs: Box::new(Expression::VarRef {
                 name: VarName::new("constraint.e").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1209,7 +1351,11 @@ fn test_infer_scalar_count_zero_equals_vector_stays_vector() {
             name: VarName::new("v"),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -1218,14 +1364,14 @@ fn test_infer_scalar_count_zero_equals_vector_stays_vector() {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("v").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1239,10 +1385,18 @@ fn test_infer_scalar_count_zero_equals_vector_stays_vector() {
 #[test]
 fn test_infer_scalar_count_record_constructor_lhs_uses_constructor_fields() {
     let mut flat = Model::new();
-    let mut complex = rumoca_core::Function::new("Complex", rumoca_core::Span::DUMMY);
+    let mut complex = rumoca_core::Function::new("Complex", crate::test_support::test_span());
     complex.is_constructor = true;
-    complex.add_input(rumoca_core::FunctionParam::new("re", "Real"));
-    complex.add_input(rumoca_core::FunctionParam::new("im", "Real"));
+    complex.add_input(rumoca_core::FunctionParam::new(
+        "re",
+        "Real",
+        crate::test_support::test_span(),
+    ));
+    complex.add_input(rumoca_core::FunctionParam::new(
+        "im",
+        "Real",
+        crate::test_support::test_span(),
+    ));
     flat.add_function(complex);
 
     for name in ["pin_p.i.re", "pin_p.i.im", "pin_n.i.re", "pin_n.i.im"] {
@@ -1251,7 +1405,11 @@ fn test_infer_scalar_count_record_constructor_lhs_uses_constructor_fields() {
             crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1261,27 +1419,27 @@ fn test_infer_scalar_count_record_constructor_lhs_uses_constructor_fields() {
         args: vec![
             Expression::Literal {
                 value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             },
             Expression::Literal {
                 value: Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             },
         ],
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let current_sum = Expression::Binary {
         op: rumoca_core::OpBinary::Add,
         lhs: Box::new(make_var_ref("pin_p.i")),
         rhs: Box::new(make_var_ref("pin_n.i")),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
     let residual = Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(zero_complex),
         rhs: Box::new(current_sum),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1302,7 +1460,11 @@ fn test_infer_scalar_count_elementwise_mul_residual_is_vector() {
                 name: VarName::new(name),
                 dims: vec![3],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1312,7 +1474,7 @@ fn test_infer_scalar_count_elementwise_mul_residual_is_vector() {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
@@ -1321,23 +1483,23 @@ fn test_infer_scalar_count_elementwise_mul_residual_is_vector() {
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("a").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
                 rhs: Box::new(Expression::VarRef {
                     name: VarName::new("b").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
             rhs: Box::new(Expression::VarRef {
                 name: VarName::new("c").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1364,7 +1526,11 @@ fn test_build_prefix_counts_normalizes_embedded_subscripts() {
             crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1393,7 +1559,11 @@ fn test_infer_equation_scalar_count_connector_field_array_alias() {
             crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1403,14 +1573,14 @@ fn test_infer_equation_scalar_count_connector_field_array_alias() {
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pin_n.v").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("plug_n.pin.v").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1485,7 +1655,11 @@ fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
         crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("state"),
             is_primitive: false,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -1495,7 +1669,11 @@ fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
             crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1505,15 +1683,15 @@ fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("state").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::FunctionCall {
             name: VarName::new("Modelica.Media.Common.smoothStep").into(),
             args: vec![],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1535,9 +1713,13 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
             is_primitive: true,
             binding: Some(Expression::Literal {
                 value: Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -1549,7 +1731,11 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
                 name: VarName::new(format!("pipe.statesFM.{field}")),
                 dims: vec![2],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1561,13 +1747,13 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[1:pipe.n]").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1583,16 +1769,16 @@ fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size()
     let mut flat = Model::new();
     let transformer_i_ref = rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
         parts: vec![
             rumoca_core::ComponentRefPart {
                 ident: "transformerL".to_string(),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
                 subs: vec![],
             },
             rumoca_core::ComponentRefPart {
                 ident: "i".to_string(),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
                 subs: vec![],
             },
         ],
@@ -1607,9 +1793,13 @@ fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size()
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(Expression::Literal {
                 value: Literal::Integer(3),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -1619,7 +1809,11 @@ fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size()
             component_ref: Some(transformer_i_ref.clone()),
             dims: vec![3],
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
 
@@ -1634,30 +1828,30 @@ fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size()
                 Box::new(Expression::Range {
                     start: Box::new(Expression::Literal {
                         value: Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
+                        span: crate::test_support::test_span(),
                     }),
                     step: None,
                     end: Box::new(Expression::VarRef {
                         name: VarName::new("m").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: crate::test_support::test_span(),
                     }),
-                    span: rumoca_core::Span::DUMMY,
+                    span: crate::test_support::test_span(),
                 }),
-                rumoca_core::Span::DUMMY,
+                crate::test_support::test_span(),
             )],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Zeros,
             args: vec![Expression::VarRef {
                 name: VarName::new("m").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1681,10 +1875,14 @@ fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fall
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             start: Some(Expression::Literal {
                 value: Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
             binding: None,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -1696,7 +1894,11 @@ fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fall
                 name: VarName::new(format!("pipe.statesFM.{field}")),
                 dims: vec![2],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1707,13 +1909,13 @@ fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fall
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[2:(pipe.n + 1)]").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1737,7 +1939,11 @@ fn test_infer_equation_scalar_count_record_array_range_uses_known_lower_bound_wh
                 name: VarName::new(format!("pipe.statesFM.{field}")),
                 dims: vec![2],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
     }
@@ -1749,13 +1955,13 @@ fn test_infer_equation_scalar_count_record_array_range_uses_known_lower_bound_wh
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[2:(pipe.n + 1)]").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1778,9 +1984,13 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(Expression::Literal {
                 value: Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: crate::test_support::test_span(),
             }),
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -1793,7 +2003,11 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
                 crate::test_support::with_component_ref(flat::Variable {
                     name: VarName::new(name),
                     is_primitive: true,
-                    ..Default::default()
+                    ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ))
                 }),
             );
         }
@@ -1804,13 +2018,13 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[2:(pipe.n + 1)]").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
         rhs: Box::new(Expression::Literal {
             value: Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: crate::test_support::test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: crate::test_support::test_span(),
     };
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1818,59 +2032,5 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
     assert_eq!(
         scalar_count, 5,
         "record-array range LHS should infer array length from indexed scalarized fields"
-    );
-}
-
-#[test]
-fn test_todae_inactive_ordinary_when_equation_uses_pre_during_initialization() {
-    let mut flat = Model::new();
-    for name in ["trigger", "y"] {
-        flat.add_variable(
-            VarName::new(name),
-            crate::test_support::with_component_ref(flat::Variable {
-                name: VarName::new(name),
-                is_discrete_type: true,
-                is_primitive: true,
-                ..Default::default()
-            }),
-        );
-    }
-
-    let mut when_clause = flat::WhenClause::new(make_var_ref("trigger"), Span::DUMMY);
-    when_clause.add_equation(flat::WhenEquation::assign(
-        VarName::new("y"),
-        Expression::Literal {
-            value: Literal::Boolean(true),
-            span: rumoca_core::Span::DUMMY,
-        },
-        Span::DUMMY,
-        "ordinary when assignment",
-    ));
-    flat.when_clauses.push(when_clause);
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("ordinary when-equation should lower to a discrete update");
-
-    let eq = dae
-        .discrete
-        .valued_updates
-        .iter()
-        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "y"))
-        .expect("expected guarded ordinary when update for y");
-    let rumoca_core::Expression::If { else_branch, .. } = &eq.rhs else {
-        panic!("expected guarded ordinary when update to lower to an If expression");
-    };
-    let rumoca_core::Expression::VarRef { name, .. } = else_branch.as_ref() else {
-        panic!("inactive ordinary when branch must be a __pre__.* parameter reference");
-    };
-    assert!(
-        name.as_str().starts_with("__pre__."),
-        "expected __pre__.* reference, got {}",
-        name.as_str(),
     );
 }

@@ -27,6 +27,7 @@ use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 mod conditional_and_eval;
 mod connections_graph;
 mod flattened_equations;
+mod structured_domain;
 mod zero_sized_reductions;
 pub(crate) use conditional_and_eval::build_eval_context;
 use conditional_and_eval::*;
@@ -35,6 +36,9 @@ pub(crate) use conditional_and_eval::{
 };
 use connections_graph::{extract_vcg_data_from_function_call, is_side_effect_only_function};
 pub(crate) use flattened_equations::FlattenedEquations;
+use structured_domain::{
+    SourceStructuredIteration, compact_domain_from_iterations, lift_full_iteration_child_family,
+};
 use zero_sized_reductions::{expand_reduction_over_array_ref, simplify_zero_sized_reductions};
 
 type ClassTree = ast::ClassTree;
@@ -574,7 +578,7 @@ pub(crate) fn flatten_equation_with_def_map(
             };
             Ok(FlattenedEquations {
                 equations: vec![equation],
-                for_equations: vec![],
+                structured_equations: vec![],
                 assert_equations: vec![],
                 when_clauses: vec![],
                 definite_roots: vec![],
@@ -652,7 +656,7 @@ fn flatten_assert_equation(
     );
     Ok(FlattenedEquations {
         equations: vec![],
-        for_equations: vec![],
+        structured_equations: vec![],
         assert_equations: vec![assert_eq],
         when_clauses: vec![],
         definite_roots: vec![],
@@ -721,7 +725,7 @@ fn flatten_assert_function_call(
 
     Ok(FlattenedEquations {
         equations: vec![],
-        for_equations: vec![],
+        structured_equations: vec![],
         assert_equations: vec![assert_eq],
         when_clauses: vec![],
         definite_roots: vec![],
@@ -1556,16 +1560,27 @@ fn expand_for_equation(
         &mut iterations,
         &mut result,
     )?;
-    result.for_equations.push(flat::ForEquation {
-        index_names: indices
-            .iter()
-            .map(|idx| idx.ident.text.to_string())
-            .collect(),
-        first_equation_index: 0,
-        iterations,
-        span,
-        origin: origin.clone(),
-    });
+    if iterations.is_empty() {
+        return Ok(result);
+    }
+    let domain = compact_domain_from_iterations(indices, &iterations, span)?;
+    let nested_family_lifted =
+        lift_full_iteration_child_family(&mut result.structured_equations, &domain, &iterations);
+    if nested_family_lifted {
+        return Ok(result);
+    }
+    result
+        .structured_equations
+        .push(flat::StructuredEquationFamily {
+            domain,
+            first_equation_index: 0,
+            equation_counts: iterations
+                .iter()
+                .map(|iteration| iteration.equation_count)
+                .collect(),
+            span,
+            origin: origin.clone(),
+        });
 
     Ok(result)
 }
@@ -1583,7 +1598,7 @@ fn collect_for_iterations(
     indices: &[ast::ForIndex],
     equations: &[ast::Equation],
     index_values: &mut Vec<i64>,
-    iterations: &mut Vec<flat::ForEquationIteration>,
+    iterations: &mut Vec<SourceStructuredIteration>,
     out: &mut FlattenedEquations,
 ) -> Result<(), FlattenError> {
     if indices.is_empty() {
@@ -1595,7 +1610,7 @@ fn collect_for_iterations(
             env.origin,
             env.def_map,
         )?;
-        iterations.push(flat::ForEquationIteration {
+        iterations.push(SourceStructuredIteration {
             index_values: index_values.clone(),
             equation_count: flattened.equations.len(),
         });
@@ -1628,7 +1643,6 @@ fn collect_for_iterations(
     Ok(())
 }
 
-/// A simple equation extracted from complex equation structures.
 #[derive(Clone)]
 struct SimpleEquation {
     lhs: ast::Expression,
@@ -1638,24 +1652,6 @@ struct SimpleEquation {
 /// Expand an if-equation by converting to conditional expressions.
 ///
 /// MLS §8.3.4: "An if-equation creates a conditional set of equations."
-///
-/// Converts:
-/// ```text
-/// if cond then
-///   x = a;
-/// else
-///   x = b;
-/// end if;
-/// ```
-/// To:
-/// ```text
-/// x = if cond then a else b;
-/// ```
-///
-/// Supports:
-/// - Constant condition evaluation (compile-time branch selection)
-/// - For-equations in branches (expanded before matching)
-/// - Nested if-equations with constant conditions
 fn expand_if_equation(
     ctx: &Context,
     cond_blocks: &[ast::EquationBlock],
@@ -1774,7 +1770,14 @@ fn try_select_constant_branch(
 
     // All conditions were constant false - use else branch if present
     // If no else branch, return empty equations (valid per MLS §8.3.4)
-    Some(else_block.clone().unwrap_or_default())
+    Some(equations_from_optional_else(else_block))
+}
+
+fn equations_from_optional_else(else_block: &Option<Vec<ast::Equation>>) -> Vec<ast::Equation> {
+    match else_block {
+        Some(equations) => equations.clone(),
+        None => Vec::new(),
+    }
 }
 
 /// Fallback branch selection for if-equations with mismatched equation counts.
@@ -1801,13 +1804,12 @@ fn try_select_branch_for_mismatched_if(
             continue;
         }
         // Can't evaluate this condition at all
-        return Err(FlattenError::unsupported_equation(
-            mismatched_if_equation_description(ctx, cond_blocks, else_block, prefix, span),
-            span,
-        ));
+        let description =
+            mismatched_if_equation_description(ctx, cond_blocks, else_block, prefix, span)?;
+        return Err(FlattenError::unsupported_equation(description, span));
     }
     // All conditions false, use else branch
-    let else_eqs = else_block.clone().unwrap_or_default();
+    let else_eqs = equations_from_optional_else(else_block);
     flatten_equations_list(ctx, &else_eqs, prefix, span, origin, def_map)
 }
 
@@ -1817,18 +1819,15 @@ fn mismatched_if_equation_description(
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-) -> String {
+) -> Result<String, FlattenError> {
     let mut counts = cond_blocks
         .iter()
         .map(|block| expand_to_simple_equations(ctx, &block.eqs, prefix, span).map(|eqs| eqs.len()))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_default();
+        .collect::<Result<Vec<_>, _>>()?;
     let else_count = else_block
         .as_ref()
         .map(|eqs| expand_to_simple_equations(ctx, eqs, prefix, span).map(|eqs| eqs.len()))
-        .transpose()
-        .ok()
-        .flatten();
+        .transpose()?;
     if let Some(count) = else_count {
         counts.push(count);
     }
@@ -1847,7 +1846,7 @@ fn mismatched_if_equation_description(
         .flat_map(|block| condition_enum_candidates(ctx, &block.cond))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
+    Ok(format!(
         "if-equation branches have mismatched equation counts in scope `{}`: conditions [{}], refs [{}], enum candidates [{}], branch counts {:?}, else count {}",
         prefix.to_flat_string(),
         conditions,
@@ -1857,7 +1856,7 @@ fn mismatched_if_equation_description(
         else_count
             .map(|count| count.to_string())
             .unwrap_or_else(|| "none".to_string())
-    )
+    ))
 }
 
 fn condition_enum_candidates(ctx: &Context, expr: &ast::Expression) -> Vec<String> {

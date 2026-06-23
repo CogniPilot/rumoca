@@ -6,36 +6,62 @@ pub(super) fn rewrite_algorithm_current_refs(
     expr: &Expression,
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
-) -> Expression {
-    AlgorithmCurrentRewriter {
+) -> Result<Expression, String> {
+    let mut rewriter = AlgorithmCurrentRewriter {
         dae,
         current_values,
         known_targets,
+        error: None,
+    };
+    let rewritten = rewriter.rewrite_expression(expr);
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(rewritten),
     }
-    .rewrite_expression(expr)
 }
 
 struct AlgorithmCurrentRewriter<'a> {
     dae: &'a Dae,
     current_values: &'a IndexMap<VarName, Expression>,
     known_targets: &'a HashSet<VarName>,
+    error: Option<String>,
+}
+
+type DynamicCurrentCase = (Vec<Subscript>, Option<Expression>);
+type DynamicCurrentAxisOption = (Subscript, Option<Expression>);
+
+impl AlgorithmCurrentRewriter<'_> {
+    fn record_error(&mut self, error: String) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
 }
 
 impl ExpressionRewriter for AlgorithmCurrentRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         match expr {
             Expression::VarRef {
                 name,
                 subscripts,
                 span,
-            } => rewrite_algorithm_current_var_ref(
+            } => match rewrite_algorithm_current_var_ref(
                 self.dae,
                 name,
                 subscripts,
                 *span,
                 self.current_values,
                 self.known_targets,
-            ),
+            ) {
+                Ok(expr) => expr,
+                Err(error) => {
+                    self.record_error(error);
+                    expr.clone()
+                }
+            },
             Expression::BuiltinCall {
                 function,
                 args,
@@ -57,10 +83,10 @@ fn rewrite_algorithm_current_var_ref(
     span: Span,
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
-) -> Expression {
+) -> Result<Expression, String> {
     let target = varref_with_subscripts(name, subscripts);
     if let Some(value) = current_values.get(&target) {
-        return value.clone();
+        return Ok(value.clone());
     }
     if !subscripts.is_empty()
         && let Some(value) = current_values.get(name.var_name())
@@ -69,21 +95,21 @@ fn rewrite_algorithm_current_var_ref(
     }
     {
         if let Some(value) =
-            dynamic_current_var_ref(dae, name, subscripts, span, current_values, known_targets)
+            dynamic_current_var_ref(dae, name, subscripts, span, current_values, known_targets)?
         {
-            return value;
+            return Ok(value);
         }
         if let Some(value) = static_parameter_array_element(dae, name, subscripts) {
-            return value;
+            return Ok(value);
         }
         if known_targets.contains(&target) {
-            algorithm_if_fallback_expr(dae, &target)
+            algorithm_if_fallback_expr(dae, &target, span)
         } else {
-            Expression::VarRef {
+            Ok(Expression::VarRef {
                 name: name.clone(),
                 subscripts: subscripts.to_vec(),
                 span,
-            }
+            })
         }
     }
 }
@@ -91,20 +117,23 @@ fn rewrite_algorithm_current_var_ref(
 pub(super) fn current_value_subscript_expr(
     value: &Expression,
     subscripts: &[Subscript],
-) -> Expression {
+) -> Result<Expression, String> {
     if let Some(element) = static_array_element(value, subscripts) {
-        return element;
+        return Ok(element);
     }
-    let span = subscripts
-        .first()
-        .map(Subscript::span)
-        .or_else(|| value.span())
-        .unwrap_or(rumoca_core::Span::DUMMY);
-    Expression::Index {
+    let span = required_current_value_span(
+        "algorithm current-value subscript expression",
+        subscripts
+            .iter()
+            .map(Subscript::span)
+            .find(|span| !span.is_dummy())
+            .or_else(|| value.span()),
+    )?;
+    Ok(Expression::Index {
         base: Box::new(value.clone()),
         subscripts: subscripts.to_vec(),
         span,
-    }
+    })
 }
 
 fn dynamic_current_var_ref(
@@ -114,19 +143,23 @@ fn dynamic_current_var_ref(
     span: Span,
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
-) -> Option<Expression> {
+) -> Result<Option<Expression>, String> {
     if subscripts.is_empty() || !subscripts.iter().any(is_dynamic_scalar_subscript) {
-        return None;
+        return Ok(None);
     }
     let base_name = VarName::new(name.as_str());
-    let dims = algorithm_variable_dims(dae, &base_name)?;
+    let Some(dims) = algorithm_variable_dims(dae, &base_name) else {
+        return Ok(None);
+    };
     if dims.len() != subscripts.len() {
-        return None;
+        return Ok(None);
     }
 
     let mut cases = vec![(Vec::new(), None)];
     for (subscript, dim) in subscripts.iter().zip(dims.iter()) {
-        let options = dynamic_current_axis_options(subscript, *dim)?;
+        let Some(options) = dynamic_current_axis_options(subscript, *dim)? else {
+            return Ok(None);
+        };
         cases = extend_dynamic_current_cases(cases, options);
     }
 
@@ -139,16 +172,18 @@ fn dynamic_current_var_ref(
     let mut used_current_value = false;
     for (static_subscripts, guard) in cases.into_iter().rev() {
         let target = varref_with_subscripts(name, &static_subscripts);
-        let value = current_values.get(&target).cloned().or_else(|| {
-            known_targets
-                .contains(&target)
-                .then(|| algorithm_if_fallback_expr(dae, &target))
-        });
+        let value = match current_values.get(&target) {
+            Some(value) => Some(value.clone()),
+            None if known_targets.contains(&target) => {
+                Some(algorithm_if_fallback_expr(dae, &target, span)?)
+            }
+            None => None,
+        };
         let Some(value) = value else {
             continue;
         };
         let Some(guard) = guard else {
-            return Some(value);
+            return Ok(Some(value));
         };
         used_current_value = true;
         merged = Expression::If {
@@ -157,11 +192,21 @@ fn dynamic_current_var_ref(
             span,
         };
     }
-    used_current_value.then_some(merged)
+    Ok(used_current_value.then_some(merged))
 }
 
 fn is_dynamic_scalar_subscript(subscript: &Subscript) -> bool {
-    matches!(subscript, Subscript::Expr { expr, .. } if static_subscript_index(&Subscript::generated_expr(expr.clone())).is_none())
+    matches!(
+        subscript,
+        Subscript::Expr { expr, .. }
+            if !matches!(
+                expr.as_ref(),
+                Expression::Literal {
+                    value: Literal::Integer(_),
+                    ..
+                }
+            )
+    )
 }
 
 pub(super) fn algorithm_variable_dims(dae: &Dae, name: &VarName) -> Option<Vec<i64>> {
@@ -182,38 +227,55 @@ pub(super) fn algorithm_variable_dims(dae: &Dae, name: &VarName) -> Option<Vec<i
 fn dynamic_current_axis_options(
     subscript: &Subscript,
     dim: i64,
-) -> Option<Vec<(Subscript, Option<Expression>)>> {
+) -> Result<Option<Vec<DynamicCurrentAxisOption>>, String> {
     if dim <= 0 {
-        return None;
+        return Ok(None);
     }
     if let Some(index) = static_subscript_index(subscript) {
-        return Some(vec![(
-            Subscript::generated_index(index, subscript.span()),
+        return Ok(Some(vec![(
+            Subscript::try_generated_index(
+                index,
+                subscript.span(),
+                "algorithm current static subscript",
+            )
+            .map_err(|err| err.to_string())?,
             None,
-        )]);
+        )]));
     }
-    let Subscript::Expr { expr: selector, .. } = subscript else {
-        return None;
+    let Subscript::Expr {
+        expr: selector,
+        span: selector_span,
+    } = subscript
+    else {
+        return Ok(None);
     };
-    Some(
+    let selector_span = required_current_value_span(
+        "algorithm current dynamic selector",
+        selector
+            .span()
+            .or_else(|| (!selector_span.is_dummy()).then_some(*selector_span)),
+    )?;
+    Ok(Some(
         (1..=dim)
             .map(|candidate| {
-                (
-                    Subscript::generated_index(
+                Ok((
+                    Subscript::try_generated_index(
                         candidate,
-                        selector.span().unwrap_or(rumoca_core::Span::DUMMY),
-                    ),
-                    Some(dynamic_current_guard(selector, candidate)),
-                )
+                        selector_span,
+                        "algorithm current dynamic candidate subscript",
+                    )
+                    .map_err(|err| err.to_string())?,
+                    Some(dynamic_current_guard(selector, candidate, selector_span)),
+                ))
             })
-            .collect(),
-    )
+            .collect::<Result<Vec<_>, String>>()?,
+    ))
 }
 
 fn extend_dynamic_current_cases(
-    cases: Vec<(Vec<Subscript>, Option<Expression>)>,
-    options: Vec<(Subscript, Option<Expression>)>,
-) -> Vec<(Vec<Subscript>, Option<Expression>)> {
+    cases: Vec<DynamicCurrentCase>,
+    options: Vec<DynamicCurrentAxisOption>,
+) -> Vec<DynamicCurrentCase> {
     let mut extended = Vec::with_capacity(cases.len() * options.len());
     for (prefix, prefix_guard) in cases {
         for (subscript, guard) in &options {
@@ -228,8 +290,11 @@ fn extend_dynamic_current_cases(
     extended
 }
 
-fn dynamic_current_guard(selector: &Expression, candidate: i64) -> Expression {
-    let span = selector.span().unwrap_or(rumoca_core::Span::DUMMY);
+fn dynamic_current_guard(
+    selector: &Expression,
+    candidate: i64,
+    span: rumoca_core::Span,
+) -> Expression {
     Expression::Binary {
         op: rumoca_core::OpBinary::Eq,
         lhs: Box::new(selector.clone()),
@@ -244,10 +309,7 @@ fn dynamic_current_guard(selector: &Expression, candidate: i64) -> Expression {
 fn and_optional_expr(lhs: Option<Expression>, rhs: Option<Expression>) -> Option<Expression> {
     match (lhs, rhs) {
         (Some(lhs), Some(rhs)) => {
-            let span = lhs
-                .span()
-                .or_else(|| rhs.span())
-                .unwrap_or(rumoca_core::Span::DUMMY);
+            let span = lhs.span().or_else(|| rhs.span())?;
             Some(Expression::Binary {
                 op: rumoca_core::OpBinary::And,
                 lhs: Box::new(lhs),
@@ -258,6 +320,18 @@ fn and_optional_expr(lhs: Option<Expression>, rhs: Option<Expression>) -> Option
         (Some(expr), None) | (None, Some(expr)) => Some(expr),
         (None, None) => None,
     }
+}
+
+fn required_current_value_span(
+    context: &'static str,
+    span: Option<rumoca_core::Span>,
+) -> Result<rumoca_core::Span, String> {
+    let Some(span) = span else {
+        return Err(format!("missing source provenance for {context}"));
+    };
+    span.require_provenance(context)
+        .map(|span| span.span())
+        .map_err(|err| err.to_string())
 }
 
 fn static_parameter_array_element(
@@ -295,5 +369,98 @@ fn static_subscript_index(subscript: &Subscript) -> Option<i64> {
             _ => None,
         },
         Subscript::Colon { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("current_value_rewrite_fixture.mo"),
+            11,
+            23,
+        )
+    }
+
+    fn literal(value: f64, span: Span) -> Expression {
+        Expression::Literal {
+            value: Literal::Real(value),
+            span,
+        }
+    }
+
+    fn selector(span: Span) -> Subscript {
+        Subscript::expr(
+            Box::new(Expression::VarRef {
+                name: rumoca_core::Reference::new("i"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            span,
+        )
+    }
+
+    fn array_dae() -> Dae {
+        let mut dae = Dae::new();
+        let name = VarName::new("x");
+        let mut var = dae::Variable::new(
+            flat_to_dae_var_name(&name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
+        var.dims = vec![2];
+        dae.variables.discrete_valued.insert(var.name.clone(), var);
+        dae
+    }
+
+    fn dynamic_x_ref(subscript: Subscript, span: Span) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::new("x"),
+            subscripts: vec![subscript],
+            span,
+        }
+    }
+
+    #[test]
+    fn dynamic_current_rewrite_preserves_selector_span() -> Result<(), String> {
+        let span = test_span();
+        let dae = array_dae();
+        let current_values = IndexMap::from([
+            (VarName::new("x[1]"), literal(1.0, span)),
+            (VarName::new("x[2]"), literal(2.0, span)),
+        ]);
+
+        let rewritten = rewrite_algorithm_current_refs(
+            &dae,
+            &dynamic_x_ref(selector(span), span),
+            &current_values,
+            &HashSet::new(),
+        )?;
+
+        assert_eq!(rewritten.span(), Some(span));
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_current_rewrite_rejects_unspanned_selector() {
+        let dae = array_dae();
+        let current_values = IndexMap::from([
+            (VarName::new("x[1]"), literal(1.0, test_span())),
+            (VarName::new("x[2]"), literal(2.0, test_span())),
+        ]);
+
+        let err = rewrite_algorithm_current_refs(
+            &dae,
+            &dynamic_x_ref(selector(Span::DUMMY), Span::DUMMY),
+            &current_values,
+            &HashSet::new(),
+        )
+        .expect_err("dynamic algorithm-current selector should require provenance");
+
+        assert!(
+            err.contains("algorithm current dynamic selector"),
+            "unexpected error: {err}"
+        );
     }
 }

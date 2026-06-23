@@ -31,6 +31,16 @@ type Model = flat::Model;
 type Statement = rumoca_core::Statement;
 type VarName = rumoca_core::VarName;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReachableCall {
+    name: VarName,
+    span: Span,
+}
+
+fn record_reachable_call(reachable_calls: &mut IndexSet<ReachableCall>, name: VarName, span: Span) {
+    reachable_calls.insert(ReachableCall { name, span });
+}
+
 /// Filter der() variables to only include those that will be classified as states.
 ///
 /// External interface inputs are not states (`der(u)` differentiates an incoming
@@ -331,37 +341,45 @@ pub(crate) fn is_continuous_unknown(
 /// Sub-component inputs (with dots) and protected top-level inputs are internal
 /// and should be promoted to algebraics when connected or equation-defined
 /// (MLS §4.4.2.2).
-pub(crate) fn is_internal_input(name: &VarName, flat: &Model) -> bool {
+pub(crate) fn is_internal_input(name: &VarName, flat: &Model) -> Result<bool, ToDaeError> {
     let var = match flat.variables.get(name) {
-        Some(v) => v,
-        None => return false,
+        Some(var) => var,
+        None => return Ok(false),
     };
     is_internal_input_var(name, var, flat)
 }
 
-fn is_internal_input_var(name: &VarName, var: &flat::Variable, flat: &Model) -> bool {
+fn is_internal_input_var(
+    name: &VarName,
+    var: &flat::Variable,
+    flat: &Model,
+) -> Result<bool, ToDaeError> {
     if !matches!(&var.causality, rumoca_core::Causality::Input(_)) {
-        return false;
+        return Ok(false);
     }
     // Sub-component inputs (with dots) are internal, UNLESS the top-level
     // prefix is a top-level connector (interface inputs stay as inputs)
     // or the top-level parent is itself declared as input (e.g.,
     // `input Record state;` → `state.field` stays external).
     if is_nested_name(name.as_str()) {
-        let prefix = get_top_level_prefix(name.as_str())
-            .expect("a nested name has a dot, so the prefix must be extractable");
+        let Some(prefix) = get_top_level_prefix(name.as_str()) else {
+            return Err(ToDaeError::runtime_contract_violation_at(
+                format!("nested input variable `{name}` has no top-level prefix"),
+                var.source_span,
+            ));
+        };
         if flat.top_level_connectors.contains(&prefix) {
-            return false;
+            return Ok(false);
         }
         // If the parent component is a top-level input, its fields are
         // external interface values, not local unknowns.
         if is_top_level_input_component(&prefix, flat) {
-            return false;
+            return Ok(false);
         }
-        return true;
+        return Ok(true);
     }
     // Top-level protected inputs are internal implementation details (MLS §4.4.2.2)
-    var.is_protected
+    Ok(var.is_protected)
 }
 
 pub(crate) struct InternalInputIndex {
@@ -370,11 +388,11 @@ pub(crate) struct InternalInputIndex {
 }
 
 impl InternalInputIndex {
-    pub(crate) fn new(flat: &Model) -> Self {
+    pub(crate) fn new(flat: &Model) -> Result<Self, ToDaeError> {
         let mut inputs = HashSet::default();
         let mut by_component_base: FxHashMap<String, Vec<VarName>> = FxHashMap::default();
         for (name, var) in &flat.variables {
-            if !is_internal_input_var(name, var, flat) {
+            if !is_internal_input_var(name, var, flat)? {
                 continue;
             }
             inputs.insert(name.clone());
@@ -388,10 +406,10 @@ impl InternalInputIndex {
         for names in by_component_base.values_mut() {
             names.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
         }
-        Self {
+        Ok(Self {
             inputs,
             by_component_base,
-        }
+        })
     }
 
     pub(crate) fn contains(&self, name: &VarName) -> bool {
@@ -419,10 +437,10 @@ impl InternalInputIndex {
         let Some(base) = flat::component_base_name(name) else {
             return Vec::new();
         };
-        self.by_component_base
-            .get(&base)
-            .cloned()
-            .unwrap_or_default()
+        match self.by_component_base.get(&base) {
+            Some(inputs) => inputs.clone(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -799,9 +817,9 @@ fn check_rhs_intra_component_alias(
     // For `volume.vessel_ps_static = volume.medium.p` (from Volume), the input
     // `volume.medium.p` has parent `volume.medium` but the equation origin is
     // `volume` → no match (the Volume model is using medium.p, not defining it).
-    let input_parent = resolved.enclosing_scope().unwrap_or("");
-    let eq_component = origin.component_name().unwrap_or_default();
-    if !input_parent.is_empty() && input_parent == eq_component {
+    let input_parent = resolved.enclosing_scope()?;
+    let eq_component = origin.component_name()?;
+    if input_parent == eq_component {
         Some(resolved)
     } else {
         None
@@ -1021,18 +1039,29 @@ fn validate_field_access_functions(
     field: &str,
     flat: &Model,
     span: Span,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
     callable_formals: Option<&HashSet<VarName>>,
 ) -> Result<(), ToDaeError> {
     if let Expression::FunctionCall {
         name,
         args,
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        span: constructor_span,
     } = base
     {
+        let owner_span = if constructor_span.is_dummy() {
+            span
+        } else {
+            *constructor_span
+        };
         for arg in args {
-            validate_flat_expression_functions(arg, flat, span, reachable_calls, callable_formals)?;
+            validate_flat_expression_functions(
+                arg,
+                flat,
+                owner_span,
+                reachable_calls,
+                callable_formals,
+            )?;
         }
 
         let selected_name = if args.is_empty() {
@@ -1059,7 +1088,7 @@ fn validate_field_access_functions(
             }
             return Err(ToDaeError::constructor_field_selection_unresolved(
                 selected_name,
-                span,
+                owner_span,
             ));
         };
 
@@ -1086,7 +1115,7 @@ fn validate_field_access_functions(
             }
             return Err(ToDaeError::constructor_field_selection_unresolved(
                 selected_name,
-                span,
+                owner_span,
             ));
         }
         return Ok(());
@@ -1098,7 +1127,7 @@ fn validate_field_access_functions(
 struct FlatFunctionCallValidator<'a> {
     flat: &'a Model,
     inherited_span: Span,
-    reachable_calls: &'a mut Vec<VarName>,
+    reachable_calls: &'a mut IndexSet<ReachableCall>,
     callable_formals: Option<&'a HashSet<VarName>>,
 }
 
@@ -1153,7 +1182,11 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
             && !resolve_flat_function(name.as_str(), self.flat)
                 .is_some_and(|func| func.is_constructor)
         {
-            self.reachable_calls.push(name.var_name().clone());
+            record_reachable_call(
+                self.reachable_calls,
+                name.var_name().clone(),
+                self.inherited_span,
+            );
         }
         for arg in args {
             let mut child = FlatFunctionCallValidator {
@@ -1222,7 +1255,7 @@ impl FallibleStatementVisitor for FlatFunctionCallValidator<'_> {
                 .callable_formals
                 .is_some_and(|formals| formals.contains(&name))
         {
-            self.reachable_calls.push(name);
+            record_reachable_call(self.reachable_calls, name, self.inherited_span);
         }
         for arg in args {
             let mut child = FlatFunctionCallValidator {
@@ -1241,7 +1274,7 @@ fn validate_flat_expression_functions(
     expr: &Expression,
     flat: &Model,
     span: Span,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
     callable_formals: Option<&HashSet<VarName>>,
 ) -> Result<(), ToDaeError> {
     let mut validator = FlatFunctionCallValidator {
@@ -1257,7 +1290,7 @@ fn validate_statement_functions(
     stmt: &Statement,
     flat: &Model,
     span: Span,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
     callable_formals: Option<&HashSet<VarName>>,
 ) -> Result<(), ToDaeError> {
     let mut validator = FlatFunctionCallValidator {
@@ -1289,7 +1322,7 @@ fn statement_span(stmt: &Statement) -> Option<Span> {
 fn validate_when_equation_functions(
     equation: &rumoca_ir_flat::WhenEquation,
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     match equation {
         rumoca_ir_flat::WhenEquation::Assign { value, span, .. } => {
@@ -1357,7 +1390,7 @@ fn function_typed_formals(function: &Function, flat: &Model) -> HashSet<VarName>
 
 fn validate_flat_variable_function_calls(
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     for variable in flat.variables.values() {
         let is_param_or_const = matches!(
@@ -1378,7 +1411,13 @@ fn validate_flat_variable_function_calls(
         .into_iter()
         .flatten()
         {
-            validate_flat_expression_functions(expr, flat, Span::DUMMY, reachable_calls, None)?
+            validate_flat_expression_functions(
+                expr,
+                flat,
+                variable.source_span,
+                reachable_calls,
+                None,
+            )?
         }
     }
     Ok(())
@@ -1386,7 +1425,7 @@ fn validate_flat_variable_function_calls(
 
 fn validate_flat_equation_function_calls(
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     for equation in flat.equations.iter().chain(flat.initial_equations.iter()) {
         validate_flat_expression_functions(
@@ -1402,7 +1441,7 @@ fn validate_flat_equation_function_calls(
 
 fn validate_flat_assertion_function_calls(
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     for assertion in flat
         .assert_equations
@@ -1432,7 +1471,7 @@ fn validate_flat_assertion_function_calls(
 
 fn validate_flat_when_function_calls(
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     for when in &flat.when_clauses {
         validate_flat_expression_functions(
@@ -1451,7 +1490,7 @@ fn validate_flat_when_function_calls(
 
 fn validate_flat_algorithm_function_calls(
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     for algorithm in flat.algorithms.iter().chain(flat.initial_algorithms.iter()) {
         for statement in &algorithm.statements {
@@ -1463,17 +1502,18 @@ fn validate_flat_algorithm_function_calls(
 
 fn validate_reachable_function_bodies(
     flat: &Model,
-    reachable_calls: &mut Vec<VarName>,
+    reachable_calls: &mut IndexSet<ReachableCall>,
 ) -> Result<(), ToDaeError> {
     let mut visited: HashSet<VarName> = HashSet::default();
-    while let Some(function_name) = reachable_calls.pop() {
+    while let Some(call) = reachable_calls.pop() {
+        let function_name = call.name;
         if !visited.insert(function_name.clone()) {
             continue;
         }
         let Some(function) = resolve_flat_function(function_name.as_str(), flat) else {
             return Err(ToDaeError::unresolved_function_call(
                 function_name.as_str(),
-                Span::DUMMY,
+                call.span,
             ));
         };
         let callable_formals = function_typed_formals(function, flat);
@@ -1508,7 +1548,7 @@ fn validate_reachable_function_bodies(
 }
 
 pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeError> {
-    let mut reachable_calls: Vec<VarName> = Vec::new();
+    let mut reachable_calls: IndexSet<ReachableCall> = IndexSet::new();
     validate_flat_variable_function_calls(flat, &mut reachable_calls)?;
     validate_flat_equation_function_calls(flat, &mut reachable_calls)?;
     validate_flat_assertion_function_calls(flat, &mut reachable_calls)?;

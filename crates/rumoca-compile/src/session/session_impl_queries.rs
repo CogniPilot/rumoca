@@ -1,6 +1,5 @@
 use super::class_body::FileClassBodyIndex;
 use super::class_body_semantics::FileClassBodySemantics;
-use super::class_interface::resolve_import_candidates;
 use super::declaration_index::ItemKind;
 use super::session_impl::{
     NavigationReadContext, apply_break_exclusions, class_name_matches_query_target,
@@ -1485,12 +1484,10 @@ impl Session {
             visiting.remove(qualified_name);
             return;
         };
-        let imports = class_interface.import_map().clone();
-
         for extend in class_interface.extends() {
-            if let Some(base_target) =
-                self.lookup_query_extends_target(extend.base_name(), &imports)
-            {
+            let base_candidates =
+                class_interface.type_resolution_candidates(qualified_name, extend.base_name());
+            if let Some(base_target) = self.lookup_query_extends_target(&base_candidates) {
                 self.collect_query_class_component_members(
                     &base_target.uri,
                     &base_target.qualified_name,
@@ -1528,12 +1525,10 @@ impl Session {
 
     fn lookup_query_extends_target(
         &mut self,
-        base_name: &str,
-        imports: &ImportMap,
+        base_candidates: &[String],
     ) -> Option<QueryClassLookup> {
-        let base_candidates = resolve_import_candidates(base_name, Some(imports));
         for candidate in base_candidates {
-            if let Some(target) = self.lookup_query_class_target(&candidate) {
+            if let Some(target) = self.lookup_query_class_target(candidate) {
                 return Some(target);
             }
         }

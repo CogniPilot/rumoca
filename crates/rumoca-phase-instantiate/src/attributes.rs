@@ -219,14 +219,29 @@ pub(super) fn validate_final_type_attribute_overrides(
     let final_attrs = final_type_attribute_names(tree, class_def);
     for attr_name in comp.final_attributes.iter().chain(final_attrs.iter()) {
         let attr_path = ast::QualifiedName::from_ident(&comp.name).child(attr_name);
-        if mod_env.get(&attr_path).is_some() {
+        if let Some(mod_value) = mod_env.get(&attr_path) {
+            let span = required_modifier_value_span(mod_value, "final type attribute override")?;
             return Err(Box::new(InstantiateError::redeclare_final(
                 format!("{}.{}", comp.name, attr_name),
-                rumoca_core::Span::DUMMY,
+                span,
             )));
         }
     }
     Ok(())
+}
+
+fn required_modifier_value_span(
+    mod_value: &ast::ModificationValue,
+    context: &'static str,
+) -> InstantiateResult<rumoca_core::Span> {
+    let expr = mod_value.source.as_ref().unwrap_or(&mod_value.value);
+    let span = expr.span();
+    if span.is_dummy() {
+        return Err(Box::new(InstantiateError::missing_source_context(format!(
+            "{context} is missing source provenance"
+        ))));
+    }
+    Ok(span)
 }
 
 fn final_type_attribute_names(

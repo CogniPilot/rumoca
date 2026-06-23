@@ -6,18 +6,21 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
 use super::{
-    EqFilterContext, classify_equations, collect_discrete_valued_binding_targets,
-    collect_discrete_valued_lhs_target_counts, collect_explicit_discrete_assignments,
-    collect_explicit_discrete_assignments_with_binding_targets, expand_record_field_equation,
-    output_alias_skip_reason, output_has_component_equation,
+    EqFilterContext, classify_equations, collect_discrete_valued_lhs_target_counts,
+    collect_explicit_discrete_assignments, expand_record_field_equation,
+    explicit_lhs_reference_from_target, output_alias_skip_reason, output_has_component_equation,
 };
 use crate::ToDaeError;
+
+fn fixture_span() -> Span {
+    Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
+}
 
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -26,7 +29,7 @@ fn residual(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoc
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -35,7 +38,7 @@ fn call(name: &str) -> rumoca_core::Expression {
         name: rumoca_core::VarName::new(name).into(),
         args: Vec::new(),
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -45,17 +48,15 @@ fn component_ref_with_def_id(
 ) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
         parts: parts
             .into_iter()
             .map(|(ident, subs)| rumoca_core::ComponentRefPart {
                 ident: ident.to_string(),
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
                 subs: subs
                     .into_iter()
-                    .map(|value| {
-                        rumoca_core::Subscript::generated_index(value, rumoca_core::Span::DUMMY)
-                    })
+                    .map(|value| rumoca_core::Subscript::generated_index(value, fixture_span()))
                     .collect(),
             })
             .collect(),
@@ -75,7 +76,7 @@ fn var_ref_with_parts(name: &str, parts: Vec<(&str, Vec<i64>)>) -> rumoca_core::
     rumoca_core::Expression::VarRef {
         name: reference_with_parts(name, parts),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -91,7 +92,11 @@ fn primitive_variable_with_dims_and_parts(
         dims,
         component_ref: Some(component_ref_with_def_id(parts, Some(def_id))),
         is_primitive: true,
-        ..Default::default()
+        ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     }
 }
 
@@ -104,13 +109,15 @@ fn primitive_variable_with_parts(
 }
 
 fn add_pair_constructor(flat_model: &mut flat::Model) {
-    let mut constructor = rumoca_core::Function::new("PairRecord", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("PairRecord", fixture_span());
     constructor.is_constructor = true;
     constructor.add_input(
-        rumoca_core::FunctionParam::new("alpha", "Real").with_def_id(rumoca_core::DefId::new(101)),
+        rumoca_core::FunctionParam::new("alpha", "Real", fixture_span())
+            .with_def_id(rumoca_core::DefId::new(101)),
     );
     constructor.add_input(
-        rumoca_core::FunctionParam::new("beta", "Real").with_def_id(rumoca_core::DefId::new(102)),
+        rumoca_core::FunctionParam::new("beta", "Real", fixture_span())
+            .with_def_id(rumoca_core::DefId::new(102)),
     );
     flat_model
         .functions
@@ -118,8 +125,8 @@ fn add_pair_constructor(flat_model: &mut flat::Model) {
 }
 
 fn add_pair_record_function(flat_model: &mut flat::Model, name: &str) {
-    let mut function = rumoca_core::Function::new(name, Span::DUMMY);
-    let mut output = rumoca_core::FunctionParam::new("y", "PairRecord");
+    let mut function = rumoca_core::Function::new(name, fixture_span());
+    let mut output = rumoca_core::FunctionParam::new("y", "PairRecord", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
     function.add_output(output);
     flat_model.functions.insert(function.name.clone(), function);
@@ -146,15 +153,15 @@ fn test_record_function_equation_expands_to_declared_fields() {
         flat_model.variables.insert(var.name.clone(), var);
     }
 
-    let mut constructor = rumoca_core::Function::new("Frames.Orientation", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("Frames.Orientation", fixture_span());
     constructor.is_constructor = true;
     constructor.add_input(
-        rumoca_core::FunctionParam::new("T", "Real")
+        rumoca_core::FunctionParam::new("T", "Real", fixture_span())
             .with_dims(vec![3, 3])
             .with_def_id(rumoca_core::DefId::new(11)),
     );
     constructor.add_input(
-        rumoca_core::FunctionParam::new("w", "Real")
+        rumoca_core::FunctionParam::new("w", "Real", fixture_span())
             .with_dims(vec![3])
             .with_def_id(rumoca_core::DefId::new(12)),
     );
@@ -162,8 +169,8 @@ fn test_record_function_equation_expands_to_declared_fields() {
         .functions
         .insert(constructor.name.clone(), constructor);
 
-    let mut null_rotation = rumoca_core::Function::new("Frames.nullRotation", Span::DUMMY);
-    let mut output = rumoca_core::FunctionParam::new("R", "Orientation");
+    let mut null_rotation = rumoca_core::Function::new("Frames.nullRotation", fixture_span());
+    let mut output = rumoca_core::FunctionParam::new("R", "Orientation", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
     null_rotation.add_output(output);
     flat_model
@@ -175,7 +182,7 @@ fn test_record_function_equation_expands_to_declared_fields() {
             var_ref_with_parts("R", vec![("R", vec![])]),
             call("Frames.nullRotation"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "body".to_string(),
         },
@@ -228,7 +235,7 @@ fn test_record_function_equation_expands_array_fields_by_component_ref() {
             var_ref_with_parts("controller.y", vec![("controller", vec![]), ("y", vec![])]),
             call("Records.makePair"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "controller".to_string(),
         },
@@ -256,7 +263,7 @@ fn test_record_function_equation_expands_array_fields_by_component_ref() {
 fn test_record_function_equation_matches_subscripts_semantically() {
     let mut flat_model = flat::Model::new();
     let generated_elsewhere = rumoca_core::Span {
-        source: rumoca_core::SourceId(7),
+        source: rumoca_core::SourceId::from_source_name(file!()),
         start: rumoca_core::BytePos(11),
         end: rumoca_core::BytePos(12),
     };
@@ -291,7 +298,7 @@ fn test_record_function_equation_matches_subscripts_semantically() {
             ),
             call("Records.makePair"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "controller".to_string(),
         },
@@ -344,7 +351,7 @@ fn test_record_function_equation_matches_record_array_index_on_field_leaf() {
             ),
             call("Records.makePair"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "controller".to_string(),
         },
@@ -383,7 +390,7 @@ fn test_record_function_equation_matches_field_def_id_not_spelling() {
             var_ref_with_parts("controller.y", vec![("controller", vec![]), ("y", vec![])]),
             call("Records.makePair"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "controller".to_string(),
         },
@@ -416,15 +423,15 @@ fn test_classify_record_function_equation_routes_expanded_fields() {
         flat_model.variables.insert(var.name.clone(), var);
     }
 
-    let mut constructor = rumoca_core::Function::new("Frames.Orientation", Span::DUMMY);
+    let mut constructor = rumoca_core::Function::new("Frames.Orientation", fixture_span());
     constructor.is_constructor = true;
     constructor.add_input(
-        rumoca_core::FunctionParam::new("T", "Real")
+        rumoca_core::FunctionParam::new("T", "Real", fixture_span())
             .with_dims(vec![3, 3])
             .with_def_id(rumoca_core::DefId::new(11)),
     );
     constructor.add_input(
-        rumoca_core::FunctionParam::new("w", "Real")
+        rumoca_core::FunctionParam::new("w", "Real", fixture_span())
             .with_dims(vec![3])
             .with_def_id(rumoca_core::DefId::new(12)),
     );
@@ -432,8 +439,8 @@ fn test_classify_record_function_equation_routes_expanded_fields() {
         .functions
         .insert(constructor.name.clone(), constructor);
 
-    let mut null_rotation = rumoca_core::Function::new("Frames.nullRotation", Span::DUMMY);
-    let mut output = rumoca_core::FunctionParam::new("R", "Orientation");
+    let mut null_rotation = rumoca_core::Function::new("Frames.nullRotation", fixture_span());
+    let mut output = rumoca_core::FunctionParam::new("R", "Orientation", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
     null_rotation.add_output(output);
     flat_model
@@ -445,7 +452,7 @@ fn test_classify_record_function_equation_routes_expanded_fields() {
             var_ref_with_parts("R", vec![("R", vec![])]),
             call("Frames.nullRotation"),
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "body".to_string(),
         },
@@ -454,7 +461,10 @@ fn test_classify_record_function_equation_routes_expanded_fields() {
     let mut dae_model = dae::Dae::new();
     for (name, dims) in [("R.T", vec![3, 3]), ("R.w", vec![3])] {
         let var_name = rumoca_core::VarName::new(name);
-        let mut var = dae::Variable::new(var_name.clone());
+        let mut var = dae::Variable::new(
+            var_name.clone(),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         var.dims = dims;
         dae_model.variables.algebraics.insert(var_name, var);
     }
@@ -475,7 +485,14 @@ fn test_discrete_alias_assignment_orients_to_unowned_rhs() {
     for name in ["phase", "state.phase"] {
         dae_model.variables.discrete_valued.insert(
             rumoca_core::VarName::new(name),
-            dae::Variable::new(rumoca_core::VarName::new(name)),
+            dae::Variable::new(
+                rumoca_core::VarName::new(name),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
     }
 
@@ -485,17 +502,17 @@ fn test_discrete_alias_assignment_orients_to_unowned_rhs() {
             var_ref("phase"),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             },
         ),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "medium".to_string(),
         },
     ));
     flat_model.equations.push(flat::Equation::new(
         residual(var_ref("phase"), var_ref("state.phase")),
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "medium".to_string(),
         },
@@ -506,6 +523,7 @@ fn test_discrete_alias_assignment_orients_to_unowned_rhs() {
         &flat_model.equations[1].residual,
         &dae_model,
         &counts,
+        flat_model.equations[1].span,
     )
     .unwrap()
     .expect("alias assignment");
@@ -583,7 +601,10 @@ fn test_discrete_alias_assignment_preserves_indexed_lhs_target() {
     let mut dae_model = dae::Dae::new();
     for name in ["auxiliary", "x"] {
         let var_name = rumoca_core::VarName::new(name);
-        let mut variable = dae::Variable::new(var_name.clone());
+        let mut variable = dae::Variable::new(
+            var_name.clone(),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         variable.dims = vec![2];
         dae_model
             .variables
@@ -595,54 +616,70 @@ fn test_discrete_alias_assignment_preserves_indexed_lhs_target() {
     counts.insert(rumoca_core::VarName::new("auxiliary"), 2);
     counts.insert(rumoca_core::VarName::new("x"), 0);
 
-    let assignments = collect_explicit_discrete_assignments(
-        &residual(var_ref("auxiliary[1]"), var_ref("x[1]")),
-        &dae_model,
-        &counts,
-    )
-    .unwrap()
-    .expect("indexed alias assignment");
+    let expr = residual(var_ref("auxiliary[1]"), var_ref("x[1]"));
+    let assignments =
+        collect_explicit_discrete_assignments(&expr, &dae_model, &counts, fixture_span())
+            .unwrap()
+            .expect("indexed alias assignment");
 
     assert!(assignments.contains_key(&rumoca_core::VarName::new("auxiliary[1]")));
     assert!(!assignments.contains_key(&rumoca_core::VarName::new("x[1]")));
 }
 
 #[test]
-fn test_discrete_alias_assignment_orients_exact_indexed_duplicate_to_unowned_rhs() {
+fn test_zero_discrete_assignment_requires_equation_span() {
     let mut dae_model = dae::Dae::new();
-    for name in [
-        "pipeB1B2.mediums[1].phase",
-        "pipeB1B2.mediums[1].state.phase",
-    ] {
-        dae_model.variables.discrete_valued.insert(
-            rumoca_core::VarName::new(name),
-            dae::Variable::new(rumoca_core::VarName::new(name)),
-        );
-    }
-
+    dae_model.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable::new(
+            rumoca_core::VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
     let mut counts = HashMap::new();
-    counts.insert(rumoca_core::VarName::new("pipeB1B2.mediums[1].phase"), 2);
-    counts.insert(
-        rumoca_core::VarName::new("pipeB1B2.mediums[1].state.phase"),
-        0,
+    counts.insert(rumoca_core::VarName::new("x"), 1);
+    let expr = residual(
+        var_ref("x"),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            span: fixture_span(),
+        },
     );
 
-    let assignments = collect_explicit_discrete_assignments_with_binding_targets(
-        &residual(
-            var_ref("pipeB1B2.mediums[1].phase"),
-            var_ref("pipeB1B2.mediums[1].state.phase"),
-        ),
-        &dae_model,
-        &counts,
-        &HashSet::new(),
-    )
-    .unwrap()
-    .expect("indexed duplicate alias assignment");
+    let err = collect_explicit_discrete_assignments(&expr, &dae_model, &counts, Span::DUMMY)
+        .expect_err("generated zero should require equation provenance");
 
-    assert!(assignments.contains_key(&rumoca_core::VarName::new(
-        "pipeB1B2.mediums[1].state.phase"
-    )));
-    assert!(!assignments.contains_key(&rumoca_core::VarName::new("pipeB1B2.mediums[1].phase")));
+    assert!(
+        err.to_string()
+            .contains("explicit discrete assignment zero")
+    );
+}
+
+#[test]
+fn test_explicit_lhs_reference_requires_scalar_target_subscript_provenance() {
+    let mut flat_model = flat::Model::new();
+    flat_model.variables.insert(
+        rumoca_core::VarName::new("x"),
+        primitive_variable_with_dims_and_parts(
+            "x",
+            vec![2],
+            vec![("x", Vec::new())],
+            rumoca_core::DefId::new(91),
+        ),
+    );
+
+    let err = explicit_lhs_reference_from_target(
+        &rumoca_core::VarName::new("x[1]"),
+        &flat_model,
+        Span::DUMMY,
+    )
+    .expect_err("generated scalar target subscript should require provenance");
+
+    assert!(
+        err.to_string()
+            .contains("explicit discrete assignment target subscript"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -690,11 +727,17 @@ fn test_output_alias_skip_preserves_internal_input_alias_connection() {
     let mut dae_model = dae::Dae::new();
     dae_model.variables.inputs.insert(
         rumoca_core::VarName::new("multiSwitch1.u"),
-        dae::Variable::new(rumoca_core::VarName::new("multiSwitch1.u")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("multiSwitch1.u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("multiSwitch1.u"),
-        dae::Variable::new(rumoca_core::VarName::new("multiSwitch1.u")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("multiSwitch1.u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let eq = flat::Equation::new(
@@ -703,16 +746,16 @@ fn test_output_alias_skip_preserves_internal_input_alias_connection() {
             lhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("booleanPulse1.y").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }),
             rhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("multiSwitch1.u[1]").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         },
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::Connection {
             lhs: "booleanPulse1.y".to_string(),
             rhs: "multiSwitch1.u[1]".to_string(),
@@ -733,7 +776,11 @@ fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
         flat::Variable {
             name: rumoca_core::VarName::new("table1.y"),
             is_discrete_type: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
     flat_model.variables.insert(
@@ -741,7 +788,11 @@ fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
         flat::Variable {
             name: rumoca_core::VarName::new("table1.realToBoolean.y"),
             is_discrete_type: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
 
@@ -762,19 +813,31 @@ fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
     let mut dae_model = dae::Dae::new();
     dae_model.variables.outputs.insert(
         rumoca_core::VarName::new("table1.y"),
-        dae::Variable::new(rumoca_core::VarName::new("table1.y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("table1.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.outputs.insert(
         rumoca_core::VarName::new("table1.realToBoolean.y"),
-        dae::Variable::new(rumoca_core::VarName::new("table1.realToBoolean.y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("table1.realToBoolean.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("table1.y"),
-        dae::Variable::new(rumoca_core::VarName::new("table1.y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("table1.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("table1.realToBoolean.y"),
-        dae::Variable::new(rumoca_core::VarName::new("table1.realToBoolean.y")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("table1.realToBoolean.y"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     let eq = flat::Equation::new(
@@ -783,16 +846,16 @@ fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
             lhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("table1.realToBoolean.y").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }),
             rhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("table1.y").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         },
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::Connection {
             lhs: "table1.realToBoolean.y".to_string(),
             rhs: "table1.y".to_string(),
@@ -832,16 +895,16 @@ fn test_output_alias_skip_applies_when_both_sides_are_component_defined() {
             lhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("source.y").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }),
             rhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("sink.u").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         },
-        Span::DUMMY,
+        fixture_span(),
         flat::EquationOrigin::Connection {
             lhs: "source.y".to_string(),
             rhs: "sink.u".to_string(),
@@ -862,13 +925,13 @@ fn test_classify_equations_preserves_repeated_residuals_for_validation() {
         lhs: Box::new(rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("x").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     };
     let mut flat_model = flat::Model::new();
     flat_model.add_variable(
@@ -876,13 +939,17 @@ fn test_classify_equations_preserves_repeated_residuals_for_validation() {
         flat::Variable {
             name: rumoca_core::VarName::new("x"),
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         },
     );
     for component in ["A", "B"] {
         flat_model.add_equation(flat::Equation {
             residual: residual.clone(),
-            span: Span::DUMMY,
+            span: fixture_span(),
             origin: flat::EquationOrigin::ComponentEquation {
                 component: component.to_string(),
             },

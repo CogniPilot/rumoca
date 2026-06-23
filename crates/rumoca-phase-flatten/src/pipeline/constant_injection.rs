@@ -2,12 +2,24 @@
 // injection helpers into owned submodules after BOPTEST parity stabilization.
 use super::*;
 use crate::record_constant_arrays::try_extract_record_array_constructor_constant;
+use crate::source_spans::required_location_span;
 
 mod component_binding_values;
+mod function_resolution;
 
 pub(crate) use component_binding_values::collect_component_binding_values;
+pub(crate) use function_resolution::resolve_function_name;
 
 const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+
+fn required_owner_span(
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Option<rumoca_core::Span> {
+    span.require_provenance(context)
+        .ok()
+        .map(rumoca_core::ProvenanceSpan::span)
+}
 
 pub(crate) fn inject_class_extends_constants(
     tree: &ClassTree,
@@ -355,7 +367,11 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
 }
 
 fn class_scope_name(tree: &ClassTree, class_def: &ClassDef) -> Result<String, FlattenError> {
-    let span = class_def_span(tree, class_def);
+    let span = required_location_span(
+        &tree.source_map,
+        &class_def.location,
+        "ancestor constant injection",
+    )?;
     let def_id = class_def.def_id.ok_or_else(|| {
         FlattenError::missing_resolved_class_metadata(
             class_def.name.text.to_string(),
@@ -370,18 +386,6 @@ fn class_scope_name(tree: &ClassTree, class_def: &ClassDef) -> Result<String, Fl
             span,
         )
     })
-}
-
-fn class_def_span(tree: &ClassTree, class_def: &ClassDef) -> rumoca_core::Span {
-    if class_def.location.file_name.is_empty() || class_def.location.start >= class_def.location.end
-    {
-        return rumoca_core::Span::DUMMY;
-    }
-    tree.source_map.location_to_span(
-        &class_def.location.file_name,
-        class_def.location.start as usize,
-        class_def.location.end as usize,
-    )
 }
 
 /// Extract integer constants and array dimensions from a class definition (MLS §4.5).
@@ -737,8 +741,10 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
             elements,
             is_matrix,
             ..
-        } => try_eval_const_array_expr(elements, *is_matrix, ctx, scope),
-        ast::Expression::Tuple { elements, .. } => try_eval_const_tuple_expr(elements, ctx, scope),
+        } => try_eval_const_array_expr(elements, *is_matrix, expr.span(), ctx, scope),
+        ast::Expression::Tuple { elements, .. } => {
+            try_eval_const_tuple_expr(elements, expr.span(), ctx, scope)
+        }
         ast::Expression::Range {
             start, step, end, ..
         } => Some(rumoca_core::Expression::Range {
@@ -754,7 +760,7 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
             span: expr.span(),
         }),
         ast::Expression::FunctionCall { comp, args, .. } => {
-            try_eval_const_function_call_expr(comp, args, ctx, scope)
+            try_eval_const_function_call_expr(comp, args, expr.span(), ctx, scope)
         }
         ast::Expression::FieldAccess { base, field, .. } => {
             if let Some(value) =
@@ -877,8 +883,8 @@ pub(crate) fn try_extract_named_record_constructor_constant(
 
     let ctor_args = resolved
         .into_iter()
-        .map(named_record_constructor_arg)
-        .collect();
+        .map(|field| named_record_constructor_arg(field, expr.span()))
+        .collect::<Option<Vec<_>>>()?;
     Some(rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new(ctor_name),
         args: ctor_args,
@@ -889,14 +895,17 @@ pub(crate) fn try_extract_named_record_constructor_constant(
 
 fn named_record_constructor_arg(
     (field_name, value): (String, rumoca_core::Expression),
-) -> rumoca_core::Expression {
-    let span = value.span().unwrap_or(rumoca_core::Span::DUMMY);
-    rumoca_core::Expression::FunctionCall {
+    owner_span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
+    let span = value
+        .span()
+        .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))?;
+    Some(rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}")),
         args: vec![value],
         is_constructor: true,
         span,
-    }
+    })
 }
 
 fn extract_named_record_constructor_fields(
@@ -1023,6 +1032,7 @@ pub(crate) fn try_eval_const_component_ref_expr(
     ctx: &Context,
     scope: &str,
 ) -> Option<rumoca_core::Expression> {
+    let owner_span = required_owner_span(cr.span, "constant component reference evaluation")?;
     if cr.parts.iter().any(|part| {
         part.subs
             .as_ref()
@@ -1033,13 +1043,15 @@ pub(crate) fn try_eval_const_component_ref_expr(
         else {
             return None;
         };
-        let substituted = crate::postprocess::substitute_known_constants_expr(
+        let Ok(substituted) = crate::postprocess::substitute_known_constants_expr(
             lowered.clone(),
             ctx,
             &rustc_hash::FxHashSet::default(),
             &std::collections::HashSet::new(),
             scope,
-        );
+        ) else {
+            return None;
+        };
         if substituted != lowered {
             return Some(substituted);
         }
@@ -1062,20 +1074,20 @@ pub(crate) fn try_eval_const_component_ref_expr(
     if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.real_parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Real(v),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Integer(v),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.boolean_parameter_values)
     {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Boolean(v),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     if let Some(enum_name) =
@@ -1084,22 +1096,26 @@ pub(crate) fn try_eval_const_component_ref_expr(
         return Some(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(enum_name),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     let resolved =
         resolve_component_ref_through_constant_aliases(&name, ctx, scope).unwrap_or(name);
     let resolved_text = resolved.to_flat_string();
-    try_eval_resolved_const_ref(&resolved_text, ctx).or_else(|| {
+    try_eval_resolved_const_ref(&resolved_text, ctx, owner_span).or_else(|| {
         looks_like_enum_literal_path(&resolved_text).then(|| rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(resolved_text),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         })
     })
 }
 
-fn try_eval_resolved_const_ref(name: &str, ctx: &Context) -> Option<rumoca_core::Expression> {
+fn try_eval_resolved_const_ref(
+    name: &str,
+    ctx: &Context,
+    owner_span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
     if let Some(v) = lookup_constant_expr_with_scope(name, "", &ctx.constant_values) {
         if lookup_with_scope(name, "", &ctx.array_dimensions).is_some_and(|dims| !dims.is_empty())
             && !constant_expr_preserves_array_shape(&v)
@@ -1114,26 +1130,26 @@ fn try_eval_resolved_const_ref(name: &str, ctx: &Context) -> Option<rumoca_core:
     if let Some(v) = lookup_with_scope(name, "", &ctx.real_parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Real(v),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     if let Some(v) = lookup_with_scope(name, "", &ctx.parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Integer(v),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     if let Some(v) = lookup_with_scope(name, "", &ctx.boolean_parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Boolean(v),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
     lookup_with_scope(name, "", &ctx.enum_parameter_values).map(|enum_name| {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(enum_name),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         }
     })
 }
@@ -1212,9 +1228,11 @@ fn resolve_component_ref_through_constant_aliases(
 fn try_eval_const_function_call_expr(
     comp: &rumoca_ir_ast::ComponentReference,
     args: &[ast::Expression],
+    owner_span: rumoca_core::Span,
     ctx: &Context,
     scope: &str,
 ) -> Option<rumoca_core::Expression> {
+    let owner_span = required_owner_span(owner_span, "constant function call evaluation")?;
     let evaluated_args: Vec<_> = args
         .iter()
         .map(|arg| try_eval_const_flat_expr_with_scope(arg, ctx, scope))
@@ -1231,7 +1249,7 @@ fn try_eval_const_function_call_expr(
         return Some(rumoca_core::Expression::Array {
             elements: evaluated_args,
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
 
@@ -1239,7 +1257,7 @@ fn try_eval_const_function_call_expr(
         return Some(rumoca_core::Expression::BuiltinCall {
             function,
             args: evaluated_args,
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
 
@@ -1249,7 +1267,7 @@ fn try_eval_const_function_call_expr(
         return Some(rumoca_core::Expression::BuiltinCall {
             function,
             args: evaluated_args,
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
 
@@ -1260,7 +1278,7 @@ fn try_eval_const_function_call_expr(
         ),
         args: evaluated_args,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: owner_span,
     })
 }
 
@@ -1286,9 +1304,11 @@ fn core_component_reference_from_ast(
 pub(crate) fn try_eval_const_array_expr(
     elements: &[ast::Expression],
     is_matrix: bool,
+    owner_span: rumoca_core::Span,
     ctx: &Context,
     scope: &str,
 ) -> Option<rumoca_core::Expression> {
+    let owner_span = required_owner_span(owner_span, "constant array evaluation")?;
     let mut out = Vec::with_capacity(elements.len());
     for el in elements {
         out.push(try_eval_const_flat_expr_with_scope(el, ctx, scope)?);
@@ -1296,22 +1316,24 @@ pub(crate) fn try_eval_const_array_expr(
     Some(rumoca_core::Expression::Array {
         elements: out,
         is_matrix,
-        span: rumoca_core::Span::DUMMY,
+        span: owner_span,
     })
 }
 
 pub(crate) fn try_eval_const_tuple_expr(
     elements: &[ast::Expression],
+    owner_span: rumoca_core::Span,
     ctx: &Context,
     scope: &str,
 ) -> Option<rumoca_core::Expression> {
+    let owner_span = required_owner_span(owner_span, "constant tuple evaluation")?;
     let mut out = Vec::with_capacity(elements.len());
     for el in elements {
         out.push(try_eval_const_flat_expr_with_scope(el, ctx, scope)?);
     }
     Some(rumoca_core::Expression::Tuple {
         elements: out,
-        span: rumoca_core::Span::DUMMY,
+        span: owner_span,
     })
 }
 
@@ -1875,57 +1897,6 @@ fn resolve_function_request(
         resolve_function_name(comp, tree, class_index),
         comp,
     )
-}
-
-/// Resolve a function call's component reference to its fully qualified name.
-/// Uses def_id from import resolution (contract from resolve phase).
-pub(crate) fn resolve_function_name(
-    comp: &rumoca_ir_ast::ComponentReference,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> String {
-    // First get the textual name from parts - this is the full reference as written
-    let textual_name = QualifiedName::from_component_reference(comp).to_flat_string();
-
-    // Use def_id for resolved qualified name (from resolve phase)
-    // If def_id resolves to a package/class, append remaining path parts and
-    // check whether that yields a function (needed for aliases like Medium.foo()).
-    if let Some(def_id) = comp.def_id
-        && let Some(base_name) = tree.def_map.get(&def_id)
-    {
-        if comp.parts.len() > 1 {
-            let suffix = comp.parts[1..]
-                .iter()
-                .map(|part| part.ident.text.to_string())
-                .collect::<Vec<_>>()
-                .join(".");
-            let candidate = format!("{base_name}.{suffix}");
-            if let Some(class_def) = class_index.get_by_qualified_name(&candidate)
-                && class_def.class_type == rumoca_core::ClassType::Function
-            {
-                return candidate;
-            }
-        }
-
-        // Also allow direct function def_id resolution.
-        if let Some(class_def) = class_index.get_by_qualified_name(base_name)
-            && class_def.class_type == rumoca_core::ClassType::Function
-        {
-            return base_name.clone();
-        }
-    }
-
-    #[cfg(feature = "tracing")]
-    if comp.def_id.is_some() {
-        tracing::warn!(
-            "Function call has def_id {:?} but not found in def_map: {}",
-            comp.def_id,
-            comp
-        );
-    } else {
-        tracing::debug!("Function call without def_id: {}", textual_name);
-    }
-    textual_name
 }
 
 /// Collect function call names from an expression recursively.

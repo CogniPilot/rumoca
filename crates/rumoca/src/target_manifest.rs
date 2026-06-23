@@ -2,15 +2,14 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 
+use crate::{CompilationResult, TemplateIr};
 use anyhow::{Context, Result, bail};
-use rumoca::{CompilationResult, TemplateIr};
-use rumoca_compile::codegen::dae_to_template_json;
-use rumoca_compile::codegen::render_dae_template_with_json_and_name;
 use rumoca_compile::codegen::targets::{
-    TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile, TargetManifest,
-    TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
-    safe_target_join, validate_dae_target_capabilities,
+    RenderedTargetFile, TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile,
+    TargetManifest, TargetTemplateIr, TargetTemplateSource, TensorCapability,
+    ensure_target_has_rendered_files, safe_target_join, validate_dae_target_capabilities,
 };
+use rumoca_compile::codegen::{dae_to_template_json, render_dae_template_with_json_and_name};
 use serde_json::Value;
 
 pub(crate) fn compile_target(
@@ -30,6 +29,20 @@ pub(crate) fn compile_target(
             phase.unwrap_or(TemplateIr::Dae),
         );
     }
+    let (bundle, manifest) = resolve_manifest_target(target, phase)?;
+    compile_manifest_target(result, model, &bundle, &manifest, output)
+}
+
+/// Apply the `--phase`/`-ir`/unknown-target guards and load a built-in or
+/// directory target's bundle + manifest.
+///
+/// Shared by the file-writing [`compile_target`] and the in-memory
+/// [`render_target_files`] so the two paths can never disagree on which targets
+/// are valid. Only reached for non-raw targets (the caller handles `.jinja`).
+fn resolve_manifest_target(
+    target: &str,
+    phase: Option<TemplateIr>,
+) -> Result<(TargetBundle, TargetManifest)> {
     // --phase only picks the IR fed to a raw .jinja template; a built-in /
     // directory target dictates its own IR.
     if phase.is_some() {
@@ -55,7 +68,56 @@ pub(crate) fn compile_target(
     }
     let bundle = TargetBundle::load(target)?;
     let manifest = bundle.parse_manifest()?;
-    compile_manifest_target(result, model, &bundle, &manifest, output)
+    Ok((bundle, manifest))
+}
+
+/// Render a code-gen `target` against a compiled model and return the rendered
+/// files in memory (path + content) instead of writing them to disk.
+///
+/// This mirrors [`compile_target`]'s rendering (capability validation, per-file
+/// path/template rendering, the same `--phase` semantics for raw `.jinja`
+/// targets) so the structured output is byte-compatible with what the CLI would
+/// write — only the destination differs. Packaging steps (e.g. FMU build) are
+/// skipped: the caller gets the raw rendered sources.
+pub(crate) fn render_target_files(
+    result: &CompilationResult,
+    model: &str,
+    target: &str,
+    phase: Option<TemplateIr>,
+) -> Result<Vec<RenderedTargetFile>> {
+    if raw_template_target(target) {
+        let rendered =
+            render_raw_template(result, model, target, phase.unwrap_or(TemplateIr::Dae))?;
+        let model_identifier = model.replace('.', "_");
+        let file_name = Path::new(target)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_string)
+            .unwrap_or(model_identifier);
+        return Ok(vec![RenderedTargetFile {
+            path: file_name,
+            content: rendered,
+        }]);
+    }
+    let (bundle, manifest) = resolve_manifest_target(target, phase)?;
+    ensure_target_has_rendered_files(&manifest)?;
+    validate_target_requirements(result, &manifest)?;
+
+    let model_identifier = model.replace('.', "_");
+    let mut files = Vec::with_capacity(manifest.files.len());
+    for file in &manifest.files {
+        let path = render_manifest_template(result, &manifest, &file.path, &model_identifier)
+            .with_context(|| format!("Render target output path '{}'", file.path))?;
+        let template = bundle.template_source(&file.template)?;
+        let content =
+            render_manifest_template(result, &manifest, template.as_ref(), &model_identifier)
+                .with_context(|| format!("Render target template '{}'", file.template))?;
+        files.push(RenderedTargetFile {
+            path: path.trim().to_string(),
+            content,
+        });
+    }
+    Ok(files)
 }
 
 fn raw_template_target(target: &str) -> bool {
@@ -65,6 +127,22 @@ fn raw_template_target(target: &str) -> bool {
         .is_some_and(|extension| extension == "jinja")
 }
 
+/// Read and render a raw `.jinja` template against the chosen IR. Shared by the
+/// file-writing and in-memory raw-template paths.
+fn render_raw_template(
+    result: &CompilationResult,
+    model: &str,
+    target: &str,
+    ir: TemplateIr,
+) -> Result<String> {
+    let template =
+        std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
+    let model_identifier = model.replace('.', "_");
+    result
+        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
+        .with_context(|| format!("Render raw template: {target}"))
+}
+
 fn compile_raw_template_target(
     result: &CompilationResult,
     model: &str,
@@ -72,12 +150,7 @@ fn compile_raw_template_target(
     output: Option<PathBuf>,
     ir: TemplateIr,
 ) -> Result<()> {
-    let template =
-        std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
-    let model_identifier = model.replace('.', "_");
-    let rendered = result
-        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
-        .with_context(|| format!("Render raw template: {target}"))?;
+    let rendered = render_raw_template(result, model, target, ir)?;
     let Some(output_path) = output else {
         print!("{rendered}");
         return Ok(());
@@ -237,7 +310,7 @@ fn validate_solve_target_capabilities(
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
     let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
-    if capabilities.tensor.is_none() && scalar_fallback {
+    if scalar_fallback {
         return Ok(());
     }
     let tensor = capabilities.tensor.as_ref();
@@ -312,7 +385,6 @@ fn write_manifest_file(
     model_identifier: &str,
 ) -> Result<()> {
     let file_ir = file.ir.unwrap_or(manifest.ir);
-    let ir = template_ir_to_cli(file_ir);
     let render_template = |template: &str| -> Result<String> {
         match file_ir {
             TargetTemplateIr::Dae => {
@@ -335,9 +407,22 @@ fn write_manifest_file(
                 render_dae_template_with_json_and_name(context, template, model_identifier)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))
             }
-            _ => result
-                .render_template_str_with_name_and_ir(template, model_identifier, ir)
-                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            _ => {
+                if manifest.ir == TargetTemplateIr::Solve
+                    && manifest.name.as_deref() == Some("wgsl-solve")
+                {
+                    return result
+                        .render_solve_template_str_without_dae(template, model_identifier)
+                        .map_err(Into::into);
+                }
+                result
+                    .render_template_str_with_name_and_ir(
+                        template,
+                        model_identifier,
+                        template_ir_to_cli(file_ir),
+                    )
+                    .map_err(Into::into)
+            }
         }
     };
 
@@ -355,6 +440,26 @@ fn write_manifest_file(
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
     eprintln!("  wrote {}", output_path.display());
     Ok(())
+}
+
+fn render_manifest_template(
+    result: &CompilationResult,
+    manifest: &TargetManifest,
+    template: &str,
+    model_identifier: &str,
+) -> Result<String> {
+    if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
+        return result
+            .render_solve_template_str_without_dae(template, model_identifier)
+            .map_err(Into::into);
+    }
+    result
+        .render_template_str_with_name_and_ir(
+            template,
+            model_identifier,
+            template_ir_to_cli(manifest.ir),
+        )
+        .map_err(Into::into)
 }
 
 fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {
@@ -408,7 +513,7 @@ fn print_target_completion_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca::Compiler;
+    use crate::Compiler;
 
     fn parse_manifest(source: &str) -> TargetManifest {
         rumoca_compile::codegen::targets::parse_target_manifest(source)

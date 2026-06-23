@@ -28,7 +28,8 @@ accesses fail the build.
 | A value that never needs to vary | A **baked-in constant** | One obvious place to edit; no runtime surface |
 | Debug / diagnostic output | A **`--trace` target** (`tracing` feature) | Unified, filterable; never a bespoke env knob |
 | Config for a child process that cannot take argv (libtest harness, node behind nested npm, VS Code extension host) | A **fixed-path config / marker file** written by the parent | Deterministic, inspectable; argv-equivalent without env |
-| User-authored model/sim/viz config | A `rum.toml` **scenario file** (below) | Colocated, version-controlled, editor-discoverable |
+| Shared editor/workspace context | A visible `rumoca-workspace.toml` **workspace file** (below) | Same source-root/cache context in VS Code, playground, and docs |
+| User-authored model/sim/viz config | A `rumoca-scenario.toml` **scenario file** (below) | Colocated, version-controlled, editor-discoverable |
 
 **REQUIRED:**
 - Do NOT add a new `RUMOCA_*` (or other ad-hoc) environment variable to read
@@ -42,6 +43,60 @@ accesses fail the build.
   (`MODELICAPATH`, `GITHUB_ACTIONS`, `ELECTRON_DISABLE_SANDBOX`, …) are not
   configuration knobs and are out of scope for this rule.
 
+### Workspace Configuration
+
+Editor/workspace context lives in visible `rumoca-workspace.toml` files.
+Rumoca tools MUST NOT create hidden project configuration directories for
+generated cache, result, or editor-session state.
+
+A workspace file owns context that affects editing and discovery, not a specific
+run:
+
+- source roots and scoped source roots
+- package/library mount points
+- parsed source-root cache policy
+- default scenario or editor layout hints that are portable across hosts
+- docs/playground preload bundles
+
+A workspace file MUST NOT contain model-specific solver, plot, codegen, viewer,
+or input-routing settings. Those settings stay in `rumoca-scenario.toml` scenario files.
+
+Workspace files cascade from parent to child. For a focused file, the effective
+workspace config is built by walking from the open workspace root to the focused
+file's directory and merging every `rumoca-workspace.toml` found on that path.
+
+Source-root merge rules are deterministic:
+
+1. Parent workspace `source_roots` are applied first.
+2. Child workspace `source_roots` append after parent roots.
+3. Matching scoped roots append after global roots. A scope key matches when the
+   focused file path is inside that scope directory, relative to the workspace
+   config file that declared it.
+4. Scenario `source_roots` append after the effective workspace roots.
+5. Host-local overrides append last and are for machine-specific paths only.
+6. Duplicate resolved paths are removed while preserving first occurrence.
+
+Each `source_roots` entry is resolved relative to the `rumoca-workspace.toml`
+that declares it, unless it is already absolute. A scoped entry is written under
+`[source_root_scopes."<relative/path>"]`:
+
+```toml
+source_roots = ["vendor/Modelica 4.1.0"]
+
+[source_root_scopes."examples/control"]
+source_roots = ["vendor/ControlLibraries"]
+```
+
+`replace_source_roots = true` may be used at the top level or inside a scope to
+clear inherited roots at that merge point. It is intentionally explicit; absent
+means append.
+
+VS Code, the playground, and mdBook live examples MUST use the same effective
+workspace config semantics. VS Code applies the nearest merged workspace config
+to completion, hover, diagnostics, go-to-definition, and model discovery. The
+playground and docs apply the same semantics through the shared WASM/runtime
+workspace API.
+
 **Enforcement:** `crates/rumoca/tests/architecture_hardening/env_var_registry.rs`
 (`test_rumoca_env_vars_are_registered`) scans workspace source files, excluding
 build output, dependencies, and vendored trees. Adding a `RUMOCA_*` name to its
@@ -51,92 +106,56 @@ allowlist is a deliberate, reviewable policy exception with written rationale.
 
 User-authored Rumoca model run configuration is colocated TOML content in a
 Rumoca scenario file, not hidden workspace project state. Scenario files follow
-a filename convention — `rum.toml` for the default scenario and
-`rum.<profile>.toml` for named profiles — which acts as the editor/discovery
+a filename convention — `rumoca-scenario.toml` for the default scenario and
+`rumoca-scenario.<profile>.toml` for named profiles — which acts as the editor/discovery
 hook. A required `[rumoca]` marker section (with a `version` field and the
 `task`) is the authoritative declaration; editors enable Rumoca-specific
 behavior only when that marker is present.
 
-- A runnable scenario uses one `rum.toml`/`rum.<profile>.toml` file and declares
+- A runnable scenario uses one `rumoca-scenario.toml`/`rumoca-scenario.<profile>.toml` file and declares
   exactly one `task` under `[rumoca]`. Accepted task values are `simulate` and
   `codegen`.
 - The scenario file sits beside the example/model/scenario it configures. The
-  `<profile>` segment should describe the task or scenario, such as `rum.toml`,
-  `rum.ball.toml`, or `rum.acro.toml`.
+  `<profile>` segment should describe the task or scenario, such as `rumoca-scenario.toml`,
+  `rumoca-scenario.ball.toml`, or `rumoca-scenario.acro.toml`.
 - Each scenario file has at most one `[model]` section, one logical model
   target, and one runnable task. Do not add multiple named runnable configs or
   multiple runnable tasks inside a single scenario file.
 - Shared settings should be factored through an explicit future include/extends
-  mechanism or a scenario-specific shared file, not through `.rumoca` UUID
-  sidecars.
+  mechanism or a scenario-specific shared file, not through hidden generated
+  state.
 - Human-authored simulation, compiler/source-root, visualization, and input
-  routing settings MUST NOT be stored under `.rumoca/models/by-id` or
-  `.rumoca/project.toml`.
-- `.rumoca` is reserved for generated cache/result/editor state only.
+  routing settings MUST be stored in visible workspace or scenario files.
+- Generated caches use visible tool-owned paths such as `rumoca-cache/`.
+  Persisted simulation results are the `rumoca-result.<timestamp>.<model>.json`
+  files themselves, written next to the scenario TOML by default or under the
+  scenario's configured output directory.
 
-Example:
+Simulation and codegen scenarios use the same single-task shape. The `[rumoca]`
+`task` selects the workflow; task-specific sections such as `[sim]`, `[plot]`,
+`[viewer]`, and `[codegen]` configure that one workflow.
 
-```toml
-source_roots = ["../Modelica"]
-
-[rumoca]
-version = "1"
-task = "simulate"
-
-[model]
-file = "../models/Ball.mo"
-name = "Ball"
-
-[sim]
-solver = "bdf"
-t_end = 10.0
-dt = 0.01
-
-[[plot.views]]
-id = "states_time"
-title = "States vs Time"
-type = "timeseries"
-x = "time"
-y = ["x", "v"]
-
-[[plot.views]]
-id = "viewer_3d"
-title = "3D View"
-type = "3d"
-script_path = "../shared/ball_scene.js"
-
-[viewer]
-mode = "results_panel"
-```
-
-Template/codegen scenarios use the same single-task shape:
-
-```toml
-source_roots = ["../Modelica"]
-
-[rumoca]
-version = "1"
-task = "codegen"
-
-[model]
-file = "../models/Ball.mo"
-name = "Ball"
-
-[codegen]
-target = "sympy"
-output_dir = "ball_sympy_out"
-```
-
-Editor run controls MUST operate on `rum.toml` scenario files, not on Modelica
+Editor run controls MUST operate on `rumoca-scenario.toml` scenario files, not on Modelica
 source files. A play/run action executes the scenario's declared task. A
 settings action edits the same scenario. Separate editor toolbar actions for
 simulation versus template generation are intentionally avoided; the task owns
 that choice.
 
-Simulation scenarios choose their presentation separately from solver pacing:
+Opening a scenario file in an editor defaults to the shared Rumoca scenario GUI.
+The GUI is an authoring view for that same TOML file, not separate state. A raw
+TOML toggle MUST edit the identical file content; GUI edits render TOML through
+the shared scenario API, and raw TOML edits reparse into the GUI. Parse errors
+are shown without discarding the raw text.
+
+Simulation scenarios choose input routing, clock policy, and presentation as
+separate concerns:
 
 - `[sim].mode` controls pacing only: `as_fast_as_possible`, `realtime`, or
   `lockstep`.
+- `[input]`, `[locals]`, `[derived]`, and `[signals.stepper_inputs]` enable
+  live keyboard, gamepad, browser, or external input routing for the same
+  regular `simulate` task. Input-enabled simulation is not a separate task or
+  viewer mode.
 - `[viewer].mode` controls the launch surface. `results_panel` runs the normal
   batch simulation and renders configured `[[plot.views]]` in the editor
   results panel. `external_web` starts the interactive runner and opens the
@@ -144,7 +163,7 @@ Simulation scenarios choose their presentation separately from solver pacing:
 - `[viewer].prefer_external` is an editor presentation hint: false/omitted
   prefers embedded VS Code panels; true opens the system browser.
   Command-line tools ignore it.
-- Interactive viewer presentation settings live in the scenario `rum.toml`:
+- Interactive viewer presentation settings live in the scenario `rumoca-scenario.toml`:
   `[viewer].status_title` (status panel title), `[viewer].show_armed` (armed
   row visibility), and `[[viewer.controls.keyboard]]`/`[[...gamepad]]` help
   rows (`keys` + `action`). Presentation metadata only; signal routing stays
@@ -162,8 +181,9 @@ Simulation scenarios choose their presentation separately from solver pacing:
   the resolved matrices (`api.frames`) and SHOULD place meshes from them
   (meshes authored nose `+Z`, up `+Y`, matching frame identity).
 - If `[viewer].mode` is omitted, editors infer `external_web` only when the
-  scenario has an HTTP transport, input routing, signals, locals, derived
-  signals, reset behavior, or external coupling; else `results_panel`.
+  scenario explicitly configures an HTTP transport or external coupling; input
+  routing alone remains a regular simulation surface and defaults to
+  `results_panel`.
 
 Codegen/template runs MUST materialize the target renderer's returned files
 under `[codegen].output_dir` when present, or under a deterministic colocated
@@ -173,11 +193,11 @@ the normal workspace/project file surface.
 
 Editor actions on Modelica source files MAY provide scaffolding only. A
 source-file wizard may help the user choose a model, choose a single task, and
-write a colocated `rum.toml` scenario, but it MUST NOT run simulation or codegen
+write a colocated `rumoca-scenario.toml` scenario, but it MUST NOT run simulation or codegen
 directly from the Modelica source file.
 
 `script_path` is an explicit reusable path. It is not derived from a hidden
-model identity, and multiple `rum.toml` scenarios may point at the same 3D script.
+model identity, and multiple `rumoca-scenario.toml` scenarios may point at the same 3D script.
 
 ### Configuration File Names
 
@@ -205,91 +225,11 @@ Configuration search starts from the target file's directory and walks up to roo
 
 First file found wins (no merging between files).
 
-### API
-
-```rust
-//! rumoca-tool-fmt/src/options.rs
-
-/// Configuration file names to search for.
-pub const CONFIG_FILE_NAMES: &[&str] = &[".rumoca_fmt.toml", "rumoca_fmt.toml"];
-
-/// Error that can occur when loading configuration.
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    #[error("failed to read config file: {0}")]
-    ReadError(#[from] std::io::Error),
-    #[error("failed to parse config file: {0}")]
-    ParseError(#[from] toml::de::Error),
-}
-
-/// Find a configuration file by searching directory and parents.
-pub fn find_config(start_dir: &Path) -> Option<PathBuf>;
-
-/// Load configuration from a specific file path.
-pub fn load_config(path: &Path) -> Result<FormatOptions, ConfigError>;
-
-/// Load configuration from a directory, searching parent directories.
-pub fn load_config_from_dir(dir: &Path) -> Result<Option<FormatOptions>, ConfigError>;
-```
-
 ### CLI Override Pattern
 
-CLI arguments override file configuration using partial option types:
-
-```rust
-/// Full options (all fields required)
-pub struct FormatOptions {
-    pub profile: FormatProfile,
-    pub indent_size: usize,
-    pub use_tabs: bool,
-    pub normalize_indentation: bool,
-    pub repair_missing_indentation: bool,
-    pub normalize_equation_spacing: bool,
-    pub normalize_operator_spacing: bool,
-    pub normalize_argument_assignment_spacing: bool,
-    pub insert_final_newline: bool,
-    pub trim_trailing_whitespace: bool,
-    pub line_ending: LineEnding,
-}
-
-/// Partial options for CLI overrides (all fields optional)
-pub struct PartialFormatOptions {
-    pub profile: Option<FormatProfile>,
-    pub indent_size: Option<usize>,
-    pub use_tabs: Option<bool>,
-    pub normalize_indentation: Option<bool>,
-    pub repair_missing_indentation: Option<bool>,
-    pub normalize_equation_spacing: Option<bool>,
-    pub normalize_operator_spacing: Option<bool>,
-    pub normalize_argument_assignment_spacing: Option<bool>,
-    pub insert_final_newline: Option<bool>,
-    pub trim_trailing_whitespace: Option<bool>,
-    pub line_ending: Option<LineEnding>,
-}
-
-impl FormatOptions {
-    /// Merge with partial options. CLI values override file values.
-    pub fn merge(self, cli: PartialFormatOptions) -> Self {
-        FormatOptions {
-            profile: cli.profile.unwrap_or(self.profile),
-        }
-    }
-}
-```
-
-### Usage Pattern
-
-```rust
-// Load config from file (if exists)
-let file_config = load_config_from_dir(input.parent().unwrap())?
-    .unwrap_or_default();
-
-// Merge with CLI overrides
-let options = file_config.merge(cli_options);
-
-// Use merged options
-let formatted = format(&source, &options)?;
-```
+CLI arguments override file configuration using partial option types: full
+options have required fields, CLI override structs use `Option<T>`, and merge
+logic keeps file/default values when the CLI omits a field.
 
 ### TOML Format
 

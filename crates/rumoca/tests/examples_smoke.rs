@@ -1,20 +1,21 @@
-use std::{env, fs};
+// SPEC_0021 file-size exception: example smoke coverage spans CLI, template,
+// and runtime examples. split plan: move smoke cases by target/runtime family
+// into focused integration test modules.
 
 use std::path::{Path, PathBuf};
+use std::{env, fs};
+
+#[path = "examples_smoke/solve_tensor_smoke_tests.rs"]
+mod solve_tensor_smoke_tests;
 
 use rumoca::Compiler;
-use rumoca_ir_solve::{ComputeBlock, ComputeNode};
 #[cfg(feature = "runner")]
 use rumoca_sim::{SimOptions, SimPacingMode, SimSolverMode, SimStepper};
+use solve_tensor_smoke_tests::cached_cmm_root;
 use tempfile::tempdir;
 
 fn example_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
-}
-
-fn cached_cmm_root() -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.2");
-    root.join("LieGroup/package.mo").is_file().then_some(root)
 }
 
 fn compile_ball_example() -> rumoca::CompilationResult {
@@ -108,43 +109,8 @@ fn compile_quadrotor_acro_if_cmm_available() -> Option<rumoca::CompilationResult
 
 #[cfg(feature = "runner")]
 fn compile_quadrotor_acro_config_if_cmm_available() -> Option<rumoca::CompilationResult> {
-    let config_path = example_root().join("interactive/quadrotor/rum.acro.toml");
+    let config_path = example_root().join("interactive/quadrotor/rumoca-scenario.acro.toml");
     compile_toml_model_if_source_roots_exist(&config_path)
-}
-
-fn max_scalar_row_ops(block: &ComputeBlock) -> usize {
-    block
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            ComputeNode::ScalarPrograms(rows) => rows.programs.iter().map(Vec::len).max(),
-            ComputeNode::MatMul { .. }
-            | ComputeNode::LinSolve { .. }
-            | ComputeNode::AffineStencil { .. } => None,
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-fn affine_stencil_count(block: &ComputeBlock) -> usize {
-    block
-        .nodes
-        .iter()
-        .filter(|node| matches!(node, ComputeNode::AffineStencil { .. }))
-        .count()
-}
-
-fn extract_doc_model(source: &str, model_name: &str) -> String {
-    let start_marker = format!("model {model_name}");
-    let start = source
-        .find(&start_marker)
-        .unwrap_or_else(|| panic!("docs should contain `{start_marker}`"));
-    let end_marker = format!("end {model_name};");
-    let end = source[start..]
-        .find(&end_marker)
-        .map(|offset| start + offset + end_marker.len())
-        .unwrap_or_else(|| panic!("docs should contain `{end_marker}`"));
-    source[start..end].to_string()
 }
 
 fn collect_examples_scenario_files(out: &mut Vec<PathBuf>) {
@@ -167,7 +133,7 @@ fn collect_scenario_files(root: &Path, out: &mut Vec<PathBuf>) {
 fn is_scenario_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(rumoca_compile::project::is_rumoca_task_filename)
+        .is_some_and(rumoca_compile::scenario::is_rumoca_task_filename)
 }
 
 fn load_example_toml_config(config_path: &Path) -> ExampleTomlConfig {
@@ -482,7 +448,7 @@ fn examples_directory_scenario_configs_compile_and_smoke_requested_task() {
 
     assert!(
         !configs.is_empty(),
-        "examples directory should contain rum.toml scenarios to smoke-test"
+        "examples directory should contain rumoca-scenario.toml scenarios to smoke-test"
     );
     for config_path in configs {
         let config = load_example_toml_config(&config_path);
@@ -543,64 +509,12 @@ end FileExample;
     assert_eq!(result.dae.continuous.equations.len(), 1);
 }
 
-#[test]
-fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
-    let Some(result) = compile_quadrotor_acro_if_cmm_available() else {
-        eprintln!(
-            "skipping QuadrotorAcro tensor regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
-        );
-        return;
-    };
-
-    let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
-        .expect("QuadrotorAcro should lower to Solve IR");
-    let implicit_rhs = &problem.continuous.implicit_rhs;
-    let linsolve_nodes = implicit_rhs.compute_node_counts().linsolve;
-
-    assert!(
-        linsolve_nodes > 0,
-        "QuadrotorAcro should preserve rigid-body solves as LinSolve nodes"
-    );
-    assert!(
-        max_scalar_row_ops(implicit_rhs) < 5_000,
-        "QuadrotorAcro Solve IR scalar fallback rows should stay below the \
-         pre-tensor explosion threshold"
-    );
-}
-
-#[test]
-fn pde_docs_examples_emit_source_stencil_opcodes() {
-    let docs = include_str!("../../../docs/user-guide/src/language/arrays-pde.md");
-    for (model_name, min_stencils) in [("Turkey", 1), ("Wave2D", 4), ("AirfoilFlow", 9)] {
-        let source = extract_doc_model(docs, model_name);
-        let result = Compiler::new()
-            .model(model_name)
-            .compile_str(&source, &format!("{model_name}.mo"))
-            .unwrap_or_else(|error| panic!("{model_name} docs model should compile: {error}"));
-        let dae_json = result
-            .to_json()
-            .unwrap_or_else(|error| panic!("{model_name} DAE JSON should render: {error}"));
-        assert!(
-            dae_json.contains("\"for_equations\""),
-            "{model_name} DAE JSON should expose source for-equation metadata"
-        );
-        let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
-            .unwrap_or_else(|error| panic!("{model_name} should lower to Solve IR: {error}"));
-        let count = affine_stencil_count(&problem.continuous.derivative_rhs);
-        assert!(
-            count >= min_stencils,
-            "{model_name} should emit at least {min_stencils} AffineStencil nodes, got {count}"
-        );
-    }
-}
-
 #[cfg(feature = "runner")]
 #[test]
 fn rover_config_steering_input_changes_delta_and_heading() {
-    let config_path = example_root().join("interactive/rover/rum.toml");
+    let config_path = example_root().join("interactive/rover/rumoca-scenario.toml");
     let result = compile_toml_model_if_source_roots_exist(&config_path)
-        .expect("rover rum.toml should compile without extra source roots");
+        .expect("rover rumoca-scenario.toml should compile without extra source roots");
     let mut stepper = SimStepper::new_with_diagnostics(
         &result.dae,
         SimOptions {
@@ -612,7 +526,7 @@ fn rover_config_steering_input_changes_delta_and_heading() {
             ..Default::default()
         },
     )
-    .expect("rover rum.toml should create an RK-like simulation stepper");
+    .expect("rover rumoca-scenario.toml should create an RK-like simulation stepper");
 
     assert!(
         stepper.input_names().iter().any(|name| name == "steering"),
@@ -625,7 +539,7 @@ fn rover_config_steering_input_changes_delta_and_heading() {
         stepper.step(0.01).expect("rover should advance");
     }
 
-    let state = stepper.state();
+    let state = stepper.state().expect("rover state read should succeed");
     let delta = state_value(&state.values, "delta");
     let theta = state_value(&state.values, "theta");
     assert!(
@@ -660,7 +574,7 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
             ..Default::default()
         },
     )
-    .expect("rum.acro.toml should create an RK-like simulation stepper");
+    .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
     stepper
         .set_inputs(&[
             ("stick_roll", 0.0),
@@ -669,10 +583,10 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
             ("stick_throttle", 0.0),
             ("armed", 0.0),
         ])
-        .expect("rum.acro.toml inputs should bind to the stepper");
+        .expect("rumoca-scenario.acro.toml inputs should bind to the stepper");
     stepper
         .step(0.01)
-        .expect("rum.acro.toml stepper should advance one frame");
+        .expect("rumoca-scenario.acro.toml stepper should advance one frame");
 
     assert!(stepper.time() > 0.0);
 }
@@ -704,7 +618,7 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
                 ..Default::default()
             },
         )
-        .expect("rum.acro.toml should create an RK-like simulation stepper");
+        .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
         stepper
             .set_inputs(&[
                 ("stick_roll", 0.0),
@@ -713,17 +627,19 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
                 ("stick_throttle", 0.65),
                 ("armed", 1.0),
             ])
-            .expect("rum.acro.toml inputs should bind to the stepper");
+            .expect("rumoca-scenario.acro.toml inputs should bind to the stepper");
         stepper
             .set_input(axis_input, 1.0)
-            .expect("rum.acro.toml axis input should bind to the stepper");
+            .expect("rumoca-scenario.acro.toml axis input should bind to the stepper");
         for _ in 0..20 {
             stepper
                 .step(0.01)
-                .expect("rum.acro.toml stepper should advance under axis command");
+                .expect("rumoca-scenario.acro.toml stepper should advance under axis command");
         }
 
-        let state = stepper.state();
+        let state = stepper
+            .state()
+            .expect("quadrotor state read should succeed");
         let rate = state
             .values
             .get(gyro_output)
@@ -761,7 +677,8 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             .expect("QuadrotorAcro simulation structural lowering should succeed");
     let sim_solve = rumoca_phase_solve::lower_dae_to_solve_model_owned(sim_dae)
         .expect("QuadrotorAcro simulation DAE should lower to SolveModel");
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&sim_solve);
+    let runtime = rumoca_eval_solve::SolveRuntime::new(&sim_solve)
+        .expect("QuadrotorAcro SolveRuntime should prepare");
     let mut derivative_probe_state = sim_solve.initial_y[..sim_solve.state_scalar_count()].to_vec();
     for (name, value) in [
         ("vehicle.omega[1]", 1.0),
@@ -791,7 +708,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     );
 
     let mut stepper = SimStepper::new_with_diagnostics(&result.dae, sim_options)
-        .expect("rum.acro.toml should create an RK-like simulation stepper");
+        .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
 
     stepper
         .set_inputs(&[
@@ -801,21 +718,23 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             ("stick_throttle", 0.0),
             ("armed", 1.0),
         ])
-        .expect("rum.acro.toml should arm while throttle is low");
+        .expect("rumoca-scenario.acro.toml should arm while throttle is low");
     stepper
         .step(0.01)
-        .expect("rum.acro.toml should advance after arming");
+        .expect("rumoca-scenario.acro.toml should advance after arming");
     stepper
         .set_inputs(&[("stick_throttle", 1.0), ("stick_roll", 1.0)])
-        .expect("rum.acro.toml should accept throttle and roll commands");
+        .expect("rumoca-scenario.acro.toml should accept throttle and roll commands");
 
     for _ in 0..1_000 {
         stepper
             .step(0.01)
-            .expect("rum.acro.toml should advance under full roll command");
+            .expect("rumoca-scenario.acro.toml should advance under full roll command");
     }
 
-    let state = stepper.state();
+    let state = stepper
+        .state()
+        .expect("quadrotor state read should succeed");
     let roll_degrees = roll_degrees_from_state(&state.values);
     assert!(
         roll_degrees.abs() > 10.0,
@@ -838,7 +757,7 @@ fn solve_state_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
 }
 
 #[cfg(feature = "runner")]
-fn roll_degrees_from_state(values: &std::collections::HashMap<String, f64>) -> f64 {
+fn roll_degrees_from_state(values: &indexmap::IndexMap<String, f64>) -> f64 {
     let q0 = state_value(values, "quat[1]");
     let q1 = state_value(values, "quat[2]");
     let q2 = state_value(values, "quat[3]");
@@ -849,7 +768,7 @@ fn roll_degrees_from_state(values: &std::collections::HashMap<String, f64>) -> f
 }
 
 #[cfg(feature = "runner")]
-fn state_value(values: &std::collections::HashMap<String, f64>, name: &str) -> f64 {
+fn state_value(values: &indexmap::IndexMap<String, f64>, name: &str) -> f64 {
     values.get(name).copied().unwrap_or_else(|| {
         let mut keys = values.keys().cloned().collect::<Vec<_>>();
         keys.sort();
@@ -940,7 +859,7 @@ fn ball_example_rk_simulation_applies_reinit_bounce() {
 
 #[test]
 fn ball_results_panel_path_applies_reinit_bounce() {
-    let config_path = example_root().join("simulation/rum.ball.toml");
+    let config_path = example_root().join("simulation/rumoca-scenario.ball.toml");
     let config = load_example_toml_config(&config_path);
     let result = compile_toml_model_if_source_roots_exist(&config_path)
         .expect("Ball simulation config should not require external source roots");
@@ -970,7 +889,7 @@ fn ball_results_panel_path_applies_reinit_bounce() {
 
     assert!(
         bounced,
-        "examples/simulation/rum.ball.toml should exercise the same RK-like \
+        "examples/simulation/rumoca-scenario.ball.toml should exercise the same RK-like \
          results-panel path and reverse velocity after ground contact"
     );
     assert!(

@@ -154,15 +154,66 @@ pub struct BytePos(pub usize);
 pub const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
 /// A span in source code (source, start, end).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     pub source: SourceId,
     pub start: BytePos,
     pub end: BytePos,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProvenanceSpan {
+    span: Span,
+}
+
+impl ProvenanceSpan {
+    pub fn new(span: Span, context: &'static str) -> Result<Self, MissingProvenanceSpan> {
+        if span.is_dummy() {
+            Err(MissingProvenanceSpan { context })
+        } else {
+            Ok(Self { span })
+        }
+    }
+
+    pub fn span(self) -> Span {
+        self.span
+    }
+}
+
+impl From<ProvenanceSpan> for Span {
+    fn from(value: ProvenanceSpan) -> Self {
+        value.span
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingProvenanceSpan {
+    context: &'static str,
+}
+
+impl MissingProvenanceSpan {
+    pub fn new(context: &'static str) -> Self {
+        Self { context }
+    }
+
+    pub fn context(&self) -> &'static str {
+        self.context
+    }
+}
+
+impl std::fmt::Display for MissingProvenanceSpan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "missing source provenance for {}", self.context)
+    }
+}
+
+impl std::error::Error for MissingProvenanceSpan {}
+
 impl Span {
-    /// A dummy span for compiler-generated constructs or missing source info.
+    /// A dummy span for explicitly source-free constructs.
+    ///
+    /// Generated source-derived IR should use the nearest owner/context span
+    /// instead of this sentinel.
     pub const DUMMY: Span = Span {
         source: SourceId::DUMMY,
         start: BytePos(0),
@@ -186,6 +237,17 @@ impl Span {
     /// True when this span is the compiler-generated dummy sentinel.
     pub fn is_dummy(&self) -> bool {
         *self == Self::DUMMY
+    }
+
+    pub fn source_free_serde_default() -> Self {
+        Self::DUMMY
+    }
+
+    pub fn require_provenance(
+        self,
+        context: &'static str,
+    ) -> Result<ProvenanceSpan, MissingProvenanceSpan> {
+        ProvenanceSpan::new(self, context)
     }
 }
 
@@ -483,15 +545,21 @@ impl Reference {
         self.component_ref.as_ref()
     }
 
+    pub fn span(&self) -> Option<Span> {
+        self.component_ref
+            .as_ref()
+            .and_then(|reference| (!reference.span.is_dummy()).then_some(reference.span))
+    }
+
     /// Element reference: this reference with a literal index appended to its
     /// last part, keeping rendered text and structure in lockstep.
-    pub fn with_appended_index(&self, index: i64) -> Self {
+    pub fn with_appended_index(&self, index: i64, span: ProvenanceSpan) -> Self {
         let rendered = format!("{}[{index}]", self.as_str());
         match self.component_ref.clone() {
             Some(mut reference) if !reference.parts.is_empty() => {
                 if let Some(part) = reference.parts.last_mut() {
                     part.subs
-                        .push(Subscript::generated_index(index, reference.span));
+                        .push(Subscript::generated_index_with_provenance(index, span));
                 }
                 Self::with_component_reference(rendered, reference)
             }
@@ -1188,25 +1256,37 @@ pub enum Expression {
         op: OpBinary,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Unary {
         op: OpUnary,
         rhs: Box<Expression>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     VarRef {
         name: Reference,
         subscripts: Vec<Subscript>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     BuiltinCall {
         function: BuiltinFunction,
         args: Vec<Expression>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     FunctionCall {
@@ -1214,66 +1294,96 @@ pub enum Expression {
         args: Vec<Expression>,
         #[serde(default)]
         is_constructor: bool,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Literal {
         value: Literal,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     If {
         branches: Vec<(Expression, Expression)>,
         else_branch: Box<Expression>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Array {
         elements: Vec<Expression>,
         is_matrix: bool,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Tuple {
         elements: Vec<Expression>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Range {
         start: Box<Expression>,
         step: Option<Box<Expression>>,
         end: Box<Expression>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     ArrayComprehension {
         expr: Box<Expression>,
         indices: Vec<ComprehensionIndex>,
         filter: Option<Box<Expression>>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Index {
         base: Box<Expression>,
         subscripts: Vec<Subscript>,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     FieldAccess {
         base: Box<Expression>,
         field: String,
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
     Empty {
-        #[serde(default, skip_serializing_if = "Span::is_dummy")]
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
         span: Span,
     },
 }
 
 impl Expression {
     pub fn with_span(self, span: Span) -> Self {
-        if span == Span::DUMMY {
+        if span.is_dummy() {
             self
         } else {
             self.map_span(|_| span)
@@ -1282,9 +1392,11 @@ impl Expression {
 
     pub fn span(&self) -> Option<Span> {
         let span = match self {
+            Expression::VarRef { name, span, .. } => {
+                return (!span.is_dummy()).then_some(*span).or_else(|| name.span());
+            }
             Expression::Binary { span, .. }
             | Expression::Unary { span, .. }
-            | Expression::VarRef { span, .. }
             | Expression::BuiltinCall { span, .. }
             | Expression::FunctionCall { span, .. }
             | Expression::Literal { span, .. }
@@ -1297,7 +1409,16 @@ impl Expression {
             | Expression::FieldAccess { span, .. }
             | Expression::Empty { span } => *span,
         };
-        (span != Span::DUMMY).then_some(span)
+        (!span.is_dummy()).then_some(span)
+    }
+
+    pub fn require_span(
+        &self,
+        context: &'static str,
+    ) -> Result<ProvenanceSpan, MissingProvenanceSpan> {
+        self.span()
+            .map(|span| span.require_provenance(context))
+            .unwrap_or_else(|| Err(MissingProvenanceSpan::new(context)))
     }
 
     pub fn unspan(&self) -> &Expression {

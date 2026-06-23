@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use super::helpers::{dims_scalar_count, static_subscript_indices};
+use super::helpers::{dims_scalar_count, static_subscript_indices_with_owner};
 use super::{LowerError, compile_time, expression_rows};
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::ExpressionRewriter;
@@ -20,13 +20,98 @@ struct DiscreteTarget {
     reference: rumoca_core::Reference,
 }
 
+fn discrete_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<T>, LowerError> {
+    let mut values = Vec::new();
+    reserve_discrete_capacity(&mut values, capacity, context, span)?;
+    Ok(values)
+}
+
+fn reserve_discrete_capacity<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    values.try_reserve_exact(additional).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })
+}
+
+fn reserve_discrete_index_map_capacity<K, V>(
+    values: &mut IndexMap<K, V>,
+    additional: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError>
+where
+    K: std::hash::Hash + Eq,
+{
+    values.try_reserve(additional).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })
+}
+
+fn reserve_discrete_index_set_capacity<T>(
+    values: &mut IndexSet<T>,
+    additional: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError>
+where
+    T: std::hash::Hash + Eq,
+{
+    values.try_reserve(additional).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })
+}
+
 pub(crate) fn normalized_discrete_update_equations(
     dae_model: &dae::Dae,
 ) -> Result<Vec<dae::Equation>, LowerError> {
     let protected_lhs_names = protected_discrete_update_lhs_names(dae_model)?;
     let mut occupied_lhs_names = IndexSet::new();
-    let mut normalized_equations = Vec::new();
-    let mut alias_edges = Vec::new();
+    let Some(first_equation) = dae_model
+        .discrete
+        .real_updates
+        .first()
+        .or_else(|| dae_model.discrete.valued_updates.first())
+        .or_else(|| dae_model.conditions.equations.first())
+    else {
+        return Ok(Vec::new());
+    };
+    let span = first_equation.span;
+    let equation_capacity = dae_model
+        .discrete
+        .real_updates
+        .len()
+        .checked_add(dae_model.discrete.valued_updates.len())
+        .and_then(|count| count.checked_add(dae_model.conditions.equations.len()))
+        .ok_or_else(|| {
+            LowerError::contract_violation(
+                "discrete update equation count exceeds host index range",
+                span,
+            )
+        })?;
+    let mut normalized_equations = discrete_vec_with_capacity(
+        equation_capacity,
+        "normalized discrete equation count",
+        span,
+    )?;
+    let mut alias_edges =
+        discrete_vec_with_capacity(equation_capacity, "discrete alias edge count", span)?;
     for eq in dae_model
         .discrete
         .real_updates
@@ -54,25 +139,39 @@ pub(crate) fn normalized_discrete_update_equations(
             true,
         )?;
     }
-    normalized_equations.extend(oriented_discrete_alias_equations(
-        &alias_edges,
-        &protected_lhs_names,
-    )?);
+    let alias_equations = oriented_discrete_alias_equations(&alias_edges, &protected_lhs_names)?;
+    reserve_discrete_capacity(
+        &mut normalized_equations,
+        alias_equations.len(),
+        "normalized discrete equation count",
+        span,
+    )?;
+    normalized_equations.extend(alias_equations);
     Ok(normalized_equations)
 }
 
-pub(crate) fn initial_condition_update_equations(dae_model: &dae::Dae) -> Vec<dae::Equation> {
-    dae_model
-        .conditions
-        .equations
-        .iter()
-        .filter(|eq| {
-            eq.lhs
-                .as_ref()
-                .is_some_and(|lhs| is_condition_memory_lhs(dae_model, lhs.var_name()))
-        })
-        .cloned()
-        .collect()
+pub(crate) fn initial_condition_update_equations(
+    dae_model: &dae::Dae,
+) -> Result<Vec<dae::Equation>, LowerError> {
+    let Some(first_equation) = dae_model.conditions.equations.first() else {
+        return Ok(Vec::new());
+    };
+    let span = first_equation.span;
+    let mut equations = discrete_vec_with_capacity(
+        dae_model.conditions.equations.len(),
+        "initial condition update equation count",
+        span,
+    )?;
+    for eq in &dae_model.conditions.equations {
+        if eq
+            .lhs
+            .as_ref()
+            .is_some_and(|lhs| is_condition_memory_lhs(dae_model, lhs.var_name()))
+        {
+            equations.push(eq.clone());
+        }
+    }
+    Ok(equations)
 }
 
 fn is_condition_memory_lhs(dae_model: &dae::Dae, lhs: &rumoca_core::VarName) -> bool {
@@ -85,8 +184,8 @@ pub(crate) fn lower_initial_update_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let equations = initial_condition_update_equations(dae_model);
-    let structural_bindings = compile_time::structural_bindings(dae_model);
+    let equations = initial_condition_update_equations(dae_model)?;
+    let structural_bindings = compile_time::structural_bindings(dae_model)?;
     Ok(rumoca_eval_solve::to_scalar_program_block(
         &expression_rows::lower_expression_rows_with_mode(
             equations.iter(),
@@ -104,7 +203,7 @@ pub(crate) fn lower_initial_update_rhs(
             },
             true,
         )?,
-    )
+    )?
     .programs)
 }
 
@@ -134,10 +233,22 @@ fn collect_normalized_discrete_update_equation(
     }
 
     if let Some(edges) = explicit_discrete_alias_edges(dae_model, &rewritten)? {
+        reserve_discrete_capacity(
+            alias_edges,
+            edges.len(),
+            "discrete alias edge count",
+            eq.span,
+        )?;
         alias_edges.extend(edges);
         return Ok(());
     }
     if let Some(edges) = residual_discrete_alias_edges(dae_model, &rewritten)? {
+        reserve_discrete_capacity(
+            alias_edges,
+            edges.len(),
+            "discrete alias edge count",
+            eq.span,
+        )?;
         alias_edges.extend(edges);
         return Ok(());
     }
@@ -155,12 +266,26 @@ fn collect_normalized_discrete_update_equation(
         return Ok(());
     }
     if let Some(lhs) = normalized.lhs.as_ref() {
-        occupied_lhs_names.extend(discrete_update_lhs_names(
+        let lhs_names = discrete_update_lhs_names(
             dae_model,
             lhs.var_name(),
             normalized.scalar_count.max(1),
-        )?);
+            normalized.span,
+        )?;
+        reserve_discrete_index_set_capacity(
+            occupied_lhs_names,
+            lhs_names.len(),
+            "occupied discrete LHS name count",
+            normalized.span,
+        )?;
+        occupied_lhs_names.extend(lhs_names);
     }
+    reserve_discrete_capacity(
+        normalized_equations,
+        1,
+        "normalized discrete equation count",
+        normalized.span,
+    )?;
     normalized_equations.push(normalized);
     Ok(())
 }
@@ -197,12 +322,19 @@ fn expand_tuple_function_residual(
         return Ok(None);
     }
 
-    let mut equations = Vec::new();
+    let mut equations =
+        discrete_vec_with_capacity(elements.len(), "tuple residual expansion count", eq.span)?;
     for (target_expr, output) in elements.iter().zip(&function.outputs) {
         let Some(target_names) = tuple_assignment_target_names(dae_model, target_expr, output)?
         else {
             return Ok(None);
         };
+        reserve_discrete_capacity(
+            &mut equations,
+            target_names.len(),
+            "tuple residual expansion count",
+            eq.span,
+        )?;
         for (idx, target_name) in target_names.into_iter().enumerate() {
             let Some(output_name) = projected_function_output_name(name.var_name(), output, idx)
             else {
@@ -246,22 +378,52 @@ fn tuple_assignment_target_names(
         {
             return Ok(None);
         }
-        let Some(indices) = static_subscript_indices(subscripts).ok().flatten() else {
+        let owner_span =
+            target_expr_or_subscript_span(target_expr, subscripts, "tuple assignment target")?;
+        let Some(indices) = static_subscript_indices_with_owner(subscripts, owner_span)
+            .ok()
+            .flatten()
+        else {
             return Ok(None);
         };
-        return Ok(Some(vec![rumoca_core::VarName::new(
-            dae::format_subscript_key(name.as_str(), &indices),
-        )]));
+        let mut names =
+            discrete_vec_with_capacity(1, "tuple assignment target name count", output.span)?;
+        names.push(rumoca_core::VarName::new(dae::format_subscript_key(
+            name.as_str(),
+            &indices,
+        )));
+        return Ok(Some(names));
     }
     let output_count = tuple_assignment_output_count(dae_model, name, output)?;
     if output_count == 1 {
-        return Ok(Some(vec![name.var_name().clone()]));
+        let mut names =
+            discrete_vec_with_capacity(1, "tuple assignment target name count", output.span)?;
+        names.push(name.var_name().clone());
+        return Ok(Some(names));
     }
     Ok(Some(discrete_update_scalar_names(
         dae_model,
         name.var_name(),
         output_count,
+        output.span,
     )?))
+}
+
+fn target_expr_or_subscript_span(
+    expr: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    context: &'static str,
+) -> Result<rumoca_core::Span, LowerError> {
+    expr.span()
+        .or_else(|| {
+            subscripts
+                .iter()
+                .map(rumoca_core::Subscript::span)
+                .find(|span| !span.is_dummy())
+        })
+        .ok_or_else(|| LowerError::UnspannedContractViolation {
+            reason: format!("missing source provenance for {context}"),
+        })
 }
 
 fn tuple_assignment_output_count(
@@ -278,13 +440,13 @@ fn tuple_assignment_output_count(
         // concrete target declaration once lowering has scalarized the
         // assignment.
         let dims = discrete_update_dims(dae_model, target_name.var_name()).ok_or_else(|| {
-            LowerError::ContractViolation {
-                reason: format!(
+            LowerError::contract_violation(
+                format!(
                     "tuple assignment target `{}` must have DAE variable dimensions",
                     target_name.as_str()
                 ),
-                span: output.span,
-            }
+                output.span,
+            )
         })?;
         return dims_scalar_count(
             dims,
@@ -341,6 +503,7 @@ fn normalize_discrete_update_equation(
             normalized.scalar_count.max(1),
             protected_lhs_names,
             occupied_lhs_names,
+            normalized.span,
         )?
     {
         let old_lhs = lhs.clone();
@@ -348,7 +511,7 @@ fn normalize_discrete_update_equation(
         normalized.rhs = rumoca_core::Expression::VarRef {
             name: old_lhs,
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: normalized.span,
         };
         return Ok(normalized);
     }
@@ -418,97 +581,167 @@ fn discrete_alias_edges(
     if lhs_targets.len() != rhs_targets.len() {
         return Ok(None);
     }
-    Ok(Some(
-        lhs_targets
-            .into_iter()
-            .zip(rhs_targets)
-            .filter(|(lhs, rhs)| lhs.name != rhs.name)
-            .map(|(lhs, rhs)| DiscreteAliasEdge {
+    let mut edges =
+        discrete_vec_with_capacity(lhs_targets.len(), "discrete alias edge count", source.span)?;
+    for (lhs, rhs) in lhs_targets.into_iter().zip(rhs_targets) {
+        if lhs.name != rhs.name {
+            edges.push(DiscreteAliasEdge {
                 lhs,
                 rhs,
                 source: source.clone(),
-            })
-            .collect(),
-    ))
+            });
+        }
+    }
+    Ok(Some(edges))
 }
 
+// SPEC_0021: Exception - alias orientation builds the graph, validates
+// components, and emits equations in deterministic order.
+#[allow(clippy::too_many_lines)]
 fn oriented_discrete_alias_equations(
     edges: &[DiscreteAliasEdge],
     protected_lhs_names: &IndexSet<rumoca_core::VarName>,
 ) -> Result<Vec<dae::Equation>, LowerError> {
+    let Some(first_edge) = edges.first() else {
+        return Ok(Vec::new());
+    };
     let mut adjacency: IndexMap<rumoca_core::VarName, Vec<(rumoca_core::VarName, usize)>> =
         IndexMap::new();
+    let span = first_edge.source.span;
     let mut target_by_name: IndexMap<rumoca_core::VarName, DiscreteTarget> = IndexMap::new();
-    let mut ordered_names = Vec::new();
+    let mut ordered_names =
+        discrete_vec_with_capacity(edges.len(), "discrete alias ordered name count", span)?;
     let mut seen_names = IndexSet::new();
     for (idx, edge) in edges.iter().enumerate() {
         for target in [&edge.lhs, &edge.rhs] {
             let name = &target.name;
-            target_by_name
-                .entry(name.clone())
-                .or_insert_with(|| target.clone());
-            if seen_names.insert(name.clone()) {
+            if !target_by_name.contains_key(name) {
+                reserve_discrete_index_map_capacity(
+                    &mut target_by_name,
+                    1,
+                    "discrete alias target metadata count",
+                    edge.source.span,
+                )?;
+                target_by_name.insert(name.clone(), target.clone());
+            }
+            if !seen_names.contains(name) {
+                reserve_discrete_index_set_capacity(
+                    &mut seen_names,
+                    1,
+                    "discrete alias seen name count",
+                    edge.source.span,
+                )?;
+                seen_names.insert(name.clone());
+                reserve_discrete_capacity(
+                    &mut ordered_names,
+                    1,
+                    "discrete alias ordered name count",
+                    edge.source.span,
+                )?;
                 ordered_names.push(name.clone());
             }
         }
-        adjacency
-            .entry(edge.lhs.name.clone())
-            .or_default()
-            .push((edge.rhs.name.clone(), idx));
-        adjacency
-            .entry(edge.rhs.name.clone())
-            .or_default()
-            .push((edge.lhs.name.clone(), idx));
+        push_alias_neighbor(
+            &mut adjacency,
+            &edge.lhs.name,
+            &edge.rhs.name,
+            idx,
+            edge.source.span,
+        )?;
+        push_alias_neighbor(
+            &mut adjacency,
+            &edge.rhs.name,
+            &edge.lhs.name,
+            idx,
+            edge.source.span,
+        )?;
     }
 
     let mut visited = IndexSet::new();
-    let mut directed = Vec::new();
+    let mut directed = discrete_vec_with_capacity(edges.len(), "directed alias edge count", span)?;
     for root_candidate in ordered_names {
         if visited.contains(&root_candidate) {
             continue;
         }
-        let component = collect_alias_component(&root_candidate, &adjacency);
-        let roots = alias_component_roots(&component, protected_lhs_names);
+        let component = collect_alias_component(&root_candidate, &adjacency, span)?;
+        let roots = alias_component_roots(&component, protected_lhs_names, span)?;
         for root in &roots {
-            visited.insert(root.clone());
+            if !visited.contains(root) {
+                reserve_discrete_index_set_capacity(
+                    &mut visited,
+                    1,
+                    "visited alias root count",
+                    span,
+                )?;
+                visited.insert(root.clone());
+            }
         }
 
         let mut queue = VecDeque::from(roots);
         while let Some(parent) = queue.pop_front() {
-            visit_alias_neighbors(&parent, &adjacency, &mut visited, &mut queue, &mut directed);
+            visit_alias_neighbors(
+                &parent,
+                &adjacency,
+                &mut visited,
+                &mut queue,
+                &mut directed,
+                span,
+            )?;
         }
     }
 
     directed.sort_by_key(|(edge_idx, _, _)| *edge_idx);
-    directed
-        .into_iter()
-        .map(|(edge_idx, parent, child)| {
-            let edge = &edges[edge_idx];
-            let parent = target_by_name.get(&parent).cloned().ok_or_else(|| {
-                LowerError::ContractViolation {
-                    reason: format!("discrete alias parent `{parent}` lost target metadata"),
-                    span: edge.source.span,
-                }
-            })?;
-            let child = target_by_name.get(&child).cloned().ok_or_else(|| {
-                LowerError::ContractViolation {
-                    reason: format!("discrete alias child `{child}` lost target metadata"),
-                    span: edge.source.span,
-                }
-            })?;
-            Ok(dae::Equation {
-                lhs: Some(child.reference),
-                rhs: rumoca_core::Expression::VarRef {
-                    name: parent.reference,
-                    subscripts: Vec::new(),
-                    span: edge.source.span,
-                },
+    let mut equations = discrete_vec_with_capacity(
+        directed.len(),
+        "oriented discrete alias equation count",
+        span,
+    )?;
+    for (edge_idx, parent, child) in directed {
+        let edge = &edges[edge_idx];
+        let parent = target_by_name.get(&parent).cloned().ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("discrete alias parent `{parent}` lost target metadata"),
+                edge.source.span,
+            )
+        })?;
+        let child = target_by_name.get(&child).cloned().ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("discrete alias child `{child}` lost target metadata"),
+                edge.source.span,
+            )
+        })?;
+        equations.push(dae::Equation {
+            lhs: Some(child.reference),
+            rhs: rumoca_core::Expression::VarRef {
+                name: parent.reference,
+                subscripts: Vec::new(),
                 span: edge.source.span,
-                origin: edge.source.origin.clone(),
-                scalar_count: 1,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()
+            },
+            span: edge.source.span,
+            origin: edge.source.origin.clone(),
+            scalar_count: 1,
+        });
+    }
+    Ok(equations)
+}
+
+fn push_alias_neighbor(
+    adjacency: &mut IndexMap<rumoca_core::VarName, Vec<(rumoca_core::VarName, usize)>>,
+    source: &rumoca_core::VarName,
+    target: &rumoca_core::VarName,
+    edge_idx: usize,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    if let Some(neighbors) = adjacency.get_mut(source) {
+        reserve_discrete_capacity(neighbors, 1, "discrete alias adjacency count", span)?;
+        neighbors.push((target.clone(), edge_idx));
+        return Ok(());
+    }
+    reserve_discrete_index_map_capacity(adjacency, 1, "discrete alias adjacency map count", span)?;
+    let mut neighbors = discrete_vec_with_capacity(1, "discrete alias adjacency count", span)?;
+    neighbors.push((target.clone(), edge_idx));
+    adjacency.insert(source.clone(), neighbors);
+    Ok(())
 }
 
 fn visit_alias_neighbors(
@@ -517,53 +750,72 @@ fn visit_alias_neighbors(
     visited: &mut IndexSet<rumoca_core::VarName>,
     queue: &mut VecDeque<rumoca_core::VarName>,
     directed: &mut Vec<(usize, rumoca_core::VarName, rumoca_core::VarName)>,
-) {
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
     let Some(neighbors) = adjacency.get(parent) else {
-        return;
+        return Ok(());
     };
     for (child, edge_idx) in neighbors {
-        if !visited.insert(child.clone()) {
+        if visited.contains(child) {
             continue;
         }
+        reserve_discrete_index_set_capacity(visited, 1, "visited alias name count", span)?;
+        visited.insert(child.clone());
         queue.push_back(child.clone());
+        reserve_discrete_capacity(directed, 1, "directed alias edge count", span)?;
         directed.push((*edge_idx, parent.clone(), child.clone()));
     }
+    Ok(())
 }
 
 fn collect_alias_component(
     root: &rumoca_core::VarName,
     adjacency: &IndexMap<rumoca_core::VarName, Vec<(rumoca_core::VarName, usize)>>,
-) -> Vec<rumoca_core::VarName> {
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_core::VarName>, LowerError> {
     let mut component = Vec::new();
     let mut seen = IndexSet::new();
     let mut queue = VecDeque::from([root.clone()]);
     while let Some(name) = queue.pop_front() {
-        if !seen.insert(name.clone()) {
+        if seen.contains(&name) {
             continue;
         }
+        reserve_discrete_index_set_capacity(&mut seen, 1, "alias component seen count", span)?;
+        seen.insert(name.clone());
         if let Some(neighbors) = adjacency.get(&name) {
             for (neighbor, _) in neighbors {
                 queue.push_back(neighbor.clone());
             }
         }
+        reserve_discrete_capacity(&mut component, 1, "alias component name count", span)?;
         component.push(name);
     }
-    component
+    Ok(component)
 }
 
 fn alias_component_roots(
     component: &[rumoca_core::VarName],
     protected_lhs_names: &IndexSet<rumoca_core::VarName>,
-) -> Vec<rumoca_core::VarName> {
-    let protected = component
-        .iter()
-        .filter(|name| protected_lhs_names.contains(*name))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !protected.is_empty() {
-        return protected;
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_core::VarName>, LowerError> {
+    let mut protected = discrete_vec_with_capacity(
+        component.len(),
+        "alias component protected root count",
+        span,
+    )?;
+    for name in component {
+        if protected_lhs_names.contains(name) {
+            protected.push(name.clone());
+        }
     }
-    component.first().cloned().into_iter().collect::<Vec<_>>()
+    if !protected.is_empty() {
+        return Ok(protected);
+    }
+    let mut roots = discrete_vec_with_capacity(1, "alias component root count", span)?;
+    if let Some(name) = component.first() {
+        roots.push(name.clone());
+    }
+    Ok(roots)
 }
 
 fn protected_discrete_update_lhs_names(
@@ -581,13 +833,29 @@ fn protected_discrete_update_lhs_names(
             if is_plain_discrete_alias_rhs(dae_model, &eq.rhs, eq.span)? {
                 continue;
             }
-            for name in
-                discrete_update_lhs_names(dae_model, lhs.var_name(), eq.scalar_count.max(1))?
-            {
+            let names = discrete_update_lhs_names(
+                dae_model,
+                lhs.var_name(),
+                eq.scalar_count.max(1),
+                eq.span,
+            )?;
+            reserve_discrete_index_set_capacity(
+                &mut protected,
+                names.len(),
+                "protected discrete LHS name count",
+                eq.span,
+            )?;
+            for name in names {
                 protected.insert(name);
             }
         } else if let Some(target) = residual_non_alias_update_target(dae_model, &eq.rhs, eq.span)?
         {
+            reserve_discrete_index_set_capacity(
+                &mut protected,
+                1,
+                "protected discrete LHS name count",
+                eq.span,
+            )?;
             protected.insert(target);
         }
     }
@@ -658,13 +926,26 @@ fn discrete_update_lhs_names(
     dae_model: &dae::Dae,
     lhs: &rumoca_core::VarName,
     scalar_count: usize,
+    span: rumoca_core::Span,
 ) -> Result<Vec<rumoca_core::VarName>, LowerError> {
-    let scalar_names = discrete_update_scalar_names(dae_model, lhs, scalar_count)?;
+    let scalar_names = discrete_update_scalar_names(dae_model, lhs, scalar_count, span)?;
     if scalar_count <= 1 {
         return Ok(scalar_names);
     }
-    let mut names = Vec::with_capacity(scalar_names.len() + 1);
+    let capacity = scalar_names.len().checked_add(1).ok_or_else(|| {
+        LowerError::contract_violation(
+            "discrete update LHS name count exceeds host index range",
+            span,
+        )
+    })?;
+    let mut names = discrete_vec_with_capacity(capacity, "discrete update LHS name count", span)?;
     names.push(lhs.clone());
+    reserve_discrete_capacity(
+        &mut names,
+        scalar_names.len(),
+        "discrete update LHS name count",
+        span,
+    )?;
     names.extend(scalar_names);
     Ok(names)
 }
@@ -673,27 +954,30 @@ fn discrete_update_scalar_names(
     dae_model: &dae::Dae,
     lhs: &rumoca_core::VarName,
     scalar_count: usize,
+    span: rumoca_core::Span,
 ) -> Result<Vec<rumoca_core::VarName>, LowerError> {
     if scalar_count <= 1 {
-        return Ok(vec![lhs.clone()]);
+        let mut names = discrete_vec_with_capacity(1, "discrete update scalar name count", span)?;
+        names.push(lhs.clone());
+        return Ok(names);
     }
-    let dims =
-        discrete_update_dims(dae_model, lhs).ok_or_else(|| LowerError::ContractViolation {
-            reason: format!(
+    let dims = discrete_update_dims(dae_model, lhs).ok_or_else(|| {
+        LowerError::contract_violation(
+            format!(
                 "array discrete update `{}` must have DAE variable dimensions",
                 lhs.as_str()
             ),
-            span: rumoca_core::Span::DUMMY,
-        })?;
-    Ok((0..scalar_count)
-        .map(|idx| {
-            rumoca_core::VarName::new(dae::scalar_name_text_for_flat_index(
-                lhs.as_str(),
-                dims,
-                idx,
-            ))
-        })
-        .collect())
+            span,
+        )
+    })?;
+    let mut names =
+        discrete_vec_with_capacity(scalar_count, "discrete update scalar name count", span)?;
+    for idx in 0..scalar_count {
+        names.push(rumoca_core::VarName::new(
+            dae::scalar_name_text_for_flat_index(lhs.as_str(), dims, idx),
+        ));
+    }
+    Ok(names)
 }
 
 fn is_plain_discrete_alias_rhs(
@@ -711,9 +995,10 @@ fn should_reorient_discrete_alias(
     scalar_count: usize,
     protected_lhs_names: &IndexSet<rumoca_core::VarName>,
     occupied_lhs_names: &IndexSet<rumoca_core::VarName>,
+    span: rumoca_core::Span,
 ) -> Result<bool, LowerError> {
-    let lhs_names = discrete_update_lhs_names(dae_model, lhs, scalar_count)?;
-    let target_names = discrete_update_lhs_names(dae_model, alias_target, scalar_count)?;
+    let lhs_names = discrete_update_lhs_names(dae_model, lhs, scalar_count, span)?;
+    let target_names = discrete_update_lhs_names(dae_model, alias_target, scalar_count, span)?;
     let lhs_protected = any_name_in_set(&lhs_names, protected_lhs_names);
     let target_protected = any_name_in_set(&target_names, protected_lhs_names);
     if lhs_protected != target_protected {
@@ -791,6 +1076,7 @@ fn extract_binary_residual_discrete_assignment(
                 scalar_count,
                 protected_lhs_names,
                 occupied_lhs_names,
+                span,
             )? {
                 Ok(Some((rhs_target, lhs.clone())))
             } else {
@@ -813,7 +1099,8 @@ fn extract_if_residual_discrete_assignment(
     occupied_lhs_names: &IndexSet<rumoca_core::VarName>,
 ) -> Result<Option<(DiscreteTarget, rumoca_core::Expression)>, LowerError> {
     let mut common_target: Option<DiscreteTarget> = None;
-    let mut rhs_branches = Vec::with_capacity(branches.len());
+    let mut rhs_branches =
+        discrete_vec_with_capacity(branches.len(), "discrete residual branch count", span)?;
     for (condition, value) in branches {
         let Some((target, rhs)) = extract_residual_discrete_assignment(
             dae_model,
@@ -887,7 +1174,7 @@ fn plain_discrete_target(
     else {
         return Ok(None);
     };
-    let Some(target_name) = target_name_from_var_ref(name, subscripts)? else {
+    let Some(target_name) = target_name_from_var_ref(name, subscripts, span)? else {
         return Ok(None);
     };
     if !is_discrete_update_name(dae_model, &target_name) {
@@ -905,11 +1192,12 @@ fn plain_discrete_target(
 fn target_name_from_var_ref(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
+    owner_span: rumoca_core::Span,
 ) -> Result<Option<rumoca_core::VarName>, LowerError> {
     if subscripts.is_empty() {
         return Ok(Some(name.var_name().clone()));
     }
-    let Some(indices) = static_subscript_indices(subscripts)? else {
+    let Some(indices) = static_subscript_indices_with_owner(subscripts, owner_span)? else {
         return Ok(None);
     };
     Ok(Some(rumoca_core::VarName::new(dae::format_subscript_key(
@@ -932,10 +1220,21 @@ fn discrete_target_from_var_ref(
         });
     }
     let reference = match name.component_ref() {
-        Some(component_ref) => rumoca_core::Reference::with_component_reference(
-            target_name.as_str(),
-            component_reference_with_subscripts(component_ref.clone(), subscripts.to_vec()),
-        ),
+        Some(component_ref) => {
+            let copied_subscripts = copy_discrete_subscripts(
+                subscripts,
+                "discrete target copied subscript count",
+                span,
+            )?;
+            rumoca_core::Reference::with_component_reference(
+                target_name.as_str(),
+                component_reference_with_subscripts(
+                    component_ref.clone(),
+                    copied_subscripts,
+                    span,
+                )?,
+            )
+        }
         None => reference_for_discrete_target(dae_model, &target_name, span)?,
     };
     Ok(DiscreteTarget {
@@ -950,14 +1249,14 @@ fn discrete_target_from_reference(
     subscripts: &[rumoca_core::Subscript],
     span: rumoca_core::Span,
 ) -> Result<DiscreteTarget, LowerError> {
-    let Some(target_name) = target_name_from_var_ref(name, subscripts)? else {
-        return Err(LowerError::ContractViolation {
-            reason: format!(
+    let Some(target_name) = target_name_from_var_ref(name, subscripts, span)? else {
+        return Err(LowerError::contract_violation(
+            format!(
                 "discrete update target `{}` has dynamic subscripts and cannot be oriented as a scalar target",
                 name.as_str()
             ),
             span,
-        });
+        ));
     };
     discrete_target_from_var_ref(dae_model, name, subscripts, target_name, span)
 }
@@ -969,17 +1268,20 @@ fn discrete_update_scalar_targets(
     span: rumoca_core::Span,
 ) -> Result<Vec<DiscreteTarget>, LowerError> {
     if scalar_count <= 1 {
-        return Ok(vec![target.clone()]);
+        let mut targets = discrete_vec_with_capacity(1, "discrete scalar target count", span)?;
+        targets.push(target.clone());
+        return Ok(targets);
     }
-    discrete_update_scalar_names(dae_model, &target.name, scalar_count)?
-        .into_iter()
-        .map(|name| {
-            Ok(DiscreteTarget {
-                reference: reference_for_discrete_target(dae_model, &name, span)?,
-                name,
-            })
-        })
-        .collect()
+    let scalar_names = discrete_update_scalar_names(dae_model, &target.name, scalar_count, span)?;
+    let mut targets =
+        discrete_vec_with_capacity(scalar_names.len(), "discrete scalar target count", span)?;
+    for name in scalar_names {
+        targets.push(DiscreteTarget {
+            reference: reference_for_discrete_target(dae_model, &name, span)?,
+            name,
+        });
+    }
+    Ok(targets)
 }
 
 fn reference_for_discrete_target(
@@ -1000,22 +1302,35 @@ fn reference_for_discrete_target(
                 dae::VariableOrigin::Source => {
                     let component_ref =
                         source_component_ref_for_discrete_variable(&base, variable, span)?;
+                    let scalar_span = discrete_target_scalar_span(variable, span)?;
                     Ok(rumoca_core::Reference::with_component_reference(
                         target.as_str(),
                         component_reference_with_scalar_indices(
                             component_ref,
                             &scalar_name.indices,
-                            variable.source_span,
-                        ),
+                            scalar_span,
+                        )?,
                     ))
                 }
             };
         }
     }
-    Err(LowerError::ContractViolation {
-        reason: format!("discrete update target `{target}` has no DAE variable metadata"),
+    Err(LowerError::contract_violation(
+        format!("discrete update target `{target}` has no DAE variable metadata"),
         span,
-    })
+    ))
+}
+
+fn discrete_target_scalar_span(
+    variable: &dae::Variable,
+    owner_span: rumoca_core::Span,
+) -> Result<rumoca_core::ProvenanceSpan, LowerError> {
+    let span = if variable.source_span.is_dummy() {
+        owner_span
+    } else {
+        variable.source_span
+    };
+    Ok(span.require_provenance("discrete target scalar subscript")?)
 }
 
 fn reference_for_discrete_variable(
@@ -1046,36 +1361,59 @@ fn source_component_ref_for_discrete_variable(
     variable
         .component_ref
         .clone()
-        .ok_or_else(|| LowerError::ContractViolation {
-            reason: format!(
+        .ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
                 "source discrete update target `{target}` lost structured component-reference metadata"
             ),
-            span,
+                span,
+            )
         })
 }
 
 fn component_reference_with_scalar_indices(
     component_ref: rumoca_core::ComponentReference,
     indices: &[i64],
-    span: rumoca_core::Span,
-) -> rumoca_core::ComponentReference {
-    component_reference_with_subscripts(
-        component_ref,
-        indices
-            .iter()
-            .map(|index| rumoca_core::Subscript::generated_index(*index, span))
-            .collect(),
-    )
+    span: rumoca_core::ProvenanceSpan,
+) -> Result<rumoca_core::ComponentReference, LowerError> {
+    let mut subscripts = discrete_vec_with_capacity(
+        indices.len(),
+        "discrete target subscript count",
+        span.span(),
+    )?;
+    for index in indices {
+        subscripts.push(rumoca_core::Subscript::generated_index_with_provenance(
+            *index, span,
+        ));
+    }
+    component_reference_with_subscripts(component_ref, subscripts, span.span())
 }
 
 fn component_reference_with_subscripts(
     mut component_ref: rumoca_core::ComponentReference,
     subscripts: Vec<rumoca_core::Subscript>,
-) -> rumoca_core::ComponentReference {
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::ComponentReference, LowerError> {
     if let Some(part) = component_ref.parts.last_mut() {
+        reserve_discrete_capacity(
+            &mut part.subs,
+            subscripts.len(),
+            "component reference subscript count",
+            span,
+        )?;
         part.subs.extend(subscripts);
     }
-    component_ref
+    Ok(component_ref)
+}
+
+fn copy_discrete_subscripts(
+    subscripts: &[rumoca_core::Subscript],
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_core::Subscript>, LowerError> {
+    let mut copied = discrete_vec_with_capacity(subscripts.len(), context, span)?;
+    copied.extend(subscripts.iter().cloned());
+    Ok(copied)
 }
 
 fn is_discrete_update_name(dae_model: &dae::Dae, name: &rumoca_core::VarName) -> bool {
@@ -1255,7 +1593,8 @@ fn relation_memory_expr_for_condition(
     let mut offset = 0usize;
     for eq in &dae_model.conditions.equations {
         let scalar_count = eq.scalar_count.max(1);
-        if relation_idx < offset + scalar_count {
+        let end = checked_relation_offset_end(offset, scalar_count, eq.span)?;
+        if relation_idx < end {
             let Some(lhs) = eq.lhs.as_ref() else {
                 return Ok(None);
             };
@@ -1267,9 +1606,22 @@ fn relation_memory_expr_for_condition(
                 eq.span,
             )?));
         }
-        offset += scalar_count;
+        offset = end;
     }
     Ok(None)
+}
+
+fn checked_relation_offset_end(
+    offset: usize,
+    scalar_count: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    offset.checked_add(scalar_count).ok_or_else(|| {
+        LowerError::contract_violation(
+            "discrete relation scalar offset overflows host index range",
+            span,
+        )
+    })
 }
 
 fn relation_memory_scalar_expr(
@@ -1293,28 +1645,237 @@ fn relation_memory_scalar_expr(
         .or_else(|| dae_model.variables.discrete_reals.get(lhs))
         .map(|var| var.dims.as_slice())
     else {
-        return Err(LowerError::ContractViolation {
-            reason: format!(
+        return Err(LowerError::contract_violation(
+            format!(
                 "relation memory target `{lhs}` has scalar_count={scalar_count} but no DAE variable metadata"
             ),
             span,
-        });
+        ));
     };
     let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) else {
-        return Err(LowerError::ContractViolation {
-            reason: format!(
+        return Err(LowerError::contract_violation(
+            format!(
                 "relation memory target `{lhs}` cannot map flat index {flat_index} of {scalar_count} through dims {dims:?}"
             ),
             span,
-        });
+        ));
     };
-    let subscripts = indices
-        .into_iter()
-        .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
-        .collect();
+    let mut subscripts =
+        discrete_vec_with_capacity(indices.len(), "relation memory subscript count", span)?;
+    for index in indices {
+        subscripts.push(checked_relation_subscript(index, span)?);
+    }
     Ok(rumoca_core::Expression::VarRef {
         name: lhs.clone().into(),
         subscripts,
         span,
     })
+}
+
+fn checked_relation_subscript(
+    index: usize,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Subscript, LowerError> {
+    let index = i64::try_from(index).map_err(|_| {
+        LowerError::contract_violation(
+            format!("discrete relation subscript index {index} exceeds i64 range"),
+            span,
+        )
+    })?;
+    Ok(rumoca_core::Subscript::try_generated_index(
+        index,
+        span,
+        "discrete relation subscript",
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unspanned_discrete_update_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
+    #[test]
+    fn discrete_vec_with_capacity_reports_capacity_overflow() -> Result<(), LowerError> {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_95.mo",
+            ),
+            4,
+            12,
+        );
+
+        let err = match discrete_vec_with_capacity::<u8>(usize::MAX, "discrete test vector", span) {
+            Ok(_) => {
+                return Err(LowerError::contract_violation(
+                    "oversized discrete test vector should fail before allocating",
+                    span,
+                ));
+            }
+            Err(err) => err,
+        };
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            err.reason()
+                .contains("discrete test vector capacity exceeds host memory limits"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discrete_vec_with_capacity_reports_capacity_overflow_without_fabricating_span() {
+        let err = discrete_vec_with_capacity::<u8>(
+            usize::MAX,
+            "discrete test vector",
+            unspanned_discrete_update_test_span(),
+        )
+        .expect_err("oversized discrete test vector must fail before allocating");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("discrete test vector capacity exceeds host memory limits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn checked_relation_offset_end_rejects_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_42.mo",
+            ),
+            5,
+            13,
+        );
+        let err = checked_relation_offset_end(usize::MAX, 1, span)
+            .expect_err("relation offset overflow must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: discrete relation scalar offset overflows host index range"
+        );
+    }
+
+    #[test]
+    fn checked_relation_offset_end_rejects_overflow_without_fabricating_span() {
+        let err = checked_relation_offset_end(usize::MAX, 1, unspanned_discrete_update_test_span())
+            .expect_err("relation offset overflow must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: discrete relation scalar offset overflows host index range"
+        );
+    }
+
+    #[test]
+    fn checked_relation_subscript_rejects_i64_overflow_with_span() {
+        let Some(index) = usize::try_from(i64::MAX)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+        else {
+            return;
+        };
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_44.mo",
+            ),
+            9,
+            19,
+        );
+
+        let err = checked_relation_subscript(index, span)
+            .expect_err("relation subscript must fit in Modelica integer range");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            format!(
+                "invalid IR contract: discrete relation subscript index {index} exceeds i64 range"
+            )
+        );
+    }
+
+    #[test]
+    fn checked_relation_subscript_rejects_i64_overflow_without_fabricating_span() {
+        let Some(index) = usize::try_from(i64::MAX)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+        else {
+            return;
+        };
+
+        let err = checked_relation_subscript(index, unspanned_discrete_update_test_span())
+            .expect_err("relation subscript must fit in Modelica integer range");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert_eq!(
+            err.reason(),
+            format!(
+                "invalid IR contract: discrete relation subscript index {index} exceeds i64 range"
+            )
+        );
+    }
+
+    #[test]
+    fn component_reference_with_scalar_indices_preserves_source_span() -> Result<(), LowerError> {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_discrete_updates_source_47.mo",
+            ),
+            3,
+            17,
+        );
+        let provenance_span = span.require_provenance("test scalar target subscript")?;
+        let name = rumoca_core::VarName::new("x");
+        let component_ref = rumoca_core::component_reference_from_flat_name(&name, span)
+            .ok_or_else(|| LowerError::contract_violation("test component ref", span))?;
+
+        let indexed =
+            component_reference_with_scalar_indices(component_ref, &[2, 3], provenance_span)?;
+        let Some(last) = indexed.parts.last() else {
+            return Err(LowerError::contract_violation(
+                "indexed ref has no parts",
+                span,
+            ));
+        };
+
+        assert_eq!(last.subs.len(), 2);
+        assert!(last.subs.iter().all(|subscript| subscript.span() == span));
+        Ok(())
+    }
+
+    #[test]
+    fn component_reference_with_scalar_indices_rejects_dummy_span() {
+        let variable = dae::Variable {
+            source_span: unspanned_discrete_update_test_span(),
+            ..dae::Variable::new(
+                rumoca_core::VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            )
+        };
+
+        let err = discrete_target_scalar_span(&variable, unspanned_discrete_update_test_span())
+            .expect_err("source-derived scalar target subscript requires provenance");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(
+            err.reason().contains("discrete target scalar subscript"),
+            "unexpected error: {err}"
+        );
+    }
 }

@@ -12,6 +12,14 @@ fn token(text: &str) -> Token {
     }
 }
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("function_eval_test.mo"),
+        1,
+        2,
+    )
+}
+
 fn cref(name: &str) -> ComponentReference {
     ComponentReference {
         local: false,
@@ -85,7 +93,7 @@ fn input_parameter(name: &str, binding: Option<Expression>) -> Component {
         variability: Variability::Parameter(token("parameter")),
         binding,
         has_explicit_binding,
-        ..Component::default()
+        ..Component::empty_with_span(test_span())
     }
 }
 
@@ -94,7 +102,7 @@ fn output_parameter(name: &str) -> Component {
         name: name.to_string(),
         causality: Causality::Output(token("output")),
         variability: Variability::Parameter(token("parameter")),
-        ..Component::default()
+        ..Component::empty_with_span(test_span())
     }
 }
 
@@ -204,7 +212,7 @@ fn build_sample_points_function() -> ClassDef {
         Component {
             name: "ns1".to_string(),
             variability: Variability::Discrete(token("discrete")),
-            ..Component::default()
+            ..Component::empty_with_span(test_span())
         },
     );
 

@@ -19,7 +19,7 @@ pub(crate) fn flat_to_dae_expression(expr: &rumoca_core::Expression) -> rumoca_c
 pub(crate) fn flat_to_dae_expression_with_refs(
     expr: &rumoca_core::Expression,
     flat: &flat::Model,
-) -> rumoca_core::Expression {
+) -> Result<rumoca_core::Expression, ToDaeError> {
     DaeReferenceRewriter { flat }.rewrite_expression(expr)
 }
 
@@ -102,10 +102,259 @@ fn assign_missing_partition_def_ids(
 /// component reference so DAE resolution never parses names. Targets whose
 /// rendered subscripts are not static integers stay unstructured and fail
 /// resolution loudly.
-pub(crate) fn structured_target_reference(target: &rumoca_core::VarName) -> rumoca_core::Reference {
-    match rumoca_core::component_reference_from_flat_name(target, rumoca_core::Span::DUMMY) {
-        Some(component_ref) => rumoca_core::Reference::from_component_reference(component_ref),
-        None => target.clone().into(),
+pub(crate) fn structured_target_reference(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    let owner = span
+        .require_provenance("DAE structured target reference")
+        .map_err(|err| ToDaeError::runtime_metadata_violation(format!("{err} for `{target}`")))?;
+    match rumoca_core::component_reference_from_flat_name(target, owner.span()) {
+        Some(component_ref) => Ok(rumoca_core::Reference::from_component_reference(
+            component_ref,
+        )),
+        None => Ok(target.clone().into()),
+    }
+}
+
+pub(crate) fn structured_target_reference_with_flat_metadata(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    flat: &flat::Model,
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    let owner = structured_target_owner_from_flat(target, span, flat)?;
+    if let Some(component_ref) = flat_component_ref_for_target(target, flat, owner) {
+        return Ok(rumoca_core::Reference::with_component_reference(
+            target.as_str(),
+            component_ref,
+        ));
+    }
+    structured_target_reference(target, owner.span())
+}
+
+pub(crate) fn structured_target_reference_with_dae_metadata(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    dae: &dae::Dae,
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    let owner = structured_target_owner_from_dae(target, span, dae)?;
+    if let Some(component_ref) = dae_component_ref_for_target(target, dae, owner) {
+        return Ok(rumoca_core::Reference::with_component_reference(
+            target.as_str(),
+            component_ref,
+        ));
+    }
+    structured_target_reference(target, owner.span())
+}
+
+fn structured_target_owner_from_flat(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    flat: &flat::Model,
+) -> Result<rumoca_core::ProvenanceSpan, ToDaeError> {
+    if let Ok(owner) = span.require_provenance("DAE structured target reference") {
+        return Ok(owner);
+    }
+    if let Some(span) = flat_target_span(target, flat) {
+        return span
+            .require_provenance("DAE structured target reference")
+            .map_err(|err| target_provenance_error(target, err.to_string(), span));
+    }
+    span.require_provenance("DAE structured target reference")
+        .map_err(|err| target_provenance_error(target, err.to_string(), span))
+}
+
+fn structured_target_owner_from_dae(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    dae: &dae::Dae,
+) -> Result<rumoca_core::ProvenanceSpan, ToDaeError> {
+    if let Ok(owner) = span.require_provenance("DAE structured target reference") {
+        return Ok(owner);
+    }
+    if let Some(span) = dae_target_span(target, dae) {
+        return span
+            .require_provenance("DAE structured target reference")
+            .map_err(|err| target_provenance_error(target, err.to_string(), span));
+    }
+    span.require_provenance("DAE structured target reference")
+        .map_err(|err| target_provenance_error(target, err.to_string(), span))
+}
+
+fn flat_target_span(
+    target: &rumoca_core::VarName,
+    flat: &flat::Model,
+) -> Option<rumoca_core::Span> {
+    flat.variables
+        .get(target)
+        .and_then(flat_variable_span)
+        .or_else(|| {
+            rumoca_core::parse_scalar_name(target.as_str()).and_then(|scalar| {
+                flat.variables
+                    .get(&rumoca_core::VarName::new(scalar.base))
+                    .and_then(flat_variable_span)
+            })
+        })
+}
+
+fn dae_target_span(target: &rumoca_core::VarName, dae: &dae::Dae) -> Option<rumoca_core::Span> {
+    find_dae_variable(target, dae)
+        .and_then(dae_variable_span)
+        .or_else(|| {
+            rumoca_core::parse_scalar_name(target.as_str()).and_then(|scalar| {
+                find_dae_variable(&rumoca_core::VarName::new(scalar.base), dae)
+                    .and_then(dae_variable_span)
+            })
+        })
+}
+
+fn find_dae_variable<'a>(
+    target: &rumoca_core::VarName,
+    dae: &'a dae::Dae,
+) -> Option<&'a dae::Variable> {
+    dae.variables
+        .states
+        .get(target)
+        .or_else(|| dae.variables.algebraics.get(target))
+        .or_else(|| dae.variables.inputs.get(target))
+        .or_else(|| dae.variables.outputs.get(target))
+        .or_else(|| dae.variables.parameters.get(target))
+        .or_else(|| dae.variables.constants.get(target))
+        .or_else(|| dae.variables.discrete_reals.get(target))
+        .or_else(|| dae.variables.discrete_valued.get(target))
+}
+
+fn flat_component_ref_for_target(
+    target: &rumoca_core::VarName,
+    flat: &flat::Model,
+    owner: rumoca_core::ProvenanceSpan,
+) -> Option<rumoca_core::ComponentReference> {
+    flat.variables
+        .get(target)
+        .and_then(|variable| variable.component_ref.clone())
+        .map(|component_ref| component_ref_with_missing_spans(component_ref, owner.span()))
+        .or_else(|| {
+            let scalar = rumoca_core::parse_scalar_name(target.as_str())?;
+            let mut component_ref = flat
+                .variables
+                .get(&rumoca_core::VarName::new(scalar.base))?
+                .component_ref
+                .clone()?;
+            append_scalar_indices(&mut component_ref, &scalar.indices, owner);
+            Some(component_ref_with_missing_spans(
+                component_ref,
+                owner.span(),
+            ))
+        })
+}
+
+fn dae_component_ref_for_target(
+    target: &rumoca_core::VarName,
+    dae: &dae::Dae,
+    owner: rumoca_core::ProvenanceSpan,
+) -> Option<rumoca_core::ComponentReference> {
+    find_dae_variable(target, dae)
+        .and_then(|variable| variable.component_ref.clone())
+        .map(|component_ref| component_ref_with_missing_spans(component_ref, owner.span()))
+        .or_else(|| {
+            let scalar = rumoca_core::parse_scalar_name(target.as_str())?;
+            let mut component_ref =
+                find_dae_variable(&rumoca_core::VarName::new(scalar.base), dae)?
+                    .component_ref
+                    .clone()?;
+            append_scalar_indices(&mut component_ref, &scalar.indices, owner);
+            Some(component_ref_with_missing_spans(
+                component_ref,
+                owner.span(),
+            ))
+        })
+}
+
+fn append_scalar_indices(
+    component_ref: &mut rumoca_core::ComponentReference,
+    indices: &[i64],
+    owner: rumoca_core::ProvenanceSpan,
+) {
+    if let Some(part) = component_ref.parts.last_mut() {
+        part.subs.extend(
+            indices.iter().map(|index| {
+                rumoca_core::Subscript::generated_index_with_provenance(*index, owner)
+            }),
+        );
+    }
+}
+
+fn component_ref_with_missing_spans(
+    mut component_ref: rumoca_core::ComponentReference,
+    owner_span: rumoca_core::Span,
+) -> rumoca_core::ComponentReference {
+    if component_ref.span.is_dummy() {
+        component_ref.span = owner_span;
+    }
+    for part in &mut component_ref.parts {
+        if part.span.is_dummy() {
+            part.span = owner_span;
+        }
+        for subscript in &mut part.subs {
+            fill_subscript_missing_span(subscript, owner_span);
+        }
+    }
+    component_ref
+}
+
+fn fill_subscript_missing_span(
+    subscript: &mut rumoca_core::Subscript,
+    owner_span: rumoca_core::Span,
+) {
+    match subscript {
+        rumoca_core::Subscript::Index { span, .. }
+        | rumoca_core::Subscript::Colon { span }
+        | rumoca_core::Subscript::Expr { span, .. } => {
+            if span.is_dummy() {
+                *span = owner_span;
+            }
+        }
+    }
+}
+
+fn flat_variable_span(variable: &flat::Variable) -> Option<rumoca_core::Span> {
+    real_span(variable.source_span)
+        .or_else(|| variable.component_ref.as_ref().and_then(component_ref_span))
+}
+
+fn dae_variable_span(variable: &dae::Variable) -> Option<rumoca_core::Span> {
+    real_span(variable.source_span)
+        .or_else(|| variable.component_ref.as_ref().and_then(component_ref_span))
+        .or_else(|| variable.start_span.and_then(real_span))
+}
+
+fn component_ref_span(
+    component_ref: &rumoca_core::ComponentReference,
+) -> Option<rumoca_core::Span> {
+    real_span(component_ref.span).or_else(|| {
+        component_ref.parts.iter().find_map(|part| {
+            real_span(part.span).or_else(|| part.subs.iter().find_map(subscript_span))
+        })
+    })
+}
+
+fn subscript_span(subscript: &rumoca_core::Subscript) -> Option<rumoca_core::Span> {
+    real_span(subscript.span())
+}
+
+fn real_span(span: rumoca_core::Span) -> Option<rumoca_core::Span> {
+    (!span.is_dummy()).then_some(span)
+}
+
+fn target_provenance_error(
+    target: &rumoca_core::VarName,
+    detail: String,
+    span: rumoca_core::Span,
+) -> ToDaeError {
+    if span.is_dummy() {
+        ToDaeError::runtime_metadata_violation(format!("{detail} for `{target}`"))
+    } else {
+        ToDaeError::runtime_metadata_violation_at(format!("{detail} for `{target}`"), span)
     }
 }
 
@@ -117,26 +366,320 @@ struct DaeReferenceRewriter<'a> {
     flat: &'a flat::Model,
 }
 
-impl ExpressionRewriter for DaeReferenceRewriter<'_> {
+impl DaeReferenceRewriter<'_> {
+    fn rewrite_expression(
+        &self,
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        match expr {
+            rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+                self.rewrite_binary_expression(op, lhs, rhs, *span)
+            }
+            rumoca_core::Expression::Unary { op, rhs, span } => {
+                self.rewrite_unary_expression(op, rhs, *span)
+            }
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } => self.rewrite_var_ref_expression(name, subscripts, *span),
+            rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } => self.rewrite_builtin_call_expression(*function, args, *span),
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                span,
+            } => self.rewrite_function_call_expression(name, args, *is_constructor, *span),
+            rumoca_core::Expression::Literal { value, span } => {
+                Ok(rumoca_core::Expression::Literal {
+                    value: value.clone(),
+                    span: *span,
+                })
+            }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => self.rewrite_if_expression(branches, else_branch, *span),
+            rumoca_core::Expression::Array {
+                elements,
+                is_matrix,
+                span,
+            } => self.rewrite_array_expression(elements, *is_matrix, *span),
+            rumoca_core::Expression::Tuple { elements, span } => {
+                self.rewrite_tuple_expression(elements, *span)
+            }
+            rumoca_core::Expression::Range {
+                start,
+                step,
+                end,
+                span,
+            } => self.rewrite_range_expression(start, step.as_deref(), end, *span),
+            rumoca_core::Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                span,
+            } => {
+                self.rewrite_array_comprehension_expression(expr, indices, filter.as_deref(), *span)
+            }
+            rumoca_core::Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => self.rewrite_index_expression(base, subscripts, *span),
+            rumoca_core::Expression::FieldAccess { base, field, span } => {
+                self.rewrite_field_access_expression(base, field, *span)
+            }
+            rumoca_core::Expression::Empty { span } => {
+                Ok(rumoca_core::Expression::Empty { span: *span })
+            }
+        }
+    }
+
+    fn rewrite_binary_expression(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(self.rewrite_expression(lhs)?),
+            rhs: Box::new(self.rewrite_expression(rhs)?),
+            span,
+        })
+    }
+
+    fn rewrite_unary_expression(
+        &self,
+        op: &rumoca_core::OpUnary,
+        rhs: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(self.rewrite_expression(rhs)?),
+            span,
+        })
+    }
+
+    fn rewrite_builtin_call_expression(
+        &self,
+        function: rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::BuiltinCall {
+            function,
+            args: self.rewrite_expressions(args)?,
+            span,
+        })
+    }
+
+    fn rewrite_function_call_expression(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: self.rewrite_expressions(args)?,
+            is_constructor,
+            span,
+        })
+    }
+
+    fn rewrite_if_expression(
+        &self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::If {
+            branches: self.rewrite_branches(branches)?,
+            else_branch: Box::new(self.rewrite_expression(else_branch)?),
+            span,
+        })
+    }
+
+    fn rewrite_array_expression(
+        &self,
+        elements: &[rumoca_core::Expression],
+        is_matrix: bool,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Array {
+            elements: self.rewrite_expressions(elements)?,
+            is_matrix,
+            span,
+        })
+    }
+
+    fn rewrite_tuple_expression(
+        &self,
+        elements: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Tuple {
+            elements: self.rewrite_expressions(elements)?,
+            span,
+        })
+    }
+
+    fn rewrite_range_expression(
+        &self,
+        start: &rumoca_core::Expression,
+        step: Option<&rumoca_core::Expression>,
+        end: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Range {
+            start: Box::new(self.rewrite_expression(start)?),
+            step: step
+                .map(|step| self.rewrite_expression(step).map(Box::new))
+                .transpose()?,
+            end: Box::new(self.rewrite_expression(end)?),
+            span,
+        })
+    }
+
+    fn rewrite_array_comprehension_expression(
+        &self,
+        expr: &rumoca_core::Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&rumoca_core::Expression>,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(self.rewrite_expression(expr)?),
+            indices: self.rewrite_comprehension_indices(indices)?,
+            filter: filter
+                .map(|filter| self.rewrite_expression(filter).map(Box::new))
+                .transpose()?,
+            span,
+        })
+    }
+
+    fn rewrite_index_expression(
+        &self,
+        base: &rumoca_core::Expression,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Index {
+            base: Box::new(self.rewrite_expression(base)?),
+            subscripts: self.rewrite_subscripts(subscripts)?,
+            span,
+        })
+    }
+
+    fn rewrite_field_access_expression(
+        &self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::FieldAccess {
+            base: Box::new(self.rewrite_expression(base)?),
+            field: field.to_owned(),
+            span,
+        })
+    }
+
+    fn rewrite_expressions(
+        &self,
+        exprs: &[rumoca_core::Expression],
+    ) -> Result<Vec<rumoca_core::Expression>, ToDaeError> {
+        exprs
+            .iter()
+            .map(|expr| self.rewrite_expression(expr))
+            .collect()
+    }
+
+    fn rewrite_branches(
+        &self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    ) -> Result<Vec<(rumoca_core::Expression, rumoca_core::Expression)>, ToDaeError> {
+        branches
+            .iter()
+            .map(|(condition, value)| {
+                Ok((
+                    self.rewrite_expression(condition)?,
+                    self.rewrite_expression(value)?,
+                ))
+            })
+            .collect()
+    }
+
+    fn rewrite_comprehension_indices(
+        &self,
+        indices: &[rumoca_core::ComprehensionIndex],
+    ) -> Result<Vec<rumoca_core::ComprehensionIndex>, ToDaeError> {
+        indices
+            .iter()
+            .map(|index| {
+                Ok(rumoca_core::ComprehensionIndex {
+                    name: index.name.clone(),
+                    range: self.rewrite_expression(&index.range)?,
+                })
+            })
+            .collect()
+    }
+
+    fn rewrite_subscripts(
+        &self,
+        subscripts: &[rumoca_core::Subscript],
+    ) -> Result<Vec<rumoca_core::Subscript>, ToDaeError> {
+        subscripts
+            .iter()
+            .map(|subscript| self.rewrite_subscript(subscript))
+            .collect()
+    }
+
+    fn rewrite_subscript(
+        &self,
+        subscript: &rumoca_core::Subscript,
+    ) -> Result<rumoca_core::Subscript, ToDaeError> {
+        match subscript {
+            rumoca_core::Subscript::Index { value, span } => Ok(rumoca_core::Subscript::Index {
+                value: *value,
+                span: *span,
+            }),
+            rumoca_core::Subscript::Colon { span } => {
+                Ok(rumoca_core::Subscript::Colon { span: *span })
+            }
+            rumoca_core::Subscript::Expr { expr, span } => Ok(rumoca_core::Subscript::Expr {
+                expr: Box::new(self.rewrite_expression(expr)?),
+                span: *span,
+            }),
+        }
+    }
+
     fn rewrite_var_ref_expression(
-        &mut self,
+        &self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
-    ) -> rumoca_core::Expression {
-        if let Some(rewritten) = self.rewrite_embedded_scalar_ref(name, subscripts, span) {
-            return rewritten;
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        if let Some(rewritten) = self.rewrite_embedded_scalar_ref(name, subscripts, span)? {
+            return Ok(rewritten);
         }
         let rewritten_name = self.reference_with_flat_variable_metadata(name);
-        rumoca_core::Expression::VarRef {
+        Ok(rumoca_core::Expression::VarRef {
             name: rewritten_name,
-            subscripts: self.rewrite_subscripts(subscripts),
+            subscripts: self.rewrite_subscripts(subscripts)?,
             span,
-        }
+        })
     }
-}
 
-impl DaeReferenceRewriter<'_> {
     fn reference_with_flat_variable_metadata(
         &self,
         name: &rumoca_core::Reference,
@@ -156,28 +699,60 @@ impl DaeReferenceRewriter<'_> {
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
-    ) -> Option<rumoca_core::Expression> {
+    ) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
         if !subscripts.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let scalar_name = rumoca_core::parse_scalar_name(name.as_str())?;
+        let Some(scalar_name) = rumoca_core::parse_scalar_name(name.as_str()) else {
+            return Ok(None);
+        };
         let base_var = self
             .flat
             .variables
-            .get(&rumoca_core::VarName::new(scalar_name.base))?;
+            .get(&rumoca_core::VarName::new(scalar_name.base));
+        let Some(base_var) = base_var else {
+            return Ok(None);
+        };
         if base_var.dims.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let component_ref = base_var.component_ref.clone()?;
-        Some(rumoca_core::Expression::VarRef {
+        let Some(component_ref) = base_var.component_ref.clone() else {
+            return Ok(None);
+        };
+        let owner = scalar_name_owner_span(span, base_var.source_span);
+        let subscript_context = "DAE embedded scalar reference subscript";
+        let subscripts = scalar_name
+            .indices
+            .into_iter()
+            .map(|index| {
+                rumoca_core::Subscript::try_generated_index(index, owner, subscript_context)
+                    .map_err(|err| missing_generated_subscript_provenance(err.to_string(), owner))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::with_component_reference(scalar_name.base, component_ref),
-            subscripts: scalar_name
-                .indices
-                .into_iter()
-                .map(|index| rumoca_core::Subscript::generated_index(index, span))
-                .collect(),
+            subscripts,
             span,
-        })
+        }))
+    }
+}
+
+fn scalar_name_owner_span(
+    expr_span: rumoca_core::Span,
+    variable_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    if expr_span.is_dummy() {
+        variable_span
+    } else {
+        expr_span
+    }
+}
+
+fn missing_generated_subscript_provenance(detail: String, span: rumoca_core::Span) -> ToDaeError {
+    if span.is_dummy() {
+        ToDaeError::runtime_metadata_violation(detail)
+    } else {
+        ToDaeError::runtime_metadata_violation_at(detail, span)
     }
 }
 
@@ -360,15 +935,14 @@ impl DaeReferenceScope {
             dae::VariableOrigin::Generated => Ok(rumoca_core::Reference::generated(rendered)),
             dae::VariableOrigin::Source => {
                 let component_ref =
-                    metadata
-                        .component_ref
-                        .clone()
-                        .ok_or_else(|| ToDaeError::RuntimeContractViolation {
-                            detail: format!(
+                    metadata.component_ref.clone().ok_or_else(|| {
+                        ToDaeError::runtime_contract_violation_at(
+                            format!(
                                 "source DAE variable `{target}` lost structured component-reference metadata"
                             ),
-                            span: rumoca_core::span_to_source_span(span),
-                        })?;
+                            span,
+                        )
+                    })?;
                 Ok(rumoca_core::Reference::with_component_reference(
                     rendered,
                     component_ref,
@@ -530,28 +1104,28 @@ impl ExpressionRewriter for DaeMetadataReferenceRewriter {
     }
 }
 
-pub(crate) fn remap_flat_for_equations(
-    for_equations: &[flat::ForEquation],
+pub(crate) fn remap_flat_structured_equations(
+    structured_equations: &[flat::StructuredEquationFamily],
     flat_to_dae_index: &IndexMap<usize, usize>,
-) -> Vec<dae::ForEquation> {
-    for_equations
+) -> Vec<dae::StructuredEquationFamily> {
+    structured_equations
         .iter()
-        .filter_map(|for_eq| remap_flat_for_equation(for_eq, flat_to_dae_index))
+        .filter_map(|family| remap_flat_structured_equation(family, flat_to_dae_index))
         .collect()
 }
 
-fn remap_flat_for_equation(
-    for_eq: &flat::ForEquation,
+fn remap_flat_structured_equation(
+    family: &flat::StructuredEquationFamily,
     flat_to_dae_index: &IndexMap<usize, usize>,
-) -> Option<dae::ForEquation> {
-    let mut flat_idx = for_eq.first_equation_index;
+) -> Option<dae::StructuredEquationFamily> {
+    let mut flat_idx = family.first_equation_index;
     let mut first_dae_index = None;
     let mut expected_next_dae_index = None;
-    let mut iterations = Vec::with_capacity(for_eq.iterations.len());
+    let mut equation_counts = Vec::with_capacity(family.equation_counts.len());
 
-    for iteration in &for_eq.iterations {
+    for equation_count in &family.equation_counts {
         let mut dae_equation_count = 0;
-        for source_idx in flat_idx..flat_idx + iteration.equation_count {
+        for source_idx in flat_idx..flat_idx + equation_count {
             let dae_idx = *flat_to_dae_index.get(&source_idx)?;
             if let Some(expected) = expected_next_dae_index
                 && dae_idx != expected
@@ -565,19 +1139,16 @@ fn remap_flat_for_equation(
         if dae_equation_count == 0 {
             return None;
         }
-        iterations.push(dae::ForEquationIteration {
-            index_values: iteration.index_values.clone(),
-            equation_count: dae_equation_count,
-        });
-        flat_idx += iteration.equation_count;
+        equation_counts.push(dae_equation_count);
+        flat_idx += equation_count;
     }
 
-    Some(dae::ForEquation {
-        index_names: for_eq.index_names.clone(),
+    Some(dae::StructuredEquationFamily {
+        domain: family.domain.clone(),
         first_equation_index: first_dae_index?,
-        iterations,
-        span: for_eq.span,
-        origin: for_eq.origin.to_string(),
+        equation_counts,
+        span: family.span,
+        origin: family.origin.to_string(),
     })
 }
 
@@ -594,29 +1165,147 @@ pub(crate) fn flat_to_dae_function_map(
 mod tests {
     use super::*;
 
+    fn test_span(start: usize, end: usize) -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("convert_test.mo"),
+            start,
+            end,
+        )
+    }
+
+    fn simple_component_ref(
+        name: &str,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::ComponentReference {
+        rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span,
+                subs: Vec::new(),
+            }],
+            def_id: Some(rumoca_core::DefId::new(1)),
+        }
+    }
+
+    fn array_flat_variable(name: &str, span: rumoca_core::Span) -> flat::Variable {
+        flat::Variable {
+            name: rumoca_core::VarName::new(name),
+            component_ref: Some(simple_component_ref(name, span)),
+            source_span: span,
+            dims: vec![3],
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        }
+    }
+
     #[test]
-    fn flat_to_dae_expression_attaches_exact_variable_component_ref() {
+    fn structured_target_reference_uses_flat_variable_span_for_dummy_owner() {
+        let span = test_span(4, 9);
         let mut flat = flat::Model::new();
+        flat.variables.insert(
+            rumoca_core::VarName::new("x"),
+            array_flat_variable("x", span),
+        );
+
+        let reference = structured_target_reference_with_flat_metadata(
+            &rumoca_core::VarName::new("x[2]"),
+            rumoca_core::Span::DUMMY,
+            &flat,
+        )
+        .expect("scalar target should inherit source-backed variable provenance");
+
+        let component_ref = reference
+            .component_ref()
+            .expect("scalar target should keep structured metadata");
+        assert_eq!(component_ref.span, span);
+        assert!(matches!(
+            component_ref.parts.as_slice(),
+            [rumoca_core::ComponentRefPart { ident, subs, span: part_span }]
+                if ident == "x"
+                    && *part_span == span
+                    && matches!(
+                        subs.as_slice(),
+                        [rumoca_core::Subscript::Index { value: 2, span: subscript_span }]
+                            if *subscript_span == span
+                    )
+        ));
+    }
+
+    #[test]
+    fn structured_target_reference_rejects_dummy_owner_without_flat_provenance() {
+        let flat = flat::Model::new();
+
+        let err = structured_target_reference_with_flat_metadata(
+            &rumoca_core::VarName::new("x[2]"),
+            rumoca_core::Span::DUMMY,
+            &flat,
+        )
+        .expect_err("unprovenanced source-derived target should fail");
+
+        assert!(
+            matches!(err, ToDaeError::RuntimeMetadataViolation { ref detail } if
+                detail.contains("missing source provenance for DAE structured target reference")
+                    && detail.contains("x[2]")),
+            "unexpected provenance error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn structured_target_reference_uses_dae_variable_span_for_dummy_owner() {
+        let span = test_span(12, 18);
+        let mut dae = dae::Dae::new();
+        dae.variables.discrete_valued.insert(
+            rumoca_core::VarName::new("flag"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("flag"),
+                source_span: span,
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+
+        let reference = structured_target_reference_with_dae_metadata(
+            &rumoca_core::VarName::new("flag"),
+            rumoca_core::Span::DUMMY,
+            &dae,
+        )
+        .expect("guarded event target should inherit DAE variable provenance");
+
+        let component_ref = reference
+            .component_ref()
+            .expect("target should keep structured metadata");
+        assert_eq!(component_ref.span, span);
+    }
+
+    #[test]
+    fn flat_to_dae_expression_attaches_exact_variable_component_ref() -> Result<(), ToDaeError> {
+        let mut flat = flat::Model::new();
+        let span = test_span(20, 27);
         let component_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "vehicle".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "motor".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: vec![rumoca_core::Subscript::generated_index(
-                        1,
-                        rumoca_core::Span::DUMMY,
-                    )],
+                    span,
+                    subs: vec![rumoca_core::Subscript::generated_index(1, span)],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "tau_inv".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -627,17 +1316,21 @@ mod tests {
             flat::Variable {
                 name: rumoca_core::VarName::new("vehicle.motor[1].tau_inv"),
                 component_ref: Some(component_ref),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
         let expr = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("vehicle.motor[1].tau_inv"),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
 
-        let rewritten = flat_to_dae_expression_with_refs(&expr, &flat);
+        let rewritten = flat_to_dae_expression_with_refs(&expr, &flat)?;
 
         assert!(
             matches!(
@@ -654,28 +1347,95 @@ mod tests {
             ),
             "DAE expression conversion should preserve exact Flat variable component references"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn flat_to_dae_expression_uses_owner_span_for_embedded_scalar_indices() -> Result<(), ToDaeError>
+    {
+        let mut flat = flat::Model::new();
+        let declaration_span = test_span(1, 4);
+        let expr_span = test_span(10, 16);
+        flat.variables.insert(
+            rumoca_core::VarName::new("arr"),
+            array_flat_variable("arr", declaration_span),
+        );
+        let expr = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("arr[2]"),
+            subscripts: Vec::new(),
+            span: expr_span,
+        };
+
+        let rewritten = flat_to_dae_expression_with_refs(&expr, &flat)?;
+
+        assert!(
+            matches!(
+                rewritten,
+                rumoca_core::Expression::VarRef { name, subscripts, span }
+                    if name.as_str() == "arr"
+                        && span == expr_span
+                        && matches!(
+                            subscripts.as_slice(),
+                            [rumoca_core::Subscript::Index { value: 2, span }]
+                                if *span == expr_span
+                        )
+            ),
+            "embedded scalar reference subscripts should inherit expression provenance"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn flat_to_dae_expression_rejects_unspanned_embedded_scalar_indices() {
+        let mut flat = flat::Model::new();
+        flat.variables.insert(
+            rumoca_core::VarName::new("arr"),
+            array_flat_variable("arr", rumoca_core::Span::DUMMY),
+        );
+        let expr = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("arr[2]"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let result = flat_to_dae_expression_with_refs(&expr, &flat);
+        assert!(
+            result.is_err(),
+            "unspanned embedded scalar reference should fail"
+        );
+        let err = match result {
+            Err(err) => err,
+            Ok(_) => return,
+        };
+
+        assert!(
+            matches!(err, ToDaeError::RuntimeMetadataViolation { ref detail } if
+                detail.contains("DAE embedded scalar reference subscript")),
+            "unexpected missing-provenance error: {err:?}"
+        );
     }
 
     #[test]
     fn dae_metadata_attachment_replaces_partial_source_component_ref() {
         let name = rumoca_core::VarName::new("adder.gate.x");
+        let span = test_span(40, 47);
         let authoritative_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "adder".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "gate".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "x".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -692,7 +1452,11 @@ mod tests {
                 name: name.clone(),
                 component_ref: Some(authoritative_ref),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.discrete.valued_updates.push(dae::Equation {
@@ -700,9 +1464,9 @@ mod tests {
             rhs: rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::with_component_reference(name.as_str(), partial_ref),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            span: rumoca_core::Span::DUMMY,
+            span,
             origin: "test".to_string(),
             scalar_count: 1,
         });
@@ -719,23 +1483,24 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_recovers_record_prefix_from_scalar_fields() {
         let field_name = rumoca_core::VarName::new("mp.modelcard.VTO");
+        let span = test_span(60, 67);
         let field_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "VTO".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -748,7 +1513,11 @@ mod tests {
                 name: field_name,
                 component_ref: Some(field_ref),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.variables.parameters.insert(
@@ -760,13 +1529,17 @@ mod tests {
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::Reference::new("mp.modelcard"),
                         subscripts: Vec::new(),
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -794,27 +1567,22 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_recovers_subscripted_array_prefix() {
         let field_name = rumoca_core::VarName::new("J[1,1].value");
+        let span = test_span(80, 87);
         let field_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "J".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: vec![
-                        rumoca_core::Subscript::Index {
-                            value: 1,
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                        rumoca_core::Subscript::Index {
-                            value: 1,
-                            span: rumoca_core::Span::DUMMY,
-                        },
+                        rumoca_core::Subscript::Index { value: 1, span },
+                        rumoca_core::Subscript::Index { value: 1, span },
                     ],
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "value".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -827,7 +1595,11 @@ mod tests {
                 name: field_name,
                 component_ref: Some(field_ref),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.variables.parameters.insert(
@@ -837,10 +1609,14 @@ mod tests {
                 start: Some(rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("J[1,1]"),
                     subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
@@ -865,23 +1641,24 @@ mod tests {
     #[test]
     fn dae_metadata_attachment_does_not_invent_bare_component_prefixes() {
         let field_name = rumoca_core::VarName::new("mp.modelcard.VTO");
+        let span = test_span(100, 107);
         let field_ref = rumoca_core::ComponentReference {
             local: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
             parts: vec![
                 rumoca_core::ComponentRefPart {
                     ident: "mp".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "modelcard".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
                 rumoca_core::ComponentRefPart {
                     ident: "VTO".to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                     subs: Vec::new(),
                 },
             ],
@@ -894,7 +1671,11 @@ mod tests {
                 name: field_name,
                 component_ref: Some(field_ref),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae.variables.parameters.insert(
@@ -904,10 +1685,14 @@ mod tests {
                 start: Some(rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("mp"),
                     subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 origin: dae::VariableOrigin::Source,
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 

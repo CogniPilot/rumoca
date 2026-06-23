@@ -1,78 +1,202 @@
+use indexmap::IndexSet;
+
 use super::*;
+
+pub(in crate::lower) type LinearParts = (
+    IndexMap<String, rumoca_core::Expression>,
+    Option<rumoca_core::Expression>,
+);
+
+fn linear_index_map_with_capacity<V>(
+    capacity: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<IndexMap<String, V>, LowerError> {
+    let mut values = IndexMap::new();
+    values.try_reserve(capacity).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })?;
+    Ok(values)
+}
+
+fn linear_index_set_with_capacity(
+    capacity: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<IndexSet<String>, LowerError> {
+    let mut values = IndexSet::new();
+    values.try_reserve(capacity).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })?;
+    Ok(values)
+}
+
+fn inherited_linear_span(
+    span: rumoca_core::Span,
+    owner_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    if span.is_dummy() { owner_span } else { span }
+}
+
+fn linear_child_owner_span(
+    expr: &rumoca_core::Expression,
+    parent_span: rumoca_core::Span,
+    owner_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    expr.span()
+        .unwrap_or_else(|| inherited_linear_span(parent_span, owner_span))
+}
+
+fn linear_expr_pair_span(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    owner_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    lhs.span().or_else(|| rhs.span()).unwrap_or(owner_span)
+}
+
+fn linear_expr_or_owner_span(
+    expr: &rumoca_core::Expression,
+    owner_span: rumoca_core::Span,
+) -> Result<rumoca_core::Span, LowerError> {
+    if let Some(span) = expr.span().filter(|span| !span.is_dummy()) {
+        return Ok(span);
+    }
+    if !owner_span.is_dummy() {
+        return Ok(owner_span);
+    }
+    Err(LowerError::UnspannedContractViolation {
+        reason: "derivative linear expression requires source span metadata".to_string(),
+    })
+}
 
 pub(in crate::lower) fn derivative_linear_parts(
     expr: &rumoca_core::Expression,
     ctx: &DerivativeLinearCtx<'_>,
-) -> Option<(
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-)> {
-    let (coefficients, remainder) = derivative_linear_parts_any(expr, ctx)?;
-    (!coefficients.is_empty()).then_some((coefficients, remainder))
+    owner_span: rumoca_core::Span,
+) -> Result<Option<LinearParts>, LowerError> {
+    let Some((coefficients, remainder)) = derivative_linear_parts_any(expr, ctx, owner_span)?
+    else {
+        return Ok(None);
+    };
+    Ok((!coefficients.is_empty()).then_some((coefficients, remainder)))
 }
 
 pub(in crate::lower) fn derivative_linear_parts_any(
     expr: &rumoca_core::Expression,
     ctx: &DerivativeLinearCtx<'_>,
-) -> Option<(
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-)> {
+    owner_span: rumoca_core::Span,
+) -> Result<Option<LinearParts>, LowerError> {
     match expr {
         rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_add(op) => {
-            let lhs_parts = derivative_linear_parts_any(lhs, ctx)?;
-            let rhs_parts = derivative_linear_parts_any(rhs, ctx)?;
-            Some(combine_linear_parts(lhs_parts, rhs_parts, false, *span))
+            let child_owner = inherited_linear_span(*span, owner_span);
+            let Some(lhs_parts) = derivative_linear_parts_any(lhs, ctx, child_owner)? else {
+                return Ok(None);
+            };
+            let Some(rhs_parts) = derivative_linear_parts_any(rhs, ctx, child_owner)? else {
+                return Ok(None);
+            };
+            combine_linear_parts(lhs_parts, rhs_parts, false, *span).map(Some)
         }
         rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_sub(op) => {
-            let lhs_parts = derivative_linear_parts_any(lhs, ctx)?;
-            let rhs_parts = derivative_linear_parts_any(rhs, ctx)?;
-            Some(combine_linear_parts(lhs_parts, rhs_parts, true, *span))
+            let child_owner = inherited_linear_span(*span, owner_span);
+            let Some(lhs_parts) = derivative_linear_parts_any(lhs, ctx, child_owner)? else {
+                return Ok(None);
+            };
+            let Some(rhs_parts) = derivative_linear_parts_any(rhs, ctx, child_owner)? else {
+                return Ok(None);
+            };
+            combine_linear_parts(lhs_parts, rhs_parts, true, *span).map(Some)
         }
         rumoca_core::Expression::Unary { op, rhs, span } if is_unary_minus(op) => {
-            let parts = derivative_linear_parts_any(rhs, ctx)?;
-            Some(negate_linear_parts(parts, *span))
+            let Some(parts) =
+                derivative_linear_parts_any(rhs, ctx, inherited_linear_span(*span, owner_span))?
+            else {
+                return Ok(None);
+            };
+            negate_linear_parts(parts, *span).map(Some)
         }
         rumoca_core::Expression::If {
             branches,
             else_branch,
             span,
-        } => derivative_linear_parts_if(branches, else_branch, ctx, *span),
+        } => derivative_linear_parts_if(
+            branches,
+            else_branch,
+            ctx,
+            inherited_linear_span(*span, owner_span),
+        ),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_mul(op) => {
-            if let Some(parts) = derivative_dot_product_linear_parts(lhs, rhs, ctx, *span) {
-                return Some(parts);
+            if let Some(parts) = derivative_dot_product_linear_parts(lhs, rhs, ctx, *span)? {
+                return Ok(Some(parts));
             }
             let lhs_has_der = lhs.contains_der();
             let rhs_has_der = rhs.contains_der();
             match (lhs_has_der, rhs_has_der) {
                 (true, false) => {
-                    let parts = derivative_linear_parts_any(lhs, ctx)?;
-                    Some(scale_linear_parts(
-                        parts,
-                        rhs.as_ref().clone(),
-                        false,
-                        *span,
-                    ))
+                    let Some(parts) = derivative_linear_parts_any(
+                        lhs,
+                        ctx,
+                        linear_child_owner_span(lhs, *span, owner_span),
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    scale_linear_parts(parts, rhs.as_ref().clone(), false, *span).map(Some)
                 }
                 (false, true) => {
-                    let parts = derivative_linear_parts_any(rhs, ctx)?;
-                    Some(scale_linear_parts(parts, lhs.as_ref().clone(), true, *span))
+                    let Some(parts) = derivative_linear_parts_any(
+                        rhs,
+                        ctx,
+                        linear_child_owner_span(rhs, *span, owner_span),
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    scale_linear_parts(parts, lhs.as_ref().clone(), true, *span).map(Some)
                 }
-                (false, false) => Some((IndexMap::new(), Some(expr.clone()))),
-                (true, true) => None,
+                (false, false) => Ok(Some((IndexMap::new(), Some(expr.clone())))),
+                (true, true) => Ok(None),
             }
         }
         rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_div(op) => {
             if rhs.contains_der() {
-                return None;
+                return Ok(None);
             }
-            let parts = derivative_linear_parts_any(lhs, ctx)?;
-            Some(divide_linear_parts(parts, rhs.as_ref().clone(), *span))
+            let Some(parts) = derivative_linear_parts_any(
+                lhs,
+                ctx,
+                linear_child_owner_span(lhs, *span, owner_span),
+            )?
+            else {
+                return Ok(None);
+            };
+            divide_linear_parts(parts, rhs.as_ref().clone(), *span).map(Some)
         }
-        _ if !expr.contains_der() => Some((IndexMap::new(), Some(expr.clone()))),
-        _ => derivative_term_coefficient(expr, ctx.state_names)
-            .map(|(name, coeff)| (IndexMap::from([(name, coeff)]), None)),
+        _ if !expr.contains_der() => Ok(Some((IndexMap::new(), Some(expr.clone())))),
+        _ => derivative_terminal_linear_parts(expr, ctx.state_names, owner_span),
     }
+}
+
+fn derivative_terminal_linear_parts(
+    expr: &rumoca_core::Expression,
+    state_names: &[String],
+    owner_span: rumoca_core::Span,
+) -> Result<Option<LinearParts>, LowerError> {
+    let Some((name, coeff)) = derivative_term_coefficient(expr, state_names, owner_span)? else {
+        return Ok(None);
+    };
+    let span = linear_expr_or_owner_span(expr, owner_span)?;
+    let mut coefficients =
+        linear_index_map_with_capacity(1, "derivative term coefficient count", span)?;
+    coefficients.insert(name, coeff);
+    Ok(Some((coefficients, None)))
 }
 
 pub(in crate::lower) fn derivative_dot_product_linear_parts(
@@ -80,42 +204,77 @@ pub(in crate::lower) fn derivative_dot_product_linear_parts(
     rhs: &rumoca_core::Expression,
     ctx: &DerivativeLinearCtx<'_>,
     span: rumoca_core::Span,
-) -> Option<(
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-)> {
+) -> Result<Option<LinearParts>, LowerError> {
     let lhs_has_der = lhs.contains_der();
     let rhs_has_der = rhs.contains_der();
     if lhs_has_der == rhs_has_der {
-        return None;
+        return Ok(None);
     }
-    let lhs_dims = expression_result_dims(lhs, ctx.dae_model, ctx.structural_bindings).ok()?;
-    let rhs_dims = expression_result_dims(rhs, ctx.dae_model, ctx.structural_bindings).ok()?;
+    let lhs_dims = match expression_result_dims(lhs, ctx.dae_model, ctx.structural_bindings, span) {
+        Ok(dims) => dims,
+        Err(LowerError::MissingBinding { .. } | LowerError::Unsupported { .. }) => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
+    let rhs_dims = match expression_result_dims(rhs, ctx.dae_model, ctx.structural_bindings, span) {
+        Ok(dims) => dims,
+        Err(LowerError::MissingBinding { .. } | LowerError::Unsupported { .. }) => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
     if lhs_dims.len() != 1 || lhs_dims != rhs_dims {
-        return None;
+        return Ok(None);
     }
-    let lhs_scalars =
-        project_expression_scalars(lhs, &lhs_dims, ctx.dae_model, ctx.structural_bindings)
-            .ok()??;
-    let rhs_scalars =
-        project_expression_scalars(rhs, &rhs_dims, ctx.dae_model, ctx.structural_bindings)
-            .ok()??;
+    let lhs_scalars = match project_expression_scalars(
+        lhs,
+        &lhs_dims,
+        ctx.dae_model,
+        ctx.structural_bindings,
+        span,
+    ) {
+        Ok(scalars) => scalars,
+        Err(LowerError::MissingBinding { .. }) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let Some(lhs_scalars) = lhs_scalars else {
+        return Ok(None);
+    };
+    let rhs_scalars = match project_expression_scalars(
+        rhs,
+        &rhs_dims,
+        ctx.dae_model,
+        ctx.structural_bindings,
+        span,
+    ) {
+        Ok(scalars) => scalars,
+        Err(LowerError::MissingBinding { .. }) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let Some(rhs_scalars) = rhs_scalars else {
+        return Ok(None);
+    };
     if lhs_scalars.len() != rhs_scalars.len() {
-        return None;
+        return Ok(None);
     }
 
     let mut combined = (IndexMap::new(), None);
     for (lhs_scalar, rhs_scalar) in lhs_scalars.into_iter().zip(rhs_scalars) {
         let parts = if lhs_has_der {
-            let parts = derivative_linear_parts_any(&lhs_scalar, ctx)?;
-            scale_linear_parts(parts, rhs_scalar, false, span)
+            let Some(parts) = derivative_linear_parts_any(&lhs_scalar, ctx, span)? else {
+                return Ok(None);
+            };
+            scale_linear_parts(parts, rhs_scalar, false, span)?
         } else {
-            let parts = derivative_linear_parts_any(&rhs_scalar, ctx)?;
-            scale_linear_parts(parts, lhs_scalar, true, span)
+            let Some(parts) = derivative_linear_parts_any(&rhs_scalar, ctx, span)? else {
+                return Ok(None);
+            };
+            scale_linear_parts(parts, lhs_scalar, true, span)?
         };
-        combined = combine_linear_parts(combined, parts, false, span);
+        combined = combine_linear_parts(combined, parts, false, span)?;
     }
-    (!combined.0.is_empty()).then_some(combined)
+    Ok((!combined.0.is_empty()).then_some(combined))
 }
 
 pub(in crate::lower) fn derivative_linear_parts_if(
@@ -123,51 +282,64 @@ pub(in crate::lower) fn derivative_linear_parts_if(
     else_branch: &rumoca_core::Expression,
     ctx: &DerivativeLinearCtx<'_>,
     span: rumoca_core::Span,
-) -> Option<(
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-)> {
+) -> Result<Option<LinearParts>, LowerError> {
     if branches
         .iter()
         .any(|(condition, _)| condition.contains_der())
     {
-        return None;
+        return Ok(None);
     }
 
-    let branch_parts = branches
-        .iter()
-        .map(|(_, expr)| derivative_linear_parts_any(expr, ctx))
-        .collect::<Option<Vec<_>>>()?;
-    let else_parts = derivative_linear_parts_any(else_branch, ctx)?;
+    let mut branch_parts =
+        derivative_vec_with_capacity(branches.len(), "derivative if branch part count", span)?;
+    for (_, expr) in branches {
+        let Some(parts) = derivative_linear_parts_any(expr, ctx, span)? else {
+            return Ok(None);
+        };
+        branch_parts.push(parts);
+    }
+    let Some(else_parts) = derivative_linear_parts_any(else_branch, ctx, span)? else {
+        return Ok(None);
+    };
 
-    let coefficient_keys = derivative_if_coefficient_keys(&branch_parts, &else_parts);
-    let coefficients = coefficient_keys
-        .into_iter()
-        .map(|key| {
-            let branch_coefficients = branches
-                .iter()
-                .zip(branch_parts.iter())
-                .map(|((condition, _), (coefficients, _))| {
-                    (
-                        condition.clone(),
-                        coefficients.get(&key).cloned().unwrap_or_else(zero_expr),
-                    )
-                })
-                .collect();
-            let else_coefficient = else_parts.0.get(&key).cloned().unwrap_or_else(zero_expr);
-            (
-                key,
-                rumoca_core::Expression::If {
-                    branches: branch_coefficients,
-                    else_branch: Box::new(else_coefficient),
-                    span,
-                },
-            )
-        })
-        .collect();
+    let coefficient_keys = derivative_if_coefficient_keys(&branch_parts, &else_parts, span)?;
+    let mut coefficients = linear_index_map_with_capacity(
+        coefficient_keys.len(),
+        "derivative if coefficient count",
+        span,
+    )?;
+    for key in coefficient_keys {
+        let mut branch_coefficients = derivative_vec_with_capacity(
+            branches.len(),
+            "derivative if branch coefficient count",
+            span,
+        )?;
+        for ((condition, _), (coefficients, _)) in branches.iter().zip(branch_parts.iter()) {
+            branch_coefficients.push((
+                condition.clone(),
+                coefficients
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| zero_expr_with_span(span)),
+            ));
+        }
+        let else_coefficient = else_parts
+            .0
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| zero_expr_with_span(span));
+        coefficients.insert(
+            key,
+            rumoca_core::Expression::If {
+                branches: branch_coefficients,
+                else_branch: Box::new(else_coefficient),
+                span,
+            },
+        );
+    }
 
-    let remainder = derivative_if_remainder(branches, &branch_parts, else_parts.1.as_ref(), span);
-    Some((coefficients, remainder))
+    let remainder = derivative_if_remainder(branches, &branch_parts, else_parts.1.as_ref(), span)?;
+    Ok(Some((coefficients, remainder)))
 }
 
 pub(in crate::lower) fn derivative_if_coefficient_keys(
@@ -179,21 +351,28 @@ pub(in crate::lower) fn derivative_if_coefficient_keys(
         IndexMap<String, rumoca_core::Expression>,
         Option<rumoca_core::Expression>,
     ),
-) -> Vec<String> {
-    let mut keys = Vec::new();
+    span: rumoca_core::Span,
+) -> Result<IndexSet<String>, LowerError> {
+    let mut capacity = else_parts.0.len();
+    for (coefficients, _) in branch_parts {
+        capacity = capacity.checked_add(coefficients.len()).ok_or_else(|| {
+            LowerError::contract_violation(
+                "derivative if coefficient key count overflows host index range",
+                span,
+            )
+        })?;
+    }
+    let mut keys =
+        linear_index_set_with_capacity(capacity, "derivative if coefficient key count", span)?;
     for (coefficients, _) in branch_parts {
         for key in coefficients.keys() {
-            if !keys.contains(key) {
-                keys.push(key.clone());
-            }
+            keys.insert(key.clone());
         }
     }
     for key in else_parts.0.keys() {
-        if !keys.contains(key) {
-            keys.push(key.clone());
-        }
+        keys.insert(key.clone());
     }
-    keys
+    Ok(keys)
 }
 
 pub(in crate::lower) fn derivative_if_remainder(
@@ -204,29 +383,33 @@ pub(in crate::lower) fn derivative_if_remainder(
     )],
     else_remainder: Option<&rumoca_core::Expression>,
     span: rumoca_core::Span,
-) -> Option<rumoca_core::Expression> {
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
     if !branch_parts
         .iter()
         .any(|(_, remainder)| remainder.is_some())
         && else_remainder.is_none()
     {
-        return None;
+        return Ok(None);
     }
-    let branch_remainders = branches
-        .iter()
-        .zip(branch_parts.iter())
-        .map(|((condition, _), (_, remainder))| {
-            (
-                condition.clone(),
-                remainder.clone().unwrap_or_else(zero_expr),
-            )
-        })
-        .collect();
-    Some(rumoca_core::Expression::If {
+    let mut branch_remainders =
+        derivative_vec_with_capacity(branches.len(), "derivative if branch remainder count", span)?;
+    for ((condition, _), (_, remainder)) in branches.iter().zip(branch_parts.iter()) {
+        branch_remainders.push((
+            condition.clone(),
+            remainder
+                .clone()
+                .unwrap_or_else(|| zero_expr_with_span(span)),
+        ));
+    }
+    Ok(Some(rumoca_core::Expression::If {
         branches: branch_remainders,
-        else_branch: Box::new(else_remainder.cloned().unwrap_or_else(zero_expr)),
+        else_branch: Box::new(
+            else_remainder
+                .cloned()
+                .unwrap_or_else(|| zero_expr_with_span(span)),
+        ),
         span,
-    })
+    }))
 }
 
 pub(in crate::lower) fn combine_linear_parts(
@@ -240,16 +423,21 @@ pub(in crate::lower) fn combine_linear_parts(
     ),
     subtract_rhs: bool,
     span: rumoca_core::Span,
-) -> (
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-) {
+) -> Result<LinearParts, LowerError> {
     let (mut coefficients, lhs_remainder) = lhs;
     let (rhs_coefficients, rhs_remainder) = if subtract_rhs {
-        negate_linear_parts(rhs, span)
+        negate_linear_parts(rhs, span)?
     } else {
         rhs
     };
+    coefficients
+        .try_reserve(rhs_coefficients.len())
+        .map_err(|_| {
+            LowerError::contract_violation(
+                "combined derivative coefficient count capacity exceeds host memory limits",
+                span,
+            )
+        })?;
     for (name, coeff) in rhs_coefficients {
         coefficients
             .entry(name)
@@ -257,7 +445,7 @@ pub(in crate::lower) fn combine_linear_parts(
             .or_insert(coeff);
     }
     let remainder = combine_remainders(lhs_remainder, rhs_remainder, span);
-    (coefficients, remainder)
+    Ok((coefficients, remainder))
 }
 
 pub(in crate::lower) fn combine_remainders(
@@ -280,22 +468,21 @@ pub(in crate::lower) fn scale_linear_parts(
     factor: rumoca_core::Expression,
     factor_on_left: bool,
     span: rumoca_core::Span,
-) -> (
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-) {
+) -> Result<LinearParts, LowerError> {
     let (coefficients, remainder) = parts;
-    let coefficients = coefficients
-        .into_iter()
-        .map(|(name, coeff)| {
-            let scaled = if factor_on_left {
-                mul_with_span(factor.clone(), coeff, span)
-            } else {
-                mul_with_span(coeff, factor.clone(), span)
-            };
-            (name, scaled)
-        })
-        .collect();
+    let mut scaled_coefficients = linear_index_map_with_capacity(
+        coefficients.len(),
+        "scaled derivative coefficient count",
+        span,
+    )?;
+    for (name, coeff) in coefficients {
+        let scaled = if factor_on_left {
+            mul_with_span(factor.clone(), coeff, span)
+        } else {
+            mul_with_span(coeff, factor.clone(), span)
+        };
+        scaled_coefficients.insert(name, scaled);
+    }
     let remainder = remainder.map(|expr| {
         if factor_on_left {
             mul_with_span(factor, expr, span)
@@ -303,7 +490,7 @@ pub(in crate::lower) fn scale_linear_parts(
             mul_with_span(expr, factor, span)
         }
     });
-    (coefficients, remainder)
+    Ok((scaled_coefficients, remainder))
 }
 
 pub(in crate::lower) fn divide_linear_parts(
@@ -313,17 +500,18 @@ pub(in crate::lower) fn divide_linear_parts(
     ),
     denominator: rumoca_core::Expression,
     span: rumoca_core::Span,
-) -> (
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-) {
+) -> Result<LinearParts, LowerError> {
     let (coefficients, remainder) = parts;
-    let coefficients = coefficients
-        .into_iter()
-        .map(|(name, coeff)| (name, div_with_span(coeff, denominator.clone(), span)))
-        .collect();
+    let mut divided_coefficients = linear_index_map_with_capacity(
+        coefficients.len(),
+        "divided derivative coefficient count",
+        span,
+    )?;
+    for (name, coeff) in coefficients {
+        divided_coefficients.insert(name, div_with_span(coeff, denominator.clone(), span));
+    }
     let remainder = remainder.map(|expr| div_with_span(expr, denominator, span));
-    (coefficients, remainder)
+    Ok((divided_coefficients, remainder))
 }
 
 pub(in crate::lower) fn negate_linear_parts(
@@ -332,27 +520,32 @@ pub(in crate::lower) fn negate_linear_parts(
         Option<rumoca_core::Expression>,
     ),
     span: rumoca_core::Span,
-) -> (
-    IndexMap<String, rumoca_core::Expression>,
-    Option<rumoca_core::Expression>,
-) {
+) -> Result<LinearParts, LowerError> {
     let (coefficients, remainder) = parts;
-    let coefficients = coefficients
-        .into_iter()
-        .map(|(name, coeff)| (name, neg_with_span(coeff, span)))
-        .collect();
-    (
-        coefficients,
+    let mut negated_coefficients = linear_index_map_with_capacity(
+        coefficients.len(),
+        "negated derivative coefficient count",
+        span,
+    )?;
+    for (name, coeff) in coefficients {
+        negated_coefficients.insert(name, neg_with_span(coeff, span));
+    }
+    Ok((
+        negated_coefficients,
         remainder.map(|expr| neg_with_span(expr, span)),
-    )
+    ))
 }
 
 pub(in crate::lower) fn rhs_without_remainder(
     rhs: rumoca_core::Expression,
     remainder: Option<rumoca_core::Expression>,
+    owner_span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     match remainder {
-        Some(remainder) => sub_with_span(rhs, remainder, rumoca_core::Span::DUMMY),
+        Some(remainder) => {
+            let span = linear_expr_pair_span(&rhs, &remainder, owner_span);
+            sub_with_span(rhs, remainder, span)
+        }
         None => rhs,
     }
 }
@@ -360,77 +553,111 @@ pub(in crate::lower) fn rhs_without_remainder(
 pub(in crate::lower) fn derivative_term_coefficient(
     term: &rumoca_core::Expression,
     state_names: &[String],
-) -> Option<(String, rumoca_core::Expression)> {
-    if let Some(name) = der_state_name(term, state_names) {
-        return Some((name, one_expr()));
+    owner_span: rumoca_core::Span,
+) -> Result<Option<(String, rumoca_core::Expression)>, LowerError> {
+    if let Some(name) = der_state_name(term, state_names)? {
+        let span = linear_expr_or_owner_span(term, owner_span)?;
+        return Ok(Some((name, one_expr_with_span(span))));
     }
     let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = term else {
-        return None;
+        return Ok(None);
     };
     if !is_mul(op) {
-        return None;
+        return Ok(None);
     }
-    if let Some(name) = der_state_name(lhs, state_names)
-        && !rhs.contains_der()
+    if !rhs.contains_der()
+        && let Some(name) = der_state_name(lhs, state_names)?
     {
-        return Some((name, rhs.as_ref().clone()));
+        return Ok(Some((name, rhs.as_ref().clone())));
     }
-    if let Some(name) = der_state_name(rhs, state_names)
-        && !lhs.contains_der()
+    if !lhs.contains_der()
+        && let Some(name) = der_state_name(rhs, state_names)?
     {
-        return Some((name, lhs.as_ref().clone()));
+        return Ok(Some((name, lhs.as_ref().clone())));
     }
-    None
+    Ok(None)
 }
 
 pub(in crate::lower) fn der_state_name(
     expr: &rumoca_core::Expression,
     state_names: &[String],
-) -> Option<String> {
-    let rumoca_core::Expression::BuiltinCall { function, args, .. } = expr else {
-        return None;
+) -> Result<Option<String>, LowerError> {
+    let rumoca_core::Expression::BuiltinCall {
+        function,
+        args,
+        span,
+    } = expr
+    else {
+        return Ok(None);
     };
     if *function != rumoca_core::BuiltinFunction::Der {
-        return None;
+        return Ok(None);
     }
-    let key = binding_key_for_der_arg(args.first()?).ok()?;
-    state_names.iter().any(|name| name == &key).then_some(key)
+    let Some(arg) = args.first() else {
+        return Err(LowerError::contract_violation(
+            "der() call has no argument in derivative RHS lowering",
+            *span,
+        ));
+    };
+    let key = binding_key_for_der_arg(arg)
+        .map_err(|err| err.with_fallback_span(arg.span().unwrap_or(*span)))?;
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    Ok(state_names.iter().any(|name| name == &key).then_some(key))
 }
 
 pub(in crate::lower) fn binding_key_for_der_arg(
     expr: &rumoca_core::Expression,
-) -> Result<String, LowerError> {
+) -> Result<Option<String>, LowerError> {
     match expr {
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
+            name,
+            subscripts,
+            span,
         } => {
             if subscripts.is_empty() {
-                return Ok(name.as_str().to_string());
+                return Ok(Some(name.as_str().to_string()));
             }
-            let indices = super::super::static_subscript_indices(subscripts)?.ok_or_else(|| {
-                LowerError::Unsupported {
-                    reason: "dynamic der() subscript is unsupported in derivative RHS lowering"
-                        .to_string(),
-                }
-            })?;
-            Ok(dae::format_subscript_key(name.as_str(), &indices))
+            let Some(indices) = der_arg_static_subscript_indices(subscripts, *span)? else {
+                return Ok(None);
+            };
+            Ok(Some(dae::format_subscript_key(name.as_str(), &indices)))
         }
         rumoca_core::Expression::Index {
-            base, subscripts, ..
+            base,
+            subscripts,
+            span,
         } => {
-            let base_key = binding_key_for_der_arg(base)?;
-            let indices = super::super::static_subscript_indices(subscripts)?.ok_or_else(|| {
-                LowerError::Unsupported {
-                    reason: "dynamic der() subscript is unsupported in derivative RHS lowering"
-                        .to_string(),
-                }
-            })?;
-            Ok(dae::format_subscript_key(&base_key, &indices))
+            let Some(base_key) = binding_key_for_der_arg(base)? else {
+                return Ok(None);
+            };
+            let Some(indices) = der_arg_static_subscript_indices(subscripts, *span)? else {
+                return Ok(None);
+            };
+            Ok(Some(dae::format_subscript_key(&base_key, &indices)))
         }
-        _ => Err(LowerError::Unsupported {
-            reason: "unsupported der() argument in derivative RHS lowering".to_string(),
-        }),
+        _ => Ok(None),
     }
+}
+
+fn der_arg_static_subscript_indices(
+    subscripts: &[rumoca_core::Subscript],
+    fallback_span: rumoca_core::Span,
+) -> Result<Option<Vec<usize>>, LowerError> {
+    super::super::static_subscript_indices_with_owner(subscripts, fallback_span)
+        .map_err(|err| err.with_fallback_span(der_arg_subscript_span(subscripts, fallback_span)))
+}
+
+fn der_arg_subscript_span(
+    subscripts: &[rumoca_core::Subscript],
+    fallback_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    subscripts
+        .iter()
+        .map(rumoca_core::Subscript::span)
+        .find(|span| !span.is_dummy())
+        .unwrap_or(fallback_span)
 }
 
 pub(in crate::lower) fn split_subtraction(
@@ -443,22 +670,27 @@ pub(in crate::lower) fn split_subtraction(
                 op: inner_op,
                 lhs,
                 rhs,
-                span: rumoca_core::Span::DUMMY,
+                span,
             } = rhs.as_ref()
             else {
                 return None;
             };
+            if !span.is_dummy() {
+                return None;
+            }
             is_sub(inner_op).then_some((rhs, lhs))
         }
         _ => None,
     }
 }
 
-pub(in crate::lower) fn collect_state_scalars(dae_model: &dae::Dae) -> Vec<StateScalar> {
+pub(in crate::lower) fn collect_state_scalars(
+    dae_model: &dae::Dae,
+) -> Result<Vec<StateScalar>, LowerError> {
     let mut states = Vec::new();
     for (name, var) in &dae_model.variables.states {
         let base = name.as_str().to_string();
-        let size = var.size();
+        let size = super::super::helpers::variable_size(var)?;
         for idx in 0..size {
             let scalar_name = if var.dims.is_empty() {
                 base.clone()
@@ -473,33 +705,33 @@ pub(in crate::lower) fn collect_state_scalars(dae_model: &dae::Dae) -> Vec<State
             });
         }
     }
-    states
+    Ok(states)
 }
 
 pub(in crate::lower) fn array_expression_dims(
     elements: &[rumoca_core::Expression],
     is_matrix: bool,
-) -> Vec<i64> {
+) -> Result<Vec<usize>, LowerError> {
     if !is_matrix {
-        return vec![elements.len() as i64];
+        return Ok(vec![elements.len()]);
     }
     let Some(rumoca_core::Expression::Array { elements: row, .. }) = elements.first() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    vec![elements.len() as i64, row.len() as i64]
+    Ok(vec![elements.len(), row.len()])
 }
 
-pub(in crate::lower) fn one_expr() -> rumoca_core::Expression {
+pub(in crate::lower) fn one_expr_with_span(span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: Literal::Real(1.0),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
-pub(in crate::lower) fn zero_expr() -> rumoca_core::Expression {
+pub(in crate::lower) fn zero_expr_with_span(span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: Literal::Real(0.0),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -571,7 +803,7 @@ pub(in crate::lower) fn sum_expressions(
     span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     if terms.is_empty() {
-        return zero_expr();
+        return zero_expr_with_span(span);
     }
     let first = terms.remove(0);
     terms
@@ -597,4 +829,193 @@ pub(in crate::lower) fn is_div(op: &OpBinary) -> bool {
 
 pub(in crate::lower) fn is_unary_minus(op: &OpUnary) -> bool {
     matches!(op, OpUnary::Minus | OpUnary::DotMinus)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span(start: usize, end: usize) -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("linear_parts_test"),
+            start,
+            end,
+        )
+    }
+
+    fn unspanned_linear_parts_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
+    fn var_ref(
+        name: &str,
+        subscripts: Vec<rumoca_core::Subscript>,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts,
+            span,
+        }
+    }
+
+    fn der(arg: rumoca_core::Expression, span: rumoca_core::Span) -> rumoca_core::Expression {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: vec![arg],
+            span,
+        }
+    }
+
+    #[test]
+    fn rhs_without_remainder_preserves_rhs_span() {
+        let rhs_span = span(10, 20);
+        let remainder_span = span(30, 40);
+        let rhs = var_ref("rhs", Vec::new(), rhs_span);
+        let remainder = var_ref("remainder", Vec::new(), remainder_span);
+
+        let expr = rhs_without_remainder(rhs, Some(remainder), span(50, 60));
+
+        assert_eq!(expr.span(), Some(rhs_span));
+    }
+
+    #[test]
+    fn rhs_without_remainder_preserves_generated_rhs_owner_span() {
+        let rhs_span = span(10, 20);
+        let remainder_span = span(30, 40);
+        let rhs = zero_expr_with_span(rhs_span);
+        let remainder = var_ref("remainder", Vec::new(), remainder_span);
+
+        let expr = rhs_without_remainder(rhs, Some(remainder), span(50, 60));
+
+        assert_eq!(expr.span(), Some(rhs_span));
+    }
+
+    #[test]
+    fn rhs_without_remainder_uses_shared_generated_owner_span() {
+        let owner_span = span(50, 60);
+        let expr = rhs_without_remainder(
+            zero_expr_with_span(owner_span),
+            Some(one_expr_with_span(owner_span)),
+            owner_span,
+        );
+
+        assert_eq!(expr.span(), Some(owner_span));
+    }
+
+    #[test]
+    fn linear_index_map_capacity_dummy_span_stays_unspanned() {
+        let err = linear_index_map_with_capacity::<rumoca_core::Expression>(
+            usize::MAX,
+            "derivative coefficients",
+            unspanned_linear_parts_test_span(),
+        )
+        .expect_err("impossible capacity must be rejected");
+
+        assert!(
+            matches!(err, LowerError::UnspannedContractViolation { .. }),
+            "dummy capacity span should not be fabricated into a source span: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("derivative coefficients capacity exceeds host memory limits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn linear_index_map_capacity_real_span_is_preserved() {
+        let real_span = span(2, 9);
+        let err = linear_index_map_with_capacity::<rumoca_core::Expression>(
+            usize::MAX,
+            "derivative coefficients",
+            real_span,
+        )
+        .expect_err("impossible capacity must be rejected");
+
+        assert!(
+            matches!(err, LowerError::ContractViolation { span: err_span, .. } if err_span == real_span),
+            "real capacity span should be preserved: {err:?}"
+        );
+    }
+
+    #[test]
+    fn der_state_name_declines_non_state_derivative() -> Result<(), LowerError> {
+        let expr = der(var_ref("p", Vec::new(), span(1, 2)), span(0, 3));
+
+        assert!(der_state_name(&expr, &["x".to_string()])?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn der_state_name_reports_missing_argument_with_call_span() {
+        let call_span = span(0, 5);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: Vec::new(),
+            span: call_span,
+        };
+
+        let err = der_state_name(&expr, &["x".to_string()])
+            .expect_err("malformed der() call should fail");
+        assert_eq!(err.source_span(), Some(call_span));
+        assert!(err.reason().contains("der() call has no argument"));
+    }
+
+    #[test]
+    fn der_state_name_missing_argument_dummy_span_stays_unspanned() {
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: Vec::new(),
+            span: unspanned_linear_parts_test_span(),
+        };
+
+        let err = der_state_name(&expr, &["x".to_string()])
+            .expect_err("malformed synthetic der() call should fail");
+        assert!(
+            matches!(err, LowerError::UnspannedContractViolation { .. }),
+            "dummy der() call span should not be fabricated into a source span: {err:?}"
+        );
+        assert!(err.reason().contains("der() call has no argument"));
+    }
+
+    #[test]
+    fn der_state_name_bubbles_invalid_static_subscript_span() {
+        let subscript_span = span(3, 4);
+        let expr = der(
+            var_ref(
+                "x",
+                vec![rumoca_core::Subscript::Index {
+                    value: 0,
+                    span: subscript_span,
+                }],
+                span(1, 4),
+            ),
+            span(0, 5),
+        );
+
+        let err = der_state_name(&expr, &["x[1]".to_string()])
+            .expect_err("invalid der() subscript should fail");
+        assert_eq!(err.source_span(), Some(subscript_span));
+        assert!(err.reason().contains("non-positive subscript"));
+    }
+
+    #[test]
+    fn der_state_name_declines_dynamic_subscript() -> Result<(), LowerError> {
+        let subscript_span = span(3, 4);
+        let expr = der(
+            var_ref(
+                "x",
+                vec![rumoca_core::Subscript::Expr {
+                    expr: Box::new(var_ref("i", Vec::new(), span(3, 4))),
+                    span: subscript_span,
+                }],
+                span(1, 4),
+            ),
+            span(0, 5),
+        );
+
+        assert!(der_state_name(&expr, &["x[1]".to_string()])?.is_none());
+        Ok(())
+    }
 }

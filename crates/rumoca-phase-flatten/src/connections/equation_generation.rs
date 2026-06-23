@@ -75,6 +75,7 @@ pub(super) fn generate_equality_equations(
     variables: &[rumoca_core::VarName],
     span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
+    let provenance = require_connection_provenance(span, "connection equality equation")?;
     // Generate chain of equality equations: v1 - v2 = 0, v2 - v3 = 0, ...
     for window in variables.windows(2) {
         let var_a = &window[0];
@@ -106,9 +107,9 @@ pub(super) fn generate_equality_equations(
         mark_connected(flat, var_b);
 
         // Create residual: var_a - var_b = 0
-        let expr_a = var_to_expr(var_a);
-        let expr_b = var_to_expr(var_b);
-        let residual = create_equality_residual(expr_a, expr_b);
+        let expr_a = var_to_expr(var_a, provenance);
+        let expr_b = var_to_expr(var_b, provenance);
+        let residual = create_equality_residual(expr_a, expr_b, provenance);
 
         let origin = rumoca_ir_flat::EquationOrigin::Connection {
             lhs: var_a.as_str().to_string(),
@@ -142,6 +143,7 @@ pub(super) fn generate_flow_equation(
     if variables.is_empty() {
         return Ok(());
     }
+    let provenance = require_connection_provenance(span, "connection flow equation")?;
 
     // Get scalar count from the first variable's dimensions (MLS §8.4)
     // All variables in a flow connection set should have the same dimensions.
@@ -178,13 +180,13 @@ pub(super) fn generate_flow_equation(
     let flow_exprs: Vec<rumoca_core::Expression> = variables
         .iter()
         .map(|var| {
-            let expr = var_to_expr(var);
+            let expr = var_to_expr(var, provenance);
             if is_outside_flow_var_for_scope(var, scope, interface_flow_vars_by_scope) {
                 // Outside connector: negate (sign = -1)
                 rumoca_core::Expression::Unary {
                     op: rumoca_core::OpUnary::Minus,
                     rhs: Box::new(expr),
-                    span: rumoca_core::Span::DUMMY,
+                    span: provenance.span(),
                 }
             } else {
                 // Inside connector: positive (sign = +1)
@@ -192,7 +194,7 @@ pub(super) fn generate_flow_equation(
             }
         })
         .collect();
-    let sum = create_sum(flow_exprs);
+    let sum = create_sum(flow_exprs, provenance);
 
     // Build origin string with signs for clarity
     let signed_vars: Vec<String> = variables
@@ -337,9 +339,8 @@ pub(crate) fn process_connections(
         collect_interface_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
 
     // Build connection sets (variables connected together)
-    let (connection_sets, raw_stream_groups, stream_interface_equation_count) =
-        build_connection_sets(&all_connections, flat, &prefix_children, &var_index);
-    flat.stream_interface_equation_count = stream_interface_equation_count;
+    let (connection_sets, raw_stream_groups) =
+        build_connection_sets(&all_connections, flat, &prefix_children, &var_index)?;
 
     // Generate equations for each connection set
     for set in connection_sets {
@@ -412,12 +413,14 @@ fn generate_unconnected_flow_equations(flat: &mut flat::Model) -> Result<(), Fla
         // The balance check counts both.
 
         // Create equation: flow_var = 0 (in residual form: flow_var - 0 = flow_var)
-        let var_expr = var_to_expr(&var_name);
+        let provenance =
+            require_flat_variable_provenance(flat, &var_name, "unconnected flow equation")?;
+        let var_expr = var_to_expr(&var_name, provenance);
 
         let origin = rumoca_ir_flat::EquationOrigin::UnconnectedFlow {
             variable: var_name.as_str().to_string(),
         };
-        let eq = flat::Equation::new_array(var_expr, Span::DUMMY, origin, scalar_count);
+        let eq = flat::Equation::new_array(var_expr, provenance.span(), origin, scalar_count);
         flat.add_equation(eq);
 
         // Note: We do NOT mark the variable as connected here because it's
@@ -673,8 +676,17 @@ fn generate_external_unconnected_flow_equations(
         let origin = rumoca_ir_flat::EquationOrigin::UnconnectedFlow {
             variable: var_name.as_str().to_string(),
         };
-        let eq =
-            flat::Equation::new_array(var_to_expr(&var_name), Span::DUMMY, origin, scalar_count);
+        let provenance = require_flat_variable_provenance(
+            flat,
+            &var_name,
+            "external unconnected flow equation",
+        )?;
+        let eq = flat::Equation::new_array(
+            var_to_expr(&var_name, provenance),
+            provenance.span(),
+            origin,
+            scalar_count,
+        );
         flat.add_equation(eq);
     }
 

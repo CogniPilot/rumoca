@@ -87,8 +87,12 @@ fn main() -> anyhow::Result<()> {
         stepper.step(DT)?;
 
         let t = stepper.time();
-        let x = stepper.get("x").unwrap_or(0.0);
-        let v = stepper.get("v").unwrap_or(0.0);
+        let x = stepper
+            .get("x")?
+            .ok_or_else(|| anyhow::anyhow!("stepper variable 'x' is not visible"))?;
+        let v = stepper
+            .get("v")?
+            .ok_or_else(|| anyhow::anyhow!("stepper variable 'v' is not visible"))?;
 
         // Render a simple ASCII visualization
         let bar_width = 60i32;

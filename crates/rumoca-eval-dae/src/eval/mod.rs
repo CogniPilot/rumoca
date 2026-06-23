@@ -37,6 +37,17 @@ fn pre_store_array_fill_default() -> f64 {
     0.0
 }
 
+pub(super) fn expression_source_span(expr: &Expression) -> Option<rumoca_core::Span> {
+    expr.span().filter(|span| !span.is_dummy())
+}
+
+pub(super) fn with_expression_span_if_available(err: EvalError, expr: &Expression) -> EvalError {
+    match expression_source_span(expr) {
+        Some(span) => err.with_span_if_missing(span),
+        None => err,
+    }
+}
+
 mod external_table;
 use external_table::{
     ExternalTableRegistry, ExternalTableSpec, external_table_data_for_values,
@@ -57,10 +68,10 @@ use array_helpers::{
 // Public for `rumoca-jit-dae` — the JIT emits calls into these runtime
 // helpers when generating machine code for table-lookup expressions.
 pub use builtin_table::{
-    eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
-    eval_time_table_next_event_value_in, try_eval_table_bound_value_in,
-    try_eval_table_lookup_slope_value_in, try_eval_table_lookup_value_in,
-    try_eval_time_table_next_event_value_in,
+    eval_table_bound_value_in, eval_table_bound_value_opt_in, eval_table_lookup_slope_value_in,
+    eval_table_lookup_slope_value_opt_in, eval_table_lookup_value_in,
+    eval_table_lookup_value_opt_in, eval_time_table_next_event_value_in,
+    eval_time_table_next_event_value_opt_in,
 };
 pub use clock_eval::infer_clock_timing_seconds;
 use clock_eval::{
@@ -109,14 +120,15 @@ use eval_expr_impl::*;
 pub use eval_expr_impl::{EvalError, eval_expr};
 mod runtime_env;
 pub use runtime_env::{
-    clear_pre_values, clear_pre_values_in_env_runtime, clear_runtime_state,
-    clear_runtime_state_in_env_runtime, get_pre_value, get_pre_value_from_env, restore_pre_values,
-    restore_pre_values_in_env_runtime, restore_pre_values_in_runtime, seed_pre_values_from_env,
-    seed_pre_values_in_env_runtime, set_pre_value, set_pre_value_in_env, set_pre_value_in_runtime,
-    snapshot_pre_values, snapshot_pre_values_from_env, snapshot_pre_values_from_runtime,
-    try_build_env, try_build_env_with_runtime, try_build_runtime_parameter_tail_env,
-    try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
-    try_build_runtime_parameter_tail_env_with_runtime, try_refresh_env_solver_and_parameter_values,
+    build_env, build_env_with_runtime, build_runtime_parameter_tail_env,
+    build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
+    build_runtime_parameter_tail_env_with_runtime, clear_pre_values,
+    clear_pre_values_in_env_runtime, clear_runtime_state, clear_runtime_state_in_env_runtime,
+    get_pre_value, get_pre_value_from_env, refresh_env_solver_and_parameter_values,
+    restore_pre_values, restore_pre_values_in_env_runtime, restore_pre_values_in_runtime,
+    seed_pre_values_from_env, seed_pre_values_in_env_runtime, set_pre_value, set_pre_value_in_env,
+    set_pre_value_in_runtime, snapshot_pre_values, snapshot_pre_values_from_env,
+    snapshot_pre_values_from_runtime,
 };
 pub(crate) use runtime_env::{lookup_pre_value, lookup_pre_value_in, snapshot_pre_values_in};
 
@@ -660,10 +672,15 @@ pub(super) fn previous_start_or_default<T: SimFloat>(
 
     if let Some(start) = env.start_exprs.get(name.as_str()) {
         if !subscripts.is_empty() {
+            let span = expression_source_span(arg)
+                .or_else(|| expression_source_span(start))
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "previous start indexed value missing source span",
+                })?;
             let indexed_start = rumoca_core::Expression::Index {
                 base: Box::new(start.clone()),
                 subscripts: subscripts.to_vec(),
-                span: arg.span().unwrap_or(rumoca_core::Span::DUMMY),
+                span,
             };
             return eval_expr::<T>(&indexed_start, env);
         }
@@ -822,33 +839,6 @@ pub const MODELICA_COMPLEX_CONSTANTS: &[(&str, f64)] = &[
     ("j.im", 1.0),
 ];
 
-/// Build a variable environment from the DAE and current state vector (f64-only).
-///
-/// The combined state vector `y` is `[x; z; y_out]` where x = states,
-/// z = algebraics, y_out = outputs. `p` contains parameter values.
-pub fn build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> VarEnv<f64> {
-    let mut env = VarEnv::new();
-    populate_env(dae, y, p, t, &mut env);
-    env
-}
-
-pub fn build_env_with_runtime(
-    dae: &Dae,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    runtime: Arc<EvalRuntimeState>,
-) -> VarEnv<f64> {
-    let mut env = VarEnv::new();
-    env.runtime = runtime;
-    populate_env(dae, y, p, t, &mut env);
-    env
-}
-
-fn populate_env(dae: &Dae, y: &[f64], p: &[f64], t: f64, env: &mut VarEnv<f64>) {
-    try_populate_env_values(dae, y, p, t, env).expect("DAE environment population failed");
-}
-
 pub(super) fn try_populate_env_values(
     dae: &Dae,
     y: &[f64],
@@ -862,48 +852,7 @@ pub(super) fn try_populate_env_values(
     try_populate_runtime_parameter_tail(env, dae, p, ParameterSlotPolicy::Numeric)
 }
 
-/// Build only the parameter/input/discrete runtime tail for a DAE env.
-///
-/// This excludes solver-vector slots (`states`, `algebraics`, `outputs`) and
-/// is intended for callers that only need runtime tail bindings such as input
-/// or discrete start values.
-pub fn build_runtime_parameter_tail_env(dae: &Dae, p: &[f64], t: f64) -> VarEnv<f64> {
-    let mut env = VarEnv::new();
-    populate_runtime_parameter_tail_env(dae, p, t, &mut env);
-    env
-}
-
-pub fn build_runtime_parameter_tail_env_with_runtime(
-    dae: &Dae,
-    p: &[f64],
-    t: f64,
-    runtime: Arc<EvalRuntimeState>,
-) -> VarEnv<f64> {
-    let mut env = VarEnv::new();
-    env.runtime = runtime;
-    populate_runtime_parameter_tail_env(dae, p, t, &mut env);
-    env
-}
-
-pub fn try_build_partial_runtime_parameter_tail_env_with_runtime(
-    dae: &Dae,
-    p: &[f64],
-    t: f64,
-    runtime: Arc<EvalRuntimeState>,
-) -> Result<VarEnv<f64>, EvalError> {
-    let mut env = VarEnv::new();
-    env.runtime = runtime;
-    try_populate_partial_runtime_parameter_tail_env_values(
-        dae,
-        p,
-        t,
-        &mut env,
-        ParameterSlotPolicy::Numeric,
-    )?;
-    Ok(env)
-}
-
-pub fn try_build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+pub fn build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime(
     dae: &Dae,
     p: &[f64],
     t: f64,
@@ -933,11 +882,6 @@ fn try_populate_partial_runtime_parameter_tail_env_values(
     map_parameter_vector_into_env(env, dae, p, parameter_slot_policy);
     inject_modelica_constants(env);
     bind_constants(env, dae)
-}
-
-fn populate_runtime_parameter_tail_env(dae: &Dae, p: &[f64], t: f64, env: &mut VarEnv<f64>) {
-    try_populate_runtime_parameter_tail_env_values(dae, p, t, env)
-        .expect("DAE runtime parameter-tail environment population failed");
 }
 
 pub(super) fn try_populate_runtime_parameter_tail_env_values(
@@ -985,7 +929,7 @@ fn try_populate_runtime_parameter_tail(
 ///
 /// This preserves already-settled discrete/runtime tail values while updating
 /// the current solver state, parameters, and time.
-pub fn refresh_env_solver_and_parameter_values(
+pub(super) fn refresh_env_solver_and_parameter_values_unchecked(
     env: &mut VarEnv<f64>,
     dae: &Dae,
     y: &[f64],

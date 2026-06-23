@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 /// Phase 6.3/6.4: linalg.matmul, Explicit sparsity, and scalarized path comparison.
 ///
 /// Phase 6.3 model: dx/dt = A * x   where A = diag(-1, -2), x(0) = [1, 1]
@@ -21,11 +22,16 @@ use std::time::Instant;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+fn fixture_span(label: &str) -> Span {
+    Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+}
+
 /// Build a `ComputeBlock` with a single `MatMul` node for  xdot = A * x.
 ///
 /// A = [[-1, 0], [0, -2]]  (2×2 dense or diagonal)
 /// x  = [x1, x2]           (loaded from y[0], y[1])
 fn matmul_block(sparsity: SparsityPattern) -> ComputeBlock {
+    let span = fixture_span("benchmark_matmul_node.mo");
     // lhs_ops: fill registers 0-3 with A row-major: -1, 0, 0, -2
     let lhs_ops = vec![
         LinearOp::Const {
@@ -56,7 +62,7 @@ fn matmul_block(sparsity: SparsityPattern) -> ComputeBlock {
             lhs_sparsity: sparsity,
             rhs_sparsity: SparsityPattern::Dense,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }],
     }
 }
@@ -96,7 +102,10 @@ fn scalar_block() -> ComputeBlock {
         },
         LinearOp::StoreOutput { src: 2 },
     ];
-    ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![row0, row1]))
+    ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
+        vec![row0, row1],
+        fixture_span("benchmark_matmul_scalar.mo"),
+    ))
 }
 
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
@@ -354,7 +363,7 @@ fn sparse_explicit_block() -> ComputeBlock {
             },
             rhs_sparsity: SparsityPattern::Dense,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span("benchmark_matmul_sparse.mo"),
         }],
     }
 }
@@ -389,7 +398,7 @@ fn sparse_dense_block() -> ComputeBlock {
             lhs_sparsity: SparsityPattern::Dense,
             rhs_sparsity: SparsityPattern::Dense,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span("benchmark_matmul_dense_3x3.mo"),
         }],
     }
 }

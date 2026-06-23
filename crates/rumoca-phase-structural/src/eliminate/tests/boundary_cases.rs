@@ -5,7 +5,7 @@ fn test_eliminate_bare_varref() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -29,7 +29,7 @@ fn test_boundary_zero_unknown_removed() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_dae_variable("z"));
 
     // eq1: 0 = z - 1.0  (1 unknown, solvable)
     dae.continuous.equations.push(dae::Equation {
@@ -69,20 +69,19 @@ fn test_boundary_zero_unknown_removed() {
 fn test_boundary_zero_unknown_alias_equation_becomes_substitution() {
     let mut dae = Dae::new();
 
-    let mut state = dae::Variable::new(VarName::new("x"));
+    let mut state = test_dae_variable("x");
     state.start = Some(lit(0.0));
     dae.variables.states.insert(VarName::new("x"), state);
     dae.variables
         .algebraics
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
     dae.variables.inputs.insert(
         VarName::new("alias_local"),
-        dae::Variable::new(VarName::new("alias_local")),
+        test_dae_variable("alias_local"),
     );
-    dae.variables.discrete_valued.insert(
-        VarName::new("local"),
-        dae::Variable::new(VarName::new("local")),
-    );
+    dae.variables
+        .discrete_valued
+        .insert(VarName::new("local"), test_dae_variable("local"));
 
     // 0 = der(x) - y
     dae.continuous.equations.push(dae::Equation {
@@ -166,10 +165,10 @@ fn test_boundary_cascade_resolution() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_dae_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_dae_variable("b"));
 
     // eq1: 0 = a - 1.0  (1 unknown)
     dae.continuous.equations.push(dae::Equation {
@@ -206,11 +205,134 @@ fn test_boundary_cascade_resolution() {
 }
 
 #[test]
+fn test_boundary_eliminates_negated_additive_single_unknown() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("n_i"), test_dae_variable("n_i"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("source_i"), test_dae_variable("source_i"));
+    let span = test_span();
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Unary {
+            op: minus_op(),
+            rhs: Box::new(Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(var_ref("source_i")),
+                rhs: Box::new(var_ref("n_i")),
+                span,
+            }),
+            span,
+        },
+        span,
+        origin: "current source balance".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert_eq!(result.n_eliminated, 1);
+    assert!(dae.continuous.equations.is_empty());
+    let substitution = result
+        .substitutions
+        .iter()
+        .find(|sub| sub.var_name.as_str() == "n_i")
+        .expect("n_i should be solved from the additive residual");
+    assert!(
+        matches!(
+            &substitution.expr,
+            Expression::Unary { op: OpUnary::Minus, rhs, span: expr_span }
+                if *expr_span == span
+                    && matches!(rhs.as_ref(), Expression::VarRef { name, .. } if name.as_str() == "source_i")
+        ),
+        "expected n_i = -source_i, got {:?}",
+        substitution.expr
+    );
+}
+
+#[test]
+fn test_eliminate_trivial_demotes_state_after_boundary_substitution() {
+    let mut dae = Dae::new();
+    let span = test_span();
+    dae.variables
+        .states
+        .insert(VarName::new("psi"), test_dae_variable("psi"));
+    for name in ["i", "v"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    for name in ["source_i", "l"] {
+        dae.variables
+            .parameters
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("i")),
+            rhs: Box::new(var_ref("source_i")),
+            span,
+        },
+        span,
+        origin: "source current".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("psi")),
+            rhs: Box::new(Expression::Binary {
+                op: OpBinary::Mul,
+                lhs: Box::new(var_ref("l")),
+                rhs: Box::new(var_ref("i")),
+                span,
+            }),
+            span,
+        },
+        span,
+        origin: "flux relation".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("v")),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("psi")],
+                span,
+            }),
+            span,
+        },
+        span,
+        origin: "voltage relation".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert_eq!(result.n_eliminated, 3);
+    assert!(dae.continuous.equations.is_empty());
+    assert!(!dae.variables.states.contains_key(&VarName::new("psi")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("psi")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("i")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("v")));
+}
+
+#[test]
 fn test_boundary_skips_ode_equations() {
     // ODE equation should never be eliminated by boundary resolution.
     let mut dae = Dae::new();
 
-    let mut var_x = dae::Variable::new(VarName::new("x"));
+    let mut var_x = test_dae_variable("x");
     var_x.start = Some(Expression::Literal {
         value: Literal::Real(0.0),
         span: rumoca_core::Span::DUMMY,
@@ -245,7 +367,7 @@ fn test_boundary_eliminates_derivative_dependent_output_alias() {
     // Keep true ODE equation and eliminate derivative-dependent output alias.
     let mut dae = Dae::new();
 
-    let mut var_x = dae::Variable::new(VarName::new("x"));
+    let mut var_x = test_dae_variable("x");
     var_x.start = Some(Expression::Literal {
         value: Literal::Real(0.0),
         span: rumoca_core::Span::DUMMY,
@@ -253,7 +375,7 @@ fn test_boundary_eliminates_derivative_dependent_output_alias() {
     dae.variables.states.insert(VarName::new("x"), var_x);
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     // ODE: 0 = der(x) - 1.0
     dae.continuous.equations.push(dae::Equation {
@@ -304,7 +426,7 @@ fn test_boundary_eliminates_control_flow_solution_equation() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -340,10 +462,10 @@ fn test_boundary_eliminates_single_unknown_connection_after_substitution() {
     let mut dae = Dae::new();
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
     dae.variables
         .algebraics
-        .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+        .insert(VarName::new("u"), test_dae_variable("u"));
 
     // Source-like equation: y = if time < 0.2 then 1 else 2.
     dae.continuous.equations.push(dae::Equation {
@@ -406,10 +528,10 @@ fn test_boundary_keeps_connection_eq_touching_runtime_discrete_target() {
     let mut dae = Dae::new();
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
     dae.variables
         .inputs
-        .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+        .insert(VarName::new("u"), test_dae_variable("u"));
 
     // Runtime-discrete partition assignment target (f_m/f_z lhs) marks `y`
     // as a runtime-discrete target that must not lose alias edges.
@@ -447,13 +569,12 @@ fn test_boundary_keeps_connection_eq_touching_runtime_discrete_target() {
 #[test]
 fn test_boundary_keeps_zero_unknown_runtime_discrete_assignment_used_by_f_m() {
     let mut dae = Dae::new();
-    dae.variables.discrete_valued.insert(
-        VarName::new("Enable.y"),
-        dae::Variable::new(VarName::new("Enable.y")),
-    );
+    dae.variables
+        .discrete_valued
+        .insert(VarName::new("Enable.y"), test_dae_variable("Enable.y"));
     dae.variables.discrete_valued.insert(
         VarName::new("Counter.enable"),
-        dae::Variable::new(VarName::new("Counter.enable")),
+        test_dae_variable("Counter.enable"),
     );
 
     dae.continuous.equations.push(dae::Equation {
@@ -509,10 +630,10 @@ fn test_eliminate_trivial_accepts_runtime_known_assignment_tail_after_output_ali
     let mut dae = Dae::new();
     dae.variables
         .outputs
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
     dae.variables
         .discrete_reals
-        .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+        .insert(VarName::new("u"), test_dae_variable("u"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
@@ -553,16 +674,16 @@ fn test_eliminate_trivial_keeps_sampled_value_source_unknown() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_dae_variable("x"));
     dae.variables
         .algebraics
-        .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+        .insert(VarName::new("u"), test_dae_variable("u"));
     dae.variables
         .discrete_reals
-        .insert(VarName::new("clk"), dae::Variable::new(VarName::new("clk")));
+        .insert(VarName::new("clk"), test_dae_variable("clk"));
     dae.variables
         .discrete_reals
-        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_dae_variable("y"));
 
     dae.continuous.equations.push(dae::Equation {
         lhs: None,

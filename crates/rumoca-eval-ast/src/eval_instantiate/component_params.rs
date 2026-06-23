@@ -97,6 +97,7 @@ fn eval_state_select_expr_with_depth(
                 env.mod_env,
                 env.effective_components,
                 env.tree,
+                env.resolve_class_components,
                 scope_prefix,
             )?;
             eval_state_select_expr_with_depth(&resolved_expr, env, next_scope.as_deref(), depth + 1)
@@ -444,6 +445,14 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("component_params_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn bool_literal(value: bool) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::Bool,
@@ -461,7 +470,7 @@ mod tests {
             type_name: ast::Name::from_string(type_name),
             variability: rumoca_core::Variability::Parameter(Default::default()),
             start: bool_literal(value),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         }
     }
 
@@ -472,7 +481,7 @@ mod tests {
             variability: rumoca_core::Variability::Parameter(Default::default()),
             binding: Some(bool_literal(value)),
             has_explicit_binding: true,
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         }
     }
 

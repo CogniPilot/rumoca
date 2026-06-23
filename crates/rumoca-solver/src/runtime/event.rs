@@ -61,7 +61,14 @@ pub fn runtime_event_horizon(event: RuntimeEventStop, target: f64, horizon: f64)
 }
 
 pub fn runtime_root_event_application_time(root_t: f64, target_t: f64) -> f64 {
-    if sample_time_match_with_tol(root_t, target_t) {
+    // A non-finite `target_t` (e.g. `f64::INFINITY` used by the interactive
+    // stepper as an "unbounded next sample" sentinel) must never be reported as
+    // the application time: `sample_time_match_with_tol(finite, INF)` is
+    // spuriously true (its relative tolerance is itself infinite, so
+    // `INF <= INF`), which would jump the event clock to infinity and NaN the
+    // rebuilt solver. Guard the match on a finite target; the `.min(target_t)`
+    // below is already a no-op for `INF`, leaving the right-limit of the root.
+    if target_t.is_finite() && sample_time_match_with_tol(root_t, target_t) {
         target_t
     } else {
         event_right_limit_time(root_t).min(target_t)

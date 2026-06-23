@@ -53,6 +53,17 @@ pub enum CodegenError {
         #[label("external function rejected here")]
         span: SourceSpan,
     },
+
+    /// Solve-IR scalar fallback generation failed.
+    #[error("Solve-IR scalarization failed: {message}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC005),
+        help("check tensor native-family metadata emitted by solve lowering")
+    )]
+    SolveScalarizationFailed {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl CodegenError {
@@ -114,6 +125,24 @@ impl From<minijinja::Error> for CodegenError {
     }
 }
 
+impl From<rumoca_eval_solve::ScalarizeError> for CodegenError {
+    fn from(err: rumoca_eval_solve::ScalarizeError) -> Self {
+        Self::SolveScalarizationFailed {
+            message: err.to_string(),
+            span: err.source_span(),
+        }
+    }
+}
+
+impl From<rumoca_ir_solve::SolveProblemShapeContractError> for CodegenError {
+    fn from(err: rumoca_ir_solve::SolveProblemShapeContractError) -> Self {
+        Self::SolveScalarizationFailed {
+            message: err.to_string(),
+            span: err.source_span(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +197,11 @@ mod tests {
             CodegenError::ExternalFunctionNotCallable { .. } => {
                 unreachable!(
                     "From<minijinja::Error> only constructs template errors, never external-function errors"
+                );
+            }
+            CodegenError::SolveScalarizationFailed { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never scalarization errors"
                 );
             }
         }

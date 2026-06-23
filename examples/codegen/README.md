@@ -25,11 +25,11 @@ cargo run -p rumoca -- \
 
 Scenarios:
 
-- `rum.ball_jax.toml`: built-in JAX target.
-- `rum.sympy_decay_sympy.toml`: built-in SymPy target.
-- `rum.sympy_decay_standalone_web.toml`: custom target directory that renders
+- `rumoca-scenario.ball_jax.toml`: built-in JAX target.
+- `rumoca-scenario.sympy_decay_sympy.toml`: built-in SymPy target.
+- `rumoca-scenario.sympy_decay_standalone_web.toml`: custom target directory that renders
   standalone HTML and companion JavaScript.
-- `rum.sympy_decay_custom_casadi.toml`: direct raw Jinja template example.
+- `rumoca-scenario.sympy_decay_custom_casadi.toml`: direct raw Jinja template example.
 
 Custom target directories and direct templates live beside scenarios:
 

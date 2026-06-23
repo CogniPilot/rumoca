@@ -2,14 +2,14 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use rumoca_compile::project::{PlotViewConfig, load_plot_views_for_model};
+use crate::web::{
+    ResultsHtmlDocument, build_results_html_document, default_visualization_views_value,
+};
+use rumoca_compile::scenario::{PlotViewConfig, load_plot_views_for_model};
 use rumoca_solver::SimResult;
 use rumoca_solver::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
-};
-use rumoca_viz_web::{
-    ResultsHtmlDocument, build_results_html_document, default_visualization_views_value,
 };
 use serde_json::{Value, json};
 
@@ -175,7 +175,7 @@ mod tests {
         let metrics = SimulationRunMetrics::default();
         let document =
             build_report_document(&sim, "Ball", &request, &metrics, None).expect("report");
-        assert!(document.html.contains("RumocaResultsApp.createResultsApp"));
+        assert!(document.html.contains("__rumocaResultsReportMount"));
         assert_eq!(document.payload["nStates"], 1);
         assert_eq!(document.views[0]["id"], "states_time");
     }

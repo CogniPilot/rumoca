@@ -60,9 +60,12 @@ pub fn derivative_rhs(time: f64, y: &[f64], p: &[f64], out: &mut [f64]) {
     let _ = y;
     let _ = p;
 {%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
-{%- for row in solve_blocks.continuous.derivative_rhs.scalar_programs.programs %}
-    out[{{ loop.index0 }}] = {{ render_solve_row_rust(row, cfg) }};
+{%- set output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices %}
+    out[..DERIVATIVE_LEN].fill(0.0);
+{%- set solve_body = render_solve_block_rust(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}", output_indices) %}
+{%- if solve_body %}
+{{ solve_body }}
 {%- else %}
     let _ = out;
-{%- endfor %}
+{%- endif %}
 }

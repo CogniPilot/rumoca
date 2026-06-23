@@ -4,10 +4,10 @@ use std::sync::Arc;
 use rumoca_core::OpBinary;
 use rumoca_eval_dae::eval::{EvalError, EvalRuntimeState};
 use rumoca_eval_dae::{
-    InitialAssignment, can_broadcast_start_value, eval_array_values, eval_expr,
-    eval_selected_function_output_pub, initial_assignment_from_equation, map_var_to_env,
-    resolve_function_call_outputs_pub, seed_pre_values_in_env_runtime, set_array_entries,
-    set_pre_value_in_env, try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
+    InitialAssignment, build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
+    can_broadcast_start_value, eval_array_values, eval_expr, eval_selected_function_output_pub,
+    initial_assignment_from_equation, map_var_to_env, resolve_function_call_outputs_pub,
+    seed_pre_values_in_env_runtime, set_array_entries, set_pre_value_in_env,
 };
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -27,8 +27,8 @@ pub(crate) fn apply_initial_equations_to_start_values(
     let mut env = start_value_env(dae_model, params, initial_y, runtime)?;
     seed_pre_values_in_env_runtime(&env);
     let aliases = initial_runtime_alias_equalities(dae_model);
-    let mut pinned = fixed_start_pins(dae_model);
-    let continuous_seed_pins = explicit_start_pins(dae_model);
+    let mut pinned = fixed_start_pins(dae_model)?;
+    let continuous_seed_pins = explicit_start_pins(dae_model)?;
     let init_eq_count = dae_model.initialization.equations.len();
     let max_passes = init_eq_count.max(aliases.len()).clamp(1, 32);
     for _ in 0..max_passes {
@@ -40,7 +40,8 @@ pub(crate) fn apply_initial_equations_to_start_values(
             if solution_is_runtime_alias(layout, assignment.solution) {
                 continue;
             }
-            let targets = assignment_target_scalar_names(layout, assignment.target.as_str());
+            let targets =
+                assignment_target_scalar_names(layout, assignment.target.as_str(), eq.span)?;
             let values = initial_assignment_values(
                 assignment.solution,
                 &env,
@@ -108,7 +109,7 @@ fn seed_continuous_assignments(
         if solution_is_runtime_alias(layout, assignment.solution) {
             continue;
         }
-        let targets = assignment_target_scalar_names(layout, assignment.target.as_str());
+        let targets = assignment_target_scalar_names(layout, assignment.target.as_str(), eq.span)?;
         if targets
             .iter()
             .any(|target| pinned.contains(target) || continuous_seed_pins.contains(target))
@@ -167,18 +168,21 @@ fn initial_seed_error_is_non_evaluable(error: &EvalError) -> bool {
     }
 }
 
-fn fixed_start_pins(dae_model: &dae::Dae) -> HashSet<String> {
-    let mut pins: HashSet<String> = fixed_start_vars(dae_model)
-        .flat_map(|(name, var)| scalar_names(name.as_str(), var))
-        .collect();
+fn fixed_start_pins(dae_model: &dae::Dae) -> Result<HashSet<String>, SolveModelLowerError> {
+    let mut pins = HashSet::new();
+    for (name, var) in fixed_start_vars(dae_model) {
+        pins.extend(scalar_names(name.as_str(), var)?);
+    }
     pins.insert("time".to_string());
-    pins
+    Ok(pins)
 }
 
-fn explicit_start_pins(dae_model: &dae::Dae) -> HashSet<String> {
-    explicit_start_vars(dae_model)
-        .flat_map(|(name, var)| scalar_names(name.as_str(), var))
-        .collect()
+fn explicit_start_pins(dae_model: &dae::Dae) -> Result<HashSet<String>, SolveModelLowerError> {
+    let mut pins = HashSet::new();
+    for (name, var) in explicit_start_vars(dae_model) {
+        pins.extend(scalar_names(name.as_str(), var)?);
+    }
+    Ok(pins)
 }
 
 fn fixed_start_vars(
@@ -304,7 +308,7 @@ fn start_value_env(
     initial_y: &[f64],
     runtime: Arc<EvalRuntimeState>,
 ) -> Result<rumoca_eval_dae::VarEnv<f64>, SolveModelLowerError> {
-    let mut env = try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+    let mut env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         dae_model, params, 0.0, runtime,
     )
     .map_err(|source| runtime_tail_error(dae_model, source))?;
@@ -335,31 +339,74 @@ fn start_value_env(
     Ok(env)
 }
 
-fn assignment_target_scalar_names(layout: &solve::VarLayout, target: &str) -> Vec<String> {
+fn assignment_target_scalar_names(
+    layout: &solve::VarLayout,
+    target: &str,
+    span: rumoca_core::Span,
+) -> Result<Vec<String>, SolveModelLowerError> {
     if rumoca_core::parse_scalar_name(target).is_some() {
-        return vec![target.to_string()];
+        return Ok(vec![target.to_string()]);
     }
     if let Some(names) = crate::lower::scalarized_record_field_binding_names(target, layout) {
-        return names
-            .into_iter()
-            .flat_map(|name| layout_scalar_names(layout, &name))
-            .collect();
+        let mut scalars = Vec::new();
+        reserve_initial_lower_vec_capacity(
+            &mut scalars,
+            names.len(),
+            "initial assignment scalar target names",
+            span,
+        )?;
+        for name in names {
+            let mut field_scalars = layout_scalar_names(layout, &name, span)?;
+            reserve_initial_lower_vec_capacity(
+                &mut scalars,
+                field_scalars.len(),
+                "initial assignment scalar target names",
+                span,
+            )?;
+            scalars.append(&mut field_scalars);
+        }
+        return Ok(scalars);
     }
-    layout_scalar_names(layout, target)
+    layout_scalar_names(layout, target, span)
 }
 
-fn layout_scalar_names(layout: &solve::VarLayout, target: &str) -> Vec<String> {
+fn layout_scalar_names(
+    layout: &solve::VarLayout,
+    target: &str,
+    span: rumoca_core::Span,
+) -> Result<Vec<String>, SolveModelLowerError> {
     let Some(shape) = layout.shape(target) else {
-        return vec![target.to_string()];
+        return Ok(vec![target.to_string()]);
     };
-    let dims = shape
-        .iter()
-        .map(|dim| i64::try_from(*dim).expect("array dimension must fit in i64"))
-        .collect::<Vec<_>>();
-    let count = shape.iter().product::<usize>().max(1);
-    (0..count)
-        .map(|idx| dae::scalar_name_text_for_flat_index(target, &dims, idx))
-        .collect()
+    let mut dims = Vec::new();
+    reserve_initial_lower_vec_capacity(
+        &mut dims,
+        shape.len(),
+        "initial assignment target dimensions",
+        span,
+    )?;
+    for dim in shape {
+        dims.push(i64::try_from(*dim).map_err(|_| {
+            SolveModelLowerError::Lower(LowerError::ContractViolation {
+                reason: format!(
+                    "initial assignment target `{target}` has dimension {dim} exceeding i64"
+                ),
+                span,
+            })
+        })?);
+    }
+    let count = checked_initial_target_element_count(target, shape, span)?;
+    let mut names = Vec::new();
+    reserve_initial_lower_vec_capacity(
+        &mut names,
+        count,
+        "initial assignment scalar target names",
+        span,
+    )?;
+    for idx in 0..count {
+        names.push(dae::scalar_name_text_for_flat_index(target, &dims, idx));
+    }
+    Ok(names)
 }
 
 fn initial_assignment_values(
@@ -390,7 +437,14 @@ fn initial_assignment_values_with_expected_size(
         return Ok(values);
     }
     if expected > 1 && values.len() == 1 && can_broadcast_start_value(solution, env) {
-        return Ok(vec![values[0]; expected]);
+        let mut broadcast = Vec::new();
+        reserve_initial_eval_vec_capacity(
+            &mut broadcast,
+            expected,
+            "initial assignment value broadcast",
+        )?;
+        broadcast.resize(expected, values[0]);
+        return Ok(broadcast);
     }
     Err(EvalError::ShapeMismatch {
         context: "initial assignment value",
@@ -414,31 +468,102 @@ fn selected_initial_function_values(
     let [output] = outputs.as_slice() else {
         return Ok(None);
     };
-    let Some(indices) = target_selection_indices(target, targets) else {
+    let Some(indices) = target_selection_indices(target, targets)? else {
         return Ok(None);
     };
-    Ok(Some(
-        indices
-            .iter()
-            .map(|indices| eval_selected_function_output_pub(&resolved, output, indices, args, env))
-            .collect::<Result<Vec<_>, EvalError>>()?,
-    ))
+    let mut values = Vec::new();
+    reserve_initial_eval_vec_capacity(
+        &mut values,
+        indices.len(),
+        "selected initial function values",
+    )?;
+    for indices in &indices {
+        values.push(eval_selected_function_output_pub(
+            &resolved, output, indices, args, env,
+        )?);
+    }
+    Ok(Some(values))
 }
 
-fn target_selection_indices(target: &str, targets: &[String]) -> Option<Vec<Vec<i64>>> {
-    targets
-        .iter()
-        .enumerate()
-        .map(|(idx, scalar_target)| {
-            if scalar_target == target {
-                return Some(Vec::new());
-            }
-            scalar_target
-                .strip_prefix(target)
-                .filter(|suffix| suffix.starts_with('['))
-                .and_then(|_| i64::try_from(idx + 1).ok().map(|index| vec![index]))
+fn target_selection_indices(
+    target: &str,
+    targets: &[String],
+) -> Result<Option<Vec<Vec<i64>>>, EvalError> {
+    let mut selections = Vec::new();
+    reserve_initial_eval_vec_capacity(
+        &mut selections,
+        targets.len(),
+        "initial function target selections",
+    )?;
+    for (idx, scalar_target) in targets.iter().enumerate() {
+        if scalar_target == target {
+            selections.push(Vec::new());
+            continue;
+        }
+        let Some(suffix) = scalar_target.strip_prefix(target) else {
+            return Ok(None);
+        };
+        if !suffix.starts_with('[') {
+            return Ok(None);
+        }
+        let index = i64::try_from(idx + 1).map_err(|_| EvalError::InvalidShape {
+            context: "initial function target selection",
+            reason: format!("target selection index {} exceeds i64", idx + 1),
+        })?;
+        let mut selected = Vec::new();
+        reserve_initial_eval_vec_capacity(
+            &mut selected,
+            1,
+            "initial function target selection index",
+        )?;
+        selected.push(index);
+        selections.push(selected);
+    }
+    Ok(Some(selections))
+}
+
+fn checked_initial_target_element_count(
+    target: &str,
+    shape: &[usize],
+    span: rumoca_core::Span,
+) -> Result<usize, SolveModelLowerError> {
+    let mut count = 1usize;
+    for dim in shape {
+        count = count.checked_mul(*dim).ok_or_else(|| {
+            SolveModelLowerError::Lower(LowerError::ContractViolation {
+                reason: format!("initial assignment target `{target}` element count overflows"),
+                span,
+            })
+        })?;
+    }
+    Ok(count.max(1))
+}
+
+fn reserve_initial_lower_vec_capacity<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<(), SolveModelLowerError> {
+    values.try_reserve_exact(capacity).map_err(|_| {
+        SolveModelLowerError::Lower(LowerError::ContractViolation {
+            reason: format!("{context} capacity overflows"),
+            span,
         })
-        .collect()
+    })
+}
+
+fn reserve_initial_eval_vec_capacity<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    context: &'static str,
+) -> Result<(), EvalError> {
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| EvalError::InvalidShape {
+            context,
+            reason: format!("{context} capacity overflows"),
+        })
 }
 
 struct InitialAssignmentApplyContext<'a> {
@@ -624,7 +749,7 @@ fn alias_target_scalar_names(
         return Ok(vec!["time".to_string()]);
     }
     if let Some(var) = variable_by_name(dae_model, name) {
-        return Ok(scalar_names(name.as_str(), var));
+        return scalar_names(name.as_str(), var);
     }
     if let Some(names) = scalarized_alias_target_names(dae_model, layout, name, span)? {
         return Ok(names);
@@ -791,10 +916,18 @@ mod tests {
     use super::*;
     use indexmap::IndexMap;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_initial_values_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     fn real(value: f64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -802,7 +935,7 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -821,7 +954,11 @@ mod tests {
             dae::Variable {
                 name: rumoca_core::VarName::new("sum.u"),
                 dims: vec![2],
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         let layout = solve::VarLayout::from_parts(
@@ -866,7 +1003,11 @@ mod tests {
 
     #[test]
     fn fixed_start_pins_include_builtin_time() {
-        assert!(fixed_start_pins(&dae::Dae::default()).contains("time"));
+        assert!(
+            fixed_start_pins(&dae::Dae::default())
+                .expect("empty DAE fixed start pins should build")
+                .contains("time")
+        );
     }
 
     #[test]
@@ -875,7 +1016,7 @@ mod tests {
             &dae::Dae::default(),
             &time_layout(),
             &rumoca_core::VarName::new("time"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect("time is a built-in solve-layout scalar");
 
@@ -888,13 +1029,55 @@ mod tests {
             &dae::Dae::default(),
             &time_layout(),
             &rumoca_core::VarName::new("missing"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect_err("unknown alias target must still fail fast");
 
         assert!(
             format!("{err:?}").contains("initial runtime alias target `missing`"),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn assignment_target_scalar_names_rejects_oversized_layout_dimension_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_initial_values_source_14.mo"),
+            7,
+            19,
+        );
+        let layout = solve::VarLayout::from_parts_with_shapes(
+            IndexMap::new(),
+            IndexMap::from([("x".to_string(), vec![0, usize::MAX])]),
+            0,
+            0,
+        )
+        .expect("zero-size shape fixture may omit scalar slots");
+
+        let err = assignment_target_scalar_names(&layout, "x", span)
+            .expect_err("oversized dimensions must not be converted through expect");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            format!("{err}").contains("dimension") && format!("{err}").contains("exceeding i64"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn assignment_target_scalar_names_rejects_shape_product_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_initial_values_source_15.mo"),
+            3,
+            11,
+        );
+        let err = checked_initial_target_element_count("x", &[i64::MAX as usize, 3], span)
+            .expect_err("overflowing target element count should fail fast");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            format!("{err}").contains("element count") && format!("{err}").contains("overflows"),
+            "{err}"
         );
     }
 
@@ -906,7 +1089,7 @@ mod tests {
             &dae_model,
             &layout,
             &rumoca_core::VarName::new("sum.u[1]"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect("indexed target is backed by DAE shape metadata and a layout slot");
 
@@ -921,7 +1104,7 @@ mod tests {
             &dae_model,
             &layout,
             &rumoca_core::VarName::new("sum.u[3]"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect_err("indexed target must be in bounds");
 
@@ -937,7 +1120,7 @@ mod tests {
             &dae_model,
             &layout,
             &rumoca_core::VarName::new("sum.u[1]"),
-            rumoca_core::Span::DUMMY,
+            test_span(),
         )
         .expect_err("indexed target must have a concrete solve layout slot");
 

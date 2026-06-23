@@ -3,14 +3,11 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use diffsol::{OdeSolverMethod, VectorHost};
+use indexmap::IndexMap;
 use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
 use rumoca_ir_solve as solve;
-use rumoca_solver::{
-    SimOptions, event_solver_step_cap, implicit_residual_is_zero_through_interval,
-    runtime_root_event_application_time,
-};
+use rumoca_solver::{SimOptions, event_solver_step_cap, runtime_root_event_application_time};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -35,7 +32,7 @@ pub struct SimStepper {
     runtime: SolveRuntime,
     runtime_params: RuntimeParameters,
     reset_snapshot: BdfResetSnapshot,
-    input_values: HashMap<String, f64>,
+    input_values: IndexMap<String, f64>,
     inputs_dirty: bool,
 }
 
@@ -58,7 +55,7 @@ impl SimStepper {
     pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
-        let runtime = SolveRuntime::new(model);
+        let runtime = SolveRuntime::new(model)?;
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
         let initial_y = settled_initial_y(model, &runtime, &ode_model, &opts, &runtime_params)?;
@@ -114,7 +111,7 @@ impl SimStepper {
                 solver.state().y.as_slice().to_vec()
             };
             let ode_model = Arc::new(OdeModel::new(&event_reset_model)?);
-            let reset_runtime = SolveRuntime::new(&event_reset_model);
+            let reset_runtime = SolveRuntime::new(&event_reset_model)?;
             let initial_y = settled_problem_y(
                 &event_reset_model,
                 &reset_runtime,
@@ -189,7 +186,7 @@ impl SimStepper {
             runtime,
             runtime_params,
             reset_snapshot,
-            input_values: HashMap::new(),
+            input_values: IndexMap::new(),
             inputs_dirty: false,
         })
     }
@@ -245,48 +242,54 @@ impl SimStepper {
         (self.time_fn)()
     }
 
-    pub fn get(&self, name: &str) -> Option<f64> {
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
-            return Some(value);
+            return Ok(Some(value));
         }
         let y = (self.y_fn)();
         let params = self.runtime_params.borrow();
-        self.runtime
-            .visible_values(&y, params.as_slice(), self.time())
-            .ok()
-            .and_then(|values| {
-                self.runtime
-                    .model
-                    .visible_names
-                    .iter()
-                    .position(|visible| visible == name)
-                    .and_then(|idx| values.get(idx).copied())
-            })
-    }
-
-    pub fn state(&self) -> StepperState {
-        let y = (self.y_fn)();
-        let params = self.runtime_params.borrow();
-        let values = self.stepper_visible_values(&y, params.as_slice());
-        StepperState {
-            time: self.time(),
-            values,
-        }
-    }
-
-    pub fn values_for(&self, names: &[String]) -> HashMap<String, f64> {
-        let y = (self.y_fn)();
-        let params = self.runtime_params.borrow();
-        let mut values = self
+        let Some(idx) = self
             .runtime
-            .visible_values_for_names(&y, params.as_slice(), self.time(), names)
-            .unwrap_or_default();
+            .model
+            .visible_names
+            .iter()
+            .position(|visible| visible == name)
+        else {
+            return Ok(None);
+        };
+        let values = self
+            .runtime
+            .visible_values(&y, params.as_slice(), self.time())?;
+        values.get(idx).copied().map(Some).ok_or_else(|| {
+            SimError::RuntimeContract {
+                reason: format!(
+                    "visible value '{name}' resolved to index {idx}, but runtime returned {} values",
+                    values.len()
+                ),
+            }
+        })
+    }
+
+    pub fn state(&self) -> Result<StepperState, SimError> {
+        let y = (self.y_fn)();
+        let params = self.runtime_params.borrow();
+        Ok(StepperState {
+            time: self.time(),
+            values: self.stepper_visible_values(&y, params.as_slice())?,
+        })
+    }
+
+    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        let y = (self.y_fn)();
+        let params = self.runtime_params.borrow();
+        let visible_values = self.stepper_visible_values(&y, params.as_slice())?;
+        let mut values = IndexMap::with_capacity(names.len());
         for name in names {
-            if let Some(value) = self.input_values.get(name).copied() {
+            if let Some(value) = visible_values.get(name).copied() {
                 values.insert(name.clone(), value);
             }
         }
-        values
+        Ok(values)
     }
 
     pub fn input_names(&self) -> &[String] {
@@ -297,27 +300,19 @@ impl SimStepper {
         &self.runtime.model.visible_names
     }
 
-    fn stepper_visible_values(&self, y: &[f64], params: &[f64]) -> HashMap<String, f64> {
-        let mut values: HashMap<String, f64> = self
-            .runtime
-            .visible_values(y, params, self.time())
-            .ok()
-            .map(|visible_values| {
-                self.runtime
-                    .model
-                    .visible_names
-                    .iter()
-                    .cloned()
-                    .zip(visible_values)
-                    .collect()
-            })
-            .unwrap_or_default();
+    fn stepper_visible_values(
+        &self,
+        y: &[f64],
+        params: &[f64],
+    ) -> Result<IndexMap<String, f64>, SimError> {
+        let visible_values = self.runtime.visible_values(y, params, self.time())?;
+        let mut values = collect_visible_values(&self.runtime.model.visible_names, visible_values)?;
         values.extend(
             self.input_values
                 .iter()
                 .map(|(name, value)| (name.clone(), *value)),
         );
-        values
+        Ok(values)
     }
 }
 
@@ -378,7 +373,23 @@ where
 #[derive(Debug, Clone)]
 pub struct StepperState {
     pub time: f64,
-    pub values: HashMap<String, f64>,
+    pub values: IndexMap<String, f64>,
+}
+
+fn collect_visible_values(
+    names: &[String],
+    values: Vec<f64>,
+) -> Result<IndexMap<String, f64>, SimError> {
+    if names.len() != values.len() {
+        return Err(SimError::RuntimeContract {
+            reason: format!(
+                "runtime returned {} visible values for {} visible names",
+                values.len(),
+                names.len()
+            ),
+        });
+    }
+    Ok(names.iter().cloned().zip(values).collect())
 }
 
 fn settled_initial_y(
@@ -488,9 +499,9 @@ where
 
 fn step_solver_by<Eqn, S>(
     solver: &Rc<RefCell<S>>,
-    model: &OdeModel,
-    params: &RuntimeParameters,
-    opts: &SimOptions,
+    _model: &OdeModel,
+    _params: &RuntimeParameters,
+    _opts: &SimOptions,
     dt: f64,
 ) -> Result<StepAdvance, SimError>
 where
@@ -506,32 +517,60 @@ where
         solver.state().t
     };
     let target = current_t + dt;
-    {
-        let solver_ref = solver.borrow();
-        let params_ref = params.borrow();
-        if implicit_residual_is_zero_through_interval(
-            model,
-            solver_ref.state().y.as_slice(),
-            params_ref.as_slice(),
-            current_t,
-            target,
-            opts.atol.max(1.0e-12),
-        )? {
-            drop(solver_ref);
-            *solver.borrow_mut().state_mut().t = target;
+    // NOTE: deliberately no `implicit_residual_is_zero_through_interval`
+    // fast-path here. Bumping `state_mut().t = target` to skip a "steady"
+    // interval jumps the solver clock forward while leaving the BDF multistep
+    // history at the old time, so the history times go inconsistent the moment
+    // the model leaves equilibrium — exactly the kind of corruption that makes
+    // a stiff long-horizon solve collapse at the next transition. The batch
+    // dense-output path (`advance_output_interval` in `lib.rs`) has no such
+    // shortcut and completes the full horizon; mirror it.
+    let mut solver = solver.borrow_mut();
+    // Advance with the solver's own adaptive steps and land on `target` via
+    // dense output (`state_mut_back`), rather than pinning a stop time at every
+    // output sample. `set_stop_time(target)` forces a shortened, awkward final
+    // step onto each output instant; on stiff models (e.g. the rover thermal
+    // system at its lunar louver/thermostat crossings) that constrained step
+    // repeatedly fails the Newton iteration and the solve collapses
+    // (~"nonlinear solver failures" at the same instant every run). Free-running
+    // the step and rewinding into the just-completed step keeps the natural step
+    // size, which is exactly what the batch dense-output path does
+    // (`advance_output_interval` / `state_mut_back` in `lib.rs`) and why the
+    // batch path completes the full horizon where the interactive stepper used
+    // to collapse.
+    loop {
+        if solver.state().t >= target {
+            solver
+                .state_mut_back(target)
+                .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
             return Ok(StepAdvance::default());
         }
-    }
-    let mut solver = solver.borrow_mut();
-    solver
-        .set_stop_time(target)
-        .map_err(|err| SimError::SolverError(format!("Failed to set stop time: {err}")))?;
-    loop {
         match solver_call("BDF step", || solver.step()) {
-            Ok(diffsol::OdeSolverStopReason::TstopReached) => return Ok(StepAdvance::default()),
-            Ok(diffsol::OdeSolverStopReason::InternalTimestep) => continue,
-            Ok(diffsol::OdeSolverStopReason::RootFound(_, _)) => {
-                return Ok(StepAdvance { hit_root: true });
+            Ok(
+                diffsol::OdeSolverStopReason::TstopReached
+                | diffsol::OdeSolverStopReason::InternalTimestep,
+            ) => continue,
+            Ok(diffsol::OdeSolverStopReason::RootFound(t_root, _)) => {
+                // The free-running step overshoots the root (the solver state
+                // sits at the natural step end, past `t_root`). The caller's
+                // event handling assumes the solver is *at* the event instant,
+                // so rewind onto it via dense output before signalling — exactly
+                // what the batch path does in `handle_root_crossing`. Without
+                // this the projection and event reset run against a post-root
+                // state at the wrong time and the next solve diverges to NaN.
+                if t_root <= target {
+                    solver
+                        .state_mut_back(t_root)
+                        .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+                    return Ok(StepAdvance { hit_root: true });
+                }
+                // Root lies beyond the requested interval: land on `target` and
+                // defer the crossing to the next step, which resumes from
+                // `target` and re-detects it.
+                solver
+                    .state_mut_back(target)
+                    .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+                return Ok(StepAdvance::default());
             }
             Err(err) => return Err(err),
         }
@@ -545,6 +584,12 @@ mod tests {
     use rumoca_ir_solve::{
         ComputeBlock, LinearOp, ScalarProgramBlock, SolveLayout, SolveProblem, SolverNameIndexMaps,
     };
+
+    macro_rules! fixture_span {
+        () => {
+            rumoca_ir_solve::source_span_from_offsets(50, 0, 1)
+        };
+    }
 
     #[test]
     fn set_input_updates_solve_ir_parameter_tail() {
@@ -563,7 +608,10 @@ mod tests {
         stepper.set_input("u", 2.0).expect("input should exist");
         stepper.step(0.05).expect("step should integrate");
 
-        let x = stepper.get("x").expect("x should be visible");
+        let x = stepper
+            .get("x")
+            .expect("stepper read should succeed")
+            .expect("x should be visible");
         assert!((x - 0.1).abs() <= 1.0e-4, "x={x}");
     }
 
@@ -586,7 +634,10 @@ mod tests {
         stepper.set_input("u", 2.0).expect("input should update");
         stepper.step(0.05).expect("changed input should step");
 
-        let x = stepper.get("x").expect("x should be visible");
+        let x = stepper
+            .get("x")
+            .expect("stepper read should succeed")
+            .expect("x should be visible");
         assert!((x - 0.15).abs() <= 1.0e-4, "x={x}");
     }
 
@@ -611,7 +662,10 @@ mod tests {
         }
 
         assert!((stepper.time() - 0.032).abs() <= 1.0e-12);
-        let x = stepper.get("x").expect("x should be visible");
+        let x = stepper
+            .get("x")
+            .expect("stepper read should succeed")
+            .expect("x should be visible");
         assert!(x.abs() <= 1.0e-12, "x={x}");
     }
 
@@ -631,16 +685,24 @@ mod tests {
 
         stepper.set_input("u", 2.0).expect("input should exist");
         stepper.step(0.05).expect("stepper should advance");
-        assert!(stepper.get("x").unwrap_or_default() > 0.05);
+        let advanced_x = stepper
+            .get("x")
+            .expect("stepper read should succeed")
+            .expect("x should be visible");
+        assert!(advanced_x > 0.05);
 
         stepper
             .reset(7.25)
             .expect("reset should restore cached initial state");
 
         assert!((stepper.time() - 7.25).abs() <= 1.0e-12);
-        assert!(stepper.get("x").unwrap_or_default().abs() <= 1.0e-12);
+        let reset_x = stepper
+            .get("x")
+            .expect("stepper read should succeed")
+            .expect("x should be visible");
+        assert!(reset_x.abs() <= 1.0e-12);
         assert_eq!(
-            stepper.get("u"),
+            stepper.get("u").expect("stepper read should succeed"),
             None,
             "reset should clear stale input overrides"
         );
@@ -665,21 +727,33 @@ mod tests {
             .step(0.05)
             .expect("second step should settle relation");
 
-        let z = stepper.get("z").expect("z should be visible");
-        let force = stepper.get("force").expect("force should be visible");
+        let z = stepper
+            .get("z")
+            .expect("stepper read should succeed")
+            .expect("z should be visible");
+        let force = stepper
+            .get("force")
+            .expect("stepper read should succeed")
+            .expect("force should be visible");
         assert!(z < 0.0, "z={z}");
         assert!((force - 42.0).abs() <= 1.0e-8, "force={force}");
     }
 
     fn single_input_integrator() -> solve::SolveModel {
-        let rhs = ScalarProgramBlock::new(vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
-        let zero = ScalarProgramBlock::new(vec![vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]]);
+        let rhs = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        );
+        let zero = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        );
         solve::SolveModel {
             problem: SolveProblem {
                 schema_version: solve::SOLVE_SCHEMA_VERSION,
@@ -688,7 +762,7 @@ mod tests {
                     implicit_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
                     implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                     algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
-                    residual: rhs.clone(),
+                    residual: ComputeBlock::from_scalar_program_block(rhs.clone()),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
@@ -739,7 +813,7 @@ mod tests {
     }
 
     fn falling_contact_probe() -> solve::SolveModel {
-        let derivative = ScalarProgramBlock::new(vec![
+        let derivative = scalar_block(vec![
             vec![
                 LinearOp::Const {
                     dst: 0,
@@ -749,7 +823,7 @@ mod tests {
             ],
             algebraic_contact_residual_row(),
         ]);
-        let jacobian_v = ScalarProgramBlock::new(vec![
+        let jacobian_v = scalar_block(vec![
             zero_row(),
             vec![
                 LinearOp::LoadSeed { dst: 0, index: 1 },
@@ -773,11 +847,11 @@ mod tests {
                             causal_steps: Vec::new(),
                         }],
                     },
-                    residual: derivative.clone(),
+                    residual: ComputeBlock::from_scalar_program_block(derivative.clone()),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(derivative.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
-                    residual: ScalarProgramBlock::new(vec![zero_row(), zero_row()]),
+                    residual: scalar_block(vec![zero_row(), zero_row()]),
                     row_targets: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),
@@ -786,7 +860,7 @@ mod tests {
                 },
                 discrete: solve::DiscreteSolveSystem::default(),
                 events: solve::SolveEventPartition {
-                    root_conditions: ScalarProgramBlock::new(vec![vec![
+                    root_conditions: scalar_block(vec![vec![
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::StoreOutput { src: 0 },
                     ]]),
@@ -835,6 +909,10 @@ mod tests {
             visible_value_rows: solve::ScalarProgramBlock::default(),
             variable_meta: Vec::new(),
         }
+    }
+
+    fn scalar_block(rows: Vec<Vec<LinearOp>>) -> ScalarProgramBlock {
+        ScalarProgramBlock::with_source_span(rows, fixture_span!())
     }
 
     fn algebraic_contact_residual_row() -> Vec<LinearOp> {

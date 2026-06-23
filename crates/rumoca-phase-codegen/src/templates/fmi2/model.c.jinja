@@ -36,6 +36,7 @@
 {% set solve_discrete_targets = solve.discrete.update_targets if solve is defined and solve.discrete is defined and solve.discrete.update_targets is defined else [] %}
 {% set solve_pre_param_bindings = solve.solve_layout.pre_param_bindings if solve is defined and solve.solve_layout is defined and solve.solve_layout.pre_param_bindings is defined else [] %}
 {% set solve_derivative_rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else [] %}
+{% set solve_derivative_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else [] %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
 {% set c_builtin_function_names = ["abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "cosh", "exp", "floor", "log", "log10", "round", "sin", "sinh", "sqrt", "tan", "tanh", "trunc"] %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
@@ -817,6 +818,7 @@ static void compute_derivatives(ModelInstance* m) {
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
 
     /* Evaluate derivatives from Solve IR. */
+    memset(m->xdot, 0, sizeof(m->xdot));
 {% if solve_derivative_nodes | length > 0 %}
 {% set ns_xdot = namespace(offset=0) %}
 {% for node in solve_derivative_nodes %}
@@ -824,16 +826,12 @@ static void compute_derivatives(ModelInstance* m) {
 {{ render_matmul_c(node.MatMul, ns_xdot.offset, solve_row_c_cfg) }}
 {% set ns_xdot.offset = ns_xdot.offset + node.MatMul.m * node.MatMul.n %}
 {% elif node.ScalarPrograms is defined %}
-{% for row in node.ScalarPrograms.programs %}
-    m->xdot[{{ ns_xdot.offset }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
-{% set ns_xdot.offset = ns_xdot.offset + 1 %}
-{% endfor %}
+{{ render_solve_block_c(node.ScalarPrograms.programs, solve_row_c_cfg, "m->xdot[{}] = {}", node.ScalarPrograms.output_indices) }}
+{% set ns_xdot.offset = ns_xdot.offset + store_output_count(node.ScalarPrograms.programs) %}
 {% endif %}
 {% endfor %}
 {% else %}
-{% for row in solve_derivative_rows %}
-    m->xdot[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
-{% endfor %}
+{{ render_solve_block_c(solve_derivative_rows, solve_row_c_cfg, "m->xdot[{}] = {}", solve_derivative_output_indices) }}
 {% endif %}
 
     /* Re-compute algebraics after derivatives (resolves derivative aliases) */
@@ -890,10 +888,8 @@ static void compute_outputs(ModelInstance* m) {
  * ========================================================================= */
 static void compute_discrete_updates(ModelInstance* m) {
 {% if solve_discrete_rows | length > 0 %}
-    double __rumoca_discrete_values[{{ solve_discrete_rows | length }}];
-{% for row in solve_discrete_rows %}
-    __rumoca_discrete_values[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
-{% endfor %}
+    double __rumoca_discrete_values[{{ store_output_count(solve_discrete_rows) }}];
+{{ render_solve_block_c(solve_discrete_rows, solve_row_c_cfg, "__rumoca_discrete_values[{}] = {}") }}
 {% for target in solve_discrete_targets %}
     {{ render_solve_slot_assign_c(target, "__rumoca_discrete_values[" ~ loop.index0 ~ "]", solve_slot_assign_c_cfg) }}
 {% endfor %}
@@ -907,9 +903,7 @@ static void compute_discrete_updates(ModelInstance* m) {
  * ========================================================================= */
 static void compute_event_indicators(ModelInstance* m) {
 {% if solve_root_rows | length > 0 %}
-{% for row in solve_root_rows %}
-    m->event_indicators[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
-{% endfor %}
+{{ render_solve_block_c(solve_root_rows, solve_row_c_cfg, "m->event_indicators[{}] = {}") }}
 {% else %}
     (void)m;
 {% endif %}

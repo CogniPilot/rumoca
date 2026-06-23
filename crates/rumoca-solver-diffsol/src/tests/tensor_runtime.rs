@@ -30,7 +30,7 @@ fn ode_model_evaluates_tensor_jacobian_vector_product() {
             lhs_sparsity: solve::SparsityPattern::Dense,
             rhs_sparsity: solve::SparsityPattern::Dense,
             metadata: solve::TensorNodeMetadata::default(),
-            span: Default::default(),
+            span: solve::SolveVariableMeta::empty_with_span(fixture_span!()).source_span,
         }],
     };
 

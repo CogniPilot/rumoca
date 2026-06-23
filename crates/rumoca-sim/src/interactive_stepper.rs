@@ -1,5 +1,6 @@
-use std::{collections::HashMap, error::Error};
+use std::error::Error;
 
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
 use crate::SimOptions;
@@ -12,11 +13,11 @@ pub trait InteractiveStepper: Sized {
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error>;
     fn step(&mut self, dt: f64) -> Result<(), Self::Error>;
     fn time(&self) -> f64;
-    fn get(&self, name: &str) -> Option<f64>;
+    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error>;
     fn input_names(&self) -> &[String];
 
-    fn values_for(&self, _names: &[String]) -> Option<HashMap<String, f64>> {
-        None
+    fn values_for(&self, _names: &[String]) -> Result<Option<IndexMap<String, f64>>, Self::Error> {
+        Ok(None)
     }
 
     fn max_runner_step_dt(&self) -> Option<f64> {

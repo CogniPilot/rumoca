@@ -1,7 +1,7 @@
 //! Conversion for component references and names.
 
 use crate::generated::modelica_grammar_trait;
-use crate::helpers::{merge_spans, token_span};
+use crate::helpers::{loc_info, merge_spans, token_span};
 
 //-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::ComponentReference {
@@ -25,16 +25,18 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::Com
         for comp_ref in &ast.component_reference_list {
             parts.push(comp_ref.component_ref_part.clone());
         }
-        let span = parts
-            .first()
-            .zip(parts.last())
-            .map(|(first, last)| merge_spans(token_span(&first.ident), token_span(&last.ident)))
-            .unwrap_or(rumoca_core::Span::DUMMY);
+        let last = parts.last().ok_or_else(|| {
+            anyhow::anyhow!(
+                "component reference conversion produced no parts{}",
+                loc_info(&ast.ident)
+            )
+        })?;
+        let span = merge_spans(token_span(&ast.ident)?, token_span(&last.ident)?);
         Ok(rumoca_ir_ast::ComponentReference {
             local: ast.component_reference_opt.is_some(),
             parts,
             span,
-            ..Default::default()
+            def_id: None,
         })
     }
 }

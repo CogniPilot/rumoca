@@ -9,16 +9,16 @@ crates.io.
 Linux and macOS:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash
 ```
 
 Install a specific version, and optionally the `rumoca-lsp` language server:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
 ```
 
-Windows PowerShell uses `install/install.ps1` from the same directory.
+Windows PowerShell uses `infra/install/install.ps1` from the same directory.
 
 The installer places binaries in `~/.local/bin` by default; override with
 `--bin-dir <path>`. Check the result with:
@@ -70,7 +70,7 @@ cargo run -p rumoca --release -- --help
 The repository includes an `xtask` developer CLI used by CI and local
 development (`cargo xtask verify quick`, `cargo xtask vscode test`, …). It is
 documented in the
-[Rumoca Internals](https://cognipilot.github.io/rumoca/dev-guide/) book and
+[Rumoca Dev Guide](https://cognipilot.github.io/rumoca/dev-guide/) book and
 `CONTRIBUTING.md`.
 
 ## Modelica Library Dependencies

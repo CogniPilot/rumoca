@@ -22,69 +22,112 @@ pub enum LinearSolveKernel {
     SparseCandidate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TensorPolicyError {
+    ShapeProductOverflow {
+        context: &'static str,
+        lhs: usize,
+        rhs: usize,
+    },
+}
+
+impl std::fmt::Display for TensorPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ShapeProductOverflow { context, lhs, rhs } => {
+                write!(f, "{context} shape product {lhs} * {rhs} overflows")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TensorPolicyError {}
+
 pub fn select_matmul_kernel(
     m: usize,
     k: usize,
     n: usize,
     lhs_sparsity: &SparsityPattern,
     rhs_sparsity: &SparsityPattern,
-) -> MatMulKernel {
+) -> Result<MatMulKernel, TensorPolicyError> {
     if matches!(lhs_sparsity, SparsityPattern::Diagonal) && m == k {
-        return MatMulKernel::DiagonalLeft;
+        return Ok(MatMulKernel::DiagonalLeft);
     }
     if matches!(rhs_sparsity, SparsityPattern::Diagonal) && k == n {
-        return MatMulKernel::DiagonalRight;
+        return Ok(MatMulKernel::DiagonalRight);
     }
-    let ops = m.saturating_mul(k).saturating_mul(n);
+    let lhs_ops = checked_policy_product(m, k, "MatMul")?;
+    let ops = checked_policy_product(lhs_ops, n, "MatMul")?;
     if ops <= SMALL_DENSE_MATMUL_OPS {
-        return MatMulKernel::SmallDense;
+        return Ok(MatMulKernel::SmallDense);
     }
-    if sparse_operand_density(lhs_sparsity, m, k)
-        .or_else(|| sparse_operand_density(rhs_sparsity, k, n))
+    if sparse_operand_density(lhs_sparsity, m, k)?
+        .or(sparse_operand_density(rhs_sparsity, k, n)?)
         .is_some_and(|density| density <= SPARSE_DENSITY_LIMIT)
     {
-        return MatMulKernel::SparseCandidate;
+        return Ok(MatMulKernel::SparseCandidate);
     }
-    MatMulKernel::Dense
+    Ok(MatMulKernel::Dense)
 }
 
-pub fn select_linear_solve_kernel(n: usize, diagonal: bool, nonzeros: usize) -> LinearSolveKernel {
+pub fn select_linear_solve_kernel(
+    n: usize,
+    diagonal: bool,
+    nonzeros: usize,
+) -> Result<LinearSolveKernel, TensorPolicyError> {
     if diagonal && n <= DIAGONAL_LINEAR_SOLVE_LIMIT {
-        return LinearSolveKernel::Diagonal;
+        return Ok(LinearSolveKernel::Diagonal);
     }
     if n <= SMALL_DENSE_LINEAR_SOLVE_LIMIT {
-        return LinearSolveKernel::SmallDense;
+        return Ok(LinearSolveKernel::SmallDense);
     }
-    let total = n.saturating_mul(n);
+    let total = checked_policy_product(n, n, "linear solve")?;
     if total > 0 && (nonzeros as f64 / total as f64) <= SPARSE_DENSITY_LIMIT {
-        return LinearSolveKernel::SparseCandidate;
+        return Ok(LinearSolveKernel::SparseCandidate);
     }
-    LinearSolveKernel::Dense
+    Ok(LinearSolveKernel::Dense)
 }
 
 pub fn matrix_nonzeros(values: &[f64], eps: f64) -> usize {
     values.iter().filter(|value| value.abs() > eps).count()
 }
 
-pub fn matrix_is_diagonal(values: &[f64], n: usize, eps: f64) -> bool {
-    values.len() >= n.saturating_mul(n)
+pub fn matrix_is_diagonal(values: &[f64], n: usize, eps: f64) -> Result<bool, TensorPolicyError> {
+    if n == 0 {
+        return Ok(values.is_empty());
+    }
+    let total = checked_policy_product(n, n, "matrix diagonal check")?;
+    Ok(values.len() >= total
         && values.iter().enumerate().all(|(idx, value)| {
             let row = idx / n;
             let col = idx % n;
             row == col || value.abs() <= eps
-        })
+        }))
 }
 
-fn sparse_operand_density(sparsity: &SparsityPattern, rows: usize, cols: usize) -> Option<f64> {
-    let total = rows.saturating_mul(cols);
+fn sparse_operand_density(
+    sparsity: &SparsityPattern,
+    rows: usize,
+    cols: usize,
+) -> Result<Option<f64>, TensorPolicyError> {
+    let total = checked_policy_product(rows, cols, "sparse operand density")?;
     if total == 0 {
-        return Some(0.0);
+        return Ok(Some(0.0));
     }
-    match sparsity {
+    Ok(match sparsity {
         SparsityPattern::Dense => None,
         SparsityPattern::Diagonal => Some(rows.min(cols) as f64 / total as f64),
         SparsityPattern::Explicit { nnz } => Some(nnz.len() as f64 / total as f64),
-    }
+    })
+}
+
+fn checked_policy_product(
+    lhs: usize,
+    rhs: usize,
+    context: &'static str,
+) -> Result<usize, TensorPolicyError> {
+    lhs.checked_mul(rhs)
+        .ok_or(TensorPolicyError::ShapeProductOverflow { context, lhs, rhs })
 }
 
 #[cfg(test)]
@@ -94,11 +137,13 @@ mod tests {
     #[test]
     fn matmul_policy_prefers_diagonal_kernels_when_declared() {
         assert_eq!(
-            select_matmul_kernel(3, 3, 2, &SparsityPattern::Diagonal, &SparsityPattern::Dense),
+            select_matmul_kernel(3, 3, 2, &SparsityPattern::Diagonal, &SparsityPattern::Dense)
+                .expect("diagonal left policy should select"),
             MatMulKernel::DiagonalLeft
         );
         assert_eq!(
-            select_matmul_kernel(2, 3, 3, &SparsityPattern::Dense, &SparsityPattern::Diagonal),
+            select_matmul_kernel(2, 3, 3, &SparsityPattern::Dense, &SparsityPattern::Diagonal)
+                .expect("diagonal right policy should select"),
             MatMulKernel::DiagonalRight
         );
     }
@@ -106,14 +151,34 @@ mod tests {
     #[test]
     fn linear_solve_policy_uses_dynamic_matrix_shape() {
         let diagonal = [2.0, 0.0, 0.0, 3.0];
-        assert!(matrix_is_diagonal(&diagonal, 2, 1.0e-14));
+        assert!(matrix_is_diagonal(&diagonal, 2, 1.0e-14).expect("diagonal check should fit"));
         assert_eq!(
             select_linear_solve_kernel(
                 2,
-                matrix_is_diagonal(&diagonal, 2, 1.0e-14),
+                matrix_is_diagonal(&diagonal, 2, 1.0e-14).expect("diagonal check should fit"),
                 matrix_nonzeros(&diagonal, 1.0e-14),
-            ),
+            )
+            .expect("linear solve policy should select"),
             LinearSolveKernel::Diagonal
         );
+    }
+
+    #[test]
+    fn tensor_policy_rejects_shape_product_overflow() {
+        assert!(matches!(
+            select_matmul_kernel(
+                usize::MAX,
+                2,
+                1,
+                &SparsityPattern::Dense,
+                &SparsityPattern::Dense,
+            ),
+            Err(TensorPolicyError::ShapeProductOverflow { .. })
+        ));
+        assert!(matches!(
+            matrix_is_diagonal(&[], usize::MAX, 1.0e-14),
+            Err(TensorPolicyError::ShapeProductOverflow { .. })
+        ));
+        assert!(matrix_is_diagonal(&[], 0, 1.0e-14).expect("zero-size diagonal check should fit"));
     }
 }

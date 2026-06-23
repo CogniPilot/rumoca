@@ -396,10 +396,14 @@ fn test_eval_state_accessor_special_functions() {
 fn test_eval_state_accessor_setstate_field_access_uses_intrinsic_fallback() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
-    let mut set_state = rumoca_core::Function::new("Medium.setState_pTX", Default::default());
+    let mut set_state = rumoca_core::Function::new("Medium.setState_pTX", rumoca_core::Span::DUMMY);
     set_state.add_output(
-        rumoca_core::FunctionParam::new("state", "ThermodynamicState")
-            .with_type_class(rumoca_core::ClassType::Record),
+        rumoca_core::FunctionParam::new(
+            "state",
+            "ThermodynamicState",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record),
     );
     funcs.insert("Medium.setState_pTX".to_string(), set_state);
     env.functions = std::sync::Arc::new(funcs);
@@ -641,7 +645,7 @@ fn test_table1d_constructor_accepts_flattened_field_access_matrix() {
     assert!(table_id > 0.0);
 
     let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
-    let value = eval_table_lookup_value_in(table_id, 1.0, 0.75, &tables).unwrap();
+    let value = eval_table_lookup_value_opt_in(table_id, 1.0, 0.75, &tables).unwrap();
     assert!((value - 0.875).abs() < 1e-12, "value={value}");
 }
 

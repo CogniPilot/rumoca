@@ -515,7 +515,7 @@ pub fn index_reduce_missing_state_derivatives_once(
         .collect();
     let state_derivative_matcher = DerivativeNameMatcher::from_var_names(&state_names);
 
-    let der_map = build_relaxed_derivative_map(dae);
+    let defining_expr_index = collect_residual_defining_expr_index(dae);
     let mut changed = 0usize;
     let mut used_eq = HashSet::new();
 
@@ -552,6 +552,12 @@ pub fn index_reduce_missing_state_derivatives_once(
             .collect();
 
         for idx in candidate_indices {
+            let seed_exprs = vec![dae.continuous.equations[idx].rhs.clone()];
+            let der_map = build_relaxed_derivative_map_for_exprs_with_index(
+                dae,
+                &defining_expr_index,
+                &seed_exprs,
+            )?;
             let differentiated =
                 symbolic_time_derivative(&dae.continuous.equations[idx].rhs, dae, &der_map);
             let Some(new_rhs) = differentiated else {
@@ -718,10 +724,11 @@ pub fn normalize_ode_equation_signs(dae: &mut Dae) {
         let sign = der_sign_in_expr(&dae.continuous.equations[i].rhs, state_name, 1);
         if sign < 0 {
             let old_rhs = dae.continuous.equations[i].rhs.clone();
+            let span = dae.continuous.equations[i].span;
             dae.continuous.equations[i].rhs = Expression::Unary {
                 op: OpUnary::Minus,
                 rhs: Box::new(old_rhs),
-                span: rumoca_core::Span::DUMMY,
+                span,
             };
         }
     }
@@ -804,4 +811,73 @@ pub fn substitute_standalone_state_derivatives_in_non_ode_rows(dae: &mut Dae) ->
     }
 
     rewritten_rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{BuiltinFunction, Reference, SourceId};
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            SourceId::from_source_name("state_row_reduction_test.mo"),
+            12,
+            31,
+        )
+    }
+
+    fn var_ref(name: &str, span: Span) -> Expression {
+        Expression::VarRef {
+            name: Reference::from_var_name(VarName::new(name)),
+            subscripts: Vec::new(),
+            span,
+        }
+    }
+
+    fn der_call(name: &str, span: Span) -> Expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var_ref(name, span)],
+            span,
+        }
+    }
+
+    #[test]
+    fn normalize_ode_equation_sign_uses_equation_span() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables.states.insert(
+            VarName::new("s"),
+            Variable::new(
+                VarName::new("s"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
+        );
+        dae.continuous.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(var_ref("v", span)),
+                rhs: Box::new(der_call("s", span)),
+                span,
+            },
+            span,
+            "test",
+        ));
+
+        normalize_ode_equation_signs(&mut dae);
+
+        let Expression::Unary {
+            op: OpUnary::Minus,
+            span: actual,
+            ..
+        } = dae.continuous.equations[0].rhs
+        else {
+            panic!("expected normalized unary minus");
+        };
+        assert_eq!(actual, span);
+    }
 }

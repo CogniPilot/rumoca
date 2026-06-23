@@ -8,14 +8,16 @@ pub(super) fn append_replaceable_function_modifier_args(
 ) -> Vec<Expression> {
     let receiver_alias = receiver_alias_for_member_function(current_ref, ctx);
     let existing_names = named_function_arg_names(&args);
-    if let Some(receiver_alias) = receiver_alias.as_deref()
-        && let Some(default_args) = replaceable_function_modifier_args(
-            current_ref.as_str(),
-            resolved_name,
-            receiver_alias,
-            ctx,
-        )
-    {
+    let declaration_receiver_scope = receiver_alias
+        .as_deref()
+        .map(ComponentPath::from_flat_path)
+        .unwrap_or_else(|| ctx.active_scope.clone());
+    if let Some(default_args) = replaceable_function_modifier_args(
+        current_ref.as_str(),
+        resolved_name,
+        &declaration_receiver_scope,
+        ctx,
+    ) {
         args.extend(
             default_args
                 .into_iter()
@@ -65,7 +67,16 @@ fn receiver_scope_for_function_modifier(
     if let Some(scope) = current_ref.component_scope() {
         let prefix_parts = scope.prefix_parts();
         if !prefix_parts.is_empty() {
-            return ComponentPath::from_parts(prefix_parts.iter().map(|part| part.ident.as_str()));
+            let receiver_scope =
+                ComponentPath::from_parts(prefix_parts.iter().map(|part| part.ident.as_str()));
+            if ctx
+                .class_index
+                .get_by_qualified_name(receiver_scope.as_str())
+                .is_some()
+            {
+                return ctx.active_scope.clone();
+            }
+            return receiver_scope;
         }
     }
     ctx.active_scope.clone()
@@ -113,7 +124,7 @@ fn receiver_alias_for_member_function(
 fn replaceable_function_modifier_args(
     current_name: &str,
     resolved_name: &str,
-    receiver_alias: &str,
+    receiver_scope: &ComponentPath,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<Vec<(String, Expression, rumoca_core::Span)>> {
     let class_def = ctx.class_index.get_by_qualified_name(current_name)?;
@@ -134,7 +145,7 @@ fn replaceable_function_modifier_args(
         }
         for modifier in &ext.modifications {
             if let Some(arg) =
-                replaceable_function_modifier_arg(&modifier.expr, receiver_alias, ctx)
+                replaceable_function_modifier_arg(&modifier.expr, receiver_scope, ctx)
             {
                 result.push(arg);
             }
@@ -145,7 +156,7 @@ fn replaceable_function_modifier_args(
 
 fn replaceable_function_modifier_arg(
     expr: &rumoca_ir_ast::Expression,
-    receiver_alias: &str,
+    receiver_scope: &ComponentPath,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<(String, Expression, rumoca_core::Span)> {
     let (name, value) = match expr {
@@ -157,9 +168,8 @@ fn replaceable_function_modifier_arg(
         }
         _ => return None,
     };
-    let receiver_path = ComponentPath::from_parts([receiver_alias]);
     let value = QualifyReplaceableFunctionModifier {
-        receiver_alias: &receiver_path,
+        receiver_alias: receiver_scope,
     }
     .transform_expression(value);
     Some((

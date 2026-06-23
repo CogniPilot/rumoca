@@ -17,9 +17,9 @@ use crate::device::{GamepadAxis, GamepadButton, KeyCode, KeyModifiers};
 pub use crate::device::{GamepadSnapshot, InputMode, KeyboardEvent};
 
 pub use compile::{
-    ButtonAction, CompiledDecay, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton,
-    CompiledInput, CompiledIntegrator, CompiledKey, DeriveRule, IntegratorSource, KeyAction, Path,
-    Precondition, PreconditionOp,
+    ButtonAction, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton, CompiledInput,
+    CompiledIntegrator, CompiledKey, CompiledKeyboardDecay, DeriveRule, IntegratorSource,
+    KeyAction, Path, Precondition, PreconditionOp,
 };
 
 // ── Runtime values ─────────────────────────────────────────────────────────
@@ -219,16 +219,8 @@ impl InputEngine {
         if !events.is_empty() {
             self.last_message = None;
         }
-        // 1. Decay configured targets (applied every frame regardless of events).
-        if let Some(decay) = self.compiled.keyboard_decay.clone() {
-            let factor = decay.factor.powf(dt / decay.ref_dt);
-            for target in &decay.targets {
-                let current = self.read_path(target).unwrap_or(0.0);
-                self.write_local(target, current * factor);
-            }
-        }
 
-        // 2a. Ctrl+C → emit "quit" signal. Raw mode disables the tty's ISIG
+        // 1a. Ctrl+C → emit "quit" signal. Raw mode disables the tty's ISIG
         //     translation, so the OS never delivers SIGINT — we have to
         //     recognize the keystroke ourselves or the user is stuck.
         for event in events {
@@ -241,7 +233,7 @@ impl InputEngine {
             }
         }
 
-        // 2b. Dispatch key events: match against bindings, fire action.
+        // 1b. Dispatch key events: match against bindings, fire action.
         let keys = self.compiled.keyboard_keys.clone();
         for event in events {
             for key in keys
@@ -252,12 +244,14 @@ impl InputEngine {
             }
         }
 
+        self.apply_keyboard_decay(dt);
+
         // 3. Re-apply browser-held set controls once per input tick. This
         // keeps held controls active without requiring the browser to stream
         // repeated key packets.
         self.apply_held_keyboard_sets(&keys);
 
-        // 4. Run keyboard integrators (source is typically a local that decays).
+        // 4. Run keyboard integrators.
         let integrators = self.compiled.keyboard_integrators.clone();
         for integ in &integrators {
             let src = match &integ.source {
@@ -280,7 +274,11 @@ impl InputEngine {
                 {
                     return;
                 }
-                self.write_local(target, if event.pressed { *value } else { 0.0 });
+                if event.pressed {
+                    self.write_local(target, *value);
+                } else if !self.has_keyboard_decay_target(target) {
+                    self.write_local(target, 0.0);
+                }
             }
             KeyAction::Toggle { state } => {
                 if !event.pressed {
@@ -335,6 +333,30 @@ impl InputEngine {
             }
             self.write_local(target, *value);
         }
+    }
+
+    fn apply_keyboard_decay(&mut self, dt: f64) {
+        let Some(decay) = self.compiled.keyboard_decay.clone() else {
+            return;
+        };
+        if dt <= 0.0 {
+            return;
+        }
+        let scale = decay.factor.powf(dt / decay.ref_dt);
+        for target in &decay.targets {
+            if let Some(current) = self.read_path(target) {
+                self.write_local(target, current * scale);
+            }
+        }
+    }
+
+    fn has_keyboard_decay_target(&self, target: &Path) -> bool {
+        self.compiled.keyboard_decay.as_ref().is_some_and(|decay| {
+            decay
+                .targets
+                .iter()
+                .any(|decay_target| decay_target == target)
+        })
     }
 
     // ── Shared helpers (used by gamepad now, keyboard next) ───────────────
@@ -667,11 +689,6 @@ deadband = 0.1
 rate = 0.7
 source = "LeftStickY"
 write = "throttle"
-
-[input.keyboard.decay]
-factor = 0.85
-ref_dt = 0.016
-targets = ["roll_cmd", "pitch_cmd", "yaw_cmd", "throttle_input"]
 
 [input.keyboard.integrators.throttle]
 clamp = [0.0, 1.0]
@@ -1006,7 +1023,7 @@ when_true = 2000
         assert_eq!(
             eng.get("throttle_input"),
             Some(1.0),
-            "held browser key should defeat decay without repeated websocket packets"
+            "held browser key should stay active without repeated websocket packets"
         );
 
         eng.process_keyboard(
@@ -1020,18 +1037,54 @@ when_true = 2000
     }
 
     #[test]
-    fn keyboard_decay_reduces_targets_each_frame() {
-        let cfg = load_quadrotor();
+    fn configured_keyboard_decay_eases_released_set_target() {
+        let cfg: InputSections = toml::from_str(
+            r#"
+[input]
+mode = "keyboard"
+
+[input.keyboard.decay]
+factor = 0.5
+ref_dt = 1.0
+targets = ["stick"]
+
+[input.keyboard.keys.w]
+action = "set"
+target = "stick"
+value = 1.0
+
+[locals.stick]
+default = 0.0
+type = "float"
+"#,
+        )
+        .expect("parse decay config");
         let mut eng = build_for_test(&cfg);
-        // Set pitch_cmd directly and verify it decays over time.
-        eng.write_local(&Path::parse("pitch_cmd"), 1.0);
-        // Decay: factor=0.85, ref_dt=0.016 -> per-frame factor at dt=0.016 is 0.85.
-        eng.process_keyboard(&[], 0.016);
-        let v1 = eng.get("pitch_cmd").unwrap();
-        assert!((v1 - 0.85).abs() < 1e-9, "expected 0.85, got {v1}");
-        eng.process_keyboard(&[], 0.016);
-        let v2 = eng.get("pitch_cmd").unwrap();
-        assert!((v2 - 0.85 * 0.85).abs() < 1e-9, "expected 0.7225, got {v2}");
+
+        eng.process_keyboard(
+            &[KeyboardEvent::holdable_press(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.0,
+        );
+        assert_eq!(eng.get("stick"), Some(1.0));
+
+        eng.process_keyboard(
+            &[KeyboardEvent::released(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.0,
+        );
+        assert_eq!(
+            eng.get("stick"),
+            Some(1.0),
+            "configured decay target should not clear immediately on release"
+        );
+
+        eng.process_keyboard(&[], 1.0);
+        assert_eq!(eng.get("stick"), Some(0.5));
     }
 
     #[test]
@@ -1078,11 +1131,10 @@ when_true = 2000
     fn keyboard_integrator_accumulates_from_local_source() {
         let cfg = load_quadrotor();
         let mut eng = build_for_test(&cfg);
-        // 'w' sets throttle_input = 1.0 (with decay).
+        // 'w' sets throttle_input = 1.0.
         // Keyboard integrator reads local:throttle_input, rate 0.7, clamp [0, 1] -> throttle.
         eng.process_keyboard(&[key('w')], 0.5);
         // After this poll:
-        //   decay runs first (throttle_input was 0, still 0)
         //   event fires: throttle_input = 1.0
         //   integrator reads throttle_input = 1.0, adds 1.0 * 0.7 * 0.5 = 0.35 to throttle
         assert!(

@@ -18,12 +18,6 @@ type RecordArgMap = HashMap<String, Vec<(usize, Vec<String>)>>;
 mod record_field_inference;
 use record_field_inference::{FieldUseMap, infer_record_fields_by_function};
 
-#[derive(Clone, Copy)]
-enum RecordArgVarRefMode {
-    FieldAccess,
-    FlattenedParam,
-}
-
 /// DAE value prepared for code generators that need DAE-level convenience
 /// rewrites without mutating the simulation DAE.
 #[derive(Debug, Clone)]
@@ -48,13 +42,12 @@ impl CodegenDae {
 /// This applies codegen-only rewrites such as record-parameter decomposition
 /// and array-size argument insertion to a cloned DAE so the caller cannot
 /// accidentally reuse a simulation DAE after backend-specific mutation.
-#[must_use]
-pub fn prepare_dae_for_codegen(dae: &dae::Dae) -> CodegenDae {
+pub fn prepare_dae_for_codegen(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError> {
     let mut prepared = dae.clone();
+    lower_record_function_params_dae(&mut prepared)?;
     unwrap_block_constructor_value_wrappers(&mut prepared);
-    lower_record_function_params_dae(&mut prepared);
-    insert_array_size_args_dae(&mut prepared);
-    CodegenDae { dae: prepared }
+    insert_array_size_args_dae(&mut prepared)?;
+    Ok(CodegenDae { dae: prepared })
 }
 
 fn unwrap_block_constructor_value_wrappers(dae: &mut Dae) {
@@ -150,7 +143,7 @@ fn record_fields_from_constructor_metadata(
 /// call-site arguments throughout all DAE equations.
 /// Decompose record-typed function params in the DAE for code generators.
 /// Must NOT be called before simulation — only before codegen rendering.
-pub fn lower_record_function_params_dae(dae: &mut Dae) {
+pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError> {
     let record_fields_by_type = dae
         .symbols
         .functions
@@ -192,19 +185,23 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) {
     }
 
     if decomp_map.is_empty() {
-        return;
+        return Ok(());
     }
 
-    DaeRecordArgDecomposer {
+    let mut rewriter = DaeRecordArgDecomposer {
         map: &decomp_map,
-        var_ref_mode: RecordArgVarRefMode::FieldAccess,
+        error: None,
+    };
+    rewriter.rewrite_dae(dae);
+    if let Some(error) = rewriter.error {
+        return Err(error);
     }
-    .rewrite_dae(dae);
     for func in dae.symbols.functions.values_mut() {
         for stmt in &mut func.body {
-            decompose_record_args_dae_stmt(stmt, &decomp_map);
+            decompose_record_args_dae_stmt(stmt, &decomp_map)?;
         }
     }
+    Ok(())
 }
 
 fn record_inputs_to_decompose(
@@ -395,21 +392,28 @@ impl StatementRewriter for EnumLiteralOrdinalLowerer<'_> {}
 
 impl DaeExpressionRewriter for EnumLiteralOrdinalLowerer<'_> {}
 
-fn decompose_record_args_dae_stmt(stmt: &mut rumoca_core::Statement, map: &RecordArgMap) {
-    *stmt = DaeRecordArgDecomposer {
-        map,
-        var_ref_mode: RecordArgVarRefMode::FlattenedParam,
+fn decompose_record_args_dae_stmt(
+    stmt: &mut rumoca_core::Statement,
+    map: &RecordArgMap,
+) -> Result<(), ToDaeError> {
+    let mut rewriter = DaeRecordArgDecomposer { map, error: None };
+    *stmt = rewriter.rewrite_statement(stmt);
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
-    .rewrite_statement(stmt);
 }
 
 struct DaeRecordArgDecomposer<'a> {
     map: &'a RecordArgMap,
-    var_ref_mode: RecordArgVarRefMode,
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for DaeRecordArgDecomposer<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         if let rumoca_core::Expression::FunctionCall {
             name,
             args,
@@ -418,10 +422,17 @@ impl ExpressionRewriter for DaeRecordArgDecomposer<'_> {
         } = expr
         {
             let rewritten_args = self.rewrite_expressions(args);
-            let args = if let Some(decomposed) = self.map.get(name.as_str()) {
-                decompose_dae_record_args(&rewritten_args, decomposed, self.var_ref_mode)
-            } else {
-                rewritten_args
+            let Some(decomposed) = self.map.get(name.as_str()) else {
+                return rumoca_core::Expression::FunctionCall {
+                    name: name.clone(),
+                    args: rewritten_args,
+                    is_constructor: *is_constructor,
+                    span: *span,
+                };
+            };
+            let args = match decompose_dae_record_args(&rewritten_args, decomposed, *span) {
+                Ok(args) => args,
+                Err(error) => return self.record_error(error, expr),
             };
             return rumoca_core::Expression::FunctionCall {
                 name: name.clone(),
@@ -434,6 +445,17 @@ impl ExpressionRewriter for DaeRecordArgDecomposer<'_> {
     }
 }
 
+impl DaeRecordArgDecomposer<'_> {
+    fn record_error(
+        &mut self,
+        error: ToDaeError,
+        expr: &rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        self.error = Some(error);
+        expr.clone()
+    }
+}
+
 impl StatementRewriter for DaeRecordArgDecomposer<'_> {}
 
 impl DaeExpressionRewriter for DaeRecordArgDecomposer<'_> {}
@@ -441,8 +463,8 @@ impl DaeExpressionRewriter for DaeRecordArgDecomposer<'_> {}
 fn decompose_dae_record_args(
     old_args: &[rumoca_core::Expression],
     decomposed: &[(usize, Vec<String>)],
-    var_ref_mode: RecordArgVarRefMode,
-) -> Vec<rumoca_core::Expression> {
+    call_span: rumoca_core::Span,
+) -> Result<Vec<rumoca_core::Expression>, ToDaeError> {
     let mut args = Vec::new();
     let mut old_idx = 0;
     for (param_idx, fields) in decomposed {
@@ -451,7 +473,7 @@ fn decompose_dae_record_args(
             old_idx += 1;
         }
         if old_idx < old_args.len() {
-            expand_dae_record_arg(&old_args[old_idx], fields, &mut args, var_ref_mode);
+            expand_dae_record_arg(&old_args[old_idx], fields, &mut args, call_span)?;
             old_idx += 1;
         }
     }
@@ -459,7 +481,7 @@ fn decompose_dae_record_args(
         args.push(old_args[old_idx].clone());
         old_idx += 1;
     }
-    args
+    Ok(args)
 }
 
 fn named_constructor_arg_dae<'a>(
@@ -485,8 +507,9 @@ fn expand_dae_record_arg(
     arg: &rumoca_core::Expression,
     fields: &[String],
     out: &mut Vec<rumoca_core::Expression>,
-    var_ref_mode: RecordArgVarRefMode,
-) {
+    call_span: rumoca_core::Span,
+) -> Result<(), ToDaeError> {
+    let owner_span = required_arg_owner_span(arg, call_span, "DAE record argument expansion")?;
     // Constructor call → extract positional/named args
     if let rumoca_core::Expression::FunctionCall {
         args: ctor_args,
@@ -511,29 +534,23 @@ fn expand_dae_record_arg(
             } else {
                 out.push(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(0.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: owner_span,
                 });
             }
         }
-        return;
+        return Ok(());
     }
 
     // Variable reference → emit field VarRefs
     if let rumoca_core::Expression::VarRef { name, .. } = arg {
         for field in fields {
-            let name = match var_ref_mode {
-                RecordArgVarRefMode::FieldAccess => name.with_appended_field(field),
-                RecordArgVarRefMode::FlattenedParam => {
-                    rumoca_core::Reference::generated(format!("{}_{field}", name.as_str()))
-                }
-            };
             out.push(rumoca_core::Expression::VarRef {
-                name,
+                name: name.with_appended_field(field),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             });
         }
-        return;
+        return Ok(());
     }
 
     // Check for FieldAccess on the record variable (e.g. `c.re` passed directly)
@@ -545,10 +562,10 @@ fn expand_dae_record_arg(
         for _ in 1..fields.len() {
             out.push(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.0),
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             });
         }
-        return;
+        return Ok(());
     }
 
     // Scalar expression passed to a record-typed parameter (e.g. Real expr passed
@@ -559,10 +576,10 @@ fn expand_dae_record_arg(
         for _ in 1..fields.len() {
             out.push(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.0),
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             });
         }
-        return;
+        return Ok(());
     }
 
     // General expression → emit FieldAccess
@@ -570,9 +587,10 @@ fn expand_dae_record_arg(
         out.push(rumoca_core::Expression::FieldAccess {
             base: Box::new(arg.clone()),
             field: field.clone(),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
         });
     }
+    Ok(())
 }
 
 /// Returns true if the expression is obviously a scalar (not a record type).
@@ -622,7 +640,7 @@ fn is_obviously_scalar(expr: &rumoca_core::Expression) -> bool {
 
 /// Insert size arguments for variable-size array params at DAE call sites.
 /// Must NOT be called before simulation — only before codegen rendering.
-pub fn insert_array_size_args_dae(dae: &mut Dae) {
+pub fn insert_array_size_args_dae(dae: &mut Dae) -> Result<(), ToDaeError> {
     let array_param_map: HashMap<String, Vec<usize>> = dae
         .symbols
         .functions
@@ -644,33 +662,50 @@ pub fn insert_array_size_args_dae(dae: &mut Dae) {
         .collect();
 
     if array_param_map.is_empty() {
-        return;
+        return Ok(());
     }
 
-    DaeSizeArgInserter {
+    let mut rewriter = DaeSizeArgInserter {
         map: &array_param_map,
+        error: None,
+    };
+    rewriter.rewrite_dae(dae);
+    if let Some(error) = rewriter.error {
+        return Err(error);
     }
-    .rewrite_dae(dae);
     for func in dae.symbols.functions.values_mut() {
         for stmt in &mut func.body {
-            insert_size_args_dae_stmt(stmt, &array_param_map);
+            insert_size_args_dae_stmt(stmt, &array_param_map)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod record_lowering_tests;
 
-fn insert_size_args_dae_stmt(stmt: &mut rumoca_core::Statement, map: &HashMap<String, Vec<usize>>) {
-    *stmt = DaeSizeArgInserter { map }.rewrite_statement(stmt);
+fn insert_size_args_dae_stmt(
+    stmt: &mut rumoca_core::Statement,
+    map: &HashMap<String, Vec<usize>>,
+) -> Result<(), ToDaeError> {
+    let mut rewriter = DaeSizeArgInserter { map, error: None };
+    *stmt = rewriter.rewrite_statement(stmt);
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 struct DaeSizeArgInserter<'a> {
     map: &'a HashMap<String, Vec<usize>>,
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for DaeSizeArgInserter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         if let rumoca_core::Expression::FunctionCall {
             name,
             args,
@@ -679,8 +714,10 @@ impl ExpressionRewriter for DaeSizeArgInserter<'_> {
         } = expr
         {
             let mut args = self.rewrite_expressions(args);
-            if let Some(array_indices) = self.map.get(name.as_str()) {
-                insert_dae_size_args(&mut args, array_indices);
+            if let Some(array_indices) = self.map.get(name.as_str())
+                && let Err(error) = insert_dae_size_args(&mut args, array_indices, *span)
+            {
+                return self.record_error(error, expr);
             }
             return rumoca_core::Expression::FunctionCall {
                 name: name.clone(),
@@ -693,11 +730,26 @@ impl ExpressionRewriter for DaeSizeArgInserter<'_> {
     }
 }
 
+impl DaeSizeArgInserter<'_> {
+    fn record_error(
+        &mut self,
+        error: ToDaeError,
+        expr: &rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        self.error = Some(error);
+        expr.clone()
+    }
+}
+
 impl StatementRewriter for DaeSizeArgInserter<'_> {}
 
 impl DaeExpressionRewriter for DaeSizeArgInserter<'_> {}
 
-fn insert_dae_size_args(args: &mut Vec<rumoca_core::Expression>, array_indices: &[usize]) {
+fn insert_dae_size_args(
+    args: &mut Vec<rumoca_core::Expression>,
+    array_indices: &[usize],
+    call_span: rumoca_core::Span,
+) -> Result<(), ToDaeError> {
     for &param_idx in array_indices.iter().rev() {
         if param_idx >= args.len() {
             continue;
@@ -705,30 +757,59 @@ fn insert_dae_size_args(args: &mut Vec<rumoca_core::Expression>, array_indices: 
         // If the argument is an Array literal with known element count, use the
         // literal count directly instead of size(), which some backends cannot
         // render for compound literals.
-        let size_expr = array_size_expr_for_arg(&args[param_idx]);
+        let size_expr = array_size_expr_for_arg(&args[param_idx], call_span)?;
         args.insert(param_idx + 1, size_expr);
     }
+    Ok(())
 }
 
-fn array_size_expr_for_arg(arg: &rumoca_core::Expression) -> rumoca_core::Expression {
+fn array_size_expr_for_arg(
+    arg: &rumoca_core::Expression,
+    call_span: rumoca_core::Span,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    let owner_span = required_arg_owner_span(arg, call_span, "DAE array size argument")?;
     if let rumoca_core::Expression::Array { elements, .. } = arg {
-        return rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(elements.len() as i64),
-            span: rumoca_core::Span::DUMMY,
-        };
+        let size = i64::try_from(elements.len()).map_err(|_| {
+            ToDaeError::runtime_contract_violation_at(
+                "DAE array literal size exceeds i64".to_string(),
+                owner_span,
+            )
+        })?;
+        return Ok(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(size),
+            span: owner_span,
+        });
     }
 
-    rumoca_core::Expression::BuiltinCall {
+    Ok(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Size,
         args: vec![
             arg.clone(),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             },
         ],
-        span: rumoca_core::Span::DUMMY,
-    }
+        span: owner_span,
+    })
+}
+
+fn required_arg_owner_span(
+    arg: &rumoca_core::Expression,
+    call_span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Span, ToDaeError> {
+    let Some(span) = arg
+        .span()
+        .or_else(|| (!call_span.is_dummy()).then_some(call_span))
+    else {
+        return Err(ToDaeError::runtime_metadata_violation(format!(
+            "missing source provenance for {context}"
+        )));
+    };
+    span.require_provenance(context)
+        .map(Into::into)
+        .map_err(|err| ToDaeError::runtime_metadata_violation(err.to_string()))
 }
 
 // =============================================================================
@@ -858,11 +939,11 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
     let array_dims = build_array_dims_map(dae);
 
-    canonicalize_embedded_subscript_equation_list(&mut dae.continuous.equations, &array_dims);
-    canonicalize_embedded_subscript_equation_list(&mut dae.initialization.equations, &array_dims);
-    canonicalize_embedded_subscript_equation_list(&mut dae.discrete.real_updates, &array_dims);
-    canonicalize_embedded_subscript_equation_list(&mut dae.discrete.valued_updates, &array_dims);
-    canonicalize_embedded_subscript_equation_list(&mut dae.conditions.equations, &array_dims);
+    canonicalize_embedded_subscript_equation_list(&mut dae.continuous.equations, &array_dims)?;
+    canonicalize_embedded_subscript_equation_list(&mut dae.initialization.equations, &array_dims)?;
+    canonicalize_embedded_subscript_equation_list(&mut dae.discrete.real_updates, &array_dims)?;
+    canonicalize_embedded_subscript_equation_list(&mut dae.discrete.valued_updates, &array_dims)?;
+    canonicalize_embedded_subscript_equation_list(&mut dae.conditions.equations, &array_dims)?;
 
     if phantom_map.is_empty() {
         return Ok(());
@@ -1011,15 +1092,26 @@ fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
 fn canonicalize_embedded_subscript_equation_list(
     equations: &mut [dae::Equation],
     array_dims: &HashMap<String, Vec<i64>>,
-) {
-    let mut canonicalizer = EmbeddedSubscriptCanonicalizer { array_dims };
+) -> Result<(), ToDaeError> {
+    let mut canonicalizer = EmbeddedSubscriptCanonicalizer {
+        array_dims,
+        error: None,
+    };
     for equation in equations {
+        if canonicalizer.error.is_some() {
+            break;
+        }
         equation.rhs = canonicalizer.rewrite_expression(&equation.rhs);
+    }
+    match canonicalizer.error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
 struct EmbeddedSubscriptCanonicalizer<'a> {
     array_dims: &'a HashMap<String, Vec<i64>>,
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
@@ -1029,6 +1121,13 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
+        if self.error.is_some() {
+            return rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: subscripts.to_vec(),
+                span,
+            };
+        }
         if subscripts.is_empty()
             && let Some(scalar_name) = rumoca_core::parse_scalar_name(name.as_str())
             && self.array_dims.contains_key(scalar_name.base)
@@ -1047,19 +1146,49 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
                     span,
                 };
             };
+            let generated_subscripts = match scalar_name
+                .indices
+                .into_iter()
+                .map(|index| {
+                    generated_index_subscript(
+                        index,
+                        span,
+                        "DAE embedded scalar reference subscript",
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(subscripts) => subscripts,
+                Err(error) => {
+                    return self.record_error(error, name, subscripts, span);
+                }
+            };
             return rumoca_core::Expression::VarRef {
                 name: base_name,
-                subscripts: scalar_name
-                    .indices
-                    .into_iter()
-                    .map(|index| rumoca_core::Subscript::generated_index(index, span))
-                    .collect(),
+                subscripts: generated_subscripts,
                 span,
             };
         }
         rumoca_core::Expression::VarRef {
             name: name.clone(),
             subscripts: self.rewrite_subscripts(subscripts),
+            span,
+        }
+    }
+}
+
+impl EmbeddedSubscriptCanonicalizer<'_> {
+    fn record_error(
+        &mut self,
+        error: ToDaeError,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        self.error = Some(error);
+        rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: subscripts.to_vec(),
             span,
         }
     }
@@ -1205,27 +1334,40 @@ fn scalarize_expr_with_context(
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     match expr {
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => scalarize_var_ref_at(name, subscripts, ctx.k, ctx.phantom_map, ctx.array_dims)
-            .map(Ok)
-            .unwrap_or_else(|| Ok(expr.clone())),
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            name,
+            subscripts,
+            span,
+        } => scalarize_var_ref_at(
+            name,
+            subscripts,
+            reference_or_wrapper_span(name, *span),
+            ctx.k,
+            ctx.phantom_map,
+            ctx.array_dims,
+        )
+        .and_then(|projected| projected.map_or_else(|| Ok(expr.clone()), Ok)),
+        rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
             Ok(rumoca_core::Expression::Binary {
                 op: op.clone(),
                 lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
                 rhs: Box::new(scalarize_expr_with_context(rhs, ctx)?),
-                span: rumoca_core::Span::DUMMY,
+                span: *span,
             })
         }
-        rumoca_core::Expression::Unary { op, rhs, .. } => Ok(rumoca_core::Expression::Unary {
+        rumoca_core::Expression::Unary { op, rhs, span } => Ok(rumoca_core::Expression::Unary {
             op: op.clone(),
             rhs: Box::new(scalarize_expr_with_context(rhs, ctx)?),
-            span: rumoca_core::Span::DUMMY,
+            span: *span,
         }),
-        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+        rumoca_core::Expression::BuiltinCall {
+            function,
+            args,
+            span,
+        } => {
             if let Some(expr) = scalarize_builtin_array_constructor_at(
                 *function,
                 args,
+                *span,
                 ctx.k,
                 ctx.phantom_map,
                 ctx.array_dims,
@@ -1239,7 +1381,7 @@ fn scalarize_expr_with_context(
                     .iter()
                     .map(|a| scalarize_expr_with_context(a, ctx))
                     .collect::<Result<Vec<_>, _>>()?,
-                span: rumoca_core::Span::DUMMY,
+                span: *span,
             })
         }
         rumoca_core::Expression::FunctionCall {
@@ -1248,11 +1390,6 @@ fn scalarize_expr_with_context(
             is_constructor,
             span,
         } => scalarize_function_call_at(name, args, *is_constructor, *span, ctx),
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => scalarize_if_expr_at(branches, else_branch, ctx),
         rumoca_core::Expression::Index {
             base,
             subscripts,
@@ -1261,6 +1398,11 @@ fn scalarize_expr_with_context(
         rumoca_core::Expression::FieldAccess { base, field, span } => {
             scalarize_field_access_at(base, field, *span, ctx)
         }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => scalarize_if_expr_at(branches, else_branch, *span, ctx),
         rumoca_core::Expression::Array { elements, .. } => {
             // An array literal in a vector equation context: extract element k
             if ctx.k < elements.len() {
@@ -1273,8 +1415,8 @@ fn scalarize_expr_with_context(
             expr: inner,
             indices,
             filter,
-            ..
-        } => scalarize_array_comprehension_at(expr, inner, indices, filter.as_deref(), ctx),
+            span,
+        } => scalarize_array_comprehension_at(expr, inner, indices, filter.as_deref(), *span, ctx),
         _ => Ok(expr.clone()),
     }
 }
@@ -1297,10 +1439,11 @@ fn scalarize_index_expr_at(
         && let Some(expr) = scalarize_var_ref_at(
             name,
             base_subscripts,
+            span,
             ctx.k,
             ctx.phantom_map,
             ctx.array_dims,
-        )
+        )?
     {
         return Ok(expr);
     }
@@ -1340,6 +1483,7 @@ fn scalarize_array_comprehension_at(
     inner: &rumoca_core::Expression,
     indices: &[rumoca_core::ComprehensionIndex],
     filter: Option<&rumoca_core::Expression>,
+    span: rumoca_core::Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     if filter.is_some() || indices.len() != 1 {
@@ -1351,6 +1495,7 @@ fn scalarize_array_comprehension_at(
     let mut substitution = ComprehensionIndexSubstitution {
         name: indices[0].name.clone(),
         value,
+        span: indices[0].range.span().unwrap_or(span),
     };
     let selected = substitution.rewrite_expression(inner);
     scalarize_expr_with_context(&selected, ctx)
@@ -1388,6 +1533,7 @@ fn integer_literal_value(expr: &rumoca_core::Expression) -> Option<i64> {
 struct ComprehensionIndexSubstitution {
     name: String,
     value: i64,
+    span: rumoca_core::Span,
 }
 
 impl ExpressionRewriter for ComprehensionIndexSubstitution {
@@ -1400,7 +1546,7 @@ impl ExpressionRewriter for ComprehensionIndexSubstitution {
         if name.as_str() == self.name && subscripts.is_empty() {
             return rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(self.value),
-                span,
+                span: self.span,
             };
         }
         rumoca_core::Expression::VarRef {
@@ -1432,33 +1578,48 @@ impl ExpressionRewriter for ComprehensionIndexSubstitution {
 fn scalarize_var_ref_at(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
-) -> Option<rumoca_core::Expression> {
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
     let n = name.as_str();
     if !subscripts.is_empty() {
-        return None;
+        return Ok(None);
     }
     if let Some(variants) = phantom_map.get(n)
         && k < variants.len()
     {
-        return Some(rumoca_core::Expression::VarRef {
+        return Ok(Some(rumoca_core::Expression::VarRef {
             name: variants[k].clone(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        });
+            span,
+        }));
     }
-    array_dims
-        .contains_key(n)
-        .then(|| rumoca_core::Expression::VarRef {
-            name: name.clone(),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                (k + 1) as i64,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
-        })
+    if !array_dims.contains_key(n) {
+        return Ok(None);
+    }
+    let index = one_based_scalar_index(k, span, "DAE phantom scalarized variable subscript")?;
+    Ok(Some(rumoca_core::Expression::VarRef {
+        name: name.clone(),
+        subscripts: vec![generated_index_subscript(
+            index,
+            span,
+            "DAE phantom scalarized variable subscript",
+        )?],
+        span,
+    }))
+}
+
+fn reference_or_wrapper_span(
+    reference: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    if span.is_dummy() {
+        reference.span().unwrap_or(span)
+    } else {
+        span
+    }
 }
 
 fn scalarize_function_call_at(
@@ -1476,6 +1637,8 @@ fn scalarize_function_call_at(
             )
         })?;
     if first_output_size > 1 {
+        let index =
+            one_based_scalar_index(ctx.k, span, "DAE scalarized function output subscript")?;
         return Ok(rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::FunctionCall {
                 name: name.clone(),
@@ -1484,13 +1647,14 @@ fn scalarize_function_call_at(
                     .map(|arg| vectorize_phantom_expr(arg, ctx.phantom_map))
                     .collect(),
                 is_constructor,
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                (ctx.k + 1) as i64,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
+            subscripts: vec![generated_index_subscript(
+                index,
+                span,
+                "DAE scalarized function output subscript",
+            )?],
+            span,
         });
     }
     Ok(rumoca_core::Expression::FunctionCall {
@@ -1500,13 +1664,44 @@ fn scalarize_function_call_at(
             .map(|a| scalarize_expr_with_context(a, ctx))
             .collect::<Result<Vec<_>, _>>()?,
         is_constructor,
-        span: rumoca_core::Span::DUMMY,
+        span,
+    })
+}
+
+fn one_based_scalar_index(
+    zero_based: usize,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<i64, ToDaeError> {
+    zero_based
+        .checked_add(1)
+        .and_then(|index| i64::try_from(index).ok())
+        .ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!("{context} {zero_based} exceeds i64 range"),
+                span,
+            )
+        })
+}
+
+fn generated_index_subscript(
+    index: i64,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Subscript, ToDaeError> {
+    rumoca_core::Subscript::try_generated_index(index, span, context).map_err(|err| {
+        if span.is_dummy() {
+            ToDaeError::runtime_metadata_violation(err.to_string())
+        } else {
+            ToDaeError::runtime_metadata_violation_at(err.to_string(), span)
+        }
     })
 }
 
 fn scalarize_if_expr_at(
     branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
     else_branch: &rumoca_core::Expression,
+    span: rumoca_core::Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     Ok(rumoca_core::Expression::If {
@@ -1520,21 +1715,22 @@ fn scalarize_if_expr_at(
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?,
         else_branch: Box::new(scalarize_expr_with_context(else_branch, ctx)?),
-        span: rumoca_core::Span::DUMMY,
+        span,
     })
 }
 
 fn scalarize_builtin_array_constructor_at(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
+    span: rumoca_core::Span,
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
     match function {
-        rumoca_core::BuiltinFunction::Zeros => Ok(Some(real_literal(0.0))),
-        rumoca_core::BuiltinFunction::Ones => Ok(Some(real_literal(1.0))),
+        rumoca_core::BuiltinFunction::Zeros => Ok(Some(real_literal(0.0, span))),
+        rumoca_core::BuiltinFunction::Ones => Ok(Some(real_literal(1.0, span))),
         rumoca_core::BuiltinFunction::Fill => {
             let Some(value) = args.first() else {
                 return Ok(None);
@@ -1547,7 +1743,7 @@ fn scalarize_builtin_array_constructor_at(
             };
             let row = k / n;
             let col = k % n;
-            Ok(Some(real_literal(if row == col { 1.0 } else { 0.0 })))
+            Ok(Some(real_literal(if row == col { 1.0 } else { 0.0 }, span)))
         }
         _ => Ok(None),
     }
@@ -1567,10 +1763,10 @@ fn literal_positive_usize(expr: &rumoca_core::Expression) -> Option<usize> {
     }
 }
 
-fn real_literal(value: f64) -> rumoca_core::Expression {
+fn real_literal(value: f64, span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -1626,11 +1822,11 @@ impl ExpressionRewriter for PhantomVectorizer<'_> {
         op: &rumoca_core::OpBinary,
         lhs: &rumoca_core::Expression,
         rhs: &rumoca_core::Expression,
-        _span: rumoca_core::Span,
+        span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
         let lhs = self.rewrite_expression(lhs);
         let rhs = self.rewrite_expression(rhs);
-        vectorized_binary_expr(op.clone(), lhs, rhs)
+        vectorized_binary_expr(op.clone(), lhs, rhs, span)
     }
 
     fn walk_unary_expression(
@@ -1666,6 +1862,7 @@ fn vectorized_binary_expr(
     op: rumoca_core::OpBinary,
     lhs: rumoca_core::Expression,
     rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     match (lhs, rhs) {
         (
@@ -1678,7 +1875,7 @@ fn vectorized_binary_expr(
                 ..
             },
         ) if lhs_values.len() == rhs_values.len() => {
-            array_from_binary_elements(op, lhs_values.into_iter().zip(rhs_values).collect())
+            array_from_binary_elements(op, lhs_values.into_iter().zip(rhs_values).collect(), span)
         }
         (
             rumoca_core::Expression::Array {
@@ -1692,6 +1889,7 @@ fn vectorized_binary_expr(
                 .into_iter()
                 .map(|lhs| (lhs, rhs.clone()))
                 .collect(),
+            span,
         ),
         (
             lhs,
@@ -1705,12 +1903,13 @@ fn vectorized_binary_expr(
                 .into_iter()
                 .map(|rhs| (lhs.clone(), rhs))
                 .collect(),
+            span,
         ),
         (lhs, rhs) => rumoca_core::Expression::Binary {
             op,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
     }
 }
@@ -1718,6 +1917,7 @@ fn vectorized_binary_expr(
 fn array_from_binary_elements(
     op: rumoca_core::OpBinary,
     pairs: Vec<(rumoca_core::Expression, rumoca_core::Expression)>,
+    span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::Array {
         elements: pairs
@@ -1726,11 +1926,11 @@ fn array_from_binary_elements(
                 op: op.clone(),
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
-                span: rumoca_core::Span::DUMMY,
+                span,
             })
             .collect(),
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -1757,7 +1957,7 @@ fn scalarize_equation_list(
                     origin,
                     phantom_map,
                     array_dims,
-                ));
+                )?);
             }
         } else if phantom_width == Some(1) {
             let scalar_rhs = scalarize_expr_at(&eq.rhs, 0, phantom_map, array_dims, functions)?;
@@ -1780,16 +1980,16 @@ fn scalarized_equation_at(
     origin: String,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
-) -> dae::Equation {
+) -> Result<dae::Equation, ToDaeError> {
     let Some(lhs) = &eq.lhs else {
-        return dae::Equation::residual(scalar_rhs, eq.span, origin);
+        return Ok(dae::Equation::residual(scalar_rhs, eq.span, origin));
     };
-    dae::Equation::explicit(
-        scalarize_lhs_name_at(lhs.var_name(), k, phantom_map, array_dims),
+    Ok(dae::Equation::explicit(
+        scalarize_lhs_name_at(lhs.var_name(), k, phantom_map, array_dims, eq.span)?,
         scalar_rhs,
         eq.span,
         origin,
-    )
+    ))
 }
 
 fn scalarize_lhs_name_at(
@@ -1797,18 +1997,19 @@ fn scalarize_lhs_name_at(
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
-) -> rumoca_core::Reference {
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Reference, ToDaeError> {
     if let Some(variants) = phantom_map.get(name.as_str())
         && let Some(variant) = variants.get(k)
     {
-        return variant.clone();
+        return Ok(variant.clone());
     }
     let scalar_name = if let Some(dims) = array_dims.get(name.as_str()) {
         dae::scalar_name_for_flat_index(name, dims, k)
     } else {
         rumoca_core::VarName::new(format!("{}[{}]", name.as_str(), k + 1))
     };
-    super::convert::structured_target_reference(&scalar_name)
+    super::convert::structured_target_reference(&scalar_name, span)
 }
 
 #[cfg(test)]

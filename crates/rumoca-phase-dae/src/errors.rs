@@ -143,6 +143,20 @@ pub enum ToDaeError {
     )]
     RuntimeMetadataViolation { detail: String },
 
+    /// Solver-facing runtime metadata failed internal consistency checks at a
+    /// known IR/source owner.
+    #[error("invalid runtime metadata: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED012),
+        help("runtime metadata must be complete and internally consistent before simulation")
+    )]
+    RuntimeMetadataViolationAt {
+        detail: String,
+        ir_span: Span,
+        #[label("invalid runtime metadata here")]
+        span: SourceSpan,
+    },
+
     /// Model-level algorithms are not allowed in solver-facing DAE unless lowered.
     #[error("unsupported {section} algorithm in solver-facing DAE: {origin}")]
     #[diagnostic(
@@ -182,9 +196,20 @@ pub enum ToDaeError {
     )]
     RuntimeContractViolation {
         detail: String,
+        ir_span: Span,
         #[label("invalid runtime contract originates here")]
         span: SourceSpan,
     },
+
+    /// Solver-facing DAE failed required runtime contract checks without source provenance.
+    #[error("invalid runtime contract: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED015),
+        help(
+            "runtime DAE must provide coherent variable partitions and discrete update partitions before simulation"
+        )
+    )]
+    UnspannedRuntimeContractViolation { detail: String },
 
     /// SPEC_0007 Stage 3 Contract: no source temporal operator may survive into solver-facing DAE-IR.
     #[error("source temporal operator survived DAE boundary: {detail}")]
@@ -291,24 +316,59 @@ impl ToDaeError {
         }
     }
 
+    /// Create a runtime metadata invariant error with the best available IR span.
+    pub fn runtime_metadata_violation_at(detail: impl Into<String>, span: Span) -> Self {
+        Self::RuntimeMetadataViolationAt {
+            detail: detail.into(),
+            ir_span: span,
+            span: span_to_source_span(span),
+        }
+    }
+
     /// Create a runtime contract invariant error.
     pub fn runtime_contract_violation(detail: impl Into<String>) -> Self {
-        Self::runtime_contract_violation_at(detail, Span::DUMMY)
+        Self::UnspannedRuntimeContractViolation {
+            detail: detail.into(),
+        }
     }
 
     /// Create a runtime contract invariant error with the best available IR span.
     pub fn runtime_contract_violation_at(detail: impl Into<String>, span: Span) -> Self {
         Self::RuntimeContractViolation {
             detail: detail.into(),
+            ir_span: span,
             span: span_to_source_span(span),
+        }
+    }
+
+    /// Create a runtime contract invariant error with an optional real IR span.
+    pub fn runtime_contract_violation_with_span(detail: impl Into<String>, span: Span) -> Self {
+        if span.is_dummy() {
+            Self::runtime_contract_violation(detail)
+        } else {
+            Self::runtime_contract_violation_at(detail, span)
+        }
+    }
+
+    pub fn source_span(&self) -> Option<Span> {
+        match self {
+            Self::RuntimeMetadataViolationAt { ir_span, .. }
+            | Self::RuntimeContractViolation { ir_span, .. } => real_span(*ir_span),
+            _ => None,
         }
     }
 }
 
+fn real_span(span: Span) -> Option<Span> {
+    (!span.is_dummy()).then_some(span)
+}
+
 impl From<crate::balance::BalanceError> for ToDaeError {
     fn from(error: crate::balance::BalanceError) -> Self {
-        let span = error.source_span().unwrap_or(Span::DUMMY);
-        ToDaeError::runtime_contract_violation_at(error.to_string(), span)
+        match error.source_span() {
+            Some(span) => ToDaeError::runtime_contract_violation_at(error.to_string(), span),
+            None => ToDaeError::runtime_contract_violation(error.to_string()),
+        }
     }
 }
 
@@ -331,7 +391,7 @@ mod tests {
 
     #[test]
     fn active_todae_errors_keep_stable_diagnostic_codes() {
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(SourceId::from_source_name("errors_fixture.mo"), 0, 10);
         use miette::Diagnostic;
 
         let cases = [

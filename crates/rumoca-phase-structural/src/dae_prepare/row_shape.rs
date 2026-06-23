@@ -127,7 +127,10 @@ mod tests {
     }
 
     fn pin_field_var(index: i64, field: &str) -> Variable {
-        let mut var = Variable::new(VarName::new(format!("inverter.ac.pin[{index}].{field}")));
+        let mut var = Variable::new(
+            VarName::new(format!("inverter.ac.pin[{index}].{field}")),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         var.component_ref = Some(component_ref(vec![
             part("inverter", vec![]),
             part("ac", vec![]),

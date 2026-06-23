@@ -30,12 +30,12 @@ rumoca sim path/to/Model.mo --model Package.Model --t-end 10
 Scenario run:
 
 ```bash
-rumoca sim -c path/to/rum.toml
+rumoca sim -c path/to/rumoca-scenario.toml
 ```
 
 | Option | Meaning |
 |---|---|
-| `-c, --config <CONFIG>` | Run a `rum.toml` scenario instead of a direct sim |
+| `-c, --config <CONFIG>` | Run a `rumoca-scenario.toml` scenario instead of a direct sim |
 | `-m, --model <MODEL>` | Main model/class to compile (auto-inferred when omitted) |
 | `--source-root <PATH>` | Add a source root (repeatable); `MODELICAPATH` entries are appended after these |
 | `--solver <SOLVER>` | `auto`, `bdf`, `esdirk34`, `trbdf2`, or `rk-like` — see [Solvers and Accuracy](../simulation/solvers.md) |
@@ -49,8 +49,8 @@ Subcommands:
 
 | Subcommand | Purpose |
 |---|---|
-| `rumoca sim check -c rum.toml` | Validate a scenario file without running it |
-| `rumoca sim init` | Print a fully commented `rum.toml` starter template |
+| `rumoca sim check -c rumoca-scenario.toml` | Validate a scenario file without running it |
+| `rumoca sim init` | Print a fully commented `rumoca-scenario.toml` starter template |
 | `rumoca sim bench` | Benchmark compile, preparation, and hot simulation throughput |
 
 Interactive viewer ports and scene files come from the `[transport.http]`
@@ -88,7 +88,8 @@ See [Formatter and Linter](./fmt-lint.md).
 
 Prints the built-in code generation targets with their consumed IR stage,
 generation mode, deployment class, readiness level, and per-feature support
-columns. See [Targets and Templates](../codegen/targets.md).
+columns, including native/scalar tensor support such as `matmul`, `linsolve`,
+`elem`, and `stencil`. See [Targets and Templates](../codegen/targets.md).
 
 ## `rumoca cache`
 

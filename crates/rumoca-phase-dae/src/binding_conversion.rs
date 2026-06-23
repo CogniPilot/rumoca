@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
 use crate::{
-    classification, flat_to_dae_expression_with_refs, flat_to_dae_var_name,
+    ToDaeError, classification, flat_to_dae_expression_with_refs, flat_to_dae_var_name,
     path_utils::strip_all_subscripts,
 };
 
@@ -29,6 +29,7 @@ struct BindingEquationContext<'a> {
 struct BindingEquationSpec<'a> {
     name: &'a VarName,
     binding: &'a Expression,
+    source_span: Span,
     dims: &'a [i64],
     kind: &'a VariableKind,
     is_discrete_type: bool,
@@ -56,7 +57,7 @@ pub(super) fn convert_bindings_to_equations(
     connected_inputs: &IndexSet<VarName>,
     algorithm_defined_vars: &HashSet<VarName>,
     record_eq_defined_vars: &HashSet<VarName>,
-) {
+) -> Result<(), ToDaeError> {
     let (_directly_defined, all_defined) = super::collect_continuous_equation_lhs(flat);
     let unknowns = collect_unknowns(flat, state_vars);
     let known_var_names: HashSet<String> = flat
@@ -64,8 +65,8 @@ pub(super) fn convert_bindings_to_equations(
         .keys()
         .map(|name| name.as_str().to_string())
         .collect();
-    let unknown_prefix_children = build_unknown_prefix_children(&unknowns);
-    let internal_inputs = super::InternalInputIndex::new(flat);
+    let unknown_prefix_children = build_unknown_prefix_children(&unknowns)?;
+    let internal_inputs = super::InternalInputIndex::new(flat)?;
     let connected_inputs_only_connected_to_inputs =
         super::find_connected_inputs_only_connected_to_inputs(flat, &internal_inputs);
 
@@ -160,13 +161,15 @@ pub(super) fn convert_bindings_to_equations(
                 BindingEquationSpec {
                     name,
                     binding,
+                    source_span: var.source_span,
                     dims: &var.dims,
                     kind: &kind,
                     is_discrete_type: var.is_discrete_type,
                 },
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 /// Keep declaration bindings for connected input-only alias sets.
@@ -195,22 +198,25 @@ pub(super) fn should_keep_connected_input_binding(
 /// expanded unknown fields (`a.b.re`, `a.b.im`) instead of a scalar variable.
 pub(super) fn build_unknown_prefix_children(
     unknowns: &HashSet<VarName>,
-) -> FxHashMap<String, Vec<VarName>> {
+) -> Result<FxHashMap<String, Vec<VarName>>, ToDaeError> {
     let mut prefix_children: FxHashMap<String, Vec<VarName>> = FxHashMap::default();
     for unknown in unknowns {
         let path = rumoca_core::ComponentPath::from_flat_path(unknown.as_str());
         for idx in 1..path.len() {
-            let prefix = path
-                .prefix(idx)
-                .expect("prefix index is in range")
-                .to_flat_string();
+            let Some(prefix) = path.prefix(idx) else {
+                return Err(ToDaeError::runtime_contract_violation(format!(
+                    "unknown `{unknown}` could not produce prefix {idx} from {} path segments",
+                    path.len()
+                )));
+            };
+            let prefix = prefix.to_flat_string();
             prefix_children
                 .entry(prefix)
                 .or_default()
                 .push(unknown.clone());
         }
     }
-    prefix_children
+    Ok(prefix_children)
 }
 
 /// Check if a binding should be skipped because an explicit equation takes precedence.
@@ -585,10 +591,18 @@ fn should_skip_variable_binding(
 }
 
 /// Add a binding equation to the appropriate DAE equation list.
-fn add_binding_equation(ctx: &mut BindingEquationContext<'_>, spec: BindingEquationSpec<'_>) {
-    let selected_binding =
-        select_scalar_binding_record_field_alias(spec.name, spec.binding, ctx.known_var_names);
+fn add_binding_equation(
+    ctx: &mut BindingEquationContext<'_>,
+    spec: BindingEquationSpec<'_>,
+) -> Result<(), ToDaeError> {
     let scalar_count = super::compute_var_size(spec.dims);
+    let span = binding_equation_span(spec.name, spec.binding, spec.source_span)?;
+    let selected_binding = select_scalar_binding_record_field_alias(
+        spec.name,
+        spec.binding,
+        ctx.known_var_names,
+        span,
+    );
     let origin = rumoca_ir_flat::EquationOrigin::Binding {
         variable: spec.name.as_str().to_string(),
     }
@@ -597,8 +611,8 @@ fn add_binding_equation(ctx: &mut BindingEquationContext<'_>, spec: BindingEquat
     if *spec.kind == VariableKind::Discrete {
         let explicit = dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(spec.name),
-            flat_to_dae_expression_with_refs(&selected_binding, ctx.flat),
-            Span::DUMMY,
+            flat_to_dae_expression_with_refs(&selected_binding, ctx.flat)?,
+            span,
             origin,
             scalar_count,
         );
@@ -607,30 +621,49 @@ fn add_binding_equation(ctx: &mut BindingEquationContext<'_>, spec: BindingEquat
         } else {
             ctx.dae.discrete.real_updates.push(explicit);
         }
-        return;
+        return Ok(());
     }
 
-    let residual = create_binding_residual(spec.name, &selected_binding);
+    let residual = create_binding_residual(spec.name, &selected_binding, span);
     let dae_eq = dae::Equation::residual_array(
-        flat_to_dae_expression_with_refs(&residual, ctx.flat),
-        Span::DUMMY,
+        flat_to_dae_expression_with_refs(&residual, ctx.flat)?,
+        span,
         origin,
         scalar_count,
     );
 
     // All continuous equations go into f_x (MLS B.1a) — no ODE/algebraic/output split.
     ctx.dae.continuous.equations.push(dae_eq);
+    Ok(())
+}
+
+fn binding_equation_span(
+    name: &VarName,
+    binding: &Expression,
+    source_span: Span,
+) -> Result<Span, ToDaeError> {
+    binding
+        .span()
+        .filter(|span| !span.is_dummy())
+        .or_else(|| (!source_span.is_dummy()).then_some(source_span))
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "binding equation for `{}` is missing source provenance",
+                name.as_str()
+            ))
+        })
 }
 
 fn select_scalar_binding_record_field_alias(
     lhs_name: &VarName,
     binding: &Expression,
     known_var_names: &HashSet<String>,
+    owner_span: Span,
 ) -> Expression {
     let Expression::VarRef {
         name: rhs_name,
         subscripts,
-        span: rumoca_core::Span::DUMMY,
+        ..
     } = binding
     else {
         return binding.clone();
@@ -658,7 +691,7 @@ fn select_scalar_binding_record_field_alias(
     Expression::VarRef {
         name: VarName::new(selected).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: owner_span,
     }
 }
 
@@ -666,24 +699,32 @@ fn select_scalar_binding_record_field_alias(
 ///
 /// For a declaration like `Real y = expr`, this creates the residual `y - expr`
 /// which represents the equation `y - expr = 0` (i.e., `y = expr`).
-fn create_binding_residual(name: &VarName, binding: &Expression) -> Expression {
+fn create_binding_residual(name: &VarName, binding: &Expression, span: Span) -> Expression {
     let var_ref = Expression::VarRef {
         name: name.clone().into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
 
     Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(var_ref),
         rhs: Box::new(binding.clone()),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("binding_conversion_test.mo"),
+            4,
+            9,
+        )
+    }
 
     #[test]
     fn test_build_unknown_prefix_children_indexes_intermediate_paths() {
@@ -693,7 +734,8 @@ mod tests {
             VarName::new("other.x"),
         ]);
 
-        let prefix_children = build_unknown_prefix_children(&unknowns);
+        let prefix_children = build_unknown_prefix_children(&unknowns)
+            .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
 
         let root_children = prefix_children
             .get("root")
@@ -710,7 +752,8 @@ mod tests {
     #[test]
     fn test_build_unknown_prefix_children_ignores_dot_inside_subscript_expression() {
         let unknowns = HashSet::from([VarName::new("bus[data.medium].pin.i")]);
-        let prefix_children = build_unknown_prefix_children(&unknowns);
+        let prefix_children = build_unknown_prefix_children(&unknowns)
+            .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
 
         assert_eq!(
             prefix_children.get("bus[data.medium]"),
@@ -727,13 +770,70 @@ mod tests {
     }
 
     #[test]
+    fn binding_equation_span_prefers_binding_expression_span() {
+        let declaration_span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("binding_decl.mo"),
+            4,
+            9,
+        );
+        let binding_span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("binding_decl.mo"),
+            13,
+            21,
+        );
+        let binding = Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: binding_span,
+        };
+
+        assert_eq!(
+            binding_equation_span(&VarName::new("x"), &binding, declaration_span)
+                .unwrap_or_else(|err| panic!("binding span should resolve: {err}")),
+            binding_span
+        );
+    }
+
+    #[test]
+    fn binding_equation_span_uses_declaration_when_binding_is_unspanned() {
+        let declaration_span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("binding_decl_fallback.mo"),
+            4,
+            9,
+        );
+        let binding = Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: Span::DUMMY,
+        };
+
+        assert_eq!(
+            binding_equation_span(&VarName::new("x"), &binding, declaration_span)
+                .unwrap_or_else(|err| panic!("binding span should resolve: {err}")),
+            declaration_span
+        );
+    }
+
+    #[test]
+    fn binding_equation_span_rejects_unspanned_binding_and_declaration() {
+        let binding = Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: Span::DUMMY,
+        };
+
+        let err = binding_equation_span(&VarName::new("x"), &binding, Span::DUMMY)
+            .expect_err("unspanned binding equation should fail");
+
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    }
+
+    #[test]
     fn test_should_skip_binding_for_explicit_var_keeps_prefix_unknown_binding() {
         let unknowns = HashSet::from([
             VarName::new("port_p.v.re"),
             VarName::new("port_n.v.re"),
             VarName::new("self"),
         ]);
-        let unknown_prefix_children = build_unknown_prefix_children(&unknowns);
+        let unknown_prefix_children = build_unknown_prefix_children(&unknowns)
+            .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
 
         let var = flat::Variable {
             name: VarName::new("self"),
@@ -742,9 +842,13 @@ mod tests {
             binding: Some(Expression::VarRef {
                 name: VarName::new("port_p.v").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         assert!(
             !should_skip_binding_for_explicit_var(
@@ -760,7 +864,8 @@ mod tests {
     #[test]
     fn test_should_skip_binding_for_explicit_var_skips_constant_binding() {
         let unknowns = HashSet::from([VarName::new("x")]);
-        let unknown_prefix_children = build_unknown_prefix_children(&unknowns);
+        let unknown_prefix_children = build_unknown_prefix_children(&unknowns)
+            .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
 
         let var = flat::Variable {
             name: VarName::new("x"),
@@ -768,9 +873,13 @@ mod tests {
             is_primitive: true,
             binding: Some(Expression::Literal {
                 value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         assert!(should_skip_binding_for_explicit_var(
             &VarName::new("x"),
@@ -823,9 +932,13 @@ mod tests {
                 is_primitive: true,
                 binding: Some(Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         flat.add_equation(rumoca_ir_flat::Equation {
@@ -834,15 +947,15 @@ mod tests {
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("x").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 rhs: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: EquationOrigin::ComponentEquation {
                 component: "M".to_string(),
             },
@@ -863,10 +976,12 @@ mod tests {
         let binding = Expression::VarRef {
             name: VarName::new("data.frictionParameters").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
+        let owner_span = test_span();
 
-        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
+        let selected =
+            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
         assert_eq!(
             format!("{selected:?}"),
             format!(
@@ -874,7 +989,38 @@ mod tests {
                 Expression::VarRef {
                     name: VarName::new("data.frictionParameters.wRef").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: owner_span,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_select_scalar_binding_record_field_alias_accepts_source_spanned_binding() {
+        let known_var_names = HashSet::from(["data.frictionParameters.wRef".to_string()]);
+        let lhs = VarName::new("mach.friction.frictionParameters.wRef");
+        let binding = Expression::VarRef {
+            name: VarName::new("data.frictionParameters").into(),
+            subscripts: vec![],
+            span: Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("record_alias.mo"),
+                21,
+                44,
+            ),
+        };
+        let owner_span = test_span();
+
+        let selected =
+            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+
+        assert_eq!(
+            format!("{selected:?}"),
+            format!(
+                "{:?}",
+                Expression::VarRef {
+                    name: VarName::new("data.frictionParameters.wRef").into(),
+                    subscripts: vec![],
+                    span: owner_span,
                 }
             )
         );
@@ -887,10 +1033,12 @@ mod tests {
         let binding = Expression::VarRef {
             name: VarName::new("aimc.aimcData.statorCoreParameters").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
+        let owner_span = test_span();
 
-        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
+        let selected =
+            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
         assert_eq!(
             format!("{selected:?}"),
             format!(
@@ -898,7 +1046,7 @@ mod tests {
                 Expression::VarRef {
                     name: VarName::new("aimcData.statorCoreParameters.wRef").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: owner_span,
                 }
             )
         );

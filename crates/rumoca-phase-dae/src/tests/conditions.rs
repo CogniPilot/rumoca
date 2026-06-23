@@ -2,11 +2,23 @@ use super::*;
 use rumoca_core::Span;
 use rumoca_ir_flat as flat;
 
+fn test_span(start: usize, end: usize) -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_dae_conditions_fixture.mo"),
+        start,
+        end,
+    )
+}
+
 fn scalar_var(name: &str) -> flat::Variable {
     crate::test_support::with_component_ref(flat::Variable {
         name: VarName::new(name),
         is_primitive: true,
-        ..Default::default()
+        ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     })
 }
 
@@ -15,7 +27,11 @@ fn input_var(name: &str) -> flat::Variable {
         name: VarName::new(name),
         causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
         is_primitive: true,
-        ..Default::default()
+        ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     })
 }
 
@@ -24,7 +40,11 @@ fn parameter_var(name: &str) -> flat::Variable {
         name: VarName::new(name),
         variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
         is_primitive: true,
-        ..Default::default()
+        ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
     })
 }
 
@@ -32,14 +52,14 @@ fn var_ref(name: &str) -> Expression {
     Expression::VarRef {
         name: VarName::new(name).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(1, 2),
     }
 }
 
 fn int(value: i64) -> Expression {
     Expression::Literal {
         value: Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(3, 4),
     }
 }
 
@@ -48,7 +68,7 @@ fn gt(lhs: Expression, rhs: Expression) -> Expression {
         op: rumoca_core::OpBinary::Gt,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(5, 6),
     }
 }
 
@@ -57,7 +77,7 @@ fn and(lhs: Expression, rhs: Expression) -> Expression {
         op: rumoca_core::OpBinary::And,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(7, 8),
     }
 }
 
@@ -66,7 +86,7 @@ fn ge(lhs: Expression, rhs: Expression) -> Expression {
         op: rumoca_core::OpBinary::Ge,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(9, 10),
     }
 }
 
@@ -75,7 +95,7 @@ fn gt_with_token_number(lhs: Expression, rhs: Expression, _token_number: u32) ->
         op: rumoca_core::OpBinary::Gt,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(11, 12),
     }
 }
 
@@ -83,7 +103,7 @@ fn if_expr(condition: Expression, when_true: Expression, when_false: Expression)
     Expression::If {
         branches: vec![(condition, when_true)],
         else_branch: Box::new(when_false),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(13, 14),
     }
 }
 
@@ -91,7 +111,7 @@ fn not(expr: Expression) -> Expression {
     Expression::Unary {
         op: rumoca_core::OpUnary::Not,
         rhs: Box::new(expr),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(15, 16),
     }
 }
 
@@ -99,7 +119,7 @@ fn builtin_call(function: BuiltinFunction, args: Vec<Expression>) -> Expression 
     Expression::BuiltinCall {
         function,
         args,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(17, 18),
     }
 }
 
@@ -109,9 +129,9 @@ fn residual_eq(lhs: Expression, rhs: Expression, component: &str) -> flat::Equat
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(19, 20),
         },
-        span: Span::DUMMY,
+        span: test_span(19, 20),
         origin: flat::EquationOrigin::ComponentEquation {
             component: component.to_string(),
         },
@@ -215,7 +235,7 @@ fn test_todae_keeps_parameter_only_if_conditions_out_of_event_memory() {
         op: rumoca_core::OpBinary::Eq,
         lhs: Box::new(var_ref("mode")),
         rhs: Box::new(var_ref("LimiterHomotopy.LowerLimit")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(21, 22),
     };
     flat.add_equation(residual_eq(
         var_ref("x"),
@@ -243,7 +263,7 @@ fn test_todae_keeps_parameter_only_if_conditions_out_of_event_memory() {
         op: rumoca_core::OpBinary::Eq,
         lhs: Box::new(var_ref("mode")),
         rhs: Box::new(int(2)),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(23, 24),
     };
     assert!(
         matches!(
@@ -300,6 +320,77 @@ fn test_todae_condition_memory_does_not_shadow_user_c() {
 }
 
 #[test]
+fn test_generated_condition_memory_preserves_relation_span() {
+    let mut flat = Model::new();
+    flat.add_variable(VarName::new("x"), scalar_var("x"));
+    flat.add_variable(VarName::new("u"), input_var("u"));
+
+    let relation_span = test_span(30, 42);
+    let condition = Expression::Binary {
+        op: rumoca_core::OpBinary::Gt,
+        lhs: Box::new(var_ref("u")),
+        rhs: Box::new(int(0)),
+        span: relation_span,
+    };
+    let mut equation = residual_eq(
+        var_ref("x"),
+        if_expr(condition, int(1), int(0)),
+        "if_condition_with_relation_span",
+    );
+    equation.span = relation_span;
+    flat.add_equation(equation);
+
+    let dae_model = to_dae_unbalanced_ok(&flat);
+    let condition_var = &dae_model.variables.discrete_valued[&VarName::new("c")];
+    let pre_condition_var = &dae_model.variables.parameters[&VarName::new("__pre__.c")];
+
+    assert_eq!(condition_var.source_span, relation_span);
+    assert_eq!(condition_var.start_attribute_span(), Some(relation_span));
+    assert_eq!(
+        condition_var.start.as_ref().and_then(Expression::span),
+        Some(relation_span)
+    );
+    assert_eq!(
+        condition_var
+            .component_ref
+            .as_ref()
+            .map(|component_ref| component_ref.span),
+        Some(relation_span)
+    );
+    if let Some(Expression::Array { elements, .. }) = &condition_var.start {
+        assert!(
+            elements
+                .iter()
+                .all(|element| element.span() == Some(relation_span)),
+            "generated condition start elements must use the relation owner span"
+        );
+    } else {
+        panic!("generated condition memory start should be a Boolean array");
+    }
+
+    assert_eq!(pre_condition_var.source_span, relation_span);
+    assert_eq!(
+        pre_condition_var.start_attribute_span(),
+        Some(relation_span)
+    );
+    assert_eq!(
+        pre_condition_var
+            .component_ref
+            .as_ref()
+            .map(|component_ref| component_ref.span),
+        Some(relation_span)
+    );
+    assert_eq!(
+        pre_condition_var
+            .component_ref
+            .as_ref()
+            .and_then(|component_ref| component_ref.parts.first())
+            .map(|part| part.span),
+        Some(relation_span)
+    );
+}
+
+#[test]
 fn test_todae_condition_memory_does_not_shadow_user_c_component() {
     let mut flat = Model::new();
     flat.add_variable(VarName::new("c.x"), scalar_var("c.x"));
@@ -345,7 +436,7 @@ fn test_todae_suppresses_noevent_if_conditions_from_relation() {
     let condition = Expression::BuiltinCall {
         function: BuiltinFunction::NoEvent,
         args: vec![gt(var_ref("u"), int(0))],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(25, 26),
     };
     flat.add_equation(residual_eq(
         var_ref("x"),
@@ -547,7 +638,11 @@ fn test_todae_populates_relation_from_discrete_boolean_relation_assignment() {
             name: VarName::new("hit"),
             is_primitive: true,
             is_discrete_type: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -591,18 +686,22 @@ fn test_todae_includes_when_condition_and_nested_conditional_when_conditions() {
     let when_condition = gt(var_ref("u"), int(0));
     let nested_condition = gt(var_ref("u2"), int(0));
 
-    let branch_assign =
-        flat::WhenEquation::assign(VarName::new("z"), int(1), Span::DUMMY, "branch assign");
+    let branch_assign = flat::WhenEquation::assign(
+        VarName::new("z"),
+        int(1),
+        test_span(27, 28),
+        "branch assign",
+    );
     let else_assign =
-        flat::WhenEquation::assign(VarName::new("z"), int(2), Span::DUMMY, "else assign");
+        flat::WhenEquation::assign(VarName::new("z"), int(2), test_span(29, 30), "else assign");
     let nested_conditional = flat::WhenEquation::conditional(
         vec![(nested_condition.clone(), vec![branch_assign])],
         vec![else_assign],
-        Span::DUMMY,
+        test_span(31, 32),
         "nested when conditional",
     );
 
-    let mut when_clause = flat::WhenClause::new(when_condition.clone(), Span::DUMMY);
+    let mut when_clause = flat::WhenClause::new(when_condition.clone(), test_span(33, 34));
     when_clause.add_equation(nested_conditional);
     flat.when_clauses.push(when_clause);
 

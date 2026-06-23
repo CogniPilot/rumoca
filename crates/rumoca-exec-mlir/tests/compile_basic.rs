@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 use rumoca_exec_mlir::{
     CompiledMlirResidual, MlirError, compile_derivative_rhs as exec_compile_derivative_rhs,
 };
@@ -12,6 +13,13 @@ fn compile_derivative_rhs(
     let artifacts =
         rumoca_phase_solve::lower_solve_artifacts(solve).expect("test solve artifacts lower");
     exec_compile_derivative_rhs(solve, &artifacts, name)
+}
+
+fn scalar_program_block(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+    )
 }
 
 /// Build a SolveProblem whose derivative_rhs computes:
@@ -34,7 +42,7 @@ fn simple_decay_solve() -> SolveProblem {
         LinearOp::StoreOutput { src: 3 },
     ];
     SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row]),
+        scalar_program_block(vec![row], "compile_basic_decay.mo"),
     ))
 }
 
@@ -70,7 +78,7 @@ fn mlir_derivative_rhs_time_dependency() {
         LinearOp::StoreOutput { src: 0 },
     ];
     let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row]),
+        scalar_program_block(vec![row], "compile_basic_time.mo"),
     ));
 
     let result = compile_derivative_rhs(&solve, "time_dep");
@@ -104,7 +112,7 @@ fn mlir_derivative_rhs_trig() {
         LinearOp::StoreOutput { src: 1 },
     ];
     let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row]),
+        scalar_program_block(vec![row], "compile_basic_trig.mo"),
     ));
 
     let result = compile_derivative_rhs(&solve, "trig");

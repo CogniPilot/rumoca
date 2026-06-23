@@ -1,0 +1,161 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[input]
+mode = "auto"
+
+[input.gamepad.axes.steering]
+source = "RightStickX"
+write = "steering"
+
+[input.gamepad.axes.throttle]
+source = "LeftStickY"
+write = "throttle"
+
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = [
+    "throttle",
+    "steering",
+]
+
+[input.keyboard.keys.ArrowDown]
+action = "set"
+target = "throttle"
+value = -1.0
+
+[input.keyboard.keys.ArrowLeft]
+action = "set"
+target = "steering"
+value = -1.0
+
+[input.keyboard.keys.ArrowRight]
+action = "set"
+target = "steering"
+value = 1.0
+
+[input.keyboard.keys.ArrowUp]
+action = "set"
+target = "throttle"
+value = 1.0
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[locals.steering]
+default = 0.0
+type = "float"
+
+[locals.throttle]
+default = 0.0
+type = "float"
+
+[model]
+file = "Rover.mo"
+name = "Rover"
+
+[reset]
+on_signal = "reset"
+rebuild_stepper = true
+reset_locals = true
+
+[signals.stepper_inputs]
+steering = "local:steering"
+throttle = "local:throttle"
+
+[signals.viewer]
+delta = "stepper:delta"
+frame = "runtime:frame_num"
+front_wheel_yaw = "stepper:front_wheel_yaw"
+input_mode = "runtime:input_mode"
+steering = "local:steering"
+t = "stepper:time"
+theta = "stepper:theta"
+throttle = "local:throttle"
+v = "stepper:v"
+wall_ms = "runtime:wall_ms"
+wheel_rpm = "stepper:wheel_rpm"
+x = "stepper:x"
+y = "stepper:y"
+yaw_rate = "stepper:yaw_rate"
+
+[sim]
+dt = 0.01
+mode = "realtime"
+solver = "rk-like"
+
+[transport.http]
+asset_dir = "../../assets"
+port = 8080
+scene = "rover_scene.js"
+
+[transport.websocket]
+port = 8081
+
+[viewer]
+show_armed = false
+status_title = "Rover"
+
+# Chassis frame in model FLU coordinates: planar position + heading. The
+# scene places the body from this frame and the onboard camera mounts on it.
+[[viewer.frame]]
+name = "chassis"
+position = ["x", "y"]
+heading = "theta"
+
+# Hood camera: C cycles scene chase → onboard.
+[[viewer.camera]]
+name = "onboard"
+frame = "chassis"
+mount = [0.95, 0.0, 0.24]
+
+[[viewer.controls.keyboard]]
+keys = "Up / Down"
+action = "Throttle"
+
+[[viewer.controls.keyboard]]
+keys = "Left / Right"
+action = "Steering"
+
+[[viewer.controls.keyboard]]
+keys = "R"
+action = "Reset"
+
+[[viewer.controls.keyboard]]
+keys = "T"
+action = "Realtime"
+
+[[viewer.controls.keyboard]]
+keys = "F"
+action = "Fullscreen"
+
+[[viewer.controls.keyboard]]
+keys = "C"
+action = "Camera"
+
+[[viewer.controls.keyboard]]
+keys = "H"
+action = "HUD"
+
+[[viewer.controls.keyboard]]
+keys = "Q"
+action = "Quit"
+
+[[viewer.controls.gamepad]]
+keys = "Left stick Y"
+action = "Throttle"
+
+[[viewer.controls.gamepad]]
+keys = "Right stick X"
+action = "Steering"
+
+[[viewer.controls.gamepad]]
+keys = "A / South"
+action = "Reset"

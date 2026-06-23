@@ -10,7 +10,11 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
     flat.add_variable(
@@ -21,7 +25,11 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
             is_primitive: true,
             connected: true,
             dims: vec![2, 3],
-            ..Default::default()
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }),
     );
 
@@ -43,30 +51,5 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
     assert!(
         !dae.variables.algebraics.contains_key(&input),
         "RHS input should not be promoted to algebraic when LHS is connected"
-    );
-}
-
-#[test]
-fn test_model_description_propagation() {
-    let mut flat = flat::Model::new();
-    flat.model_description = Some("Test model description".to_string());
-
-    // Add a simple variable to make it valid. Producers must attach the
-    // structured component reference (DAE provenance contract).
-    let var = rumoca_ir_flat::Variable {
-        name: "x".into(),
-        variability: rumoca_core::Variability::Parameter(Default::default()),
-        component_ref: rumoca_core::component_reference_from_flat_name(
-            &rumoca_core::VarName::new("x"),
-            rumoca_core::Span::DUMMY,
-        ),
-        ..Default::default()
-    };
-    flat.add_variable("x".into(), var);
-
-    let dae = to_dae(&flat).unwrap();
-    assert_eq!(
-        dae.metadata.model_description,
-        Some("Test model description".to_string())
     );
 }

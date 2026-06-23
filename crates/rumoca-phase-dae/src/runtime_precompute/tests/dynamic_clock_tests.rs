@@ -2,14 +2,21 @@ use super::*;
 
 #[test]
 fn test_runtime_precompute_skips_shift_sample_with_non_static_source_clock() {
+    let span = test_span(1, 2);
     let mut dae_model = dae::Dae::default();
-    let mut shift_counter = dae::Variable::new(rumoca_core::VarName::new("shiftCounter"));
+    let mut shift_counter = dae::Variable::new(
+        rumoca_core::VarName::new("shiftCounter"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     shift_counter.start = Some(lit(2.0));
     dae_model
         .variables
         .parameters
         .insert(rumoca_core::VarName::new("shiftCounter"), shift_counter);
-    let mut resolution = dae::Variable::new(rumoca_core::VarName::new("resolution"));
+    let mut resolution = dae::Variable::new(
+        rumoca_core::VarName::new("resolution"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     resolution.start = Some(lit(10.0));
     dae_model
         .variables
@@ -17,7 +24,10 @@ fn test_runtime_precompute_skips_shift_sample_with_non_static_source_clock() {
         .insert(rumoca_core::VarName::new("resolution"), resolution);
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("u"),
-        dae::Variable::new(rumoca_core::VarName::new("u")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     dae_model
@@ -29,9 +39,9 @@ fn test_runtime_precompute_skips_shift_sample_with_non_static_source_clock() {
                 name: rumoca_core::VarName::new("shiftSample").into(),
                 args: vec![var("u"), var("shiftCounter"), var("resolution")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            Span::DUMMY,
+            span,
             "shift_sample_inferred_source_clock",
         ));
 
@@ -50,6 +60,7 @@ fn test_runtime_precompute_skips_shift_sample_with_non_static_source_clock() {
 
 #[test]
 fn test_runtime_precompute_rejects_dynamic_clock_constructor_without_schedule() {
+    let span = test_span(1, 2);
     let mut dae_model = dae::Dae::default();
     dae_model
         .discrete
@@ -66,14 +77,14 @@ fn test_runtime_precompute_rejects_dynamic_clock_constructor_without_schedule() 
                             name: rumoca_core::VarName::new("Clock").into(),
                             args: vec![var("u")],
                             is_constructor: false,
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                         },
                     ],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            Span::DUMMY,
+            span,
             "test_dynamic_clock_constructor",
         ));
 
@@ -88,7 +99,11 @@ fn test_runtime_precompute_rejects_dynamic_clock_constructor_without_schedule() 
 #[test]
 fn test_runtime_precompute_resolves_event_clock_condition_through_spanned_alias() {
     let mut dae_model = dae::Dae::default();
-    let source_span = Span::from_offsets(rumoca_core::SourceId(7), 11, 23);
+    let source_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("runtime_precompute_dynamic_clock_fixture.mo"),
+        11,
+        23,
+    );
     dae_model
         .discrete
         .real_updates

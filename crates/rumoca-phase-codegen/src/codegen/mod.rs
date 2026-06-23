@@ -6,34 +6,126 @@
 //!
 //! For common cases, templates can use the built-in `render_expr` function
 //! which handles the recursive tree walking with configurable operator syntax.
+//!
+//! SPEC_0021 file-size exception: codegen still owns target registration,
+//! template environment setup, and shared render helpers. split plan: move
+//! target registration and template environment construction into submodules.
 
 use crate::errors::{CodegenError, render_err};
 use indexmap::{IndexMap, IndexSet};
 use minijinja::{Environment, UndefinedBehavior, Value};
-use rumoca_core::{Expression, ExpressionVisitor, Span, Subscript};
+use rumoca_core::{Expression, ExpressionVisitor, Subscript};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 mod render_c;
+mod render_dae_modelica;
 mod render_expr;
 mod render_solve;
+mod render_solve_ops;
 mod render_stmt;
+mod solve_lazy;
+mod symbol_alloc;
 
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_pre_param_binding_c_function,
-    render_solve_row_c_function, render_solve_row_rust_function, render_solve_row_wgsl_function,
-    render_solve_slot_assign_c_function,
+    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
+    render_solve_block_py_function, render_solve_block_rust_function,
+    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
+    render_solve_row_output_wgsl_function, render_solve_row_rust_function,
+    render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
+    render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
+    render_wgsl_native_family_inventory_json_function, solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
+use symbol_alloc::{
+    allocate_symbols_function, emitted_symbol, lookup_symbol_value, symbol_function,
+    symbol_ref_priority, target_symbols_function,
+};
 
 /// Result type for internal render functions.
 pub(crate) type RenderResult = Result<String, minijinja::Error>;
+
+pub(crate) fn render_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, minijinja::Error> {
+    let mut values = Vec::new();
+    reserve_render_capacity(&mut values, capacity, context)?;
+    Ok(values)
+}
+
+pub(crate) fn reserve_render_capacity<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    context: &'static str,
+) -> Result<(), minijinja::Error> {
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| render_err(format!("{context} exceeds host memory limits")))
+}
+
+fn render_string_with_capacity(
+    capacity: usize,
+    context: &'static str,
+) -> Result<String, minijinja::Error> {
+    let mut value = String::new();
+    reserve_render_string_capacity(&mut value, capacity, context)?;
+    Ok(value)
+}
+
+fn reserve_render_string_capacity(
+    value: &mut String,
+    additional: usize,
+    context: &'static str,
+) -> Result<(), minijinja::Error> {
+    value
+        .try_reserve_exact(additional)
+        .map_err(|_| render_err(format!("{context} exceeds host memory limits")))
+}
+
+pub(crate) fn join_usize_values(
+    values: &[usize],
+    separator: &str,
+    context: &'static str,
+) -> Result<String, minijinja::Error> {
+    let mut rendered = render_vec_with_capacity(values.len(), context)?;
+    for value in values {
+        rendered.push(value.to_string());
+    }
+    Ok(rendered.join(separator))
+}
+
+fn codegen_join_usize_values(
+    values: &[usize],
+    separator: &str,
+    context: &'static str,
+) -> Result<String, CodegenError> {
+    let mut rendered = codegen_vec_with_capacity(values.len(), context)?;
+    for value in values {
+        rendered.push(value.to_string());
+    }
+    Ok(rendered.join(separator))
+}
+
+fn codegen_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, CodegenError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| CodegenError::SerializationFailed {
+            message: format!("{context} exceeds host memory limits"),
+        })?;
+    Ok(values)
+}
+
+const SOURCE_REF_ENUMERATION_LIMIT: usize = 1_000_000;
 
 /// Supported IR roots for template rendering.
 #[derive(Debug, Clone, Copy)]
@@ -57,7 +149,7 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
             message: "DAE did not serialize to a JSON object".to_string(),
         })?;
     let enum_type_names = enum_type_names_from_ordinals(dae);
-    let symbol_refs = source_refs_from_dae(dae, &enum_type_names);
+    let symbol_refs = source_refs_from_dae(dae, &enum_type_names)?;
     let symbol_aliases = symbol_aliases_from_dae(dae)?;
     let condition_aliases =
         condition_aliases_from_dae(dae).map_err(|e| CodegenError::SerializationFailed {
@@ -100,13 +192,13 @@ fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, 
     dae.conditions
         .equations
         .iter()
-        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| (lhs, &eq.rhs)))
-        .map(|(lhs, relation)| {
+        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| (eq, lhs, &eq.rhs)))
+        .map(|(eq, lhs, relation)| {
             Ok(serde_json::json!({
                 "condition": Expression::VarRef {
                     name: lhs.clone(),
                     subscripts: Vec::new(),
-                    span: Span::DUMMY,
+                    span: eq.span,
                 },
                 "relation": relation,
             }))
@@ -130,7 +222,10 @@ fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
     result
 }
 
-fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<String> {
+fn source_refs_from_dae(
+    dae: &dae::Dae,
+    enum_type_names: &[String],
+) -> Result<Vec<String>, CodegenError> {
     let mut refs = IndexSet::new();
 
     for vars in [
@@ -144,13 +239,13 @@ fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<Strin
         &dae.variables.discrete_valued,
     ] {
         for (name, var) in vars {
-            add_source_refs_for_var(name.as_str(), &var.dims, &mut refs);
+            add_source_refs_for_var(name.as_str(), &var.dims, &mut refs)?;
         }
     }
 
     for (func_name, func) in &dae.symbols.functions {
         refs.insert(func_name.as_str().to_string());
-        add_function_output_projection_refs(func_name.as_str(), func, &mut refs);
+        add_function_output_projection_refs(func_name.as_str(), func, &mut refs)?;
     }
     for func in dae.symbols.functions.values() {
         for var in func
@@ -159,7 +254,7 @@ fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<Strin
             .chain(func.outputs.iter())
             .chain(func.locals.iter())
         {
-            add_source_refs_for_var(var.name.as_str(), &var.dims, &mut refs);
+            add_source_refs_for_var(var.name.as_str(), &var.dims, &mut refs)?;
         }
     }
     for name in dae.symbols.enum_literal_ordinals.keys() {
@@ -169,31 +264,25 @@ fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<Strin
         refs.insert(name.clone());
     }
 
-    let mut refs = refs.into_iter().collect::<Vec<_>>();
+    let mut sorted_refs = codegen_vec_with_capacity(refs.len(), "source reference count")?;
+    sorted_refs.extend(refs);
+    let mut refs = sorted_refs;
     refs.sort_by(|a, b| {
         symbol_ref_priority(a)
             .cmp(&symbol_ref_priority(b))
             .then_with(|| a.cmp(b))
     });
-    refs
+    Ok(refs)
 }
 
 fn add_function_output_projection_refs(
     func_name: &str,
     func: &rumoca_core::Function,
     refs: &mut IndexSet<String>,
-) {
+) -> Result<(), CodegenError> {
     for output in &func.outputs {
-        let dims: Vec<usize> = output
-            .dims
-            .iter()
-            .filter_map(|dim| (*dim > 0).then_some(*dim as usize))
-            .collect();
-        let count = if dims.is_empty() {
-            1
-        } else {
-            dims.iter().product::<usize>()
-        };
+        let dims = positive_usize_dims_for_source_refs(output.name.as_str(), &output.dims)?;
+        let count = source_ref_scalar_count(output.name.as_str(), &dims)?;
         for element_idx in 1..=count {
             let selector = if count == 1 {
                 output.name.as_str().to_string()
@@ -203,27 +292,67 @@ fn add_function_output_projection_refs(
             refs.insert(format!("{func_name}.{selector}"));
         }
     }
+    Ok(())
 }
 
-fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut IndexSet<String>) {
+fn add_source_refs_for_var(
+    name: &str,
+    dims: &[i64],
+    refs: &mut IndexSet<String>,
+) -> Result<(), CodegenError> {
     refs.insert(name.to_string());
 
-    let dims: Vec<usize> = dims
-        .iter()
-        .filter_map(|dim| (*dim > 0).then_some(*dim as usize))
-        .collect();
+    let dims = positive_usize_dims_for_source_refs(name, dims)?;
     if dims.is_empty() {
-        return;
+        return Ok(());
     }
 
-    let total = dims.iter().product::<usize>();
+    let total = source_ref_scalar_count(name, &dims)?;
     for flat_index in 1..=total {
         refs.insert(format!(
             "{}[{}]",
             name,
-            source_subscript_suffix(&dims, flat_index)
+            source_subscript_suffix(&dims, flat_index)?
         ));
     }
+    Ok(())
+}
+
+fn positive_usize_dims_for_source_refs(
+    name: &str,
+    dims: &[i64],
+) -> Result<Vec<usize>, CodegenError> {
+    let mut converted = codegen_vec_with_capacity(dims.len(), "source reference dimension count")?;
+    for dim in dims.iter().copied().filter(|dim| *dim > 0) {
+        converted.push(
+            usize::try_from(dim).map_err(|_| CodegenError::SerializationFailed {
+                message: format!(
+                    "source ref dimension {dim} for `{name}` exceeds host index range"
+                ),
+            })?,
+        );
+    }
+    Ok(converted)
+}
+
+fn source_ref_scalar_count(name: &str, dims: &[usize]) -> Result<usize, CodegenError> {
+    if dims.is_empty() {
+        return Ok(1);
+    }
+    let count = dims.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or_else(|| CodegenError::SerializationFailed {
+                message: format!("source ref scalar count for `{name}` overflows host index range"),
+            })
+    })?;
+    if count > SOURCE_REF_ENUMERATION_LIMIT {
+        return Err(CodegenError::SerializationFailed {
+            message: format!(
+                "source ref scalar count for `{name}` ({count}) exceeds enumeration limit {SOURCE_REF_ENUMERATION_LIMIT}"
+            ),
+        });
+    }
+    Ok(count)
 }
 
 fn symbol_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, CodegenError> {
@@ -239,7 +368,7 @@ fn symbol_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, Cod
         &dae.variables.discrete_valued,
     ] {
         for (name, var) in vars {
-            add_source_refs_for_var(name.as_str(), &var.dims, &mut declared_refs);
+            add_source_refs_for_var(name.as_str(), &var.dims, &mut declared_refs)?;
         }
     }
 
@@ -372,350 +501,6 @@ fn literal_positive_indices(subscripts: &[Subscript]) -> Option<Vec<usize>> {
         .collect()
 }
 
-fn symbol_ref_priority(reference: &str) -> (usize, usize) {
-    let (base, _) = split_modelica_subscript(reference);
-    let depth = split_modelica_path(base).len();
-    let indexed = usize::from(reference.contains('['));
-    (depth, indexed)
-}
-
-#[derive(Clone)]
-struct SymbolPolicy {
-    reserved: HashSet<String>,
-    generated_prefixes: Vec<String>,
-    separator: String,
-}
-
-impl SymbolPolicy {
-    fn language_neutral() -> Self {
-        Self {
-            reserved: HashSet::new(),
-            generated_prefixes: Vec::new(),
-            separator: "_".to_string(),
-        }
-    }
-
-    fn from_value(value: &Value) -> Self {
-        let mut policy = Self::language_neutral();
-
-        if let Some(separator) = get_str_attr(value, "separator")
-            && !separator.is_empty()
-        {
-            policy.separator = separator;
-        }
-        if let Ok(reserved) = value.get_attr("reserved") {
-            for item in value_list_strings(&reserved) {
-                policy.reserved.insert(item);
-            }
-        }
-        if let Ok(prefixes) = value.get_attr("generated_prefixes") {
-            policy.generated_prefixes = value_list_strings(&prefixes);
-        }
-
-        policy
-    }
-}
-
-struct SymbolAllocator {
-    used: HashSet<String>,
-    policy: SymbolPolicy,
-}
-
-impl SymbolAllocator {
-    fn new(policy: SymbolPolicy) -> Self {
-        let used = policy.reserved.clone();
-        Self { used, policy }
-    }
-
-    fn allocate(
-        &mut self,
-        candidates: &[String],
-        candidate_counts: &HashMap<String, usize>,
-    ) -> RenderResult {
-        for candidate in candidates {
-            let count = candidate_counts.get(candidate).copied().ok_or_else(|| {
-                render_err(format!(
-                    "symbol candidate `{candidate}` missing from allocation count table"
-                ))
-            })?;
-            if count <= 1 && self.try_use(candidate) {
-                return Ok(candidate.clone());
-            }
-        }
-
-        for candidate in candidates {
-            if self.try_use(candidate) {
-                return Ok(candidate.clone());
-            }
-        }
-
-        let base = candidates
-            .last()
-            .ok_or_else(|| render_err("symbol allocation requires at least one candidate"))?;
-        for idx in 2.. {
-            let candidate = format!("{base}_{idx}");
-            if self.try_use(&candidate) {
-                return Ok(candidate);
-            }
-        }
-        unreachable!("exhausted usize suffix range while allocating a unique codegen name")
-    }
-
-    fn try_use(&mut self, candidate: &str) -> bool {
-        if candidate.is_empty()
-            || self.used.contains(candidate)
-            || self.policy.reserved.contains(candidate)
-        {
-            return false;
-        }
-        if self
-            .policy
-            .generated_prefixes
-            .iter()
-            .any(|prefix| self.used.contains(&format!("{prefix}{candidate}")))
-        {
-            return false;
-        }
-
-        self.used.insert(candidate.to_string());
-        for prefix in &self.policy.generated_prefixes {
-            self.used.insert(format!("{prefix}{candidate}"));
-        }
-        true
-    }
-}
-
-fn allocate_symbols_function(symbol_refs: Value, policy: Value) -> Result<Value, minijinja::Error> {
-    let policy = SymbolPolicy::from_value(&policy);
-    let references = value_list_strings(&symbol_refs);
-    let symbols = allocate_symbols_for_refs(references, policy)?;
-    Ok(Value::from_serialize(symbols))
-}
-
-fn target_symbols_function(
-    symbol_refs: Value,
-    policy: Value,
-    symbol_aliases: Value,
-) -> Result<Value, minijinja::Error> {
-    let policy = SymbolPolicy::from_value(&policy);
-    let references = value_list_strings(&symbol_refs);
-    let mut requests = references
-        .into_iter()
-        .map(|reference| {
-            let candidates = symbol_candidates(&reference, &policy)?;
-            Ok((reference, candidates))
-        })
-        .collect::<Result<Vec<_>, minijinja::Error>>()?;
-
-    requests.sort_by(|(a_ref, a_candidates), (b_ref, b_candidates)| {
-        symbol_ref_priority(a_ref)
-            .cmp(&symbol_ref_priority(b_ref))
-            .then_with(|| {
-                a_candidates
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or("")
-                    .cmp(b_candidates.first().map(String::as_str).unwrap_or(""))
-            })
-            .then_with(|| a_ref.cmp(b_ref))
-    });
-
-    let mut candidate_counts = HashMap::<String, usize>::new();
-    for (_, candidates) in &requests {
-        let mut seen = HashSet::new();
-        for candidate in candidates {
-            if seen.insert(candidate) {
-                *candidate_counts.entry(candidate.clone()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    let mut allocator = SymbolAllocator::new(policy);
-    let mut out = IndexMap::new();
-    for (reference, candidates) in requests {
-        let symbol = allocator.allocate(&candidates, &candidate_counts)?;
-        out.insert(reference, symbol);
-    }
-    for (alias, target) in value_symbol_aliases(&symbol_aliases)? {
-        let symbol = out.get(&target).cloned().ok_or_else(|| {
-            render_err(format!(
-                "symbol alias `{alias}` targets unknown source reference `{target}`"
-            ))
-        })?;
-        out.insert(alias, symbol);
-    }
-    Ok(Value::from_serialize(out))
-}
-
-fn allocate_symbols_for_refs(
-    mut references: Vec<String>,
-    policy: SymbolPolicy,
-) -> Result<IndexMap<String, String>, minijinja::Error> {
-    references.sort_by(|a, b| {
-        symbol_ref_priority(a)
-            .cmp(&symbol_ref_priority(b))
-            .then_with(|| a.cmp(b))
-    });
-    references.dedup();
-
-    let requests = references
-        .into_iter()
-        .map(|reference| {
-            let candidates = symbol_candidates(&reference, &policy)?;
-            Ok((reference, candidates))
-        })
-        .collect::<Result<Vec<_>, minijinja::Error>>()?;
-
-    let mut candidate_counts = HashMap::<String, usize>::new();
-    for (_, candidates) in &requests {
-        let mut seen = HashSet::new();
-        for candidate in candidates {
-            if seen.insert(candidate) {
-                *candidate_counts.entry(candidate.clone()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    let mut allocator = SymbolAllocator::new(policy);
-    let mut out = IndexMap::new();
-    for (reference, candidates) in requests {
-        let symbol = allocator.allocate(&candidates, &candidate_counts)?;
-        out.insert(reference, symbol);
-    }
-    Ok(out)
-}
-
-fn symbol_candidates(
-    modelica_ref: &str,
-    policy: &SymbolPolicy,
-) -> Result<Vec<String>, minijinja::Error> {
-    let (base_ref, subscript) = split_modelica_subscript(modelica_ref);
-    let suffix = subscript.map(|s| scalarized_subscript_suffix(s, &policy.separator));
-    let segments = split_modelica_path(base_ref);
-    let mut candidates = Vec::new();
-    for start in (0..segments.len()).rev() {
-        let base = segments[start..]
-            .iter()
-            .filter_map(|segment| readable_identifier_segment(segment))
-            .collect::<Vec<_>>()
-            .join(&policy.separator);
-        if base.is_empty() {
-            continue;
-        }
-        candidates.push(with_optional_suffix(
-            &base,
-            suffix.as_deref(),
-            &policy.separator,
-        ));
-    }
-
-    if candidates.is_empty() {
-        return Err(render_err(format!(
-            "source reference `{modelica_ref}` does not contain any valid identifier segment"
-        )));
-    }
-    candidates.dedup();
-    Ok(candidates)
-}
-
-fn split_modelica_subscript(reference: &str) -> (&str, Option<&str>) {
-    if let Some((base, subscript)) = rumoca_core::split_trailing_subscript_suffix(reference) {
-        return (base, Some(subscript));
-    }
-    (reference, None)
-}
-
-fn split_modelica_path(name: &str) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (idx, ch) in name.char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
-            '.' if depth == 0 => {
-                segments.push(&name[start..idx]);
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-    segments.push(&name[start..]);
-    segments
-}
-
-fn readable_identifier_segment(segment: &str) -> Option<String> {
-    let mut out = String::with_capacity(segment.len());
-    let mut last_was_underscore = false;
-    for ch in segment.chars() {
-        let valid = ch.is_ascii_alphanumeric() || ch == '_';
-        if valid {
-            if out.is_empty() && ch.is_ascii_digit() {
-                out.push('_');
-            }
-            out.push(ch);
-            last_was_underscore = ch == '_';
-        } else if !last_was_underscore {
-            out.push('_');
-            last_was_underscore = true;
-        }
-    }
-    while out.ends_with('_') {
-        out.pop();
-    }
-    (!out.is_empty()).then_some(out)
-}
-
-fn scalarized_subscript_suffix(subscript: &str, separator: &str) -> String {
-    subscript
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(separator)
-}
-
-fn with_optional_suffix(base: &str, suffix: Option<&str>, separator: &str) -> String {
-    match suffix {
-        Some(suffix) if !suffix.is_empty() => format!("{base}{separator}{suffix}"),
-        _ => base.to_string(),
-    }
-}
-
-fn symbol_function(symbols: Value, name: Value) -> RenderResult {
-    let name = value_to_string(&name);
-    lookup_symbol_value(Some(&symbols), &name).ok_or_else(|| {
-        render_err(format!(
-            "missing emitted symbol for source reference `{name}`"
-        ))
-    })
-}
-
-pub(crate) fn lookup_symbol_value(symbols: Option<&Value>, name: &str) -> Option<String> {
-    let symbols = symbols?;
-    symbols
-        .get_item(&Value::from(name))
-        .ok()
-        .filter(|value| !value.is_undefined() && !value.is_none())
-        .map(|value| value_to_string(&value))
-        .filter(|value| !value.is_empty())
-}
-
-pub(crate) fn emitted_symbol(reference: &str, cfg: &ExprConfig) -> RenderResult {
-    if let Some(symbols) = cfg.symbols.as_ref() {
-        return lookup_symbol_value(Some(symbols), reference).ok_or_else(|| {
-            render_err(format!(
-                "missing emitted symbol for source reference `{reference}`"
-            ))
-        });
-    }
-    if cfg.sanitize_dots || cfg.subscript_underscore {
-        Ok(sanitize_name(reference))
-    } else {
-        Ok(escape_reserved_keyword(reference))
-    }
-}
-
 fn dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
     Ok(Value::from_serialize(dae_template_json(dae)?))
 }
@@ -828,6 +613,7 @@ fn solve_template_blocks_value(
     Ok(minijinja::context! {
         continuous => minijinja::context! {
             implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
+            residual => solve_template_compute_block_json(&solve_problem.continuous.residual)?,
             derivative_rhs => solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
         },
         artifacts => minijinja::context! {
@@ -838,66 +624,170 @@ fn solve_template_blocks_value(
     })
 }
 
-fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Value, CodegenError> {
-    let scalar_programs = rumoca_eval_solve::to_scalar_program_block(block);
-    let uses_linear_solve = scalar_program_block_uses_linear_solve_component(&scalar_programs);
-    let nodes = Value::from_serialize(&block.nodes);
-    let program_spans = Value::from_serialize(&scalar_programs.program_spans);
-    let (stencils, residual_rows) = stencil_template_partition(block);
-    let stencil_residual_rows = Value::from_serialize(&residual_rows);
-    let stencils = Value::from_object(render_solve::SolveStencilsValue::new(stencils));
-    // Rows go to templates as typed objects: per-row serde bridging made
-    // rendering the dominant compile cost on large models.
-    let programs = Value::from_object(render_solve::SolveRowsValue::new(scalar_programs.programs));
-    Ok(minijinja::context! {
-        nodes => nodes,
-        scalar_programs => minijinja::context! {
-            programs => programs,
-            program_spans => program_spans,
-        },
-        stencils => stencils,
-        stencil_residual_rows => stencil_residual_rows,
-        output_count => block.len(),
-        tensor_node_count => block.tensor_node_count(),
-        scalar_programs_use_linear_solve_component => uses_linear_solve,
-    })
+#[derive(Debug)]
+struct LazyScalarProgramsValue {
+    block: std::sync::Arc<solve::ComputeBlock>,
+    scalar: std::sync::OnceLock<Option<std::sync::Arc<solve::ScalarProgramBlock>>>,
 }
 
-fn stencil_template_partition(
-    block: &solve::ComputeBlock,
-) -> (Vec<render_solve::RenderAffineStencil>, Vec<usize>) {
-    let mut stencils = Vec::new();
-    let mut residual_rows = Vec::new();
-    let mut start_row = 0;
-    for node in &block.nodes {
-        match node {
-            solve::ComputeNode::AffineStencil {
-                count,
-                base_ops,
-                load_strides,
-                const_strides,
-                ..
-            } => {
-                stencils.push(render_solve::RenderAffineStencil {
-                    start_row,
-                    count: *count,
-                    base_ops: base_ops.clone(),
-                    load_strides: load_strides.clone(),
-                    const_strides: const_strides.clone(),
-                });
-                start_row += count;
-            }
-            other => {
-                let len = solve::ComputeBlock {
-                    nodes: vec![other.clone()],
-                }
-                .len();
-                residual_rows.extend(start_row..start_row + len);
-                start_row += len;
-            }
+impl LazyScalarProgramsValue {
+    fn new(block: solve::ComputeBlock) -> Self {
+        Self {
+            block: std::sync::Arc::new(block),
+            scalar: std::sync::OnceLock::new(),
         }
     }
-    (stencils, residual_rows)
+
+    fn scalar(&self) -> Option<&std::sync::Arc<solve::ScalarProgramBlock>> {
+        self.scalar
+            .get_or_init(|| {
+                rumoca_eval_solve::to_scalar_program_block(&self.block)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+            .as_ref()
+    }
+}
+
+impl minijinja::value::Object for LazyScalarProgramsValue {
+    fn repr(self: &std::sync::Arc<Self>) -> minijinja::value::ObjectRepr {
+        minijinja::value::ObjectRepr::Map
+    }
+
+    fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
+        let scalar = self.scalar()?;
+        match key.as_str()? {
+            "programs" => Some(Value::from_object(render_solve::SolveRowsValue::from_arc(
+                std::sync::Arc::new(scalar.programs.clone()),
+            ))),
+            "program_spans" => Some(Value::from_serialize(&scalar.program_spans)),
+            "output_indices" => Some(Value::from_serialize(&scalar.output_indices)),
+            _ => None,
+        }
+    }
+
+    fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
+        minijinja::value::Enumerator::Values(vec![
+            Value::from("programs"),
+            Value::from("program_spans"),
+            Value::from("output_indices"),
+        ])
+    }
+}
+
+#[derive(Debug)]
+pub(in crate::codegen) struct LazyScalarRowsValue {
+    block: std::sync::Arc<solve::ComputeBlock>,
+    row_count: usize,
+    scalar: std::sync::OnceLock<Option<std::sync::Arc<Vec<Vec<solve::LinearOp>>>>>,
+}
+
+impl LazyScalarRowsValue {
+    pub(in crate::codegen) fn new(block: solve::ComputeBlock) -> Result<Self, CodegenError> {
+        let row_count = block.len()?;
+        Ok(Self {
+            block: std::sync::Arc::new(block),
+            row_count,
+            scalar: std::sync::OnceLock::new(),
+        })
+    }
+
+    fn rows(&self) -> Option<&std::sync::Arc<Vec<Vec<solve::LinearOp>>>> {
+        self.scalar
+            .get_or_init(|| {
+                rumoca_eval_solve::to_scalar_program_block(&self.block)
+                    .ok()
+                    .map(|scalar| std::sync::Arc::new(scalar.programs))
+            })
+            .as_ref()
+    }
+}
+
+impl minijinja::value::Object for LazyScalarRowsValue {
+    fn repr(self: &std::sync::Arc<Self>) -> minijinja::value::ObjectRepr {
+        minijinja::value::ObjectRepr::Seq
+    }
+
+    fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        let rows = self.rows()?;
+        (index < rows.len())
+            .then(|| Value::from_object(render_solve::SolveRowValue::new(rows.clone(), index)))
+    }
+
+    fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
+        minijinja::value::Enumerator::Seq(self.row_count)
+    }
+}
+
+#[derive(Debug)]
+pub(in crate::codegen) struct LazyDerivativeNodesValue {
+    block: std::sync::Arc<solve::ComputeBlock>,
+    nodes: std::sync::OnceLock<Option<std::sync::Arc<Vec<solve::ComputeNode>>>>,
+}
+
+impl LazyDerivativeNodesValue {
+    pub(in crate::codegen) fn new(block: solve::ComputeBlock) -> Self {
+        Self {
+            block: std::sync::Arc::new(block),
+            nodes: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn nodes(&self) -> Option<&std::sync::Arc<Vec<solve::ComputeNode>>> {
+        self.nodes
+            .get_or_init(|| {
+                solve_renderer::c_renderable_derivative_nodes(&self.block)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+            .as_ref()
+    }
+}
+
+impl minijinja::value::Object for LazyDerivativeNodesValue {
+    fn repr(self: &std::sync::Arc<Self>) -> minijinja::value::ObjectRepr {
+        minijinja::value::ObjectRepr::Seq
+    }
+
+    fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        self.nodes()?.get(index).map(Value::from_serialize)
+    }
+
+    fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
+        match self.nodes() {
+            Some(nodes) => minijinja::value::Enumerator::Seq(nodes.len()),
+            None => minijinja::value::Enumerator::Empty,
+        }
+    }
+}
+
+fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Value, CodegenError> {
+    let partition = render_solve::native_family_template_partition(block)?;
+    let uses_linear_solve = compute_block_uses_linear_solve_component(block);
+    // Lazy nodes (one ComputeNode -> ops materialized on demand) so blocks whose
+    // nodes contain large op programs don't materialize as eager Values.
+    let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()))?;
+    let output_count = block.len()?;
+    let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(block.clone()));
+    let scalar_fallback_rows = Value::from_object(render_solve::SolveScalarFallbackRowsValue::new(
+        partition.scalar_fallback_rows,
+    ));
+    let native_families = Value::from_object(render_solve::SolveNativeFamiliesValue::new(
+        partition.families,
+    ));
+    Ok(minijinja::context! {
+        nodes => nodes,
+        scalar_programs => scalar_programs,
+        native_families => native_families,
+        scalar_fallback_rows => scalar_fallback_rows,
+        output_count => output_count,
+        tensor_node_count => block.tensor_node_count(),
+        map_family_count => partition.map_family_count,
+        stencil_family_count => partition.stencil_family_count,
+        scalar_programs_use_linear_solve_component => uses_linear_solve,
+    })
 }
 
 fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
@@ -906,6 +796,18 @@ fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgram
         .iter()
         .flatten()
         .any(|op| matches!(op, solve::LinearOp::LinearSolveComponent { .. }))
+}
+
+fn compute_block_uses_linear_solve_component(block: &solve::ComputeBlock) -> bool {
+    block.nodes.iter().any(|node| match node {
+        solve::ComputeNode::ScalarPrograms(block) => {
+            scalar_program_block_uses_linear_solve_component(block)
+        }
+        solve::ComputeNode::LinSolve { .. } => true,
+        solve::ComputeNode::Map { .. }
+        | solve::ComputeNode::AffineStencil { .. }
+        | solve::ComputeNode::MatMul { .. } => false,
+    })
 }
 
 fn render_flat_context(
@@ -1028,7 +930,9 @@ pub fn render_template_with_dae_json(
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
     let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
+    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
+    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
+    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
         solve => solve_value,
@@ -1036,7 +940,9 @@ pub fn render_template_with_dae_json(
         ir_kind => ir_kind,
         solve_blocks => solve_blocks,
         solve_derivative_nodes => solve_derivative_nodes,
+        solve_implicit_rows => Value::from_serialize(&solve_implicit_rows),
         solve_jacobian_rows => solve_jacobian_rows,
+        solve_full_jacobian_rows => solve_full_jacobian_rows,
     })?;
 
     Ok(result)
@@ -1061,7 +967,9 @@ pub fn render_template_with_dae_json_and_name(
     };
     let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
     let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json);
+    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
+    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
+    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
     let tmpl = env.get_template("inline")?;
     let result = tmpl.render(minijinja::context! {
         dae => dae_value.clone(),
@@ -1071,7 +979,9 @@ pub fn render_template_with_dae_json_and_name(
         model_name => model_name,
         solve_blocks => solve_blocks,
         solve_derivative_nodes => solve_derivative_nodes,
+        solve_implicit_rows => Value::from_serialize(&solve_implicit_rows),
         solve_jacobian_rows => solve_jacobian_rows,
+        solve_full_jacobian_rows => solve_full_jacobian_rows,
     })?;
 
     Ok(result)
@@ -1139,13 +1049,26 @@ fn solve_derivative_nodes_from_dae_json(
             message: format!("Solve derivative nodes template context: {err}"),
         })?;
     Ok(Value::from_serialize(
-        solve_renderer::c_renderable_derivative_nodes(&block),
+        solve_renderer::c_renderable_derivative_nodes(&block)?,
     ))
 }
 
-fn solve_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
+fn solve_implicit_rows_from_dae_json(dae_json: &serde_json::Value) -> serde_json::Value {
+    dae_json
+        .pointer("/solve/continuous/implicit_rhs/nodes")
+        .map(scalar_programs_from_compute_nodes)
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
+}
+
+fn solve_jacobian_rows_from_dae_json(
+    dae_json: &serde_json::Value,
+    implicit_rows: &serde_json::Value,
+) -> Value {
+    if implicit_rows.as_array().is_none_or(Vec::is_empty) {
+        return Value::from_serialize(Vec::<serde_json::Value>::new());
+    }
     let rows = dae_json
-        .pointer("/solve/artifacts/continuous/full_jacobian_v/programs")
+        .pointer("/solve/artifacts/continuous/implicit_jacobian_v_scalar/programs")
         .cloned()
         .or_else(|| {
             dae_json
@@ -1154,6 +1077,14 @@ fn solve_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
         })
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
     Value::from_serialize(&rows)
+}
+
+fn solve_full_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
+    Value::from_serialize(
+        dae_json
+            .pointer("/solve/artifacts/continuous/full_jacobian_v/programs")
+            .unwrap_or(&serde_json::Value::Array(Vec::new())),
+    )
 }
 
 fn scalar_programs_from_compute_nodes(nodes: &serde_json::Value) -> serde_json::Value {
@@ -1283,10 +1214,38 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
+    env.add_function("render_solve_block_c", render_solve_block_c_function);
+    env.add_function("render_solve_block_rust", render_solve_block_rust_function);
+    env.add_function("render_solve_block_py", render_solve_block_py_function);
+    env.add_function("store_output_count", solve_block_output_count_function);
     env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
     env.add_function(
-        "render_solve_stencil_wgsl",
-        render_solve::render_solve_stencil_wgsl_function,
+        "render_solve_row_output_wgsl",
+        render_solve_row_output_wgsl_function,
+    );
+    env.add_function(
+        "render_solve_native_family_wgsl",
+        render_solve::render_solve_native_family_wgsl_function,
+    );
+    env.add_function(
+        "render_solve_native_family_output_index_wgsl",
+        render_solve::render_solve_native_family_output_index_wgsl_function,
+    );
+    env.add_function(
+        "render_solve_native_family_output_map_start",
+        render_solve::render_solve_native_family_output_map_start_function,
+    );
+    env.add_function(
+        "wgsl_kernel_schedule_json",
+        render_wgsl_kernel_schedule_json_function,
+    );
+    env.add_function(
+        "wgsl_kernel_workgroup_total",
+        render_wgsl_kernel_workgroup_total_function,
+    );
+    env.add_function(
+        "wgsl_native_family_inventory_json",
+        render_wgsl_native_family_inventory_json_function,
     );
     env.add_function(
         "render_solve_slot_assign_c",
@@ -1304,6 +1263,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
     env.add_function("render_equation", render_equation_function);
+    env.add_function(
+        "render_dae_equations",
+        render_dae_modelica::render_dae_equations_function,
+    );
 
     // Custom functions for statement rendering (MLS §12: function bodies)
     env.add_function("render_statement", render_statement_function);
@@ -1406,17 +1369,20 @@ fn last_segment_filter(value: Value) -> String {
 /// Filter to compute the product of all elements in a sequence.
 ///
 /// Used by MX template: `{{ var.dims | product }}` -> total scalar size.
-fn product_filter(value: Value) -> Value {
+fn product_filter(value: Value) -> Result<Value, minijinja::Error> {
     let Some(len) = value.len() else {
-        return Value::from(1);
+        return Ok(Value::from(1));
     };
     let mut result: i64 = 1;
     for i in 0..len {
         if let Ok(item) = value.get_item(&Value::from(i)) {
-            result *= item.as_i64().unwrap_or(1);
+            let item = item.as_i64().unwrap_or(1);
+            result = result
+                .checked_mul(item)
+                .ok_or_else(|| render_err("product filter overflows Modelica integer range"))?;
         }
     }
-    Value::from(result)
+    Ok(Value::from(result))
 }
 
 fn json_filter(value: Value) -> RenderResult {
@@ -1435,40 +1401,43 @@ fn value_to_string(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string().trim_matches('"').to_string())
 }
 
-fn dims_from_value(value: &Value) -> Vec<usize> {
+fn dims_from_value(value: &Value) -> Result<Vec<usize>, minijinja::Error> {
     let Some(len) = value.len() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let mut dims = Vec::with_capacity(len);
+    let mut dims = render_vec_with_capacity(len, "render dimension count")?;
     for i in 0..len {
         if let Ok(item) = value.get_item(&Value::from(i))
             && let Some(dim) = item.as_i64()
             && dim > 0
         {
-            dims.push(dim as usize);
+            dims.push(
+                usize::try_from(dim)
+                    .map_err(|_| render_err(format!("dimension {dim} exceeds host index range")))?,
+            );
         }
     }
-    dims
+    Ok(dims)
 }
 
-fn value_list_strings(value: &Value) -> Vec<String> {
+fn value_list_strings(value: &Value) -> Result<Vec<String>, minijinja::Error> {
     let Some(len) = value.len() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let mut out = Vec::with_capacity(len);
+    let mut out = render_vec_with_capacity(len, "template value string count")?;
     for i in 0..len {
         if let Ok(item) = value.get_item(&Value::from(i)) {
             out.push(value_to_string(&item));
         }
     }
-    out
+    Ok(out)
 }
 
 fn value_symbol_aliases(value: &Value) -> Result<Vec<(String, String)>, minijinja::Error> {
     let Some(len) = value.len() else {
         return Ok(Vec::new());
     };
-    let mut out = Vec::with_capacity(len);
+    let mut out = render_vec_with_capacity(len, "symbol alias count")?;
     for i in 0..len {
         let item = value
             .get_item(&Value::from(i))
@@ -1489,31 +1458,69 @@ fn value_symbol_aliases(value: &Value) -> Result<Vec<(String, String)>, minijinj
     Ok(out)
 }
 
-fn subscripts_for_flat_index(dims: &[usize], flat_index: usize) -> Vec<usize> {
+fn subscripts_for_flat_index(
+    dims: &[usize],
+    flat_index: usize,
+) -> Result<Vec<usize>, CodegenError> {
     if dims.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut remaining = flat_index.saturating_sub(1);
-    let mut subscripts = vec![1; dims.len()];
+    let mut subscripts = codegen_vec_with_capacity(dims.len(), "source reference subscript count")?;
+    subscripts.resize(dims.len(), 1);
     for dim_idx in (0..dims.len()).rev() {
         let dim = dims[dim_idx].max(1);
         subscripts[dim_idx] = (remaining % dim) + 1;
         remaining /= dim;
     }
-    subscripts
+    Ok(subscripts)
 }
 
-fn source_subscript_suffix(dims: &[usize], flat_index: usize) -> String {
-    let subscripts = subscripts_for_flat_index(dims, flat_index);
+fn source_subscript_suffix(dims: &[usize], flat_index: usize) -> Result<String, CodegenError> {
+    let subscripts = subscripts_for_flat_index(dims, flat_index)?;
     if subscripts.is_empty() {
-        flat_index.max(1).to_string()
+        Ok(flat_index.max(1).to_string())
     } else {
-        subscripts
-            .iter()
-            .map(usize::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
+        codegen_join_usize_values(&subscripts, ",", "source reference subscript text count")
+    }
+}
+
+fn checked_subscripts_for_flat_index(
+    dims: &[usize],
+    flat_index: usize,
+) -> Result<Vec<usize>, minijinja::Error> {
+    if dims.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut remaining = flat_index
+        .checked_sub(1)
+        .ok_or_else(|| render_err("source_ref flat index must be one-based"))?;
+    let mut subscripts =
+        render_vec_with_capacity(dims.len(), "checked source_ref subscript count")?;
+    subscripts.extend(std::iter::repeat_n(1, dims.len()));
+    for dim_idx in (0..dims.len()).rev() {
+        let dim = dims[dim_idx].max(1);
+        subscripts[dim_idx] = (remaining % dim) + 1;
+        remaining /= dim;
+    }
+    if remaining != 0 {
+        return Err(render_err(format!(
+            "source_ref flat index {flat_index} exceeds dimensions {dims:?}"
+        )));
+    }
+    Ok(subscripts)
+}
+
+fn checked_source_subscript_suffix(
+    dims: &[usize],
+    flat_index: usize,
+) -> Result<String, minijinja::Error> {
+    let subscripts = checked_subscripts_for_flat_index(dims, flat_index)?;
+    if subscripts.is_empty() {
+        Ok(flat_index.to_string())
+    } else {
+        join_usize_values(&subscripts, ",", "source_ref rendered subscript count")
     }
 }
 
@@ -1522,17 +1529,22 @@ fn source_subscript_suffix(dims: &[usize], flat_index: usize) -> String {
 /// Examples:
 /// - `source_ref("x", [4], 3)` -> `x[3]`
 /// - `source_ref("leg.f", [4,3], 4)` -> `leg.f[2,1]`
-fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> String {
+fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> RenderResult {
     let name = value_to_string(&name);
-    let dims = dims_from_value(&dims);
+    let dims = dims_from_value(&dims)?;
     if dims.is_empty() {
-        return name;
+        return Ok(name);
     }
-    let index = flat_index
-        .as_usize()
-        .expect("source_ref flat index must be numeric")
-        .max(1);
-    format!("{}[{}]", name, source_subscript_suffix(&dims, index))
+    let index = flat_index.as_usize().ok_or_else(|| {
+        render_err(format!(
+            "source_ref flat index `{flat_index}` is not numeric"
+        ))
+    })?;
+    Ok(format!(
+        "{}[{}]",
+        name,
+        checked_source_subscript_suffix(&dims, index)?
+    ))
 }
 
 /// Fail template rendering with an explicit message.
@@ -1936,9 +1948,17 @@ pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;
 
 #[cfg(test)]
+mod codegen_block_render_tests;
+#[cfg(test)]
 mod codegen_tests;
 #[cfg(test)]
+mod dae_modelica_tests;
+#[cfg(test)]
 mod fmi_template_tests;
+#[cfg(test)]
+mod solve_sparse_output_tests;
+#[cfg(test)]
+mod solve_template_context_tests;
 #[cfg(test)]
 mod stencil_codegen_tests;
 #[cfg(test)]

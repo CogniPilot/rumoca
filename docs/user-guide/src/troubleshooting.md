@@ -4,7 +4,7 @@
 
 **"class not found" / unresolved names** — The model references a package
 Rumoca cannot see. Add the library with `--source-root` (CLI), top-level
-`source_roots` (scenario), or `rumoca.sourceRootPaths` (VS Code). Check
+`source_roots` (scenario), or `rumoca-workspace.toml` (workspace). Check
 `MODELICAPATH` if you rely on it. See
 [Using Modelica Libraries](./language/libraries.md).
 
@@ -65,20 +65,21 @@ scenario to define focused plots.
 ## VS Code
 
 **No diagnostics / completion** — Check that the extension is active for
-the file (it activates on `.mo` and `rum.toml`). If you enabled
+the file (it activates on `.mo` and `rumoca-scenario.toml`). If you enabled
 `rumoca.useSystemServer`, ensure `rumoca-lsp` is on `PATH`; otherwise the
 bundled server is used.
 
-**Library completion missing** — Set `rumoca.sourceRootPaths` (workspace
-scope). For the repository's own examples, run
+**Library completion missing** — Add shared library roots to
+`rumoca-workspace.toml`. For the repository's own examples, run
 `cargo xtask repo modelica-deps ensure` first.
 
-## Live Examples in This Book
+## Runnable Blocks in This Book
 
 **The ▶ Simulate button reports the WASM package is missing** — Live
 examples need the WASM package deployed next to the book. They work on
 [the published site](https://cognipilot.github.io/rumoca/user-guide/); for
-a local build, serve the repository root after `cargo xtask wasm build`.
+a local build, use `cargo xtask docs serve`; it builds the missing local
+WASM package for live examples before serving the books.
 
 **The editor has no syntax highlighting** — Monaco loads from a CDN; when
 offline, the examples fall back to plain text editors but still simulate.

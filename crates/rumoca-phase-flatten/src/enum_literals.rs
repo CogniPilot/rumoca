@@ -370,6 +370,14 @@ mod tests {
     use super::*;
     use rumoca_core::Span;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("enum_literals_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn var_ref(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
@@ -398,7 +406,7 @@ mod tests {
             rumoca_core::VarName::new("y"),
             flat::Variable {
                 binding: Some(var_ref("Init.NoInit")),
-                ..flat::Variable::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.equations.push(rumoca_ir_flat::Equation::new(
@@ -450,7 +458,7 @@ mod tests {
                     value: rumoca_core::Literal::Integer(1),
                     span: rumoca_core::Span::DUMMY,
                 }),
-                ..flat::Variable::default()
+                ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.equations.push(rumoca_ir_flat::Equation::new(

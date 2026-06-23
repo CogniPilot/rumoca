@@ -132,7 +132,11 @@ impl Session {
         model_name: &str,
     ) -> InstantiatedModelOutcome {
         InstantiatedModelOutcome::from_instantiation_outcome(
-            instantiate_model_with_outcome_options(tree, model_name, self.instantiation_options),
+            instantiate_model_with_outcome_options(
+                tree,
+                model_name,
+                self.instantiation_options.clone(),
+            ),
         )
     }
 

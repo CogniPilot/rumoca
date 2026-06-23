@@ -17,15 +17,24 @@ pub(super) fn flat_index_for_subscripts(dims: &[usize], indices: &[usize]) -> Op
 }
 
 impl ArrayOperand {
-    pub(super) fn new(values: Vec<Reg>, dims: Vec<usize>) -> Self {
-        let dims = normalize_operand_dims(values.len(), dims);
-        Self { values, dims }
+    pub(super) fn with_shape_span(
+        values: Vec<Reg>,
+        dims: Vec<usize>,
+        span: rumoca_core::Span,
+    ) -> Result<Self, LowerError> {
+        let dims = normalize_operand_dims(values.len(), dims, span)?;
+        Ok(Self {
+            values,
+            dims,
+            shape_span: span,
+        })
     }
 
-    pub(super) fn scalar(value: Reg) -> Self {
+    pub(super) fn scalar_with_span(value: Reg, span: rumoca_core::Span) -> Self {
         Self {
             values: vec![value],
             dims: Vec::new(),
+            shape_span: span,
         }
     }
 
@@ -37,45 +46,50 @@ impl ArrayOperand {
 pub(super) fn cat_array_operands(
     dim: usize,
     operands: &[ArrayOperand],
+    span: rumoca_core::Span,
 ) -> Result<ArrayOperand, LowerError> {
-    let dims = cat_array_dims(dim, operands)?;
+    let dims = cat_array_dims(dim, operands, span)?;
     if operands.is_empty() {
-        return Ok(ArrayOperand::new(Vec::new(), dims));
+        return ArrayOperand::with_shape_span(Vec::new(), dims, span);
     }
     let values = match dim {
         1 => operands
             .iter()
             .flat_map(|operand| operand.values.iter().copied())
             .collect(),
-        2 => cat_matrix_columns(operands)?,
+        2 => cat_matrix_columns(operands, span)?,
         _ => {
-            return Err(LowerError::Unsupported {
-                reason: format!("cat dimension {dim} is unsupported for compiled array lowering"),
-            });
+            return Err(unsupported_at(
+                format!("cat dimension {dim} is unsupported for compiled array lowering"),
+                span,
+            ));
         }
     };
-    Ok(ArrayOperand::new(values, dims))
+    ArrayOperand::with_shape_span(values, dims, span)
 }
 
 pub(super) fn cat_array_dims(
     dim: usize,
     operands: &[ArrayOperand],
+    span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
     let Some(first) = operands.first() else {
         return Ok(Vec::new());
     };
     match dim {
-        1 => cat_dim1_dims(operands, &first.dims),
-        2 => cat_dim2_dims(operands, &first.dims),
-        _ => Err(LowerError::Unsupported {
-            reason: format!("cat dimension {dim} is not supported yet"),
-        }),
+        1 => cat_dim1_dims(operands, &first.dims, span),
+        2 => cat_dim2_dims(operands, &first.dims, span),
+        _ => Err(unsupported_at(
+            format!("cat dimension {dim} is not supported yet"),
+            span,
+        )),
     }
 }
 
 pub(super) fn cat_dim1_dims(
     operands: &[ArrayOperand],
     first_dims: &[usize],
+    span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
     if first_dims.is_empty() {
         return Ok(vector_dims(operands.len()));
@@ -84,14 +98,21 @@ pub(super) fn cat_dim1_dims(
     let mut total = 0usize;
     for operand in operands {
         if operand.dims.len() != first_dims.len() || &operand.dims[1..] != tail {
-            return Err(LowerError::Unsupported {
-                reason: format!(
-                    "cat(1, ...) requires matching trailing dimensions, got {:?} and {:?}",
-                    first_dims, operand.dims
+            return Err(unsupported_at(
+                format!(
+                    "cat(1, ...) requires matching trailing dimensions, got {} and {}",
+                    format_usize_dims(first_dims),
+                    format_usize_dims(&operand.dims)
                 ),
-            });
+                operand_shape_span(operand, span),
+            ));
         }
-        total += operand.dims[0];
+        total = checked_array_dim_sum_at(
+            total,
+            operand.dims[0],
+            "cat(1, ...) dimension",
+            operand_shape_span(operand, span),
+        )?;
     }
     let mut dims = vec![total];
     dims.extend_from_slice(tail);
@@ -101,62 +122,97 @@ pub(super) fn cat_dim1_dims(
 pub(super) fn cat_dim2_dims(
     operands: &[ArrayOperand],
     first_dims: &[usize],
+    span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
     let [rows, cols] = first_dims else {
-        return Err(LowerError::Unsupported {
-            reason: "cat(2, ...) currently requires matrix operands".to_string(),
-        });
+        return Err(unsupported_at(
+            "cat(2, ...) currently requires matrix operands",
+            span,
+        ));
     };
     let mut total_cols = *cols;
     for operand in operands.iter().skip(1) {
         let [operand_rows, operand_cols] = operand.dims.as_slice() else {
-            return Err(LowerError::Unsupported {
-                reason: "cat(2, ...) currently requires matrix operands".to_string(),
-            });
+            return Err(unsupported_at(
+                "cat(2, ...) currently requires matrix operands",
+                operand_shape_span(operand, span),
+            ));
         };
         if operand_rows != rows {
-            return Err(LowerError::Unsupported {
-                reason: format!(
-                    "cat(2, ...) requires matching row counts, got {rows} and {operand_rows}"
-                ),
-            });
+            return Err(unsupported_at(
+                format!("cat(2, ...) requires matching row counts, got {rows} and {operand_rows}"),
+                operand_shape_span(operand, span),
+            ));
         }
-        total_cols += operand_cols;
+        total_cols = checked_array_dim_sum_at(
+            total_cols,
+            *operand_cols,
+            "cat(2, ...) column count",
+            operand_shape_span(operand, span),
+        )?;
     }
     Ok(vec![*rows, total_cols])
 }
 
-pub(super) fn cat_matrix_columns(operands: &[ArrayOperand]) -> Result<Vec<Reg>, LowerError> {
+pub(super) fn cat_matrix_columns(
+    operands: &[ArrayOperand],
+    span: rumoca_core::Span,
+) -> Result<Vec<Reg>, LowerError> {
     let Some(first) = operands.first() else {
         return Ok(Vec::new());
     };
     let [rows, _] = first.dims.as_slice() else {
-        return Err(LowerError::Unsupported {
-            reason: "cat(2, ...) currently requires matrix operands".to_string(),
-        });
+        return Err(unsupported_at(
+            "cat(2, ...) currently requires matrix operands",
+            operand_shape_span(first, span),
+        ));
     };
 
     let mut values = Vec::new();
     for row in 0..*rows {
         for operand in operands {
             let [_, cols] = operand.dims.as_slice() else {
-                return Err(LowerError::Unsupported {
-                    reason: "cat(2, ...) currently requires matrix operands".to_string(),
-                });
+                return Err(unsupported_at(
+                    "cat(2, ...) currently requires matrix operands",
+                    operand_shape_span(operand, span),
+                ));
             };
-            let start = row * cols;
-            values.extend_from_slice(&operand.values[start..start + cols]);
+            let start = checked_matrix_row_start_at(
+                row,
+                *cols,
+                "cat(2, ...) row offset",
+                operand_shape_span(operand, span),
+            )?;
+            let end = start.checked_add(*cols).ok_or_else(|| {
+                LowerError::contract_violation(
+                    "cat(2, ...) row slice end overflows host index range",
+                    operand_shape_span(operand, span),
+                )
+            })?;
+            values.extend_from_slice(&operand.values[start..end]);
         }
     }
     Ok(values)
 }
 
-pub(super) fn normalize_operand_dims(value_count: usize, dims: Vec<usize>) -> Vec<usize> {
-    if !dims.is_empty() && shape_size(&dims) == value_count {
-        return dims;
+fn operand_shape_span(operand: &ArrayOperand, fallback: rumoca_core::Span) -> rumoca_core::Span {
+    if operand.shape_span.is_dummy() {
+        fallback
+    } else {
+        operand.shape_span
+    }
+}
+
+pub(super) fn normalize_operand_dims(
+    value_count: usize,
+    dims: Vec<usize>,
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    if !dims.is_empty() && checked_shape_size(&dims, "array operand shape", span)? == value_count {
+        return Ok(dims);
     }
     if value_count <= 1 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if let [outer] = dims.as_slice()
         && *outer > 1
@@ -167,15 +223,20 @@ pub(super) fn normalize_operand_dims(value_count: usize, dims: Vec<usize>) -> Ve
         // If only the outer dimension survived shape inference, recover the
         // trailing dimension from the lowered scalar count instead of erasing
         // the matrix shape into a flat vector.
-        return vec![*outer, value_count / *outer];
+        return Ok(vec![*outer, value_count / *outer]);
     }
-    vector_dims(value_count)
+    Ok(vector_dims(value_count))
 }
 
-pub(super) fn one_based_index_tuples(dims: &[usize]) -> Vec<Vec<usize>> {
-    let mut tuples = Vec::new();
+pub(super) fn one_based_index_tuples(
+    dims: &[usize],
+    span: rumoca_core::Span,
+) -> Result<Vec<Vec<usize>>, LowerError> {
+    let count = checked_shape_size(dims, "array-like dynamic index tuple count", span)?;
+    let mut tuples =
+        fallible_vec_with_capacity(count, "array-like dynamic index tuple count", span)?;
     collect_one_based_index_tuples(dims, 0, &mut Vec::new(), &mut tuples);
-    tuples
+    Ok(tuples)
 }
 
 fn collect_one_based_index_tuples(
@@ -195,10 +256,15 @@ fn collect_one_based_index_tuples(
     }
 }
 
-pub(super) fn index_choice_tuples(choices: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    let mut tuples = Vec::new();
+pub(super) fn index_choice_tuples(
+    choices: &[Vec<usize>],
+    span: rumoca_core::Span,
+) -> Result<Vec<Vec<usize>>, LowerError> {
+    let count = checked_choice_tuple_count(choices, "array-like dynamic slice tuple count", span)?;
+    let mut tuples =
+        fallible_vec_with_capacity(count, "array-like dynamic slice tuple count", span)?;
     collect_index_choice_tuples(choices, 0, &mut Vec::new(), &mut tuples);
-    tuples
+    Ok(tuples)
 }
 
 fn collect_index_choice_tuples(
@@ -221,26 +287,50 @@ fn collect_index_choice_tuples(
 pub(super) fn inferred_subscripted_dims(
     base_dims: &[usize],
     subscripts: &[rumoca_core::Subscript],
+    context_span: Option<rumoca_core::Span>,
     builder: &LowerBuilder<'_>,
     scope: &Scope,
 ) -> Result<Vec<usize>, LowerError> {
-    let mut dims = Vec::new();
+    let span = expr_span_from_subscripts(subscripts).or(context_span);
+    let mut dims = match span {
+        Some(span) => array_vec_with_capacity(
+            base_dims.len(),
+            "inferred subscripted dimension count",
+            span,
+        )?,
+        None => {
+            let mut dims = Vec::new();
+            dims.try_reserve_exact(base_dims.len()).map_err(|_| {
+                LowerError::UnspannedContractViolation {
+                    reason:
+                        "inferred subscripted dimension count capacity exceeds host memory limits"
+                            .to_string(),
+                }
+            })?;
+            dims
+        }
+    };
     for (dim_index, subscript) in subscripts.iter().enumerate() {
         let dim = base_dims[dim_index];
         match subscript {
-            rumoca_core::Subscript::Colon { .. } => dims.extend(vector_dims(dim)),
-            rumoca_core::Subscript::Expr { expr, .. }
+            rumoca_core::Subscript::Colon { .. } if dim > 1 => {
+                dims.push(dim);
+            }
+            rumoca_core::Subscript::Expr { expr, span }
                 if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
             {
-                dims.extend(vector_dims(
-                    builder.slice_expr_indices(expr, dim, scope)?.len(),
-                ));
+                let len = builder.slice_expr_indices(expr, dim, scope, *span)?.len();
+                if len > 1 {
+                    dims.push(len);
+                }
             }
             _ => {}
         }
     }
     for &dim in &base_dims[subscripts.len()..] {
-        dims.extend(vector_dims(dim));
+        if dim > 1 {
+            dims.push(dim);
+        }
     }
     Ok(dims)
 }
@@ -447,53 +537,100 @@ pub(super) fn vector_dims(len: usize) -> Vec<usize> {
     if len <= 1 { Vec::new() } else { vec![len] }
 }
 
-pub(super) fn shape_size(dims: &[usize]) -> usize {
+pub(super) fn checked_shape_size(
+    dims: &[usize],
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
     if dims.is_empty() {
-        1
-    } else {
-        dims.iter().product()
+        return Ok(1);
     }
+    dims.iter().copied().try_fold(1usize, |total, dim| {
+        checked_dim_product(total, dim, context, span)
+    })
 }
 
-pub(super) fn shape_size_or_scalar(dims: &[usize]) -> usize {
-    shape_size(dims).max(1)
+pub(super) fn checked_shape_size_or_scalar(
+    dims: &[usize],
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    Ok(checked_shape_size(dims, context, span)?.max(1))
 }
 
-pub(super) fn broadcast_shape(lhs: &[usize], rhs: &[usize]) -> Result<Vec<usize>, LowerError> {
+pub(super) fn copy_shape_dims(
+    dims: &[usize],
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    let mut copied = crate::lower_vec_with_capacity(dims.len(), context, span)?;
+    copied.extend(dims.iter().copied());
+    Ok(copied)
+}
+
+pub(super) fn broadcast_shape(
+    lhs: &[usize],
+    rhs: &[usize],
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
     if lhs.is_empty() {
-        return Ok(rhs.to_vec());
+        return copy_shape_dims(rhs, "array broadcast rhs shape rank", span);
     }
     if rhs.is_empty() || lhs == rhs {
-        return Ok(lhs.to_vec());
+        return copy_shape_dims(lhs, "array broadcast lhs shape rank", span);
     }
-    if shape_size(lhs) == shape_size(rhs) {
+    if checked_shape_size(lhs, "array broadcast lhs shape", span)?
+        == checked_shape_size(rhs, "array broadcast rhs shape", span)?
+    {
         // Record-valued function outputs can arrive at Solve IR with their
         // scalar width preserved but rank metadata flattened. At this boundary
         // elementwise rows are already scalarized, so equal scalar counts can
         // still be paired deterministically.
-        return Ok(lhs.to_vec());
+        return copy_shape_dims(lhs, "array broadcast equal-size lhs shape rank", span);
     }
-    Err(LowerError::Unsupported {
+    Err(unsupported_at(
         // MLS §10 and §10.6.2: array binary operations require matching sizes
         // unless one operand is scalar.
-        reason: format!("array operands have incompatible shapes {lhs:?} and {rhs:?}"),
-    })
+        format!(
+            "array operands have incompatible shapes {} and {}",
+            format_usize_dims(lhs),
+            format_usize_dims(rhs)
+        ),
+        span,
+    ))
 }
 
-pub(super) fn multiplication_dims(lhs: &[usize], rhs: &[usize]) -> Result<Vec<usize>, LowerError> {
+pub(super) fn multiplication_dims(
+    lhs: &[usize],
+    rhs: &[usize],
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
     match (lhs, rhs) {
         ([], []) => Ok(Vec::new()),
-        ([], dims) | (dims, []) => Ok(dims.to_vec()),
+        ([], dims) | (dims, []) => {
+            copy_shape_dims(dims, "array multiplication scalar shape rank", span)
+        }
         ([lhs_len], [rhs_len]) if lhs_len == rhs_len => Ok(Vec::new()),
-        ([rows, inner], [rhs_len]) if inner == rhs_len => Ok(vec![*rows]),
-        ([lhs_len], [inner, cols]) if lhs_len == inner => Ok(vec![*cols]),
-        ([rows, inner], [rhs_inner, cols]) if inner == rhs_inner => Ok(vec![*rows, *cols]),
-        _ => Err(LowerError::Unsupported {
+        ([rows, inner], [rhs_len]) if inner == rhs_len => {
+            copy_shape_dims(&[*rows], "matrix-vector multiplication output rank", span)
+        }
+        ([lhs_len], [inner, cols]) if lhs_len == inner => {
+            copy_shape_dims(&[*cols], "vector-matrix multiplication output rank", span)
+        }
+        ([rows, inner], [rhs_inner, cols]) if inner == rhs_inner => {
+            copy_shape_dims(&[*rows, *cols], "matrix multiplication output rank", span)
+        }
+        _ => Err(unsupported_at(
             // MLS §10.6.5 defines ordinary multiplication for scalar scaling,
             // vector scalar products, matrix-vector, vector-matrix, and
             // matrix-matrix products.
-            reason: format!("array multiplication shapes {lhs:?} and {rhs:?} are incompatible"),
-        }),
+            format!(
+                "array multiplication shapes {} and {} are incompatible",
+                format_usize_dims(lhs),
+                format_usize_dims(rhs)
+            ),
+            span,
+        )),
     }
 }
 
@@ -501,51 +638,59 @@ pub(super) fn broadcast_pairs(
     lhs: &ArrayOperand,
     rhs: &ArrayOperand,
 ) -> Result<Vec<(Reg, Reg)>, LowerError> {
-    if let Some(pairs) = trailing_vector_broadcast_pairs(lhs, rhs) {
+    if let Some(pairs) = trailing_vector_broadcast_pairs(lhs, rhs)? {
         return Ok(pairs);
     }
     let dims = broadcast_dims(lhs, rhs)?;
-    let count = shape_size_or_scalar(&dims);
-    let pairs = (0..count)
-        .map(|idx| {
-            let lhs = if lhs.is_scalar() {
-                lhs.values[0]
-            } else {
-                lhs.values[idx]
-            };
-            let rhs = if rhs.is_scalar() {
-                rhs.values[0]
-            } else {
-                rhs.values[idx]
-            };
-            (lhs, rhs)
-        })
-        .collect();
+    let span = operand_pair_shape_span(lhs, rhs)?;
+    let count = checked_shape_size_or_scalar(&dims, "array broadcast value count", span)?;
+    let mut pairs = array_vec_with_capacity(count, "array broadcast pair count", span)?;
+    for idx in 0..count {
+        let lhs = if lhs.is_scalar() {
+            lhs.values[0]
+        } else {
+            lhs.values[idx]
+        };
+        let rhs = if rhs.is_scalar() {
+            rhs.values[0]
+        } else {
+            rhs.values[idx]
+        };
+        pairs.push((lhs, rhs));
+    }
     Ok(pairs)
 }
 
 fn trailing_vector_broadcast_pairs(
     lhs: &ArrayOperand,
     rhs: &ArrayOperand,
-) -> Option<Vec<(Reg, Reg)>> {
+) -> Result<Option<Vec<(Reg, Reg)>>, LowerError> {
     match (lhs.dims.as_slice(), rhs.dims.as_slice()) {
-        ([_, cols], [rhs_cols]) if cols == rhs_cols => Some(
-            lhs.values
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(idx, lhs)| (lhs, rhs.values[idx % cols]))
-                .collect(),
-        ),
-        ([lhs_cols], [_, cols]) if lhs_cols == cols => Some(
-            rhs.values
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(idx, rhs)| (lhs.values[idx % cols], rhs))
-                .collect(),
-        ),
-        _ => None,
+        ([_, cols], [rhs_cols]) if cols == rhs_cols => {
+            let span = operand_pair_shape_span(lhs, rhs)?;
+            let mut pairs = array_vec_with_capacity(
+                lhs.values.len(),
+                "trailing vector broadcast pair count",
+                span,
+            )?;
+            for (idx, lhs) in lhs.values.iter().copied().enumerate() {
+                pairs.push((lhs, rhs.values[idx % cols]));
+            }
+            Ok(Some(pairs))
+        }
+        ([lhs_cols], [_, cols]) if lhs_cols == cols => {
+            let span = operand_pair_shape_span(lhs, rhs)?;
+            let mut pairs = array_vec_with_capacity(
+                rhs.values.len(),
+                "trailing vector broadcast pair count",
+                span,
+            )?;
+            for (idx, rhs) in rhs.values.iter().copied().enumerate() {
+                pairs.push((lhs.values[idx % cols], rhs));
+            }
+            Ok(Some(pairs))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -553,14 +698,32 @@ pub(super) fn broadcast_dims(
     lhs: &ArrayOperand,
     rhs: &ArrayOperand,
 ) -> Result<Vec<usize>, LowerError> {
-    broadcast_shape(&lhs.dims, &rhs.dims)
+    let span = operand_pair_shape_span(lhs, rhs)?;
+    broadcast_shape(&lhs.dims, &rhs.dims, span)
+}
+
+fn operand_pair_shape_span(
+    lhs: &ArrayOperand,
+    rhs: &ArrayOperand,
+) -> Result<rumoca_core::Span, LowerError> {
+    if !lhs.shape_span.is_dummy() {
+        return Ok(lhs.shape_span);
+    }
+    if !rhs.shape_span.is_dummy() {
+        return Ok(rhs.shape_span);
+    }
+    Err(LowerError::UnspannedContractViolation {
+        reason: "array operand pair requires shape span metadata".to_string(),
+    })
 }
 
 pub(super) fn lower_static_range_values(
     start: &rumoca_core::Expression,
     step: Option<&rumoca_core::Expression>,
     end: &rumoca_core::Expression,
+    range_span: rumoca_core::Span,
 ) -> Result<Option<Vec<f64>>, LowerError> {
+    let range_span = static_range_diagnostic_span(start, step, end, range_span)?;
     let Some(start_v) = lower_static_index_numeric(start)? else {
         return Ok(None);
     };
@@ -583,9 +746,11 @@ pub(super) fn lower_static_range_values(
         || !step_v.is_finite()
         || step_v.abs() <= f64::EPSILON
     {
-        return Err(LowerError::Unsupported {
-            reason: "invalid static range expression in compiled lowering".to_string(),
-        });
+        return Err(unsupported_at(
+            "invalid static range expression in compiled lowering",
+            step.and_then(rumoca_core::Expression::span)
+                .unwrap_or(range_span),
+        ));
     }
 
     let tol = step_v.abs() * 1e-9 + 1e-12;
@@ -598,24 +763,49 @@ pub(super) fn lower_static_range_values(
             break;
         }
         values.push(value);
-        value += step_v;
+        let next = value + step_v;
+        if !next.is_finite() {
+            return Err(unsupported_at(
+                "static range overflows finite Real values",
+                range_span,
+            ));
+        }
+        value = next;
     }
     let past_end = (step_v > 0.0 && value > end_v + tol) || (step_v < 0.0 && value < end_v - tol);
     if !past_end {
-        return Err(LowerError::Unsupported {
-            reason: format!(
-                "static range exceeds maximum lowered range length {MAX_STATIC_RANGE_VALUES}"
-            ),
-        });
+        return Err(unsupported_at(
+            format!("static range exceeds maximum lowered range length {MAX_STATIC_RANGE_VALUES}"),
+            range_span,
+        ));
     }
     Ok(Some(values))
+}
+
+fn static_range_diagnostic_span(
+    start: &rumoca_core::Expression,
+    step: Option<&rumoca_core::Expression>,
+    end: &rumoca_core::Expression,
+    range_span: rumoca_core::Span,
+) -> Result<rumoca_core::Span, LowerError> {
+    if !range_span.is_dummy() {
+        return Ok(range_span);
+    }
+    start
+        .span()
+        .or_else(|| step.and_then(rumoca_core::Expression::span))
+        .or_else(|| end.span())
+        .ok_or_else(|| LowerError::UnspannedContractViolation {
+            reason: "static range lowering requires source span metadata".to_string(),
+        })
 }
 
 pub(super) fn scoped_indexed_binding_values(
     scope: &Scope,
     path: &ComponentReferenceKey,
-) -> Option<Vec<Reg>> {
-    scope.indexed_values(path)
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<Reg>>, LowerError> {
+    scope.indexed_values(path, span)
 }
 
 pub(super) fn function_output_values(
@@ -638,13 +828,14 @@ pub(super) fn function_output_values(
                 reason: "function output was not assigned".to_string(),
             });
     }
-    if let Some(values) = scoped_indexed_binding_values(scope, &output_path)
+    if let Some(values) = scoped_indexed_binding_values(scope, &output_path, output.span)?
         && values.len() == width
     {
         return Ok(values);
     }
 
-    let mut values = Vec::with_capacity(width);
+    let mut values =
+        crate::lower_vec_with_capacity(width, "function output value count", output.span)?;
     for flat_index in 0..width {
         let key = dae::scalar_name_text_for_flat_index(&output.name, &output.dims, flat_index);
         let key_path = generated_scope_key(&key);
@@ -659,38 +850,53 @@ pub(super) fn function_output_values(
     Ok(values)
 }
 
-pub(super) fn record_output_component_values(output_name: &str, scope: &Scope) -> Option<Vec<Reg>> {
+pub(super) fn record_output_component_values(
+    output_name: &str,
+    scope: &Scope,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<Reg>>, LowerError> {
     let output_prefix = format!("{output_name}.");
-    let entries = scope
-        .iter()
-        .into_iter()
-        .filter(|(key, _)| {
-            generated_scope_key_name(key).is_some_and(|name| name.starts_with(&output_prefix))
-        })
-        .collect::<Vec<_>>();
+    let scope_entries = scope.iter_checked("record output scope source count", span)?;
+    let mut entries = crate::lower_vec_with_capacity(
+        scope_entries.len(),
+        "record output component entry count",
+        span,
+    )?;
+    for (key, reg) in scope_entries {
+        if generated_scope_key_name(&key).is_some_and(|name| name.starts_with(&output_prefix)) {
+            entries.push((key, reg));
+        }
+    }
     if entries.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    let keys = entries
-        .iter()
-        .filter_map(|(key, _)| generated_scope_key_name(key).map(ToString::to_string))
-        .collect::<Vec<_>>();
-    let values = entries
-        .into_iter()
-        .filter(|(key, _)| {
-            let Some(key) = generated_scope_key_name(key) else {
-                return false;
-            };
-            !keys.iter().any(|candidate| {
-                candidate.len() > key.len()
-                    && (candidate.starts_with(&format!("{key}["))
-                        || candidate.starts_with(&format!("{key}.")))
-            })
-        })
-        .map(|(_, reg)| reg)
-        .collect::<Vec<_>>();
-    (!values.is_empty()).then_some(values)
+    let mut keys =
+        crate::lower_vec_with_capacity(entries.len(), "record output component key count", span)?;
+    for (key, _) in &entries {
+        let Some(name) = generated_scope_key_name(key) else {
+            continue;
+        };
+        keys.push(name.to_string());
+    }
+    let mut values =
+        crate::lower_vec_with_capacity(entries.len(), "record output component value count", span)?;
+    for (key, reg) in entries {
+        let Some(key) = generated_scope_key_name(&key) else {
+            continue;
+        };
+        let indexed_prefix = format!("{key}[");
+        let component_prefix = format!("{key}.");
+        if keys.iter().any(|candidate| {
+            candidate.len() > key.len()
+                && (candidate.starts_with(&indexed_prefix)
+                    || candidate.starts_with(&component_prefix))
+        }) {
+            continue;
+        }
+        values.push(reg);
+    }
+    Ok((!values.is_empty()).then_some(values))
 }
 
 pub(super) fn collect_slice_binding_keys(
@@ -712,12 +918,73 @@ pub(super) fn collect_slice_binding_keys(
     }
 }
 
-pub(super) fn validate_slice_indices(indices: &[usize], dim: usize) -> Result<(), LowerError> {
+pub(super) fn validate_slice_indices(
+    indices: &[usize],
+    dim: usize,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
     if indices.iter().all(|index| *index > 0 && *index <= dim) {
         return Ok(());
     }
-    Err(LowerError::Unsupported {
-        reason: "array slice index is outside dimension bounds".to_string(),
+    Err(unsupported_at(
+        "array slice index is outside dimension bounds",
+        span,
+    ))
+}
+
+fn checked_array_dim_sum_at(
+    lhs: usize,
+    rhs: usize,
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    lhs.checked_add(rhs).ok_or_else(|| {
+        LowerError::contract_violation(format!("{context} overflows host index range"), span)
+    })
+}
+
+pub(super) fn checked_dim_product(
+    lhs: usize,
+    rhs: usize,
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    lhs.checked_mul(rhs).ok_or_else(|| {
+        LowerError::contract_violation(format!("{context} overflows host index range"), span)
+    })
+}
+
+fn checked_matrix_row_start_at(
+    row: usize,
+    cols: usize,
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    checked_dim_product(row, cols, context, span)
+}
+
+pub(super) fn fallible_vec_with_capacity<T>(
+    capacity: usize,
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<Vec<T>, LowerError> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|_| {
+        LowerError::contract_violation(
+            format!("{context} capacity exceeds host memory limits"),
+            span,
+        )
+    })?;
+    Ok(values)
+}
+
+fn checked_choice_tuple_count(
+    choices: &[Vec<usize>],
+    context: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    choices.iter().try_fold(1usize, |total, choice| {
+        checked_dim_product(total, choice.len(), context, span)
     })
 }
 
@@ -760,7 +1027,10 @@ pub(super) fn detect_matrix_sparsity(
     rows: usize,
     cols: usize,
 ) -> rumoca_ir_solve::SparsityPattern {
-    if rows != cols || values.len() != rows * cols {
+    let Some(extent) = rows.checked_mul(cols) else {
+        return rumoca_ir_solve::SparsityPattern::Dense;
+    };
+    if rows != cols || values.len() != extent {
         return rumoca_ir_solve::SparsityPattern::Dense;
     }
     // Build reg → constant-value map, propagating through Move chains.
@@ -788,4 +1058,342 @@ pub(super) fn detect_matrix_sparsity(
         }
     }
     rumoca_ir_solve::SparsityPattern::Diagonal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cat_dim1_dims_rejects_overflowing_first_dimension() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_10.mo",
+            ),
+            4,
+            9,
+        );
+        let operands = [
+            ArrayOperand {
+                values: Vec::new(),
+                dims: vec![usize::MAX, 2],
+                shape_span: span,
+            },
+            ArrayOperand {
+                values: Vec::new(),
+                dims: vec![1, 2],
+                shape_span: span,
+            },
+        ];
+
+        let err = cat_dim1_dims(&operands, &[usize::MAX, 2], span)
+            .expect_err("cat(1) dimension overflow must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: cat(1, ...) dimension overflows host index range"
+        );
+    }
+
+    #[test]
+    fn cat_dim2_dims_rejects_overflowing_column_count() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_11.mo",
+            ),
+            6,
+            14,
+        );
+        let operands = [
+            ArrayOperand {
+                values: Vec::new(),
+                dims: vec![2, usize::MAX],
+                shape_span: span,
+            },
+            ArrayOperand {
+                values: Vec::new(),
+                dims: vec![2, 1],
+                shape_span: span,
+            },
+        ];
+
+        let err = cat_dim2_dims(&operands, &[2, usize::MAX], span)
+            .expect_err("cat(2) column overflow must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: cat(2, ...) column count overflows host index range"
+        );
+    }
+
+    #[test]
+    fn cat_dim2_dims_reports_row_mismatch_operand_span() -> Result<(), String> {
+        let first_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_12.mo",
+            ),
+            1,
+            5,
+        );
+        let mismatch_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_12.mo",
+            ),
+            8,
+            13,
+        );
+        let operands = [
+            ArrayOperand {
+                values: Vec::new(),
+                dims: vec![2, 3],
+                shape_span: first_span,
+            },
+            ArrayOperand {
+                values: Vec::new(),
+                dims: vec![4, 3],
+                shape_span: mismatch_span,
+            },
+        ];
+
+        let Err(err) = cat_dim2_dims(&operands, &[2, 3], first_span) else {
+            return Err("cat(2) row mismatch succeeded".to_string());
+        };
+
+        assert_eq!(err.source_span(), Some(mismatch_span));
+        assert_eq!(
+            err.reason(),
+            "cat(2, ...) requires matching row counts, got 2 and 4"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_matrix_row_start_rejects_overflow() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_12.mo",
+            ),
+            3,
+            7,
+        );
+        let err = checked_matrix_row_start_at(usize::MAX, 2, "cat(2, ...) row offset", span)
+            .expect_err("matrix row offset overflow must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: cat(2, ...) row offset overflows host index range"
+        );
+    }
+
+    #[test]
+    fn broadcast_shape_reports_mismatch_span() -> Result<(), String> {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_13.mo",
+            ),
+            2,
+            11,
+        );
+
+        let Err(err) = broadcast_shape(&[2, 3], &[4, 5], span) else {
+            return Err("incompatible broadcast shapes succeeded".to_string());
+        };
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "array operands have incompatible shapes [2, 3] and [4, 5]"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn multiplication_dims_reports_mismatch_span() -> Result<(), String> {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_14.mo",
+            ),
+            6,
+            18,
+        );
+
+        let Err(err) = multiplication_dims(&[2, 3], &[4, 5], span) else {
+            return Err("incompatible multiplication shapes succeeded".to_string());
+        };
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "array multiplication shapes [2, 3] and [4, 5] are incompatible"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_shape_size_rejects_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_5.mo",
+            ),
+            5,
+            8,
+        );
+        let err = checked_shape_size(&[usize::MAX, 2], "array operand shape", span)
+            .expect_err("shape product overflow must fail");
+
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: array operand shape overflows host index range"
+        );
+        assert_eq!(err.source_span(), Some(span));
+    }
+
+    #[test]
+    fn one_based_index_tuples_reports_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("dynamic_index.mo"),
+            13,
+            21,
+        );
+        let err = one_based_index_tuples(&[usize::MAX, 2], span)
+            .expect_err("overflowing index tuple count must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(
+            err.to_string()
+                .contains("array-like dynamic index tuple count"),
+            "error should explain dynamic index tuple overflow: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_slice_indices_reports_bounds_error_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("array_slice_bounds.mo"),
+            20,
+            23,
+        );
+        let err =
+            validate_slice_indices(&[4], 3, span).expect_err("out-of-bounds slice index must fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert_eq!(
+            err.reason(),
+            "array slice index is outside dimension bounds"
+        );
+    }
+
+    #[test]
+    fn array_operand_with_shape_span_rejects_overflowing_shape() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("array_operand_shape.mo"),
+            8,
+            12,
+        );
+        let Err(err) = ArrayOperand::with_shape_span(Vec::new(), vec![usize::MAX, 2], span) else {
+            panic!("overflowing normalized shape must fail");
+        };
+
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: array operand shape overflows host index range"
+        );
+        assert_eq!(err.source_span(), Some(span));
+    }
+
+    #[test]
+    fn fallible_vec_with_capacity_rejects_impossible_capacity() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_9.mo",
+            ),
+            9,
+            11,
+        );
+        let err = fallible_vec_with_capacity::<Reg>(
+            usize::MAX,
+            "array-like dynamic index tuple count",
+            span,
+        )
+        .expect_err("impossible vector capacity must fail");
+
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: array-like dynamic index tuple count capacity exceeds host memory limits"
+        );
+        assert_eq!(err.source_span(), Some(span));
+    }
+
+    #[test]
+    fn fallible_vec_with_capacity_rejects_impossible_capacity_without_fabricating_span() {
+        let err = fallible_vec_with_capacity::<Reg>(
+            usize::MAX,
+            "array-like dynamic index tuple count",
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("impossible vector capacity must fail");
+
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: array-like dynamic index tuple count capacity exceeds host memory limits"
+        );
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+    }
+
+    #[test]
+    fn checked_dim_product_rejects_overflow_without_fabricating_span() {
+        let err = checked_dim_product(
+            usize::MAX,
+            2,
+            "array test dimension product",
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("dimension product overflow must fail");
+
+        assert_eq!(
+            err.reason(),
+            "invalid IR contract: array test dimension product overflows host index range"
+        );
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+    }
+
+    #[test]
+    fn lower_static_range_values_rejects_real_overflow() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("static_range_overflow.mo"),
+            3,
+            16,
+        );
+        let start = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f64::MAX),
+            span,
+        };
+        let step = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f64::MAX),
+            span,
+        };
+        let end = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f64::MAX),
+            span,
+        };
+
+        let err = lower_static_range_values(&start, Some(&step), &end, span)
+            .expect_err("overflowing Real range step must fail");
+
+        assert_eq!(err.reason(), "static range overflows finite Real values");
+        assert_eq!(err.source_span(), Some(span));
+    }
+
+    #[test]
+    fn detect_matrix_sparsity_treats_overflowing_extent_as_dense() {
+        assert_eq!(
+            detect_matrix_sparsity(&[], &[], usize::MAX, 2),
+            rumoca_ir_solve::SparsityPattern::Dense
+        );
+    }
 }

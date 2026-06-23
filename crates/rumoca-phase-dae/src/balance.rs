@@ -18,15 +18,14 @@ pub enum BalanceError {
     #[error("invalid DAE balance contract: missing discrete variable metadata for `{name}`")]
     MissingDiscreteVariableMetadata {
         name: rumoca_core::VarName,
-        span: rumoca_core::Span,
+        span: Option<rumoca_core::Span>,
     },
 }
 
 impl BalanceError {
     pub fn source_span(&self) -> Option<rumoca_core::Span> {
         match self {
-            Self::MissingDiscreteVariableMetadata { span, .. } if !span.is_dummy() => Some(*span),
-            Self::MissingDiscreteVariableMetadata { .. } => None,
+            Self::MissingDiscreteVariableMetadata { span, .. } => *span,
         }
     }
 }
@@ -439,13 +438,14 @@ fn collect_discrete_connection_balance_anchors(
             .get(name)
             .ok_or_else(|| BalanceError::MissingDiscreteVariableMetadata {
                 name: name.clone(),
-                span: rumoca_core::Span::DUMMY,
+                span: None,
             })?;
         insert_connection_rank_nodes(
             name,
             variable.size(),
             &dae_model.variables.discrete_valued,
             &mut anchors,
+            real_balance_span(variable.source_span),
         )?;
     }
     for eq in dae_model
@@ -463,6 +463,7 @@ fn collect_discrete_connection_balance_anchors(
                 eq.scalar_count,
                 &dae_model.variables.discrete_valued,
                 &mut anchors,
+                real_balance_span(eq.span),
             )?;
         }
     }
@@ -474,6 +475,7 @@ fn insert_connection_rank_nodes(
     scalar_count: usize,
     variables: &IndexMap<rumoca_core::VarName, dae::Variable>,
     nodes: &mut IndexSet<rumoca_core::VarName>,
+    span: Option<rumoca_core::Span>,
 ) -> BalanceResult<()> {
     if let Some(expanded) = expand_connection_rank_nodes(name, scalar_count, variables) {
         nodes.extend(expanded);
@@ -481,12 +483,16 @@ fn insert_connection_rank_nodes(
         if scalar_count > 1 && !variables.contains_key(name) {
             return Err(BalanceError::MissingDiscreteVariableMetadata {
                 name: name.clone(),
-                span: rumoca_core::Span::DUMMY,
+                span,
             });
         }
         nodes.insert(name.clone());
     }
     Ok(())
+}
+
+fn real_balance_span(span: rumoca_core::Span) -> Option<rumoca_core::Span> {
+    (!span.is_dummy()).then_some(span)
 }
 
 fn is_discrete_input_update(eq: &dae::Equation, discrete_input_names: &BalanceSymbolSet) -> bool {
@@ -1158,6 +1164,14 @@ mod tests {
     use super::*;
     use rumoca_core::Span;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("balance_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     fn scalar_eq(count: usize) -> dae::Equation {
         scalar_eq_with_lhs("x", count)
     }
@@ -1170,15 +1184,15 @@ mod tests {
                 lhs: Box::new(rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new(lhs_name).into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 rhs: Box::new(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: "test".to_string(),
             scalar_count: count,
         }
@@ -1190,9 +1204,9 @@ mod tests {
             rhs: rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new(rhs_name).into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: "test".to_string(),
             scalar_count: 1,
         }
@@ -1227,11 +1241,11 @@ mod tests {
                 name: rumoca_core::VarName::new(rhs_name).into(),
                 subscripts: vec![rumoca_core::Subscript::generated_index(
                     rhs_index,
-                    rumoca_core::Span::DUMMY,
+                    test_span(),
                 )],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: "explicit connection equation: a = b[1]".to_string(),
             scalar_count: 1,
         }
@@ -1244,9 +1258,9 @@ mod tests {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(var_ref(lhs_name)),
                 rhs: Box::new(var_ref(rhs_name)),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
-            span: Span::DUMMY,
+            span: test_span(),
             origin: origin.to_string(),
             scalar_count: 1,
         }
@@ -1256,7 +1270,7 @@ mod tests {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -1267,7 +1281,11 @@ mod tests {
             dae::Variable {
                 name: rumoca_core::VarName::new("x"),
                 dims: vec![unknown_scalars],
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         dae
@@ -1276,14 +1294,22 @@ mod tests {
     fn scalar_input(name: &str) -> dae::Variable {
         dae::Variable {
             name: rumoca_core::VarName::new(name),
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }
     }
 
     fn discrete_var(name: &str) -> dae::Variable {
         dae::Variable {
             name: rumoca_core::VarName::new(name),
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }
     }
 
@@ -1291,7 +1317,11 @@ mod tests {
         dae::Variable {
             name: rumoca_core::VarName::new(name),
             dims: vec![size],
-            ..Default::default()
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         }
     }
 

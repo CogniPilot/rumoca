@@ -56,7 +56,7 @@ pub use convert::attach_dae_reference_metadata;
 pub(crate) use convert::{
     dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
     flat_to_dae_expression_with_refs, flat_to_dae_function_map, flat_to_dae_var_name,
-    remap_flat_for_equations,
+    remap_flat_structured_equations,
 };
 use dae_lowering::sort_parameters_by_start_dependency;
 use indexmap::{IndexMap, IndexSet};
@@ -244,14 +244,14 @@ pub fn to_dae_with_options(
     dae.metadata.model_description = flat.model_description.clone();
     dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
 
-    let classification_indexes = build_variable_classification_indexes(flat);
+    let classification_indexes = build_variable_classification_indexes(flat)?;
     let prefix_children = &classification_indexes.prefix_children;
     let state_vars = &classification_indexes.state_vars;
     let connected_inputs = &classification_indexes.connected_inputs;
 
     // Second pass: classify all variables
     let classification_inputs = classification_indexes.as_inputs();
-    classify_variables(&mut dae, flat, &classification_inputs);
+    classify_variables(&mut dae, flat, &classification_inputs)?;
 
     // Collect variables defined by algorithm outputs (including record field expansion)
     // Per MLS §11.1, algorithm sections contribute equations for assigned variables.
@@ -263,7 +263,7 @@ pub fn to_dae_with_options(
     // When `cc = func(...)` defines all fields of record `cc`, and `cc.m_capgd`
     // also has a binding, skip the binding to avoid double-counting.
     let record_eq_defined_vars =
-        definition_analysis::collect_record_equation_defined_vars(flat, prefix_children);
+        definition_analysis::collect_record_equation_defined_vars(flat, prefix_children)?;
 
     // Third pass: convert variable bindings to equations (MLS §4.4.1)
     run_todae_phase(todae_subphase_timing, "binding_conversion", || {
@@ -275,8 +275,9 @@ pub fn to_dae_with_options(
             connected_inputs,
             &algorithm_defined_vars,
             &record_eq_defined_vars,
-        );
-    });
+        )?;
+        Ok::<(), ToDaeError>(())
+    })?;
 
     // Build prefix count map for efficient scalar count inference
     let prefix_counts = build_prefix_counts(flat);
@@ -324,11 +325,11 @@ pub fn to_dae_with_options(
         || initial::add_fixed_start_initial_equations(&mut dae),
     )?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
-        populate_canonical_conditions(&mut dae);
-    });
+        populate_canonical_conditions(&mut dae)
+    })?;
     run_todae_phase(todae_subphase_timing, "condition_variable_finalize", || {
-        finalize_canonical_condition_variables(&mut dae);
-    });
+        finalize_canonical_condition_variables(&mut dae)
+    })?;
     // MLS §3.7.5: Lower pre() operator calls to dedicated parameter symbols.
     // This must run after equation construction but before parameter sorting,
     // so that the new __pre__ parameters are included in dependency ordering.
@@ -369,8 +370,8 @@ fn finalize_lowered_dae(
     // possible. Safe as an always-on pass: start values are init-time
     // metadata, not user-observable at runtime.
     run_todae_phase(todae_subphase_timing, "fold_start_values", || {
-        fold_start_values::fold_start_values_to_literals(dae);
-    });
+        fold_start_values::fold_start_values_to_literals(dae)
+    })?;
 
     // Reorder algebraics so any algebraic used in another's defining
     // equation appears first. Pure reorder, no information loss; lets
@@ -503,9 +504,11 @@ impl VariableClassificationIndexes {
     }
 }
 
-fn build_variable_classification_indexes(flat: &flat::Model) -> VariableClassificationIndexes {
+fn build_variable_classification_indexes(
+    flat: &flat::Model,
+) -> Result<VariableClassificationIndexes, ToDaeError> {
     let prefix_children = build_prefix_children(flat);
-    let internal_inputs = InternalInputIndex::new(flat);
+    let internal_inputs = InternalInputIndex::new(flat)?;
     let der_vars = classification::find_state_variables(flat);
     let state_vars = filter_state_variables(der_vars, flat, &internal_inputs);
     let mut connected_input_set = find_connected_inputs(flat, &internal_inputs);
@@ -513,7 +516,7 @@ fn build_variable_classification_indexes(flat: &flat::Model) -> VariableClassifi
     let connected_inputs = ordered_var_set(flat, connected_input_set);
     let connector_input_members = ordered_var_set(
         flat,
-        connector_input_analysis::find_top_level_connector_input_members(flat, &state_vars),
+        connector_input_analysis::find_top_level_connector_input_members(flat, &state_vars)?,
     );
     let when_only_vars = ordered_var_set(flat, find_when_only_vars(flat, &prefix_children));
     let discrete_connected_inputs = ordered_var_set(
@@ -525,7 +528,7 @@ fn build_variable_classification_indexes(flat: &flat::Model) -> VariableClassifi
         find_connected_inputs_only_connected_to_inputs(flat, &internal_inputs),
     );
 
-    VariableClassificationIndexes {
+    Ok(VariableClassificationIndexes {
         prefix_children,
         state_vars,
         connected_inputs,
@@ -534,7 +537,7 @@ fn build_variable_classification_indexes(flat: &flat::Model) -> VariableClassifi
         connector_input_members,
         when_only_vars,
         internal_inputs,
-    }
+    })
 }
 
 fn ordered_var_set(
@@ -564,7 +567,11 @@ struct ClassificationInputs<'a> {
 
 // SPEC_0021: Exception - top-level DAE variable classification pass.
 #[allow(clippy::too_many_lines)]
-fn classify_variables(dae: &mut dae::Dae, flat: &flat::Model, inputs: &ClassificationInputs<'_>) {
+fn classify_variables(
+    dae: &mut dae::Dae,
+    flat: &flat::Model,
+    inputs: &ClassificationInputs<'_>,
+) -> Result<(), ToDaeError> {
     let known_var_names: HashSet<String> = flat
         .variables
         .keys()
@@ -580,8 +587,8 @@ fn classify_variables(dae: &mut dae::Dae, flat: &flat::Model, inputs: &Classific
         }
 
         let kind = classification::classify_variable(var, inputs.state_vars);
-        let mut dae_var = create_dae_variable(name, var, &known_var_names);
-        inherit_scalarized_start_from_base(name, flat, &mut dae_var, &known_var_names);
+        let mut dae_var = create_dae_variable(name, var, &known_var_names)?;
+        inherit_scalarized_start_from_base(name, flat, &mut dae_var, &known_var_names)?;
         record_variable_start_metadata(dae, name, &dae_var);
 
         // Top-level connector members connected only to internal inputs act as
@@ -686,6 +693,7 @@ fn classify_variables(dae: &mut dae::Dae, flat: &flat::Model, inputs: &Classific
             dae::VariableKind::Derivative => {} // Implicit, not stored
         }
     }
+    Ok(())
 }
 
 fn record_variable_start_metadata(
@@ -707,34 +715,46 @@ fn inherit_scalarized_start_from_base(
     flat: &flat::Model,
     dae_var: &mut dae::Variable,
     known_var_names: &HashSet<String>,
-) {
+) -> Result<(), ToDaeError> {
     if dae_var.start.is_some() {
-        return;
+        return Ok(());
     }
 
     let Some(base_name) = flat::component_base_name(name.as_str()) else {
-        return;
+        return Ok(());
     };
     if base_name == name.as_str() {
-        return;
+        return Ok(());
     }
 
     let base_var_name = rumoca_core::VarName::new(base_name.clone());
     let Some(base_var) = flat.variables.get(&base_var_name) else {
-        return;
+        return Ok(());
     };
     let Some(base_start) = base_var.start.as_ref() else {
-        return;
+        return Ok(());
     };
 
     if matches!(
         base_start,
         rumoca_core::Expression::Array { .. } | rumoca_core::Expression::Tuple { .. }
     ) {
-        return;
+        return Ok(());
     }
 
-    let selected_start = select_scalarized_start_expr(base_start, &base_name, name.as_str());
+    let owner_span = base_start
+        .span()
+        .filter(|span| !span.is_dummy())
+        .or_else(|| (!base_var.source_span.is_dummy()).then_some(base_var.source_span))
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "scalarized inherited start for `{}` is missing source provenance",
+                name.as_str()
+            ))
+        })?;
+    let selected_start =
+        select_scalarized_start_expr(base_start, &base_name, name.as_str(), owner_span);
+    dae_var.start_span = Some(owner_span);
     dae_var.start = Some(flat_to_dae_expression(&rewrite_start_expr_missing_refs(
         &selected_start,
         known_var_names,
@@ -742,12 +762,14 @@ fn inherit_scalarized_start_from_base(
     if dae_var.fixed.is_none() {
         dae_var.fixed = base_var.fixed;
     }
+    Ok(())
 }
 
 fn select_scalarized_start_expr(
     base_start: &rumoca_core::Expression,
     base_name: &str,
     scalar_name: &str,
+    owner_span: Span,
 ) -> rumoca_core::Expression {
     let Some(suffix) = scalar_name.strip_prefix(base_name) else {
         return base_start.clone();
@@ -771,7 +793,7 @@ fn select_scalarized_start_expr(
             rumoca_core::Expression::VarRef {
                 name: reference,
                 subscripts: vec![],
-                span: *span,
+                span: if span.is_dummy() { owner_span } else { *span },
             }
         }
         _ => base_start.clone(),
@@ -826,7 +848,7 @@ fn convert_bindings_to_equations(
     connected_inputs: &IndexSet<rumoca_core::VarName>,
     algorithm_defined_vars: &HashSet<rumoca_core::VarName>,
     record_eq_defined_vars: &HashSet<rumoca_core::VarName>,
-) {
+) -> Result<(), ToDaeError> {
     binding_conversion::convert_bindings_to_equations(
         dae,
         flat,
@@ -835,7 +857,7 @@ fn convert_bindings_to_equations(
         connected_inputs,
         algorithm_defined_vars,
         record_eq_defined_vars,
-    );
+    )
 }
 
 #[cfg(test)]
@@ -867,6 +889,7 @@ fn build_unknown_prefix_children(
     unknowns: &HashSet<rumoca_core::VarName>,
 ) -> FxHashMap<String, Vec<rumoca_core::VarName>> {
     binding_conversion::build_unknown_prefix_children(unknowns)
+        .expect("unknown prefix index should build for test-provided unknown names")
 }
 
 #[cfg(test)]
@@ -906,6 +929,7 @@ fn find_top_level_connector_input_members(
     state_vars: &IndexSet<rumoca_core::VarName>,
 ) -> HashSet<rumoca_core::VarName> {
     connector_input_analysis::find_top_level_connector_input_members(flat, state_vars)
+        .expect("connector input member analysis should succeed")
 }
 
 /// Check if a connection equation connects only input variables.

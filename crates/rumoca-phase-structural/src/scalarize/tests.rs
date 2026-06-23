@@ -1,44 +1,60 @@
 use super::*;
 use rumoca_core::Span;
+use std::collections::HashMap;
+
+fn test_span() -> Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_structural_scalarize_tests_source_1.mo"),
+        1,
+        2,
+    )
+}
 
 fn var(name: &str) -> Expression {
+    let span = test_span();
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
 fn var_idx(name: &str, indices: &[i64]) -> Expression {
+    let span = test_span();
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: indices
             .iter()
             .copied()
-            .map(|index| Subscript::generated_index(index, rumoca_core::Span::DUMMY))
+            .map(|index| Subscript::generated_index(index, span))
             .collect(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
 fn var_sub(name: &str, subscripts: Vec<Subscript>) -> Expression {
+    let span = test_span();
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts,
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
 fn real(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn variable(name: &str, dims: &[i64]) -> dae::Variable {
-    let mut variable = dae::Variable::new(VarName::new(name));
+    let mut variable = dae::Variable::new(
+        VarName::new(name),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     variable.dims = dims.to_vec();
+    variable.source_span = test_span();
     variable
 }
 
@@ -47,7 +63,7 @@ fn lhs(name: &str) -> Option<rumoca_core::Reference> {
     // (`Equation::explicit` normalizes bare names).
     let component_ref = rumoca_core::component_reference_from_flat_name(
         &rumoca_core::VarName::new(name),
-        rumoca_core::Span::DUMMY,
+        test_span(),
     );
     Some(match component_ref {
         Some(component_ref) => {
@@ -67,7 +83,7 @@ fn complex_field_scalar_name_requires_top_level_segment_boundary() {
 }
 
 #[test]
-fn scalar_target_projection_parsers_use_structured_scalar_names() {
+fn scalar_target_projection_parsers_use_structured_scalar_names() -> Result<(), StructuralError> {
     assert_eq!(parse_complex_field_selector("re[2]"), Some((1, Some(2))));
     assert_eq!(parse_complex_field_selector("im"), Some((2, None)));
     assert_eq!(parse_complex_field_selector("re[0]"), None);
@@ -88,7 +104,7 @@ fn scalar_target_projection_parsers_use_structured_scalar_names() {
 
     let Expression::VarRef {
         name, subscripts, ..
-    } = target_var_ref_expr("a[index.with.dot].x[2, 3]")
+    } = target_var_ref_expr_with_span("a[index.with.dot].x[2, 3]", test_span())?
     else {
         panic!("expected var ref");
     };
@@ -103,12 +119,114 @@ fn scalar_target_projection_parsers_use_structured_scalar_names() {
 
     let Expression::VarRef {
         name, subscripts, ..
-    } = target_var_ref_expr("a[index.with.dot]")
+    } = target_var_ref_expr_with_span("a[index.with.dot]", test_span())?
     else {
         panic!("expected var ref");
     };
     assert_eq!(name.as_str(), "a[index.with.dot]");
     assert!(subscripts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn scalarized_equation_lhs_rejects_unspanned_generated_index() {
+    let eq = Equation {
+        lhs: Some(rumoca_core::Reference::new("x")),
+        rhs: var("x"),
+        span: Span::DUMMY,
+        origin: "unspanned scalarization fixture".to_string(),
+        scalar_count: 2,
+    };
+
+    let err = scalarized_equation_lhs(&eq, None, 1, Span::DUMMY)
+        .expect_err("scalarized LHS index requires reference or equation provenance");
+
+    assert!(matches!(
+        err,
+        StructuralError::UnspannedContractViolation { .. }
+    ));
+    assert!(
+        err.to_string()
+            .contains("cannot append scalarized index to `x`"),
+        "error should identify missing LHS provenance: {err}"
+    );
+}
+
+#[test]
+fn scalar_lhs_targets_use_variable_span_when_equation_span_is_generated() {
+    let span = test_span();
+    let mut var_dims = HashMap::new();
+    var_dims.insert("x".to_string(), vec![2]);
+    let mut var_spans = HashMap::new();
+    var_spans.insert("x".to_string(), span);
+    let scalar_names = vec!["x[1]".to_string(), "x[2]".to_string()];
+
+    let (targets, has_residual_targets) = scalar_lhs_targets_for_equation(
+        Vec::new(),
+        Some("x"),
+        Some(&rumoca_core::Reference::new("x")),
+        Span::DUMMY,
+        &scalar_names,
+        &var_dims,
+        &var_spans,
+    )
+    .expect("variable source span should provide scalar target provenance");
+
+    assert!(!has_residual_targets);
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].expr.span(), Some(span));
+}
+
+#[test]
+fn scalar_lhs_targets_use_base_variable_span_for_scalarized_target_name() {
+    let span = test_span();
+    let var_dims = HashMap::new();
+    let mut var_spans = HashMap::new();
+    var_spans.insert("x".to_string(), span);
+    let scalar_names = vec!["x[2]".to_string()];
+
+    let (targets, has_residual_targets) = scalar_lhs_targets_for_equation(
+        Vec::new(),
+        Some("x[2]"),
+        Some(&rumoca_core::Reference::new("x[2]")),
+        Span::DUMMY,
+        &scalar_names,
+        &var_dims,
+        &var_spans,
+    )
+    .expect("base variable source span should provide scalar target provenance");
+
+    assert!(!has_residual_targets);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].expr.span(), Some(span));
+}
+
+#[test]
+fn scalar_lhs_targets_reject_generated_equation_without_target_provenance() {
+    let var_dims = HashMap::new();
+    let var_spans = HashMap::new();
+    let scalar_names = vec!["x[1]".to_string()];
+
+    let err = scalar_lhs_targets_for_equation(
+        Vec::new(),
+        Some("x"),
+        Some(&rumoca_core::Reference::new("x")),
+        Span::DUMMY,
+        &scalar_names,
+        &var_dims,
+        &var_spans,
+    )
+    .expect_err("source-derived scalar target must have provenance");
+
+    assert!(matches!(
+        err,
+        StructuralError::UnspannedContractViolation { .. }
+    ));
+    assert!(
+        err.to_string()
+            .contains("cannot scalarize target `x` without source provenance"),
+        "error should identify missing scalar target provenance: {err}"
+    );
 }
 
 fn complex(re: Expression, im: Expression) -> Expression {
@@ -116,7 +234,7 @@ fn complex(re: Expression, im: Expression) -> Expression {
         name: rumoca_core::Reference::new("Complex"),
         args: vec![re, im],
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -124,7 +242,7 @@ fn array(elements: Vec<Expression>) -> Expression {
     Expression::Array {
         elements,
         is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -142,7 +260,7 @@ fn residual_with_binary_span(
             rhs: Box::new(rhs),
             span: binary_span,
         },
-        span: Span::DUMMY,
+        span: test_span(),
         origin: "scalarize residual test".to_string(),
         scalar_count,
     }
@@ -200,7 +318,13 @@ fn scalarize_complex_record_array_residual_targets_each_field_element() {
                 complex(var_idx("a", &[3]), real(0.0)),
             ]),
             6,
-            Span::from_offsets(rumoca_core::SourceId(0), 10, 20),
+            Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(
+                    "phase_structural_scalarize_tests_source_0.mo",
+                ),
+                10,
+                20,
+            ),
         ));
 
     scalarize_equations(&mut dae_model).unwrap();
@@ -245,7 +369,13 @@ fn scalarize_matrix_binding_residual_targets_each_element() {
                 array(vec![real(0.0), real(0.0), real(0.0)]),
             ]),
             9,
-            Span::from_offsets(rumoca_core::SourceId(0), 10, 20),
+            Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(
+                    "phase_structural_scalarize_tests_source_0.mo",
+                ),
+                10,
+                20,
+            ),
         ));
 
     scalarize_equations(&mut dae_model).unwrap();
@@ -278,7 +408,7 @@ fn eq(lhs: &str, rhs: Expression, scalar_count: usize) -> Equation {
     Equation::explicit_with_scalar_count(
         VarName::new(lhs),
         rhs,
-        Span::DUMMY,
+        test_span(),
         "scalarize test",
         scalar_count,
     )
@@ -296,7 +426,7 @@ fn transpose(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Transpose,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -304,19 +434,20 @@ fn cross(lhs: Expression, rhs: Expression) -> Expression {
     Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Cross,
         args: vec![lhs, rhs],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn index(expr: Expression, indices: &[i64]) -> Expression {
+    let span = test_span();
     Expression::Index {
         base: Box::new(expr),
         subscripts: indices
             .iter()
             .copied()
-            .map(|index| Subscript::generated_index(index, rumoca_core::Span::DUMMY))
+            .map(|index| Subscript::generated_index(index, span))
             .collect(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -324,7 +455,7 @@ fn der(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -400,7 +531,10 @@ fn expr_contains_der_var_idx(expr: &Expression, target: &str, idx: i64) -> bool 
 fn build_output_names_orders_states_algebraics_outputs_and_expands_arrays() {
     let mut dae_model = dae::Dae::default();
 
-    let mut x = dae::Variable::new(rumoca_core::VarName::new("x"));
+    let mut x = dae::Variable::new(
+        rumoca_core::VarName::new("x"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     x.dims = vec![2];
     dae_model
         .variables
@@ -408,15 +542,24 @@ fn build_output_names_orders_states_algebraics_outputs_and_expands_arrays() {
         .insert(rumoca_core::VarName::new("x"), x);
     dae_model.variables.states.insert(
         rumoca_core::VarName::new("v"),
-        dae::Variable::new(rumoca_core::VarName::new("v")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("v"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("z"),
-        dae::Variable::new(rumoca_core::VarName::new("z")),
+        dae::Variable::new(
+            rumoca_core::VarName::new("z"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
     );
 
-    let mut y = dae::Variable::new(rumoca_core::VarName::new("y"));
+    let mut y = dae::Variable::new(
+        rumoca_core::VarName::new("y"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     y.dims = vec![2];
     dae_model
         .variables
@@ -461,6 +604,7 @@ fn build_output_names_expands_matrix_indices_row_major() {
 fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
     let ctx = ExpressionScalarizationContext {
         var_dims: HashMap::new(),
+        var_spans: HashMap::new(),
         structural_values: HashMap::new(),
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
@@ -529,6 +673,7 @@ fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
 fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
     let ctx = ExpressionScalarizationContext {
         var_dims: HashMap::new(),
+        var_spans: HashMap::new(),
         structural_values: HashMap::new(),
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
@@ -629,9 +774,11 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
         .outputs
         .insert(VarName::new("R"), variable("R", &[3]));
 
-    let mut function = rumoca_core::Function::new("LieGroup.SO3.rotationMatrix", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("q", "Real").with_dims(vec![4]));
-    function.add_output(rumoca_core::FunctionParam::new("R", "Real").with_dims(vec![3]));
+    let mut function = rumoca_core::Function::new("LieGroup.SO3.rotationMatrix", test_span());
+    function
+        .add_input(rumoca_core::FunctionParam::new("q", "Real", test_span()).with_dims(vec![4]));
+    function
+        .add_output(rumoca_core::FunctionParam::new("R", "Real", test_span()).with_dims(vec![3]));
     dae_model
         .symbols
         .functions
@@ -972,15 +1119,18 @@ fn scalarize_structural_range_slice_dot_product_in_scalar_equation() {
         mul_expr(
             var_sub(
                 "a",
-                vec![Subscript::generated_expr(Box::new(Expression::Range {
-                    start: Box::new(Expression::Literal {
-                        value: Literal::Integer(2),
+                vec![Subscript::generated_expr(
+                    Box::new(Expression::Range {
+                        start: Box::new(Expression::Literal {
+                            value: Literal::Integer(2),
+                            span: rumoca_core::Span::DUMMY,
+                        }),
+                        step: None,
+                        end: Box::new(var("n")),
                         span: rumoca_core::Span::DUMMY,
                     }),
-                    step: None,
-                    end: Box::new(var("n")),
-                    span: rumoca_core::Span::DUMMY,
-                }))],
+                    rumoca_core::Span::DUMMY,
+                )],
             ),
             var("x"),
         ),
@@ -1028,36 +1178,42 @@ fn scalarize_singleton_structural_range_derivative_residual_projects_element() {
         rhs: sub_expr(
             der(var_sub(
                 "x",
-                vec![Subscript::generated_expr(Box::new(Expression::Range {
-                    start: Box::new(Expression::Literal {
-                        value: Literal::Integer(2),
+                vec![Subscript::generated_expr(
+                    Box::new(Expression::Range {
+                        start: Box::new(Expression::Literal {
+                            value: Literal::Integer(2),
+                            span: rumoca_core::Span::DUMMY,
+                        }),
+                        step: None,
+                        end: Box::new(var("nx")),
                         span: rumoca_core::Span::DUMMY,
                     }),
-                    step: None,
-                    end: Box::new(var("nx")),
-                    span: rumoca_core::Span::DUMMY,
-                }))],
+                    rumoca_core::Span::DUMMY,
+                )],
             )),
             var_sub(
                 "x",
-                vec![Subscript::generated_expr(Box::new(Expression::Range {
-                    start: Box::new(Expression::Literal {
-                        value: Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    step: None,
-                    end: Box::new(sub_expr(
-                        var("nx"),
-                        Expression::Literal {
+                vec![Subscript::generated_expr(
+                    Box::new(Expression::Range {
+                        start: Box::new(Expression::Literal {
                             value: Literal::Integer(1),
                             span: rumoca_core::Span::DUMMY,
-                        },
-                    )),
-                    span: rumoca_core::Span::DUMMY,
-                }))],
+                        }),
+                        step: None,
+                        end: Box::new(sub_expr(
+                            var("nx"),
+                            Expression::Literal {
+                                value: Literal::Integer(1),
+                                span: rumoca_core::Span::DUMMY,
+                            },
+                        )),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    rumoca_core::Span::DUMMY,
+                )],
             ),
         ),
-        span: Span::DUMMY,
+        span: test_span(),
         origin: "singleton derivative slice".to_string(),
         scalar_count: 1,
     });
@@ -1218,7 +1374,7 @@ fn scalarize_residual_column_slice_lhs_infers_targets_from_array_ir() {
                 ),
             ),
         ),
-        span: Span::DUMMY,
+        span: test_span(),
         origin: "slice residual".to_string(),
         scalar_count: 4,
     });

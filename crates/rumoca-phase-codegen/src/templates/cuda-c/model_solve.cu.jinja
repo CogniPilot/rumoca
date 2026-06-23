@@ -9,6 +9,7 @@
 {%- set name = model_name | default("model") | sanitize %}
 {%- set derivative = solve_blocks.continuous.derivative_rhs %}
 {%- set rows = derivative.scalar_programs.programs %}
+{%- set output_indices = derivative.scalar_programs.output_indices %}
 {%- set nodes = derivative.nodes %}
 
 extern "C" __global__ void {{ name }}_derivative_rhs_batch(
@@ -34,11 +35,15 @@ extern "C" __global__ void {{ name }}_derivative_rhs_batch(
     (void)batch_y;
     (void)batch_p;
 {%- set cfg = {"time": "time", "y": "batch_y[{}]", "p": "batch_p[{}]"} %}
-{%- for row in rows %}
-    batch_out[{{ loop.index0 }}] = {{ render_solve_row_c(row, cfg) }};
+    for (int i = 0; i < {{ derivative.output_count }}; ++i) {
+        batch_out[i] = 0.0;
+    }
+{%- set solve_body = render_solve_block_c(rows, cfg, "batch_out[{}] = {}", output_indices) %}
+{%- if solve_body %}
+{{ solve_body }}
 {%- else %}
     (void)batch_out;
-{%- endfor %}
+{%- endif %}
 }
 
 // Solve-IR derivative block inventory:

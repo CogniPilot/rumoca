@@ -90,19 +90,25 @@ mod tests {
 
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("name_resolution_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn test_extract_varref_name_handles_index_wrapped_varref() {
+        let span = test_span();
         let expr = rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("arr").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                1,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
+            subscripts: vec![rumoca_core::Subscript::generated_index(1, span)],
+            span,
         };
         assert_eq!(
             extract_varref_name(&expr),
@@ -115,7 +121,14 @@ mod tests {
         let mut dae = dae::Dae::new();
         dae.variables.inputs.insert(
             rumoca_core::VarName::new("u"),
-            dae::Variable::new(rumoca_core::VarName::new("u")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("u"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         assert!(is_dae_input_name(&dae, &rumoca_core::VarName::new("u[1]")));
     }

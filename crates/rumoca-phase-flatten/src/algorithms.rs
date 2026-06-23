@@ -299,6 +299,14 @@ mod tests {
     use rumoca_ir_ast::{self as ast, ComponentRefPart, Subscript};
     use std::sync::Arc;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_flatten_algorithms_source_0.mo"),
+            0,
+            1,
+        )
+    }
+
     fn make_comp_ref(names: &[&str]) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
@@ -313,7 +321,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -534,9 +542,7 @@ mod tests {
                     text: std::sync::Arc::from("i"),
                     ..Default::default()
                 },
-                range: ast::Expression::Empty {
-                    span: rumoca_core::Span::DUMMY,
-                },
+                range: ast::Expression::Empty { span: test_span() },
             }],
             equations: vec![ast::Statement::Assignment {
                 comp: make_comp_ref(&["y"]),

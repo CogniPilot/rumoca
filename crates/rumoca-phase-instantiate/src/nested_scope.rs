@@ -35,6 +35,15 @@ pub(super) fn key_matches_referenced_root(
         .is_some_and(|name| referenced_roots.contains(name))
 }
 
+#[cfg(test)]
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("nested_scope_test.mo"),
+        1,
+        2,
+    )
+}
+
 /// Collect the mod_env keys that are explicitly targeted at a component's nested class.
 ///
 /// Returns keys from two sources:
@@ -270,7 +279,11 @@ pub(super) fn resolve_component_nested_type_overrides(
                 return Err(Box::new(InstantiateError::redeclare_error(
                     target_name,
                     "resolved forwarding redeclare target has no DefId",
-                    location_to_span(&target_class.location, &tree.source_map),
+                    location_to_span(
+                        &target_class.location,
+                        &tree.source_map,
+                        "forwarding redeclare target class",
+                    )?,
                 )));
             };
             if let Some(effective_def_id) = type_overrides
@@ -353,7 +366,7 @@ mod tests {
     fn test_collect_targeted_mod_keys_omits_bare_key_for_nested_attrs() {
         let mut comp = ast::Component {
             name: "port".to_string(),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         comp.modifications.insert(
             "m_flow".to_string(),
@@ -410,7 +423,11 @@ mod tests {
 
     #[test]
     fn test_collect_referenced_mod_roots_finds_nested_component_refs() {
-        let mut comp = ast::Component::default();
+        let mut comp = ast::Component::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("nested_scope_test.mo"),
+            1,
+            2,
+        ));
         comp.modifications.insert(
             "k".to_string(),
             ast::Expression::ArrayIndex {
@@ -497,12 +514,12 @@ mod tests {
             ast::Component {
                 name: "re".to_string(),
                 is_replaceable: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         let mut comp = ast::Component {
             name: "y".to_string(),
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         comp.modifications.insert(
             "re".to_string(),

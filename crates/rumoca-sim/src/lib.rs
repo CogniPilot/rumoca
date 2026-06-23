@@ -5,6 +5,8 @@
 //! and the I/O `runner` module that drives interactive simulations.
 
 use indexmap::IndexSet;
+use rumoca_ir_solve as solve;
+use serde::{Deserialize, Serialize};
 
 /// NaN / non-finite runtime tracing, exposed through the sim facade so the CLI
 /// (and library users) can switch it on without an environment variable. See
@@ -55,8 +57,8 @@ pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     SimulationDiagnosticError, SingularityDiagnosis, StructuralReport, TearingReport,
     UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis, diagnose_structural_singularity,
-    eval_dae_at, jacobian_for_dae, lower_dae_for_simulation, structural_report_for_dae,
-    structurally_lowered_dae_for_simulation_artifact,
+    eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation, lower_dae_for_simulation,
+    structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
 };
 
 #[cfg(feature = "solver-rk45")]
@@ -204,12 +206,28 @@ fn simulate_with_auto_diagnostics(
 mod solver_mode_tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("solver_mode_test.mo"),
+            0,
+            8,
+        )
+    }
+
     #[test]
     fn auto_mode_uses_rk45_when_diffsol_is_not_built() {
+        let span = test_span();
         let mut model = dae::Dae::new();
         model.variables.states.insert(
             rumoca_core::VarName::new("x"),
-            dae::Variable::new(rumoca_core::VarName::new("x")),
+            dae::Variable::new(
+                rumoca_core::VarName::new("x"),
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ),
+            ),
         );
         model.continuous.equations.push(dae::Equation {
             lhs: None,
@@ -220,17 +238,17 @@ mod solver_mode_tests {
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::VarName::new("x"),
                         subscripts: Vec::new(),
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 rhs: Box::new(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            span: rumoca_core::Span::DUMMY,
+            span,
             origin: "test".to_string(),
             scalar_count: 1,
         });
@@ -290,13 +308,8 @@ fn simulate_with_diffsol_diagnostics(
     ))
 }
 
-#[cfg(all(feature = "viz", not(target_arch = "wasm32")))]
-pub mod viz_web {
-    pub use rumoca_viz_web::{
-        ResultsHtmlDocument, THREE_JS, UPLOT_CSS, UPLOT_JS, build_results_html_document,
-        default_visualization_views_value, sim_viewer_server, start_viewer_server,
-    };
-}
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web;
 
 struct VariableSource<'a> {
     var: &'a dae::Variable,
@@ -491,6 +504,77 @@ pub fn build_variable_meta(
         .collect()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunableParameterMeta {
+    pub name: String,
+    pub default_value: f64,
+    pub unit: Option<String>,
+    pub start: Option<String>,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    pub nominal: Option<String>,
+    pub min_value: Option<f64>,
+    pub max_value: Option<f64>,
+    pub fixed: Option<bool>,
+    pub description: Option<String>,
+}
+
+pub fn build_tunable_parameter_meta(
+    dae_model: &dae::Dae,
+    solve_model: &solve::SolveModel,
+) -> Vec<TunableParameterMeta> {
+    solve_model
+        .problem
+        .layout
+        .bindings()
+        .iter()
+        .filter_map(|(name, slot)| {
+            let solve::ScalarSlot::P { index, .. } = *slot else {
+                return None;
+            };
+            let source = lookup_variable_source(dae_model, name)?;
+            if source.role != "parameter" || !source.var.is_tunable {
+                return None;
+            }
+            Some(TunableParameterMeta {
+                name: name.to_string(),
+                default_value: solve_model.parameters.get(index).copied().unwrap_or(0.0),
+                unit: source.var.unit.clone(),
+                start: source.var.start.as_ref().map(truncate_meta_expr),
+                min: source.var.min.as_ref().map(truncate_meta_expr),
+                max: source.var.max.as_ref().map(truncate_meta_expr),
+                nominal: source.var.nominal.as_ref().map(truncate_meta_expr),
+                min_value: source.var.min.as_ref().and_then(numeric_expression_value),
+                max_value: source.var.max.as_ref().and_then(numeric_expression_value),
+                fixed: source.var.fixed,
+                description: source.var.description.clone(),
+            })
+        })
+        .collect()
+}
+
+fn numeric_expression_value(expr: &rumoca_core::Expression) -> Option<f64> {
+    match expr {
+        rumoca_core::Expression::Literal { value, .. } => match value {
+            rumoca_core::Literal::Real(value) => Some(*value),
+            rumoca_core::Literal::Integer(value) => Some(*value as f64),
+            _ => None,
+        },
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            let value = numeric_expression_value(rhs)?;
+            match op {
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Some(-value),
+                rumoca_core::OpUnary::Plus
+                | rumoca_core::OpUnary::DotPlus
+                | rumoca_core::OpUnary::Empty => Some(value),
+                rumoca_core::OpUnary::Not => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn runtime_defined_unknown_names(dae_model: &dae::Dae) -> IndexSet<String> {
     rumoca_phase_structural::runtime_defined_unknown_names(dae_model)
 }
@@ -547,7 +631,10 @@ mod tests {
     #[test]
     fn build_variable_meta_resolves_scalarized_names_back_to_array_variable() {
         let mut dae_model = dae::Dae::default();
-        let mut state = Variable::new(rumoca_core::VarName::new("x"));
+        let mut state = Variable::new(
+            rumoca_core::VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
         state.dims = vec![2];
         state.unit = Some("m".to_string());
         dae_model

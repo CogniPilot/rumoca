@@ -1,5 +1,5 @@
 [book]
-title = "Rumoca Handbook"
+title = "Rumoca User Guide"
 authors = ["Rumoca Contributors"]
 language = "en"
 src = "src"
@@ -10,5 +10,7 @@ build-dir = "book"
 [output.html]
 git-repository-url = "https://github.com/CogniPilot/rumoca"
 edit-url-template = "https://github.com/CogniPilot/rumoca/edit/main/docs/user-guide/{path}"
+default-theme = "rust"
+preferred-dark-theme = "ayu"
 additional-js = ["live/rumoca-live.js"]
 additional-css = ["live/rumoca-live.css"]

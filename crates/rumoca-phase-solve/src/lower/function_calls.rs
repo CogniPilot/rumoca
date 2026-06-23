@@ -1,71 +1,28 @@
+// SPEC_0021 file-size exception: function-call lowering still handles builtin,
+// record, random, and projection calls together. split plan: move builtin
+// families and projection-specific lowering into focused modules.
+
 use super::function_projection::FunctionOutputProjection;
 use super::*;
 use rumoca_ir_solve::RandomGenerator;
+mod helpers;
 mod random;
 mod runtime_intrinsics;
+use helpers::{
+    ComplexProjectionComprehensionCtx, FlattenedRecordInputRequest,
+    FlattenedRecordPositionalInputRequest, NamedOrPositionalArg, append_complex_projection_values,
+    checked_usize_dims_to_i64, complex_projection_vec_with_capacity, flattened_input_has_prefix,
+    function_input_actual_dim, missing_intrinsic_argument, missing_required_function_input,
+    record_constructor_field, split_flattened_record_input_name, validate_complex_component_width,
+};
 pub(super) use runtime_intrinsics::*;
 
-struct ComplexProjectionComprehensionCtx<'a> {
-    indices: &'a [rumoca_core::ComprehensionIndex],
-    filter: Option<&'a rumoca_core::Expression>,
-    field: &'a str,
-    scope: &'a mut Scope,
-    const_scope: &'a mut IndexMap<String, f64>,
-    call_depth: usize,
-}
-
-struct FlattenedRecordInputRequest<'a, 'b> {
-    input: &'a rumoca_core::FunctionParam,
-    fields: &'a [rumoca_core::FunctionParam],
-    positional_args: &'a [&'a rumoca_core::Expression],
-    positional_idx: &'b mut usize,
-    caller_scope: &'a Scope,
-    call_depth: usize,
-}
-
-struct FlattenedRecordPositionalInputRequest<'a, 'b> {
-    function_name: &'a str,
-    input: &'a rumoca_core::FunctionParam,
-    inputs: &'a [rumoca_core::FunctionParam],
-    input_idx: usize,
-    positional_args: &'a [&'a rumoca_core::Expression],
-    positional_idx: &'b mut usize,
-    caller_scope: &'a Scope,
-    call_depth: usize,
-}
-
-struct NamedOrPositionalArg<'a> {
-    name: &'a str,
-    idx: usize,
-    default: f64,
-}
-
-fn split_flattened_record_input_name(name: &str) -> Option<(&str, &str)> {
-    let (prefix, field) = name.split_once('_')?;
-    (!prefix.is_empty() && !field.is_empty()).then_some((prefix, field))
-}
-
-fn flattened_input_has_prefix(name: &str, prefix: &str) -> bool {
-    split_flattened_record_input_name(name).is_some_and(|(candidate, _)| candidate == prefix)
-}
-
-fn missing_required_function_input<T>(
-    function_name: &str,
-    input_name: &str,
-) -> Result<T, LowerError> {
-    Err(LowerError::MissingActualArgument {
-        function: function_name.to_string(),
-        what: "required input",
-        input: input_name.to_string(),
-    })
-}
-
 impl<'a> LowerBuilder<'a> {
-    pub(super) fn try_lower_qualified_standard_numeric_intrinsic(
+    pub(super) fn lower_qualified_standard_numeric_intrinsic(
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
-        _span: rumoca_core::Span,
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -76,39 +33,41 @@ impl<'a> LowerBuilder<'a> {
             // so local helper arrays in the library function remain local and
             // cannot leak into the runtime variable layout.
             "Modelica.Math.Distributions.Uniform.quantile" => self
-                .lower_uniform_quantile(args, scope, call_depth)
+                .lower_uniform_quantile(args, span, scope, call_depth)
                 .map(Some),
             "Modelica.Math.Distributions.Normal.quantile" => self
-                .lower_normal_quantile(args, scope, call_depth)
+                .lower_normal_quantile(args, span, scope, call_depth)
                 .map(Some),
             "Modelica.Math.Distributions.Weibull.quantile" => self
-                .lower_weibull_quantile(args, scope, call_depth)
+                .lower_weibull_quantile(args, span, scope, call_depth)
                 .map(Some),
             "Modelica.Math.Special.erfInv" => {
-                let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
-                let half = self.emit_const(0.5);
-                let one = self.emit_const(1.0);
-                let shifted = self.emit_binary(BinaryOp::Add, u, one);
-                let p = self.emit_binary(BinaryOp::Mul, half, shifted);
-                let inv = self.emit_standard_normal_quantile(p);
-                let sqrt_two = self.emit_const(std::f64::consts::SQRT_2);
-                Ok(Some(self.emit_binary(BinaryOp::Div, inv, sqrt_two)))
+                let u = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
+                let half = self.emit_const_at(0.5, span)?;
+                let one = self.emit_const_at(1.0, span)?;
+                let shifted = self.emit_binary_at(BinaryOp::Add, u, one, span)?;
+                let p = self.emit_binary_at(BinaryOp::Mul, half, shifted, span)?;
+                let inv = self.emit_standard_normal_quantile(p, span)?;
+                let sqrt_two = self.emit_const_at(std::f64::consts::SQRT_2, span)?;
+                self.emit_binary_at(BinaryOp::Div, inv, sqrt_two, span)
+                    .map(Some)
             }
             "Modelica.Math.Special.erfcInv" => {
-                let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
-                let half = self.emit_const(0.5);
-                let two = self.emit_const(2.0);
-                let shifted = self.emit_binary(BinaryOp::Sub, two, u);
-                let p = self.emit_binary(BinaryOp::Mul, half, shifted);
-                let inv = self.emit_standard_normal_quantile(p);
-                let sqrt_two = self.emit_const(std::f64::consts::SQRT_2);
-                Ok(Some(self.emit_binary(BinaryOp::Div, inv, sqrt_two)))
+                let u = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
+                let half = self.emit_const_at(0.5, span)?;
+                let two = self.emit_const_at(2.0, span)?;
+                let shifted = self.emit_binary_at(BinaryOp::Sub, two, u, span)?;
+                let p = self.emit_binary_at(BinaryOp::Mul, half, shifted, span)?;
+                let inv = self.emit_standard_normal_quantile(p, span)?;
+                let sqrt_two = self.emit_const_at(std::f64::consts::SQRT_2, span)?;
+                self.emit_binary_at(BinaryOp::Div, inv, sqrt_two, span)
+                    .map(Some)
             }
             _ => Ok(None),
         }
     }
 
-    pub(super) fn try_lower_intrinsic_function_call(
+    pub(super) fn lower_intrinsic_function_call(
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
@@ -116,10 +75,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        self.try_lower_intrinsic_function_call_key(name.as_str(), args, span, scope, call_depth)
+        self.lower_intrinsic_function_call_key(name.as_str(), args, span, scope, call_depth)
     }
 
-    pub(super) fn try_lower_intrinsic_function_call_key(
+    pub(super) fn lower_intrinsic_function_call_key(
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
@@ -128,18 +87,18 @@ impl<'a> LowerBuilder<'a> {
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
         if let Some(reg) =
-            self.lower_complex_operator_projection(call_name, args, scope, call_depth)?
+            self.lower_complex_operator_projection(call_name, args, span, scope, call_depth)?
         {
             return Ok(Some(reg));
         }
         if let Some(reg) =
-            self.lower_complex_math_sum_projection(call_name, args, scope, call_depth)?
+            self.lower_complex_math_sum_projection(call_name, args, span, scope, call_depth)?
         {
             return Ok(Some(reg));
         }
         if intrinsic_short_name(call_name) == "interval" {
             return self
-                .lower_interval_intrinsic(args, scope, call_depth)
+                .lower_interval_intrinsic(args, span, scope, call_depth)
                 .map(Some);
         }
         if call_name == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
@@ -159,20 +118,21 @@ impl<'a> LowerBuilder<'a> {
                 "subSample" | "superSample" | "shiftSample" | "backSample"
             )
             && let Some(reg) =
-                self.lower_synchronous_value_intrinsic(call_name, args, scope, call_depth)?
+                self.lower_synchronous_value_intrinsic(call_name, args, span, scope, call_depth)?
         {
             return Ok(Some(reg));
         }
         if let Some(reg) = self.lower_clock_constructor_tick(
             intrinsic_short_name(call_name),
             args,
+            span,
             scope,
             call_depth,
         )? {
             return Ok(Some(reg));
         }
         if let Some(reg) =
-            self.lower_synchronous_value_intrinsic(call_name, args, scope, call_depth)?
+            self.lower_synchronous_value_intrinsic(call_name, args, span, scope, call_depth)?
         {
             return Ok(Some(reg));
         }
@@ -186,7 +146,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Some(reg));
         }
         if let Some(reg) =
-            self.lower_external_table_intrinsic(call_name, args, scope, call_depth)?
+            self.lower_external_table_intrinsic(call_name, args, span, scope, call_depth)?
         {
             return Ok(Some(reg));
         }
@@ -195,7 +155,7 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(Some(reg));
         }
-        if let Some(reg) = self.lower_random_intrinsic(call_name, args, scope, call_depth)? {
+        if let Some(reg) = self.lower_random_intrinsic(call_name, args, span, scope, call_depth)? {
             return Ok(Some(reg));
         }
         if let Some(builtin) = resolve_intrinsic_builtin(call_name) {
@@ -209,6 +169,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -217,28 +178,35 @@ impl<'a> LowerBuilder<'a> {
             // MLS §16.4 / §16.5.1: previous(v) reads the value from the
             // previous clock tick. DAE lowering represents that as an explicit
             // `__pre__.*` parameter slot before Solve-IR lowering.
-            "previous" => args
-                .first()
-                .map(|arg| self.lower_expr_in_mode(arg, scope, call_depth, ValueMode::Pre))
-                .transpose(),
+            "previous" => {
+                let Some(arg) = args.first() else {
+                    return Err(missing_intrinsic_argument("previous", "argument 1", span));
+                };
+                self.lower_expr_in_mode(arg, scope, call_depth, ValueMode::Pre)
+                    .map(Some)
+            }
             // MLS §16.5.1: hold(v) exposes the held value on the
             // continuous-time partition. Before the first tick of the clock
             // associated with v, the output exposes the held source start
             // value, falling back to the target start when source metadata is
             // unavailable.
-            "hold" => self.lower_hold_intrinsic(args, scope, call_depth).map(Some),
+            "hold" => self
+                .lower_hold_intrinsic(args, span, scope, call_depth)
+                .map(Some),
             // noClock(v) removes the clock without introducing a zero-order
             // hold startup value.
-            "noClock" => args
-                .first()
-                .map(|arg| self.lower_expr(arg, scope, call_depth))
-                .transpose(),
-            "firstTick" => Ok(Some(self.lower_first_tick_intrinsic())),
+            "noClock" => {
+                let Some(arg) = args.first() else {
+                    return Err(missing_intrinsic_argument("noClock", "argument 1", span));
+                };
+                self.lower_expr(arg, scope, call_depth).map(Some)
+            }
+            "firstTick" => self.lower_first_tick_intrinsic(span).map(Some),
             // Value-form sample-rate conversion helpers update on their
             // converted target clock and hold the current output at unrelated
             // event instants.
             "subSample" | "superSample" | "shiftSample" | "backSample" => self
-                .lower_clocked_value_conversion(short, args, scope, call_depth)
+                .lower_clocked_value_conversion(short, args, span, scope, call_depth)
                 .map(Some),
             _ => Ok(None),
         }
@@ -247,12 +215,14 @@ impl<'a> LowerBuilder<'a> {
     fn lower_hold_intrinsic(
         &mut self,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         let Some(value_expr) = args.first() else {
-            return Ok(self.emit_const(0.0));
+            return Err(missing_intrinsic_argument("hold", "argument 1", call_span));
         };
+        let span = value_expr.span().unwrap_or(call_span);
         let value = self.lower_expr(value_expr, scope, call_depth)?;
         let Some(start_expr) = self
             .variable_start_expr(value_expr)
@@ -261,15 +231,16 @@ impl<'a> LowerBuilder<'a> {
             return Ok(value);
         };
         let source_phase = self.lower_clock_phase_expr(value_expr, scope, call_depth)?;
-        let time = self.emit_load_time();
-        let tol = self.emit_const(1.0e-9);
-        let first_source_boundary = self.emit_binary(BinaryOp::Sub, source_phase, tol);
+        let time = self.emit_load_time_at(span)?;
+        let tol = self.emit_const_at(1.0e-9, span)?;
+        let first_source_boundary = self.emit_binary_at(BinaryOp::Sub, source_phase, tol, span)?;
         let before_first_source_tick =
-            self.emit_compare(CompareOp::Lt, time, first_source_boundary);
+            self.emit_compare_at(CompareOp::Lt, time, first_source_boundary, span)?;
         let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
-        let initial = self.lower_initial_builtin()?;
-        let use_start_value = self.emit_binary(BinaryOp::Or, initial, before_first_source_tick);
-        Ok(self.emit_select(use_start_value, start_value, value))
+        let initial = self.lower_initial_builtin(call_span)?;
+        let use_start_value =
+            self.emit_binary_at(BinaryOp::Or, initial, before_first_source_tick, span)?;
+        self.emit_select_at(use_start_value, start_value, value, span)
     }
 
     fn current_update_target_start_expr(&self) -> Option<rumoca_core::Expression> {
@@ -283,28 +254,32 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         short: &str,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         let Some(value_expr) = args.first() else {
-            return Ok(self.emit_const(0.0));
+            return Err(missing_intrinsic_argument(short, "argument 1", call_span));
         };
-        let value = self.lower_clocked_conversion_value(short, value_expr, scope, call_depth)?;
+        let value =
+            self.lower_clocked_conversion_value(short, value_expr, call_span, scope, call_depth)?;
         let Some(target) = self.current_update_target else {
             return Ok(value);
         };
-        let tick = self.lower_clock_constructor_tick(short, args, scope, call_depth)?;
+        let tick = self.lower_clock_constructor_tick(short, args, call_span, scope, call_depth)?;
         let Some(tick) = tick else {
             return Ok(value);
         };
-        let held = self.emit_slot_load(target)?;
-        Ok(self.emit_select(tick, value, held))
+        let span = value_expr.span().unwrap_or(call_span);
+        let held = self.emit_slot_load(target, span)?;
+        self.emit_select_at(tick, value, held, span)
     }
 
     fn lower_clocked_conversion_value(
         &mut self,
         short: &str,
         value_expr: &rumoca_core::Expression,
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
@@ -312,17 +287,18 @@ impl<'a> LowerBuilder<'a> {
         if short != "backSample" {
             return Ok(value);
         }
+        let span = value_expr.span().unwrap_or(call_span);
         let Some(start_expr) = self.variable_start_expr(value_expr) else {
             return Ok(value);
         };
         let source_phase = self.lower_clock_phase_expr(value_expr, scope, call_depth)?;
-        let time = self.emit_load_time();
-        let tol = self.emit_const(1.0e-9);
-        let first_source_boundary = self.emit_binary(BinaryOp::Sub, source_phase, tol);
+        let time = self.emit_load_time_at(span)?;
+        let tol = self.emit_const_at(1.0e-9, span)?;
+        let first_source_boundary = self.emit_binary_at(BinaryOp::Sub, source_phase, tol, span)?;
         let before_first_source_tick =
-            self.emit_compare(CompareOp::Lt, time, first_source_boundary);
+            self.emit_compare_at(CompareOp::Lt, time, first_source_boundary, span)?;
         let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
-        Ok(self.emit_select(before_first_source_tick, start_value, value))
+        self.emit_select_at(before_first_source_tick, start_value, value, span)
     }
 
     fn variable_start_expr(
@@ -342,14 +318,14 @@ impl<'a> LowerBuilder<'a> {
             .and_then(|starts| starts.get(name.as_str()).cloned())
     }
 
-    fn lower_first_tick_intrinsic(&mut self) -> Reg {
+    fn lower_first_tick_intrinsic(&mut self, span: rumoca_core::Span) -> Result<Reg, LowerError> {
         if self.value_mode == ValueMode::Pre {
-            return self.emit_const(0.0);
+            return self.emit_const_at(0.0, span);
         }
-        let time = self.emit_load_time();
-        let abs_time = self.emit_unary(UnaryOp::Abs, time);
-        let tol = self.emit_const(1.0e-12);
-        self.emit_compare(CompareOp::Le, abs_time, tol)
+        let time = self.emit_load_time_at(span)?;
+        let abs_time = self.emit_unary_at(UnaryOp::Abs, time, span)?;
+        let tol = self.emit_const_at(1.0e-12, span)?;
+        self.emit_compare_at(CompareOp::Le, abs_time, tol, span)
     }
 
     pub(super) fn lower_runtime_string_special_intrinsic(
@@ -358,14 +334,17 @@ impl<'a> LowerBuilder<'a> {
         args: &[rumoca_core::Expression],
         span: rumoca_core::Span,
     ) -> Result<Option<Reg>, LowerError> {
-        lower_runtime_string_special_value(call_name, args, span)
-            .map(|value| value.map(|value| self.emit_const(value)))
+        match lower_runtime_string_special_value(call_name, args, span)? {
+            Some(value) => self.emit_const_at(value, span).map(Some),
+            None => Ok(None),
+        }
     }
 
     fn lower_external_table_intrinsic(
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -373,31 +352,22 @@ impl<'a> LowerBuilder<'a> {
         // The table helper family is lowered to host-backed scalar ops here so
         // compiled kernels stay on the compiled path instead of falling back to
         // runtime expression evaluation.
-        let short = intrinsic_short_name(call_name);
-        match short {
-            "getTimeTableTmin" | "getTable1DAbscissaUmin" => {
-                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
-                Ok(Some(self.emit_table_bounds(table_id, false)))
+        match external_table_intrinsic_kind(call_name) {
+            Some(ExternalTableIntrinsicKind::Bounds { upper }) => {
+                let table_id = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
+                self.emit_table_bounds(table_id, upper, span).map(Some)
             }
-            "getTimeTableTmax" | "getTable1DAbscissaUmax" => {
-                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
-                Ok(Some(self.emit_table_bounds(table_id, true)))
+            Some(ExternalTableIntrinsicKind::Lookup) => {
+                let table_id = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
+                let column = self.lower_optional_arg(args, 1, span, scope, call_depth)?;
+                let input = self.lower_optional_arg(args, 2, span, scope, call_depth)?;
+                self.emit_table_lookup(table_id, column, input, span)
+                    .map(Some)
             }
-            "getTimeTableValueNoDer"
-            | "getTimeTableValueNoDer2"
-            | "getTimeTableValue"
-            | "getTable1DValueNoDer"
-            | "getTable1DValueNoDer2"
-            | "getTable1DValue" => {
-                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
-                let column = self.lower_optional_arg(args, 1, scope, call_depth)?;
-                let input = self.lower_optional_arg(args, 2, scope, call_depth)?;
-                Ok(Some(self.emit_table_lookup(table_id, column, input)))
-            }
-            "getNextTimeEvent" => {
-                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
-                let time = self.lower_optional_arg(args, 1, scope, call_depth)?;
-                Ok(Some(self.emit_table_next_event(table_id, time)))
+            Some(ExternalTableIntrinsicKind::NextEvent) => {
+                let table_id = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
+                let time = self.lower_optional_arg(args, 1, span, scope, call_depth)?;
+                self.emit_table_next_event(table_id, time, span).map(Some)
             }
             _ => Ok(None),
         }
@@ -407,6 +377,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -414,13 +385,18 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         };
         let Some(arg) = args.first() else {
-            return Ok(Some(self.emit_const(0.0)));
+            return Err(missing_intrinsic_argument(
+                call_name,
+                "argument 1",
+                call_span,
+            ));
         };
+        let span = arg.span().unwrap_or(call_span);
 
-        let values = self.lower_complex_projection_values(arg, field, scope, call_depth)?;
-        let mut acc = self.emit_const(0.0);
+        let values = self.lower_complex_projection_values(arg, field, span, scope, call_depth)?;
+        let mut acc = self.emit_const_at(0.0, span)?;
         for value in values {
-            acc = self.emit_binary(BinaryOp::Add, acc, value);
+            acc = self.emit_binary_at(BinaryOp::Add, acc, value, span)?;
         }
         Ok(Some(acc))
     }
@@ -429,54 +405,54 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
+        call_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
         let Some((op, field)) = parse_complex_operator_projection(call_name) else {
             return Ok(None);
         };
-        let lhs = args.first().ok_or_else(|| LowerError::InvalidFunction {
-            name: call_name.to_string(),
-            reason: "missing lhs for complex operator projection".to_string(),
+        let lhs = args.first().ok_or_else(|| {
+            missing_intrinsic_argument(call_name, "lhs for complex operator projection", call_span)
         })?;
-        let rhs = args.get(1).ok_or_else(|| LowerError::InvalidFunction {
-            name: call_name.to_string(),
-            reason: "missing rhs for complex operator projection".to_string(),
+        let rhs = args.get(1).ok_or_else(|| {
+            missing_intrinsic_argument(call_name, "rhs for complex operator projection", call_span)
         })?;
-        let (lhs_re, lhs_im) = self.lower_complex_operand_parts(lhs, scope, call_depth)?;
-        let (rhs_re, rhs_im) = self.lower_complex_operand_parts(rhs, scope, call_depth)?;
+        let span = lhs.span().or_else(|| rhs.span()).unwrap_or(call_span);
+        let (lhs_re, lhs_im) = self.lower_complex_operand_parts(lhs, span, scope, call_depth)?;
+        let (rhs_re, rhs_im) = self.lower_complex_operand_parts(rhs, span, scope, call_depth)?;
         let (re, im) = match op {
             BinaryOp::Add => (
-                self.emit_binary(BinaryOp::Add, lhs_re, rhs_re),
-                self.emit_binary(BinaryOp::Add, lhs_im, rhs_im),
+                self.emit_binary_at(BinaryOp::Add, lhs_re, rhs_re, span)?,
+                self.emit_binary_at(BinaryOp::Add, lhs_im, rhs_im, span)?,
             ),
             BinaryOp::Sub => (
-                self.emit_binary(BinaryOp::Sub, lhs_re, rhs_re),
-                self.emit_binary(BinaryOp::Sub, lhs_im, rhs_im),
+                self.emit_binary_at(BinaryOp::Sub, lhs_re, rhs_re, span)?,
+                self.emit_binary_at(BinaryOp::Sub, lhs_im, rhs_im, span)?,
             ),
             BinaryOp::Mul => {
-                let ac = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_re);
-                let bd = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_im);
-                let ad = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_im);
-                let bc = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_re);
+                let ac = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_re, span)?;
+                let bd = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_im, span)?;
+                let ad = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_im, span)?;
+                let bc = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_re, span)?;
                 (
-                    self.emit_binary(BinaryOp::Sub, ac, bd),
-                    self.emit_binary(BinaryOp::Add, ad, bc),
+                    self.emit_binary_at(BinaryOp::Sub, ac, bd, span)?,
+                    self.emit_binary_at(BinaryOp::Add, ad, bc, span)?,
                 )
             }
             BinaryOp::Div => {
-                let rr2 = self.emit_binary(BinaryOp::Mul, rhs_re, rhs_re);
-                let ri2 = self.emit_binary(BinaryOp::Mul, rhs_im, rhs_im);
-                let denom = self.emit_binary(BinaryOp::Add, rr2, ri2);
-                let lhs_rr = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_re);
-                let lhs_ri = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_im);
-                let li_rr = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_re);
-                let li_ri = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_im);
-                let re_num = self.emit_binary(BinaryOp::Add, lhs_rr, li_ri);
-                let im_num = self.emit_binary(BinaryOp::Sub, li_rr, lhs_ri);
+                let rr2 = self.emit_binary_at(BinaryOp::Mul, rhs_re, rhs_re, span)?;
+                let ri2 = self.emit_binary_at(BinaryOp::Mul, rhs_im, rhs_im, span)?;
+                let denom = self.emit_binary_at(BinaryOp::Add, rr2, ri2, span)?;
+                let lhs_rr = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_re, span)?;
+                let lhs_ri = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_im, span)?;
+                let li_rr = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_re, span)?;
+                let li_ri = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_im, span)?;
+                let re_num = self.emit_binary_at(BinaryOp::Add, lhs_rr, li_ri, span)?;
+                let im_num = self.emit_binary_at(BinaryOp::Sub, li_rr, lhs_ri, span)?;
                 (
-                    self.emit_binary(BinaryOp::Div, re_num, denom),
-                    self.emit_binary(BinaryOp::Div, im_num, denom),
+                    self.emit_binary_at(BinaryOp::Div, re_num, denom, span)?,
+                    self.emit_binary_at(BinaryOp::Div, im_num, denom, span)?,
                 )
             }
             _ => return Ok(None),
@@ -488,17 +464,28 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         expr: &rumoca_core::Expression,
         field: &str,
+        fallback_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
+        let span = expr.span().unwrap_or(fallback_span);
         match expr {
             rumoca_core::Expression::Array { elements, .. }
             | rumoca_core::Expression::Tuple { elements, .. } => {
-                let mut values = Vec::new();
+                let mut values = complex_projection_vec_with_capacity(
+                    elements.len(),
+                    "complex projection element count",
+                    span,
+                )?;
                 for element in elements {
-                    values.extend(
-                        self.lower_complex_projection_values(element, field, scope, call_depth)?,
-                    );
+                    let element_values = self
+                        .lower_complex_projection_values(element, field, span, scope, call_depth)?;
+                    append_complex_projection_values(
+                        &mut values,
+                        element_values,
+                        "complex projection flattened element count",
+                        span,
+                    )?;
                 }
                 Ok(values)
             }
@@ -510,7 +497,11 @@ impl<'a> LowerBuilder<'a> {
             } => {
                 let mut scope = scope.clone();
                 let mut const_scope = IndexMap::<String, f64>::new();
-                let mut values = Vec::new();
+                let mut values = complex_projection_vec_with_capacity(
+                    0,
+                    "complex projection comprehension value count",
+                    span,
+                )?;
                 let mut ctx = ComplexProjectionComprehensionCtx {
                     indices,
                     filter: filter.as_deref(),
@@ -518,6 +509,7 @@ impl<'a> LowerBuilder<'a> {
                     scope: &mut scope,
                     const_scope: &mut const_scope,
                     call_depth,
+                    fallback_span: span,
                 };
                 self.lower_complex_projection_comprehension_values(expr, 0, &mut ctx, &mut values)?;
                 Ok(values)
@@ -526,9 +518,12 @@ impl<'a> LowerBuilder<'a> {
                 let projected = rumoca_core::Expression::FieldAccess {
                     base: Box::new(expr.clone()),
                     field: field.to_string(),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 };
-                Ok(vec![self.lower_expr(&projected, scope, call_depth)?])
+                let mut values =
+                    complex_projection_vec_with_capacity(1, "complex scalar projection", span)?;
+                values.push(self.lower_expr(&projected, scope, call_depth)?);
+                Ok(values)
             }
         }
     }
@@ -546,26 +541,39 @@ impl<'a> LowerBuilder<'a> {
             {
                 return Ok(());
             }
-            out.extend(self.lower_complex_projection_values(
+            let values = self.lower_complex_projection_values(
                 expr,
                 ctx.field,
+                expr.span()
+                    .or_else(|| ctx.filter.and_then(rumoca_core::Expression::span))
+                    .unwrap_or(ctx.fallback_span),
                 ctx.scope,
                 ctx.call_depth,
-            )?);
+            )?;
+            append_complex_projection_values(
+                out,
+                values,
+                "complex projection comprehension output count",
+                expr.span().unwrap_or(ctx.fallback_span),
+            )?;
             return Ok(());
         }
 
         let iter = &ctx.indices[depth];
         let iter_values = self.eval_for_index_values(&iter.range, ctx.const_scope)?;
         for value in iter_values {
-            let iter_reg = self.emit_const(value);
+            let iter_reg =
+                self.emit_const_at(value, iter.range.span().unwrap_or(ctx.fallback_span))?;
             ctx.scope.push_frame();
-            ctx.scope
-                .insert_scoped(generated_scope_key(&iter.name), iter_reg);
-            ctx.const_scope.insert(iter.name.clone(), value);
-            let result =
-                self.lower_complex_projection_comprehension_values(expr, depth + 1, ctx, out);
-            ctx.const_scope.shift_remove(&iter.name);
+            let result = (|| {
+                ctx.scope
+                    .insert_scoped(generated_scope_key(&iter.name), iter_reg)?;
+                ctx.const_scope.insert(iter.name.clone(), value);
+                let result =
+                    self.lower_complex_projection_comprehension_values(expr, depth + 1, ctx, out);
+                ctx.const_scope.shift_remove(&iter.name);
+                result
+            })();
             ctx.scope.pop_frame();
             result?;
         }
@@ -693,7 +701,7 @@ impl<'a> LowerBuilder<'a> {
                 continue;
             }
 
-            return missing_required_function_input(function_name, &input.name);
+            return missing_required_function_input(function_name, input);
         }
 
         Ok(FunctionInputBindings {
@@ -720,7 +728,7 @@ impl<'a> LowerBuilder<'a> {
         let projected = rumoca_core::Expression::FieldAccess {
             base: Box::new((*arg_expr).clone()),
             field: field.to_string(),
-            span: arg_expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            span: arg_expr.span().unwrap_or(request.input.span),
         };
         self.bind_function_input_arg_or_closure(
             state,
@@ -898,6 +906,7 @@ impl<'a> LowerBuilder<'a> {
                     function: function_name.as_str().to_string(),
                     what: "required input",
                     input: input.name.clone(),
+                    span: input.span,
                 });
             };
 
@@ -945,12 +954,21 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(false);
         }
-        if req
+        let remaining_positional = req
             .positional_args
             .len()
-            .saturating_sub(*req.positional_idx)
-            < req.fields.len()
-        {
+            .checked_sub(*req.positional_idx)
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!(
+                        "function input positional cursor {} exceeds argument count {}",
+                        req.positional_idx,
+                        req.positional_args.len()
+                    ),
+                    req.input.span,
+                )
+            })?;
+        if remaining_positional < req.fields.len() {
             return Ok(false);
         }
 
@@ -995,8 +1013,15 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<(), LowerError> {
         if !field.dims.is_empty() {
             let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            self.bind_assignment_values_with_dims(state.scope, local_name, &values, &field.dims);
-            self.bind_local_array_shape(local_name, &field.dims, values.len());
+            let span = expr.span().unwrap_or(field.span);
+            self.bind_assignment_values_with_dims(
+                state.scope,
+                local_name,
+                &values,
+                &field.dims,
+                span,
+            )?;
+            self.bind_local_array_shape(local_name, &field.dims, values.len(), span)?;
             return Ok(());
         }
 
@@ -1011,12 +1036,14 @@ impl<'a> LowerBuilder<'a> {
             ) {
                 return Ok(());
             }
-            let dims = inferred_dims
-                .iter()
-                .map(|dim| *dim as i64)
-                .collect::<Vec<_>>();
-            self.bind_assignment_values_with_dims(state.scope, local_name, &values, &dims);
-            self.bind_local_array_shape(local_name, &dims, values.len());
+            let dims = checked_usize_dims_to_i64(
+                &inferred_dims,
+                "flattened record field actual shape",
+                expr.span().unwrap_or(field.span),
+            )?;
+            let span = expr.span().unwrap_or(field.span);
+            self.bind_assignment_values_with_dims(state.scope, local_name, &values, &dims, span)?;
+            self.bind_local_array_shape(local_name, &dims, values.len(), span)?;
             return Ok(());
         }
 
@@ -1044,7 +1071,7 @@ impl<'a> LowerBuilder<'a> {
             name,
             args,
             is_constructor,
-            ..
+            span,
         } = expr
         else {
             return Ok(false);
@@ -1070,9 +1097,7 @@ impl<'a> LowerBuilder<'a> {
             .filter(|(_, arg_expr)| !non_numeric_record_metadata(arg_expr))
         {
             let local_name = format!("{}.{}", input.name, field_name);
-            // Earlier phases must guarantee field names match the registered
-            // constructor, so a missing field is an internal error.
-            let field = record_constructor_field(&fields, &field_name);
+            let field = record_constructor_field(name.as_str(), &fields, &field_name, *span)?;
             self.bind_flattened_record_field_value(
                 FunctionInputBindState {
                     scope: &mut *state.scope,
@@ -1132,7 +1157,14 @@ impl<'a> LowerBuilder<'a> {
             return Ok(());
         }
         if is_complex_param(input) {
-            self.bind_complex_input(state.scope, input, expr, expr_scope, call_depth)?;
+            self.bind_complex_input(
+                state.scope,
+                function_name,
+                input,
+                expr,
+                expr_scope,
+                call_depth,
+            )?;
             return Ok(());
         }
         if !input.dims.is_empty() {
@@ -1148,18 +1180,29 @@ impl<'a> LowerBuilder<'a> {
                 expr.span().unwrap_or(input.span),
             )?;
             if values.len() != expected {
-                return Err(LowerError::ContractViolation {
-                    reason: format!(
-                        "function `{function_name}` input `{}` expected {expected} scalar value(s) for shape {:?}, got {}",
+                let shape = format_i64_dims(&binding_dims);
+                return Err(LowerError::contract_violation(
+                    format!(
+                        "function `{function_name}` input `{}` expected {expected} scalar value(s) for shape {shape}, got {}",
                         input.name,
-                        binding_dims,
                         values.len(),
                     ),
-                    span: expr.span().unwrap_or(input.span),
-                });
+                    expr.span().unwrap_or(input.span),
+                ));
             }
-            self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &binding_dims);
-            self.bind_local_array_shape(&input.name, &binding_dims, values.len());
+            self.bind_assignment_values_with_dims(
+                state.scope,
+                &input.name,
+                &values,
+                &binding_dims,
+                expr.span().unwrap_or(input.span),
+            )?;
+            self.bind_local_array_shape(
+                &input.name,
+                &binding_dims,
+                values.len(),
+                expr.span().unwrap_or(input.span),
+            )?;
             return Ok(());
         }
         let inferred_dims = self.infer_expr_dims(expr, expr_scope)?;
@@ -1173,12 +1216,14 @@ impl<'a> LowerBuilder<'a> {
             ) {
                 return Ok(());
             }
-            let dims = inferred_dims
-                .iter()
-                .map(|dim| *dim as i64)
-                .collect::<Vec<_>>();
-            self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &dims);
-            self.bind_local_array_shape(&input.name, &dims, values.len());
+            let dims = checked_usize_dims_to_i64(
+                &inferred_dims,
+                "function input actual shape",
+                expr.span().unwrap_or(input.span),
+            )?;
+            let span = expr.span().unwrap_or(input.span);
+            self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &dims, span)?;
+            self.bind_local_array_shape(&input.name, &dims, values.len(), span)?;
             return Ok(());
         }
         let reg = match self.lower_expr(expr, expr_scope, call_depth) {
@@ -1189,6 +1234,7 @@ impl<'a> LowerBuilder<'a> {
                     &input.name,
                     expr,
                     expr_scope,
+                    input.span,
                 )? =>
             {
                 return Ok(());
@@ -1199,7 +1245,7 @@ impl<'a> LowerBuilder<'a> {
             state.const_scope.insert(input.name.clone(), value);
             state.const_bindings.insert(input.name.clone(), value);
         }
-        self.clear_local_array_metadata(&input.name);
+        self.clear_local_array_metadata(&input.name, expr.span().unwrap_or(input.span))?;
         state.scope.insert(generated_scope_key(&input.name), reg);
         Ok(())
     }
@@ -1216,58 +1262,34 @@ impl<'a> LowerBuilder<'a> {
         }
         let span = expr.span().unwrap_or(input.span);
         if input.dims.iter().any(|dim| *dim < 0) {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
-                    "function `{function_name}` input `{}` has negative dimension in declared shape {:?}",
-                    input.name, input.dims
+            let shape = format_i64_dims(&input.dims);
+            return Err(LowerError::contract_violation(
+                format!(
+                    "function `{function_name}` input `{}` has negative dimension in declared shape {shape}",
+                    input.name
                 ),
                 span,
-            });
+            ));
         }
         let actual_dims = self.infer_expr_dims(expr, expr_scope)?;
         if actual_dims.len() != input.dims.len() {
-            return Err(LowerError::ContractViolation {
-                reason: format!(
-                    "function `{function_name}` input `{}` expected rank {} for declared shape {:?}, got rank {}",
+            let shape = format_i64_dims(&input.dims);
+            return Err(LowerError::contract_violation(
+                format!(
+                    "function `{function_name}` input `{}` expected rank {} for declared shape {shape}, got rank {}",
                     input.name,
                     input.dims.len(),
-                    input.dims,
                     actual_dims.len()
                 ),
                 span,
-            });
+            ));
         }
         input
             .dims
             .iter()
             .zip(actual_dims)
             .map(|(declared, actual)| {
-                if *declared == 0 {
-                    return i64::try_from(actual).map_err(|_| LowerError::ContractViolation {
-                        reason: format!(
-                            "function `{function_name}` input `{}` actual dimension {actual} exceeds supported range",
-                            input.name
-                        ),
-                        span,
-                    });
-                }
-                let actual = i64::try_from(actual).map_err(|_| LowerError::ContractViolation {
-                    reason: format!(
-                        "function `{function_name}` input `{}` actual dimension {actual} exceeds supported range",
-                        input.name
-                    ),
-                    span,
-                })?;
-                if *declared != actual {
-                    return Err(LowerError::ContractViolation {
-                        reason: format!(
-                            "function `{function_name}` input `{}` expected dimension {declared} in declared shape {:?}, got {actual}",
-                            input.name, input.dims
-                        ),
-                        span,
-                    });
-                }
-                Ok(actual)
+                function_input_actual_dim(function_name, input, *declared, actual, span)
             })
             .collect()
     }
@@ -1278,30 +1300,36 @@ impl<'a> LowerBuilder<'a> {
         input_name: &str,
         expr: &rumoca_core::Expression,
         expr_scope: &Scope,
+        fallback_span: rumoca_core::Span,
     ) -> Result<bool, LowerError> {
         let Ok(base_key) = binding_base_key(expr) else {
             return Ok(false);
         };
+        let span = expr.span().unwrap_or(fallback_span);
         let source_prefix = format!("{base_key}.");
         let mut bound_any = false;
-        for (key, reg) in expr_scope.iter() {
+        let expr_scope_entries =
+            expr_scope.iter_checked("record input scope component source count", span)?;
+        for (key, reg) in expr_scope_entries {
             let Some(suffix) = generated_scope_key_suffix(&key, &source_prefix) else {
                 continue;
             };
-            self.bind_record_input_component(scope, input_name, &key, reg, suffix);
+            self.bind_record_input_component(scope, input_name, &key, reg, suffix, span)?;
             bound_any = true;
         }
 
         let prefix = format!("{base_key}.");
-        let slots = self
-            .layout
-            .bindings()
-            .iter()
-            .filter_map(|(key, slot)| {
-                key.strip_prefix(prefix.as_str())
-                    .map(|suffix| (key.clone(), suffix.to_string(), *slot))
-            })
-            .collect::<Vec<_>>();
+        let mut slots = crate::lower_vec_with_capacity(
+            self.layout.bindings().len(),
+            "record input layout component staging count",
+            span,
+        )?;
+        for (key, slot) in self.layout.bindings() {
+            let Some(suffix) = key.strip_prefix(prefix.as_str()) else {
+                continue;
+            };
+            slots.push((key.clone(), suffix.to_string(), *slot));
+        }
         for (key, suffix, slot) in slots {
             let local_key = format!("{input_name}.{suffix}");
             let local_path = generated_scope_key(&local_key);
@@ -1309,9 +1337,9 @@ impl<'a> LowerBuilder<'a> {
                 continue;
             }
             let slot = self.pre_mode_slot_for_key(&key).unwrap_or(slot);
-            let reg = self.emit_slot_load(slot)?;
+            let reg = self.emit_slot_load(slot, span)?;
             scope.insert(local_path, reg);
-            self.copy_record_input_component_dims(&key, &local_key);
+            self.copy_record_input_component_dims(&key, &local_key, span)?;
             bound_any = true;
         }
 
@@ -1325,12 +1353,14 @@ impl<'a> LowerBuilder<'a> {
         key: &ComponentReferenceKey,
         reg: Reg,
         suffix: &str,
-    ) {
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
         let local_key = format!("{input_name}.{suffix}");
         scope.insert(generated_scope_key(&local_key), reg);
         if let Some(source_key) = generated_scope_key_name(key) {
-            self.copy_record_input_component_dims(source_key, &local_key);
+            self.copy_record_input_component_dims(source_key, &local_key, span)?;
         }
+        Ok(())
     }
 
     fn bind_record_function_call_input(
@@ -1365,10 +1395,18 @@ impl<'a> LowerBuilder<'a> {
         if output.type_class != Some(rumoca_core::ClassType::Record) {
             return Ok(false);
         }
-        self.ensure_pure_inline_function(name.as_str(), &function)?;
+        self.ensure_pure_inline_function(
+            name.as_str(),
+            &function,
+            expr.span().unwrap_or(input.span),
+        )?;
 
         let Some(materialized) = self.materialize_single_record_function_call_components(
-            name, args, expr_scope, call_depth,
+            name,
+            args,
+            expr.span().unwrap_or(input.span),
+            expr_scope,
+            call_depth,
         )?
         else {
             return Ok(false);
@@ -1409,6 +1447,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<MaterializedRecordComponents>, LowerError> {
@@ -1427,7 +1466,7 @@ impl<'a> LowerBuilder<'a> {
         if output.type_class != Some(rumoca_core::ClassType::Record) {
             return Ok(None);
         }
-        self.ensure_pure_inline_function(name.as_str(), &function)?;
+        self.ensure_pure_inline_function(name.as_str(), &function, span)?;
 
         let output_name = output.name.clone();
         self.with_local_lower_frame(|this| {
@@ -1441,7 +1480,8 @@ impl<'a> LowerBuilder<'a> {
             Ok(Some(this.materialized_record_components_from_scope(
                 &output_name,
                 &function_scope,
-            )))
+                output.span,
+            )?))
         })
     }
 
@@ -1449,38 +1489,52 @@ impl<'a> LowerBuilder<'a> {
         &self,
         output_name: &str,
         scope: &Scope,
-    ) -> MaterializedRecordComponents {
+        span: rumoca_core::Span,
+    ) -> Result<MaterializedRecordComponents, LowerError> {
         let source_prefix = format!("{output_name}.");
-        let components = scope
-            .iter()
-            .into_iter()
-            .filter_map(|(key, reg)| {
-                let key_text = generated_scope_key_name(&key)?;
-                key_text.strip_prefix(source_prefix.as_str()).map(|suffix| {
-                    MaterializedRecordComponent {
-                        suffix: suffix.to_string(),
-                        reg,
-                        dims: self.local_binding_dims.get(key_text).cloned(),
-                        known_empty: self.known_empty_local_arrays.contains(key_text),
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        let indexed_components = self
-            .local_indexed_bindings
-            .iter()
-            .filter_map(|(key, bindings)| {
-                key.strip_prefix(source_prefix.as_str())
-                    .map(|suffix| (suffix.to_string(), bindings.clone()))
-            })
-            .collect::<Vec<_>>();
-        MaterializedRecordComponents {
+        let scope_entries = scope.iter_checked("record output component source count", span)?;
+        let mut components = crate::lower_vec_with_capacity(
+            scope_entries.len(),
+            "record output component staging count",
+            span,
+        )?;
+        for (key, reg) in scope_entries {
+            let Some(key_text) = generated_scope_key_name(&key) else {
+                continue;
+            };
+            let Some(suffix) = key_text.strip_prefix(source_prefix.as_str()) else {
+                continue;
+            };
+            components.push(MaterializedRecordComponent {
+                suffix: suffix.to_string(),
+                reg,
+                dims: self.local_binding_dims.get(key_text).cloned(),
+                known_empty: self.known_empty_local_arrays.contains(key_text),
+            });
+        }
+        let mut indexed_components = crate::lower_vec_with_capacity(
+            self.local_indexed_bindings.len(),
+            "record output indexed component staging count",
+            span,
+        )?;
+        for (key, bindings) in &self.local_indexed_bindings {
+            let Some(suffix) = key.strip_prefix(source_prefix.as_str()) else {
+                continue;
+            };
+            indexed_components.push((suffix.to_string(), bindings.clone()));
+        }
+        Ok(MaterializedRecordComponents {
             components,
             indexed_components,
-        }
+        })
     }
 
-    fn copy_record_input_component_dims(&mut self, source_key: &str, local_key: &str) {
+    fn copy_record_input_component_dims(
+        &mut self,
+        source_key: &str,
+        local_key: &str,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
         if let Some(dims) = self.local_binding_dims.get(source_key).cloned() {
             self.local_binding_dims.insert(local_key.to_string(), dims);
             if self.known_empty_local_arrays.contains(source_key) {
@@ -1488,15 +1542,14 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 self.known_empty_local_arrays.shift_remove(local_key);
             }
-            return;
+            return Ok(());
         }
         if let Some(shape) = self.layout.shape(source_key) {
-            self.local_binding_dims.insert(
-                local_key.to_string(),
-                shape.iter().map(|dim| *dim as i64).collect(),
-            );
+            let dims = checked_usize_dims_to_i64(shape, "record input component shape", span)?;
+            self.local_binding_dims.insert(local_key.to_string(), dims);
             self.known_empty_local_arrays.shift_remove(local_key);
         }
+        Ok(())
     }
 
     pub(super) fn with_local_lower_frame<T>(
@@ -1530,8 +1583,14 @@ impl<'a> LowerBuilder<'a> {
         for param in function.outputs.iter().chain(function.locals.iter()) {
             if param.default.is_some() {
                 let values = self.initial_function_param_values(param, scope, call_depth)?;
-                self.bind_assignment_values_with_dims(scope, &param.name, &values, &param.dims);
-                self.bind_local_array_shape(&param.name, &param.dims, values.len());
+                self.bind_assignment_values_with_dims(
+                    scope,
+                    &param.name,
+                    &values,
+                    &param.dims,
+                    param.span,
+                )?;
+                self.bind_local_array_shape(&param.name, &param.dims, values.len(), param.span)?;
                 self.bind_initial_function_param_const(param);
                 continue;
             }
@@ -1542,7 +1601,11 @@ impl<'a> LowerBuilder<'a> {
             // caller elements (e.g. `X[11..13]` of a larger caller array) leak
             // into reads of this function's array output.
             if !param.dims.is_empty() {
-                super::function_projection::clear_indexed_scope_bindings(scope, &param.name);
+                super::function_projection::clear_indexed_scope_bindings(
+                    scope,
+                    &param.name,
+                    param.span,
+                )?;
                 scope.shift_remove(&generated_scope_key(&param.name));
                 self.local_indexed_bindings
                     .shift_remove(param.name.as_str());
@@ -1557,7 +1620,7 @@ impl<'a> LowerBuilder<'a> {
         param: &rumoca_core::FunctionParam,
     ) -> Result<(), LowerError> {
         if param.dims.is_empty() {
-            self.clear_local_array_metadata(&param.name);
+            self.clear_local_array_metadata(&param.name, param.span)?;
             return Ok(());
         }
         self.bind_declared_function_param_shape(param)
@@ -1567,15 +1630,17 @@ impl<'a> LowerBuilder<'a> {
         &self,
         function_name: &str,
         function: &rumoca_core::Function,
+        span: rumoca_core::Span,
     ) -> Result<(), LowerError> {
         if function.pure {
             return Ok(());
         }
-        Err(LowerError::Unsupported {
-            reason: format!(
+        Err(unsupported_at(
+            format!(
                 "impure function call `{function_name}` cannot be lowered as a pure algebraic expression"
             ),
-        })
+            span,
+        ))
     }
 
     pub(super) fn bind_initial_function_param_const(&mut self, param: &rumoca_core::FunctionParam) {
@@ -1590,8 +1655,19 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    pub(super) fn bind_local_array_shape(&mut self, name: &str, dims: &[i64], value_count: usize) {
-        let resolved_dims = resolve_array_dims_for_value_count(dims, value_count);
+    pub(super) fn bind_local_array_shape(
+        &mut self,
+        name: &str,
+        dims: &[i64],
+        value_count: usize,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
+        let resolved_dims = resolve_array_dims_for_value_count(
+            dims,
+            value_count,
+            "local array shape dimension resolution",
+            span,
+        )?;
         for (idx, dim) in resolved_dims.iter().enumerate() {
             let dim = if *dim > 0 {
                 *dim as f64
@@ -1603,22 +1679,32 @@ impl<'a> LowerBuilder<'a> {
             std::sync::Arc::make_mut(&mut self.structural_bindings)
                 .insert(super::size_binding_key(name, idx + 1), dim);
         }
+        Ok(())
     }
 
-    pub(super) fn clear_local_array_metadata(&mut self, name: &str) {
+    pub(super) fn clear_local_array_metadata(
+        &mut self,
+        name: &str,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
         self.local_binding_dims.shift_remove(name);
         self.local_indexed_bindings.shift_remove(name);
         self.known_empty_local_arrays.shift_remove(name);
         let prefix = format!("{}{}.", super::SIZE_BINDING_PREFIX, name);
-        let keys = self
-            .structural_bindings
-            .keys()
-            .filter(|key| key.starts_with(prefix.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut keys = crate::lower_vec_with_capacity(
+            self.structural_bindings.len(),
+            "local array metadata cleanup key count",
+            span,
+        )?;
+        for key in self.structural_bindings.keys() {
+            if key.starts_with(prefix.as_str()) {
+                keys.push(key.clone());
+            }
+        }
         for key in keys {
             std::sync::Arc::make_mut(&mut self.structural_bindings).shift_remove(key.as_str());
         }
+        Ok(())
     }
 
     pub(super) fn set_known_local_array_dims(
@@ -1626,16 +1712,18 @@ impl<'a> LowerBuilder<'a> {
         name: &str,
         dims: Vec<i64>,
         value_count: usize,
-    ) {
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
         let is_empty = !dims.is_empty() && dims.iter().all(|dim| *dim >= 0) && dims.contains(&0);
+        self.bind_local_array_shape(name, &dims, value_count, span)?;
         self.local_binding_dims
             .insert(name.to_string(), dims.clone());
-        self.bind_local_array_shape(name, &dims, value_count);
         if is_empty {
             self.known_empty_local_arrays.insert(name.to_string());
         } else {
             self.known_empty_local_arrays.shift_remove(name);
         }
+        Ok(())
     }
 
     pub(super) fn bind_declared_function_param_shape(
@@ -1654,11 +1742,12 @@ impl<'a> LowerBuilder<'a> {
                     format!("function parameter `{}`", param.name),
                     param.span,
                 )?,
-            );
+                param.span,
+            )?;
             return Ok(());
         }
         if param.dims.contains(&0) && param.shape_expr.is_empty() {
-            self.set_known_local_array_dims(&param.name, param.dims.clone(), 0);
+            self.set_known_local_array_dims(&param.name, param.dims.clone(), 0, param.span)?;
             return Ok(());
         }
         if param.dims.iter().any(|dim| *dim < 0) {
@@ -1672,7 +1761,7 @@ impl<'a> LowerBuilder<'a> {
             format!("function parameter `{}`", param.name),
             param.span,
         )?;
-        self.set_known_local_array_dims(&param.name, param.dims.clone(), value_count);
+        self.set_known_local_array_dims(&param.name, param.dims.clone(), value_count, param.span)?;
         Ok(())
     }
 
@@ -1697,46 +1786,105 @@ impl<'a> LowerBuilder<'a> {
     fn bind_complex_input(
         &mut self,
         scope: &mut Scope,
+        function_name: &str,
         input: &rumoca_core::FunctionParam,
         expr: &rumoca_core::Expression,
         expr_scope: &Scope,
         call_depth: usize,
     ) -> Result<(), LowerError> {
         if input.dims.is_empty() {
-            let (re, im) = self.lower_complex_operand_parts(expr, expr_scope, call_depth)?;
+            let owner_span = expr.span().unwrap_or(input.span);
+            let (re, im) =
+                self.lower_complex_operand_parts(expr, owner_span, expr_scope, call_depth)?;
             self.bind_complex_scalar_components(scope, &input.name, re, im);
             return Ok(());
         }
 
+        let binding_dims =
+            self.resolve_function_input_binding_dims(function_name, input, expr, expr_scope)?;
+        let span = expr.span().unwrap_or(input.span);
+        let expected = dims_scalar_count(
+            &binding_dims,
+            format!(
+                "function `{function_name}` input `{}` declared shape",
+                input.name
+            ),
+            span,
+        )?;
         if let rumoca_core::Expression::FieldAccess { field, .. } = expr
             && matches!(field.as_str(), "re" | "im")
         {
             let component_values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            let zeros = (0..component_values.len())
-                .map(|_| self.emit_const(0.0))
-                .collect::<Vec<_>>();
+            validate_complex_component_width(
+                function_name,
+                input,
+                &binding_dims,
+                expected,
+                component_values.len(),
+                span,
+            )?;
+            let zeros = self.complex_zero_values(component_values.len(), span)?;
             if field == "re" {
-                self.bind_complex_component_values(scope, &input.name, &component_values, &zeros);
+                self.bind_complex_component_values(
+                    scope,
+                    &input.name,
+                    &component_values,
+                    &zeros,
+                    expected,
+                    span,
+                )?;
             } else {
-                self.bind_complex_component_values(scope, &input.name, &zeros, &component_values);
+                self.bind_complex_component_values(
+                    scope,
+                    &input.name,
+                    &zeros,
+                    &component_values,
+                    expected,
+                    span,
+                )?;
             }
+            self.bind_local_array_shape(&input.name, &binding_dims, expected, span)?;
             return Ok(());
         }
 
         let re_expr = rumoca_core::Expression::FieldAccess {
             base: Box::new(expr.clone()),
             field: "re".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
         let im_expr = rumoca_core::Expression::FieldAccess {
             base: Box::new(expr.clone()),
             field: "im".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
 
         let re_values = self.lower_array_like_values(&re_expr, expr_scope, call_depth)?;
         let im_values = self.lower_array_like_values(&im_expr, expr_scope, call_depth)?;
-        self.bind_complex_component_values(scope, &input.name, &re_values, &im_values);
+        validate_complex_component_width(
+            function_name,
+            input,
+            &binding_dims,
+            expected,
+            re_values.len(),
+            span,
+        )?;
+        validate_complex_component_width(
+            function_name,
+            input,
+            &binding_dims,
+            expected,
+            im_values.len(),
+            span,
+        )?;
+        self.bind_complex_component_values(
+            scope,
+            &input.name,
+            &re_values,
+            &im_values,
+            expected,
+            span,
+        )?;
+        self.bind_local_array_shape(&input.name, &binding_dims, expected, span)?;
         Ok(())
     }
 
@@ -1762,26 +1910,44 @@ impl<'a> LowerBuilder<'a> {
         base_name: &str,
         re_values: &[Reg],
         im_values: &[Reg],
-    ) {
+        expected: usize,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
         let width = re_values.len().max(im_values.len());
-        let zero_values = (0..width).map(|_| self.emit_const(0.0)).collect::<Vec<_>>();
-        let first = re_values
-            .first()
-            .copied()
-            .unwrap_or_else(|| self.emit_const(0.0));
-        scope.insert(generated_scope_key(base_name), first);
+        if width != expected {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "Complex input `{base_name}` expected {expected} scalar value(s), got {width}"
+                ),
+                span,
+            ));
+        }
+        let zero_values = self.complex_zero_values(width, span)?;
+        if let Some(first) = re_values.first().copied() {
+            scope.insert(generated_scope_key(base_name), first);
+        }
         if let Some(re) = re_values.first().copied() {
             scope.insert(generated_scope_key(format!("{base_name}.re")), re);
         }
         if let Some(im) = im_values.first().copied() {
             scope.insert(generated_scope_key(format!("{base_name}.im")), im);
         }
-        self.bind_assignment_values(scope, &format!("{base_name}[:].re"), re_values);
-        self.bind_assignment_values(scope, &format!("{base_name}[:].im"), im_values);
-        self.bind_assignment_values(scope, &format!("{base_name}[:].re.re"), re_values);
-        self.bind_assignment_values(scope, &format!("{base_name}[:].re.im"), &zero_values);
-        self.bind_assignment_values(scope, &format!("{base_name}[:].im.re"), &zero_values);
-        self.bind_assignment_values(scope, &format!("{base_name}[:].im.im"), im_values);
+        self.bind_assignment_values_at(scope, &format!("{base_name}[:].re"), re_values, span)?;
+        self.bind_assignment_values_at(scope, &format!("{base_name}[:].im"), im_values, span)?;
+        self.bind_assignment_values_at(scope, &format!("{base_name}[:].re.re"), re_values, span)?;
+        self.bind_assignment_values_at(
+            scope,
+            &format!("{base_name}[:].re.im"),
+            &zero_values,
+            span,
+        )?;
+        self.bind_assignment_values_at(
+            scope,
+            &format!("{base_name}[:].im.re"),
+            &zero_values,
+            span,
+        )?;
+        self.bind_assignment_values_at(scope, &format!("{base_name}[:].im.im"), im_values, span)?;
         for (idx, reg) in re_values.iter().copied().enumerate() {
             scope.insert(
                 generated_scope_key(format!("{base_name}[{}].re", idx + 1)),
@@ -1794,16 +1960,22 @@ impl<'a> LowerBuilder<'a> {
                 reg,
             );
         }
+        Ok(())
+    }
+
+    fn complex_zero_values(
+        &mut self,
+        width: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<Reg>, LowerError> {
+        let mut values =
+            crate::lower_vec_with_capacity(width, "Complex zero component value count", span)?;
+        for _ in 0..width {
+            values.push(self.emit_const_at(0.0, span)?);
+        }
+        Ok(values)
     }
 }
 
-fn record_constructor_field(
-    fields: &[rumoca_core::FunctionParam],
-    field_name: &str,
-) -> rumoca_core::FunctionParam {
-    fields
-        .iter()
-        .find(|field| field.name == field_name)
-        .cloned()
-        .expect("registered record constructor must contain requested field")
-}
+#[cfg(test)]
+mod tests;

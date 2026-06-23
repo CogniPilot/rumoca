@@ -786,7 +786,7 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
     let results = targets.iter().map(|name| {
         (
             name.clone(),
-            compile_model_internal_with_options(tree, name, instantiation_options),
+            compile_model_internal_with_options(tree, name, instantiation_options.clone()),
         )
     });
     finalize_strict_compile_report_from_results(tree, requested_model, &mut failures, results)
@@ -814,7 +814,8 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
         });
 
         targets.par_iter().for_each_with(result_tx, |tx, name| {
-            let result = compile_model_internal_with_options(tree, name, instantiation_options);
+            let result =
+                compile_model_internal_with_options(tree, name, instantiation_options.clone());
             let _ = tx.send((name.clone(), result));
         });
 

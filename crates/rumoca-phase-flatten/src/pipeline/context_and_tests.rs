@@ -106,7 +106,7 @@ impl Context {
             let Some(flat_var) = flat.variables.get(&var_name) else {
                 continue;
             };
-            let span = instance_source_span(instance_data, tree);
+            let span = instance_source_span(instance_data, tree)?;
             let resolved_dims = self.resolve_component_dims_expr(
                 var_name.as_str(),
                 &instance_data.dims_expr,
@@ -1425,9 +1425,9 @@ fn process_class_instance_body(
         for eq in flattened.equations {
             flat.add_equation(eq);
         }
-        for mut for_eq in flattened.for_equations {
+        for mut for_eq in flattened.structured_equations {
             for_eq.first_equation_index += equation_base;
-            flat.add_for_equation(for_eq);
+            flat.add_structured_equation(for_eq);
         }
         flat.assert_equations.extend(flattened.assert_equations);
         flat.when_clauses.extend(flattened.when_clauses);
@@ -1477,9 +1477,9 @@ fn process_class_instance_body(
         for eq in flattened.equations {
             flat.add_initial_equation(eq);
         }
-        for mut for_eq in flattened.for_equations {
+        for mut for_eq in flattened.structured_equations {
             for_eq.first_equation_index += equation_base;
-            flat.add_initial_for_equation(for_eq);
+            flat.add_initial_structured_equation(for_eq);
         }
         flat.initial_assert_equations
             .extend(flattened.assert_equations);
@@ -1580,8 +1580,16 @@ pub(crate) fn flatten_algorithm_section(
     source_map: &rumoca_core::SourceMap,
     instance_name: Option<&str>,
 ) -> Result<Algorithm, FlattenError> {
-    // Get span from first statement if available
-    let span = statements.first().map(|s| s.span).unwrap_or(Span::DUMMY);
+    let span = statements
+        .iter()
+        .map(|statement| statement.span)
+        .find(|span| !span.is_dummy())
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "algorithm section for `{}` has no statement source span",
+                prefix.to_flat_string()
+            ))
+        })?;
 
     // Extract raw statements from InstanceStatements
     let raw_statements: Vec<_> = statements.iter().map(|s| s.statement.clone()).collect();
@@ -1689,12 +1697,25 @@ pub(crate) fn process_component_instance(
 fn instance_source_span(
     instance_data: &rumoca_ir_ast::InstanceData,
     tree: &rumoca_ir_ast::ClassTree,
-) -> rumoca_core::Span {
-    tree.source_map.location_to_span(
-        &instance_data.source_location.file_name,
-        instance_data.source_location.start as usize,
-        instance_data.source_location.end as usize,
-    )
+) -> Result<rumoca_core::Span, FlattenError> {
+    let location = &instance_data.source_location;
+    if location.file_name.is_empty() || location.start >= location.end {
+        return Err(FlattenError::missing_source_context(
+            "symbolic component dimensions are missing a non-empty source location",
+        ));
+    }
+    tree.source_map
+        .try_location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        )
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "source file `{}` for symbolic component dimensions was not found",
+                location.file_name
+            ))
+        })
 }
 
 /// Convert a QualifiedName to a flat VarName string.

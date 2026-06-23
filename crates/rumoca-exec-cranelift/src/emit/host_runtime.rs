@@ -1,8 +1,8 @@
 use cranelift_jit::JITBuilder;
 use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
-    try_eval_table_bound_value_in, try_eval_table_lookup_slope_value_in,
-    try_eval_table_lookup_value_in, try_eval_time_table_next_event_value_in,
+    eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
+    eval_time_table_next_event_value_in,
 };
 use std::cell::Cell;
 
@@ -145,19 +145,19 @@ extern "C" fn rumoca_host_powf(x: f64, y: f64) -> f64 {
 
 pub(super) extern "C" fn rumoca_host_table_bounds_min(table_id: f64) -> f64 {
     with_current_external_tables(|tables| {
-        try_eval_table_bound_value_in(table_id, false, tables).unwrap_or(f64::NAN)
+        eval_table_bound_value_in(table_id, false, tables).unwrap_or(f64::NAN)
     })
 }
 
 pub(super) extern "C" fn rumoca_host_table_bounds_max(table_id: f64) -> f64 {
     with_current_external_tables(|tables| {
-        try_eval_table_bound_value_in(table_id, true, tables).unwrap_or(f64::NAN)
+        eval_table_bound_value_in(table_id, true, tables).unwrap_or(f64::NAN)
     })
 }
 
 pub(super) extern "C" fn rumoca_host_table_lookup(table_id: f64, column: f64, input: f64) -> f64 {
     with_current_external_tables(|tables| {
-        try_eval_table_lookup_value_in(table_id, column, input, tables).unwrap_or(f64::NAN)
+        eval_table_lookup_value_in(table_id, column, input, tables).unwrap_or(f64::NAN)
     })
 }
 
@@ -167,12 +167,12 @@ pub(super) extern "C" fn rumoca_host_table_lookup_slope(
     input: f64,
 ) -> f64 {
     with_current_external_tables(|tables| {
-        try_eval_table_lookup_slope_value_in(table_id, column, input, tables).unwrap_or(f64::NAN)
+        eval_table_lookup_slope_value_in(table_id, column, input, tables).unwrap_or(f64::NAN)
     })
 }
 
 pub(super) extern "C" fn rumoca_host_table_next_event(table_id: f64, time: f64) -> f64 {
     with_current_external_tables(|tables| {
-        try_eval_time_table_next_event_value_in(table_id, time, tables).unwrap_or(f64::NAN)
+        eval_time_table_next_event_value_in(table_id, time, tables).unwrap_or(f64::NAN)
     })
 }

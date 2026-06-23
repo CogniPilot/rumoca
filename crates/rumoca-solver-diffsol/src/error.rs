@@ -11,6 +11,9 @@ pub enum SimError {
     #[error("solve-IR evaluation failed: {0}")]
     SolveIr(String),
 
+    #[error("diffsol runtime contract violation: {reason}")]
+    RuntimeContract { reason: String },
+
     #[error("Modelica assert failed at t={time:.9}: {message}")]
     AssertionFailed { time: f64, message: String },
 
@@ -30,7 +33,13 @@ impl SimError {
 impl From<RuntimeSolveError> for SimError {
     fn from(value: RuntimeSolveError) -> Self {
         match value {
-            RuntimeSolveError::SolveIr(message) => Self::SolveIr(message),
+            RuntimeSolveError::SolveIr { message, span } => {
+                let message = match span {
+                    Some(span) => format!("{message} @ {span:?}"),
+                    None => message,
+                };
+                Self::SolveIr(message)
+            }
             RuntimeSolveError::UnsupportedModel { reason } => Self::SolveIr(reason),
             RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
                 "non-finite derivative evaluation for state '{state_name}'"
@@ -39,5 +48,17 @@ impl From<RuntimeSolveError> for SimError {
                 Self::SolveIr(non_finite.to_string())
             }
         }
+    }
+}
+
+impl From<rumoca_eval_solve::EvalSolveError> for SimError {
+    fn from(value: rumoca_eval_solve::EvalSolveError) -> Self {
+        Self::SolveIr(value.to_string())
+    }
+}
+
+impl From<rumoca_eval_solve::ScalarizeError> for SimError {
+    fn from(value: rumoca_eval_solve::ScalarizeError) -> Self {
+        Self::SolveIr(value.to_string())
     }
 }

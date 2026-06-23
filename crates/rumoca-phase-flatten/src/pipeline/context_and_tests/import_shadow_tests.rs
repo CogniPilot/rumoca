@@ -2,6 +2,14 @@ use std::sync::Arc;
 
 use super::*;
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("import_shadow_test.mo"),
+        1,
+        2,
+    )
+}
+
 fn token(text: &str) -> rumoca_core::Token {
     rumoca_core::Token {
         text: Arc::from(text),
@@ -17,7 +25,7 @@ fn comp_ref(name: &str, def_id: rumoca_core::DefId) -> ast::Expression {
             subs: None,
         }],
         def_id: Some(def_id),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     })
 }
 
@@ -32,7 +40,7 @@ fn comp_ref_parts(parts: &[&str]) -> ast::ComponentReference {
             })
             .collect(),
         def_id: None,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -118,7 +126,7 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
         args: vec![ast::Expression::ComponentReference(comp_ref_parts(&[
             "medium", "state",
         ]))],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let prefix = QualifiedName::from_dotted("tank");
 

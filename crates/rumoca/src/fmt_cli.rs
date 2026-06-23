@@ -4,10 +4,10 @@ use anyhow::Result;
 use clap::{Args, ValueEnum};
 use rumoca_tool_fmt::PartialFormatOptions;
 
-use crate::{collect_modelica_files, normalize_target_paths, validate_explicit_target_paths};
+use crate::cli::{collect_modelica_files, normalize_target_paths, validate_explicit_target_paths};
 
 #[derive(Args, Debug)]
-pub(crate) struct FmtArgs {
+pub struct FmtArgs {
     /// Files or directories to format. If empty, formats current directory.
     #[arg()]
     pub(crate) paths: Vec<PathBuf>,

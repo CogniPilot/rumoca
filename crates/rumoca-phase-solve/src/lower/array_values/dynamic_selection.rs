@@ -5,12 +5,17 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         base: &rumoca_core::Expression,
         subscripts: &[rumoca_core::Subscript],
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
     ) -> Result<Option<Reg>, LowerError> {
         let Ok(base_key) = dynamic_binding_base_key(base) else {
             return Ok(None);
         };
-        let Some(indices) = self.compile_time_subscript_indices(subscripts)? else {
+        let Some(owner_span) = owner_span.or_else(|| base.span().filter(|span| !span.is_dummy()))
+        else {
+            return Ok(None);
+        };
+        let Some(indices) = self.compile_time_subscript_indices(subscripts, owner_span)? else {
             return Ok(None);
         };
         if indices.is_empty() {
@@ -40,10 +45,22 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Some(value));
         }
         if let Some(slot) = self.pre_mode_slot_for_key(indexed_key.as_str()) {
-            return Ok(Some(self.emit_slot_load(slot)?));
+            let span = required_expr_span_from_subscripts_or_base(
+                subscripts,
+                base,
+                Some(owner_span),
+                "compile-time indexed pre-mode slot load",
+            )?;
+            return Ok(Some(self.emit_slot_load(slot, span)?));
         }
         if let Some(slot) = self.layout.binding(indexed_key.as_str()) {
-            return Ok(Some(self.emit_slot_load(slot)?));
+            let span = required_expr_span_from_subscripts_or_base(
+                subscripts,
+                base,
+                Some(owner_span),
+                "compile-time indexed slot load",
+            )?;
+            return Ok(Some(self.emit_slot_load(slot, span)?));
         }
         Ok(None)
     }
@@ -52,29 +69,41 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         base: &rumoca_core::Expression,
         subscripts: &[rumoca_core::Subscript],
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        let Some(mut values) =
-            self.lower_array_like_dynamic_selection_values(base, subscripts, scope, call_depth)?
+        let Some(mut values) = self.lower_array_like_dynamic_selection_values(
+            base, subscripts, owner_span, scope, call_depth,
+        )?
         else {
             return Ok(None);
         };
         if values.len() != 1 {
-            return Err(LowerError::Unsupported {
-                reason: format!(
+            return Err(unsupported_at(
+                format!(
                     "array-like dynamic index selected {} values where a scalar was required",
                     values.len()
                 ),
-            });
+                required_expr_span_from_subscripts_or_base(
+                    subscripts,
+                    base,
+                    owner_span,
+                    "array-like dynamic index scalar selection",
+                )?,
+            ));
         }
         Ok(values.pop())
     }
 
+    // SPEC_0021: Exception - dynamic selector assembly keeps selection proof,
+    // tuple construction, and value lookup together to preserve span context.
+    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn lower_array_like_dynamic_selection_values(
         &mut self,
         base: &rumoca_core::Expression,
         subscripts: &[rumoca_core::Subscript],
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
@@ -96,37 +125,67 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
 
-        let values = self.lower_array_like_values(base, scope, call_depth)?;
-        let index_tuples = one_based_index_tuples(&dims);
+        let span = required_expr_span_from_subscripts_or_base(
+            subscripts,
+            base,
+            owner_span,
+            "array-like dynamic selection",
+        )?;
+        let values = self.lower_array_like_values_with_optional_source_context(
+            base, owner_span, scope, call_depth,
+        )?;
+        let index_tuples = one_based_index_tuples(&dims, span)?;
         if values.len() != index_tuples.len() {
-            return Err(LowerError::Unsupported {
-                reason: format!(
-                    "array-like dynamic index shape mismatch: {} values for shape {:?}",
+            return Err(unsupported_at(
+                format!(
+                    "array-like dynamic index shape mismatch: {} values for shape {}",
                     values.len(),
-                    dims
+                    format_usize_dims(&dims)
                 ),
-            });
+                span,
+            ));
         }
 
         let selection_parts =
-            self.lower_array_like_selection_parts(subscripts, &dims, scope, call_depth)?;
-        let slice_choices = selection_parts
-            .iter()
-            .filter_map(|part| part.slice_indices.clone())
-            .collect::<Vec<_>>();
+            self.lower_array_like_selection_parts(subscripts, &dims, span, scope, call_depth)?;
+        let mut slice_choices = array_vec_with_capacity(
+            selection_parts.len(),
+            "array dynamic slice choice count",
+            span,
+        )?;
+        for part in &selection_parts {
+            if let Some(indices) = &part.slice_indices {
+                let mut choice = array_vec_with_capacity(
+                    indices.len(),
+                    "array dynamic slice index count",
+                    span,
+                )?;
+                for index in indices {
+                    choice.push(*index);
+                }
+                slice_choices.push(choice);
+            }
+        }
         let output_tuples = if slice_choices.is_empty() {
-            vec![Vec::new()]
+            let mut tuples = array_vec_with_capacity(1, "array dynamic output tuple count", span)?;
+            tuples.push(Vec::new());
+            tuples
         } else {
-            index_choice_tuples(&slice_choices)
+            index_choice_tuples(&slice_choices, span)?
         };
-        let mut selected_values = Vec::with_capacity(output_tuples.len());
+        let mut selected_values = array_vec_with_capacity(
+            output_tuples.len(),
+            "array dynamic selected value count",
+            span,
+        )?;
         for output_tuple in output_tuples {
             selected_values.push(self.select_array_like_output_tuple(
                 &selection_parts,
                 &index_tuples,
                 &values,
                 &output_tuple,
-            ));
+                span,
+            )?);
         }
         Ok(Some(selected_values))
     }
@@ -137,63 +196,82 @@ impl<'a> LowerBuilder<'a> {
         index_tuples: &[Vec<usize>],
         values: &[Reg],
         output_tuple: &[usize],
-    ) -> Reg {
-        let mut merged = self.emit_const(0.0);
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        let mut merged = self.emit_const_at(0.0, span)?;
         for (indices, value) in index_tuples.iter().zip(values.iter().copied()) {
             if slice_indices_match(selection_parts, indices, output_tuple) {
-                let cond = self.emit_non_slice_subscript_match(selection_parts, indices);
-                merged = self.emit_select(cond, value, merged);
+                let cond =
+                    self.emit_non_slice_subscript_match_at(selection_parts, indices, span)?;
+                merged = self.emit_select_at(cond, value, merged, span)?;
             }
         }
-        merged
+        Ok(merged)
     }
 
     pub(in crate::lower) fn lower_array_like_selection_parts(
         &mut self,
         subscripts: &[rumoca_core::Subscript],
         dims: &[usize],
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<ArraySelectionPart>, LowerError> {
-        dims.iter()
-            .copied()
-            .enumerate()
-            .map(|(dim_index, dim)| match subscripts.get(dim_index) {
-                Some(rumoca_core::Subscript::Colon { .. }) => Ok(ArraySelectionPart {
+        let mut parts =
+            array_vec_with_capacity(dims.len(), "array dynamic selection part count", span)?;
+        for (dim_index, dim) in dims.iter().copied().enumerate() {
+            let part = match subscripts.get(dim_index) {
+                Some(rumoca_core::Subscript::Colon { span }) => ArraySelectionPart {
                     selector: None,
-                    slice_indices: Some((1..=dim).collect()),
-                }),
+                    slice_indices: Some(one_based_indices(
+                        dim,
+                        "array dynamic colon slice count",
+                        *span,
+                    )?),
+                },
                 Some(rumoca_core::Subscript::Expr { expr, .. })
                     if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
                 {
-                    Ok(ArraySelectionPart {
+                    let range_subscript = rumoca_core::Subscript::try_generated_expr(
+                        expr.clone(),
+                        span,
+                        "array dynamic range selection subscript",
+                    )?;
+                    ArraySelectionPart {
                         selector: None,
                         slice_indices: Some(self.slice_subscript_indices(
-                            &rumoca_core::Subscript::generated_expr(expr.clone()),
+                            &range_subscript,
                             dim,
                             scope,
                         )?),
-                    })
+                    }
                 }
-                Some(subscript) => Ok(ArraySelectionPart {
+                Some(subscript) => ArraySelectionPart {
                     selector: Some(
-                        self.lower_structural_index_selector(subscript, scope, call_depth)?,
+                        self.lower_structural_index_selector(subscript, span, scope, call_depth)?,
                     ),
                     slice_indices: None,
-                }),
-                None => Ok(ArraySelectionPart {
+                },
+                None => ArraySelectionPart {
                     selector: None,
-                    slice_indices: Some((1..=dim).collect()),
-                }),
-            })
-            .collect()
+                    slice_indices: Some(one_based_indices(
+                        dim,
+                        "array dynamic implicit slice count",
+                        span,
+                    )?),
+                },
+            };
+            parts.push(part);
+        }
+        Ok(parts)
     }
 
-    pub(in crate::lower) fn emit_non_slice_subscript_match(
+    pub(in crate::lower) fn emit_non_slice_subscript_match_at(
         &mut self,
         parts: &[ArraySelectionPart],
         indices: &[usize],
-    ) -> Reg {
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
         let mut regs = Vec::new();
         let mut expected = Vec::new();
         for (part, index) in parts.iter().zip(indices.iter().copied()) {
@@ -203,16 +281,18 @@ impl<'a> LowerBuilder<'a> {
             }
         }
         if regs.is_empty() {
-            return self.emit_const(1.0);
+            return self.emit_const_at(1.0, span);
         }
-        self.emit_subscript_match(&regs, &expected)
+        self.emit_subscript_match_at(&regs, &expected, span)
     }
 
     pub(in crate::lower) fn load_binding_keys(
         &mut self,
         keys: &[String],
+        span: rumoca_core::Span,
     ) -> Result<Vec<Reg>, LowerError> {
-        let mut values = Vec::with_capacity(keys.len());
+        let mut values =
+            array_vec_with_capacity(keys.len(), "array binding load value count", span)?;
         for key in keys {
             if let Some(mut direct_values) =
                 self.lower_direct_assignment_values_for_key(key, &Scope::new(), 0)?
@@ -224,7 +304,7 @@ impl<'a> LowerBuilder<'a> {
             let Some(slot) = self.layout.binding(key.as_str()) else {
                 return Err(LowerError::MissingBinding { name: key.clone() });
             };
-            values.push(self.emit_slot_load(slot)?);
+            values.push(self.emit_slot_load(slot, span)?);
         }
         Ok(values)
     }
@@ -246,6 +326,7 @@ impl<'a> LowerBuilder<'a> {
         &self,
         base_name: &str,
         subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Option<Vec<String>>, LowerError> {
         let Some(shape) = self.layout.shape(base_name) else {
@@ -255,7 +336,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
 
-        let selections = self.slice_selections(subscripts, shape, scope)?;
+        let selections = self.slice_selections(subscripts, shape, span, scope)?;
         let mut keys = Vec::new();
         collect_slice_binding_keys(base_name, &selections, 0, &mut Vec::new(), &mut keys);
         Ok(Some(keys))
@@ -265,20 +346,27 @@ impl<'a> LowerBuilder<'a> {
         &self,
         subscripts: &[rumoca_core::Subscript],
         shape: &[usize],
+        span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Vec<Vec<usize>>, LowerError> {
         if subscripts.len() > shape.len() {
-            return Err(LowerError::Unsupported {
-                reason: "array slice has more subscripts than dimensions".to_string(),
-            });
+            return Err(unsupported_at(
+                "array slice has more subscripts than dimensions",
+                span,
+            ));
         }
 
-        let mut selections = Vec::with_capacity(shape.len());
+        let mut selections =
+            array_vec_with_capacity(shape.len(), "array slice selection count", span)?;
         for (dim_index, subscript) in subscripts.iter().enumerate() {
             selections.push(self.slice_subscript_indices(subscript, shape[dim_index], scope)?);
         }
         for &dim in &shape[subscripts.len()..] {
-            selections.push((1..=dim).collect());
+            selections.push(one_based_indices(
+                dim,
+                "array implicit slice index count",
+                span,
+            )?);
         }
         Ok(selections)
     }
@@ -290,49 +378,77 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Vec<usize>, LowerError> {
         match subscript {
-            rumoca_core::Subscript::Index { value, .. } if *value > 0 => Ok(vec![*value as usize]),
-            rumoca_core::Subscript::Expr { expr, .. } => self.slice_expr_indices(expr, dim, scope),
-            rumoca_core::Subscript::Colon { .. } => Ok((1..=dim).collect()),
-            _ => Err(LowerError::Unsupported {
-                reason: "non-positive subscript is unsupported".to_string(),
-            }),
+            rumoca_core::Subscript::Index { value, span } if *value > 0 => single_usize_vec(
+                crate::lower::helpers::positive_i64_index(*value, *span)?,
+                "array scalar slice index count",
+                *span,
+            ),
+            rumoca_core::Subscript::Expr { expr, span } => {
+                self.slice_expr_indices(expr, dim, scope, *span)
+            }
+            rumoca_core::Subscript::Colon { span } => {
+                one_based_indices(dim, "array colon slice index count", *span)
+            }
+            _ => Err(unsupported_at(
+                "non-positive subscript is unsupported".to_string(),
+                subscript.span(),
+            )),
         }
     }
 
+    // SPEC_0021: Exception - range and scalar selector normalization stay
+    // together so selector errors report the original subscript span.
+    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn slice_expr_indices(
         &self,
         expr: &rumoca_core::Expression,
         dim: usize,
         scope: &Scope,
+        context_span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         let const_scope = self.compile_time_slice_bindings(scope);
+        let span = expr.span().unwrap_or(context_span);
         let indices = match expr {
             rumoca_core::Expression::Range {
-                start, step, end, ..
+                start,
+                step,
+                end,
+                span: range_span,
             } => {
+                let range_span = if range_span.is_dummy() {
+                    span
+                } else {
+                    *range_span
+                };
                 let values = self.eval_compile_time_range_values(
                     start,
                     step.as_deref(),
                     end,
+                    range_span,
                     &const_scope,
                     "array slice range",
                 )?;
-                values
-                    .into_iter()
-                    .map(|value| {
-                        usize::try_from(value).map_err(|_| LowerError::Unsupported {
-                            reason: "array slice range index must be positive".to_string(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
+                let mut indices =
+                    array_vec_with_capacity(values.len(), "array slice range index count", span)?;
+                for value in values {
+                    indices.push(usize::try_from(value).map_err(|_| {
+                        unsupported_at("array slice range index must be positive", span)
+                    })?);
+                }
+                indices
             }
-            _ => vec![self.eval_compile_time_positive_index(
-                expr,
-                &const_scope,
-                "array slice index",
-            )?],
+            _ => single_usize_vec(
+                self.eval_compile_time_positive_index_at(
+                    expr,
+                    &const_scope,
+                    "array slice index",
+                    span,
+                )?,
+                "array slice scalar index count",
+                span,
+            )?,
         };
-        validate_slice_indices(&indices, dim)?;
+        validate_slice_indices(&indices, dim, span)?;
         Ok(indices)
     }
 
@@ -340,6 +456,20 @@ impl<'a> LowerBuilder<'a> {
         let mut bindings = (*self.structural_bindings).clone();
         bindings.extend(self.local_const_bindings.clone());
         bindings
+    }
+
+    fn required_dynamic_selection_span(
+        &self,
+        candidates: &[&rumoca_core::Expression],
+        context: &'static str,
+    ) -> Result<rumoca_core::Span, LowerError> {
+        candidates
+            .iter()
+            .find_map(|expr| expr.span())
+            .or_else(|| self.active_source_context_span())
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("missing source provenance for {context}"),
+            })
     }
 
     pub(in crate::lower) fn lower_field_access_array_like_values(
@@ -350,7 +480,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        if let Some(values) = self.lower_indexed_record_field_values(base, field, scope)? {
+        let owner_span = expr.span().or_else(|| self.active_source_context_span());
+        if let Some(values) =
+            self.lower_indexed_record_field_values(base, field, owner_span, scope)?
+        {
             return Ok(values);
         }
         if let Some(values) =
@@ -359,19 +492,30 @@ impl<'a> LowerBuilder<'a> {
             return Ok(values);
         }
         if let Some(values) =
-            self.lower_record_array_slice_field_values(base, field, scope, call_depth)?
+            self.lower_record_array_slice_field_values(base, field, owner_span, scope, call_depth)?
         {
             return Ok(values);
         }
         if let Ok(key) = field_access_binding_key(base, field)
-            && let Some(values) = self.lower_indexed_binding_values(key.as_str())?
+            && let Some(values) = self.lower_indexed_binding_values_at(
+                key.as_str(),
+                owner_span.ok_or_else(|| LowerError::UnspannedContractViolation {
+                    reason: format!(
+                        "field access `{}` requires source span metadata",
+                        key.as_str()
+                    ),
+                })?,
+            )?
         {
             return Ok(values);
         }
         if let Some(values) = self.lower_structural_field_values(base, field, scope, call_depth)? {
             return Ok(values);
         }
-        Ok(vec![self.lower_expr(expr, scope, call_depth)?])
+        let span = self.required_dynamic_selection_span(&[expr], "field access fallback value")?;
+        let mut values = array_vec_with_capacity(1, "field access fallback value count", span)?;
+        values.push(self.lower_expr(expr, scope, call_depth)?);
+        Ok(values)
     }
 
     /// Lowers a record-array member slice such as `ac.pin[:].v` by loading
@@ -382,6 +526,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         base: &rumoca_core::Expression,
         field: &str,
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
@@ -410,6 +555,11 @@ impl<'a> LowerBuilder<'a> {
         let Some(component_ref) = name.component_ref() else {
             return Ok(None);
         };
+        let span = Self::non_dummy_span(*span).or(owner_span).ok_or_else(|| {
+            LowerError::UnspannedContractViolation {
+                reason: "missing source provenance for record array member slice".to_string(),
+            }
+        })?;
         let mut values = Vec::new();
         for element in 1.. {
             let key = format!("{}[{element}].{field}", name.as_str());
@@ -420,26 +570,28 @@ impl<'a> LowerBuilder<'a> {
             let Some(last) = element_ref.parts.last_mut() else {
                 return Ok(None);
             };
-            last.subs = vec![rumoca_core::Subscript::generated_index(
-                element as i64,
-                *span,
-            )];
+            let element_index = i64::from(element);
+            last.subs = vec![rumoca_core::Subscript::try_generated_index(
+                element_index,
+                span,
+                "record array member slice subscript",
+            )?];
             element_ref.parts.push(rumoca_core::ComponentRefPart {
                 ident: field.to_string(),
-                span: *span,
+                span,
                 subs: Vec::new(),
             });
             let element_expr = rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(element_ref),
                 subscripts: vec![],
-                span: *span,
+                span,
             };
             values.push(self.lower_expr(&element_expr, scope, call_depth)?);
         }
         if values.is_empty() {
             return Ok(None);
         }
-        self.ensure_dense_record_array_slice(name.as_str(), field, values.len(), *span)?;
+        self.ensure_dense_record_array_slice(name.as_str(), field, values.len(), span)?;
         Ok(Some(values))
     }
 
@@ -465,14 +617,14 @@ impl<'a> LowerBuilder<'a> {
                 continue;
             };
             if index > found {
-                return Err(LowerError::ContractViolation {
-                    reason: format!(
+                let missing = missing_record_array_member_index(found, span)?;
+                return Err(LowerError::contract_violation(
+                    format!(
                         "record-array member slice `{base}[:].{field}` is not densely \
-                         scalarized: element {index} exists but element {} is missing",
-                        found + 1
+                         scalarized: element {index} exists but element {missing} is missing",
                     ),
                     span,
-                });
+                ));
             }
         }
         Ok(())
@@ -528,10 +680,14 @@ impl<'a> LowerBuilder<'a> {
             .map(Some)
     }
 
+    // SPEC_0021: Exception - indexed record-field lowering handles scalar and
+    // sliced selector forms in one pass to keep generated binding keys ordered.
+    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn lower_indexed_record_field_values(
         &mut self,
         base: &rumoca_core::Expression,
         field: &str,
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         let rumoca_core::Expression::Index {
@@ -554,11 +710,29 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
         if subscripts.len() == dims.len() && subscripts.iter().all(is_scalar_selector_subscript) {
+            let span = required_expr_span_from_subscripts_or_base(
+                subscripts,
+                base,
+                owner_span,
+                "dynamic indexed record field scalar selection",
+            )?;
             return self
-                .lower_dynamic_indexed_record_field_value(subscripts, &field_keys, scope)
-                .map(|value| value.map(|reg| vec![reg]));
+                .lower_dynamic_indexed_record_field_value(subscripts, &field_keys, span, scope)
+                .and_then(|value| {
+                    value
+                        .map(|reg| {
+                            single_reg_vec(reg, "dynamic indexed record field value count", span)
+                        })
+                        .transpose()
+                });
         }
-        let selections = self.slice_selections(subscripts, &dims, scope)?;
+        let span = required_expr_span_from_subscripts_or_base(
+            subscripts,
+            base,
+            owner_span,
+            "dynamic indexed record field slice selection",
+        )?;
+        let selections = self.slice_selections(subscripts, &dims, span, scope)?;
         let mut keys = Vec::new();
         collect_indexed_record_field_keys(
             base_key.as_str(),
@@ -568,31 +742,33 @@ impl<'a> LowerBuilder<'a> {
             &mut Vec::new(),
             &mut keys,
         );
-        self.load_binding_keys(&keys).map(Some)
+        self.load_binding_keys(&keys, span).map(Some)
     }
 
     pub(in crate::lower) fn lower_dynamic_indexed_record_field_value(
         &mut self,
         subscripts: &[rumoca_core::Subscript],
         field_keys: &IndexMap<Vec<usize>, String>,
+        span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Option<Reg>, LowerError> {
-        let selectors = subscripts
-            .iter()
-            .map(|subscript| self.lower_structural_index_selector(subscript, scope, 0))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut merged = self.emit_const(0.0);
+        let mut selectors =
+            array_vec_with_capacity(subscripts.len(), "dynamic selector value count", span)?;
+        for subscript in subscripts {
+            selectors.push(self.lower_structural_index_selector(subscript, span, scope, 0)?);
+        }
+        let mut merged = self.emit_const_at(0.0, span)?;
         let mut matched = false;
         for (indices, key) in field_keys {
             if indices.len() != selectors.len() {
                 continue;
             }
-            let mut values = self.load_binding_keys(std::slice::from_ref(key))?;
+            let mut values = self.load_binding_keys(std::slice::from_ref(key), span)?;
             let value = values
                 .pop()
                 .ok_or_else(|| LowerError::MissingBinding { name: key.clone() })?;
-            let cond = self.emit_subscript_match(&selectors, indices);
-            merged = self.emit_select(cond, value, merged);
+            let cond = self.emit_subscript_match_at(&selectors, indices, span)?;
+            merged = self.emit_select_at(cond, value, merged, span)?;
             matched = true;
         }
         Ok(matched.then_some(merged))
@@ -603,31 +779,54 @@ impl<'a> LowerBuilder<'a> {
         start: &rumoca_core::Expression,
         step: Option<&rumoca_core::Expression>,
         end: &rumoca_core::Expression,
+        range_span: rumoca_core::Span,
     ) -> Result<Vec<Reg>, LowerError> {
-        let Some(values) = lower_static_range_values(start, step, end)? else {
-            return Err(LowerError::Unsupported {
-                reason: "dynamic range array expansion requires known structural bounds"
-                    .to_string(),
-            });
+        let span = if range_span.is_dummy() {
+            start
+                .span()
+                .or_else(|| step.and_then(rumoca_core::Expression::span))
+                .or_else(|| end.span())
+                .ok_or_else(|| LowerError::UnspannedContractViolation {
+                    reason: "missing source provenance for range array expansion".to_string(),
+                })?
+        } else {
+            range_span
         };
-        Ok(values
-            .into_iter()
-            .map(|value| self.emit_const(value))
-            .collect())
+        let Some(values) = lower_static_range_values(start, step, end, range_span)? else {
+            return Err(unsupported_at(
+                "dynamic range array expansion requires known structural bounds",
+                span,
+            ));
+        };
+        let mut regs = array_vec_with_capacity(values.len(), "range array value count", span)?;
+        for value in values {
+            regs.push(self.emit_const_at(value, span)?);
+        }
+        Ok(regs)
     }
 
     pub(in crate::lower) fn lower_unary_array_like_values(
         &mut self,
         op: &rumoca_core::OpUnary,
         rhs: &rumoca_core::Expression,
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let values = self.lower_array_like_values(rhs, scope, call_depth)?;
-        values
-            .into_iter()
-            .map(|value| self.lower_unary(op.clone(), value))
-            .collect()
+        let values = self.lower_array_like_values_with_optional_source_context(
+            rhs, owner_span, scope, call_depth,
+        )?;
+        let span =
+            rhs.span()
+                .or(owner_span)
+                .ok_or_else(|| LowerError::UnspannedContractViolation {
+                    reason: "missing source provenance for unary array value lowering".to_string(),
+                })?;
+        let mut lowered = array_vec_with_capacity(values.len(), "unary array value count", span)?;
+        for value in values {
+            lowered.push(self.lower_unary(op.clone(), value, span)?);
+        }
+        Ok(lowered)
     }
 
     pub(in crate::lower) fn lower_user_function_call_array_values(
@@ -638,13 +837,13 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        if let Some(projection) = self.lookup_function_output_projection(name)
+        if let Some(projection) = self.lookup_function_output_projection(name, span)?
             && let Some(values) =
-                self.lower_fft_projection_values(&projection, args, caller_scope, call_depth)?
+                self.lower_fft_projection_values(&projection, args, span, caller_scope, call_depth)?
         {
             return Ok(Some(values));
         }
-        if let Some(projection) = self.lookup_function_output_projection(name)
+        if let Some(projection) = self.lookup_function_output_projection(name, span)?
             && projection.indices.is_empty()
             && projection.output_field.is_none()
         {
@@ -653,6 +852,7 @@ impl<'a> LowerBuilder<'a> {
                     &projection.base_function_name,
                     &projection.output_name,
                     args,
+                    span,
                     caller_scope,
                     call_depth,
                 )
@@ -674,7 +874,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Vec<Reg>, LowerError> {
         if output.type_class == Some(rumoca_core::ClassType::Record)
-            && let Some(values) = record_output_component_values(&output.name, scope)
+            && let Some(values) = record_output_component_values(&output.name, scope, output.span)?
         {
             return Ok(values);
         }
@@ -724,7 +924,7 @@ impl<'a> LowerBuilder<'a> {
         let [subscript] = subscripts else {
             return Ok(None);
         };
-        let output_number = lower_subscript_index(subscript)?;
+        let output_number = lower_subscript_index_with_owner(subscript, *span)?;
         if function.outputs.len() <= 1
             || output_number == 0
             || output_number > function.outputs.len()
@@ -750,7 +950,7 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        let Some(indices) = static_subscript_indices(subscripts)? else {
+        let Some(indices) = static_subscript_indices_with_owner(subscripts, span)? else {
             return Ok(None);
         };
         let Some(function) = self.lookup_function(name) else {
@@ -774,7 +974,11 @@ impl<'a> LowerBuilder<'a> {
         else {
             return Ok(None);
         };
-        Ok(values.get(flat_index).copied().map(|value| vec![value]))
+        values
+            .get(flat_index)
+            .copied()
+            .map(|value| single_reg_vec(value, "function output projection value count", span))
+            .transpose()
     }
 
     pub(in crate::lower) fn lower_user_function_call_output_values(
@@ -794,18 +998,18 @@ impl<'a> LowerBuilder<'a> {
                 let reg = self.lower_function_closure_call(
                     &closure,
                     args,
-                    rumoca_core::Span::DUMMY,
+                    span,
                     caller_scope,
                     call_depth,
                 )?;
-                return Ok(Some(vec![reg]));
+                return single_reg_vec(reg, "function closure output value count", span).map(Some);
             }
             return Ok(None);
         };
         if function.external.is_some() || function.outputs.is_empty() {
             return Ok(None);
         }
-        self.ensure_pure_inline_function(name.as_str(), &function)?;
+        self.ensure_pure_inline_function(name.as_str(), &function, span)?;
         self.with_local_lower_frame(|this| {
             let bindings =
                 this.bind_function_inputs(name, &function.inputs, args, caller_scope, call_depth)?;
@@ -831,9 +1035,18 @@ impl<'a> LowerBuilder<'a> {
         function: &rumoca_core::Function,
         scope: &Scope,
     ) -> Result<Vec<Reg>, LowerError> {
-        let mut values = Vec::new();
+        let mut values = array_vec_with_capacity(
+            function.outputs.len(),
+            "function output value count",
+            function.span,
+        )?;
         for output in &function.outputs {
-            values.extend(self.scoped_function_output_values(output, scope)?);
+            append_reg_values(
+                &mut values,
+                self.scoped_function_output_values(output, scope)?,
+                "function output value count",
+                output.span,
+            )?;
         }
         Ok(values)
     }
@@ -843,6 +1056,7 @@ impl<'a> LowerBuilder<'a> {
         function_name: &rumoca_core::VarName,
         output_name: &str,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
@@ -858,14 +1072,15 @@ impl<'a> LowerBuilder<'a> {
             });
         };
         if function.external.is_some() {
-            return Err(LowerError::Unsupported {
-                reason: format!(
+            return Err(unsupported_at(
+                format!(
                     "external function call `{}` cannot be inlined",
                     function_name.as_str()
                 ),
-            });
+                span,
+            ));
         }
-        self.ensure_pure_inline_function(function_name.as_str(), &function)?;
+        self.ensure_pure_inline_function(function_name.as_str(), &function, span)?;
         self.with_local_lower_frame(|this| {
             let bindings = this.bind_function_inputs_for_name(
                 function_name.as_str(),
@@ -936,10 +1151,22 @@ impl<'a> LowerBuilder<'a> {
             return Ok(values);
         }
 
-        let operands = elements
-            .iter()
-            .map(|element| self.lower_array_operand(element, scope, call_depth))
-            .collect::<Result<Vec<_>, _>>()?;
+        let span = elements
+            .first()
+            .and_then(rumoca_core::Expression::span)
+            .or_else(|| self.active_source_context_span())
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: "missing source provenance for matrix constructor operand count"
+                    .to_string(),
+            })?;
+        let mut operands = crate::lower_vec_with_capacity(
+            elements.len(),
+            "matrix constructor operand count",
+            span,
+        )?;
+        for element in elements {
+            operands.push(self.lower_array_operand(element, scope, call_depth)?);
+        }
         lower_matrix_column_constructor_values(&operands)
     }
 
@@ -955,11 +1182,7 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::Expression::Tuple { elements, .. } => {
                 let mut values = Vec::new();
                 for element in elements {
-                    let projected = rumoca_core::Expression::FieldAccess {
-                        base: Box::new(element.clone()),
-                        field: field.to_string(),
-                        span: rumoca_core::Span::DUMMY,
-                    };
+                    let projected = projected_record_field_expression(element, field)?;
                     values.extend(self.lower_array_like_values(&projected, scope, call_depth)?);
                 }
                 Ok(Some(values))
@@ -970,11 +1193,7 @@ impl<'a> LowerBuilder<'a> {
                 filter,
                 ..
             } => {
-                let projected = rumoca_core::Expression::FieldAccess {
-                    base: Box::new((**expr).clone()),
-                    field: field.to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                };
+                let projected = projected_record_field_expression(expr, field)?;
                 self.lower_array_comprehension_values(
                     &projected,
                     indices,
@@ -984,9 +1203,11 @@ impl<'a> LowerBuilder<'a> {
                 )
                 .map(Some)
             }
-            rumoca_core::Expression::FunctionCall { name, args, .. } => {
-                self.lower_user_function_output_field_values(name, args, field, scope, call_depth)
-            }
+            rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } => self.lower_user_function_output_field_values(
+                name, args, field, *span, scope, call_depth,
+            ),
             _ => Ok(None),
         }
     }
@@ -996,6 +1217,7 @@ impl<'a> LowerBuilder<'a> {
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
         field: &str,
+        span: rumoca_core::Span,
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
@@ -1008,7 +1230,7 @@ impl<'a> LowerBuilder<'a> {
         if function.external.is_some() || function.outputs.len() != 1 {
             return Ok(None);
         }
-        self.ensure_pure_inline_function(name.as_str(), &function)?;
+        self.ensure_pure_inline_function(name.as_str(), &function, span)?;
 
         self.with_local_lower_frame(|this| {
             let bindings =
@@ -1029,7 +1251,7 @@ impl<'a> LowerBuilder<'a> {
             }
 
             let _returned = this.lower_statements(&function.body, &mut scope, call_depth + 1)?;
-            Ok(this.scoped_record_output_field_values(output, field, &scope))
+            this.scoped_record_output_field_values(output, field, &scope)
         })
     }
 
@@ -1069,15 +1291,15 @@ impl<'a> LowerBuilder<'a> {
                 }
             }
 
-            let projected = projected_record_field_expression(value, field);
+            let projected = projected_record_field_expression(value, field)?;
             let field_key = format!("{}.{}", output.name, field);
             let values = self.lower_array_like_values(&projected, scope, call_depth)?;
-            self.bind_assignment_values(scope, &field_key, &values);
+            self.bind_assignment_values_at(scope, &field_key, &values, output.span)?;
             lowered_projected_assignment = true;
         }
 
         if lowered_projected_assignment {
-            return Ok(self.scoped_record_output_field_values(output, field, scope));
+            return self.scoped_record_output_field_values(output, field, scope);
         }
         Ok(None)
     }
@@ -1132,19 +1354,19 @@ impl<'a> LowerBuilder<'a> {
         output: &rumoca_core::FunctionParam,
         field: &str,
         scope: &Scope,
-    ) -> Option<Vec<Reg>> {
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
         let field_key = format!("{}.{}", output.name, field);
         if let Some(values) = self.local_indexed_binding_values(&field_key) {
-            return Some(values);
+            return Ok(Some(values));
         }
         let field_path = generated_scope_key(&field_key);
-        if let Some(values) = scoped_indexed_binding_values(scope, &field_path) {
-            return Some(values);
+        if let Some(values) = scoped_indexed_binding_values(scope, &field_path, output.span)? {
+            return Ok(Some(values));
         }
         if let Some(reg) = scope.get(&field_path).copied() {
-            return Some(vec![reg]);
+            return single_reg_vec(reg, "record output field value count", output.span).map(Some);
         }
-        None
+        Ok(None)
     }
 
     pub(in crate::lower) fn lower_array_comprehension_values(
@@ -1182,20 +1404,32 @@ impl<'a> LowerBuilder<'a> {
             {
                 return Ok(());
             }
-            out.extend(self.lower_array_like_values(expr, ctx.scope, ctx.call_depth)?);
+            append_reg_values(
+                out,
+                self.lower_array_like_values(expr, ctx.scope, ctx.call_depth)?,
+                "array comprehension value count",
+                self.required_dynamic_selection_span(&[expr], "array comprehension value count")?,
+            )?;
             return Ok(());
         }
 
         let iter = &ctx.indices[depth];
         let iter_values = self.eval_for_index_values(&iter.range, ctx.const_scope)?;
         for value in iter_values {
-            let iter_reg = self.emit_const(value);
+            let iter_span = self.required_dynamic_selection_span(
+                &[&iter.range],
+                "array comprehension iterator value",
+            )?;
+            let iter_reg = self.emit_const_at(value, iter_span)?;
             ctx.scope.push_frame();
-            ctx.scope
-                .insert_scoped(generated_scope_key(&iter.name), iter_reg);
-            ctx.const_scope.insert(iter.name.clone(), value);
-            let result = self.collect_array_comprehension_values(expr, depth + 1, ctx, out);
-            ctx.const_scope.shift_remove(&iter.name);
+            let result = (|| {
+                ctx.scope
+                    .insert_scoped(generated_scope_key(&iter.name), iter_reg)?;
+                ctx.const_scope.insert(iter.name.clone(), value);
+                let result = self.collect_array_comprehension_values(expr, depth + 1, ctx, out);
+                ctx.const_scope.shift_remove(&iter.name);
+                result
+            })();
             ctx.scope.pop_frame();
             result?;
         }
@@ -1206,13 +1440,38 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
+        owner_span: Option<rumoca_core::Span>,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
+        let owner_span = owner_span
+            .filter(|span| !span.is_dummy())
+            .or_else(|| name.span());
         let Some(function) = self.lookup_function(name).cloned() else {
-            let mut values = Vec::new();
+            let Some(span) = owner_span else {
+                return Err(LowerError::UnspannedContractViolation {
+                    reason: format!(
+                        "missing source provenance for record constructor `{}` arguments",
+                        name.as_str()
+                    ),
+                });
+            };
+            let mut values = array_vec_with_capacity(
+                args.len(),
+                "record constructor argument value count",
+                span,
+            )?;
             for arg in args {
-                values.extend(self.lower_array_like_values(arg, scope, call_depth)?);
+                let arg_span = self.required_array_value_context_span(
+                    arg,
+                    "record constructor argument value count",
+                )?;
+                append_reg_values(
+                    &mut values,
+                    self.lower_array_like_values(arg, scope, call_depth)?,
+                    "record constructor argument value count",
+                    arg_span,
+                )?;
             }
             return Ok(values);
         };
@@ -1220,7 +1479,11 @@ impl<'a> LowerBuilder<'a> {
         let (named_args, positional_args) =
             function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
         let mut positional_idx = 0usize;
-        let mut values = Vec::new();
+        let mut values = array_vec_with_capacity(
+            function.inputs.len(),
+            "record constructor value count",
+            function.span,
+        )?;
 
         for input in &function.inputs {
             let arg_expr = named_args.get(input.name.as_str()).copied().or_else(|| {
@@ -1230,11 +1493,28 @@ impl<'a> LowerBuilder<'a> {
             });
 
             if let Some(expr) = arg_expr {
-                values.extend(self.lower_array_like_values(expr, scope, call_depth)?);
+                let span =
+                    self.required_array_value_context_span(expr, "record constructor value count")?;
+                append_reg_values(
+                    &mut values,
+                    self.lower_array_like_values(expr, scope, call_depth)?,
+                    "record constructor value count",
+                    span,
+                )?;
             } else if let Some(default) = input.default.as_ref() {
-                values.extend(self.lower_array_like_values(default, scope, call_depth + 1)?);
+                append_reg_values(
+                    &mut values,
+                    self.lower_array_like_values(default, scope, call_depth + 1)?,
+                    "record constructor default value count",
+                    default.span().unwrap_or(input.span),
+                )?;
             } else {
-                values.push(self.emit_const(0.0));
+                return Err(LowerError::MissingActualArgument {
+                    function: name.as_str().to_string(),
+                    what: "record constructor field",
+                    input: input.name.clone(),
+                    span: input.span,
+                });
             }
         }
 
@@ -1256,11 +1536,20 @@ impl<'a> LowerBuilder<'a> {
             let cond_reg = self.lower_expr(cond, scope, call_depth)?;
             let branch_values = self.lower_array_like_values(value, scope, call_depth)?;
             if branch_values.len() != result.len() {
-                return Err(LowerError::Unsupported {
-                    // MLS §3.6 / §3.8: if-expression branches must agree on
-                    // shape. Keep compiled lowering strict instead of silently
-                    // truncating structured results.
-                    reason: format!(
+                // MLS §3.6 / §3.8: if-expression branches must agree on
+                // shape. Keep compiled lowering strict instead of silently
+                // truncating structured results.
+                let span = value
+                    .span()
+                    .or_else(|| cond.span())
+                    .or_else(|| else_branch.span())
+                    .or_else(|| self.active_source_context_span())
+                    .ok_or_else(|| LowerError::UnspannedContractViolation {
+                        reason: "missing source provenance for if-expression branch width"
+                            .to_string(),
+                    })?;
+                return Err(unsupported_at(
+                    format!(
                         "if-expression branches with mismatched array-like widths are unsupported: branch width {}, accumulated else width {}, branch={} {}, else={} {}",
                         branch_values.len(),
                         result.len(),
@@ -1269,13 +1558,17 @@ impl<'a> LowerBuilder<'a> {
                         expr_tag(else_branch),
                         short_expr(else_branch, 240)
                     ),
-                });
+                    span,
+                ));
             }
-            result = branch_values
-                .into_iter()
-                .zip(result)
-                .map(|(if_true, if_false)| self.emit_select(cond_reg, if_true, if_false))
-                .collect();
+            let span =
+                self.required_dynamic_selection_span(&[cond], "if-expression select value")?;
+            let mut selected =
+                array_vec_with_capacity(result.len(), "if-expression value count", span)?;
+            for (if_true, if_false) in branch_values.into_iter().zip(result) {
+                selected.push(self.emit_select_at(cond_reg, if_true, if_false, span)?);
+            }
+            result = selected;
         }
         Ok(result)
     }
@@ -1286,6 +1579,17 @@ impl<'a> LowerBuilder<'a> {
         else_branch: &'expr rumoca_core::Expression,
     ) -> Option<&'expr rumoca_core::Expression> {
         for (cond, value) in branches {
+            // Only fold the branch away when the predicate is a genuine
+            // translation-time constant. A condition that reads a run-time value
+            // (state, input, `time`, continuous algebraic, tunable parameter, …)
+            // must lower to a run-time `Select`, not be collapsed to one branch
+            // using the variable's `start` value. Otherwise an inline relation
+            // such as `if a >= 0 then 1 else -1` (e.g. the body of a
+            // `noEvent(...)`, whose relation carries no event memory) silently
+            // bakes in the start-value branch and yields wrong dynamics.
+            if !self.condition_is_compile_time_constant(cond) {
+                return None;
+            }
             let Ok(condition) = self.eval_compile_time_expr(cond, &self.local_const_bindings)
             else {
                 return None;
@@ -1297,9 +1601,89 @@ impl<'a> LowerBuilder<'a> {
         Some(else_branch)
     }
 
-    pub(in crate::lower) fn lower_indexed_binding_values(
+    /// True when `expr` can be evaluated at translation time without reading any
+    /// run-time value, so it is sound to use it to select an if-branch during
+    /// lowering. Mirrors the expression forms `eval_compile_time_expr` accepts;
+    /// anything else is treated conservatively as non-constant so lowering falls
+    /// through to a run-time `Select`.
+    fn condition_is_compile_time_constant(&self, expr: &rumoca_core::Expression) -> bool {
+        match expr {
+            rumoca_core::Expression::Literal { .. } => true,
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => self.var_ref_is_compile_time_constant(name, subscripts),
+            rumoca_core::Expression::Unary { rhs, .. } => {
+                self.condition_is_compile_time_constant(rhs)
+            }
+            rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+                self.condition_is_compile_time_constant(lhs)
+                    && self.condition_is_compile_time_constant(rhs)
+            }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches.iter().all(|(cond, value)| {
+                    self.condition_is_compile_time_constant(cond)
+                        && self.condition_is_compile_time_constant(value)
+                }) && self.condition_is_compile_time_constant(else_branch)
+            }
+            rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+                // `size`/`ndims` only read an array's structural shape, never its
+                // run-time contents, so they stay translation-time constant
+                // regardless of the argument.
+                matches!(
+                    function,
+                    rumoca_core::BuiltinFunction::Size | rumoca_core::BuiltinFunction::Ndims
+                ) || args
+                    .iter()
+                    .all(|arg| self.condition_is_compile_time_constant(arg))
+            }
+            rumoca_core::Expression::FunctionCall { args, .. } => args
+                .iter()
+                .all(|arg| self.condition_is_compile_time_constant(arg)),
+            _ => false,
+        }
+    }
+
+    fn var_ref_is_compile_time_constant(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) -> bool {
+        let key = name.as_str();
+        // Loop indices and projected function parameters bound to constants.
+        if subscripts.is_empty() && self.local_const_bindings.contains_key(key) {
+            return true;
+        }
+        // Structural quantities: sizes, enum-literal ordinals, structural params.
+        if self.structural_bindings.contains_key(key) {
+            return true;
+        }
+        // `time` always varies at run time.
+        if key == "time" {
+            return false;
+        }
+        let Some(variables) = self.dae_variables else {
+            return false;
+        };
+        let var_name = name.var_name();
+        if variables.constants.contains_key(var_name) {
+            return true;
+        }
+        // Non-tunable parameters are fixed for the whole simulation; tunable
+        // parameters and every continuous/discrete variable may change.
+        if let Some(parameter) = variables.parameters.get(var_name) {
+            return !parameter.is_tunable;
+        }
+        false
+    }
+
+    pub(in crate::lower) fn lower_indexed_binding_values_at(
         &mut self,
         key: &str,
+        span: rumoca_core::Span,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         if let Some(values) = self.lower_direct_assignment_values_for_key(key, &Scope::new(), 0)? {
             return Ok(Some(values));
@@ -1308,7 +1692,7 @@ impl<'a> LowerBuilder<'a> {
         if entries.is_empty() {
             return Ok(None);
         }
-        self.lower_indexed_entries_values(key, &entries)
+        self.lower_indexed_entries_values(key, &entries, span)
     }
 
     pub(in crate::lower) fn lower_indexed_binding_values_for_reference(
@@ -1324,22 +1708,35 @@ impl<'a> LowerBuilder<'a> {
         if entries.is_empty() {
             return Ok(None);
         }
-        self.lower_indexed_entries_values(key, &entries)
+        self.lower_indexed_entries_values(key, &entries, span)
+    }
+
+    pub(in crate::lower) fn lower_indexed_binding_values_for_resolved_key(
+        &mut self,
+        display_key: &str,
+        key: &ComponentReferenceKey,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let Some(entries) = self.indexed_bindings.get(key).cloned() else {
+            return Ok(None);
+        };
+        self.lower_indexed_entries_values(display_key, &entries, span)
     }
 
     pub(in crate::lower) fn lower_indexed_entries_values(
         &mut self,
         key: &str,
         entries: &[IndexedBinding],
+        span: rumoca_core::Span,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         let flat = sorted_flat_entries(entries);
         if flat.is_empty() {
             return Ok(None);
         }
-        let mut values = Vec::with_capacity(flat.len());
+        let mut values = array_vec_with_capacity(flat.len(), "indexed binding value count", span)?;
         for entry in flat {
             if entry.indices.is_empty() {
-                values.push(self.emit_slot_load(entry.slot)?);
+                values.push(self.emit_slot_load(entry.slot, span)?);
                 continue;
             }
             let scalar_key = format_subscript_binding_key(key, &entry.indices);
@@ -1350,7 +1747,7 @@ impl<'a> LowerBuilder<'a> {
                 values.push(value);
                 continue;
             }
-            values.push(self.emit_slot_load(entry.slot)?);
+            values.push(self.emit_slot_load(entry.slot, span)?);
         }
         Ok(Some(values))
     }
@@ -1383,7 +1780,12 @@ impl<'a> LowerBuilder<'a> {
         for (cond, value) in runtime_branches.into_iter().rev() {
             let cond_reg = self.lower_expr(cond, scope, call_depth)?;
             let value_reg = self.lower_expr(value, scope, call_depth)?;
-            result = self.emit_select(cond_reg, value_reg, result);
+            result = self.emit_select_at(
+                cond_reg,
+                value_reg,
+                result,
+                self.required_dynamic_selection_span(&[cond], "if-expression scalar select")?,
+            )?;
         }
         Ok(result)
     }
@@ -1393,17 +1795,129 @@ fn function_output_dims(
     function_name: &rumoca_core::Reference,
     output: &rumoca_core::FunctionParam,
 ) -> Result<Vec<usize>, LowerError> {
-    output
-        .dims
-        .iter()
-        .map(|dim| {
-            usize::try_from(*dim).map_err(|_| LowerError::ContractViolation {
-                reason: format!(
-                    "function `{function_name}` output `{}` has invalid dimension `{dim}`",
-                    output.name
-                ),
-                span: output.span,
-            })
-        })
-        .collect()
+    output.dims.iter().try_fold(
+        array_vec_with_capacity(
+            output.dims.len(),
+            "function output dimension count",
+            output.span,
+        )?,
+        |mut dims, dim| {
+            dims.push(usize::try_from(*dim).map_err(|_| {
+                LowerError::contract_violation(
+                    format!(
+                        "function `{function_name}` output `{}` has invalid dimension `{dim}`",
+                        output.name
+                    ),
+                    output.span,
+                )
+            })?);
+            Ok(dims)
+        },
+    )
+}
+
+fn missing_record_array_member_index(
+    found: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    found.checked_add(1).ok_or_else(|| {
+        LowerError::contract_violation(
+            "record-array member slice gap index overflows host index range",
+            span,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output_param_with_dims(
+        name: &str,
+        dims: Vec<i64>,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::FunctionParam {
+        rumoca_core::FunctionParam {
+            def_id: None,
+            name: name.to_string(),
+            span,
+            type_name: "Real".to_string(),
+            type_class: None,
+            dims,
+            shape_expr: Vec::new(),
+            default: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn projected_record_field_expression_preserves_value_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("project_record_field.mo"),
+            6,
+            12,
+        );
+        let value = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pin"),
+            subscripts: Vec::new(),
+            span,
+        };
+
+        let projected = projected_record_field_expression(&value, "v")
+            .expect("spanned field projection should be generated");
+
+        assert_eq!(projected.span(), Some(span));
+    }
+
+    #[test]
+    fn projected_record_field_expression_rejects_unspanned_value() {
+        let value = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pin"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let err = projected_record_field_expression(&value, "v")
+            .expect_err("source-derived field projection requires an owner span");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(
+            err.reason().contains("projected record field expression"),
+            "error should name the missing provenance context: {err}"
+        );
+    }
+
+    #[test]
+    fn function_output_dims_invalid_dummy_span_stays_unspanned() {
+        let output = output_param_with_dims("y", vec![-1], rumoca_core::Span::DUMMY);
+        let err = function_output_dims(&rumoca_core::Reference::new("f"), &output)
+            .expect_err("negative output dimension must be rejected");
+
+        assert!(
+            matches!(err, LowerError::UnspannedContractViolation { .. }),
+            "dummy output span should not be fabricated into a source span: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("invalid dimension `-1`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn function_output_dims_invalid_real_span_is_preserved() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("function_output_dims.mo"),
+            14,
+            18,
+        );
+        let output = output_param_with_dims("y", vec![-1], span);
+        let err = function_output_dims(&rumoca_core::Reference::new("f"), &output)
+            .expect_err("negative output dimension must be rejected");
+
+        assert!(
+            matches!(err, LowerError::ContractViolation { span: err_span, .. } if err_span == span),
+            "real output span should be preserved: {err:?}"
+        );
+    }
 }

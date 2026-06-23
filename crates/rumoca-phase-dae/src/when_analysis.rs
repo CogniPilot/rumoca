@@ -184,6 +184,14 @@ fn insert_when_target(targets: &mut HashSet<rumoca_core::VarName>, target: &rumo
 mod tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("when_analysis_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn test_insert_when_target_adds_base_name_for_subscripted_target() {
         let mut targets = HashSet::default();
@@ -210,19 +218,20 @@ mod tests {
     #[test]
     fn test_collect_when_statement_targets_keeps_function_call_output_subscripts() {
         let mut targets = HashSet::default();
+        let span = test_span();
         let when_stmt = rumoca_core::Statement::When {
             blocks: vec![rumoca_core::StatementBlock {
                 cond: rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
                 stmts: vec![rumoca_core::Statement::FunctionCall {
                     comp: rumoca_core::ComponentReference {
                         local: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                         parts: vec![rumoca_core::ComponentRefPart {
                             ident: "superSample".to_string(),
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                             subs: vec![],
                         }],
                         def_id: None,
@@ -230,24 +239,22 @@ mod tests {
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::VarName::new("u").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
                     outputs: vec![rumoca_core::ComponentReference {
                         local: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                         parts: vec![rumoca_core::ComponentRefPart {
                             ident: "arr".to_string(),
-                            span: rumoca_core::Span::DUMMY,
-                            subs: vec![rumoca_core::Subscript::generated_colon(
-                                rumoca_core::Span::DUMMY,
-                            )],
+                            span,
+                            subs: vec![rumoca_core::Subscript::generated_colon(span)],
                         }],
                         def_id: None,
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
             }],
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
 
         collect_when_statement_targets(&[when_stmt], &mut targets);

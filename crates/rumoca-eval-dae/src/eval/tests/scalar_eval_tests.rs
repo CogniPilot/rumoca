@@ -1,4 +1,9 @@
+// SPEC_0021 file-size exception: scalar DAE evaluation tests cover many
+// expression families and runtime table fixtures. split plan: move function-call,
+// record-field, and runtime-special regressions into focused test modules.
 use super::*;
+
+mod function_call_tests;
 
 #[test]
 fn test_eval_binary_add() {
@@ -292,8 +297,16 @@ fn test_eval_field_access_on_constructor_complex_components() {
     let mut funcs = IndexMap::new();
     let mut complex = rumoca_core::Function::new("Complex", rumoca_core::Span::DUMMY);
     complex.is_constructor = true;
-    complex.add_input(rumoca_core::FunctionParam::new("re", "Real"));
-    complex.add_input(rumoca_core::FunctionParam::new("im", "Real"));
+    complex.add_input(rumoca_core::FunctionParam::new(
+        "re",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    complex.add_input(rumoca_core::FunctionParam::new(
+        "im",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     funcs.insert("Complex".to_string(), complex);
     env.functions = std::sync::Arc::new(funcs);
     let ctor = rumoca_core::Expression::FunctionCall {
@@ -329,7 +342,10 @@ fn test_eval_field_access_after_array_literal_index() {
                 is_matrix: false,
                 span: rumoca_core::Span::DUMMY,
             }),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(var("i")))],
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(var("i")),
+                rumoca_core::Span::DUMMY,
+            )],
             span: rumoca_core::Span::DUMMY,
         }),
         field: "im".to_string(),
@@ -355,43 +371,65 @@ fn test_eval_constructor_call_scalar_fallback_uses_first_argument() {
 fn test_eval_field_access_constructor_named_args_bind_by_name() {
     let mut ctor = rumoca_core::Function::new(
         "Modelica.Electrical.Machines.Losses.CoreParameters",
-        Default::default(),
+        rumoca_core::Span::DUMMY,
     );
-    ctor.add_input(rumoca_core::FunctionParam::new("m", "Integer"));
-    ctor.add_input(rumoca_core::FunctionParam::new("PRef", "Real").with_default(lit(0.0)));
-    ctor.add_input(rumoca_core::FunctionParam::new("VRef", "Real"));
-    ctor.add_input(rumoca_core::FunctionParam::new("wRef", "Real"));
+    ctor.add_input(rumoca_core::FunctionParam::new(
+        "m",
+        "Integer",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     ctor.add_input(
-        rumoca_core::FunctionParam::new("GcRef", "Real").with_default(
-            rumoca_core::Expression::If {
-                branches: vec![(
-                    rumoca_core::Expression::Binary {
-                        op: rumoca_core::OpBinary::Le,
-                        lhs: Box::new(var("PRef")),
-                        rhs: Box::new(lit(0.0)),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    lit(0.0),
-                )],
-                else_branch: Box::new(rumoca_core::Expression::Binary {
+        rumoca_core::FunctionParam::new(
+            "PRef",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(lit(0.0)),
+    );
+    ctor.add_input(rumoca_core::FunctionParam::new(
+        "VRef",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    ctor.add_input(rumoca_core::FunctionParam::new(
+        "wRef",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    ctor.add_input(
+        rumoca_core::FunctionParam::new(
+            "GcRef",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(rumoca_core::Expression::If {
+            branches: vec![(
+                rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Le,
+                    lhs: Box::new(var("PRef")),
+                    rhs: Box::new(lit(0.0)),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                lit(0.0),
+            )],
+            else_branch: Box::new(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Div,
+                lhs: Box::new(rumoca_core::Expression::Binary {
                     op: rumoca_core::OpBinary::Div,
-                    lhs: Box::new(rumoca_core::Expression::Binary {
-                        op: rumoca_core::OpBinary::Div,
-                        lhs: Box::new(var("PRef")),
-                        rhs: Box::new(rumoca_core::Expression::Binary {
-                            op: rumoca_core::OpBinary::Mul,
-                            lhs: Box::new(var("VRef")),
-                            rhs: Box::new(var("VRef")),
-                            span: rumoca_core::Span::DUMMY,
-                        }),
+                    lhs: Box::new(var("PRef")),
+                    rhs: Box::new(rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Mul,
+                        lhs: Box::new(var("VRef")),
+                        rhs: Box::new(var("VRef")),
                         span: rumoca_core::Span::DUMMY,
                     }),
-                    rhs: Box::new(var("m")),
                     span: rumoca_core::Span::DUMMY,
                 }),
+                rhs: Box::new(var("m")),
                 span: rumoca_core::Span::DUMMY,
-            },
-        ),
+            }),
+            span: rumoca_core::Span::DUMMY,
+        }),
     );
 
     let mut env = VarEnv::<f64>::new();
@@ -464,7 +502,7 @@ fn test_lift_env() {
 #[test]
 fn test_modelica_constants_in_build_env() {
     let dae = Dae::new();
-    let env = build_env(&dae, &[], &[], 0.0);
+    let env = build_env(&dae, &[], &[], 0.0).expect("test env should build");
 
     // Full qualified names (MLS §3.7.3 — short aliases resolved at flatten time via imports)
     assert!((env_value(&env, "Modelica.Constants.pi") - std::f64::consts::PI).abs() < 1e-15);
@@ -482,7 +520,10 @@ fn test_modelica_constants_do_not_override_dae_values() {
     let mut dae = Dae::new();
 
     // Provide a custom "Modelica.Constants.pi" in the DAE constants
-    let mut var = dae::Variable::new(rumoca_core::VarName::new("Modelica.Constants.pi"));
+    let mut var = dae::Variable::new(
+        rumoca_core::VarName::new("Modelica.Constants.pi"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     var.start = Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(3.0),
         span: rumoca_core::Span::DUMMY,
@@ -491,7 +532,7 @@ fn test_modelica_constants_do_not_override_dae_values() {
         .constants
         .insert(rumoca_core::VarName::new("Modelica.Constants.pi"), var);
 
-    let env = build_env(&dae, &[], &[], 0.0);
+    let env = build_env(&dae, &[], &[], 0.0).expect("test env should build");
     // DAE-provided value should win over the fallback
     assert!((env_value(&env, "Modelica.Constants.pi") - 3.0).abs() < 1e-15);
 }
@@ -583,12 +624,29 @@ fn test_eval_function_call_named_args_bind_by_name() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = rumoca_core::Function::new("Pkg.affine", Default::default());
-    f.add_input(rumoca_core::FunctionParam::new("u", "Real"));
-    f.add_input(rumoca_core::FunctionParam::new("A", "Real"));
-    f.add_input(rumoca_core::FunctionParam::new("w", "Real"));
+    let mut f = rumoca_core::Function::new("Pkg.affine", rumoca_core::Span::DUMMY);
+    f.add_input(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "A",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "w",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     f.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(binop(
             rumoca_core::OpBinary::Add,
             binop(rumoca_core::OpBinary::Add, var("u"), var("A")),
             var("w"),
@@ -616,23 +674,36 @@ fn test_eval_function_call_defaults_can_reference_prior_inputs() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = rumoca_core::Function::new("Pkg.defaults", Default::default());
-    f.add_input(rumoca_core::FunctionParam::new("a", "Real"));
+    let mut f = rumoca_core::Function::new("Pkg.defaults", rumoca_core::Span::DUMMY);
+    f.add_input(rumoca_core::FunctionParam::new(
+        "a",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     f.add_input(
-        rumoca_core::FunctionParam::new("b", "Real").with_default(binop(
-            rumoca_core::OpBinary::Add,
-            var("a"),
-            lit(1.0),
-        )),
+        rumoca_core::FunctionParam::new(
+            "b",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(binop(rumoca_core::OpBinary::Add, var("a"), lit(1.0))),
     );
     f.add_input(
-        rumoca_core::FunctionParam::new("c", "Real").with_default(binop(
-            rumoca_core::OpBinary::Add,
-            var("b"),
-            lit(1.0),
-        )),
+        rumoca_core::FunctionParam::new(
+            "c",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(binop(rumoca_core::OpBinary::Add, var("b"), lit(1.0))),
     );
-    f.add_output(rumoca_core::FunctionParam::new("y", "Real").with_default(var("c")));
+    f.add_output(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(var("c")),
+    );
     f.body = vec![rumoca_core::Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -648,11 +719,28 @@ fn test_eval_function_call_uses_structured_indexed_output_selection() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut random_like = rumoca_core::Function::new("Pkg.randomLike", Default::default());
-    random_like.add_input(rumoca_core::FunctionParam::new("seedIn", "Integer").with_dims(vec![3]));
-    random_like.add_output(rumoca_core::FunctionParam::new("x", "Real"));
-    random_like
-        .add_output(rumoca_core::FunctionParam::new("seedOut", "Integer").with_dims(vec![3]));
+    let mut random_like = rumoca_core::Function::new("Pkg.randomLike", rumoca_core::Span::DUMMY);
+    random_like.add_input(
+        rumoca_core::FunctionParam::new(
+            "seedIn",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
+    random_like.add_output(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    random_like.add_output(
+        rumoca_core::FunctionParam::new(
+            "seedOut",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
     random_like.body = vec![
         rumoca_core::Statement::Assignment {
             comp: comp_ref("x"),
@@ -707,8 +795,15 @@ fn test_eval_array_values_collects_function_array_output() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut vector = rumoca_core::Function::new("Pkg.vector", Default::default());
-    vector.add_output(rumoca_core::FunctionParam::new("y", "Real").with_dims(vec![3]));
+    let mut vector = rumoca_core::Function::new("Pkg.vector", rumoca_core::Span::DUMMY);
+    vector.add_output(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
     vector.body = vec![
         rumoca_core::Statement::Assignment {
             comp: comp_ref_index("y", 1),
@@ -740,9 +835,23 @@ fn test_statement_constructor_assignment_materializes_record_fields() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", Default::default());
-    orientation.add_input(rumoca_core::FunctionParam::new("T", "Real").with_dims(vec![3]));
-    orientation.add_input(rumoca_core::FunctionParam::new("w", "Real").with_dims(vec![2]));
+    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
+    orientation.add_input(
+        rumoca_core::FunctionParam::new(
+            "T",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
+    orientation.add_input(
+        rumoca_core::FunctionParam::new(
+            "w",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![2]),
+    );
     funcs.insert("Pkg.Orientation".to_string(), orientation);
     env.functions = std::sync::Arc::new(funcs);
 
@@ -779,13 +888,31 @@ fn test_eval_field_access_array_values_selects_record_function_output() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", Default::default());
-    orientation.add_input(rumoca_core::FunctionParam::new("T", "Real").with_dims(vec![3]));
-    orientation.add_input(rumoca_core::FunctionParam::new("w", "Real").with_dims(vec![2]));
+    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
+    orientation.add_input(
+        rumoca_core::FunctionParam::new(
+            "T",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
+    orientation.add_input(
+        rumoca_core::FunctionParam::new(
+            "w",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![2]),
+    );
     funcs.insert("Pkg.Orientation".to_string(), orientation);
 
-    let mut axes = rumoca_core::Function::new("Pkg.axes", Default::default());
-    axes.add_output(rumoca_core::FunctionParam::new("R", "Orientation"));
+    let mut axes = rumoca_core::Function::new("Pkg.axes", rumoca_core::Span::DUMMY);
+    axes.add_output(rumoca_core::FunctionParam::new(
+        "R",
+        "Orientation",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     axes.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("R"),
         value: rumoca_core::Expression::FunctionCall {
@@ -819,15 +946,27 @@ fn test_eval_field_access_scalar_selects_record_function_output() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut params = rumoca_core::Function::new("Pkg.Params", Default::default());
-    params.add_input(rumoca_core::FunctionParam::new("gain", "Real"));
-    params.add_input(rumoca_core::FunctionParam::new("offset", "Real"));
+    let mut params = rumoca_core::Function::new("Pkg.Params", rumoca_core::Span::DUMMY);
+    params.add_input(rumoca_core::FunctionParam::new(
+        "gain",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    params.add_input(rumoca_core::FunctionParam::new(
+        "offset",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     funcs.insert("Pkg.Params".to_string(), params);
 
-    let mut make_params = rumoca_core::Function::new("Pkg.makeParams", Default::default());
+    let mut make_params = rumoca_core::Function::new("Pkg.makeParams", rumoca_core::Span::DUMMY);
     make_params.add_output(
-        rumoca_core::FunctionParam::new("p", "Params")
-            .with_type_class(rumoca_core::ClassType::Record),
+        rumoca_core::FunctionParam::new(
+            "p",
+            "Params",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record),
     );
     make_params.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("p"),
@@ -859,10 +998,14 @@ fn test_eval_field_access_scalar_selects_record_function_output_field_assignment
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut make_params = rumoca_core::Function::new("Pkg.makeParams", Default::default());
+    let mut make_params = rumoca_core::Function::new("Pkg.makeParams", rumoca_core::Span::DUMMY);
     make_params.add_output(
-        rumoca_core::FunctionParam::new("p", "Params")
-            .with_type_class(rumoca_core::ClassType::Record),
+        rumoca_core::FunctionParam::new(
+            "p",
+            "Params",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record),
     );
     make_params.body = vec![rumoca_core::Statement::Assignment {
         comp: rumoca_core::ComponentReference {
@@ -902,13 +1045,22 @@ fn test_record_function_output_preserves_matrix_product_field_shape() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut orientation = Function::new("Pkg.Orientation", Default::default());
-    orientation.add_input(FunctionParam::new("T", "Real").with_dims(vec![3, 3]));
-    orientation.add_input(FunctionParam::new("w", "Real").with_dims(vec![3]));
+    let mut orientation = Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
+    orientation.add_input(
+        FunctionParam::new("T", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3, 3]),
+    );
+    orientation.add_input(
+        FunctionParam::new("w", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
     funcs.insert("Pkg.Orientation".to_string(), orientation);
 
-    let mut axis = Function::new("Pkg.axisRotation", Default::default());
-    axis.add_output(FunctionParam::new("T", "Real").with_dims(vec![3, 3]));
+    let mut axis = Function::new("Pkg.axisRotation", rumoca_core::Span::DUMMY);
+    axis.add_output(
+        FunctionParam::new("T", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3, 3]),
+    );
     axis.body = vec![Statement::Assignment {
         comp: comp_ref("T"),
         value: arr(
@@ -929,8 +1081,12 @@ fn test_record_function_output_preserves_matrix_product_field_shape() {
         rhs: Box::new(fn_call("Pkg.axisRotation", vec![])),
         span: rumoca_core::Span::DUMMY,
     };
-    let mut axes = Function::new("Pkg.axes", Default::default());
-    axes.add_output(FunctionParam::new("R", "Orientation"));
+    let mut axes = Function::new("Pkg.axes", rumoca_core::Span::DUMMY);
+    axes.add_output(FunctionParam::new(
+        "R",
+        "Orientation",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     axes.body = vec![Statement::Assignment {
         comp: comp_ref("R"),
         value: Expression::FunctionCall {
@@ -967,8 +1123,12 @@ fn test_shaped_matrix_product_rejects_unshaped_function_output() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut axis = Function::new("Pkg.axisRotation", Default::default());
-    axis.add_output(FunctionParam::new("T", "Real"));
+    let mut axis = Function::new("Pkg.axisRotation", rumoca_core::Span::DUMMY);
+    axis.add_output(FunctionParam::new(
+        "T",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     axis.body = vec![Statement::Assignment {
         comp: comp_ref("T"),
         value: arr(
@@ -1002,9 +1162,15 @@ fn test_function_array_input_binds_builtin_zeros_shape() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut vector = Function::new("Pkg.vector", Default::default());
-    vector.add_input(FunctionParam::new("u", "Real").with_dims(vec![3]));
-    vector.add_output(FunctionParam::new("y", "Real").with_dims(vec![3]));
+    let mut vector = Function::new("Pkg.vector", rumoca_core::Span::DUMMY);
+    vector.add_input(
+        FunctionParam::new("u", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
+    vector.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
     vector.body = vec![Statement::Assignment {
         comp: comp_ref("y"),
         value: var("u"),
@@ -1030,9 +1196,15 @@ fn test_function_array_input_rejects_wrong_shape() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut vector = Function::new("Pkg.vector", Default::default());
-    vector.add_input(FunctionParam::new("u", "Real").with_dims(vec![3]));
-    vector.add_output(FunctionParam::new("y", "Real").with_dims(vec![3]));
+    let mut vector = Function::new("Pkg.vector", rumoca_core::Span::DUMMY);
+    vector.add_input(
+        FunctionParam::new("u", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
+    vector.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
     vector.body = vec![Statement::Assignment {
         comp: comp_ref("y"),
         value: var("u"),
@@ -1067,10 +1239,21 @@ fn test_eval_function_call_selection_suffix_requires_declared_output_name() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut random_like = rumoca_core::Function::new("Pkg.randomLikeMalformed", Default::default());
-    random_like.add_output(rumoca_core::FunctionParam::new("x", "Real"));
-    random_like
-        .add_output(rumoca_core::FunctionParam::new("seedOut", "Integer").with_dims(vec![3]));
+    let mut random_like =
+        rumoca_core::Function::new("Pkg.randomLikeMalformed", rumoca_core::Span::DUMMY);
+    random_like.add_output(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    random_like.add_output(
+        rumoca_core::FunctionParam::new(
+            "seedOut",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![3]),
+    );
     random_like.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref_index("seedOut", 1),
         value: int_lit(11),
@@ -1096,10 +1279,11 @@ fn test_eval_function_call_selected_complex_output_components() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = rumoca_core::Function::new("Pkg.powerOfJ", Default::default());
+    let mut f = rumoca_core::Function::new("Pkg.powerOfJ", rumoca_core::Span::DUMMY);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
     ));
     f.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("x"),
@@ -1130,10 +1314,11 @@ fn test_eval_function_call_selected_complex_output_from_single_arg_constructor()
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = rumoca_core::Function::new("Pkg.singleArgComplex", Default::default());
+    let mut f = rumoca_core::Function::new("Pkg.singleArgComplex", rumoca_core::Span::DUMMY);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
     ));
     f.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("x"),
@@ -1166,13 +1351,14 @@ fn test_eval_function_call_selected_complex_output_from_plain_complex_call() {
 
     funcs.insert(
         "Complex".to_string(),
-        rumoca_core::Function::new("Complex", Default::default()),
+        rumoca_core::Function::new("Complex", rumoca_core::Span::DUMMY),
     );
 
-    let mut f = rumoca_core::Function::new("Pkg.plainComplex", Default::default());
+    let mut f = rumoca_core::Function::new("Pkg.plainComplex", rumoca_core::Span::DUMMY);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
     ));
     f.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("x"),
@@ -1203,10 +1389,11 @@ fn test_eval_function_call_selected_complex_output_uses_component_var_ref() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut f = rumoca_core::Function::new("Pkg.negJ", Default::default());
+    let mut f = rumoca_core::Function::new("Pkg.negJ", rumoca_core::Span::DUMMY);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
+        rumoca_core::Span::source_free_serde_default(),
     ));
     f.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("x"),
@@ -1266,12 +1453,29 @@ fn test_eval_function_closure_partial_application_binds_function_input() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut target = rumoca_core::Function::new("Pkg.target", Default::default());
-    target.add_input(rumoca_core::FunctionParam::new("u", "Real"));
-    target.add_input(rumoca_core::FunctionParam::new("A", "Real"));
-    target.add_input(rumoca_core::FunctionParam::new("w", "Real"));
+    let mut target = rumoca_core::Function::new("Pkg.target", rumoca_core::Span::DUMMY);
+    target.add_input(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    target.add_input(rumoca_core::FunctionParam::new(
+        "A",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    target.add_input(rumoca_core::FunctionParam::new(
+        "w",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     target.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(binop(
             rumoca_core::OpBinary::Add,
             binop(rumoca_core::OpBinary::Add, var("u"), var("A")),
             var("w"),
@@ -1282,15 +1486,24 @@ fn test_eval_function_closure_partial_application_binds_function_input() {
     }];
     funcs.insert("Pkg.target".to_string(), target);
 
-    let mut wrapper = rumoca_core::Function::new("Pkg.wrapper", Default::default());
+    let mut wrapper = rumoca_core::Function::new("Pkg.wrapper", rumoca_core::Span::DUMMY);
     wrapper.add_input(rumoca_core::FunctionParam::new(
         "f",
         "Pkg.Interfaces.PartialFunction",
+        rumoca_core::Span::source_free_serde_default(),
     ));
-    wrapper.add_input(rumoca_core::FunctionParam::new("x", "Real"));
+    wrapper.add_input(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     wrapper.add_output(
-        rumoca_core::FunctionParam::new("y", "Real")
-            .with_default(fn_call("Pkg.wrapper.f", vec![var("x")])),
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(fn_call("Pkg.wrapper.f", vec![var("x")])),
     );
     wrapper.body = vec![rumoca_core::Statement::Empty {
         span: rumoca_core::Span::DUMMY,
@@ -1311,12 +1524,29 @@ fn test_eval_function_closure_propagates_through_nested_function_arguments() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
-    let mut target = rumoca_core::Function::new("Pkg.target", Default::default());
-    target.add_input(rumoca_core::FunctionParam::new("u", "Real"));
-    target.add_input(rumoca_core::FunctionParam::new("A", "Real"));
-    target.add_input(rumoca_core::FunctionParam::new("w", "Real"));
+    let mut target = rumoca_core::Function::new("Pkg.target", rumoca_core::Span::DUMMY);
+    target.add_input(rumoca_core::FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    target.add_input(rumoca_core::FunctionParam::new(
+        "A",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    target.add_input(rumoca_core::FunctionParam::new(
+        "w",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     target.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(binop(
             rumoca_core::OpBinary::Add,
             binop(rumoca_core::OpBinary::Add, var("u"), var("A")),
             var("w"),
@@ -1327,29 +1557,48 @@ fn test_eval_function_closure_propagates_through_nested_function_arguments() {
     }];
     funcs.insert("Pkg.target".to_string(), target);
 
-    let mut inner = rumoca_core::Function::new("Pkg.outer.inner", Default::default());
+    let mut inner = rumoca_core::Function::new("Pkg.outer.inner", rumoca_core::Span::DUMMY);
     inner.add_input(rumoca_core::FunctionParam::new(
         "f",
         "Pkg.Interfaces.PartialFunction",
+        rumoca_core::Span::source_free_serde_default(),
     ));
-    inner.add_input(rumoca_core::FunctionParam::new("x", "Real"));
+    inner.add_input(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     inner.add_output(
-        rumoca_core::FunctionParam::new("y", "Real")
-            .with_default(fn_call("Pkg.outer.inner.f", vec![var("x")])),
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(fn_call("Pkg.outer.inner.f", vec![var("x")])),
     );
     inner.body = vec![rumoca_core::Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
     funcs.insert("Pkg.outer.inner".to_string(), inner);
 
-    let mut outer = rumoca_core::Function::new("Pkg.outer", Default::default());
+    let mut outer = rumoca_core::Function::new("Pkg.outer", rumoca_core::Span::DUMMY);
     outer.add_input(rumoca_core::FunctionParam::new(
         "f",
         "Pkg.Interfaces.PartialFunction",
+        rumoca_core::Span::source_free_serde_default(),
     ));
-    outer.add_input(rumoca_core::FunctionParam::new("x", "Real"));
+    outer.add_input(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     outer.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(fn_call(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(fn_call(
             "Pkg.outer.inner",
             vec![var("Pkg.outer.f"), var("x")],
         )),
@@ -1366,294 +1615,4 @@ fn test_eval_function_closure_propagates_through_nested_function_arguments() {
         vec![fn_call("Pkg.target", vec![lit(2.0), lit(3.0)]), lit(5.0)],
     );
     assert_eq!(eval_expr_value::<f64>(&expr, &env), 10.0);
-}
-
-#[test]
-fn test_eval_user_function_binds_record_input_fields_from_varref_argument() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-    let mut f = rumoca_core::Function::new("Pkg.stateMetric", Default::default());
-    f.add_input(rumoca_core::FunctionParam::new("st", "State"));
-    f.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
-            rumoca_core::OpBinary::Add,
-            var("st.p"),
-            var("st.T"),
-        )),
-    );
-    f.body = vec![rumoca_core::Statement::Empty {
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.stateMetric".to_string(), f);
-    env.functions = std::sync::Arc::new(funcs);
-
-    env.set("arg.p", 101325.0);
-    env.set("arg.T", 350.0);
-
-    let expr = fn_call("Pkg.stateMetric", vec![var("arg")]);
-    assert!((eval_expr_value::<f64>(&expr, &env) - 101675.0).abs() < 1e-9);
-    assert!((eval_expr::<f64>(&expr, &env).expect("strict eval") - 101675.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_user_function_binds_record_input_fields_from_start_exprs() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-    let mut f = rumoca_core::Function::new("Pkg.stateMetric", Default::default());
-    f.add_input(rumoca_core::FunctionParam::new("st", "State"));
-    f.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
-            rumoca_core::OpBinary::Add,
-            var("st.p"),
-            var("st.T"),
-        )),
-    );
-    f.body = vec![rumoca_core::Statement::Empty {
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.stateMetric".to_string(), f);
-    env.functions = std::sync::Arc::new(funcs);
-
-    let mut starts = IndexMap::new();
-    starts.insert("arg.p".to_string(), lit(101325.0));
-    starts.insert("arg.T".to_string(), lit(350.0));
-    env.start_exprs = std::sync::Arc::new(starts);
-
-    let expr = fn_call("Pkg.stateMetric", vec![var("arg")]);
-    assert!((eval_expr::<f64>(&expr, &env).expect("strict eval") - 101675.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_user_function_binds_record_input_fields_from_record_function_output() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-
-    let mut state = rumoca_core::Function::new("Pkg.State", Default::default());
-    state.is_constructor = true;
-    state.add_input(rumoca_core::FunctionParam::new("p", "Real"));
-    state.add_input(rumoca_core::FunctionParam::new("T", "Real"));
-    funcs.insert("Pkg.State".to_string(), state);
-
-    let mut make_state = rumoca_core::Function::new("Pkg.makeState", Default::default());
-    make_state.add_output(
-        rumoca_core::FunctionParam::new("out", "State")
-            .with_type_class(rumoca_core::ClassType::Record),
-    );
-    make_state.body = vec![rumoca_core::Statement::Assignment {
-        comp: comp_ref("out"),
-        value: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::new("Pkg.State"),
-            args: vec![
-                named_ctor_arg("p", lit(101325.0)),
-                named_ctor_arg("T", lit(350.0)),
-            ],
-            is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.makeState".to_string(), make_state);
-
-    let mut metric = rumoca_core::Function::new("Pkg.stateMetric", Default::default());
-    metric.add_input(
-        rumoca_core::FunctionParam::new("st", "State")
-            .with_type_class(rumoca_core::ClassType::Record),
-    );
-    metric.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
-            rumoca_core::OpBinary::Add,
-            var("st.p"),
-            var("st.T"),
-        )),
-    );
-    metric.body = vec![rumoca_core::Statement::Empty {
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.stateMetric".to_string(), metric);
-    env.functions = std::sync::Arc::new(funcs);
-
-    let expr = fn_call("Pkg.stateMetric", vec![fn_call("Pkg.makeState", vec![])]);
-    assert!((eval_expr::<f64>(&expr, &env).expect("strict eval") - 101675.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_user_function_binds_record_input_fields_from_field_access_argument() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-    let mut f = rumoca_core::Function::new("Pkg.stateMetric", Default::default());
-    f.add_input(rumoca_core::FunctionParam::new("st", "State"));
-    f.add_output(
-        rumoca_core::FunctionParam::new("y", "Real").with_default(binop(
-            rumoca_core::OpBinary::Add,
-            var("st.p"),
-            var("st.T"),
-        )),
-    );
-    f.body = vec![rumoca_core::Statement::Empty {
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.stateMetric".to_string(), f);
-    env.functions = std::sync::Arc::new(funcs);
-
-    env.set("container.state.p", 200000.0);
-    env.set("container.state.T", 500.0);
-
-    let expr = fn_call(
-        "Pkg.stateMetric",
-        vec![rumoca_core::Expression::FieldAccess {
-            base: Box::new(var("container")),
-            field: "state".to_string(),
-            span: rumoca_core::Span::DUMMY,
-        }],
-    );
-    assert!((eval_expr_value::<f64>(&expr, &env) - 200500.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_function_record_field_array_uses_first_element_in_scalar_context() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-
-    let mut state = rumoca_core::Function::new("Pkg.State", Default::default());
-    state.is_constructor = true;
-    state.add_input(rumoca_core::FunctionParam::new("p", "Real"));
-    state.add_input(rumoca_core::FunctionParam::new("X", "Real").with_dims(vec![2]));
-    funcs.insert("Pkg.State".to_string(), state);
-
-    let mut make_state = rumoca_core::Function::new("Pkg.makeState", Default::default());
-    make_state.add_output(
-        rumoca_core::FunctionParam::new("out", "State")
-            .with_type_class(rumoca_core::ClassType::Record),
-    );
-    make_state.body = vec![rumoca_core::Statement::Assignment {
-        comp: comp_ref("out"),
-        value: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::new("Pkg.State"),
-            args: vec![
-                named_ctor_arg("p", lit(101325.0)),
-                named_ctor_arg("X", arr(vec![lit(0.25), lit(0.75)], false)),
-            ],
-            is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.makeState".to_string(), make_state);
-    env.functions = std::sync::Arc::new(funcs);
-
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(fn_call("Pkg.makeState", vec![])),
-        field: "X".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-
-    assert!((eval_expr_value::<f64>(&expr, &env) - 0.25).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_function_call_unknown_user_function_returns_error() {
-    let env = VarEnv::<f64>::new();
-    let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("exlin"),
-        args: vec![lit(2.0), lit(50.0)],
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    assert_eq!(
-        eval_expr::<f64>(&expr, &env),
-        Err(EvalError::MissingFunction {
-            name: "exlin".to_string()
-        })
-    );
-}
-
-#[test]
-fn test_eval_function_call_unassigned_output_rejects_instead_of_defaulting_zero() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-
-    let mut f = rumoca_core::Function::new("Pkg.unassigned", Default::default());
-    f.add_output(rumoca_core::FunctionParam::new("y", "Real"));
-    f.body = vec![rumoca_core::Statement::Empty {
-        span: rumoca_core::Span::DUMMY,
-    }];
-    funcs.insert("Pkg.unassigned".to_string(), f);
-    env.functions = std::sync::Arc::new(funcs);
-
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Pkg.unassigned", vec![]), &env),
-        Err(EvalError::MissingBinding {
-            name: "y".to_string()
-        })
-    );
-}
-
-#[test]
-fn test_eval_function_call_external_stub_falls_back_to_special_handler() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-    let mut and_true_stub =
-        rumoca_core::Function::new("Modelica.Math.BooleanVectors.andTrue", Default::default());
-    and_true_stub.external = Some(rumoca_core::ExternalFunction::default());
-    funcs.insert(
-        "Modelica.Math.BooleanVectors.andTrue".to_string(),
-        and_true_stub,
-    );
-    env.functions = std::sync::Arc::new(funcs);
-
-    let all_true = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Modelica.Math.BooleanVectors.andTrue"),
-        args: vec![arr(vec![bool_lit(true), bool_lit(true)], false)],
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    assert_eq!(eval_expr_value::<f64>(&all_true, &env), 1.0);
-
-    let one_false = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Modelica.Math.BooleanVectors.andTrue"),
-        args: vec![arr(vec![bool_lit(true), bool_lit(false)], false)],
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    assert_eq!(eval_expr_value::<f64>(&one_false, &env), 0.0);
-}
-
-#[test]
-fn test_runtime_special_function_precedence_over_user_body() {
-    let mut env = VarEnv::<f64>::new();
-    let mut funcs = IndexMap::new();
-    let mut first_true = rumoca_core::Function::new(
-        "Modelica.Math.BooleanVectors.firstTrueIndex",
-        Default::default(),
-    );
-    first_true.add_input(rumoca_core::FunctionParam::new("u", "Boolean").with_dims(vec![0]));
-    first_true.add_input(rumoca_core::FunctionParam::new("nu", "Integer"));
-    first_true.add_output(
-        rumoca_core::FunctionParam::new("index", "Integer").with_default(
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
-            },
-        ),
-    );
-    funcs.insert(
-        "Modelica.Math.BooleanVectors.firstTrueIndex".to_string(),
-        first_true,
-    );
-    env.functions = std::sync::Arc::new(funcs);
-
-    let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Modelica.Math.BooleanVectors.firstTrueIndex"),
-        args: vec![
-            arr(vec![bool_lit(true), bool_lit(true)], false),
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(2),
-                span: rumoca_core::Span::DUMMY,
-            },
-        ],
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-
-    assert_eq!(eval_expr_value::<f64>(&expr, &env), 1.0);
 }

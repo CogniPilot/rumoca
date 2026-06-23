@@ -18,9 +18,9 @@ impl TypeChecker {
         let Some(loc) = lhs.get_location().or_else(|| rhs.get_location()) else {
             return;
         };
-        let span =
-            self.source_map
-                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
+        let Some(span) = self.diagnostic_location_span(loc, "equation shape compatibility") else {
+            return;
+        };
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET002",
             format!(

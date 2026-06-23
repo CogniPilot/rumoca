@@ -89,6 +89,7 @@ pub struct TypeCheckEvalContext {
     pub integers: FxHashMap<String, i64>,
     pub reals: FxHashMap<String, f64>,
     pub booleans: FxHashMap<String, bool>,
+    scalar_spans: FxHashMap<String, Span>,
     pub enums: FxHashMap<String, String>,
     pub dimensions: FxHashMap<String, Vec<usize>>,
     /// Function definitions for compile-time evaluation (MLS §12.4).
@@ -112,6 +113,7 @@ impl TypeCheckEvalContext {
             integers: FxHashMap::default(),
             reals: FxHashMap::default(),
             booleans: FxHashMap::default(),
+            scalar_spans: FxHashMap::default(),
             enums: FxHashMap::default(),
             dimensions: FxHashMap::default(),
             functions: Arc::new(FxHashMap::default()),
@@ -124,11 +126,27 @@ impl TypeCheckEvalContext {
     }
 
     pub fn add_integer(&mut self, name: impl Into<String>, value: i64) {
-        self.integers.insert(name.into(), value);
+        let name = name.into();
+        self.integers.insert(name.clone(), value);
+        self.scalar_spans.remove(&name);
     }
 
     pub fn add_real(&mut self, name: impl Into<String>, value: f64) {
-        self.reals.insert(name.into(), value);
+        let name = name.into();
+        self.reals.insert(name.clone(), value);
+        self.scalar_spans.remove(&name);
+    }
+
+    fn remember_scalar_span(&mut self, name: &str, span: Span) {
+        if !span.is_dummy() {
+            self.scalar_spans.insert(name.to_string(), span);
+        } else {
+            self.scalar_spans.remove(name);
+        }
+    }
+
+    fn scalar_span(&self, name: &str) -> Option<Span> {
+        self.scalar_spans.get(name).copied()
     }
 
     pub fn add_dimensions(&mut self, name: impl Into<String>, dims: Vec<usize>) {
@@ -451,10 +469,12 @@ fn bind_local_scalar_value(
     if let Some(v) = eval_integer_with_scope(expr, ctx, scope) {
         local.integers.insert(name.to_string(), v);
         local.reals.insert(name.to_string(), v as f64);
+        local.remember_scalar_span(name, expr.span());
         return;
     }
     if let Some(v) = eval_real_with_scope(expr, ctx, scope) {
         local.reals.insert(name.to_string(), v);
+        local.remember_scalar_span(name, expr.span());
         if let Some(i) = integral_real_to_i64(v, ctx, expr.span(), "local scalar binding") {
             local.integers.insert(name.to_string(), i);
         }
@@ -462,6 +482,7 @@ fn bind_local_scalar_value(
     }
     if let Some(v) = eval_boolean_with_scope(expr, ctx, scope) {
         local.booleans.insert(name.to_string(), v);
+        local.scalar_spans.remove(name);
     }
 }
 
@@ -553,10 +574,11 @@ fn eval_user_func_integer(
         }
     }
     local_ctx.integers.get(&output_name).copied().or_else(|| {
+        let span = local_ctx.scalar_span(&output_name)?;
         local_ctx
             .reals
             .get(&output_name)
-            .and_then(|v| integral_real_to_i64(*v, &local_ctx, Span::DUMMY, "function return"))
+            .and_then(|v| integral_real_to_i64(*v, &local_ctx, span, "function return"))
     })
 }
 
@@ -591,11 +613,13 @@ fn interpret_stmt(stmt: &Statement, ctx: &mut TypeCheckEvalContext) -> Option<Fu
             let var_name = comp.to_string();
             if let Some(val) = eval_integer_with_scope(value, ctx, "") {
                 ctx.integers.insert(var_name.clone(), val);
-                ctx.reals.insert(var_name, val as f64);
+                ctx.reals.insert(var_name.clone(), val as f64);
+                ctx.remember_scalar_span(&var_name, value.span());
                 return Some(FunctionStmtFlow::Continue);
             }
             if let Some(val) = eval_real_with_scope(value, ctx, "") {
                 ctx.reals.insert(var_name.clone(), val);
+                ctx.remember_scalar_span(&var_name, value.span());
                 if let Some(i) =
                     integral_real_to_i64(val, ctx, value.span(), "algorithm assignment")
                 {
@@ -604,7 +628,8 @@ fn interpret_stmt(stmt: &Statement, ctx: &mut TypeCheckEvalContext) -> Option<Fu
                 return Some(FunctionStmtFlow::Continue);
             }
             if let Some(val) = eval_boolean_with_scope(value, ctx, "") {
-                ctx.booleans.insert(var_name, val);
+                ctx.booleans.insert(var_name.clone(), val);
+                ctx.scalar_spans.remove(&var_name);
             }
             Some(FunctionStmtFlow::Continue)
         }
@@ -659,15 +684,18 @@ fn interpret_for_stmt(
             FunctionStmtFlow::Continue => {}
             FunctionStmtFlow::Break => {
                 ctx.integers.remove(&var_name);
+                ctx.scalar_spans.remove(&var_name);
                 return Some(FunctionStmtFlow::Continue);
             }
             FunctionStmtFlow::Return => {
                 ctx.integers.remove(&var_name);
+                ctx.scalar_spans.remove(&var_name);
                 return Some(FunctionStmtFlow::Return);
             }
         }
     }
     ctx.integers.remove(&var_name);
+    ctx.scalar_spans.remove(&var_name);
     Some(FunctionStmtFlow::Continue)
 }
 

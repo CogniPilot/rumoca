@@ -1,6 +1,47 @@
 //! Regression tests for interface-flow balance accounting.
 
-use rumoca_compile::{Session, SessionConfig};
+use rumoca_compile::{Session, SessionConfig, compile::CompilationResult};
+
+fn compile_model(source: &str, model_name: &str) -> CompilationResult {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("model should parse/typecheck");
+
+    session
+        .compile_model(model_name)
+        .expect("model should compile")
+}
+
+#[test]
+fn test_source_top_level_unconnected_flow_generates_boundary_closure() {
+    let source = r#"
+connector Pin
+    Real v;
+    flow Real i;
+end Pin;
+
+model OpenBoundary
+    Pin pin;
+end OpenBoundary;
+"#;
+
+    let result = compile_model(source, "OpenBoundary");
+    let unconnected_flow_scalars = result
+        .dae
+        .continuous
+        .equations
+        .iter()
+        .filter(|eq| eq.origin.starts_with("unconnected flow:"))
+        .map(|eq| eq.scalar_count)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        unconnected_flow_scalars,
+        vec![1],
+        "top-level unconnected flow variable should generate one scalar boundary closure"
+    );
+}
 
 #[test]
 fn test_interface_flow_does_not_double_count_closed_boundary() {
@@ -41,14 +82,7 @@ equation
 end BoundaryWithDelta;
 "#;
 
-    let mut session = Session::new(SessionConfig::default());
-    session
-        .add_document("test.mo", source)
-        .expect("model should parse/typecheck");
-
-    let result = session
-        .compile_model("BoundaryWithDelta")
-        .expect("model should compile");
+    let result = compile_model(source, "BoundaryWithDelta");
 
     let dae = &result.dae;
     let detail = rumoca_phase_dae::balance::balance_detail(dae).expect("valid DAE balance fixture");

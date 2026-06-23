@@ -137,6 +137,11 @@ pub(crate) fn ensure_example_libraries(root: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn ensure_cmm_library(root: &Path, force: bool) -> Result<()> {
+    let manifest = load_manifest(root)?;
+    ensure_library(root, required_library(&manifest, CMM_KEY)?, force)
+}
+
 fn load_manifest(root: &Path) -> Result<DependencyManifest> {
     let path = root.join(MANIFEST_FILE);
     let raw =

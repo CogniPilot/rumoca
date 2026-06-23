@@ -1,0 +1,41 @@
+{
+  "name": "@cognipilot/rumoca-web",
+  "version": "0.9.4",
+  "description": "Hand-written browser assets for Rumoca: wasm runtime glue (workers, WebGPU/diffsol drivers) and the visualization front-end (uPlot plots, three.js 3D viewer, results app). Single source consumed by the npm package build, the rustbook live examples, the tutorial website, the VS Code webview, and the native CLI report.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cognipilot/rumoca.git",
+    "directory": "packages/rumoca-web"
+  },
+  "exports": {
+    "./viz": "./viz/visualization_shared.js",
+    "./results-app": "./viz/results_app.js",
+    "./results-report": "./viz/results_mount.js",
+    "./results-mount": "./viz/results_mount.js",
+    "./runtime": "./runtime/rumoca_runtime.js",
+    "./modelica-language": "./runtime/modelica_language.js",
+    "./gpu": "./runtime/rumoca_gpu.js",
+    "./worker": "./runtime/rumoca_worker.js",
+    "./parse-worker": "./runtime/parse_worker.js",
+    "./diffsol": "./runtime/rumoca_diffsol.js"
+  },
+  "files": [
+    "build.mjs",
+    "viz",
+    "runtime"
+  ],
+  "dependencies": {
+    "esbuild": "^0.28.1",
+    "jszip": "3.10.1",
+    "marked": "^18.0.5",
+    "monaco-editor": "0.45.0",
+    "three": "0.164.1",
+    "uplot": "1.6.32"
+  }
+}

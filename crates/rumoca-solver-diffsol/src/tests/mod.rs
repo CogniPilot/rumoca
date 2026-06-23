@@ -1,9 +1,16 @@
 use super::*;
 
+macro_rules! fixture_span {
+    () => {
+        solve::source_span_from_offsets(49, 0, 1)
+    };
+}
+
 mod root_events;
 mod tensor_runtime;
 
 mod runtime_value_tests;
+
 fn install_dense_algebraic_projection_plan(model: &mut solve::SolveModel) {
     let state_count = model.problem.solve_layout.state_scalar_count;
     let algebraic_count = model.problem.solve_layout.algebraic_scalar_count;
@@ -27,13 +34,13 @@ fn state_only_bdf_accepts_projection_backed_derivative_dependencies() {
     let mut model = projected_derivative_model();
 
     assert!(
-        can_use_state_only_bdf(&model),
+        can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
         "state derivative rows may read non-state slots when the projection plan can refresh them"
     );
 
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan::default();
     assert!(
-        !can_use_state_only_bdf(&model),
+        !can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
         "state-only BDF must not treat missing algebraic refresh data as a default"
     );
 }
@@ -82,21 +89,32 @@ fn run_ramp(model: &solve::SolveModel, method: DiffsolMethod) -> f64 {
 /// directly.
 fn general_ramp_model() -> solve::SolveModel {
     let mut model = unit_integrator_model();
-    model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::Const { dst: 0, value: 1.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
     model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
-    model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::Const { dst: 0, value: 0.0 },
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.visible_value_rows = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
-    model.visible_value_rows = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 0 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
+        ]],
+        fixture_span!(),
+    );
     model
 }
 
@@ -122,17 +140,25 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
         .base_to_indices
         .insert("b".to_string(), vec![2]);
     model.problem.solve_layout.algebraic_scalar_count = 2;
-    model.problem.continuous.derivative_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadY { dst: 0, index: 2 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
-    model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![
-            state_residual_row(),
-            y_minus_y_row(1, 0),
-            y_minus_y_row(2, 1),
-        ]));
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![
+                state_residual_row(),
+                y_minus_y_row(1, 0),
+                y_minus_y_row(2, 1),
+            ],
+            fixture_span!(),
+        ),
+    );
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
         blocks: vec![
             solve::AlgebraicProjectionBlock {
@@ -149,7 +175,7 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
     };
 
     assert!(
-        can_use_state_only_bdf(&model),
+        can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
         "projection coverage should be checked transitively through producer rows"
     );
 }
@@ -187,16 +213,21 @@ fn projected_derivative_model() -> solve::SolveModel {
         indexmap::IndexMap::from([("x".to_string(), 0), ("a".to_string(), 1)]);
     model.problem.solve_layout.solver_maps.base_to_indices =
         indexmap::IndexMap::from([("x".to_string(), vec![0]), ("a".to_string(), vec![1])]);
-    model.problem.continuous.derivative_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadY { dst: 0, index: 1 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
-    model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![
-            state_residual_row(),
-            y_minus_y_row(1, 0),
-        ]));
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![state_residual_row(), y_minus_y_row(1, 0)],
+            fixture_span!(),
+        ),
+    );
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
@@ -216,21 +247,28 @@ fn unit_integrator_model() -> solve::SolveModel {
         indexmap::IndexMap::from([("x".to_string(), 0)]);
     model.problem.solve_layout.solver_maps.base_to_indices =
         indexmap::IndexMap::from([("x".to_string(), vec![0])]);
-    model.problem.continuous.derivative_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::Const { dst: 0, value: 1.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
-    model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![
-            state_residual_row(),
-        ]));
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(vec![state_residual_row()], fixture_span!()),
+    );
     model.artifacts.continuous.mass_matrix = vec![vec![1.0]];
-    model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadSeed { dst: 0, index: 0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
     model.initial_y = vec![0.0];
     model.visible_names = vec!["x".to_string()];
     model
@@ -313,18 +351,21 @@ fn simulate_no_state_solve_ir_recomputes_external_time_table_runtime_assignment(
     model.problem.solve_layout.compiled_parameter_len = 2;
     model.problem.solve_layout.discrete_real_scalar_names = vec!["y".to_string()];
     model.problem.discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(1)];
-    model.problem.discrete.runtime_assignment_rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadP { dst: 0, index: 0 },
-        solve::LinearOp::Const { dst: 1, value: 1.0 },
-        solve::LinearOp::LoadTime { dst: 2 },
-        solve::LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        solve::LinearOp::StoreOutput { src: 3 },
-    ]]);
+    model.problem.discrete.runtime_assignment_rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::LoadTime { dst: 2 },
+            solve::LinearOp::TableLookup {
+                dst: 3,
+                table_id: 0,
+                column: 1,
+                input: 2,
+            },
+            solve::LinearOp::StoreOutput { src: 3 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![1.0, 0.0];
     model
         .external_tables
@@ -358,48 +399,62 @@ fn simulate_no_state_dynamic_table_event_updates_projected_runtime_alias() {
     model.problem.solve_layout.solver_maps.name_to_idx =
         indexmap::IndexMap::from([("table_y".to_string(), 0)]);
     model.problem.solve_layout.discrete_real_scalar_names = vec!["table_u".to_string()];
-    model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadY { dst: 0, index: 0 },
-            solve::LinearOp::LoadP { dst: 1, index: 0 },
-            solve::LinearOp::Const { dst: 2, value: 1.0 },
-            solve::LinearOp::LoadTime { dst: 3 },
-            solve::LinearOp::TableLookup {
-                dst: 4,
-                table_id: 1,
-                column: 2,
-                input: 3,
-            },
-            solve::LinearOp::Binary {
-                dst: 5,
-                op: solve::BinaryOp::Sub,
-                lhs: 0,
-                rhs: 4,
-            },
-            solve::LinearOp::StoreOutput { src: 5 },
-        ]]));
-    model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadSeed { dst: 0, index: 0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadP { dst: 1, index: 0 },
+                solve::LinearOp::Const { dst: 2, value: 1.0 },
+                solve::LinearOp::LoadTime { dst: 3 },
+                solve::LinearOp::TableLookup {
+                    dst: 4,
+                    table_id: 1,
+                    column: 2,
+                    input: 3,
+                },
+                solve::LinearOp::Binary {
+                    dst: 5,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 4,
+                },
+                solve::LinearOp::StoreOutput { src: 5 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
     model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
     install_dense_algebraic_projection_plan(&mut model);
     model.problem.discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(1)];
-    model.problem.discrete.runtime_assignment_rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 0 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
-    model.problem.events.dynamic_time_event_rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadP { dst: 0, index: 0 },
-        solve::LinearOp::LoadTime { dst: 1 },
-        solve::LinearOp::TableNextEvent {
-            dst: 2,
-            table_id: 0,
-            time: 1,
-        },
-        solve::LinearOp::StoreOutput { src: 2 },
-    ]]);
+    model.problem.discrete.runtime_assignment_rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.events.dynamic_time_event_rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::LoadTime { dst: 1 },
+            solve::LinearOp::TableNextEvent {
+                dst: 2,
+                table_id: 0,
+                time: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![1.0, 0.0];
     model.initial_y = vec![0.0];
     model.visible_names = vec!["table_y".to_string(), "table_u".to_string()];
@@ -436,10 +491,13 @@ fn simulate_applies_discrete_runtime_tail_updates_at_initial_event() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::Const { dst: 0, value: 3.0 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 3.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![0.0];
     model.visible_names = vec!["m".to_string()];
 
@@ -465,10 +523,13 @@ fn simulate_discrete_updates_can_read_initial_event_flag() {
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.solve_layout.initial_event_parameter_index = Some(1);
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadP { dst: 0, index: 1 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["m".to_string()];
 
@@ -501,24 +562,30 @@ fn simulate_applies_start_time_clock_tick_after_initial_mode() {
         phase_seconds: 0.0,
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadP { dst: 0, index: 2 },
-        solve::LinearOp::Const { dst: 1, value: 0.0 },
-        solve::LinearOp::LoadP { dst: 2, index: 0 },
-        solve::LinearOp::Select {
-            dst: 3,
-            cond: 0,
-            if_true: 1,
-            if_false: 2,
-        },
-        solve::LinearOp::StoreOutput { src: 3 },
-    ]]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 2 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::LoadP { dst: 2, index: 0 },
+            solve::LinearOp::Select {
+                dst: 3,
+                cond: 0,
+                if_true: 1,
+                if_false: 2,
+            },
+            solve::LinearOp::StoreOutput { src: 3 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![2.0, 0.0, 0.0];
     model.visible_names = vec!["held".to_string()];
-    model.visible_value_rows = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadP { dst: 0, index: 1 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]]);
+    model.visible_value_rows = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
 
     let result = simulate(
         &model,
@@ -546,16 +613,19 @@ fn simulate_initial_event_iterates_pre_to_current_runtime_tail() {
         source: solve::PreParamSource::P { index: 0 },
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![
-            solve::LinearOp::Const { dst: 0, value: 3.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 3.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
         ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 2 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-    ]);
+        fixture_span!(),
+    );
     model.parameters = vec![1.0, 0.0, 0.0];
     model.visible_names = vec!["aux".to_string(), "y".to_string()];
 
@@ -585,23 +655,26 @@ fn fixed_static_event_keeps_follow_current_pre_rows_iterating() {
         source: solve::PreParamSource::P { index: 0 },
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![
-            solve::LinearOp::Const { dst: 0, value: 3.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 3.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
         ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 2 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-    ]);
+        fixture_span!(),
+    );
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::FollowCurrent,
     ];
     model.parameters = vec![1.0, 0.0, 0.0];
 
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
@@ -634,24 +707,27 @@ fn simulate_no_state_solve_ir_records_dynamic_time_event_between_outputs() {
     model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
     model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadTime { dst: 0 },
-        solve::LinearOp::LoadP { dst: 1, index: 0 },
-        solve::LinearOp::Compare {
-            dst: 2,
-            op: solve::CompareOp::Ge,
-            lhs: 0,
-            rhs: 1,
-        },
-        solve::LinearOp::Const { dst: 3, value: 7.0 },
-        solve::LinearOp::Select {
-            dst: 4,
-            cond: 2,
-            if_true: 3,
-            if_false: 1,
-        },
-        solve::LinearOp::StoreOutput { src: 4 },
-    ]]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::LoadP { dst: 1, index: 0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 7.0 },
+            solve::LinearOp::Select {
+                dst: 4,
+                cond: 2,
+                if_true: 3,
+                if_false: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![5.0];
     model.visible_names = vec!["next".to_string()];
 
@@ -681,44 +757,50 @@ fn simulate_no_state_solve_ir_records_direct_time_threshold_event() {
     model.problem.solve_layout.parameter_count = 2;
     model.problem.solve_layout.compiled_parameter_len = 3;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["pulse".to_string()];
-    model.problem.events.dynamic_time_event_rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadP { dst: 0, index: 0 },
-        solve::LinearOp::LoadP { dst: 1, index: 1 },
-        solve::LinearOp::Binary {
-            dst: 2,
-            op: solve::BinaryOp::Add,
-            lhs: 0,
-            rhs: 1,
-        },
-        solve::LinearOp::StoreOutput { src: 2 },
-    ]]);
+    model.problem.events.dynamic_time_event_rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::LoadP { dst: 1, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![vec![
-        solve::LinearOp::LoadTime { dst: 0 },
-        solve::LinearOp::LoadP { dst: 1, index: 0 },
-        solve::LinearOp::LoadP { dst: 2, index: 1 },
-        solve::LinearOp::Binary {
-            dst: 3,
-            op: solve::BinaryOp::Add,
-            lhs: 1,
-            rhs: 2,
-        },
-        solve::LinearOp::Compare {
-            dst: 4,
-            op: solve::CompareOp::Lt,
-            lhs: 0,
-            rhs: 3,
-        },
-        solve::LinearOp::Const { dst: 5, value: 1.0 },
-        solve::LinearOp::Const { dst: 6, value: 0.0 },
-        solve::LinearOp::Select {
-            dst: 7,
-            cond: 4,
-            if_true: 5,
-            if_false: 6,
-        },
-        solve::LinearOp::StoreOutput { src: 7 },
-    ]]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::LoadP { dst: 1, index: 0 },
+            solve::LinearOp::LoadP { dst: 2, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Add,
+                lhs: 1,
+                rhs: 2,
+            },
+            solve::LinearOp::Compare {
+                dst: 4,
+                op: solve::CompareOp::Lt,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::Const { dst: 5, value: 1.0 },
+            solve::LinearOp::Const { dst: 6, value: 0.0 },
+            solve::LinearOp::Select {
+                dst: 7,
+                cond: 4,
+                if_true: 5,
+                if_false: 6,
+            },
+            solve::LinearOp::StoreOutput { src: 7 },
+        ]],
+        fixture_span!(),
+    );
     model.parameters = vec![0.0, 0.2, 0.0];
     model.visible_names = vec!["pulse".to_string()];
 
@@ -754,8 +836,10 @@ fn simulate_no_state_solve_ir_refreshes_periodic_event_indicator_between_ticks()
         period_seconds: 0.5,
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
-    model.problem.discrete.rhs =
-        solve::ScalarProgramBlock::new(vec![periodic_tick_row(0.0, 0.5), not_parameter_row(0)]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![periodic_tick_row(0.0, 0.5), not_parameter_row(0)],
+        fixture_span!(),
+    );
     model.problem.discrete.observation_refresh = vec![true, true];
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["pulse".to_string(), "derived".to_string()];
@@ -794,10 +878,13 @@ fn observation_refresh_keeps_pre_values_fixed_during_settle() {
         period_seconds: 0.1,
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
-        periodic_tick_row(0.0, 0.1),
-        increment_pre_state_on_tick_row(),
-    ]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![
+            periodic_tick_row(0.0, 0.1),
+            increment_pre_state_on_tick_row(),
+        ],
+        fixture_span!(),
+    );
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::Fixed,
@@ -836,8 +923,10 @@ fn observation_refresh_resets_fixed_pre_event_history_rows() {
         source: solve::PreParamSource::P { index: 1 },
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1), solve::scalar_slot_p(2)];
-    model.problem.discrete.rhs =
-        solve::ScalarProgramBlock::new(vec![load_parameter_row(0), change_parameter_row(1, 3)]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![load_parameter_row(0), change_parameter_row(1, 3)],
+        fixture_span!(),
+    );
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::Fixed,
@@ -900,12 +989,10 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
     ];
     let rhs_rows = vec![y_minus_p_plus_const_row(0, 3, 1.0), y_minus_p_row(1, 0)];
     let jvp_rows = vec![seed_output_row(0), seed_output_row(1)];
-    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        solve::ScalarProgramBlock::new(rhs_rows.clone()),
-    );
-    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
-        solve::ScalarProgramBlock::new(jvp_rows.clone()),
-    );
+    model.problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(scalar_block(rhs_rows.clone()));
+    model.artifacts.continuous.implicit_jacobian_v =
+        solve::ComputeBlock::from_scalar_program_block(scalar_block(jvp_rows.clone()));
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
@@ -920,7 +1007,7 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
         solve::scalar_slot_p(1),
         solve::scalar_slot_p(4),
     ];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
+    model.problem.discrete.rhs = scalar_block(vec![
         periodic_tick_row(0.0, 0.02),
         load_parameter_row(7),
         load_parameter_row(2),
@@ -963,6 +1050,10 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
             vec![1.0, 2.0, 3.0, 3.0],
         ]
     );
+}
+
+fn scalar_block(rows: Vec<Vec<solve::LinearOp>>) -> solve::ScalarProgramBlock {
+    solve::ScalarProgramBlock::with_source_span(rows, fixture_span!())
 }
 
 fn not_parameter_row(index: usize) -> Vec<solve::LinearOp> {
@@ -1207,38 +1298,41 @@ fn event_update_converges_boolean_pre_feedback_loop_row_by_row() {
         source: solve::PreParamSource::P { index: 0 },
     }];
     model.problem.discrete.update_targets = (0..5).map(solve::scalar_slot_p).collect();
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![
-            solve::LinearOp::LoadP { dst: 0, index: 4 },
-            solve::LinearOp::StoreOutput { src: 0 },
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 4 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 5 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 1 },
+                solve::LinearOp::Unary {
+                    dst: 1,
+                    op: solve::UnaryOp::Not,
+                    arg: 0,
+                },
+                solve::LinearOp::StoreOutput { src: 1 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 3 },
+                solve::LinearOp::Unary {
+                    dst: 1,
+                    op: solve::UnaryOp::Not,
+                    arg: 0,
+                },
+                solve::LinearOp::StoreOutput { src: 1 },
+            ],
         ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 5 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 1 },
-            solve::LinearOp::Unary {
-                dst: 1,
-                op: solve::UnaryOp::Not,
-                arg: 0,
-            },
-            solve::LinearOp::StoreOutput { src: 1 },
-        ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 2 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 3 },
-            solve::LinearOp::Unary {
-                dst: 1,
-                op: solve::UnaryOp::Not,
-                arg: 0,
-            },
-            solve::LinearOp::StoreOutput { src: 1 },
-        ],
-    ]);
+        fixture_span!(),
+    );
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::Fixed,
@@ -1248,7 +1342,7 @@ fn event_update_converges_boolean_pre_feedback_loop_row_by_row() {
     ];
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
@@ -1275,13 +1369,16 @@ fn fixed_time_event_does_not_freeze_follow_current_rows() {
         source: solve::PreParamSource::P { index: 0 },
     }];
     model.problem.discrete.update_targets = (0..5).map(solve::scalar_slot_p).collect();
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
-        load_parameter_row(4),
-        load_parameter_row(5),
-        not_parameter_row(1),
-        load_parameter_row(2),
-        not_parameter_row(3),
-    ]);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![
+            load_parameter_row(4),
+            load_parameter_row(5),
+            not_parameter_row(1),
+            load_parameter_row(2),
+            not_parameter_row(3),
+        ],
+        fixture_span!(),
+    );
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::Fixed,
@@ -1291,7 +1388,7 @@ fn fixed_time_event_does_not_freeze_follow_current_rows() {
     ];
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
@@ -1323,40 +1420,43 @@ fn event_update_rechecks_change_guard_after_runtime_alias_refresh() {
     ];
     model.problem.discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(1)];
     model.problem.discrete.runtime_assignment_rhs =
-        solve::ScalarProgramBlock::new(vec![load_parameter_row(0)]);
+        solve::ScalarProgramBlock::with_source_span(vec![load_parameter_row(0)], fixture_span!());
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(2)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::new(vec![
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![
-            solve::LinearOp::Const { dst: 0, value: 3.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 3.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 1 },
+                solve::LinearOp::LoadP { dst: 1, index: 3 },
+                solve::LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Ne,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::Const { dst: 3, value: 7.0 },
+                solve::LinearOp::LoadP { dst: 4, index: 4 },
+                solve::LinearOp::Select {
+                    dst: 5,
+                    cond: 2,
+                    if_true: 3,
+                    if_false: 4,
+                },
+                solve::LinearOp::StoreOutput { src: 5 },
+            ],
         ],
-        vec![
-            solve::LinearOp::LoadP { dst: 0, index: 1 },
-            solve::LinearOp::LoadP { dst: 1, index: 3 },
-            solve::LinearOp::Compare {
-                dst: 2,
-                op: solve::CompareOp::Ne,
-                lhs: 0,
-                rhs: 1,
-            },
-            solve::LinearOp::Const { dst: 3, value: 7.0 },
-            solve::LinearOp::LoadP { dst: 4, index: 4 },
-            solve::LinearOp::Select {
-                dst: 5,
-                cond: 2,
-                if_true: 3,
-                if_false: 4,
-            },
-            solve::LinearOp::StoreOutput { src: 5 },
-        ],
-    ]);
+        fixture_span!(),
+    );
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::Fixed,
     ];
     model.parameters = vec![1.0, 1.0, 0.0, 0.0, 0.0];
 
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
@@ -1377,29 +1477,37 @@ fn event_update_refreshes_runtime_aliases_before_parameter_only_projection() {
     model.problem.solve_layout.compiled_parameter_len = 3;
     model.problem.solve_layout.solver_maps.names = vec!["dummy".to_string()];
     model.initial_y = vec![0.0];
-    model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::LoadP { dst: 0, index: 0 },
-            solve::LinearOp::LoadP { dst: 1, index: 1 },
-            solve::LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Sub,
-                lhs: 0,
-                rhs: 1,
-            },
-            solve::LinearOp::StoreOutput { src: 2 },
-        ]]));
-    model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
-            solve::LinearOp::Const { dst: 0, value: 0.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]));
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::LoadP { dst: 1, index: 1 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
     model.problem.discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(0)];
     model.problem.discrete.runtime_assignment_rhs =
-        solve::ScalarProgramBlock::new(vec![load_parameter_row(2)]);
+        solve::ScalarProgramBlock::with_source_span(vec![load_parameter_row(2)], fixture_span!());
     model.parameters = vec![0.0, 2.0, 2.0];
 
-    let runtime = SolveRuntime::new(&model);
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("ODE model should build");
     let mut y = model.initial_y.clone();
     let mut p = model.parameters.clone();

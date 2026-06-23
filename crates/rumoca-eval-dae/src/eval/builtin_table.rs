@@ -74,22 +74,22 @@ pub fn eval_table_bound_value_in(
     eval_table_bound_spec(&spec, max)
 }
 
-pub fn try_eval_table_bound_value_in(
+pub fn eval_table_bound_value_opt_in(
     table_id: f64,
     max: bool,
     tables: &[rumoca_core::ExternalTableData],
 ) -> Option<f64> {
     let spec = lookup_external_table_in(table_id, tables)?;
-    try_eval_table_bound_spec(&spec, max)
+    eval_table_bound_spec_opt(&spec, max)
 }
 
 fn eval_table_bound_spec(spec: &ExternalTableSpec, max: bool) -> Result<f64, EvalError> {
-    try_eval_table_bound_spec(spec, max).ok_or(EvalError::UnsupportedExpression {
+    eval_table_bound_spec_opt(spec, max).ok_or(EvalError::UnsupportedExpression {
         kind: "external table bounds",
     })
 }
 
-fn try_eval_table_bound_spec(spec: &ExternalTableSpec, max: bool) -> Option<f64> {
+fn eval_table_bound_spec_opt(spec: &ExternalTableSpec, max: bool) -> Option<f64> {
     table_x_bounds(spec).map(|(min, upper)| if max { upper } else { min })
 }
 
@@ -106,14 +106,14 @@ pub fn eval_table_lookup_value_in(
     eval_table_lookup_spec(&spec, col_arg, x)
 }
 
-pub fn try_eval_table_lookup_value_in(
+pub fn eval_table_lookup_value_opt_in(
     table_id: f64,
     col_arg: f64,
     x: f64,
     tables: &[rumoca_core::ExternalTableData],
 ) -> Option<f64> {
     let spec = lookup_external_table_in(table_id, tables)?;
-    try_eval_table_lookup_spec(&spec, col_arg, x)
+    eval_table_lookup_spec_opt(&spec, col_arg, x)
 }
 
 fn eval_table_lookup_spec<T: SimFloat>(
@@ -125,7 +125,7 @@ fn eval_table_lookup_spec<T: SimFloat>(
     eval_table_1d_lookup(spec, col_idx, x)
 }
 
-fn try_eval_table_lookup_spec<T: SimFloat>(
+fn eval_table_lookup_spec_opt<T: SimFloat>(
     spec: &ExternalTableSpec,
     col_arg: f64,
     x: T,
@@ -147,14 +147,14 @@ pub fn eval_table_lookup_slope_value_in(
     eval_table_lookup_slope_spec(&spec, col_arg, x)
 }
 
-pub fn try_eval_table_lookup_slope_value_in(
+pub fn eval_table_lookup_slope_value_opt_in(
     table_id: f64,
     col_arg: f64,
     x: f64,
     tables: &[rumoca_core::ExternalTableData],
 ) -> Option<f64> {
     let spec = lookup_external_table_in(table_id, tables)?;
-    try_eval_table_lookup_slope_spec(&spec, col_arg, x)
+    eval_table_lookup_slope_spec_opt(&spec, col_arg, x)
 }
 
 fn eval_table_lookup_slope_spec(
@@ -166,7 +166,7 @@ fn eval_table_lookup_slope_spec(
     Ok(eval_table_1d_lookup(spec, col_idx, Dual::new(x, 1.0))?.du)
 }
 
-fn try_eval_table_lookup_slope_spec(spec: &ExternalTableSpec, col_arg: f64, x: f64) -> Option<f64> {
+fn eval_table_lookup_slope_spec_opt(spec: &ExternalTableSpec, col_arg: f64, x: f64) -> Option<f64> {
     let col_idx = checked_table_col_index(spec, col_arg)?;
     Some(
         eval_table_1d_lookup(spec, col_idx, Dual::new(x, 1.0))
@@ -186,7 +186,7 @@ pub fn eval_time_table_next_event_value_in(
     eval_time_table_next_event_spec(&spec, time_in)
 }
 
-pub fn try_eval_time_table_next_event_value_in(
+pub fn eval_time_table_next_event_value_opt_in(
     table_id: f64,
     time_in: f64,
     tables: &[rumoca_core::ExternalTableData],
@@ -248,7 +248,7 @@ fn eval_table_bounds_call<T: SimFloat>(
         .ok_or_else(|| EvalError::MissingBinding {
             name: format!("external table {table_id}"),
         })?;
-    let value = try_eval_table_bound_spec(&spec, max).ok_or(EvalError::UnsupportedExpression {
+    let value = eval_table_bound_spec_opt(&spec, max).ok_or(EvalError::UnsupportedExpression {
         kind: "external table bounds",
     })?;
     Ok(T::from_f64(value))

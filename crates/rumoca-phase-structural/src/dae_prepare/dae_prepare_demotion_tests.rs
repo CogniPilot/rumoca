@@ -2,26 +2,54 @@ use super::*;
 use indexmap::IndexSet;
 use rumoca_core::Span;
 
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("dae_prepare_demotion_test.mo"),
+        1,
+        2,
+    )
+}
+
+fn test_variable(name: &str) -> Variable {
+    let mut variable = Variable::new(
+        VarName::new(name),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    variable.source_span = test_span();
+    variable
+}
+
 fn var(name: &str) -> Expression {
+    var_with_span(name, Span::DUMMY)
+}
+
+fn var_with_span(name: &str, span: Span) -> Expression {
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
 fn var_idx(name: &str, idx: i64) -> Expression {
+    var_idx_with_span(name, idx, rumoca_core::Span::DUMMY)
+}
+
+fn var_idx_with_span(name: &str, idx: i64, span: Span) -> Expression {
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
-        subscripts: vec![Subscript::generated_index(idx, rumoca_core::Span::DUMMY)],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![Subscript::generated_index(idx, span)],
+        span,
     }
 }
 
 fn var_sub(name: &str, subscript: Expression) -> Expression {
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
-        subscripts: vec![Subscript::generated_expr(Box::new(subscript))],
+        subscripts: vec![Subscript::generated_expr(
+            Box::new(subscript),
+            rumoca_core::Span::DUMMY,
+        )],
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -43,6 +71,15 @@ fn real(v: f64) -> Expression {
 fn sub(lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
         op: OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn add(lhs: Expression, rhs: Expression) -> Expression {
+    Expression::Binary {
+        op: OpBinary::Add,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
         span: rumoca_core::Span::DUMMY,
@@ -110,19 +147,23 @@ fn array(elements: Vec<Expression>) -> Expression {
 }
 
 fn call(name: &str, args: Vec<Expression>) -> Expression {
+    call_with_span(name, args, Span::DUMMY)
+}
+
+fn call_with_span(name: &str, args: Vec<Expression>, span: Span) -> Expression {
     Expression::FunctionCall {
         name: rumoca_core::Reference::new(name),
         args,
         is_constructor: false,
-        span: Span::DUMMY,
+        span,
     }
 }
 
 fn der(name: &str) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
-        args: vec![var(name)],
-        span: rumoca_core::Span::DUMMY,
+        args: vec![var_with_span(name, test_span())],
+        span: test_span(),
     }
 }
 
@@ -144,15 +185,40 @@ fn eq(rhs: Expression) -> Equation {
     }
 }
 
+fn spanned_eq(rhs: Expression, origin: &str, span: Span) -> Equation {
+    Equation {
+        lhs: None,
+        rhs,
+        span,
+        origin: origin.to_string(),
+        scalar_count: 1,
+    }
+}
+
+#[test]
+fn test_split_linear_target_zero_remainder_uses_context_span() {
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_12.mo",
+        ),
+        20,
+        31,
+    );
+    let (_, remainder) = split_linear_target(&var_with_span("x", span), &VarName::new("x"), span)
+        .expect("direct target should split");
+
+    assert_eq!(remainder.span(), Some(span));
+}
+
 #[test]
 fn test_assignable_derivative_rows_keep_rows_with_non_state_rhs_aliases() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
     dae.variables
         .algebraics
-        .insert(VarName::new("dx"), Variable::new(VarName::new("dx")));
+        .insert(VarName::new("dx"), test_variable("dx"));
 
     dae.continuous.equations.push(eq(sub(var("dx"), der("x"))));
 
@@ -164,15 +230,15 @@ fn test_assignable_derivative_rows_keep_rows_with_non_state_rhs_aliases() {
 #[test]
 fn test_demote_states_without_derivative_refs_uses_exact_state_path() {
     let mut dae = Dae::new();
-    let mut is = Variable::new(VarName::new("imc.is"));
+    let mut is = test_variable("imc.is");
     is.dims = vec![3];
     dae.variables.states.insert(VarName::new("imc.is"), is);
-    let mut idq = Variable::new(VarName::new("imc.idq_rs"));
+    let mut idq = test_variable("imc.idq_rs");
     idq.dims = vec![2];
     dae.variables.states.insert(VarName::new("imc.idq_rs"), idq);
     dae.variables.algebraics.insert(
         VarName::new("imc.plug_sp.pin[1].i"),
-        Variable::new(VarName::new("imc.plug_sp.pin[1].i")),
+        test_variable("imc.plug_sp.pin[1].i"),
     );
 
     dae.continuous
@@ -201,14 +267,13 @@ fn test_demote_states_without_derivative_refs_uses_exact_state_path() {
 #[test]
 fn test_demote_states_ignores_derivatives_in_static_inactive_if_branch() {
     let mut dae = Dae::new();
-    dae.variables.states.insert(
-        VarName::new("pump.T"),
-        Variable::new(VarName::new("pump.T")),
-    );
+    dae.variables
+        .states
+        .insert(VarName::new("pump.T"), test_variable("pump.T"));
     dae.variables
         .algebraics
-        .insert(VarName::new("q"), Variable::new(VarName::new("q")));
-    let mut mass = Variable::new(VarName::new("pump.m"));
+        .insert(VarName::new("q"), test_variable("q"));
+    let mut mass = test_variable("pump.m");
     mass.start = Some(int(0));
     dae.variables
         .parameters
@@ -237,14 +302,13 @@ fn test_demote_states_ignores_derivatives_in_static_inactive_if_branch() {
 #[test]
 fn test_demote_states_keeps_derivatives_in_static_active_if_branch() {
     let mut dae = Dae::new();
-    dae.variables.states.insert(
-        VarName::new("pump.T"),
-        Variable::new(VarName::new("pump.T")),
-    );
+    dae.variables
+        .states
+        .insert(VarName::new("pump.T"), test_variable("pump.T"));
     dae.variables
         .algebraics
-        .insert(VarName::new("q"), Variable::new(VarName::new("q")));
-    let mut mass = Variable::new(VarName::new("pump.m"));
+        .insert(VarName::new("q"), test_variable("q"));
+    let mut mass = test_variable("pump.m");
     mass.start = Some(int(2));
     dae.variables
         .parameters
@@ -270,10 +334,10 @@ fn test_assignable_derivative_rows_reject_non_state_derivatives() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_variable("a"));
 
     dae.continuous.equations.push(eq(sub(der("x"), der("a"))));
 
@@ -289,25 +353,25 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
     dae.variables
         .states
-        .insert(VarName::new("v"), Variable::new(VarName::new("v")));
+        .insert(VarName::new("v"), test_variable("v"));
     dae.variables
         .algebraics
-        .insert(VarName::new("d"), Variable::new(VarName::new("d")));
+        .insert(VarName::new("d"), test_variable("d"));
     dae.variables
         .parameters
-        .insert(VarName::new("r"), Variable::new(VarName::new("r")));
+        .insert(VarName::new("r"), test_variable("r"));
     dae.variables
         .parameters
-        .insert(VarName::new("g"), Variable::new(VarName::new("g")));
+        .insert(VarName::new("g"), test_variable("g"));
     dae.variables
         .parameters
-        .insert(VarName::new("k"), Variable::new(VarName::new("k")));
+        .insert(VarName::new("k"), test_variable("k"));
     dae.variables
         .parameters
-        .insert(VarName::new("c"), Variable::new(VarName::new("c")));
+        .insert(VarName::new("c"), test_variable("c"));
 
     // der(x) = v
     dae.continuous.equations.push(eq(sub(der("x"), var("v"))));
@@ -345,7 +409,7 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
         span: rumoca_core::Span::DUMMY,
     }));
 
-    let demoted = demote_direct_assigned_states(&mut dae);
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
     assert_eq!(
         demoted, 0,
         "state demotion must not treat algebraic alias constraints as trajectory assignment"
@@ -355,18 +419,167 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
 }
 
 #[test]
+fn test_demote_direct_assigned_states_allows_fixed_connection_alias() {
+    let mut dae = Dae::new();
+    let connection_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_2.mo",
+        ),
+        10,
+        42,
+    );
+    let derivative_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_2.mo",
+        ),
+        43,
+        58,
+    );
+    dae.variables
+        .states
+        .insert(VarName::new("support.phi"), test_variable("support.phi"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("support.w"), test_variable("support.w"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("fixed.phi0"), test_variable("fixed.phi0"));
+
+    dae.continuous.equations.push(spanned_eq(
+        sub(
+            var_with_span("fixed.phi0", connection_span),
+            var_with_span("support.phi", connection_span),
+        ),
+        "connection equation: fixed.flange.phi = support.phi",
+        connection_span,
+    ));
+    dae.continuous.equations.push(spanned_eq(
+        sub(
+            var_with_span("support.w", derivative_span),
+            der("support.phi"),
+        ),
+        "equation from support.w = der(support.phi)",
+        derivative_span,
+    ));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(
+        !dae.variables
+            .states
+            .contains_key(&VarName::new("support.phi"))
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("support.phi"))
+    );
+    assert!(
+        !dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_der_of(&eq.rhs, &VarName::new("support.phi"))),
+        "demotion must replace derivative uses of a fixed connection state"
+    );
+}
+
+#[test]
+fn test_demote_direct_assigned_states_rejects_state_dependent_connection_alias() {
+    let mut dae = Dae::new();
+    let connection_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_3.mo",
+        ),
+        8,
+        36,
+    );
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .states
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("p"), test_variable("p"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("z"), test_variable("z"));
+
+    dae.continuous.equations.push(eq(sub(der("x"), var("z"))));
+    dae.continuous.equations.push(eq(sub(der("y"), int(1))));
+    dae.continuous.equations.push(spanned_eq(
+        sub(
+            var_with_span("x", connection_span),
+            var_with_span("p", connection_span),
+        ),
+        "connection equation: x = p",
+        connection_span,
+    ));
+    dae.continuous.equations.push(eq(sub(var("p"), var("y"))));
+    dae.continuous.equations.push(eq(sub(var("z"), int(1))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(
+        demoted, 0,
+        "connection aliases through another state must not demote the source state"
+    );
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.states.contains_key(&VarName::new("y")));
+}
+
+#[test]
+fn test_demote_direct_assigned_states_allows_fixed_state_with_extra_value_ref() {
+    let mut dae = Dae::new();
+    let fixed_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_4.mo",
+        ),
+        12,
+        18,
+    );
+    dae.variables
+        .states
+        .insert(VarName::new("w"), test_variable("w"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("z"), test_variable("z"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("p"), test_variable("p"));
+
+    dae.continuous.equations.push(spanned_eq(
+        sub(
+            var_with_span("w", fixed_span),
+            var_with_span("p", fixed_span),
+        ),
+        "equation from fixed speed",
+        fixed_span,
+    ));
+    dae.continuous.equations.push(eq(sub(var("z"), var("w"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("w")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("w")));
+}
+
+#[test]
 fn test_constrained_dummy_reduction_keeps_state_with_direct_output_alias() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("delta"), Variable::new(VarName::new("delta")));
+        .insert(VarName::new("delta"), test_variable("delta"));
     dae.variables.outputs.insert(
         VarName::new("front_wheel_yaw"),
-        Variable::new(VarName::new("front_wheel_yaw")),
+        test_variable("front_wheel_yaw"),
     );
     dae.variables
         .parameters
-        .insert(VarName::new("u"), Variable::new(VarName::new("u")));
+        .insert(VarName::new("u"), test_variable("u"));
 
     dae.continuous
         .equations
@@ -375,7 +588,8 @@ fn test_constrained_dummy_reduction_keeps_state_with_direct_output_alias() {
         .equations
         .push(eq(sub(var("front_wheel_yaw"), var("delta"))));
 
-    let demoted = reduce_constrained_dummy_derivatives(&mut dae);
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("constrained dummy reduction should succeed");
     assert_eq!(
         demoted, 0,
         "a plain output alias must not make the source state a dummy derivative"
@@ -389,23 +603,60 @@ fn test_constrained_dummy_reduction_keeps_state_with_direct_output_alias() {
 }
 
 #[test]
+fn test_constrained_dummy_state_names_skip_self_integrating_output_transform() {
+    let mut dae = Dae::new();
+    for name in ["occB", "manHours"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.variables
+        .outputs
+        .insert(VarName::new("occA"), test_variable("occA"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(der("occB"), sub(real(0.5), var("occB")))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("occA"), sub(real(1.0), var("occB")))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("manHours"), var("occA"))));
+
+    let dummy_states = constrained_dummy_state_names(&dae);
+    assert!(
+        dummy_states.is_empty(),
+        "a self-integrating state transformed through an output must not be classified as dummy"
+    );
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("constrained dummy reduction should succeed");
+    assert_eq!(
+        demoted, 0,
+        "a self-integrating output transform must not be demoted later"
+    );
+    assert!(dae.variables.states.contains_key(&VarName::new("occB")));
+}
+
+#[test]
 fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_closure() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
     dae.variables
         .states
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_variable("y"));
     dae.variables
         .algebraics
-        .insert(VarName::new("p"), Variable::new(VarName::new("p")));
+        .insert(VarName::new("p"), test_variable("p"));
     dae.variables
         .algebraics
-        .insert(VarName::new("n"), Variable::new(VarName::new("n")));
+        .insert(VarName::new("n"), test_variable("n"));
     dae.variables
         .algebraics
-        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_variable("z"));
 
     // MLS Appendix B / SPEC_0003: variables that appear differentiated remain
     // states. A direct-assignment candidate is not a dummy trajectory when its
@@ -419,7 +670,7 @@ fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_clos
     dae.continuous.equations.push(eq(sub(var("n"), int(0))));
     dae.continuous.equations.push(eq(sub(var("z"), int(1))));
 
-    let demoted = demote_direct_assigned_states(&mut dae);
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
     assert_eq!(
         demoted, 0,
         "state demotion must reject alias closures that resolve through another state"
@@ -434,17 +685,16 @@ fn test_reduce_constrained_dummy_derivatives_allows_alias_closure() {
     for name in ["mass.s", "mass.v", "gap.s"] {
         dae.variables
             .states
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
     for name in ["left.s", "right.s", "gap.v"] {
         dae.variables
             .algebraics
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
-    dae.variables.parameters.insert(
-        VarName::new("fixed.s0"),
-        Variable::new(VarName::new("fixed.s0")),
-    );
+    dae.variables
+        .parameters
+        .insert(VarName::new("fixed.s0"), test_variable("fixed.s0"));
 
     dae.continuous
         .equations
@@ -465,7 +715,8 @@ fn test_reduce_constrained_dummy_derivatives_allows_alias_closure() {
         .equations
         .push(eq(sub(der("mass.v"), int(0))));
 
-    let demoted = reduce_constrained_dummy_derivatives(&mut dae);
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("constrained dummy reduction should succeed");
 
     assert_eq!(demoted, 1);
     assert!(!dae.variables.states.contains_key(&VarName::new("gap.s")));
@@ -488,23 +739,23 @@ fn test_demote_direct_assigned_states_moves_demotions_in_name_order() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("base"), Variable::new(VarName::new("base")));
+        .insert(VarName::new("base"), test_variable("base"));
     dae.variables
         .states
-        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_variable("z"));
     dae.variables
         .states
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_variable("a"));
     dae.variables
         .parameters
-        .insert(VarName::new("p"), Variable::new(VarName::new("p")));
+        .insert(VarName::new("p"), test_variable("p"));
 
     dae.continuous
         .equations
         .push(eq(sub(var("z"), var("time"))));
     dae.continuous.equations.push(eq(sub(var("a"), var("p"))));
 
-    let demoted = demote_direct_assigned_states(&mut dae);
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
 
     assert_eq!(demoted, 2);
     let algebraic_names: Vec<&str> = dae
@@ -521,16 +772,16 @@ fn test_demote_alias_states_without_der_moves_demotions_in_name_order() {
     let mut dae = Dae::new();
     dae.variables
         .algebraics
-        .insert(VarName::new("base"), Variable::new(VarName::new("base")));
+        .insert(VarName::new("base"), test_variable("base"));
     dae.variables
         .algebraics
-        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+        .insert(VarName::new("b"), test_variable("b"));
     dae.variables
         .states
-        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
+        .insert(VarName::new("z"), test_variable("z"));
     dae.variables
         .states
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_variable("a"));
 
     dae.continuous.equations.push(eq(sub(var("z"), var("b"))));
     dae.continuous.equations.push(eq(sub(var("a"), var("b"))));
@@ -551,22 +802,22 @@ fn test_demote_alias_states_without_der_moves_demotions_in_name_order() {
 #[test]
 fn test_demote_exact_alias_component_states_demotes_duplicate_alias_state() {
     let mut dae = Dae::new();
-    let mut x = Variable::new(VarName::new("x"));
+    let mut x = test_variable("x");
     x.fixed = Some(true);
     x.start = Some(int(0));
     dae.variables.states.insert(VarName::new("x"), x);
     dae.variables
         .states
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_variable("y"));
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("w"), Variable::new(VarName::new("w")));
+        .insert(VarName::new("w"), test_variable("w"));
     dae.variables
         .algebraics
-        .insert(VarName::new("v"), Variable::new(VarName::new("v")));
+        .insert(VarName::new("v"), test_variable("v"));
 
     // MLS simple equality equations / generated connection equations:
     // x = a and y = a place x and y in one exact alias component, so only one
@@ -576,7 +827,8 @@ fn test_demote_exact_alias_component_states_demotes_duplicate_alias_state() {
     dae.continuous.equations.push(eq(sub(var("w"), der("x"))));
     dae.continuous.equations.push(eq(sub(var("v"), der("y"))));
 
-    let demoted = demote_exact_alias_component_states(&mut dae);
+    let demoted =
+        demote_exact_alias_component_states(&mut dae).expect("exact alias demotion should succeed");
     assert_eq!(demoted, 1);
     assert!(dae.variables.states.contains_key(&VarName::new("x")));
     assert!(!dae.variables.states.contains_key(&VarName::new("y")));
@@ -598,31 +850,32 @@ fn test_demote_exact_alias_component_states_demotes_duplicate_alias_state() {
 #[test]
 fn test_eliminate_derivative_aliases_keeps_state_alias_row_after_alias_state_demotion() {
     let mut dae = Dae::new();
-    let mut x = Variable::new(VarName::new("x"));
+    let mut x = test_variable("x");
     x.fixed = Some(true);
     dae.variables.states.insert(VarName::new("x"), x);
     dae.variables
         .states
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_variable("y"));
     dae.variables
         .states
-        .insert(VarName::new("w"), Variable::new(VarName::new("w")));
+        .insert(VarName::new("w"), test_variable("w"));
     dae.variables
         .algebraics
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+        .insert(VarName::new("a"), test_variable("a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("v"), Variable::new(VarName::new("v")));
+        .insert(VarName::new("v"), test_variable("v"));
 
     dae.continuous.equations.push(eq(sub(var("x"), var("a"))));
     dae.continuous.equations.push(eq(sub(var("y"), var("a"))));
     dae.continuous.equations.push(eq(sub(var("w"), der("x"))));
     dae.continuous.equations.push(eq(sub(var("v"), der("y"))));
 
-    let demoted = demote_exact_alias_component_states(&mut dae);
+    let demoted =
+        demote_exact_alias_component_states(&mut dae).expect("exact alias demotion should succeed");
     assert_eq!(demoted, 1);
 
-    eliminate_derivative_aliases(&mut dae);
+    eliminate_derivative_aliases(&mut dae).expect("derivative alias elimination should succeed");
 
     assert!(dae.variables.states.contains_key(&VarName::new("w")));
     assert!(dae.variables.algebraics.contains_key(&VarName::new("y")));
@@ -640,14 +893,13 @@ fn test_eliminate_derivative_aliases_keeps_output_derivative_alias_row() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.variables.algebraics.insert(
-        VarName::new("dx_alias"),
-        Variable::new(VarName::new("dx_alias")),
-    );
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("dx_alias"), test_variable("dx_alias"));
     dae.variables
         .outputs
-        .insert(VarName::new("y_out"), Variable::new(VarName::new("y_out")));
+        .insert(VarName::new("y_out"), test_variable("y_out"));
 
     dae.continuous.equations.push(eq(sub(var("x"), int(0))));
     dae.continuous
@@ -657,7 +909,7 @@ fn test_eliminate_derivative_aliases_keeps_output_derivative_alias_row() {
         .equations
         .push(eq(sub(var("y_out"), der("x"))));
 
-    eliminate_derivative_aliases(&mut dae);
+    eliminate_derivative_aliases(&mut dae).expect("derivative alias elimination should succeed");
 
     assert!(
         !dae.variables
@@ -684,16 +936,16 @@ fn test_eliminate_derivative_aliases_removes_multiple_alias_rows() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
     dae.variables
         .algebraics
-        .insert(VarName::new("dx_a"), Variable::new(VarName::new("dx_a")));
+        .insert(VarName::new("dx_a"), test_variable("dx_a"));
     dae.variables
         .algebraics
-        .insert(VarName::new("dx_b"), Variable::new(VarName::new("dx_b")));
+        .insert(VarName::new("dx_b"), test_variable("dx_b"));
     dae.variables
         .outputs
-        .insert(VarName::new("y_out"), Variable::new(VarName::new("y_out")));
+        .insert(VarName::new("y_out"), test_variable("y_out"));
 
     dae.continuous.equations.push(eq(sub(var("x"), int(0))));
     dae.continuous
@@ -706,7 +958,7 @@ fn test_eliminate_derivative_aliases_removes_multiple_alias_rows() {
         .equations
         .push(eq(sub(var("y_out"), der("x"))));
 
-    eliminate_derivative_aliases(&mut dae);
+    eliminate_derivative_aliases(&mut dae).expect("derivative alias elimination should succeed");
 
     assert!(!dae.variables.algebraics.contains_key(&VarName::new("dx_a")));
     assert!(!dae.variables.algebraics.contains_key(&VarName::new("dx_b")));
@@ -730,21 +982,19 @@ fn test_eliminate_derivative_aliases_rewrites_sampled_runtime_surfaces() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
     dae.variables
         .states
-        .insert(VarName::new("dx"), Variable::new(VarName::new("dx")));
-    dae.variables.algebraics.insert(
-        VarName::new("sample1.u"),
-        Variable::new(VarName::new("sample1.u")),
-    );
-    dae.variables.discrete_reals.insert(
-        VarName::new("sample1.y"),
-        Variable::new(VarName::new("sample1.y")),
-    );
+        .insert(VarName::new("dx"), test_variable("dx"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("sample1.u"), test_variable("sample1.u"));
+    dae.variables
+        .discrete_reals
+        .insert(VarName::new("sample1.y"), test_variable("sample1.y"));
     dae.variables.discrete_reals.insert(
         VarName::new("sample1.clock"),
-        Variable::new(VarName::new("sample1.clock")),
+        test_variable("sample1.clock"),
     );
 
     dae.continuous.equations.push(eq(sub(var("x"), int(0))));
@@ -767,7 +1017,7 @@ fn test_eliminate_derivative_aliases_rewrites_sampled_runtime_surfaces() {
         scalar_count: 1,
     });
 
-    eliminate_derivative_aliases(&mut dae);
+    eliminate_derivative_aliases(&mut dae).expect("derivative alias elimination should succeed");
 
     assert!(
         !dae.variables
@@ -795,26 +1045,22 @@ fn test_eliminate_derivative_aliases_rewrites_runtime_surfaces() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.variables.algebraics.insert(
-        VarName::new("dx_alias"),
-        Variable::new(VarName::new("dx_alias")),
-    );
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("dx_alias"), test_variable("dx_alias"));
     dae.variables
         .outputs
-        .insert(VarName::new("y_out"), Variable::new(VarName::new("y_out")));
-    dae.variables.discrete_reals.insert(
-        VarName::new("sample1.u"),
-        Variable::new(VarName::new("sample1.u")),
-    );
-    dae.variables.discrete_reals.insert(
-        VarName::new("sample1.y"),
-        Variable::new(VarName::new("sample1.y")),
-    );
-    dae.variables.discrete_valued.insert(
-        VarName::new("trigger"),
-        Variable::new(VarName::new("trigger")),
-    );
+        .insert(VarName::new("y_out"), test_variable("y_out"));
+    dae.variables
+        .discrete_reals
+        .insert(VarName::new("sample1.u"), test_variable("sample1.u"));
+    dae.variables
+        .discrete_reals
+        .insert(VarName::new("sample1.y"), test_variable("sample1.y"));
+    dae.variables
+        .discrete_valued
+        .insert(VarName::new("trigger"), test_variable("trigger"));
 
     dae.continuous
         .equations
@@ -842,7 +1088,7 @@ fn test_eliminate_derivative_aliases_rewrites_runtime_surfaces() {
         .push(sub(var("dx_alias"), int(0)));
     dae.clocks.constructor_exprs.push(var("dx_alias"));
 
-    eliminate_derivative_aliases(&mut dae);
+    eliminate_derivative_aliases(&mut dae).expect("derivative alias elimination should succeed");
 
     let alias = VarName::new("dx_alias");
     assert!(
@@ -886,16 +1132,16 @@ fn test_eliminate_derivative_aliases_rewrites_runtime_surfaces() {
 #[test]
 fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
     let mut dae = Dae::new();
-    let mut omega = Variable::new(VarName::new("omega"));
+    let mut omega = test_variable("omega");
     omega.dims = vec![3];
     dae.variables.states.insert(VarName::new("omega"), omega);
 
-    let mut attitude_omega = Variable::new(VarName::new("attitude.omega"));
+    let mut attitude_omega = test_variable("attitude.omega");
     attitude_omega.dims = vec![3];
     dae.variables
         .algebraics
         .insert(VarName::new("attitude.omega"), attitude_omega);
-    let mut tau = Variable::new(VarName::new("tau"));
+    let mut tau = test_variable("tau");
     tau.dims = vec![3];
     dae.variables.algebraics.insert(VarName::new("tau"), tau);
 
@@ -911,7 +1157,7 @@ fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
             .push(eq(sub(der_idx("omega", idx), var_idx("tau", idx))));
     }
 
-    let demoted = demote_direct_assigned_states(&mut dae);
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
     assert_eq!(demoted, 0);
     assert!(dae.variables.states.contains_key(&VarName::new("omega")));
     for idx in 1..=3 {
@@ -927,16 +1173,23 @@ fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
 
 #[test]
 fn test_index_reduction_differentiates_vector_function_constraint_with_structured_subscripts() {
+    let constraint_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("orientation_constraint.mo"),
+        40,
+        64,
+    );
     let mut dae = Dae::new();
-    let mut q = Variable::new(VarName::new("Q"));
+    let mut q = test_variable("Q");
     q.dims = vec![4];
     dae.variables.states.insert(VarName::new("Q"), q);
 
-    let mut function = rumoca_core::Function::new("orientationConstraint", Span::DUMMY);
-    function
-        .inputs
-        .push(rumoca_core::FunctionParam::new("Q", "Orientation"));
-    let mut output = rumoca_core::FunctionParam::new("residue", "Real");
+    let mut function = rumoca_core::Function::new("orientationConstraint", test_span());
+    function.inputs.push(rumoca_core::FunctionParam::new(
+        "Q",
+        "Orientation",
+        test_span(),
+    ));
+    let mut output = rumoca_core::FunctionParam::new("residue", "Real", test_span());
     output.dims = vec![1];
     function.outputs.push(output);
     function.body.push(rumoca_core::Statement::Assignment {
@@ -950,8 +1203,14 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
             }],
             def_id: None,
         },
-        value: array(vec![sub(mul(var("Q"), var("Q")), int(1))]),
-        span: Span::DUMMY,
+        value: array(vec![sub(
+            mul(
+                var_with_span("Q", constraint_span),
+                var_with_span("Q", constraint_span),
+            ),
+            int(1),
+        )]),
+        span: constraint_span,
     });
     dae.symbols
         .functions
@@ -959,7 +1218,7 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
 
     dae.continuous.equations.push(eq(sub(
         array(vec![int(0)]),
-        call("orientationConstraint", vec![var("Q")]),
+        call_with_span("orientationConstraint", vec![var("Q")], constraint_span),
     )));
 
     assert!(expr_contains_var(
@@ -970,7 +1229,7 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
         symbolic_time_derivative(
             &dae.continuous.equations[0].rhs,
             &dae,
-            &build_relaxed_derivative_map(&dae)
+            &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build")
         )
         .is_some()
     );
@@ -998,15 +1257,15 @@ fn test_symbolic_function_derivative_stops_at_recursive_function_call() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+        .insert(VarName::new("x"), test_variable("x"));
 
-    let mut function = rumoca_core::Function::new("recursiveDerivative", Span::DUMMY);
+    let mut function = rumoca_core::Function::new("recursiveDerivative", test_span());
     function
         .inputs
-        .push(rumoca_core::FunctionParam::new("u", "Real"));
+        .push(rumoca_core::FunctionParam::new("u", "Real", test_span()));
     function
         .outputs
-        .push(rumoca_core::FunctionParam::new("y", "Real"));
+        .push(rumoca_core::FunctionParam::new("y", "Real", test_span()));
     function.body.push(rumoca_core::Statement::Assignment {
         comp: rumoca_core::ComponentReference {
             local: false,
@@ -1028,35 +1287,96 @@ fn test_symbolic_function_derivative_stops_at_recursive_function_call() {
     let derivative = symbolic_time_derivative(
         &call("recursiveDerivative", vec![var("x")]),
         &dae,
-        &build_relaxed_derivative_map(&dae),
+        &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build"),
     );
     assert!(derivative.is_none());
 }
 
 #[test]
-fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
+fn test_expand_derivative_preserves_initial_condition_span() {
+    let initial_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_1.mo",
+        ),
+        10,
+        17,
+    );
+    let if_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_structural_dae_prepare_demotion_source_1.mo",
+        ),
+        4,
+        30,
+    );
+    let expr = Expression::If {
+        branches: vec![(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Initial,
+                args: vec![],
+                span: initial_span,
+            },
+            der("x"),
+        )],
+        else_branch: Box::new(real(0.0)),
+        span: if_span,
+    };
     let mut dae = Dae::new();
-    let mut x = Variable::new(VarName::new("x"));
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+
+    let expanded = expand_der_in_expr_full(
+        &expr,
+        &dae,
+        &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build"),
+        &std::collections::HashSet::from(["x".to_string()]),
+    );
+
+    let Expression::If { branches, span, .. } = expanded else {
+        panic!("expected derivative expansion to preserve if expression");
+    };
+    assert_eq!(span, if_span);
+    let Expression::BuiltinCall {
+        function: BuiltinFunction::Initial,
+        span,
+        ..
+    } = &branches[0].0
+    else {
+        panic!("expected if condition to remain initial()");
+    };
+    assert_eq!(*span, initial_span);
+}
+
+#[test]
+fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
+    let indexed_constraint_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("vector_constraint.mo"),
+        120,
+        131,
+    );
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
     x.dims = vec![3];
     dae.variables.states.insert(VarName::new("x"), x);
-    let mut y = Variable::new(VarName::new("y"));
+    let mut y = test_variable("y");
     y.dims = vec![3];
     dae.variables.states.insert(VarName::new("y"), y);
-    let mut distance = Variable::new(VarName::new("distance"));
+    let mut distance = test_variable("distance");
     distance.dims = vec![3];
     dae.variables
         .algebraics
         .insert(VarName::new("distance"), distance);
-    let mut vy = Variable::new(VarName::new("vy"));
+    let mut vy = test_variable("vy");
     vy.dims = vec![3];
     dae.variables.algebraics.insert(VarName::new("vy"), vy);
 
     dae.continuous
         .equations
         .push(eq(sub(var("distance"), sub(var("y"), var("x")))));
-    dae.continuous
-        .equations
-        .push(eq(sub(var_idx("distance", 3), int(0))));
+    dae.continuous.equations.push(eq(sub(
+        var_idx_with_span("distance", 3, indexed_constraint_span),
+        int(0),
+    )));
     dae.continuous
         .equations
         .push(eq(sub(var_idx("vy", 1), der_idx("y", 1))));
@@ -1085,22 +1405,20 @@ fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
 #[test]
 fn test_exact_alias_component_rewrites_derivative_of_non_state_alias_to_canonical_state() {
     let mut dae = Dae::new();
-    dae.variables.states.insert(
-        VarName::new("load.phi"),
-        Variable::new(VarName::new("load.phi")),
-    );
+    dae.variables
+        .states
+        .insert(VarName::new("load.phi"), test_variable("load.phi"));
     dae.variables.algebraics.insert(
         VarName::new("load.flange_b.phi"),
-        Variable::new(VarName::new("load.flange_b.phi")),
+        test_variable("load.flange_b.phi"),
     );
     dae.variables.algebraics.insert(
         VarName::new("speed.flange.phi"),
-        Variable::new(VarName::new("speed.flange.phi")),
+        test_variable("speed.flange.phi"),
     );
-    dae.variables.outputs.insert(
-        VarName::new("speed.w"),
-        Variable::new(VarName::new("speed.w")),
-    );
+    dae.variables
+        .outputs
+        .insert(VarName::new("speed.w"), test_variable("speed.w"));
 
     // MLS §8 simple equality equations define one exact alias component:
     // load.phi = load.flange_b.phi = speed.flange.phi. Any derivative taken
@@ -1116,7 +1434,8 @@ fn test_exact_alias_component_rewrites_derivative_of_non_state_alias_to_canonica
         .equations
         .push(eq(sub(var("speed.w"), der("speed.flange.phi"))));
 
-    let demoted = demote_exact_alias_component_states(&mut dae);
+    let demoted =
+        demote_exact_alias_component_states(&mut dae).expect("exact alias demotion should succeed");
     assert_eq!(demoted, 0, "single-state alias component should not demote");
     assert!(
         dae.continuous
@@ -1139,8 +1458,8 @@ fn test_exact_alias_component_propagates_start_to_canonical_state() {
     let mut dae = Dae::new();
     dae.variables
         .states
-        .insert(VarName::new("c.v"), Variable::new(VarName::new("c.v")));
-    let mut alias = Variable::new(VarName::new("v"));
+        .insert(VarName::new("c.v"), test_variable("c.v"));
+    let mut alias = test_variable("v");
     alias.start = Some(int(0));
     dae.variables.algebraics.insert(VarName::new("v"), alias);
 
@@ -1150,7 +1469,8 @@ fn test_exact_alias_component_propagates_start_to_canonical_state() {
     // declared start value on the shared trajectory.
     dae.continuous.equations.push(eq(sub(var("v"), var("c.v"))));
 
-    let demoted = demote_exact_alias_component_states(&mut dae);
+    let demoted =
+        demote_exact_alias_component_states(&mut dae).expect("exact alias demotion should succeed");
     assert_eq!(demoted, 0, "single-state alias component should not demote");
     assert_eq!(
         dae.variables
@@ -1167,7 +1487,7 @@ fn test_constrained_dummy_state_names_reports_direct_state_constraint() {
     for name in ["x1", "x2", "x3"] {
         dae.variables
             .states
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
 
     dae.continuous
@@ -1192,12 +1512,12 @@ fn test_constrained_dummy_state_names_follows_linear_alias_constraints() {
     for name in ["x1", "x2", "x3"] {
         dae.variables
             .states
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
     for name in ["i[1]", "i[2]", "i[3]"] {
         dae.variables
             .algebraics
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
 
     // Connector/current aliases expose the actual state relation only after
@@ -1208,15 +1528,15 @@ fn test_constrained_dummy_state_names_follows_linear_alias_constraints() {
     //   i[1] + i[2] + i[3] = 0
     dae.continuous
         .equations
-        .push(eq(add_expr(var("x1"), var_idx("i", 1))));
+        .push(eq(add(var("x1"), var_idx("i", 1))));
     dae.continuous
         .equations
-        .push(eq(add_expr(var("x2"), var_idx("i", 2))));
+        .push(eq(add(var("x2"), var_idx("i", 2))));
     dae.continuous
         .equations
-        .push(eq(add_expr(var("x3"), var_idx("i", 3))));
-    dae.continuous.equations.push(eq(add_expr(
-        add_expr(var_idx("i", 1), var_idx("i", 2)),
+        .push(eq(add(var("x3"), var_idx("i", 3))));
+    dae.continuous.equations.push(eq(add(
+        add(var_idx("i", 1), var_idx("i", 2)),
         var_idx("i", 3),
     )));
     dae.continuous.equations.push(eq(sub(der("x1"), int(1))));
@@ -1235,15 +1555,14 @@ fn test_constrained_dummy_state_names_follows_linear_alias_constraints() {
 #[test]
 fn test_constrained_dummy_state_names_follows_constant_scaled_alias() {
     let mut dae = Dae::new();
-    let mut preferred = Variable::new(VarName::new("accelerate.v"));
+    let mut preferred = test_variable("accelerate.v");
     preferred.state_select = rumoca_core::StateSelect::Prefer;
     dae.variables
         .states
         .insert(VarName::new("accelerate.v"), preferred);
-    dae.variables.states.insert(
-        VarName::new("mass.v"),
-        Variable::new(VarName::new("mass.v")),
-    );
+    dae.variables
+        .states
+        .insert(VarName::new("mass.v"), test_variable("mass.v"));
 
     dae.continuous.equations.push(eq(sub(
         var("mass.v"),
@@ -1272,19 +1591,18 @@ fn test_constrained_dummy_state_names_follows_constant_scaled_alias() {
 fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
     let mut dae = Dae::new();
     for name in ["accelerate.s", "accelerate.v"] {
-        let mut state = Variable::new(VarName::new(name));
+        let mut state = test_variable(name);
         state.state_select = rumoca_core::StateSelect::Prefer;
         dae.variables.states.insert(VarName::new(name), state);
     }
     for name in ["mass.s", "mass.v"] {
         dae.variables
             .states
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
-    dae.variables.parameters.insert(
-        VarName::new("mass.L"),
-        Variable::new(VarName::new("mass.L")),
-    );
+    dae.variables
+        .parameters
+        .insert(VarName::new("mass.L"), test_variable("mass.L"));
 
     dae.continuous
         .equations
@@ -1310,7 +1628,8 @@ fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
         ),
     )));
 
-    let demoted = reduce_constrained_dummy_derivatives(&mut dae);
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("constrained dummy reduction should succeed");
 
     assert_eq!(
         demoted, 2,
@@ -1333,12 +1652,12 @@ fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
 #[test]
 fn test_constrained_dummy_state_names_maps_singleton_array_component_state() {
     let mut dae = Dae::new();
-    let mut x = Variable::new(VarName::new("x"));
+    let mut x = test_variable("x");
     x.dims = vec![1];
     dae.variables.states.insert(VarName::new("x"), x);
     dae.variables
         .states
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_variable("y"));
 
     dae.continuous
         .equations
@@ -1360,12 +1679,12 @@ fn test_constrained_dummy_state_names_maps_singleton_array_component_state() {
 #[test]
 fn test_constrained_dummy_derivative_reduction_rewrites_indexed_singleton_derivative() {
     let mut dae = Dae::new();
-    let mut x = Variable::new(VarName::new("x"));
+    let mut x = test_variable("x");
     x.dims = vec![1];
     dae.variables.states.insert(VarName::new("x"), x);
     dae.variables
         .states
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+        .insert(VarName::new("y"), test_variable("y"));
 
     dae.continuous
         .equations
@@ -1375,7 +1694,8 @@ fn test_constrained_dummy_derivative_reduction_rewrites_indexed_singleton_deriva
         .push(eq(sub(der_idx("x", 1), int(1))));
     dae.continuous.equations.push(eq(sub(der("y"), int(1))));
 
-    let demoted = reduce_constrained_dummy_derivatives(&mut dae);
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("constrained dummy reduction should succeed");
 
     assert_eq!(demoted, 1);
     assert!(!dae.variables.states.contains_key(&VarName::new("x")));
@@ -1392,14 +1712,14 @@ fn test_constrained_dummy_derivative_reduction_rewrites_indexed_singleton_deriva
 #[test]
 fn test_constrained_dummy_state_names_follows_singleton_array_alias_chain() {
     let mut dae = Dae::new();
-    let mut filtered = Variable::new(VarName::new("criticalDamping.x"));
+    let mut filtered = test_variable("criticalDamping.x");
     filtered.dims = vec![1];
     dae.variables
         .states
         .insert(VarName::new("criticalDamping.x"), filtered);
     dae.variables.states.insert(
         VarName::new("firstOrder1.y"),
-        Variable::new(VarName::new("firstOrder1.y")),
+        test_variable("firstOrder1.y"),
     );
     for name in [
         "criticalDamping.y",
@@ -1408,7 +1728,7 @@ fn test_constrained_dummy_state_names_follows_singleton_array_alias_chain() {
     ] {
         dae.variables
             .algebraics
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+            .insert(VarName::new(name), test_variable(name));
     }
 
     dae.continuous.equations.push(eq(sub(
@@ -1447,12 +1767,12 @@ fn test_constrained_dummy_state_names_follows_singleton_array_alias_chain() {
 #[test]
 fn test_constrained_dummy_state_names_keeps_always_state() {
     let mut dae = Dae::new();
-    let mut x1 = Variable::new(VarName::new("x1"));
+    let mut x1 = test_variable("x1");
     x1.state_select = rumoca_core::StateSelect::Always;
     dae.variables.states.insert(VarName::new("x1"), x1);
     dae.variables
         .states
-        .insert(VarName::new("x2"), Variable::new(VarName::new("x2")));
+        .insert(VarName::new("x2"), test_variable("x2"));
 
     dae.continuous.equations.push(eq(sub(var("x1"), var("x2"))));
     dae.continuous.equations.push(eq(sub(der("x1"), int(1))));

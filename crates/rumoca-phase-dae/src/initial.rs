@@ -1,12 +1,12 @@
 //! Initial-equation conversion for ToDAE.
 
 use indexmap::IndexMap;
-use rumoca_core::{Expression, Literal, Reference, Span, VarName};
+use rumoca_core::{Expression, Literal, ProvenanceSpan, Reference, Span, VarName};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
-use crate::{ToDaeError, flat_to_dae_expression_with_refs, remap_flat_for_equations};
+use crate::{ToDaeError, flat_to_dae_expression_with_refs, remap_flat_structured_equations};
 
 /// Determine scalar count for one initial equation.
 ///
@@ -52,7 +52,7 @@ where
                 continue;
             };
             let dae_eq = dae::Equation::residual_array(
-                flat_to_dae_expression_with_refs(&expanded_eq.residual, flat),
+                flat_to_dae_expression_with_refs(&expanded_eq.residual, flat)?,
                 expanded_eq.span,
                 expanded_eq.origin.to_string(),
                 scalar_count,
@@ -64,8 +64,8 @@ where
         }
     }
 
-    dae.initialization.for_equations =
-        remap_flat_for_equations(&flat.initial_for_equations, &flat_to_dae_index);
+    dae.initialization.structured_equations =
+        remap_flat_structured_equations(&flat.initial_structured_equations, &flat_to_dae_index);
     Ok(())
 }
 
@@ -100,20 +100,38 @@ fn collect_fixed_start_equations(
 }
 
 fn fixed_start_equation(name: &VarName, var: &dae::Variable) -> Result<dae::Equation, ToDaeError> {
-    let span = var.start_attribute_span().unwrap_or(var.source_span);
-    let lhs = fixed_start_lhs_reference(name, var, span)?;
+    let span = fixed_start_owner_span(var)?;
+    let owner = span
+        .require_provenance("fixed-start initialization equation")
+        .map_err(|err| ToDaeError::runtime_metadata_violation(err.to_string()))?;
+    let lhs = fixed_start_lhs_reference(name, var, owner.span())?;
     // MLS §8.6: Real start attribute defaults to 0.0 when not explicitly set.
     let rhs = var
         .start
         .clone()
-        .unwrap_or_else(|| default_real_start(span));
+        .unwrap_or_else(|| default_real_start(owner));
     Ok(dae::Equation::explicit_with_scalar_count(
         lhs,
         rhs,
-        span,
+        owner.span(),
         format!("fixed start initialization for {}", name.as_str()),
         var.size(),
     ))
+}
+
+fn fixed_start_owner_span(var: &dae::Variable) -> Result<Span, ToDaeError> {
+    var.start_attribute_span()
+        .or_else(|| {
+            var.component_ref
+                .as_ref()
+                .map(|component_ref| component_ref.span)
+        })
+        .filter(|span| !span.is_dummy())
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(
+                "fixed-start initialization equation is missing source provenance",
+            )
+        })
 }
 
 fn fixed_start_lhs_reference(
@@ -136,18 +154,24 @@ fn fixed_start_lhs_reference(
     ))
 }
 
-fn default_real_start(span: Span) -> Expression {
+fn default_real_start(span: ProvenanceSpan) -> Expression {
     Expression::Literal {
         value: Literal::Real(0.0),
-        span,
+        span: span.span(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{fixed_start_equation, initial_equation_scalar_count};
-    use rumoca_core::{ComponentRefPart, ComponentReference, Expression, Literal, Span, VarName};
+    use rumoca_core::{
+        ComponentRefPart, ComponentReference, Expression, Literal, SourceId, Span, VarName,
+    };
     use rumoca_ir_dae as dae;
+
+    fn test_span() -> Span {
+        Span::from_offsets(SourceId::from_source_name("initial_test.mo"), 3, 9)
+    }
 
     #[test]
     fn test_initial_equation_scalar_count_skips_explicit_zero() {
@@ -167,11 +191,17 @@ mod tests {
 
     #[test]
     fn fixed_start_equation_uses_default_real_start_when_missing() {
+        let span = test_span();
         let mut var = dae::Variable {
             name: VarName::new("x"),
-            component_ref: Some(component_ref("x")),
+            component_ref: Some(component_ref("x", span)),
             fixed: Some(true),
-            ..Default::default()
+            source_span: span,
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
         };
         let eq = fixed_start_equation(&VarName::new("x"), &var)
             .expect("fixed-start equation should preserve component reference");
@@ -181,8 +211,8 @@ mod tests {
             eq.rhs,
             Expression::Literal {
                 value: Literal::Real(0.0),
-                span: Span::DUMMY
-            }
+                span: rhs_span
+            } if rhs_span == span
         ));
 
         var.dims = vec![3];
@@ -191,13 +221,31 @@ mod tests {
         assert_eq!(eq.scalar_count, 3);
     }
 
-    fn component_ref(name: &str) -> ComponentReference {
+    #[test]
+    fn fixed_start_equation_rejects_missing_default_start_provenance() {
+        let var = dae::Variable {
+            name: VarName::new("x"),
+            component_ref: Some(component_ref("x", Span::DUMMY)),
+            fixed: Some(true),
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        };
+        let err = fixed_start_equation(&VarName::new("x"), &var)
+            .expect_err("default fixed start should require variable provenance");
+
+        assert!(err.to_string().contains("fixed-start initialization"));
+    }
+
+    fn component_ref(name: &str, span: Span) -> ComponentReference {
         ComponentReference {
             local: false,
-            span: Span::DUMMY,
+            span,
             parts: vec![ComponentRefPart {
                 ident: name.to_string(),
-                span: Span::DUMMY,
+                span,
                 subs: Vec::new(),
             }],
             def_id: None,

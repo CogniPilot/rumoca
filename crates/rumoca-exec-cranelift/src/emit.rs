@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: Cranelift emission still keeps builder state,
+// intrinsic lowering, and ABI glue together. split plan: move intrinsic
+// lowering and memory/ABI helpers into focused emitter submodules.
 use super::CompileError;
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, types};
@@ -8,25 +11,32 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
-    try_eval_table_bound_value_in, try_eval_table_lookup_slope_value_in,
-    try_eval_table_lookup_value_in, try_eval_time_table_next_event_value_in,
+    eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
+    eval_time_table_next_event_value_in,
 };
-use rumoca_ir_solve::{BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, UnaryOp};
+use rumoca_ir_solve::{
+    BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, UnaryOp, resolve_indexed_slot,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 mod host_runtime;
 mod input_validation;
+mod interpreter;
 
 use host_runtime::{register_math_symbols, with_active_external_tables};
 pub(crate) use input_validation::InputRequirements as EmitInputRequirements;
 use input_validation::{
-    InputRequirements, input_requirements_for_linear_ops, input_requirements_for_plans,
-    row_input_requirements, validate_input_requirements, validate_output_len,
+    InputRequirements, input_compile_error, input_requirements_for_linear_ops,
+    input_requirements_for_plans, row_input_requirements, validate_input_requirements,
+    validate_output_len,
 };
+use interpreter::execute_row;
 
-type ResidualRowFn = unsafe extern "C" fn(*const f64, *const f64, f64) -> f64;
-type JacobianRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *const f64) -> f64;
+// Each compiled program writes its outputs through the trailing `*mut f64`
+// pointer (one program may emit several outputs via consecutive StoreOutputs).
+type ResidualRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64);
+type JacobianRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *const f64, *mut f64);
 
 #[derive(Clone)]
 enum RowPlan {
@@ -54,11 +64,24 @@ struct JacobianCallContext<'a> {
     external_tables: &'a [ExternalTableData],
 }
 
+/// The runtime inputs read while interpreting one row: state `y`, parameters
+/// `p`, time `t`, the optional directional `seed` (present for Jacobian rows),
+/// and the active external tables. Grouped so the interpreter entry points take
+/// one input bundle instead of five separate arguments.
+#[derive(Clone, Copy)]
+struct RowInputs<'a> {
+    y: &'a [f64],
+    p: &'a [f64],
+    t: f64,
+    seed: Option<&'a [f64]>,
+    external_tables: &'a [ExternalTableData],
+}
+
 #[derive(Clone)]
 struct SimpleRowPlan {
     ops: Box<[SimpleOp]>,
     reg_count: usize,
-    output_src: usize,
+    output_srcs: Box<[usize]>,
     input_requirements: InputRequirements,
 }
 
@@ -66,8 +89,18 @@ struct SimpleRowPlan {
 struct GeneralRowPlan {
     ops: Box<[LinearOp]>,
     reg_count: usize,
-    output_src: usize,
+    output_srcs: Box<[usize]>,
     input_requirements: InputRequirements,
+}
+
+impl RowPlan {
+    /// Number of outputs this program writes (one per StoreOutput).
+    fn output_count(&self) -> usize {
+        match self {
+            RowPlan::Simple(plan) => plan.output_srcs.len(),
+            RowPlan::General(plan) => plan.output_srcs.len(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -139,13 +172,23 @@ impl CompiledResidualRows {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        validate_output_len(out, self.rows.len())?;
+        let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
+        validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, None)?;
+        let inputs = RowInputs {
+            y,
+            p,
+            t,
+            seed: None,
+            external_tables,
+        };
         with_active_external_tables(external_tables, || {
             let mut regs_scratch = self.regs_scratch.borrow_mut();
-            for (index, row) in self.rows.iter().enumerate() {
-                out[index] =
-                    self.call_residual_row(row, &mut regs_scratch, y, p, t, external_tables)?;
+            let mut base = 0;
+            for row in self.rows.iter() {
+                let k = row.plan.output_count();
+                self.call_residual_row(row, &mut regs_scratch, inputs, &mut out[base..base + k])?;
+                base += k;
             }
             Ok(())
         })
@@ -155,21 +198,23 @@ impl CompiledResidualRows {
         &self,
         row: &CompiledResidualRow,
         regs_scratch: &mut Vec<f64>,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[ExternalTableData],
-    ) -> Result<f64, CompileError> {
+        inputs: RowInputs<'_>,
+        out: &mut [f64],
+    ) -> Result<(), CompileError> {
+        let (y, p, t) = (inputs.y, inputs.p, inputs.t);
         if should_validate_jit_row(row.validate_with_interpreter) {
-            let expected = execute_row(&row.plan, regs_scratch, y, p, t, None, external_tables)?;
-            let actual = unsafe { call_residual_jit(row.jit, y, p, t) };
+            let mut expected = vec![0.0; out.len()];
+            execute_row(&row.plan, regs_scratch, inputs, &mut expected)?;
+            unsafe { call_residual_jit(row.jit, y, p, t, out) };
             self.record_jit_call();
-            validate_jit_matches_interpreter("residual", actual, expected)?;
-            return Ok(actual);
+            for (actual, expected) in out.iter().zip(&expected) {
+                validate_jit_matches_interpreter("residual", *actual, *expected)?;
+            }
+            return Ok(());
         }
-        let actual = unsafe { call_residual_jit(row.jit, y, p, t) };
+        unsafe { call_residual_jit(row.jit, y, p, t, out) };
         self.record_jit_call();
-        Ok(actual)
+        Ok(())
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -220,7 +265,8 @@ impl CompiledJacobianRows {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        validate_output_len(out, self.rows.len())?;
+        let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
+        validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, Some(v))?;
         with_active_external_tables(external_tables, || {
             let mut regs_scratch = self.regs_scratch.borrow_mut();
@@ -231,8 +277,11 @@ impl CompiledJacobianRows {
                 v,
                 external_tables,
             };
-            for (index, row) in self.rows.iter().enumerate() {
-                out[index] = self.call_jacobian_row(row, &mut regs_scratch, &ctx)?;
+            let mut base = 0;
+            for row in self.rows.iter() {
+                let k = row.plan.output_count();
+                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut out[base..base + k])?;
+                base += k;
             }
             Ok(())
         })
@@ -243,25 +292,28 @@ impl CompiledJacobianRows {
         row: &CompiledJacobianRow,
         regs_scratch: &mut Vec<f64>,
         ctx: &JacobianCallContext<'_>,
-    ) -> Result<f64, CompileError> {
+        out: &mut [f64],
+    ) -> Result<(), CompileError> {
         if should_validate_jit_row(row.validate_with_interpreter) {
-            let expected = execute_row(
-                &row.plan,
-                regs_scratch,
-                ctx.y,
-                ctx.p,
-                ctx.t,
-                Some(ctx.v),
-                ctx.external_tables,
-            )?;
-            let actual = unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v) };
+            let mut expected = vec![0.0; out.len()];
+            let inputs = RowInputs {
+                y: ctx.y,
+                p: ctx.p,
+                t: ctx.t,
+                seed: Some(ctx.v),
+                external_tables: ctx.external_tables,
+            };
+            execute_row(&row.plan, regs_scratch, inputs, &mut expected)?;
+            unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) };
             self.record_jit_call();
-            validate_jit_matches_interpreter("jacobian", actual, expected)?;
-            return Ok(actual);
+            for (actual, expected) in out.iter().zip(&expected) {
+                validate_jit_matches_interpreter("jacobian", *actual, *expected)?;
+            }
+            return Ok(());
         }
-        let actual = unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v) };
+        unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) };
         self.record_jit_call();
-        Ok(actual)
+        Ok(())
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -299,11 +351,8 @@ pub(crate) fn compile_residual_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledResidualRows, CompileError> {
     let mut emitter = CraneliftEmitter::new()?;
-    let plans = rows
-        .iter()
-        .map(|row| plan_row(row))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut func_ids = Vec::with_capacity(rows.len());
+    let plans = plan_rows(rows)?;
+    let mut func_ids = checked_vec_with_capacity(rows.len(), "residual row function ids")?;
     for (index, row) in rows.iter().enumerate() {
         validate_row_supported_by_jit(row, RowKind::Residual)?;
         let func_id = emitter.compile_row(
@@ -318,22 +367,18 @@ pub(crate) fn compile_residual_rows(
         .finalize_definitions()
         .map_err(to_backend_err)?;
     let input_requirements = input_requirements_for_plans(&plans);
-    let rows = plans
-        .into_iter()
-        .zip(func_ids)
-        .enumerate()
-        .map(|(index, (plan, func_id))| {
-            let jit = finalized_residual_fn(&emitter.module, func_id)?;
-            Ok(CompiledResidualRow {
-                plan,
-                jit,
-                validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            })
-        })
-        .collect::<Result<Vec<_>, CompileError>>()?;
+    let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled residual rows")?;
+    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+        let jit = finalized_residual_fn(&emitter.module, func_id)?;
+        compiled_rows.push(CompiledResidualRow {
+            plan,
+            jit,
+            validate_with_interpreter: row_uses_table_ops(&rows[index]),
+        });
+    }
     Ok(CompiledResidualRows {
         _module: emitter.module,
-        rows,
+        rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
@@ -344,11 +389,8 @@ pub(crate) fn compile_jacobian_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledJacobianRows, CompileError> {
     let mut emitter = CraneliftEmitter::new()?;
-    let plans = rows
-        .iter()
-        .map(|row| plan_row(row))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut func_ids = Vec::with_capacity(rows.len());
+    let plans = plan_rows(rows)?;
+    let mut func_ids = checked_vec_with_capacity(rows.len(), "Jacobian row function ids")?;
     for (index, row) in rows.iter().enumerate() {
         validate_row_supported_by_jit(row, RowKind::JacobianV)?;
         let func_id = emitter.compile_row(
@@ -363,26 +405,41 @@ pub(crate) fn compile_jacobian_rows(
         .finalize_definitions()
         .map_err(to_backend_err)?;
     let input_requirements = input_requirements_for_plans(&plans);
-    let rows = plans
-        .into_iter()
-        .zip(func_ids)
-        .enumerate()
-        .map(|(index, (plan, func_id))| {
-            let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
-            Ok(CompiledJacobianRow {
-                plan,
-                jit,
-                validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            })
-        })
-        .collect::<Result<Vec<_>, CompileError>>()?;
+    let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
+    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+        let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
+        compiled_rows.push(CompiledJacobianRow {
+            plan,
+            jit,
+            validate_with_interpreter: row_uses_table_ops(&rows[index]),
+        });
+    }
     Ok(CompiledJacobianRows {
         _module: emitter.module,
-        rows,
+        rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
     })
+}
+
+fn plan_rows(rows: &[Vec<LinearOp>]) -> Result<Vec<RowPlan>, CompileError> {
+    let mut plans = checked_vec_with_capacity(rows.len(), "row plans")?;
+    for row in rows {
+        plans.push(plan_row(row)?);
+    }
+    Ok(plans)
+}
+
+fn checked_vec_with_capacity<T>(
+    capacity: usize,
+    kind: &'static str,
+) -> Result<Vec<T>, CompileError> {
+    let mut values = Vec::new();
+    values.try_reserve(capacity).map_err(|_| {
+        CompileError::Backend(format!("{kind} allocation overflow for {capacity} entries"))
+    })?;
+    Ok(values)
 }
 
 fn finalized_residual_fn(
@@ -418,18 +475,25 @@ fn finalized_jacobian_fn(
     Ok(unsafe { std::mem::transmute::<*const u8, JacobianRowFn>(ptr) })
 }
 
-unsafe fn call_residual_jit(jit: ResidualRowFn, y: &[f64], p: &[f64], t: f64) -> f64 {
+unsafe fn call_residual_jit(jit: ResidualRowFn, y: &[f64], p: &[f64], t: f64, out: &mut [f64]) {
     // SAFETY: the caller guarantees the function pointer came from
-    // finalized_residual_fn, and prevalidation ensures any loaded y/p indices
-    // are in bounds before the JIT reads through these pointers.
-    unsafe { jit(y.as_ptr(), p.as_ptr(), t) }
+    // finalized_residual_fn, prevalidation ensures any loaded y/p indices are in
+    // bounds, and `out` has room for this program's output_count outputs.
+    unsafe { jit(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr()) }
 }
 
-unsafe fn call_jacobian_jit(jit: JacobianRowFn, y: &[f64], p: &[f64], t: f64, v: &[f64]) -> f64 {
+unsafe fn call_jacobian_jit(
+    jit: JacobianRowFn,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    v: &[f64],
+    out: &mut [f64],
+) {
     // SAFETY: the caller guarantees the function pointer came from
-    // finalized_jacobian_fn, and prevalidation ensures any loaded y/p/seed
-    // indices are in bounds before the JIT reads through these pointers.
-    unsafe { jit(y.as_ptr(), p.as_ptr(), t, v.as_ptr()) }
+    // finalized_jacobian_fn, prevalidation ensures any loaded y/p/seed indices
+    // are in bounds, and `out` has room for this program's outputs.
+    unsafe { jit(y.as_ptr(), p.as_ptr(), t, v.as_ptr(), out.as_mut_ptr()) }
 }
 
 fn validate_jit_matches_interpreter(
@@ -521,7 +585,7 @@ impl CraneliftEmitter {
         if kind.has_seed() {
             signature.params.push(AbiParam::new(pointer_type)); // v
         }
-        signature.returns.push(AbiParam::new(types::F64));
+        signature.params.push(AbiParam::new(pointer_type)); // out (written, not returned)
 
         let func_id = self
             .module
@@ -542,14 +606,14 @@ impl CraneliftEmitter {
             let y_ptr = params[0];
             let p_ptr = params[1];
             let t_value = params[2];
-            let v_ptr = if kind.has_seed() {
-                Some(params[3])
+            let (v_ptr, out_ptr) = if kind.has_seed() {
+                (Some(params[3]), params[4])
             } else {
-                None
+                (None, params[3])
             };
 
             let mut regs: HashMap<u32, cranelift_codegen::ir::Value> = HashMap::new();
-            let mut output = fb.ins().f64const(0.0);
+            let flags = MemFlags::new();
             let mut row_lower = RowLowerCtx {
                 fb: &mut fb,
                 module: &mut self.module,
@@ -559,13 +623,11 @@ impl CraneliftEmitter {
                 p_ptr,
                 t_value,
                 v_ptr,
-                flags: MemFlags::new(),
+                flags,
             };
 
-            for &op in row {
-                output = row_lower.lower_op(op)?.unwrap_or(output);
-            }
-            fb.ins().return_(&[output]);
+            row_lower.lower_row_outputs(row, out_ptr)?;
+            fb.ins().return_(&[]);
             fb.finalize();
         }
 
@@ -592,6 +654,24 @@ struct RowLowerCtx<'a, 'b> {
 }
 
 impl<'a, 'b> RowLowerCtx<'a, 'b> {
+    /// Lower every op in `row`, writing each `StoreOutput` result to the next
+    /// consecutive `out[k]` slot so a multi-output program fills consecutive
+    /// output slots. (`lower_op` returns `Some(value)` exactly for StoreOutput.)
+    fn lower_row_outputs(
+        &mut self,
+        row: &[LinearOp],
+        out_ptr: cranelift_codegen::ir::Value,
+    ) -> Result<(), CompileError> {
+        let mut out_idx: i32 = 0;
+        for &op in row {
+            if let Some(value) = self.lower_op(op)? {
+                self.fb.ins().store(self.flags, value, out_ptr, out_idx * 8);
+                out_idx += 1;
+            }
+        }
+        Ok(())
+    }
+
     fn lower_op(
         &mut self,
         op: LinearOp,
@@ -604,7 +684,24 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             LinearOp::LoadTime { dst } => self.insert(dst, self.t_value),
             LinearOp::LoadY { dst, index } => self.lower_loaded_reg(dst, self.y_ptr, index),
             LinearOp::LoadP { dst, index } => self.lower_loaded_reg(dst, self.p_ptr, index),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.lower_indexed_loaded_reg(dst, self.p_ptr, base, count, index),
             LinearOp::LoadSeed { dst, index } => self.lower_seed_reg(dst, index),
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let base_ptr = self.v_ptr.ok_or_else(|| {
+                    CompileError::Backend("LoadIndexedSeed in row without seed input".to_string())
+                })?;
+                self.lower_indexed_loaded_reg(dst, base_ptr, base, count, index)
+            }
             LinearOp::Move { dst, src } => {
                 let value = lookup_reg(self.regs, src)?;
                 self.insert(dst, value)
@@ -680,6 +777,43 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         index: usize,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
         let value = load_f64(self.fb, self.flags, base, index)?;
+        self.insert(dst, value)
+    }
+
+    /// Lower `mem[base_ptr + 8*(base + clamp(round(index_reg), 0, count-1))]`,
+    /// matching [`rumoca_ir_solve::resolve_indexed_slot`]: round the runtime
+    /// f64 index to nearest, clamp into `[0, count-1]`, convert to an integer
+    /// byte offset, then add the run-relative `base` and dereference.
+    fn lower_indexed_loaded_reg(
+        &mut self,
+        dst: u32,
+        base_ptr: cranelift_codegen::ir::Value,
+        base: usize,
+        count: usize,
+        index: u32,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let idx = lookup_reg(self.regs, index)?;
+        let rounded = self.fb.ins().nearest(idx);
+        let zero = self.fb.ins().f64const(0.0);
+        let lo = self.fb.ins().fmax(rounded, zero);
+        let last_index = if count == 0 { 0 } else { count - 1 };
+        let last = self.fb.ins().f64const(last_index as f64);
+        let clamped = self.fb.ins().fmin(lo, last);
+        let idx_i = self.fb.ins().fcvt_to_sint(types::I64, clamped);
+        let byte_off = self
+            .fb
+            .ins()
+            .imul_imm(idx_i, std::mem::size_of::<f64>() as i64);
+        let base_bytes = base
+            .checked_mul(std::mem::size_of::<f64>())
+            .ok_or_else(|| {
+                CompileError::Backend("indexed load base byte offset overflow".to_string())
+            })?;
+        let base_bytes = i64::try_from(base_bytes)
+            .map_err(|_| CompileError::Backend("indexed load base exceeds i64".to_string()))?;
+        let abs_off = self.fb.ins().iadd_imm(byte_off, base_bytes);
+        let addr = self.fb.ins().iadd(base_ptr, abs_off);
+        let value = self.fb.ins().load(types::F64, self.flags, addr, 0);
         self.insert(dst, value)
     }
 
@@ -782,18 +916,18 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             CompileError::Backend("linear solve matrix size overflow".to_string())
         })?;
 
-        let mut matrix = Vec::with_capacity(matrix_len);
+        let mut matrix = checked_vec_with_capacity(matrix_len, "linear solve matrix values")?;
         for offset in 0..matrix_len {
             let reg = checked_reg_offset(matrix_start, offset, "matrix")?;
             matrix.push(lookup_reg(self.regs, reg)?);
         }
-        let mut rhs = Vec::with_capacity(n);
+        let mut rhs = checked_vec_with_capacity(n, "linear solve rhs values")?;
         for offset in 0..n {
             let reg = checked_reg_offset(rhs_start, offset, "rhs")?;
             rhs.push(lookup_reg(self.regs, reg)?);
         }
 
-        let solution = emit_dense_linear_solve(self.fb, &mut matrix, &mut rhs, n);
+        let solution = emit_dense_linear_solve(self.fb, &mut matrix, &mut rhs, n)?;
         self.insert(dst, solution[component])
     }
 
@@ -1013,7 +1147,7 @@ fn emit_dense_linear_solve(
     matrix: &mut [cranelift_codegen::ir::Value],
     rhs: &mut [cranelift_codegen::ir::Value],
     n: usize,
-) -> Vec<cranelift_codegen::ir::Value> {
+) -> Result<Vec<cranelift_codegen::ir::Value>, CompileError> {
     for col in 0..n {
         emit_partial_pivot(fb, matrix, rhs, n, col);
         let pivot = emit_nonzero_pivot(fb, matrix[dense_index(n, col, col)]);
@@ -1031,7 +1165,8 @@ fn emit_dense_linear_solve(
     }
 
     let zero = fb.ins().f64const(0.0);
-    let mut solution = vec![zero; n];
+    let mut solution = checked_vec_with_capacity(n, "linear solve solution values")?;
+    solution.resize(n, zero);
     for row in (0..n).rev() {
         let mut tail = zero;
         for col in row + 1..n {
@@ -1044,7 +1179,7 @@ fn emit_dense_linear_solve(
         let pivot = emit_nonzero_pivot(fb, matrix[dense_index(n, row, row)]);
         solution[row] = fb.ins().fdiv(numerator, pivot);
     }
-    solution
+    Ok(solution)
 }
 
 fn emit_partial_pivot(
@@ -1219,45 +1354,57 @@ fn checked_reg_offset(base: u32, offset: usize, kind: &str) -> Result<u32, Compi
 
 fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     let mut reg_count = 0usize;
-    let input_requirements = input_requirements_for_linear_ops(row);
+    let input_requirements = input_requirements_for_linear_ops(row)?;
     for op in row {
-        reg_count = reg_count.max(max_reg_index(*op).map_or(0, |index| index + 1));
+        if let Some(index) = max_reg_index(*op)? {
+            reg_count = reg_count.max(index.checked_add(1).ok_or_else(|| {
+                CompileError::Backend("compiled row register count overflow".to_string())
+            })?);
+        }
     }
-    let mut defined = vec![false; reg_count];
+    let mut defined = checked_vec_with_capacity(reg_count, "defined register flags")?;
+    defined.resize(reg_count, false);
     for op in row {
         validate_row_sources(&defined, *op)?;
         if let Some(dst) = dst_reg(*op) {
             defined[dst] = true;
         }
     }
-    let output_src = match row.last().copied() {
-        Some(LinearOp::StoreOutput { src }) => src as usize,
-        _ => {
-            return Err(CompileError::Backend(
-                "compiled row is missing final StoreOutput".to_string(),
-            ));
+    // Collect every output (one per StoreOutput, in order) and keep the
+    // compute ops as the body. A program may emit several outputs.
+    let mut output_srcs = Vec::new();
+    let mut body: Vec<LinearOp> = Vec::with_capacity(row.len());
+    for op in row {
+        if let LinearOp::StoreOutput { src } = op {
+            output_srcs.push(*src as usize);
+        } else {
+            body.push(*op);
         }
-    };
+    }
+    if output_srcs.is_empty() {
+        return Err(CompileError::Backend(
+            "compiled row is missing StoreOutput".to_string(),
+        ));
+    }
+    let output_srcs = output_srcs.into_boxed_slice();
 
-    let body = &row[..row.len().saturating_sub(1)];
     if body.iter().copied().all(is_simple_linear_op) {
-        let ops = body
-            .iter()
-            .copied()
-            .map(lower_simple_op)
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut ops = checked_vec_with_capacity(body.len(), "simple runtime ops")?;
+        for op in body.iter().copied() {
+            ops.push(lower_simple_op(op)?);
+        }
         return Ok(RowPlan::Simple(SimpleRowPlan {
             ops: ops.into_boxed_slice(),
             reg_count,
-            output_src,
+            output_srcs,
             input_requirements,
         }));
     }
 
     Ok(RowPlan::General(GeneralRowPlan {
-        ops: body.to_vec().into_boxed_slice(),
+        ops: body.into_boxed_slice(),
         reg_count,
-        output_src,
+        output_srcs,
         input_requirements,
     }))
 }
@@ -1266,6 +1413,8 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
     !matches!(
         op,
         LinearOp::LoadSeed { .. }
+            | LinearOp::LoadIndexedP { .. }
+            | LinearOp::LoadIndexedSeed { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
             | LinearOp::TableBounds { .. }
@@ -1310,6 +1459,8 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
             if_false,
         }),
         LinearOp::LoadSeed { .. }
+        | LinearOp::LoadIndexedP { .. }
+        | LinearOp::LoadIndexedSeed { .. }
         | LinearOp::Move { .. }
         | LinearOp::LinearSolveComponent { .. }
         | LinearOp::TableBounds { .. }
@@ -1334,7 +1485,7 @@ fn lower_runtime_index(index: usize, kind: &str) -> Result<u32, CompileError> {
         .map_err(|_| CompileError::Backend(format!("{kind} index exceeds u32 runtime plan")))
 }
 
-fn max_reg_index(op: LinearOp) -> Option<usize> {
+fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
     match op {
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
@@ -1344,13 +1495,15 @@ fn max_reg_index(op: LinearOp) -> Option<usize> {
         | LinearOp::TableBounds { dst, .. }
         | LinearOp::TableLookup { dst, .. }
         | LinearOp::TableLookupSlope { dst, .. }
-        | LinearOp::TableNextEvent { dst, .. } => Some(dst as usize),
+        | LinearOp::TableNextEvent { dst, .. } => Ok(Some(dst as usize)),
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(Some(dst.max(index) as usize)),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
             global_seed,
             ..
-        } => Some(dst.max(local_seed).max(global_seed) as usize),
+        } => Ok(Some(dst.max(local_seed).max(global_seed) as usize)),
         LinearOp::RandomResult {
             dst,
             state_start,
@@ -1362,45 +1515,67 @@ fn max_reg_index(op: LinearOp) -> Option<usize> {
             state_start,
             state_len,
             ..
-        } => Some(dst.max(state_start.saturating_add(state_len.saturating_sub(1) as u32)) as usize),
-        LinearOp::ImpureRandomInit { dst, seed } => Some(dst.max(seed) as usize),
-        LinearOp::ImpureRandom { dst, id, .. } => Some(dst.max(id) as usize),
+        } => Ok(Some(dst.max(checked_range_last_reg(
+            state_start,
+            state_len,
+            "random state",
+        )?) as usize)),
+        LinearOp::ImpureRandomInit { dst, seed } => Ok(Some(dst.max(seed) as usize)),
+        LinearOp::ImpureRandom { dst, id, .. } => Ok(Some(dst.max(id) as usize)),
         LinearOp::ImpureRandomInteger {
             dst,
             id,
             imin,
             imax,
             ..
-        } => Some(dst.max(id).max(imin).max(imax) as usize),
+        } => Ok(Some(dst.max(id).max(imin).max(imax) as usize)),
         LinearOp::ExternalCall {
             dst,
             args,
             arg_count,
             ..
-        } => Some(args.iter().copied().take(arg_count).fold(dst, u32::max) as usize),
-        LinearOp::Move { dst, src } => Some(dst.max(src) as usize),
+        } => Ok(Some(
+            args.iter().copied().take(arg_count).fold(dst, u32::max) as usize,
+        )),
+        LinearOp::Move { dst, src } => Ok(Some(dst.max(src) as usize)),
         LinearOp::LinearSolveComponent {
             dst,
             matrix_start,
             rhs_start,
             n,
             ..
-        } => Some(
-            dst.max(matrix_start.saturating_add((n.saturating_mul(n)).saturating_sub(1) as u32))
-                .max(rhs_start.saturating_add(n.saturating_sub(1) as u32)) as usize,
-        ),
-        LinearOp::Unary { dst, arg, .. } => Some((dst.max(arg)) as usize),
+        } => Ok(Some(
+            dst.max(checked_range_last_reg(
+                matrix_start,
+                checked_square_len(n, "linear solve matrix")?,
+                "linear solve matrix",
+            )?)
+            .max(checked_range_last_reg(rhs_start, n, "linear solve rhs")?) as usize,
+        )),
+        LinearOp::Unary { dst, arg, .. } => Ok(Some((dst.max(arg)) as usize)),
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            Some(dst.max(lhs).max(rhs) as usize)
+            Ok(Some(dst.max(lhs).max(rhs) as usize))
         }
         LinearOp::Select {
             dst,
             cond,
             if_true,
             if_false,
-        } => Some(dst.max(cond).max(if_true).max(if_false) as usize),
-        LinearOp::StoreOutput { src } => Some(src as usize),
+        } => Ok(Some(dst.max(cond).max(if_true).max(if_false) as usize)),
+        LinearOp::StoreOutput { src } => Ok(Some(src as usize)),
     }
+}
+
+fn checked_square_len(n: usize, kind: &str) -> Result<usize, CompileError> {
+    n.checked_mul(n)
+        .ok_or_else(|| CompileError::Backend(format!("{kind} size overflow")))
+}
+
+fn checked_range_last_reg(base: u32, count: usize, kind: &str) -> Result<u32, CompileError> {
+    let Some(offset) = count.checked_sub(1) else {
+        return Ok(base);
+    };
+    checked_reg_offset(base, offset, kind)
 }
 
 fn dst_reg(op: LinearOp) -> Option<usize> {
@@ -1426,6 +1601,8 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::Unary { dst, .. }
         | LinearOp::Binary { dst, .. }
         | LinearOp::Compare { dst, .. }
+        | LinearOp::LoadIndexedP { dst, .. }
+        | LinearOp::LoadIndexedSeed { dst, .. }
         | LinearOp::Select { dst, .. } => Some(dst as usize),
         LinearOp::StoreOutput { .. } => None,
     }
@@ -1433,6 +1610,9 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
 
 fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileError> {
     match op {
+        LinearOp::LoadIndexedP { index, .. } | LinearOp::LoadIndexedSeed { index, .. } => {
+            validate_reg_defined(defined, index)
+        }
         LinearOp::TableBounds { table_id, .. } => validate_reg_defined(defined, table_id),
         LinearOp::TableLookup {
             table_id,
@@ -1497,7 +1677,11 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
             n,
             ..
         } => {
-            validate_reg_range_defined(defined, matrix_start, n.saturating_mul(n))?;
+            validate_reg_range_defined(
+                defined,
+                matrix_start,
+                checked_square_len(n, "linear solve matrix")?,
+            )?;
             validate_reg_range_defined(defined, rhs_start, n)
         }
         LinearOp::Unary { arg, .. } => validate_reg_defined(defined, arg),
@@ -1539,450 +1723,19 @@ fn validate_reg_range_defined(
     count: usize,
 ) -> Result<(), CompileError> {
     for offset in 0..count {
-        validate_reg_defined(defined, start.saturating_add(offset as u32))?;
+        validate_reg_defined(defined, checked_reg_offset(start, offset, "source range")?)?;
     }
     Ok(())
 }
 
-#[inline(always)]
-fn execute_row(
-    row: &RowPlan,
-    regs_scratch: &mut Vec<f64>,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    seed: Option<&[f64]>,
-    external_tables: &[ExternalTableData],
-) -> Result<f64, CompileError> {
-    validate_input_requirements(row_input_requirements(row), y, p, seed)?;
-    match row {
-        RowPlan::Simple(row) => execute_simple_row(row, regs_scratch, y, p, t),
-        RowPlan::General(row) => {
-            execute_general_row(row, regs_scratch, y, p, t, seed, external_tables)
-        }
-    }
-}
-
-#[inline(always)]
-fn execute_simple_row(
-    row: &SimpleRowPlan,
-    regs_scratch: &mut Vec<f64>,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-) -> Result<f64, CompileError> {
-    let regs = runtime_reg_slice(regs_scratch, row.reg_count);
-    for op in row.ops.iter().copied() {
-        match op {
-            SimpleOp::Const { dst, value } => set_reg_value(regs, dst as usize, value),
-            SimpleOp::LoadTime { dst } => set_reg_value(regs, dst as usize, t),
-            SimpleOp::LoadY { dst, index } => {
-                let value = read_input_value("y", y, index as usize)?;
-                set_reg_value(regs, dst as usize, value)
-            }
-            SimpleOp::LoadP { dst, index } => {
-                let value = read_input_value("p", p, index as usize)?;
-                set_reg_value(regs, dst as usize, value)
-            }
-            SimpleOp::Unary { dst, op, arg } => {
-                let x = read_reg_value(regs, arg as usize);
-                set_reg_value(regs, dst as usize, apply_unary(op, x));
-            }
-            SimpleOp::Binary { dst, op, lhs, rhs } => {
-                let lhs = read_reg_value(regs, lhs as usize);
-                let rhs = read_reg_value(regs, rhs as usize);
-                set_reg_value(regs, dst as usize, apply_binary(op, lhs, rhs));
-            }
-            SimpleOp::Compare { dst, op, lhs, rhs } => {
-                let lhs = read_reg_value(regs, lhs as usize);
-                let rhs = read_reg_value(regs, rhs as usize);
-                set_reg_value(regs, dst as usize, apply_compare(op, lhs, rhs));
-            }
-            SimpleOp::Select {
-                dst,
-                cond,
-                if_true,
-                if_false,
-            } => {
-                let cond = read_reg_value(regs, cond as usize);
-                let if_true = read_reg_value(regs, if_true as usize);
-                let if_false = read_reg_value(regs, if_false as usize);
-                set_reg_value(
-                    regs,
-                    dst as usize,
-                    if cond != 0.0 { if_true } else { if_false },
-                );
-            }
-        }
-    }
-    Ok(read_reg_value(regs, row.output_src))
-}
-
-#[inline(always)]
-fn execute_general_row(
-    row: &GeneralRowPlan,
-    regs_scratch: &mut Vec<f64>,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    seed: Option<&[f64]>,
-    external_tables: &[ExternalTableData],
-) -> Result<f64, CompileError> {
-    let regs = runtime_reg_slice(regs_scratch, row.reg_count);
-    for op in row.ops.iter().copied() {
-        execute_general_op(regs, op, y, p, t, seed, external_tables)?;
-    }
-    Ok(read_reg_value(regs, row.output_src))
-}
-
-#[inline(always)]
-fn execute_general_op(
-    regs: &mut [f64],
-    op: LinearOp,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    seed: Option<&[f64]>,
-    external_tables: &[ExternalTableData],
-) -> Result<(), CompileError> {
-    match op {
-        LinearOp::Const { dst, value } => set_reg_value(regs, dst as usize, value),
-        LinearOp::LoadTime { dst } => set_reg_value(regs, dst as usize, t),
-        LinearOp::LoadY { dst, index } => {
-            let value = read_input_value("y", y, index)?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::LoadP { dst, index } => {
-            let value = read_input_value("p", p, index)?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::LoadSeed { dst, index } => {
-            let seed = seed.ok_or_else(|| input_compile_error("seed", index, 0))?;
-            let value = read_input_value("seed", seed, index)?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::Move { dst, src } => {
-            let value = read_reg_value(regs, src as usize);
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::LinearSolveComponent { dst, .. } => {
-            set_reg_value(regs, dst as usize, eval_linear_solve_component(regs, op));
-        }
-        LinearOp::TableBounds { dst, table_id, max } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let value =
-                try_eval_table_bound_value_in(table_id, max, external_tables).ok_or_else(|| {
-                    table_compile_error(
-                        if max { "bounds max" } else { "bounds min" },
-                        table_id,
-                        None,
-                    )
-                })?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::TableLookup { .. }
-        | LinearOp::TableLookupSlope { .. }
-        | LinearOp::TableNextEvent { .. } => execute_general_table_op(regs, op, external_tables)?,
-        LinearOp::RandomInitialState { dst, .. }
-        | LinearOp::RandomResult { dst, .. }
-        | LinearOp::RandomState { dst, .. }
-        | LinearOp::ImpureRandomInit { dst, .. }
-        | LinearOp::ImpureRandom { dst, .. }
-        | LinearOp::ImpureRandomInteger { dst, .. } => set_reg_value(regs, dst as usize, 1.0),
-        LinearOp::ExternalCall { function, .. } => {
-            return Err(external_call_compile_error(function));
-        }
-        LinearOp::Unary { dst, op, arg } => {
-            let x = read_reg_value(regs, arg as usize);
-            set_reg_value(regs, dst as usize, apply_unary(op, x));
-        }
-        LinearOp::Binary { dst, op, lhs, rhs } => {
-            let lhs = read_reg_value(regs, lhs as usize);
-            let rhs = read_reg_value(regs, rhs as usize);
-            set_reg_value(regs, dst as usize, apply_binary(op, lhs, rhs));
-        }
-        LinearOp::Compare { dst, op, lhs, rhs } => {
-            let lhs = read_reg_value(regs, lhs as usize);
-            let rhs = read_reg_value(regs, rhs as usize);
-            set_reg_value(regs, dst as usize, apply_compare(op, lhs, rhs));
-        }
-        LinearOp::Select {
-            dst,
-            cond,
-            if_true,
-            if_false,
-        } => {
-            let cond = read_reg_value(regs, cond as usize);
-            let if_true = read_reg_value(regs, if_true as usize);
-            let if_false = read_reg_value(regs, if_false as usize);
-            set_reg_value(
-                regs,
-                dst as usize,
-                if cond != 0.0 { if_true } else { if_false },
-            );
-        }
-        LinearOp::StoreOutput { .. } => {}
-    }
-    Ok(())
+fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {
+    CompileError::Backend(err.to_string())
 }
 
 fn external_call_compile_error(function: ExternalFunctionKind) -> CompileError {
     CompileError::Backend(format!(
         "external function {function:?} requires a native runtime bridge not provided by rumoca-exec-cranelift"
     ))
-}
-
-fn execute_general_table_op(
-    regs: &mut [f64],
-    op: LinearOp,
-    external_tables: &[ExternalTableData],
-) -> Result<(), CompileError> {
-    match op {
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let column = read_reg_value(regs, column as usize);
-            let input = read_reg_value(regs, input as usize);
-            let value = try_eval_table_lookup_value_in(table_id, column, input, external_tables)
-                .ok_or_else(|| table_compile_error("lookup", table_id, Some(column)))?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let column = read_reg_value(regs, column as usize);
-            let input = read_reg_value(regs, input as usize);
-            let value =
-                try_eval_table_lookup_slope_value_in(table_id, column, input, external_tables)
-                    .ok_or_else(|| table_compile_error("lookup slope", table_id, Some(column)))?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let time = read_reg_value(regs, time as usize);
-            let value = try_eval_time_table_next_event_value_in(table_id, time, external_tables)
-                .ok_or_else(|| table_compile_error("next event", table_id, None))?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn table_compile_error(
-    operation: &'static str,
-    table_id: f64,
-    column: Option<f64>,
-) -> CompileError {
-    let message = if let Some(column) = column {
-        format!("external table {operation} failed for table id {table_id} column {column}")
-    } else {
-        format!("external table {operation} failed for table id {table_id}")
-    };
-    CompileError::Input(message)
-}
-
-fn read_input_value(
-    vector: &'static str,
-    values: &[f64],
-    index: usize,
-) -> Result<f64, CompileError> {
-    values
-        .get(index)
-        .copied()
-        .ok_or_else(|| input_compile_error(vector, index, values.len()))
-}
-
-fn input_compile_error(vector: &'static str, index: usize, len: usize) -> CompileError {
-    CompileError::Input(format!(
-        "missing {vector}[{index}] while evaluating Cranelift row; vector length is {len}"
-    ))
-}
-
-#[inline(always)]
-fn runtime_reg_slice(regs_scratch: &mut Vec<f64>, reg_count: usize) -> &mut [f64] {
-    if regs_scratch.len() < reg_count {
-        regs_scratch.resize(reg_count, 0.0);
-    }
-    &mut regs_scratch[..reg_count]
-}
-
-#[inline(always)]
-fn set_reg_value(regs: &mut [f64], reg: usize, value: f64) {
-    regs[reg] = value;
-}
-
-#[inline(always)]
-fn read_reg_value(regs: &[f64], reg: usize) -> f64 {
-    regs[reg]
-}
-
-fn eval_linear_solve_component(regs: &[f64], op: LinearOp) -> f64 {
-    let LinearOp::LinearSolveComponent {
-        matrix_start,
-        rhs_start,
-        n,
-        component,
-        ..
-    } = op
-    else {
-        return f64::NAN;
-    };
-    if n == 0 || component >= n {
-        return f64::NAN;
-    }
-    let mut matrix = vec![0.0; n * n];
-    let mut rhs = vec![0.0; n];
-    for row in 0..n {
-        rhs[row] = read_reg_value(regs, rhs_start as usize + row);
-        for col in 0..n {
-            matrix[row * n + col] = read_reg_value(regs, matrix_start as usize + row * n + col);
-        }
-    }
-    solve_dense_component(&mut matrix, &mut rhs, n, component)
-}
-
-fn solve_dense_component(matrix: &mut [f64], rhs: &mut [f64], n: usize, component: usize) -> f64 {
-    for col in 0..n {
-        let Some(pivot) = pivot_row(matrix, n, col) else {
-            return f64::NAN;
-        };
-        swap_dense_rows(matrix, rhs, n, col, pivot);
-        let pivot_value = matrix[col * n + col];
-        if pivot_value.abs() <= f64::EPSILON {
-            return f64::NAN;
-        }
-        for row in col + 1..n {
-            let factor = matrix[row * n + col] / pivot_value;
-            matrix[row * n + col] = 0.0;
-            for entry in col + 1..n {
-                matrix[row * n + entry] -= factor * matrix[col * n + entry];
-            }
-            rhs[row] -= factor * rhs[col];
-        }
-    }
-
-    let mut solution = vec![0.0; n];
-    for row in (0..n).rev() {
-        let tail = ((row + 1)..n)
-            .map(|col| matrix[row * n + col] * solution[col])
-            .sum::<f64>();
-        solution[row] = (rhs[row] - tail) / matrix[row * n + row];
-    }
-    solution[component]
-}
-
-fn pivot_row(matrix: &[f64], n: usize, col: usize) -> Option<usize> {
-    (col..n).max_by(|&lhs, &rhs| {
-        matrix[lhs * n + col]
-            .abs()
-            .total_cmp(&matrix[rhs * n + col].abs())
-    })
-}
-
-fn swap_dense_rows(matrix: &mut [f64], rhs: &mut [f64], n: usize, lhs: usize, rhs_row: usize) {
-    if lhs == rhs_row {
-        return;
-    }
-    for col in 0..n {
-        matrix.swap(lhs * n + col, rhs_row * n + col);
-    }
-    rhs.swap(lhs, rhs_row);
-}
-
-#[inline(always)]
-fn apply_unary(op: UnaryOp, value: f64) -> f64 {
-    match op {
-        UnaryOp::Neg => -value,
-        UnaryOp::Not => {
-            if value == 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        UnaryOp::Abs => value.abs(),
-        UnaryOp::Sign => {
-            if value > 0.0 {
-                1.0
-            } else if value < 0.0 {
-                -1.0
-            } else {
-                0.0
-            }
-        }
-        UnaryOp::Sqrt => value.sqrt(),
-        UnaryOp::Floor => value.floor(),
-        UnaryOp::Ceil => value.ceil(),
-        UnaryOp::Trunc => value.trunc(),
-        UnaryOp::Sin => value.sin(),
-        UnaryOp::Cos => value.cos(),
-        UnaryOp::Tan => value.tan(),
-        UnaryOp::Asin => value.asin(),
-        UnaryOp::Acos => value.acos(),
-        UnaryOp::Atan => value.atan(),
-        UnaryOp::Sinh => value.sinh(),
-        UnaryOp::Cosh => value.cosh(),
-        UnaryOp::Tanh => value.tanh(),
-        UnaryOp::Exp => value.exp(),
-        UnaryOp::Log => value.ln(),
-        UnaryOp::Log10 => value.log10(),
-    }
-}
-
-#[inline(always)]
-fn apply_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
-    match op {
-        BinaryOp::Add => lhs + rhs,
-        BinaryOp::Sub => lhs - rhs,
-        BinaryOp::Mul => lhs * rhs,
-        BinaryOp::Div => {
-            if rhs == 0.0 {
-                if lhs == 0.0 { 0.0 } else { f64::INFINITY }
-            } else {
-                lhs / rhs
-            }
-        }
-        BinaryOp::Pow => lhs.powf(rhs),
-        BinaryOp::And => {
-            if lhs != 0.0 && rhs != 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Or => {
-            if lhs != 0.0 || rhs != 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Atan2 => lhs.atan2(rhs),
-        BinaryOp::Min => lhs.min(rhs),
-        BinaryOp::Max => lhs.max(rhs),
-    }
-}
-
-#[inline(always)]
-fn apply_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
-    op.compare_as_f64(lhs, rhs)
-}
-
-fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {
-    CompileError::Backend(err.to_string())
 }
 
 #[cfg(test)]

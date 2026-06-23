@@ -73,10 +73,12 @@ fn eval_string_expr<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Result<S
             name, args, span, ..
         } => eval_string_function_call(name.as_str(), args, env)
             .map_err(|err| err.with_span_if_missing(*span)),
-        _ => Err(EvalError::UnsupportedExpression {
-            kind: "string expression",
-        }
-        .with_span_if_missing(expr.span().unwrap_or(rumoca_core::Span::DUMMY))),
+        _ => Err(with_expression_span_if_available(
+            EvalError::UnsupportedExpression {
+                kind: "string expression",
+            },
+            expr,
+        )),
     }
 }
 
@@ -262,7 +264,7 @@ fn eval_literal_string_arg<T: SimFloat>(
 ) -> Result<Option<T>, EvalError> {
     if let Some(Expression::Literal {
         value: Literal::String(s),
-        span: rumoca_core::Span::DUMMY,
+        ..
     }) = args.first()
     {
         Ok(Some(eval(s)))
@@ -280,11 +282,11 @@ fn eval_string_find_intrinsic<T: SimFloat>(
     let (
         Some(Expression::Literal {
             value: Literal::String(haystack),
-            span: rumoca_core::Span::DUMMY,
+            ..
         }),
         Some(Expression::Literal {
             value: Literal::String(needle),
-            span: rumoca_core::Span::DUMMY,
+            ..
         }),
     ) = (args.first(), args.get(1))
     else {

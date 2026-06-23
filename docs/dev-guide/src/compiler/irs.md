@@ -65,7 +65,7 @@ Dump it: `--emit dae-mo` / `dae-json`. The `dae-mo` form is what the
 A register-machine representation of the DAE functions: `ComputeBlock`
 graphs mixing `ScalarProgramBlock`s (flat register programs, one scalar
 output each) with tensor program nodes (`MatMul`, `LinSolve`, …) that carry
-explicit shape/layout metadata and a scalar fallback. Solve adds no new
+explicit shape/layout metadata and a fallible scalar fallback. Solve adds no new
 mathematics — it changes *format* so execution backends (interpreter,
 Cranelift JIT, MLIR, CUDA, generated C/Rust) can consume the system
 directly, choosing scalar expansion or native tensor kernels.

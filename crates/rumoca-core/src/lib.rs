@@ -44,12 +44,16 @@ mod expression_visitor;
 mod ir_primitives;
 mod modelica_builtins;
 mod statement_rewriter;
+mod structured_domain;
 mod subscript;
-pub use expression_rewriter::ExpressionRewriter;
+pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
 pub use ir_primitives::*;
 pub use modelica_builtins::*;
-pub use statement_rewriter::StatementRewriter;
+pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
+pub use structured_domain::{
+    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError,
+};
 pub use subscript::Subscript;
 
 /// Internal DAE-level sample tick callable emitted after source `sample(...)`
@@ -797,16 +801,6 @@ impl SourceMap {
         self.files.first().map(|(id, _, _)| *id)
     }
 
-    /// Create a Span from a file name and byte offsets.
-    ///
-    /// Looks up the SourceId from the file name. Returns `Span::DUMMY` when
-    /// the file is not found so diagnostics do not get misattributed to the
-    /// first source file in the map.
-    pub fn location_to_span(&self, file_name: &str, start: usize, end: usize) -> Span {
-        self.try_location_to_span(file_name, start, end)
-            .unwrap_or(Span::DUMMY)
-    }
-
     /// Try to create a Span from a file name and byte offsets.
     pub fn try_location_to_span(&self, file_name: &str, start: usize, end: usize) -> Option<Span> {
         let source_id = self.name_to_id.get(file_name).copied().or_else(|| {
@@ -1473,15 +1467,14 @@ mod source_map_tests {
     use super::*;
 
     #[test]
-    fn location_to_span_does_not_misattribute_unknown_files_to_source_zero() {
+    fn try_location_to_span_does_not_misattribute_unknown_files_to_source_zero() {
         let mut source_map = SourceMap::new();
         let source = source_map.add("known.mo", "model Known end Known;");
 
         assert_eq!(
-            source_map.location_to_span("known.mo", 1, 5),
-            Span::from_offsets(source, 1, 5)
+            source_map.try_location_to_span("known.mo", 1, 5),
+            Some(Span::from_offsets(source, 1, 5))
         );
-        assert_eq!(source_map.location_to_span("missing.mo", 1, 5), Span::DUMMY);
         assert_eq!(source_map.try_location_to_span("missing.mo", 1, 5), None);
     }
 
@@ -1553,7 +1546,7 @@ pub mod error_macro_tests {
 
     #[test]
     fn test_single_field_constructor() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(SourceId::from_source_name("core_lib_source_0.mo"), 10, 20);
         let err = TestError::single_field("test_name", span);
         match err {
             TestError::SingleField { name, span: s } => {
@@ -1567,7 +1560,7 @@ pub mod error_macro_tests {
 
     #[test]
     fn test_two_fields_constructor() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(SourceId::from_source_name("core_lib_source_0.mo"), 10, 20);
         let err = TestError::two_fields("first", "second", span);
         match err {
             TestError::TwoFields { a, b, span: s } => {
@@ -1581,7 +1574,7 @@ pub mod error_macro_tests {
 
     #[test]
     fn test_span_only_constructor() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(SourceId::from_source_name("core_lib_source_0.mo"), 10, 20);
         let err = TestError::span_only(span);
         match err {
             TestError::SpanOnly { span: s } => {

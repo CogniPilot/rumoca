@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rumoca"
-version = "0.9.4"
+version = "0.9.8"
 description = "Python interface for the Rumoca Modelica compiler"
 license = {text = "Apache-2.0"}
 authors = [{name = "Rumoca Contributors"}]
@@ -24,6 +24,21 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 
+# Every optional dependency is genuinely optional: `import rumoca` and the typed
+# object graph never need them. Each extra unlocks one convenience —
+# `result.to_numpy()`/`to_dataframe()` (data), `result.plot()` (plot),
+# `model.to_casadi()` (casadi), the `%%modelica` magic (notebook), etc. The
+# returned objects degrade gracefully (e.g. `result["x"]` is a plain list without
+# numpy) or raise a message naming the extra to install.
+[project.optional-dependencies]
+data = ["numpy", "pandas"]
+plot = ["matplotlib"]
+casadi = ["casadi"]
+jax = ["jax"]
+sympy = ["sympy"]
+notebook = ["ipython"]
+all = ["numpy", "pandas", "matplotlib", "casadi", "jax", "sympy", "ipython"]
+
 [project.urls]
 Homepage = "https://github.com/climamind/rumoca"
 Repository = "https://github.com/climamind/rumoca"
@@ -31,4 +46,8 @@ Issues = "https://github.com/climamind/rumoca/issues"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
-module-name = "rumoca"
+# Mixed Rust+Python layout: the compiled extension is `rumoca._native`, and the
+# pure-Python package under `python/rumoca/` re-exports it and adds the
+# `%%modelica` Jupyter cell magic.
+module-name = "rumoca._native"
+python-source = "python"

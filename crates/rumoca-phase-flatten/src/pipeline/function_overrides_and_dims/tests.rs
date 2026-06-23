@@ -13,6 +13,14 @@ fn token(text: &str) -> Token {
     }
 }
 
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("function_overrides_test.mo"),
+        1,
+        2,
+    )
+}
+
 fn class(name: &str, class_type: ClassType) -> ClassDef {
     ClassDef {
         name: token(name),
@@ -26,7 +34,7 @@ fn component(name: &str, type_name: &str, type_def_id: DefId) -> Component {
         name: name.to_string(),
         type_name: Name::from_string(type_name),
         type_def_id: Some(type_def_id),
-        ..Component::default()
+        ..Component::empty_with_span(test_span())
     }
 }
 
@@ -60,7 +68,7 @@ fn comp_ref(parts: &[&str]) -> ComponentReference {
                 subs: None,
             })
             .collect(),
-        span: Span::DUMMY,
+        span: test_span(),
         def_id: None,
     }
 }
@@ -750,9 +758,11 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
             expr: rumoca_ir_ast::Expression::Modification {
                 target: comp_ref(&["gravityType"]),
                 value: Arc::new(ast_var("gravityType")),
-                span: Span::DUMMY,
+                span: test_span(),
             },
-            ..Default::default()
+            each: false,
+            final_: false,
+            redeclare: false,
         }],
         ..Extend::default()
     });
@@ -813,15 +823,25 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
 #[test]
 fn redeclare_function_assignment_rewrites_call_with_modifier_actuals() {
     let quadratic_def = DefId::new(1);
+    let partial_pump_def = DefId::new(2);
     let mut quadratic = class("quadraticFlow", ClassType::Function);
     quadratic.def_id = Some(quadratic_def);
+    let mut partial_pump = class("PartialPump", ClassType::Model);
+    partial_pump.def_id = Some(partial_pump_def);
 
     let mut tree = ClassTree::new();
     tree.definitions
         .classes
         .insert("quadraticFlow".to_string(), quadratic);
+    tree.definitions
+        .classes
+        .insert("PartialPump".to_string(), partial_pump);
     tree.def_map
         .insert(quadratic_def, "quadraticFlow".to_string());
+    tree.def_map.insert(
+        partial_pump_def,
+        "Modelica.Fluid.Machines.BaseClasses.PartialPump".to_string(),
+    );
     tree.name_map
         .insert("quadraticFlow".to_string(), quadratic_def);
 
@@ -845,8 +865,16 @@ fn redeclare_function_assignment_rewrites_call_with_modifier_actuals() {
     let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &override_functions)
         .with_active_scope(ComponentPath::from_flat_path("pump"));
     let mut expr = Expression::FunctionCall {
-        name: rumoca_core::Reference::new(
+        name: rumoca_core::Reference::with_component_reference(
             "Modelica.Fluid.Machines.BaseClasses.PartialPump.flowCharacteristic",
+            core_comp_ref(&[
+                "Modelica",
+                "Fluid",
+                "Machines",
+                "BaseClasses",
+                "PartialPump",
+                "flowCharacteristic",
+            ]),
         ),
         args: vec![core_var("pump.V_flow_single")],
         is_constructor: false,
@@ -864,6 +892,182 @@ fn redeclare_function_assignment_rewrites_call_with_modifier_actuals() {
         panic!("expected receiver-qualified V_flow_nominal named argument");
     };
     assert_eq!(name.as_str(), "pump.V_flow_op");
+}
+
+#[test]
+fn inherited_replaceable_function_call_keeps_declaration_modifier_actuals() {
+    let (tree, efficiency_characteristic_def) = replaceable_efficiency_fixture();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &override_functions)
+        .with_active_scope(ComponentPath::from_flat_path("pump"));
+    let mut expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "Modelica.Fluid.Machines.BaseClasses.PartialPump.efficiencyCharacteristic",
+            rumoca_core::ComponentReference {
+                def_id: Some(efficiency_characteristic_def),
+                ..core_comp_ref(&[
+                    "Modelica",
+                    "Fluid",
+                    "Machines",
+                    "BaseClasses",
+                    "PartialPump",
+                    "efficiencyCharacteristic",
+                ])
+            },
+        ),
+        args: vec![core_var("pump.V_flow_single")],
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::FunctionCall { name, args, .. } = expr else {
+        panic!("expected rewritten function call");
+    };
+    assert_eq!(
+        name.as_str(),
+        "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency"
+    );
+    assert_eq!(args.len(), 2);
+    let Some(("eta_nominal", Expression::Literal { value, .. })) = named_arg(&args[1]) else {
+        panic!("expected eta_nominal declaration modifier argument");
+    };
+    assert_eq!(*value, rumoca_core::Literal::Real(0.8));
+}
+
+fn replaceable_efficiency_fixture() -> (ClassTree, DefId) {
+    let base_efficiency_def = DefId::new(1);
+    let constant_efficiency_def = DefId::new(2);
+    let efficiency_characteristic_def = DefId::new(3);
+
+    let pump_characteristics =
+        replaceable_efficiency_pump_characteristics(base_efficiency_def, constant_efficiency_def);
+    let partial_pump =
+        replaceable_efficiency_partial_pump(efficiency_characteristic_def, constant_efficiency_def);
+    let modelica = replaceable_efficiency_modelica_tree(pump_characteristics, partial_pump);
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("Modelica".to_string(), modelica);
+    register_replaceable_efficiency_names(
+        &mut tree,
+        base_efficiency_def,
+        constant_efficiency_def,
+        efficiency_characteristic_def,
+    );
+    (tree, efficiency_characteristic_def)
+}
+
+fn replaceable_efficiency_pump_characteristics(
+    base_efficiency_def: DefId,
+    constant_efficiency_def: DefId,
+) -> ClassDef {
+    let mut base_efficiency = class("baseEfficiency", ClassType::Function);
+    base_efficiency.def_id = Some(base_efficiency_def);
+    let mut constant_efficiency = class("constantEfficiency", ClassType::Function);
+    constant_efficiency.def_id = Some(constant_efficiency_def);
+    constant_efficiency
+        .algorithms
+        .push(vec![rumoca_ir_ast::Statement::Return {
+            token: token("return"),
+        }]);
+    let mut pump_characteristics = class("PumpCharacteristics", ClassType::Package);
+    pump_characteristics
+        .classes
+        .insert("baseEfficiency".to_string(), base_efficiency);
+    pump_characteristics
+        .classes
+        .insert("constantEfficiency".to_string(), constant_efficiency);
+    pump_characteristics
+}
+
+fn replaceable_efficiency_partial_pump(
+    efficiency_characteristic_def: DefId,
+    constant_efficiency_def: DefId,
+) -> ClassDef {
+    let mut efficiency_characteristic = class("efficiencyCharacteristic", ClassType::Function);
+    efficiency_characteristic.def_id = Some(efficiency_characteristic_def);
+    efficiency_characteristic.extends.push(Extend {
+        base_name: Name {
+            def_id: Some(constant_efficiency_def),
+            ..Name::from_string("PumpCharacteristics.constantEfficiency")
+        },
+        base_def_id: Some(constant_efficiency_def),
+        modifications: vec![eta_nominal_modifier()],
+        ..Extend::default()
+    });
+
+    let mut partial_pump = class("PartialPump", ClassType::Model);
+    partial_pump.classes.insert(
+        "efficiencyCharacteristic".to_string(),
+        efficiency_characteristic,
+    );
+    partial_pump
+}
+
+fn eta_nominal_modifier() -> rumoca_ir_ast::ExtendModification {
+    rumoca_ir_ast::ExtendModification {
+        expr: rumoca_ir_ast::Expression::NamedArgument {
+            name: token("eta_nominal"),
+            value: Arc::new(rumoca_ir_ast::Expression::Terminal {
+                terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
+                token: token("0.8"),
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        each: false,
+        final_: false,
+        redeclare: false,
+    }
+}
+
+fn replaceable_efficiency_modelica_tree(
+    pump_characteristics: ClassDef,
+    partial_pump: ClassDef,
+) -> ClassDef {
+    let mut base_classes = class("BaseClasses", ClassType::Package);
+    base_classes
+        .classes
+        .insert("PumpCharacteristics".to_string(), pump_characteristics);
+    base_classes
+        .classes
+        .insert("PartialPump".to_string(), partial_pump);
+    let mut machines = class("Machines", ClassType::Package);
+    machines
+        .classes
+        .insert("BaseClasses".to_string(), base_classes);
+    let mut fluid = class("Fluid", ClassType::Package);
+    fluid.classes.insert("Machines".to_string(), machines);
+    let mut modelica = class("Modelica", ClassType::Package);
+    modelica.classes.insert("Fluid".to_string(), fluid);
+    modelica
+}
+
+fn register_replaceable_efficiency_names(
+    tree: &mut ClassTree,
+    base_efficiency_def: DefId,
+    constant_efficiency_def: DefId,
+    efficiency_characteristic_def: DefId,
+) {
+    tree.def_map.insert(
+        base_efficiency_def,
+        "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.baseEfficiency".to_string(),
+    );
+    tree.def_map.insert(
+        constant_efficiency_def,
+        "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency".to_string(),
+    );
+    tree.def_map.insert(
+        efficiency_characteristic_def,
+        "Modelica.Fluid.Machines.BaseClasses.PartialPump.efficiencyCharacteristic".to_string(),
+    );
+    tree.name_map.insert(
+        "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency".to_string(),
+        constant_efficiency_def,
+    );
 }
 
 #[test]
@@ -898,11 +1102,11 @@ fn component_scope_inherits_type_extends_redeclare_function() {
                     args: vec![rumoca_ir_ast::Expression::NamedArgument {
                         name: token("V_flow_nominal"),
                         value: Arc::new(ast_var("V_flow_op")),
-                        span: Span::DUMMY,
+                        span: test_span(),
                     }],
-                    span: Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: Span::DUMMY,
+                span: test_span(),
             },
             each: false,
             final_: false,

@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_solve::{ComputeBlock, ComputeNode, LinearOp, Reg, SolveVisitor, SparsityPattern};
 
+use crate::runtime::solve_ops::RuntimeSolveError;
+
 /// Greedy column coloring for a Jacobian sparsity pattern.
 ///
 /// `column_rows[c]` contains row indices where column `c` may be nonzero.
@@ -77,22 +79,35 @@ pub fn seeds_affecting_regs(ops: &[LinearOp]) -> HashMap<Reg, Vec<usize>> {
             | LinearOp::LoadP { dst, .. } => {
                 reg_seeds.insert(dst, vec![]);
             }
+            // A runtime-indexed parameter load is piecewise-constant in the
+            // (discrete) index, so its value carries no solver-y seed — same as
+            // a plain `LoadP`.
+            LinearOp::LoadIndexedP { dst, .. } => {
+                reg_seeds.insert(dst, vec![]);
+            }
+            // A runtime-indexed seed load may select any column in its run; be
+            // conservative and propagate the whole `[base, base+count)` range.
+            LinearOp::LoadIndexedSeed {
+                dst, base, count, ..
+            } => {
+                reg_seeds.insert(dst, (base..base + count).collect());
+            }
             LinearOp::Move { dst, src } => {
-                let seeds = reg_seeds.get(&src).cloned().unwrap_or_default();
+                let seeds = known_seed_dependencies(&reg_seeds, src);
                 reg_seeds.insert(dst, seeds);
             }
             LinearOp::Unary { dst, arg, .. } => {
-                let seeds = reg_seeds.get(&arg).cloned().unwrap_or_default();
+                let seeds = known_seed_dependencies(&reg_seeds, arg);
                 reg_seeds.insert(dst, seeds);
             }
             LinearOp::Binary { dst, lhs, rhs, .. } => {
-                let a = reg_seeds.get(&lhs).cloned().unwrap_or_default();
-                let b = reg_seeds.get(&rhs).cloned().unwrap_or_default();
+                let a = known_seed_dependencies(&reg_seeds, lhs);
+                let b = known_seed_dependencies(&reg_seeds, rhs);
                 reg_seeds.insert(dst, merge(&a, &b));
             }
             LinearOp::Compare { dst, lhs, rhs, .. } => {
-                let a = reg_seeds.get(&lhs).cloned().unwrap_or_default();
-                let b = reg_seeds.get(&rhs).cloned().unwrap_or_default();
+                let a = known_seed_dependencies(&reg_seeds, lhs);
+                let b = known_seed_dependencies(&reg_seeds, rhs);
                 reg_seeds.insert(dst, merge(&a, &b));
             }
             LinearOp::Select {
@@ -101,9 +116,9 @@ pub fn seeds_affecting_regs(ops: &[LinearOp]) -> HashMap<Reg, Vec<usize>> {
                 if_true,
                 if_false,
             } => {
-                let a = reg_seeds.get(&cond).cloned().unwrap_or_default();
-                let b = reg_seeds.get(&if_true).cloned().unwrap_or_default();
-                let c = reg_seeds.get(&if_false).cloned().unwrap_or_default();
+                let a = known_seed_dependencies(&reg_seeds, cond);
+                let b = known_seed_dependencies(&reg_seeds, if_true);
+                let c = known_seed_dependencies(&reg_seeds, if_false);
                 reg_seeds.insert(dst, merge(&merge(&a, &b), &c));
             }
             LinearOp::StoreOutput { .. } => {
@@ -131,6 +146,13 @@ pub fn seeds_affecting_regs(ops: &[LinearOp]) -> HashMap<Reg, Vec<usize>> {
     reg_seeds
 }
 
+fn known_seed_dependencies(reg_seeds: &HashMap<Reg, Vec<usize>>, reg: Reg) -> Vec<usize> {
+    match reg_seeds.get(&reg) {
+        Some(seeds) => seeds.clone(),
+        None => Vec::new(),
+    }
+}
+
 fn sorted_unique_seeds_from_regs(reg_seeds: &HashMap<Reg, Vec<usize>>) -> Vec<usize> {
     let mut seeds: Vec<usize> = reg_seeds.values().flat_map(|s| s.iter().copied()).collect();
     seeds.sort_unstable();
@@ -150,6 +172,25 @@ fn push_row_for_seeds(
     }
 }
 
+fn checked_sparsity_product(
+    lhs: usize,
+    rhs: usize,
+    context: &'static str,
+) -> Result<usize, RuntimeSolveError> {
+    lhs.checked_mul(rhs)
+        .ok_or_else(|| RuntimeSolveError::solve_ir(format!("{context} overflows host index range")))
+}
+
+fn checked_sparsity_row_end(
+    start: usize,
+    count: usize,
+    context: &'static str,
+) -> Result<usize, RuntimeSolveError> {
+    start
+        .checked_add(count)
+        .ok_or_else(|| RuntimeSolveError::solve_ir(format!("{context} overflows host index range")))
+}
+
 fn push_matmul_jac_sparsity(
     column_rows: &mut [Vec<usize>],
     rhs_ops: &[LinearOp],
@@ -157,7 +198,7 @@ fn push_matmul_jac_sparsity(
     lhs_sparsity: &SparsityPattern,
     dims: (usize, usize, usize),
     row_offset: usize,
-) {
+) -> Result<(), RuntimeSolveError> {
     let (m, k, n) = dims;
     let rhs_reg_seeds = seeds_affecting_regs(rhs_ops);
 
@@ -165,10 +206,11 @@ fn push_matmul_jac_sparsity(
     // output[i] = A[i,i] * x[i], so only seeds affecting rhs[i] matter.
     let is_diagonal_matvec = matches!(lhs_sparsity, SparsityPattern::Diagonal) && n == 1 && m == k;
     let all_rhs_seeds = sorted_unique_seeds_from_regs(&rhs_reg_seeds);
+    let output_count = checked_sparsity_product(m, n, "MatMul sparsity output count")?;
 
-    for slot in 0..m * n {
+    for slot in 0..output_count {
         let i = slot / n;
-        let out_row = row_offset + slot;
+        let out_row = checked_sparsity_row_end(row_offset, slot, "MatMul sparsity output row")?;
         let seeds = if is_diagonal_matvec {
             rhs_reg_seeds
                 .get(&(rhs_start + i as u32))
@@ -179,6 +221,7 @@ fn push_matmul_jac_sparsity(
         };
         push_row_for_seeds(column_rows, seeds, out_row);
     }
+    Ok(())
 }
 
 /// Structural sparsity of the Jacobian of a `ComputeBlock` JVP.
@@ -189,21 +232,21 @@ fn push_matmul_jac_sparsity(
 ///
 /// Returns `column_rows[seed_index]` = sorted list of output row indices that may
 /// depend on that seed.  Length of the outer vec is `n_seeds`.
-pub fn compute_block_jac_sparsity(block: &ComputeBlock, n_seeds: usize) -> Vec<Vec<usize>> {
+pub fn compute_block_jac_sparsity(
+    block: &ComputeBlock,
+    n_seeds: usize,
+) -> Result<Vec<Vec<usize>>, RuntimeSolveError> {
     let mut visitor = JacSparsityVisitor {
         column_rows: vec![Vec::new(); n_seeds],
         row_offset: 0,
     };
-    let result = visitor.visit_compute_block(block);
-    if let Err(error) = result {
-        match error {}
-    }
+    visitor.visit_compute_block(block)?;
 
     for rows in &mut visitor.column_rows {
         rows.sort_unstable();
         rows.dedup();
     }
-    visitor.column_rows
+    Ok(visitor.column_rows)
 }
 
 struct JacSparsityVisitor {
@@ -212,7 +255,7 @@ struct JacSparsityVisitor {
 }
 
 impl SolveVisitor for JacSparsityVisitor {
-    type Error = std::convert::Infallible;
+    type Error = RuntimeSolveError;
 
     fn visit_compute_node(
         &mut self,
@@ -222,12 +265,17 @@ impl SolveVisitor for JacSparsityVisitor {
         match node {
             ComputeNode::ScalarPrograms(rb) => {
                 for (r, row_ops) in rb.programs.iter().enumerate() {
-                    let out_row = self.row_offset + r;
+                    let out_row =
+                        checked_sparsity_row_end(self.row_offset, r, "scalar sparsity output row")?;
                     let reg_seeds = seeds_affecting_regs(row_ops);
                     let row_seeds = sorted_unique_seeds_from_regs(&reg_seeds);
                     push_row_for_seeds(&mut self.column_rows, row_seeds, out_row);
                 }
-                self.row_offset += rb.programs.len();
+                self.row_offset = checked_sparsity_row_end(
+                    self.row_offset,
+                    rb.programs.len(),
+                    "scalar sparsity row count",
+                )?;
             }
 
             ComputeNode::MatMul {
@@ -246,29 +294,46 @@ impl SolveVisitor for JacSparsityVisitor {
                     lhs_sparsity,
                     (*m, *k, *n),
                     self.row_offset,
-                );
-                self.row_offset += m * n;
+                )?;
+                let output_count = checked_sparsity_product(*m, *n, "MatMul sparsity row count")?;
+                self.row_offset = checked_sparsity_row_end(
+                    self.row_offset,
+                    output_count,
+                    "MatMul sparsity row count",
+                )?;
             }
 
             ComputeNode::LinSolve { setup_ops, n, .. } => {
                 // Conservative: any seed in setup_ops may affect any output row.
                 let reg_seeds = seeds_affecting_regs(setup_ops);
                 let all_seeds = sorted_unique_seeds_from_regs(&reg_seeds);
-                for out_row in self.row_offset..self.row_offset + n {
+                let end =
+                    checked_sparsity_row_end(self.row_offset, *n, "LinSolve sparsity row count")?;
+                for out_row in self.row_offset..end {
                     push_row_for_seeds(&mut self.column_rows, all_seeds.iter().copied(), out_row);
                 }
-                self.row_offset += n;
+                self.row_offset = end;
             }
 
-            ComputeNode::AffineStencil {
-                base_ops, count, ..
+            ComputeNode::Map {
+                base_ops, domain, ..
+            }
+            | ComputeNode::AffineStencil {
+                base_ops, domain, ..
             } => {
+                let count = domain.scalar_count().map_err(|err| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "structured index domain is invalid while computing sparsity: {err}"
+                    ))
+                })?;
                 let reg_seeds = seeds_affecting_regs(base_ops);
                 let row_seeds = sorted_unique_seeds_from_regs(&reg_seeds);
-                for out_row in self.row_offset..self.row_offset + count {
+                let end =
+                    checked_sparsity_row_end(self.row_offset, count, "tensor sparsity row count")?;
+                for out_row in self.row_offset..end {
                     push_row_for_seeds(&mut self.column_rows, row_seeds.iter().copied(), out_row);
                 }
-                self.row_offset += count;
+                self.row_offset = end;
             }
         }
         Ok(())
@@ -278,6 +343,14 @@ impl SolveVisitor for JacSparsityVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("solver_sparsity_source_52.mo"),
+            0,
+            1,
+        )
+    }
 
     fn assert_color_validity(column_rows: &[Vec<usize>], colors: &[Vec<usize>]) {
         let mut seen = vec![false; column_rows.len()];
@@ -324,7 +397,9 @@ mod tests {
 
     fn make_scalar_block(rows: Vec<Vec<LinearOp>>) -> ComputeBlock {
         ComputeBlock {
-            nodes: vec![ComputeNode::ScalarPrograms(ScalarProgramBlock::new(rows))],
+            nodes: vec![ComputeNode::ScalarPrograms(
+                ScalarProgramBlock::with_source_span(rows, fixture_span()),
+            )],
         }
     }
 
@@ -354,7 +429,8 @@ mod tests {
             vec![LinearOp::Const { dst: 0, value: 1.0 }],
         ]);
 
-        let col_rows = compute_block_jac_sparsity(&block, 2);
+        let col_rows =
+            compute_block_jac_sparsity(&block, 2).expect("fixture sparsity should compute");
         assert_eq!(col_rows[0], vec![0], "seed 0 affects row 0");
         assert_eq!(col_rows[1], vec![1], "seed 1 affects row 1");
     }
@@ -387,11 +463,12 @@ mod tests {
                 lhs_sparsity: SparsityPattern::Diagonal,
                 rhs_sparsity: SparsityPattern::Dense,
                 metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }],
         };
 
-        let col_rows = compute_block_jac_sparsity(&block, 2);
+        let col_rows =
+            compute_block_jac_sparsity(&block, 2).expect("fixture sparsity should compute");
         assert_eq!(
             col_rows[0],
             vec![0],
@@ -432,11 +509,12 @@ mod tests {
                 lhs_sparsity: SparsityPattern::Dense,
                 rhs_sparsity: SparsityPattern::Dense,
                 metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             }],
         };
 
-        let col_rows = compute_block_jac_sparsity(&block, 2);
+        let col_rows =
+            compute_block_jac_sparsity(&block, 2).expect("fixture sparsity should compute");
         assert_eq!(
             col_rows[0],
             vec![0, 1],

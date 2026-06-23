@@ -8,6 +8,14 @@ use crate::{
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::sync::Arc;
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("visitor_test.mo"),
+        1,
+        2,
+    )
+}
+
 fn make_var(name: &str) -> Expression {
     Expression::ComponentReference(make_comp_ref(name))
 }
@@ -286,7 +294,7 @@ fn test_type_name_context_dispatch() {
         Component {
             type_name: Name::from_string("MyComponentType"),
             constrainedby: Some(Name::from_string("MyComponentConstraint")),
-            ..Default::default()
+            ..Component::empty_with_span(test_span())
         },
     );
 
@@ -294,7 +302,12 @@ fn test_type_name_context_dispatch() {
         constrainedby: Some(Name::from_string("MyClassConstraint")),
         extends: vec![Extend {
             base_name: Name::from_string("MyBaseClass"),
-            ..Default::default()
+            base_def_id: None,
+            location: Location::default(),
+            modifications: Vec::new(),
+            break_names: Vec::new(),
+            is_protected: false,
+            annotation: Vec::new(),
         }],
         components,
         ..Default::default()
@@ -400,7 +413,7 @@ fn test_subscript_context_dispatch() {
                 "x".to_string(),
                 Component {
                     shape_expr: vec![Subscript::Expression(make_int(4))],
-                    ..Default::default()
+                    ..Component::empty_with_span(test_span())
                 },
             );
             components
@@ -432,7 +445,7 @@ fn make_expression_context_dispatch_class() -> ClassDef {
         start: make_int(1),
         binding: Some(make_int(10)),
         condition: Some(make_var("cond")),
-        ..Default::default()
+        ..Component::empty_with_span(test_span())
     };
     component.modifications.insert("k".to_string(), make_int(2));
     component.annotation.push(make_int(3));
@@ -442,10 +455,15 @@ fn make_expression_context_dispatch_class() -> ClassDef {
             base_name: Name::from_string("Base"),
             modifications: vec![crate::ExtendModification {
                 expr: make_int(4),
-                ..Default::default()
+                each: false,
+                final_: false,
+                redeclare: false,
             }],
             annotation: vec![make_int(11)],
-            ..Default::default()
+            base_def_id: None,
+            location: Location::default(),
+            break_names: Vec::new(),
+            is_protected: false,
         }],
         annotation: vec![make_int(12)],
         components: {

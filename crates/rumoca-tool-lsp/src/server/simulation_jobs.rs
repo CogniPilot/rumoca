@@ -19,10 +19,10 @@ fn stable_u64_from_hash(hash: blake3::Hash) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-fn simulation_models_from_project_config_source(
+fn simulation_models_from_scenario_config_source(
     source: &str,
 ) -> std::result::Result<Vec<String>, String> {
-    let config = toml::from_str::<ProjectConfigFile>(source)
+    let config = toml::from_str::<ScenarioConfigFile>(source)
         .map_err(|error| format!("failed to parse simulation config TOML: {error}"))?;
     let Some(model) = config.model.name.as_deref().map(str::trim) else {
         return Err("simulation config TOML is missing [model] name".to_string());
@@ -273,13 +273,13 @@ impl ModelicaLanguageServer {
         uri: &Url,
     ) -> std::result::Result<Vec<String>, String> {
         let uri_path = session_document_uri_key(uri);
-        if is_project_config_uri(uri) {
+        if is_scenario_config_uri(uri) {
             let source = if let Some(doc) = self.document_snapshot(&uri_path).await {
                 doc.content.to_string()
             } else {
                 self.open_document_source_for_uri(uri).await?
             };
-            return simulation_models_from_project_config_source(&source);
+            return simulation_models_from_scenario_config_source(&source);
         }
         if let Some(doc) = self.document_snapshot(&uri_path).await {
             if let Some(parsed) = doc.parsed().cloned() {
@@ -663,6 +663,11 @@ impl ModelicaLanguageServer {
 
         let request_id = self.next_background_request_id("simulate");
         let request_token = self.begin_analysis_request().await;
+        let parameter_overrides = settings
+            .parameter_overrides
+            .iter()
+            .map(|(name, value)| (name.clone(), json!(value)))
+            .collect::<serde_json::Map<_, _>>();
         let request_payload = json!({
             "uri": uri,
             "model": model,
@@ -671,6 +676,7 @@ impl ModelicaLanguageServer {
                 "tEnd": settings.t_end,
                 "dt": settings.dt,
                 "sourceRootPaths": settings.source_root_paths,
+                "parameterOverrides": parameter_overrides,
             },
         });
         let server = self.clone();

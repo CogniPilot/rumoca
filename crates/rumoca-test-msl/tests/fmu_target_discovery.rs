@@ -216,7 +216,10 @@ fn probe_model(
     driver_template: &str,
 ) -> Stage {
     // 1. Compile
-    let report = source_root.compile_model_strict_reachable_with_recovery(model_name);
+    let report = match source_root.compile_model_strict_reachable_with_recovery(model_name) {
+        Ok(report) => report,
+        Err(error) => return Stage::CompileFail(format!("strict reachable compile: {error}")),
+    };
     let result: CompilationResult = match report.requested_result {
         Some(PhaseResult::Success(boxed)) => *boxed,
         Some(PhaseResult::Failed { error, .. }) => return Stage::CompileFail(error),

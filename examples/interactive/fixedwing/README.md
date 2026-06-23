@@ -22,7 +22,7 @@ get slow.
 | `FixedWingSIL.mo` | 6-DOF aero plant, `FixedWingFBW` controller, and `FixedWing` wrapper |
 | `../../../target/cmm/CMM-v0.0.2/LieGroup/package.mo` | SO(3) attitude utilities |
 | `../../../target/cmm/CMM-v0.0.2/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
-| `rum.toml` | Config — `FixedWing` closed-loop Modelica model |
+| `rumoca-scenario.toml` | Config — `FixedWing` closed-loop Modelica model |
 | `fixedwing_scene.js` | Three.js scene — desert environment + rigged airplane |
 | `../../assets/models/airplane.glb` | Aircraft model with riggable control-surface pivots |
 | `../../assets/skybox/` | `arid2` desert skybox (shared with the quadrotor example) |
@@ -30,16 +30,18 @@ get slow.
 
 Skybox, PBR textures, and glb models are served from the shared
 [`examples/assets/`](../../assets) root (`[transport.http].asset_dir = "../../assets"`).
+Model asset licenses and attributions are recorded in
+[`../../assets/models/README.md`](../../assets/models/README.md).
 
 ## Running
 
 ```bash
 cargo xtask repo modelica-deps ensure
 cargo run -p rumoca --release -- \
-  sim -c examples/interactive/fixedwing/rum.toml
+  sim -c examples/interactive/fixedwing/rumoca-scenario.toml
 ```
 
-`sim -c` reads the `rum.toml` scenario, loads the shared `LieGroup` and
+`sim -c` reads the `rumoca-scenario.toml` scenario, loads the shared `LieGroup` and
 `RigidBody` Modelica packages from `source_roots`, compiles `FixedWing`, starts
 the HTTP / WS viewer servers, and enters the realtime pacing loop.
 Then open [http://localhost:8080](http://localhost:8080).

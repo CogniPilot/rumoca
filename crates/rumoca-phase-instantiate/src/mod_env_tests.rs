@@ -10,6 +10,14 @@ fn make_token(text: &str) -> rumoca_core::Token {
     }
 }
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("mod_env_tests.mo"),
+        1,
+        2,
+    )
+}
+
 fn make_int_expr(value: i64) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
@@ -46,7 +54,7 @@ fn make_component(name: &str, type_name: &str, type_def_id: Option<DefId>) -> as
         name_token: make_token(name),
         type_name: make_name(type_name),
         type_def_id,
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     }
 }
 
@@ -232,7 +240,7 @@ fn test_collect_structural_integer_fields_from_sibling_reference() {
     let mut stack_data = ast::Component {
         name: "stackData".to_string(),
         type_def_id: Some(record_def),
-        ..Default::default()
+        ..ast::Component::empty_with_span(test_span())
     };
     stack_data
         .modifications

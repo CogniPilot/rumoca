@@ -13,7 +13,7 @@ spec, it's not a rule — propose a spec change first.
   how specs themselves work; what the statuses mean; how to propose a new
   spec.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — local setup and `cargo xtask` CLI usage.
-- [docs/development_instructions.md](docs/development_instructions.md) —
+- [spec/SPEC_0032_DEVELOPMENT_PROCESS.md](spec/SPEC_0032_DEVELOPMENT_PROCESS.md) —
   operational workflow, triage proof requirements, upstream-first fix policy,
   and MSL-backed validation expectations.
 
@@ -22,12 +22,14 @@ spec, it's not a rule — propose a spec change first.
 | If you are touching... | Read these specs |
 |---|---|
 | Compiler pipeline / any IR / any phase | [SPEC_0007](spec/SPEC_0007_IR_PIPELINE.md) — IR stage contracts, structural-transformation scope |
+| Range-preserving array/tensor/stencil IR | [SPEC_0032](spec/SPEC_0032_RANGE_PRESERVING_TENSORS.md) — compact domains, scalar views, Map/AffineStencil ownership |
 | Crate dependencies, foundation types, re-exports, single-source helpers | [SPEC_0029](spec/SPEC_0029_CRATE_BOUNDARIES.md) |
 | Modelica semantics (any MLS-affecting change) | [SPEC_0022](spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md) (use its section index) |
 | Name lookup, scopes, `DefId` | [SPEC_0001](spec/SPEC_0001_DEFID.md), [SPEC_0002](spec/SPEC_0002_SCOPE_TREE.md) |
 | Diagnostics, spans, error codes, tracing | [SPEC_0008](spec/SPEC_0008_PHASE_ERRORS.md) |
 | Tool config (`rumoca-tool-*`) | [SPEC_0018](spec/SPEC_0018_TOOL_CONFIG.md) |
 | Function length, nesting, file size, deterministic collections, code-size policy | [SPEC_0021](spec/SPEC_0021_CODE_COMPLEXITY.md) |
+| Development workflow, bug triage, root-cause proof, upstream-first fixes | [SPEC_0032](spec/SPEC_0032_DEVELOPMENT_PROCESS.md) |
 | Opening a PR (workflow, metrics, verification commands, MSL gates, done criteria) | [SPEC_0025](spec/SPEC_0025_PR_REVIEW_PROCESS.md) |
 
 ## Rules of thumb

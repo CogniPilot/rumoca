@@ -636,6 +636,31 @@ fn arr_037_cross_of_2_vectors_rejected() {
     );
 }
 
+// Regression: a column slice `m[:, i]` of a `[3, n]` matrix is a 3-vector, so
+// `cross` must accept it. The shape walk previously dropped dimension 0 on the
+// scalar subscript (yielding `[n]`) instead of dimension 1, spuriously firing
+// ET009 for `n != 3`.
+#[test]
+fn arr_037_cross_of_matrix_column_slice_accepted() {
+    expect_success(
+        r#"
+        model Test
+            parameter Integer n = 4;
+            Real m[3, n] = zeros(3, n);
+            Real omega[3] = {0, 0, 1};
+            Real v[3, n];
+            Real x(start = 0, fixed = true);
+        equation
+            for i in 1:n loop
+                v[:, i] = cross(omega, m[:, i]);
+            end for;
+            der(x) = v[1, 1];
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
 // =============================================================================
 // ARR-038: transpose needs at least two dimensions (MLS §10.3.2)
 // =============================================================================

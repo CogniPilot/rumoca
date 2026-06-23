@@ -288,3 +288,312 @@ pub trait ExpressionRewriter {
             .collect()
     }
 }
+
+pub trait FallibleExpressionRewriter {
+    type Error;
+
+    fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error> {
+        self.walk_expression(expr)
+    }
+
+    fn walk_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error> {
+        match expr {
+            Expression::Binary { op, lhs, rhs, span } => {
+                self.walk_binary_expression(op, lhs, rhs, *span)
+            }
+            Expression::Unary { op, rhs, span } => self.walk_unary_expression(op, rhs, *span),
+            Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } => self.rewrite_var_ref_expression(name, subscripts, *span),
+            Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } => self.walk_builtin_call_expression(*function, args, *span),
+            Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                span,
+            } => self.walk_function_call_expression(name, args, *is_constructor, *span),
+            Expression::Literal { value, span } => self.walk_literal_expression(value, *span),
+            Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => self.walk_if_expression(branches, else_branch, *span),
+            Expression::Array {
+                elements,
+                is_matrix,
+                span,
+            } => self.walk_array_expression(elements, *is_matrix, *span),
+            Expression::Tuple { elements, span } => self.walk_tuple_expression(elements, *span),
+            Expression::Range {
+                start,
+                step,
+                end,
+                span,
+            } => self.walk_range_expression(start, step.as_deref(), end, *span),
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                span,
+            } => self.walk_array_comprehension_expression(expr, indices, filter.as_deref(), *span),
+            Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => self.walk_index_expression(base, subscripts, *span),
+            Expression::FieldAccess { base, field, span } => {
+                self.walk_field_access_expression(base, field, *span)
+            }
+            Expression::Empty { span } => Ok(Expression::Empty { span: *span }),
+        }
+    }
+
+    fn walk_binary_expression(
+        &mut self,
+        op: &OpBinary,
+        lhs: &Expression,
+        rhs: &Expression,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(self.rewrite_expression(lhs)?),
+            rhs: Box::new(self.rewrite_expression(rhs)?),
+            span,
+        })
+    }
+
+    fn walk_unary_expression(
+        &mut self,
+        op: &crate::OpUnary,
+        rhs: &Expression,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(self.rewrite_expression(rhs)?),
+            span,
+        })
+    }
+
+    fn walk_var_ref_expression(
+        &mut self,
+        name: &Reference,
+        subscripts: &[Subscript],
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::VarRef {
+            name: name.clone(),
+            subscripts: self.rewrite_subscripts(subscripts)?,
+            span,
+        })
+    }
+
+    fn rewrite_var_ref_expression(
+        &mut self,
+        name: &Reference,
+        subscripts: &[Subscript],
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        self.walk_var_ref_expression(name, subscripts, span)
+    }
+
+    fn walk_builtin_call_expression(
+        &mut self,
+        function: BuiltinFunction,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::BuiltinCall {
+            function,
+            args: self.rewrite_expressions(args)?,
+            span,
+        })
+    }
+
+    fn walk_function_call_expression(
+        &mut self,
+        name: &Reference,
+        args: &[Expression],
+        is_constructor: bool,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::FunctionCall {
+            name: name.clone(),
+            args: self.rewrite_expressions(args)?,
+            is_constructor,
+            span,
+        })
+    }
+
+    fn walk_literal_expression(
+        &mut self,
+        value: &Literal,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Literal {
+            value: value.clone(),
+            span,
+        })
+    }
+
+    fn walk_if_expression(
+        &mut self,
+        branches: &[(Expression, Expression)],
+        else_branch: &Expression,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::If {
+            branches: branches
+                .iter()
+                .map(|(condition, value)| {
+                    Ok((
+                        self.rewrite_expression(condition)?,
+                        self.rewrite_expression(value)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, Self::Error>>()?,
+            else_branch: Box::new(self.rewrite_expression(else_branch)?),
+            span,
+        })
+    }
+
+    fn walk_array_expression(
+        &mut self,
+        elements: &[Expression],
+        is_matrix: bool,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Array {
+            elements: self.rewrite_expressions(elements)?,
+            is_matrix,
+            span,
+        })
+    }
+
+    fn walk_tuple_expression(
+        &mut self,
+        elements: &[Expression],
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Tuple {
+            elements: self.rewrite_expressions(elements)?,
+            span,
+        })
+    }
+
+    fn walk_range_expression(
+        &mut self,
+        start: &Expression,
+        step: Option<&Expression>,
+        end: &Expression,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Range {
+            start: Box::new(self.rewrite_expression(start)?),
+            step: step
+                .map(|step| self.rewrite_expression(step).map(Box::new))
+                .transpose()?,
+            end: Box::new(self.rewrite_expression(end)?),
+            span,
+        })
+    }
+
+    fn walk_array_comprehension_expression(
+        &mut self,
+        expr: &Expression,
+        indices: &[ComprehensionIndex],
+        filter: Option<&Expression>,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::ArrayComprehension {
+            expr: Box::new(self.rewrite_expression(expr)?),
+            indices: self.rewrite_comprehension_indices(indices)?,
+            filter: filter
+                .map(|filter| self.rewrite_expression(filter).map(Box::new))
+                .transpose()?,
+            span,
+        })
+    }
+
+    fn walk_index_expression(
+        &mut self,
+        base: &Expression,
+        subscripts: &[Subscript],
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::Index {
+            base: Box::new(self.rewrite_expression(base)?),
+            subscripts: self.rewrite_subscripts(subscripts)?,
+            span,
+        })
+    }
+
+    fn walk_field_access_expression(
+        &mut self,
+        base: &Expression,
+        field: &str,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::FieldAccess {
+            base: Box::new(self.rewrite_expression(base)?),
+            field: field.to_owned(),
+            span,
+        })
+    }
+
+    fn rewrite_expressions(
+        &mut self,
+        exprs: &[Expression],
+    ) -> Result<Vec<Expression>, Self::Error> {
+        exprs
+            .iter()
+            .map(|expr| self.rewrite_expression(expr))
+            .collect()
+    }
+
+    fn rewrite_subscripts(
+        &mut self,
+        subscripts: &[Subscript],
+    ) -> Result<Vec<Subscript>, Self::Error> {
+        subscripts
+            .iter()
+            .map(|subscript| self.rewrite_subscript(subscript))
+            .collect()
+    }
+
+    fn rewrite_subscript(&mut self, subscript: &Subscript) -> Result<Subscript, Self::Error> {
+        match subscript {
+            Subscript::Index { value, span } => Ok(Subscript::Index {
+                value: *value,
+                span: *span,
+            }),
+            Subscript::Colon { span } => Ok(Subscript::Colon { span: *span }),
+            Subscript::Expr { expr, span } => Ok(Subscript::Expr {
+                expr: Box::new(self.rewrite_expression(expr)?),
+                span: *span,
+            }),
+        }
+    }
+
+    fn rewrite_comprehension_indices(
+        &mut self,
+        indices: &[ComprehensionIndex],
+    ) -> Result<Vec<ComprehensionIndex>, Self::Error> {
+        indices
+            .iter()
+            .map(|index| {
+                Ok(ComprehensionIndex {
+                    name: index.name.clone(),
+                    range: self.rewrite_expression(&index.range)?,
+                })
+            })
+            .collect()
+    }
+}

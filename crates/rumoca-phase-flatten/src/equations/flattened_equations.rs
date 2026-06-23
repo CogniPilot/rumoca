@@ -6,8 +6,8 @@ use rumoca_ir_flat as flat;
 pub(crate) struct FlattenedEquations {
     /// Regular flat equations (continuous, discrete)
     pub equations: Vec<flat::Equation>,
-    /// Preserved `for`-equation grouping metadata (MLS §8.3.3).
-    pub for_equations: Vec<flat::ForEquation>,
+    /// Structured source equation families (MLS §8.3.3).
+    pub structured_equations: Vec<flat::StructuredEquationFamily>,
     /// Assertion equations preserved from equation sections (MLS §8.3.7).
     pub assert_equations: Vec<flat::AssertEquation>,
     /// When-clauses extracted from nested when-equations
@@ -29,8 +29,13 @@ impl FlattenedEquations {
     /// Keeping merge logic centralized avoids accidentally dropping side-channel
     /// data when adding new flattened outputs.
     pub(super) fn append(&mut self, mut other: FlattenedEquations) {
+        let equation_offset = self.equations.len();
+        for for_equation in &mut other.structured_equations {
+            for_equation.first_equation_index += equation_offset;
+        }
         self.equations.append(&mut other.equations);
-        self.for_equations.append(&mut other.for_equations);
+        self.structured_equations
+            .append(&mut other.structured_equations);
         self.assert_equations.append(&mut other.assert_equations);
         self.when_clauses.append(&mut other.when_clauses);
         self.definite_roots.append(&mut other.definite_roots);
@@ -40,7 +45,7 @@ impl FlattenedEquations {
 
     pub(super) fn is_empty(&self) -> bool {
         self.equations.is_empty()
-            && self.for_equations.is_empty()
+            && self.structured_equations.is_empty()
             && self.assert_equations.is_empty()
             && self.when_clauses.is_empty()
             && self.definite_roots.is_empty()

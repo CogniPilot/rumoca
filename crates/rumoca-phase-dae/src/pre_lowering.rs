@@ -29,18 +29,18 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     // into a system of pure mathematical functions over v.
     // IndexMap for deterministic parameter insertion order (SPEC_0021).
     let mut pre_targets: IndexMap<rumoca_core::VarName, PreTarget> = IndexMap::new();
-    collect_pre_targets_from_equations(&dae.continuous.equations, &mut pre_targets, false);
-    collect_pre_targets_from_equations(&dae.discrete.real_updates, &mut pre_targets, true);
-    collect_pre_targets_from_equations(&dae.discrete.valued_updates, &mut pre_targets, true);
-    collect_pre_targets_from_equations(&dae.conditions.equations, &mut pre_targets, true);
+    collect_pre_targets_from_equations(&dae.continuous.equations, &mut pre_targets, false)?;
+    collect_pre_targets_from_equations(&dae.discrete.real_updates, &mut pre_targets, true)?;
+    collect_pre_targets_from_equations(&dae.discrete.valued_updates, &mut pre_targets, true)?;
+    collect_pre_targets_from_equations(&dae.conditions.equations, &mut pre_targets, true)?;
     for expr in &dae.conditions.relations {
-        collect_pre_targets_from_expr(expr, &mut pre_targets, false);
+        collect_pre_targets_from_expr(expr, &mut pre_targets, false)?;
     }
     for expr in &dae.clocks.triggered_conditions {
-        collect_pre_targets_from_expr(expr, &mut pre_targets, true);
+        collect_pre_targets_from_expr(expr, &mut pre_targets, true)?;
     }
-    collect_pre_targets_from_event_actions(&dae.events.event_actions, &mut pre_targets);
-    collect_pre_targets_from_equations(&dae.initialization.equations, &mut pre_targets, true);
+    collect_pre_targets_from_event_actions(&dae.events.event_actions, &mut pre_targets)?;
+    collect_pre_targets_from_equations(&dae.initialization.equations, &mut pre_targets, true)?;
 
     discard_enum_literal_pre_targets(dae, &mut pre_targets);
     resolve_pre_targets(dae, &mut pre_targets)?;
@@ -78,38 +78,38 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
         &mut dae.continuous.equations,
         &pre_targets,
         &relation_memories,
-    );
+    )?;
     rewrite_equations(
         &mut dae.discrete.real_updates,
         &pre_targets,
         &relation_memories,
-    );
+    )?;
     rewrite_equations(
         &mut dae.discrete.valued_updates,
         &pre_targets,
         &relation_memories,
-    );
+    )?;
     rewrite_equations(
         &mut dae.conditions.equations,
         &pre_targets,
         &relation_memories,
-    );
+    )?;
     for expr in &mut dae.conditions.relations {
-        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories);
+        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories)?;
     }
     for expr in &mut dae.clocks.triggered_conditions {
-        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories);
+        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories)?;
     }
     rewrite_event_actions(
         &mut dae.events.event_actions,
         &pre_targets,
         &relation_memories,
-    );
+    )?;
     rewrite_equations(
         &mut dae.initialization.equations,
         &pre_targets,
         &relation_memories,
-    );
+    )?;
     Ok(())
 }
 
@@ -124,38 +124,93 @@ fn collect_pre_targets_from_equations(
     equations: &[dae::Equation],
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
     allow_continuous_target: bool,
-) {
+) -> Result<(), ToDaeError> {
     for eq in equations {
-        collect_pre_targets_from_expr(&eq.rhs, targets, allow_continuous_target);
+        collect_pre_targets_from_expr(&eq.rhs, targets, allow_continuous_target)?;
     }
+    Ok(())
 }
 
 fn collect_pre_targets_from_expr(
     expr: &rumoca_core::Expression,
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
     allow_continuous_target: bool,
-) {
-    ExpressionVisitor::visit_expression(
-        &mut PreTargetCollector {
-            targets,
-            allow_continuous_target,
-        },
-        expr,
-    );
+) -> Result<(), ToDaeError> {
+    let mut collector = PreTargetCollector {
+        targets,
+        allow_continuous_target,
+        error: None,
+    };
+    ExpressionVisitor::visit_expression(&mut collector, expr);
+    match collector.error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 fn collect_pre_targets_from_event_actions(
     actions: &[dae::DaeEventAction],
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
-) {
+) -> Result<(), ToDaeError> {
     for action in actions {
-        collect_pre_targets_from_expr(&action.condition, targets, true);
+        collect_pre_targets_from_expr(&action.condition, targets, true)?;
     }
+    Ok(())
 }
 
 struct PreTargetCollector<'a> {
     targets: &'a mut IndexMap<rumoca_core::VarName, PreTarget>,
     allow_continuous_target: bool,
+    error: Option<ToDaeError>,
+}
+
+impl PreTargetCollector<'_> {
+    fn collect_pre_call_arg(&mut self, args: &[rumoca_core::Expression]) {
+        let Some(arg) = args.first() else {
+            self.collect_args_as_pre_values(args);
+            return;
+        };
+        let (name, subscripts) = match pre_target_parts(arg) {
+            Ok(Some(parts)) => parts,
+            Ok(None) => {
+                self.collect_args_as_pre_values(args);
+                return;
+            }
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+        let span = match pre_target_span(arg, &subscripts, "pre() target") {
+            Ok(span) => span,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+        insert_pre_target(self.targets, name, span, true, self.allow_continuous_target);
+    }
+
+    fn record_collection_result(&mut self, result: Result<(), ToDaeError>) {
+        if let Err(err) = result {
+            self.error = Some(err);
+        }
+    }
+
+    fn collect_args_as_pre_values(&mut self, args: &[rumoca_core::Expression]) {
+        let result = collect_args_as_pre_values(args, self.targets);
+        self.record_collection_result(result);
+    }
+
+    fn collect_first_arg_as_pre_value(&mut self, args: &[rumoca_core::Expression]) {
+        let result = collect_first_arg_as_pre_value(args, self.targets);
+        self.record_collection_result(result);
+    }
+
+    fn collect_sample_value_as_pre_value(&mut self, args: &[rumoca_core::Expression]) {
+        let result = collect_sample_value_as_pre_value(args, self.targets);
+        self.record_collection_result(result);
+    }
 }
 
 impl ExpressionVisitor for PreTargetCollector<'_> {
@@ -164,24 +219,23 @@ impl ExpressionVisitor for PreTargetCollector<'_> {
         function: &rumoca_core::BuiltinFunction,
         args: &[rumoca_core::Expression],
     ) {
+        if self.error.is_some() {
+            return;
+        }
         match function {
             rumoca_core::BuiltinFunction::Pre => {
-                if let Some(arg) = args.first()
-                    && let Some((name, _)) = pre_target_parts(arg)
-                {
-                    let span = arg.span().unwrap_or(rumoca_core::Span::DUMMY);
-                    insert_pre_target(self.targets, name, span, true, self.allow_continuous_target);
-                } else {
-                    collect_args_as_pre_values(args, self.targets);
-                }
+                self.collect_pre_call_arg(args);
             }
             rumoca_core::BuiltinFunction::Edge | rumoca_core::BuiltinFunction::Change => {
-                collect_first_arg_as_pre_value(args, self.targets);
+                self.collect_first_arg_as_pre_value(args);
             }
             rumoca_core::BuiltinFunction::Sample => {
-                collect_sample_value_as_pre_value(args, self.targets);
+                self.collect_sample_value_as_pre_value(args);
             }
             _ => {}
+        }
+        if self.error.is_some() {
+            return;
         }
         self.walk_builtin_call(function, args);
     }
@@ -192,24 +246,23 @@ impl ExpressionVisitor for PreTargetCollector<'_> {
         args: &[rumoca_core::Expression],
         is_constructor: bool,
     ) {
+        if self.error.is_some() {
+            return;
+        }
         match rumoca_core::source_temporal_function_short_name(name.as_str()) {
             Some("pre") => {
-                if let Some(arg) = args.first()
-                    && let Some((name, _)) = pre_target_parts(arg)
-                {
-                    let span = arg.span().unwrap_or(rumoca_core::Span::DUMMY);
-                    insert_pre_target(self.targets, name, span, true, self.allow_continuous_target);
-                } else {
-                    collect_args_as_pre_values(args, self.targets);
-                }
+                self.collect_pre_call_arg(args);
             }
             Some("edge" | "change" | "previous") => {
-                collect_first_arg_as_pre_value(args, self.targets);
+                self.collect_first_arg_as_pre_value(args);
             }
             Some("sample") => {
-                collect_sample_value_as_pre_value(args, self.targets);
+                self.collect_sample_value_as_pre_value(args);
             }
             _ => {}
+        }
+        if self.error.is_some() {
+            return;
         }
         self.walk_function_call(name, args, is_constructor);
     }
@@ -218,28 +271,31 @@ impl ExpressionVisitor for PreTargetCollector<'_> {
 fn collect_args_as_pre_values(
     args: &[rumoca_core::Expression],
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
-) {
+) -> Result<(), ToDaeError> {
     for arg in args {
-        collect_pre_targets_from_pre_expr(arg, targets);
+        collect_pre_targets_from_pre_expr(arg, targets)?;
     }
+    Ok(())
 }
 
 fn collect_first_arg_as_pre_value(
     args: &[rumoca_core::Expression],
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
-) {
+) -> Result<(), ToDaeError> {
     if let Some(arg) = args.first() {
-        collect_pre_targets_from_pre_expr(arg, targets);
+        collect_pre_targets_from_pre_expr(arg, targets)?;
     }
+    Ok(())
 }
 
 fn collect_sample_value_as_pre_value(
     args: &[rumoca_core::Expression],
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
-) {
+) -> Result<(), ToDaeError> {
     if matches!(args.len(), 1 | 2) && !args.first().is_some_and(is_time_var_ref) {
-        collect_first_arg_as_pre_value(args, targets);
+        collect_first_arg_as_pre_value(args, targets)?;
     }
+    Ok(())
 }
 
 fn is_time_var_ref(expr: &rumoca_core::Expression) -> bool {
@@ -256,19 +312,40 @@ fn is_time_var_ref(expr: &rumoca_core::Expression) -> bool {
 fn collect_pre_targets_from_pre_expr(
     expr: &rumoca_core::Expression,
     targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
-) {
-    ExpressionVisitor::visit_expression(&mut PreValueCollector { targets }, expr);
+) -> Result<(), ToDaeError> {
+    let mut collector = PreValueCollector {
+        targets,
+        error: None,
+    };
+    ExpressionVisitor::visit_expression(&mut collector, expr);
+    match collector.error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 struct PreValueCollector<'a> {
     targets: &'a mut IndexMap<rumoca_core::VarName, PreTarget>,
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionVisitor for PreValueCollector<'_> {
     fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
-        if let Some((name, _)) = pre_target_parts(expr) {
-            let span = expr.span().unwrap_or(rumoca_core::Span::DUMMY);
-            insert_pre_target(self.targets, name, span, false, true);
+        if self.error.is_some() {
+            return;
+        }
+        let parts = match pre_target_parts(expr) {
+            Ok(parts) => parts,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+        if let Some((name, subscripts)) = parts {
+            match pre_target_span(expr, &subscripts, "pre() value target") {
+                Ok(span) => insert_pre_target(self.targets, name, span, false, true),
+                Err(err) => self.error = Some(err),
+            }
             return;
         }
         self.walk_expression(expr);
@@ -432,6 +509,7 @@ fn build_pre_parameter(
     let pre_ref = crate::condition_lowering::generated_pre_component_ref(
         var.component_ref.as_ref(),
         source_name,
+        var.source_span,
     );
     dae::Variable {
         name: pre_param_name.clone(),
@@ -553,10 +631,11 @@ fn rewrite_equations(
     equations: &mut [dae::Equation],
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
-) {
+) -> Result<(), ToDaeError> {
     for eq in equations {
-        eq.rhs = rewrite_pre_expr(&eq.rhs, targets, relation_memories);
+        eq.rhs = rewrite_pre_expr(&eq.rhs, targets, relation_memories)?;
     }
+    Ok(())
 }
 
 fn relation_memory_exprs(
@@ -655,8 +734,19 @@ fn relation_memory_scalar_expr(
             )
         })?
         .into_iter()
-        .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
-        .collect();
+        .map(|index| {
+            let index = i64::try_from(index).map_err(|_| {
+                ToDaeError::runtime_contract_violation_at(
+                    format!(
+                        "relation memory target `{}` flat index component {index} exceeds i64 range",
+                        lhs.as_str()
+                    ),
+                    span,
+                )
+            })?;
+            generated_index_subscript(index, span, "relation memory target subscript")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rumoca_core::Expression::VarRef {
         name,
         subscripts,
@@ -735,31 +825,41 @@ fn rewrite_event_actions(
     actions: &mut [dae::DaeEventAction],
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
-) {
+) -> Result<(), ToDaeError> {
     for action in actions {
-        action.condition = rewrite_pre_expr(&action.condition, targets, relation_memories);
+        action.condition = rewrite_pre_expr(&action.condition, targets, relation_memories)?;
     }
+    Ok(())
 }
 
 fn rewrite_pre_expr(
     expr: &rumoca_core::Expression,
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
-) -> rumoca_core::Expression {
-    PreExpressionRewriter {
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    let mut rewriter = PreExpressionRewriter {
         targets,
         relation_memories,
+        error: None,
+    };
+    let rewritten = rewriter.rewrite_expression(expr);
+    match rewriter.error {
+        Some(err) => Err(err),
+        None => Ok(rewritten),
     }
-    .rewrite_expression(expr)
 }
 
 struct PreExpressionRewriter<'a> {
     targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &'a [(rumoca_core::Expression, rumoca_core::Expression)],
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for PreExpressionRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if self.error.is_some() {
+            return expr.clone();
+        }
         match expr {
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Pre,
@@ -831,16 +931,28 @@ impl PreExpressionRewriter<'_> {
         if let Some(arg) = args.first()
             && let Some(memory) = relation_memory_expr_for_condition(self.relation_memories, arg)
         {
-            return relation_memory_pre_expr(&memory, span);
+            return self.rewrite_relation_memory_pre_expr(&memory, span);
         }
         let rewritten_args = self.rewrite_expressions(args);
-        if let Some((name, subscripts)) = rewritten_args.first().and_then(pre_target_parts)
+        let parts = match rewritten_args.first().map(pre_target_parts) {
+            Some(Ok(parts)) => parts,
+            Some(Err(err)) => {
+                self.error = Some(err);
+                return rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Pre,
+                    args: rewritten_args,
+                    span,
+                };
+            }
+            None => None,
+        };
+        if let Some((name, subscripts)) = parts
             && let Some(target) = self.targets.get(&name)
         {
             return pre_var_ref(&target.source_name, &subscripts, span);
         }
         if let [arg] = rewritten_args.as_slice() {
-            return rewrite_pre_expr_value(arg, self.targets);
+            return self.rewrite_pre_value(arg);
         }
         // Preserve unsupported pre(...) shapes so validation/errors can surface
         // instead of silently dropping expression structure.
@@ -868,7 +980,7 @@ impl PreExpressionRewriter<'_> {
                 lhs: Box::new(memory.clone()),
                 rhs: Box::new(rumoca_core::Expression::Unary {
                     op: rumoca_core::OpUnary::Not,
-                    rhs: Box::new(relation_memory_pre_expr(&memory, span)),
+                    rhs: Box::new(self.rewrite_relation_memory_pre_expr(&memory, span)),
                     span,
                 }),
                 span,
@@ -878,7 +990,7 @@ impl PreExpressionRewriter<'_> {
         // memory must still keep Modelica edge semantics instead of becoming a
         // level-sensitive relation.
         let current = self.rewrite_expression(arg);
-        let previous = rewrite_pre_expr_value(&current, self.targets);
+        let previous = self.rewrite_pre_value(&current);
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::And,
             lhs: Box::new(current),
@@ -905,7 +1017,7 @@ impl PreExpressionRewriter<'_> {
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Neq,
             lhs: Box::new(self.rewrite_expression(arg)),
-            rhs: Box::new(rewrite_pre_expr_value(arg, self.targets)),
+            rhs: Box::new(self.rewrite_pre_value(arg)),
             span,
         }
     }
@@ -918,7 +1030,7 @@ impl PreExpressionRewriter<'_> {
         if rumoca_core::sample_call_is_inferred_clock_value_form(args)
             && let Some(value) = args.first()
         {
-            return rewrite_pre_expr_value(value, self.targets);
+            return self.rewrite_pre_value(value);
         }
         rumoca_core::Expression::FunctionCall {
             name: rumoca_core::Reference::generated(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME),
@@ -935,7 +1047,7 @@ impl PreExpressionRewriter<'_> {
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
         if let Some(arg) = args.first() {
-            return rewrite_pre_expr_value(arg, self.targets);
+            return self.rewrite_pre_value(arg);
         }
         rumoca_core::Expression::FunctionCall {
             name: rumoca_core::Reference::generated("previous"),
@@ -944,42 +1056,89 @@ impl PreExpressionRewriter<'_> {
             span,
         }
     }
+
+    fn rewrite_pre_value(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        match rewrite_pre_expr_value(expr, self.targets) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.error = Some(err);
+                expr.clone()
+            }
+        }
+    }
+
+    fn rewrite_relation_memory_pre_expr(
+        &mut self,
+        memory: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        match relation_memory_pre_expr(memory, span) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.error = Some(err);
+                rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Pre,
+                    args: vec![memory.clone()],
+                    span,
+                }
+            }
+        }
+    }
 }
 
 fn relation_memory_pre_expr(
     memory: &rumoca_core::Expression,
     span: rumoca_core::Span,
-) -> rumoca_core::Expression {
-    if let Some((name, subscripts)) = pre_target_parts(memory) {
-        return pre_var_ref(&name, &subscripts, span);
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let Some((name, subscripts)) = pre_target_parts(memory)? {
+        return Ok(pre_var_ref(&name, &subscripts, span));
     }
-    rumoca_core::Expression::BuiltinCall {
+    Ok(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Pre,
         args: vec![memory.clone()],
         span,
-    }
+    })
 }
 
 fn rewrite_pre_expr_value(
     expr: &rumoca_core::Expression,
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
-) -> rumoca_core::Expression {
-    PreValueRewriter { targets }.rewrite_expression(expr)
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    let mut rewriter = PreValueRewriter {
+        targets,
+        error: None,
+    };
+    let rewritten = rewriter.rewrite_expression(expr);
+    match rewriter.error {
+        Some(err) => Err(err),
+        None => Ok(rewritten),
+    }
 }
 
 struct PreValueRewriter<'a> {
     targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
+    error: Option<ToDaeError>,
 }
 
 impl ExpressionRewriter for PreValueRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
-        if let Some((name, subscripts)) = pre_target_parts(expr)
+        if self.error.is_some() {
+            return expr.clone();
+        }
+        let parts = match pre_target_parts(expr) {
+            Ok(parts) => parts,
+            Err(err) => {
+                self.error = Some(err);
+                return expr.clone();
+            }
+        };
+        if let Some((name, subscripts)) = parts
             && let Some(target) = self.targets.get(&name)
         {
             return pre_var_ref(
                 &target.source_name,
                 &subscripts,
-                expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                expr.span().unwrap_or(target.span),
             );
         }
         match expr {
@@ -1025,36 +1184,113 @@ fn pre_var_ref(
 
 fn pre_target_parts(
     expr: &rumoca_core::Expression,
-) -> Option<(rumoca_core::VarName, Vec<rumoca_core::Subscript>)> {
+) -> Result<Option<(rumoca_core::VarName, Vec<rumoca_core::Subscript>)>, ToDaeError> {
     match expr {
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
+            name,
+            subscripts,
+            span,
+            ..
         } if !is_pre_parameter_name(name.var_name()) => {
-            Some(pre_target_parts_from_name(name.var_name(), subscripts))
+            pre_target_parts_from_name(name.var_name(), subscripts, *span).map(Some)
         }
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
-            let (name, mut target_subscripts) = pre_target_parts(base)?;
+            let Some((name, mut target_subscripts)) = pre_target_parts(base)? else {
+                return Ok(None);
+            };
             target_subscripts.extend(subscripts.clone());
-            Some((name, target_subscripts))
+            Ok(Some((name, target_subscripts)))
         }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let (base_name, subscripts) = pre_target_parts(base)?;
+            let Some((base_name, subscripts)) = pre_target_parts(base)? else {
+                return Ok(None);
+            };
             if subscripts.is_empty() {
-                Some((
+                Ok(Some((
                     rumoca_core::VarName::new(format!("{}.{}", base_name.as_str(), field)),
                     Vec::new(),
-                ))
+                )))
             } else {
-                Some((
-                    indexed_field_target_name(&base_name, &subscripts, field)?,
-                    Vec::new(),
-                ))
+                Ok(indexed_field_target_name(&base_name, &subscripts, field)
+                    .map(|name| (name, Vec::new())))
             }
         }
-        _ => None,
+        _ => Ok(None),
     }
+}
+
+fn pre_target_parts_from_name(
+    name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Result<(rumoca_core::VarName, Vec<rumoca_core::Subscript>), ToDaeError> {
+    let (base_name, mut encoded_subscripts) =
+        split_encoded_integer_subscripts(name.as_str(), span)?;
+    encoded_subscripts.extend_from_slice(subscripts);
+    Ok((rumoca_core::VarName::new(base_name), encoded_subscripts))
+}
+
+fn split_encoded_integer_subscripts(
+    path: &str,
+    span: rumoca_core::Span,
+) -> Result<(String, Vec<rumoca_core::Subscript>), ToDaeError> {
+    let mut base = path;
+    let mut reversed_groups = Vec::new();
+    while let Some(scalar) = rumoca_core::parse_scalar_name(base) {
+        reversed_groups.push(scalar.indices);
+        base = scalar.base;
+    }
+    reversed_groups.reverse();
+    let mut subscripts = Vec::new();
+    for index in reversed_groups.into_iter().flatten() {
+        subscripts.push(generated_index_subscript(
+            index,
+            span,
+            "encoded pre() target subscript",
+        )?);
+    }
+    Ok((base.to_string(), subscripts))
+}
+
+fn generated_index_subscript(
+    index: i64,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Subscript, ToDaeError> {
+    rumoca_core::Subscript::try_generated_index(index, span, context).map_err(|err| {
+        if span.is_dummy() {
+            ToDaeError::runtime_metadata_violation(err.to_string())
+        } else {
+            ToDaeError::runtime_metadata_violation_at(err.to_string(), span)
+        }
+    })
+}
+
+fn pre_target_span(
+    expr: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    context: &'static str,
+) -> Result<rumoca_core::Span, ToDaeError> {
+    expr.span()
+        .or_else(|| subscripts.iter().find_map(subscript_source_span))
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "{context} is missing source provenance"
+            ))
+        })
+}
+
+fn subscript_source_span(subscript: &rumoca_core::Subscript) -> Option<rumoca_core::Span> {
+    let span = subscript.span();
+    if !span.is_dummy() {
+        return Some(span);
+    }
+    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+        return None;
+    };
+    expr.span()
 }
 
 fn is_pre_parameter_name(name: &rumoca_core::VarName) -> bool {
@@ -1109,33 +1345,6 @@ fn selected_static_if_branch<'a>(
 
 fn static_bool_expr(expr: &rumoca_core::Expression) -> Option<bool> {
     rumoca_eval_dae::constant::eval_const_expr_with(expr, &|_, _| None)?.as_bool()
-}
-
-fn pre_target_parts_from_name(
-    name: &rumoca_core::VarName,
-    subscripts: &[rumoca_core::Subscript],
-) -> (rumoca_core::VarName, Vec<rumoca_core::Subscript>) {
-    let (base_name, mut encoded_subscripts) = split_encoded_integer_subscripts(name.as_str());
-    encoded_subscripts.extend_from_slice(subscripts);
-    (rumoca_core::VarName::new(base_name), encoded_subscripts)
-}
-
-fn split_encoded_integer_subscripts(path: &str) -> (String, Vec<rumoca_core::Subscript>) {
-    let mut base = path;
-    let mut reversed_groups = Vec::new();
-    while let Some(scalar) = rumoca_core::parse_scalar_name(base) {
-        reversed_groups.push(scalar.indices);
-        base = scalar.base;
-    }
-    reversed_groups.reverse();
-    (
-        base.to_string(),
-        reversed_groups
-            .into_iter()
-            .flatten()
-            .map(|index| rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY))
-            .collect(),
-    )
 }
 
 #[cfg(test)]

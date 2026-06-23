@@ -1,6 +1,34 @@
 use super::*;
 use rumoca_ir_solve::RandomGenerator;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::lower) enum ExternalTableIntrinsicKind {
+    Bounds { upper: bool },
+    Lookup,
+    NextEvent,
+}
+
+pub(in crate::lower) fn external_table_intrinsic_kind(
+    call_name: &str,
+) -> Option<ExternalTableIntrinsicKind> {
+    match intrinsic_short_name(call_name) {
+        "getTimeTableTmin" | "getTable1DAbscissaUmin" => {
+            Some(ExternalTableIntrinsicKind::Bounds { upper: false })
+        }
+        "getTimeTableTmax" | "getTable1DAbscissaUmax" => {
+            Some(ExternalTableIntrinsicKind::Bounds { upper: true })
+        }
+        "getTimeTableValueNoDer"
+        | "getTimeTableValueNoDer2"
+        | "getTimeTableValue"
+        | "getTable1DValueNoDer"
+        | "getTable1DValueNoDer2"
+        | "getTable1DValue" => Some(ExternalTableIntrinsicKind::Lookup),
+        "getNextTimeEvent" => Some(ExternalTableIntrinsicKind::NextEvent),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::lower) enum RandomIntrinsicKind {
     InitialState,
@@ -94,9 +122,16 @@ pub(in crate::lower) fn is_size_actual_for_array_dim(
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
             ..
-        } => value.is_finite() && value.fract() == 0.0 && *value > 0.0 && *value as usize == dim,
+        } => positive_integer_real_equals_usize(*value, dim),
         _ => false,
     })
+}
+
+fn positive_integer_real_equals_usize(value: f64, expected: usize) -> bool {
+    if !value.is_finite() || value.fract() != 0.0 || value <= 0.0 || value >= usize::MAX as f64 {
+        return false;
+    }
+    value == expected as f64
 }
 
 pub(in crate::lower) fn random_projection_state_len(
@@ -104,7 +139,7 @@ pub(in crate::lower) fn random_projection_state_len(
     projection: &FunctionOutputProjection,
     args: &[rumoca_core::Expression],
 ) -> Result<usize, LowerError> {
-    let declared_len = match random_state_len_arg(args)? {
+    let declared_len = match random_state_len_arg(args, projection.span)? {
         Some(len) => len,
         None => random_generator_state_len(generator),
     };
@@ -116,10 +151,17 @@ pub(in crate::lower) fn random_projection_state_len(
 
 pub(in crate::lower) fn random_state_len_arg(
     args: &[rumoca_core::Expression],
+    owner_span: rumoca_core::Span,
 ) -> Result<Option<usize>, LowerError> {
     let Some(expr) = args.get(2) else {
         return Ok(None);
     };
+    let span = expr
+        .span()
+        .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))
+        .ok_or_else(|| LowerError::UnspannedContractViolation {
+            reason: "random state length argument requires source provenance".to_string(),
+        })?;
     let rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
         ..
@@ -127,13 +169,13 @@ pub(in crate::lower) fn random_state_len_arg(
     else {
         return Err(unsupported_at(
             "random state length argument must be an Integer literal",
-            expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            span,
         ));
     };
     let len = usize::try_from((*value).max(1)).map_err(|_| {
         unsupported_at(
             "random state length argument is outside the supported range",
-            expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            span,
         )
     })?;
     Ok(Some(len))
@@ -217,11 +259,13 @@ pub(in crate::lower) fn lower_runtime_string_special_value(
         Some(
             intrinsic @ (rumoca_core::ModelicaStringIntrinsic::Find
             | rumoca_core::ModelicaStringIntrinsic::FindLast),
-        ) => Ok(Some(find_string_special_value(
+        ) => find_string_special_value(
             intrinsic == rumoca_core::ModelicaStringIntrinsic::FindLast,
             required_literal_string(args.first(), call_span)?,
             required_literal_string(args.get(1), call_span)?,
-        ))),
+            call_span,
+        )
+        .map(Some),
         None => match short_name {
             "isValidTable" => Ok(Some(1.0)),
             "writeRealMatrix" => Ok(Some(1.0)),
@@ -266,13 +310,20 @@ pub(in crate::lower) fn find_string_special_value(
     find_last: bool,
     haystack: &str,
     needle: &str,
-) -> f64 {
+    span: rumoca_core::Span,
+) -> Result<f64, LowerError> {
     let idx = if find_last {
         haystack.rfind(needle)
     } else {
         haystack.find(needle)
     };
-    idx.map(|i| i.saturating_add(1) as f64).unwrap_or(0.0)
+    idx.map(|i| {
+        i.checked_add(1).map(|index| index as f64).ok_or_else(|| {
+            LowerError::contract_violation("Modelica string find result index overflows", span)
+        })
+    })
+    .transpose()
+    .map(|idx| idx.unwrap_or(0.0))
 }
 
 pub(in crate::lower) fn exact_dim_value_count(
@@ -289,11 +340,16 @@ pub(in crate::lower) fn bind_singleton_array_actual_to_scalar_formal(
     inferred_dims: &[usize],
     values: &[Reg],
 ) -> bool {
-    if inferred_dims.iter().product::<usize>() != 1 || values.len() != 1 {
+    if checked_dim_product(inferred_dims) != Some(1) || values.len() != 1 {
         return false;
     }
     scope.insert(generated_scope_key(name), values[0]);
     true
+}
+
+fn checked_dim_product(dims: &[usize]) -> Option<usize> {
+    dims.iter()
+        .try_fold(1usize, |total, dim| total.checked_mul(*dim))
 }
 
 pub(in crate::lower) fn decode_named_function_arg(
@@ -340,4 +396,124 @@ pub(in crate::lower) fn split_named_and_positional_call_args<'a>(
     }
 
     Ok((named_args, positional_args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unspanned_runtime_intrinsics_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
+    #[test]
+    fn find_string_special_value_uses_modelica_one_based_index() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("runtime_intrinsics_string_find.mo"),
+            3,
+            20,
+        );
+        let value = find_string_special_value(false, "abcdef", "cd", span)
+            .expect("literal string find should evaluate");
+
+        assert_eq!(value, 3.0);
+    }
+
+    #[test]
+    fn find_string_special_value_returns_zero_for_missing_match() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("runtime_intrinsics_string_find_last.mo"),
+            5,
+            26,
+        );
+        let value = find_string_special_value(true, "abcdef", "xy", span)
+            .expect("literal string findLast should evaluate");
+
+        assert_eq!(value, 0.0);
+    }
+
+    #[test]
+    fn positive_integer_real_equals_usize_rejects_host_overflow() {
+        assert!(!positive_integer_real_equals_usize(usize::MAX as f64, 1));
+    }
+
+    #[test]
+    fn positive_integer_real_equals_usize_matches_expected_dimension() {
+        assert!(positive_integer_real_equals_usize(2.0, 2));
+        assert!(!positive_integer_real_equals_usize(2.0, 3));
+    }
+
+    #[test]
+    fn random_state_len_arg_rejects_unspanned_non_literal() {
+        let args = vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                span: unspanned_runtime_intrinsics_test_span(),
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                span: unspanned_runtime_intrinsics_test_span(),
+            },
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("n").into(),
+                subscripts: Vec::new(),
+                span: unspanned_runtime_intrinsics_test_span(),
+            },
+        ];
+
+        let err = random_state_len_arg(&args, unspanned_runtime_intrinsics_test_span())
+            .expect_err("unspanned random state length must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("random state length argument requires source provenance")
+        );
+    }
+
+    #[test]
+    fn random_state_len_arg_uses_owner_span_for_non_literal() {
+        let owner_span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_function_calls_runtime_intrinsics_source_901.mo",
+            ),
+            4,
+            19,
+        );
+        let args = vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                span: owner_span,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                span: owner_span,
+            },
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("n").into(),
+                subscripts: Vec::new(),
+                span: unspanned_runtime_intrinsics_test_span(),
+            },
+        ];
+
+        let err = random_state_len_arg(&args, owner_span)
+            .expect_err("non-literal random state length must fail");
+
+        assert_eq!(err.source_span(), Some(owner_span));
+        assert!(err.reason().contains("must be an Integer literal"));
+    }
+
+    #[test]
+    fn bind_singleton_array_actual_declines_overflowing_dims() {
+        let mut scope = Scope::new();
+
+        assert!(!bind_singleton_array_actual_to_scalar_formal(
+            &mut scope,
+            "x",
+            &[usize::MAX, 2],
+            &[0],
+        ));
+        assert!(scope.get(&generated_scope_key("x")).is_none());
+    }
 }

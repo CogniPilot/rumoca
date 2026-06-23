@@ -19,9 +19,10 @@ use rumoca_transport_udp::UdpConfig;
 
 /// Authoritative marker that a TOML file is a Rumoca task file.
 ///
-/// The filename convention (`rum.toml` / `rum.<profile>.toml`) is the discovery
-/// hook; this `[rumoca]` section is the authoritative declaration. Keeping a
-/// `version` field gives a clean path for future schema evolution.
+/// The filename convention (`rumoca-scenario.toml` /
+/// `rumoca-scenario.<profile>.toml`) is the discovery hook; this `[rumoca]`
+/// section is the authoritative declaration. Keeping a `version` field gives a
+/// clean path for future schema evolution.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RumocaMarker {
     /// Task-file schema version (currently `"1"`).
@@ -32,7 +33,7 @@ pub struct RumocaMarker {
 }
 
 /// Whether a path's filename matches the Rumoca task-file convention:
-/// `rum.toml` (default) or `rum.<profile>.toml` (e.g. `rum.f16.toml`).
+/// `rumoca-scenario.toml` (default) or `rumoca-scenario.<profile>.toml`.
 ///
 /// This is the editor/discovery hook only — the authoritative check is the
 /// presence of the `[rumoca]` marker inside the file (see [`RumocaMarker`]).
@@ -41,7 +42,10 @@ pub fn is_rumoca_task_filename(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(str::to_ascii_lowercase)
-        .is_some_and(|name| name.starts_with("rum.") && name.ends_with(".toml"))
+        .is_some_and(|name| {
+            name == "rumoca-scenario.toml"
+                || (name.starts_with("rumoca-scenario.") && name.ends_with(".toml"))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,8 +416,8 @@ impl SimulationConfig {
         if config.rumoca.is_none() {
             anyhow::bail!(
                 "'{}' is not a Rumoca task file: missing the required `[rumoca]` marker section. \
-                 Add:\n\n[rumoca]\nversion = \"1\"\n\nand name task files `rum.toml` or \
-                 `rum.<profile>.toml` (e.g. `rum.f16.toml`).",
+                 Add:\n\n[rumoca]\nversion = \"1\"\n\nand name task files `rumoca-scenario.toml` or \
+                 `rumoca-scenario.<profile>.toml` (e.g. `rumoca-scenario.f16.toml`).",
                 path.display()
             );
         }
@@ -557,8 +561,8 @@ mod tests {
             .join("examples")
             .join("interactive")
             .join("rover")
-            .join("rum.toml");
-        let cfg = SimulationConfig::load(&path).expect("rover rum.toml must parse");
+            .join("rumoca-scenario.toml");
+        let cfg = SimulationConfig::load(&path).expect("rover rumoca-scenario.toml must parse");
         assert!(!cfg.has_fb());
         assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
         let sig = cfg.signals.as_ref().expect("[signals]");
@@ -810,8 +814,8 @@ bfbs = []
             .join("examples")
             .join("interactive")
             .join("quadrotor")
-            .join("rum.acro.toml");
-        let cfg = SimulationConfig::load(&path).expect("rum.acro.toml must parse");
+            .join("rumoca-scenario.acro.toml");
+        let cfg = SimulationConfig::load(&path).expect("rumoca-scenario.acro.toml must parse");
         assert!(!cfg.has_fb());
         assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
         assert_eq!(

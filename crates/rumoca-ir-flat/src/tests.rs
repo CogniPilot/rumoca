@@ -7,6 +7,14 @@ use std::sync::Arc;
 
 const DUMMY: rumoca_core::Span = rumoca_core::Span::DUMMY;
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("flat_ir_test.mo"),
+        1,
+        2,
+    )
+}
+
 fn make_var(name: &str) -> ast::Expression {
     ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
@@ -20,6 +28,31 @@ fn make_var(name: &str) -> ast::Expression {
         def_id: None,
         span: DUMMY,
     })
+}
+
+#[test]
+fn flat_variable_and_clock_constructors_preserve_owner_span() {
+    assert_eq!(
+        Variable::empty_with_span(test_span()).source_span,
+        test_span()
+    );
+    assert_eq!(BaseClock::inferred(test_span()).source_span, test_span());
+    assert_eq!(
+        BaseClock::periodic(0.1, test_span()).source_span,
+        test_span()
+    );
+    assert_eq!(
+        SubClock::empty_with_span(test_span()).source_span,
+        test_span()
+    );
+    assert_eq!(
+        SubClock::sub_sample(2, test_span()).source_span,
+        test_span()
+    );
+    assert_eq!(
+        SubClock::super_sample(2, test_span()).source_span,
+        test_span()
+    );
 }
 
 fn make_int(value: i64) -> ast::Expression {
@@ -447,7 +480,7 @@ fn make_parameter_var(name: &str, fixed: Option<bool>, has_binding: bool) -> Var
             value: Literal::Real(1.0),
             span: rumoca_core::Span::DUMMY,
         }),
-        ..Default::default()
+        ..Variable::empty_with_span(test_span())
     }
 }
 

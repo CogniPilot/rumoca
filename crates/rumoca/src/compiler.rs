@@ -75,6 +75,9 @@ pub struct CompilationResult {
     /// generation on large models and a multi-file target renders several
     /// strings against the same input.
     solve_template_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
+    /// Cached solve-template renderer for targets that never read the `dae`
+    /// template entry.
+    solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -98,6 +101,15 @@ fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRendere
         .map_err(CompilerError::TemplateError)
 }
 
+fn build_solve_template_renderer_without_dae(
+    dae_model: &Dae,
+) -> Result<SolveTemplateRenderer, CompilerError> {
+    let problem = lower_solve_problem(dae_model)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
+    SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
+}
+
 impl CompilationResult {
     pub fn new(
         dae: Dae,
@@ -111,6 +123,7 @@ impl CompilationResult {
             flat,
             resolved,
             solve_template_renderer: std::sync::OnceLock::new(),
+            solve_template_renderer_without_dae: std::sync::OnceLock::new(),
         }
     }
 
@@ -335,9 +348,12 @@ impl CompilationResult {
                     let renderer = build_solve_template_renderer(&self.dae)?;
                     let _ = self.solve_template_renderer.set(renderer);
                 }
-                self.solve_template_renderer
-                    .get()
-                    .expect("solve template renderer just initialized")
+                let renderer = self.solve_template_renderer.get().ok_or_else(|| {
+                    CompilerError::TemplateError(CodegenError::template(
+                        "solve template renderer was not initialized after build",
+                    ))
+                })?;
+                renderer
                     .render_with_name(template, model_name)
                     .map_err(CompilerError::TemplateError)
             }
@@ -348,6 +364,28 @@ impl CompilationResult {
                     .map_err(CompilerError::TemplateError)
             }
         }
+    }
+
+    pub fn render_solve_template_str_without_dae(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CompilerError> {
+        if self.solve_template_renderer_without_dae.get().is_none() {
+            let renderer = build_solve_template_renderer_without_dae(&self.dae)?;
+            let _ = self.solve_template_renderer_without_dae.set(renderer);
+        }
+        let renderer = self
+            .solve_template_renderer_without_dae
+            .get()
+            .ok_or_else(|| {
+                CompilerError::TemplateError(CodegenError::template(
+                    "solve template renderer was not initialized after build",
+                ))
+            })?;
+        renderer
+            .render_with_name(template, model_name)
+            .map_err(CompilerError::TemplateError)
     }
 
     pub fn to_ir_json(&self, ir: TemplateIr) -> Result<String, CompilerError> {
@@ -403,8 +441,8 @@ impl CompilationResult {
         Self::push_nonempty(&mut canonical, "f_x", &f_x)?;
         Self::push_nonempty(
             &mut canonical,
-            "for_equations",
-            &self.dae.continuous.for_equations,
+            "structured_equations",
+            &self.dae.continuous.structured_equations,
         )?;
         Self::push_nonempty(&mut canonical, "f_z", &f_z)?;
         Self::push_nonempty(&mut canonical, "f_m", &f_m)?;
@@ -413,8 +451,8 @@ impl CompilationResult {
         Self::push_nonempty(&mut canonical, "initial", &initial)?;
         Self::push_nonempty(
             &mut canonical,
-            "initial_for_equations",
-            &self.dae.initialization.for_equations,
+            "initial_structured_equations",
+            &self.dae.initialization.structured_equations,
         )?;
         Self::push_nonempty(&mut canonical, "functions", &self.dae.symbols.functions)?;
 

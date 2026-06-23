@@ -71,9 +71,16 @@ pub(super) fn read_reg_range(
     if len == 0 {
         return Ok(vec![1.0]);
     }
-    (0..len)
-        .map(|idx| get(regs, initialized, start + idx as u32))
-        .collect()
+    let mut values = random_vec_with_capacity(len, "random register range")?;
+    for idx in 0..len {
+        values.push(get(
+            regs,
+            initialized,
+            checked_random_reg_offset(start, idx)?,
+            None,
+        )?);
+    }
+    Ok(values)
 }
 
 pub(super) fn projected_random_value(values: &[f64], index: usize) -> Result<f64, EvalSolveError> {
@@ -91,7 +98,7 @@ pub(super) fn initial_state_values(
     local_seed: i64,
     global_seed: i64,
     state_len: usize,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, EvalSolveError> {
     let len = state_len.max(random_generator_state_len(generator));
     let mut state = scramble_seed(
         (local_seed as u64)
@@ -99,18 +106,18 @@ pub(super) fn initial_state_values(
             ^ (len as u64).wrapping_mul(0x9E3779B97F4A7C15),
     )
     .max(1);
-    let mut out = Vec::with_capacity(len);
+    let mut out = random_vec_with_capacity(len, "random initial state value count")?;
     for idx in 0..len {
         state = scramble_seed(state ^ (idx as u64 + 1).wrapping_mul(0xD1B54A32D192ED03)).max(1);
         out.push(clamp_i64_to_positive_u31(state) as f64);
     }
-    out
+    Ok(out)
 }
 
 pub(super) fn random_result_and_state(
     generator: RandomGenerator,
     seed_values: &[f64],
-) -> (f64, Vec<f64>) {
+) -> Result<(f64, Vec<f64>), EvalSolveError> {
     let len = random_generator_state_len(generator)
         .max(seed_values.len())
         .max(1);
@@ -126,13 +133,40 @@ pub(super) fn random_result_and_state(
         state = 0x9E3779B97F4A7C15;
     }
 
-    let mut out = Vec::with_capacity(len);
+    let mut out = random_vec_with_capacity(len, "random next state value count")?;
     for idx in 0..len {
         state = scramble_seed(state ^ (idx as u64 + 1).wrapping_mul(0x94D049BB133111EB)).max(1);
         out.push(clamp_i64_to_positive_u31(state) as f64);
     }
     let mut sample_state = state.max(1);
-    (unit_from_u64(xorshift64star_next(&mut sample_state)), out)
+    Ok((unit_from_u64(xorshift64star_next(&mut sample_state)), out))
+}
+
+fn random_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, EvalSolveError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| EvalSolveError::InvalidRow {
+            message: format!("{context} exceeds host memory limits"),
+            span: None,
+        })?;
+    Ok(values)
+}
+
+pub(super) fn checked_random_reg_offset(start: u32, offset: usize) -> Result<u32, EvalSolveError> {
+    let offset = u32::try_from(offset).map_err(|_| EvalSolveError::InvalidRow {
+        message: format!("random register range offset {offset} exceeds register index type"),
+        span: None,
+    })?;
+    start
+        .checked_add(offset)
+        .ok_or_else(|| EvalSolveError::InvalidRow {
+            message: format!("random register range starting at {start} overflows"),
+            span: None,
+        })
 }
 
 fn random_generator_state_len(generator: RandomGenerator) -> usize {

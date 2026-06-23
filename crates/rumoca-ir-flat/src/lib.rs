@@ -29,7 +29,7 @@ use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     BuiltinFunction, Causality, ClassType, ComponentReference, DefId, Expression, ForIndex,
     Function, FunctionShapeContractError, Reference, Span, StateSelect, Statement, StatementBlock,
-    Subscript, TypeId, VarName, Variability,
+    StructuredIndexDomain, Subscript, TypeId, VarName, Variability,
 };
 #[cfg(test)]
 use rumoca_core::{ComprehensionIndex, Literal};
@@ -84,9 +84,9 @@ pub struct Model {
     pub variable_final_flags: VarNameIndexMap<bool>,
     /// Regular equations (0 = residual form).
     pub equations: Vec<Equation>,
-    /// Preserved `for`-equation grouping metadata for regular equations.
+    /// Structured source equation families for regular equations.
     #[serde(default)]
-    pub for_equations: Vec<ForEquation>,
+    pub structured_equations: Vec<StructuredEquationFamily>,
     /// Runtime assertion equations from regular equation sections (MLS §8.3.7).
     ///
     /// Assertions are preserved for flat output but do not contribute to DAE
@@ -95,9 +95,9 @@ pub struct Model {
     pub assert_equations: Vec<AssertEquation>,
     /// Initial equations (0 = residual form).
     pub initial_equations: Vec<Equation>,
-    /// Preserved `for`-equation grouping metadata for initial equations.
+    /// Structured source equation families for initial equations.
     #[serde(default)]
-    pub initial_for_equations: Vec<ForEquation>,
+    pub initial_structured_equations: Vec<StructuredEquationFamily>,
     /// Runtime assertion equations from initial equation sections (MLS §8.6, §8.3.7).
     #[serde(default)]
     pub initial_assert_equations: Vec<AssertEquation>,
@@ -191,9 +191,9 @@ impl Model {
         self.equations.push(eq);
     }
 
-    /// Add preserved for-equation metadata for regular equations.
-    pub fn add_for_equation(&mut self, for_eq: ForEquation) {
-        self.for_equations.push(for_eq);
+    /// Add a structured source equation family for regular equations.
+    pub fn add_structured_equation(&mut self, family: StructuredEquationFamily) {
+        self.structured_equations.push(family);
     }
 
     /// Add an initial equation to the model.
@@ -201,9 +201,9 @@ impl Model {
         self.initial_equations.push(eq);
     }
 
-    /// Add preserved for-equation metadata for initial equations.
-    pub fn add_initial_for_equation(&mut self, for_eq: ForEquation) {
-        self.initial_for_equations.push(for_eq);
+    /// Add a structured source equation family for initial equations.
+    pub fn add_initial_structured_equation(&mut self, family: StructuredEquationFamily) {
+        self.initial_structured_equations.push(family);
     }
 
     /// Add a function definition to the model.
@@ -468,12 +468,12 @@ fn shape_size(
     Ok(size)
 }
 
-impl Default for Variable {
-    fn default() -> Self {
+impl Variable {
+    pub fn empty_with_span(source_span: Span) -> Self {
         Self {
             name: VarName::default(),
             component_ref: None,
-            source_span: Span::DUMMY,
+            source_span,
             type_id: TypeId::default(),
             variability: Variability::Empty,
             causality: Causality::Empty,
@@ -509,12 +509,20 @@ impl Default for Variable {
 mod variable_shape_contract_tests {
     use super::*;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("flat_variable_test.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn flat_variable_shape_size_preserves_zero_sized_arrays() {
         let variable = Variable {
             name: VarName::new("x"),
             dims: vec![0, 3],
-            ..Default::default()
+            ..Variable::empty_with_span(test_span())
         };
 
         assert_eq!(variable.shape_size(), Ok(0));
@@ -525,7 +533,7 @@ mod variable_shape_contract_tests {
         let variable = Variable {
             name: VarName::new("x"),
             dims: vec![2, -1],
-            ..Default::default()
+            ..Variable::empty_with_span(test_span())
         };
 
         assert_eq!(
@@ -533,7 +541,7 @@ mod variable_shape_contract_tests {
             Err(VariableShapeContractError::NegativeDimension {
                 variable: VarName::new("x"),
                 dimension: -1,
-                span: Span::DUMMY,
+                span: test_span(),
             })
         );
     }
@@ -545,7 +553,7 @@ mod variable_shape_contract_tests {
             VarName::new("key"),
             Variable {
                 name: VarName::new("stored"),
-                ..Default::default()
+                ..Variable::empty_with_span(test_span())
             },
         );
 
@@ -554,7 +562,7 @@ mod variable_shape_contract_tests {
             Err(ModelShapeContractError::VariableKeyNameMismatch {
                 key: VarName::new("key"),
                 name: VarName::new("stored"),
-                span: Span::DUMMY,
+                span: test_span(),
             })
         );
     }
@@ -563,7 +571,9 @@ mod variable_shape_contract_tests {
     fn flat_model_shape_contract_rejects_function_param_negative_dims() {
         let mut model = Model::new();
         let mut function = Function::new("Pkg.f", Span::DUMMY);
-        function.add_output(rumoca_core::FunctionParam::new("y", "Real").with_dims(vec![-1]));
+        function.add_output(
+            rumoca_core::FunctionParam::new("y", "Real", test_span()).with_dims(vec![-1]),
+        );
         model.add_function(function);
 
         assert!(matches!(
@@ -682,28 +692,20 @@ pub struct Equation {
     pub scalar_count: usize,
 }
 
-/// One expanded iteration inside a preserved for-equation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ForEquationIteration {
-    /// Concrete index values for this iteration, in declaration order.
-    pub index_values: Vec<i64>,
-    /// Number of flattened equations produced for this iteration.
-    pub equation_count: usize,
-}
-
-/// Structured metadata for a flattened `for`-equation (MLS §8.3.3).
+/// Structured source equation family over an index domain.
 ///
-/// The residual equations remain in `Model::equations` or
-/// `Model::initial_equations`; this metadata preserves iteration grouping.
+/// Current Flat lowering still materializes deterministic scalar views in
+/// `Model::equations` or `Model::initial_equations`; this family is the
+/// authoritative source grouping for later structured lowering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ForEquation {
-    /// Index variable names in declaration order.
-    pub index_names: Vec<String>,
+pub struct StructuredEquationFamily {
+    /// Compact index domain in source binder declaration order.
+    pub domain: StructuredIndexDomain,
     /// First equation index in the corresponding flat equation vector.
     #[serde(default)]
     pub first_equation_index: usize,
-    /// Per-iteration equation counts.
-    pub iterations: Vec<ForEquationIteration>,
+    /// Scalar-view equation count for each domain point in deterministic order.
+    pub equation_counts: Vec<usize>,
     /// Source span for diagnostics.
     pub span: Span,
     /// Typed origin for traceability.

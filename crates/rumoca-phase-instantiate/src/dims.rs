@@ -73,27 +73,30 @@ pub(super) fn resolve_type_alias_dimensions(
         return Ok(Vec::new());
     }
 
-    evaluate_array_dimensions(
+    let Some(dims) = evaluate_array_dimensions(
         &[],
         &subscripts,
         mod_env,
         effective_components,
         tree,
         &resolve_effective_components_for_eval,
-    )
-    .ok_or_else(|| {
+    ) else {
         let name = class_def
             .map(|class| class.name.text.to_string())
             .unwrap_or_else(|| "<anonymous type alias>".to_string());
-        let span = class_def
-            .map(|class| location_to_span(&class.location, &tree.source_map))
-            .unwrap_or(rumoca_core::Span::DUMMY);
-        Box::new(InstantiateError::structural_param_error(
+        let Some(class) = class_def else {
+            return Err(Box::new(InstantiateError::missing_source_context(
+                "type-alias array dimensions are missing source class provenance",
+            )));
+        };
+        let span = location_to_span(&class.location, &tree.source_map, "type-alias class")?;
+        return Err(Box::new(InstantiateError::structural_param_error(
             name,
             "cannot evaluate type-alias array dimensions",
             span,
-        ))
-    })
+        )));
+    };
+    Ok(dims)
 }
 
 pub(super) fn resolve_component_dimensions(
@@ -354,6 +357,14 @@ mod tests {
         }
     }
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("dims_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn make_name(text: &str) -> ast::Name {
         ast::Name {
             name: vec![make_token(text)],
@@ -392,7 +403,7 @@ mod tests {
         let comp = ast::Component {
             shape: vec![2],
             shape_expr: vec![make_dim_subscript(2)],
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
@@ -411,7 +422,7 @@ mod tests {
         let comp = ast::Component {
             shape: vec![],
             shape_expr: vec![make_dim_subscript(2)],
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
@@ -430,7 +441,7 @@ mod tests {
         let comp = ast::Component {
             shape: vec![],
             shape_expr: vec![make_cref_subscript("Medium.nC")],
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
@@ -449,7 +460,7 @@ mod tests {
         let comp = ast::Component {
             shape: vec![],
             shape_expr: vec![make_cref_subscript("nout")],
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         let mut effective_components = IndexMap::default();
         effective_components.insert(
@@ -461,7 +472,7 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 }),
                 has_explicit_binding: true,
-                ..Default::default()
+                ..ast::Component::empty_with_span(test_span())
             },
         );
         let (dims, dims_expr) = resolve_component_dimensions(
@@ -486,7 +497,7 @@ mod tests {
                 },
                 make_dim_subscript(2),
             ],
-            ..Default::default()
+            ..ast::Component::empty_with_span(test_span())
         };
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,

@@ -62,6 +62,10 @@ pub enum EvalError {
     #[error("range evaluation error: {message}")]
     RangeError { message: String, span: Span },
 
+    /// Required source provenance was missing for an evaluation diagnostic.
+    #[error("missing source context: {reason}")]
+    MissingSourceContext { reason: String },
+
     /// Internal evaluation error
     #[error("internal evaluation error: {message}")]
     Internal { message: String },
@@ -83,7 +87,7 @@ impl EvalError {
             | Self::FieldNotFound { span, .. }
             | Self::NotConstant { span, .. }
             | Self::RangeError { span, .. } => Some(*span),
-            Self::Internal { .. } => None,
+            Self::MissingSourceContext { .. } | Self::Internal { .. } => None,
         }
     }
 
@@ -137,6 +141,13 @@ impl EvalError {
         Self::RangeError {
             message: message.into(),
             span,
+        }
+    }
+
+    /// Create a missing source context error.
+    pub fn missing_source_context(reason: impl Into<String>) -> Self {
+        Self::MissingSourceContext {
+            reason: reason.into(),
         }
     }
 }

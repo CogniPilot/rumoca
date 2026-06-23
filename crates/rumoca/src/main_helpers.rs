@@ -1,6 +1,10 @@
-use super::*;
+use std::path::PathBuf;
 
-pub(super) fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
+use anyhow::{Context, Result};
+
+use crate::cli::{Cli, CompletionShell};
+
+pub(crate) fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
     let input_path = PathBuf::from(model_file);
     let absolute = if input_path.is_absolute() {
         input_path
@@ -23,7 +27,7 @@ pub(super) fn discover_workspace_root_for_model_file(model_file: &str) -> Option
 /// Generate a shell completion script directly from the clap command tree, so
 /// completions can never drift from the real command/flag set (no hand-
 /// maintained list to keep in sync — see the CLI review's completions finding).
-pub(super) fn completion_script(shell: CompletionShell) -> String {
+pub(crate) fn completion_script(shell: CompletionShell) -> Result<String> {
     use clap::CommandFactory;
 
     let shell = match shell {
@@ -35,5 +39,5 @@ pub(super) fn completion_script(shell: CompletionShell) -> String {
     let mut command = Cli::command();
     let mut buffer = Vec::new();
     clap_complete::generate(shell, &mut command, "rumoca", &mut buffer);
-    String::from_utf8(buffer).expect("clap_complete emits valid UTF-8")
+    String::from_utf8(buffer).context("clap_complete emitted invalid UTF-8")
 }

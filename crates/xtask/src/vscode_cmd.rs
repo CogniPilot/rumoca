@@ -15,6 +15,7 @@ use crate::{
     VscodeBuildArgs, VscodeHostArgs, VscodeInstallCheckArgs, VscodePackageArgs, exe_name,
     newest_prefixed_file, repo_cli_cmd, repo_root, run_capture, run_status, run_status_quiet,
 };
+use xtask::web_assets;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VscodeNpmDependencyMode {
@@ -236,6 +237,7 @@ pub(crate) fn package_vscode_ext(args: VscodePackageArgs) -> Result<()> {
     let root = repo_root();
     let vscode_dir = resolve_vscode_dir(&root)?;
 
+    prepare_vscode_web_assets(&root)?;
     ensure_vscode_npm_dependencies(
         &vscode_dir,
         VscodeNpmDependencyMode::IfMissing,
@@ -250,6 +252,7 @@ pub(crate) fn package_vscode_ext(args: VscodePackageArgs) -> Result<()> {
 
 pub(crate) fn run_vscode_ci(root: &Path) -> Result<()> {
     let vscode_dir = resolve_vscode_dir(root)?;
+    prepare_vscode_web_assets(root)?;
     // Keep the local and hosted gates aligned. We intentionally skip install scripts everywhere
     // because the esbuild postinstall validation fails under the Node 24 toolchain on this repo,
     // while the bundled binary still works for test/lint/bundle verification.
@@ -452,7 +455,7 @@ fn prepare_vscode_smoke_stage(root: &Path) -> Result<TempDir> {
     mirror_cached_vscode_smoke_install(&source_vscode_dir, staged_vscode_dir)?;
 
     // SPEC_0025: smoke verification must not mutate the live extension tree or
-    // interfere with a concurrent local watch session under editors/vscode.
+    // interfere with a concurrent local watch session under packages/vscode.
     build_and_stage_vscode_lsp(root, staged_vscode_dir, false)?;
     ensure_vscode_npm_dependencies(
         staged_vscode_dir,
@@ -460,6 +463,7 @@ fn prepare_vscode_smoke_stage(root: &Path) -> Result<TempDir> {
         true,
         true,
     )?;
+    prepare_vscode_web_assets(root)?;
 
     println!("Bundling VSCode extension for MSL smoke...");
     // The esbuild npm script vendors shared webview assets from the real repo,
@@ -486,6 +490,7 @@ fn build_vscode_dev_vsix(root: &Path, system: bool) -> Result<PathBuf> {
         build_and_stage_vscode_lsp(root, &vscode_dir, true)?;
     }
 
+    prepare_vscode_web_assets(root)?;
     ensure_vscode_npm_dependencies(
         &vscode_dir,
         VscodeNpmDependencyMode::IfMissing,
@@ -732,7 +737,7 @@ fn try_symlink_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 fn resolve_vscode_smoke_executable(vscode_dir: &Path, cache_path: &Path) -> Result<PathBuf> {
-    // Cache the VS Code test runtime under editors/vscode/.vscode-test so every
+    // Cache the VS Code test runtime under packages/vscode/.vscode-test so every
     // smoke stage reuses the same verified download instead of hitting the CDN again.
     let mut resolve = Command::new("node");
     resolve
@@ -746,6 +751,12 @@ fn resolve_vscode_smoke_executable(vscode_dir: &Path, cache_path: &Path) -> Resu
         "failed to resolve VS Code smoke executable path"
     );
     Ok(PathBuf::from(executable))
+}
+
+fn prepare_vscode_web_assets(root: &Path) -> Result<()> {
+    let vendor_dir = web_assets::build_web_vendor_assets(root)?;
+    println!("Prepared VS Code webview assets: {}", vendor_dir.display());
+    Ok(())
 }
 
 pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
@@ -762,6 +773,17 @@ pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
         false,
         false,
     )?;
+    prepare_vscode_web_assets(&root)?;
+
+    // Set up the examples Python env so notebooks (and the %%modelica magic) are
+    // ready to use against the LOCAL rumoca build. Best-effort: a missing Python
+    // toolchain must not block editing the extension.
+    if let Err(error) = crate::vscode_python_env::prepare_examples_python_env(&root) {
+        eprintln!(
+            "[xtask vscode edit] examples Python env setup skipped ({error:#}); \
+             notebooks will not have a local rumoca build"
+        );
+    }
 
     let mut rust_watch_stop: Option<Arc<AtomicBool>> = None;
     let mut rust_watch_handle: Option<thread::JoinHandle<()>> = None;
@@ -902,7 +924,7 @@ fn rust_watch_descend(path: &Path) -> bool {
     };
     !matches!(
         name,
-        ".git" | "target" | "node_modules" | ".venv" | ".rumoca" | ".vscode" | ".idea"
+        ".git" | "target" | "node_modules" | ".venv" | ".vscode" | ".idea"
     )
 }
 
@@ -921,7 +943,7 @@ fn is_rust_watch_file(path: &Path) -> bool {
 }
 
 fn resolve_vscode_dir(root: &Path) -> Result<PathBuf> {
-    let vscode_dir = root.join("editors/vscode");
+    let vscode_dir = root.join("packages/vscode");
     ensure!(
         vscode_dir.is_dir(),
         "missing VSCode extension dir: {}",

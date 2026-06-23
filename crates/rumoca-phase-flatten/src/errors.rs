@@ -202,6 +202,15 @@ pub enum FlattenError {
         #[label("class used here")]
         span: SourceSpan,
     },
+
+    /// Source location metadata could not be mapped to the source text needed
+    /// for a diagnostic span.
+    #[error("missing source context: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF017),
+        help("earlier phases must preserve source-map entries and non-empty source locations")
+    )]
+    MissingSourceContext { reason: String },
 }
 
 impl FlattenError {
@@ -333,6 +342,13 @@ impl FlattenError {
             span: rumoca_core::span_to_source_span(span),
         }
     }
+
+    /// Create a MissingSourceContext error.
+    pub fn missing_source_context(reason: impl Into<String>) -> Self {
+        Self::MissingSourceContext {
+            reason: reason.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,7 +358,11 @@ mod tests {
 
     #[test]
     fn test_undefined_variable_error() {
-        let span = Span::from_offsets(SourceId(0), 10, 20);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_errors_source_0.mo"),
+            10,
+            20,
+        );
         let err = FlattenError::undefined_variable("x", span);
         assert_eq!(format!("{err}"), "undefined variable: x");
 
@@ -354,7 +374,11 @@ mod tests {
 
     #[test]
     fn test_incompatible_connectors_with_help() {
-        let span = Span::from_offsets(SourceId(0), 0, 10);
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_errors_source_0.mo"),
+            0,
+            10,
+        );
         let err = FlattenError::incompatible_connectors("A", "B", span);
 
         // Check that help text is present

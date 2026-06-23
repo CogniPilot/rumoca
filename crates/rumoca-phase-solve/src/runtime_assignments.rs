@@ -1,70 +1,94 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::lower::normalized_discrete_update_equations;
-use crate::{LowerError, literal_positive_indices};
+use crate::{LowerError, checked_literal_positive_indices};
 
 pub(crate) fn runtime_assignment_equations(
     dae_model: &dae::Dae,
     runtime_tail_updates: &HashSet<String>,
 ) -> Result<Vec<dae::Equation>, LowerError> {
     let state_derivative_rows = crate::lower::state_derivative_equation_flags(dae_model)?;
-    let equations = dae_model
-        .continuous
-        .equations
-        .iter()
-        .enumerate()
-        .filter(|(row_idx, _)| {
-            !state_derivative_rows
-                .get(*row_idx)
-                .copied()
-                .unwrap_or(false)
-        })
-        .map(|(_, eq)| eq)
-        .filter_map(|eq| runtime_assignment_equation(dae_model, runtime_tail_updates, eq))
-        .collect();
-    Ok(orient_runtime_tail_aliases(dae_model, equations))
+    let mut equations = Vec::new();
+    for (row_idx, eq) in dae_model.continuous.equations.iter().enumerate() {
+        let Some(&is_state_derivative_row) = state_derivative_rows.get(row_idx) else {
+            return Err(runtime_assignment_contract_violation(
+                format!("missing state-derivative flag for runtime-assignment equation {row_idx}"),
+                eq.span,
+            ));
+        };
+        if !is_state_derivative_row
+            && let Some(equation) =
+                runtime_assignment_equation(dae_model, runtime_tail_updates, eq)?
+        {
+            equations.push(equation);
+        }
+    }
+    orient_runtime_tail_aliases(dae_model, equations)
+}
+
+fn runtime_assignment_contract_violation(reason: String, span: rumoca_core::Span) -> LowerError {
+    if span.is_dummy() {
+        LowerError::UnspannedContractViolation { reason }
+    } else {
+        LowerError::ContractViolation { reason, span }
+    }
 }
 
 pub(crate) fn runtime_assignment_equation(
     dae_model: &dae::Dae,
     runtime_tail_updates: &HashSet<String>,
     eq: &dae::Equation,
-) -> Option<dae::Equation> {
+) -> Result<Option<dae::Equation>, LowerError> {
     let (target, rhs) = if let Some(lhs) = eq.lhs.as_ref() {
-        explicit_runtime_assignment(
+        let Some(assignment) = explicit_runtime_assignment(
             dae_model,
             runtime_tail_updates,
             lhs,
             &eq.rhs,
             eq.scalar_count.max(1),
+            eq.span,
         )?
+        else {
+            return Ok(None);
+        };
+        assignment
     } else {
-        residual_runtime_assignment(
+        let Some(assignment) = residual_runtime_assignment(
             dae_model,
             runtime_tail_updates,
             &eq.rhs,
             eq.scalar_count.max(1),
+            eq.span,
         )?
+        else {
+            return Ok(None);
+        };
+        assignment
     };
-    Some(dae::Equation {
+    Ok(Some(dae::Equation {
         lhs: Some(target.into()),
         rhs,
         span: eq.span,
         origin: eq.origin.clone(),
         scalar_count: eq.scalar_count.max(1),
-    })
+    }))
 }
 
 pub(crate) fn static_runtime_tail_equation(
     dae_model: &dae::Dae,
     runtime_tail_updates: &HashSet<String>,
     eq: &dae::Equation,
-) -> bool {
+) -> Result<bool, LowerError> {
     if let Some(lhs) = eq.lhs.as_ref() {
-        return is_static_runtime_tail_name(dae_model, runtime_tail_updates, lhs.as_str());
+        return Ok(is_static_runtime_tail_name(
+            dae_model,
+            runtime_tail_updates,
+            lhs.as_str(),
+        ));
     }
     let rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
@@ -73,11 +97,11 @@ pub(crate) fn static_runtime_tail_equation(
         ..
     } = &eq.rhs
     else {
-        return false;
+        return Ok(false);
     };
-    target_expr_name(lhs).is_some_and(|name| {
+    Ok(target_expr_name(lhs)?.is_some_and(|name| {
         is_static_runtime_tail_name(dae_model, runtime_tail_updates, name.as_str())
-    })
+    }))
 }
 
 fn explicit_runtime_assignment(
@@ -86,18 +110,21 @@ fn explicit_runtime_assignment(
     lhs: &rumoca_core::Reference,
     rhs: &rumoca_core::Expression,
     scalar_count: usize,
-) -> Option<(rumoca_core::VarName, rumoca_core::Expression)> {
+    span: rumoca_core::Span,
+) -> Result<Option<(rumoca_core::VarName, rumoca_core::Expression)>, LowerError> {
     if is_writable_runtime_tail_name(dae_model, lhs.as_str())
         && !runtime_tail_has_event_update(runtime_tail_updates, lhs.as_str())
         && !is_static_runtime_tail_name(dae_model, runtime_tail_updates, lhs.as_str())
-        && runtime_assignment_shape_compatible(dae_model, lhs.as_str(), rhs, scalar_count)
+        && runtime_assignment_shape_compatible(dae_model, lhs.as_str(), rhs, scalar_count, span)?
     {
-        return Some((
+        return Ok(Some((
             array_target_name(lhs.var_name().clone(), scalar_count),
             rhs.clone(),
-        ));
+        )));
     }
-    let rhs_target = target_expr_name(rhs)?;
+    let Some(rhs_target) = target_expr_name(rhs)? else {
+        return Ok(None);
+    };
     if is_writable_runtime_tail_name(dae_model, rhs_target.as_str())
         && !runtime_tail_has_event_update(runtime_tail_updates, rhs_target.as_str())
         && !is_static_runtime_tail_name(dae_model, runtime_tail_updates, rhs_target.as_str())
@@ -106,16 +133,17 @@ fn explicit_runtime_assignment(
             rhs_target.as_str(),
             lhs.as_str(),
             scalar_count,
-        )
+            span,
+        )?
     {
-        return Some((
+        return Ok(Some((
             rhs_target,
             rumoca_core::Expression::VarRef {
                 name: lhs.clone(),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-        ));
+        )));
     }
     if scalar_count > 1
         && let Some(rhs_base) = dae::component_base_name(rhs_target.as_str())
@@ -127,18 +155,19 @@ fn explicit_runtime_assignment(
             &rhs_base,
             lhs.as_str(),
             scalar_count,
-        )
+            span,
+        )?
     {
-        return Some((
+        return Ok(Some((
             rumoca_core::VarName::new(rhs_base),
             rumoca_core::Expression::VarRef {
                 name: lhs.clone(),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-        ));
+        )));
     }
-    None
+    Ok(None)
 }
 
 fn residual_runtime_assignment(
@@ -146,7 +175,8 @@ fn residual_runtime_assignment(
     runtime_tail_updates: &HashSet<String>,
     expr: &rumoca_core::Expression,
     scalar_count: usize,
-) -> Option<(rumoca_core::VarName, rumoca_core::Expression)> {
+    span: rumoca_core::Span,
+) -> Result<Option<(rumoca_core::VarName, rumoca_core::Expression)>, LowerError> {
     let rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs,
@@ -154,53 +184,45 @@ fn residual_runtime_assignment(
         span: _,
     } = expr
     else {
-        return None;
+        return Ok(None);
     };
-    let lhs_target = target_expr_name(lhs);
-    let rhs_target = target_expr_name(rhs);
-    match (lhs_target, rhs_target) {
-        (Some(target), _)
-            if is_writable_runtime_tail_name(dae_model, target.as_str())
-                && !runtime_tail_has_event_update(runtime_tail_updates, target.as_str())
-                && !is_static_runtime_tail_name(
-                    dae_model,
-                    runtime_tail_updates,
-                    target.as_str(),
-                )
-                && runtime_assignment_shape_compatible(
-                    dae_model,
-                    target.as_str(),
-                    rhs.as_ref(),
-                    scalar_count,
-                ) =>
-        {
-            Some((
-                array_target_name(target, scalar_count),
-                rhs.as_ref().clone(),
-            ))
-        }
-        (_, Some(target))
-            if is_writable_runtime_tail_name(dae_model, target.as_str())
-                && !runtime_tail_has_event_update(runtime_tail_updates, target.as_str())
-                && !is_static_runtime_tail_name(
-                    dae_model,
-                    runtime_tail_updates,
-                    target.as_str(),
-                )
-                && runtime_assignment_shape_compatible(
-                    dae_model,
-                    target.as_str(),
-                    lhs.as_ref(),
-                    scalar_count,
-                ) =>
-        {
-            Some((
-                array_target_name(target, scalar_count),
-                lhs.as_ref().clone(),
-            ))
-        }
-        _ => None,
+    let lhs_target = target_expr_name(lhs)?;
+    let rhs_target = target_expr_name(rhs)?;
+    if let Some(target) = lhs_target
+        && is_writable_runtime_tail_name(dae_model, target.as_str())
+        && !runtime_tail_has_event_update(runtime_tail_updates, target.as_str())
+        && !is_static_runtime_tail_name(dae_model, runtime_tail_updates, target.as_str())
+        && runtime_assignment_shape_compatible(
+            dae_model,
+            target.as_str(),
+            rhs.as_ref(),
+            scalar_count,
+            span,
+        )?
+    {
+        return Ok(Some((
+            array_target_name(target, scalar_count),
+            rhs.as_ref().clone(),
+        )));
     }
+    if let Some(target) = rhs_target
+        && is_writable_runtime_tail_name(dae_model, target.as_str())
+        && !runtime_tail_has_event_update(runtime_tail_updates, target.as_str())
+        && !is_static_runtime_tail_name(dae_model, runtime_tail_updates, target.as_str())
+        && runtime_assignment_shape_compatible(
+            dae_model,
+            target.as_str(),
+            lhs.as_ref(),
+            scalar_count,
+            span,
+        )?
+    {
+        return Ok(Some((
+            array_target_name(target, scalar_count),
+            lhs.as_ref().clone(),
+        )));
+    }
+    Ok(None)
 }
 
 fn is_static_runtime_tail_name(
@@ -255,13 +277,15 @@ fn runtime_assignment_shape_compatible(
     target: &str,
     source: &rumoca_core::Expression,
     equation_scalar_count: usize,
-) -> bool {
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
     let target_dims = runtime_assignment_target_dims(dae_model, target);
-    let source_dims = runtime_assignment_expr_dims(dae_model, source);
+    let source_dims = runtime_assignment_expr_dims(dae_model, source)?;
     runtime_assignment_dims_compatible(
         target_dims.as_deref(),
         source_dims.as_deref(),
         equation_scalar_count,
+        span,
     )
 }
 
@@ -270,13 +294,15 @@ fn runtime_assignment_name_shape_compatible(
     target: &str,
     source: &str,
     equation_scalar_count: usize,
-) -> bool {
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
     let target_dims = runtime_assignment_target_dims(dae_model, target);
     let source_dims = runtime_assignment_target_dims(dae_model, source);
     runtime_assignment_dims_compatible(
         target_dims.as_deref(),
         source_dims.as_deref(),
         equation_scalar_count,
+        span,
     )
 }
 
@@ -284,41 +310,58 @@ fn runtime_assignment_dims_compatible(
     target_dims: Option<&[i64]>,
     source_dims: Option<&[i64]>,
     equation_scalar_count: usize,
-) -> bool {
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
     match (target_dims, source_dims) {
         (Some(target_dims), Some(source_dims)) => {
-            dims_assignable_to_target(target_dims, source_dims)
+            dims_assignable_to_target(target_dims, source_dims, span)
         }
-        (Some(target_dims), None) => concrete_shape_size(target_dims).is_some_and(|target_size| {
-            equation_scalar_count <= 1 || target_size == equation_scalar_count
-        }),
-        (None, Some(source_dims)) => concrete_shape_size(source_dims)
-            .is_some_and(|source_size| equation_scalar_count <= 1 || source_size <= 1),
-        (None, None) => true,
+        (Some(target_dims), None) => {
+            let target_size = concrete_shape_size(target_dims, span)?;
+            Ok(equation_scalar_count <= 1 || target_size == equation_scalar_count)
+        }
+        (None, Some(source_dims)) => {
+            let source_size = concrete_shape_size(source_dims, span)?;
+            Ok(equation_scalar_count <= 1 || source_size <= 1)
+        }
+        (None, None) => Ok(true),
     }
 }
 
-fn dims_assignable_to_target(target_dims: &[i64], source_dims: &[i64]) -> bool {
+fn dims_assignable_to_target(
+    target_dims: &[i64],
+    source_dims: &[i64],
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
     if target_dims == source_dims || source_dims.is_empty() {
-        return true;
+        return Ok(true);
     }
     if target_dims.len() == source_dims.len() + 1 {
-        return target_dims.get(1..).is_some_and(|tail| tail == source_dims);
+        return Ok(target_dims.get(1..).is_some_and(|tail| tail == source_dims));
     }
-    concrete_shape_size(target_dims)
-        .zip(concrete_shape_size(source_dims))
-        .is_some_and(|(target, source)| target == source)
+    Ok(concrete_shape_size(target_dims, span)? == concrete_shape_size(source_dims, span)?)
 }
 
-fn concrete_shape_size(dims: &[i64]) -> Option<usize> {
+fn concrete_shape_size(dims: &[i64], span: rumoca_core::Span) -> Result<usize, LowerError> {
     if dims.is_empty() {
-        return Some(1);
+        return Ok(1);
     }
-    dims.iter().try_fold(1usize, |acc, dim| {
-        usize::try_from(*dim)
-            .ok()
-            .and_then(|dim| acc.checked_mul(dim))
-    })
+    let mut total = 1usize;
+    for dim in dims {
+        let dim = usize::try_from(*dim).map_err(|_| {
+            runtime_assignment_contract_violation(
+                format!("runtime assignment dimension {dim} is invalid"),
+                span,
+            )
+        })?;
+        total = total.checked_mul(dim).ok_or_else(|| {
+            runtime_assignment_contract_violation(
+                "runtime assignment shape scalar count overflows".to_string(),
+                span,
+            )
+        })?;
+    }
+    Ok(total)
 }
 
 fn runtime_assignment_target_dims(dae_model: &dae::Dae, target: &str) -> Option<Vec<i64>> {
@@ -345,59 +388,97 @@ fn runtime_assignment_var_dims(dae_model: &dae::Dae, name: &str) -> Option<Vec<i
 fn runtime_assignment_expr_dims(
     dae_model: &dae::Dae,
     expr: &rumoca_core::Expression,
-) -> Option<Vec<i64>> {
+) -> Result<Option<Vec<i64>>, LowerError> {
     match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => runtime_assignment_target_dims(dae_model, name.as_str()),
+        } if subscripts.is_empty() => Ok(runtime_assignment_target_dims(dae_model, name.as_str())),
         rumoca_core::Expression::Array {
             elements,
             is_matrix,
-            ..
-        } => runtime_assignment_array_dims(elements, *is_matrix),
-        _ => None,
+            span,
+        } => runtime_assignment_array_dims(elements, *is_matrix, *span),
+        _ => Ok(None),
     }
 }
 
 fn runtime_assignment_array_dims(
     elements: &[rumoca_core::Expression],
     is_matrix: bool,
-) -> Option<Vec<i64>> {
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<i64>>, LowerError> {
     if !is_matrix {
-        return Some(vec![elements.len() as i64]);
+        return Ok(Some(vec![runtime_assignment_len_dim(
+            elements.len(),
+            "runtime assignment array length",
+            span,
+        )?]));
     }
+    let Some(first) = elements.first() else {
+        return Ok(None);
+    };
     let rumoca_core::Expression::Array {
         elements: first_row,
+        span: row_span,
         ..
-    } = elements.first()?
+    } = first
     else {
-        return None;
+        return Ok(None);
     };
-    Some(vec![elements.len() as i64, first_row.len() as i64])
+    Ok(Some(vec![
+        runtime_assignment_len_dim(elements.len(), "runtime assignment matrix row count", span)?,
+        runtime_assignment_len_dim(
+            first_row.len(),
+            "runtime assignment matrix column count",
+            *row_span,
+        )?,
+    ]))
+}
+
+fn runtime_assignment_len_dim(
+    len: usize,
+    context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<i64, LowerError> {
+    i64::try_from(len).map_err(|_| {
+        runtime_assignment_contract_violation(
+            format!("{context} {len} exceeds Modelica dimension range"),
+            span,
+        )
+    })
 }
 
 fn orient_runtime_tail_aliases(
     dae_model: &dae::Dae,
     equations: Vec<dae::Equation>,
-) -> Vec<dae::Equation> {
-    let source_distances = runtime_tail_source_distances(dae_model, &equations);
-    equations
-        .into_iter()
-        .map(|eq| orient_runtime_tail_alias(dae_model, &source_distances, eq))
-        .collect()
+) -> Result<Vec<dae::Equation>, LowerError> {
+    if equations.is_empty() {
+        return Ok(Vec::new());
+    }
+    let source_distances = runtime_tail_source_distances(dae_model, &equations)?;
+    let span = equations
+        .iter()
+        .find_map(|equation| (!equation.span.is_dummy()).then_some(equation.span))
+        .unwrap_or(equations[0].span);
+    let mut oriented =
+        crate::lower_vec_with_capacity(equations.len(), "runtime tail alias equation count", span)?;
+    for eq in equations {
+        oriented.push(orient_runtime_tail_alias(dae_model, &source_distances, eq)?);
+    }
+    Ok(oriented)
 }
 
 fn runtime_tail_source_distances(
     dae_model: &dae::Dae,
     equations: &[dae::Equation],
-) -> HashMap<String, usize> {
-    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+) -> Result<IndexMap<String, usize>, LowerError> {
+    let mut graph: IndexMap<String, Vec<String>> = IndexMap::new();
     let mut queue = VecDeque::new();
-    let mut distances = HashMap::new();
+    let mut distances = IndexMap::new();
     for eq in equations {
         let Some(lhs) = eq.lhs.as_ref() else { continue };
         let lhs_name = lhs.as_str().to_string();
-        let rhs_tail = target_expr_name(&eq.rhs)
+        let rhs_tail = target_expr_name(&eq.rhs)?
             .filter(|name| is_runtime_tail_name(dae_model, name.as_str()))
             .map(|name| name.as_str().to_string());
         if let Some(rhs_name) = rhs_tail {
@@ -423,49 +504,47 @@ fn runtime_tail_source_distances(
             }
         }
     }
-    distances
+    Ok(distances)
 }
 
 fn orient_runtime_tail_alias(
     dae_model: &dae::Dae,
-    source_distances: &HashMap<String, usize>,
+    source_distances: &IndexMap<String, usize>,
     eq: dae::Equation,
-) -> dae::Equation {
+) -> Result<dae::Equation, LowerError> {
     let Some(lhs) = eq.lhs.as_ref() else {
-        return eq;
+        return Ok(eq);
     };
     let Some(rhs_name) =
-        target_expr_name(&eq.rhs).filter(|name| is_runtime_tail_name(dae_model, name.as_str()))
+        target_expr_name(&eq.rhs)?.filter(|name| is_runtime_tail_name(dae_model, name.as_str()))
     else {
-        return eq;
+        return Ok(eq);
     };
-    let lhs_distance = source_distances
-        .get(lhs.as_str())
-        .copied()
-        .unwrap_or(usize::MAX);
-    let rhs_distance = source_distances
-        .get(rhs_name.as_str())
-        .copied()
-        .unwrap_or(usize::MAX);
+    let Some(&lhs_distance) = source_distances.get(lhs.as_str()) else {
+        return Ok(eq);
+    };
+    let Some(&rhs_distance) = source_distances.get(rhs_name.as_str()) else {
+        return Ok(eq);
+    };
     if rhs_distance <= lhs_distance {
-        return eq;
+        return Ok(eq);
     }
 
     // MLS §8.3: connection-generated alias equations are symmetric. Runtime
     // tail solve-IR rows orient aliases away from variables with non-alias
     // equations so a computed source is not overwritten by stale connector
     // aliases during fixed-point iteration.
-    dae::Equation {
+    Ok(dae::Equation {
         lhs: Some(rhs_name.into()),
         rhs: rumoca_core::Expression::VarRef {
             name: lhs.clone(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: eq.span,
         },
         span: eq.span,
         origin: eq.origin,
         scalar_count: eq.scalar_count,
-    }
+    })
 }
 
 pub(crate) fn runtime_tail_update_names(
@@ -503,19 +582,23 @@ fn array_target_name(target: rumoca_core::VarName, scalar_count: usize) -> rumoc
     dae::component_base_name(target.as_str()).map_or(target, rumoca_core::VarName::new)
 }
 
-fn target_expr_name(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName> {
+fn target_expr_name(
+    expr: &rumoca_core::Expression,
+) -> Result<Option<rumoca_core::VarName>, LowerError> {
     match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => {
             if subscripts.is_empty() {
-                return Some(name.var_name().clone());
+                return Ok(Some(name.var_name().clone()));
             }
-            let indices = literal_positive_indices(subscripts)?;
-            Some(rumoca_core::VarName::new(dae::format_subscript_key(
+            let Some(indices) = checked_literal_positive_indices(subscripts, expr.span())? else {
+                return Ok(None);
+            };
+            Ok(Some(rumoca_core::VarName::new(dae::format_subscript_key(
                 name.as_str(),
                 &indices,
-            )))
+            ))))
         }
         rumoca_core::Expression::Index {
             base, subscripts, ..
@@ -523,21 +606,25 @@ fn target_expr_name(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarNa
             let rumoca_core::Expression::VarRef {
                 name,
                 subscripts: base_subscripts,
-                span: rumoca_core::Span::DUMMY,
+                ..
             } = base.as_ref()
             else {
-                return None;
+                return Ok(None);
             };
             if !base_subscripts.is_empty() {
-                return None;
+                return Ok(None);
             }
-            let indices = literal_positive_indices(subscripts)?;
-            Some(rumoca_core::VarName::new(dae::format_subscript_key(
+            let Some(indices) =
+                checked_literal_positive_indices(subscripts, expr.span().or_else(|| base.span()))?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(rumoca_core::VarName::new(dae::format_subscript_key(
                 name.as_str(),
                 &indices,
-            )))
+            ))))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -613,13 +700,13 @@ fn runtime_assignment_scalar_name(
         Ok(lhs.as_str().to_string())
     } else {
         let dims = runtime_assignment_dims(dae_model, lhs).ok_or_else(|| {
-            LowerError::ContractViolation {
-                reason: format!(
+            runtime_assignment_contract_violation(
+                format!(
                     "runtime assignment array LHS `{}` must be a known DAE variable",
                     lhs.as_str()
                 ),
                 span,
-            }
+            )
         })?;
         Ok(dae::scalar_name_text_for_flat_index(
             lhs.as_str(),
@@ -649,10 +736,61 @@ fn runtime_assignment_dims<'a>(
 mod tests {
     use super::*;
 
+    fn dae_with_discrete_reals(names: &[&str]) -> dae::Dae {
+        let mut dae_model = dae::Dae::new();
+        for name in names {
+            dae_model.variables.discrete_reals.insert(
+                rumoca_core::VarName::new(*name),
+                dae::Variable {
+                    name: rumoca_core::VarName::new(*name),
+                    ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name(file!()),
+                        1,
+                        2,
+                    ))
+                },
+            );
+        }
+        dae_model
+    }
+
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        let span = runtime_assignment_test_span();
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span,
+        }
+    }
+
+    fn real_literal(value: f64) -> rumoca_core::Expression {
+        let span = runtime_assignment_test_span();
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span,
+        }
+    }
+
+    fn runtime_assignment_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn unspanned_runtime_assignment_test_span() -> rumoca_core::Span {
+        rumoca_core::Span::DUMMY
+    }
+
     #[test]
     fn runtime_assignment_scalar_name_reports_missing_array_lhs_with_span() {
         let dae_model = dae::Dae::new();
-        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(7), 11, 19);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_7.mo"),
+            11,
+            19,
+        );
 
         let err = runtime_assignment_scalar_name(
             &dae_model,
@@ -668,6 +806,202 @@ mod tests {
         assert!(
             err.reason()
                 .contains("runtime assignment array LHS `missingArray`")
+        );
+    }
+
+    #[test]
+    fn runtime_assignment_scalar_name_reports_missing_array_lhs_without_dummy_span() {
+        let dae_model = dae::Dae::new();
+
+        let err = runtime_assignment_scalar_name(
+            &dae_model,
+            &rumoca_core::VarName::new("missingArray"),
+            0,
+            2,
+            unspanned_runtime_assignment_test_span(),
+        )
+        .expect_err("unspanned array runtime assignment target must fail");
+
+        assert_eq!(err.source_span(), None);
+        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("runtime assignment array LHS `missingArray`")
+        );
+    }
+
+    #[test]
+    fn runtime_tail_aliases_orient_away_from_non_alias_source() -> Result<(), LowerError> {
+        let dae_model = dae_with_discrete_reals(&["a", "b"]);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_8.mo"),
+            4,
+            13,
+        );
+        let equations = vec![
+            dae::Equation::explicit(
+                rumoca_core::Reference::new("b"),
+                var_ref("a"),
+                span,
+                "runtime alias",
+            ),
+            dae::Equation::explicit(
+                rumoca_core::Reference::new("b"),
+                real_literal(1.0),
+                span,
+                "runtime source",
+            ),
+        ];
+
+        let oriented = orient_runtime_tail_aliases(&dae_model, equations)?;
+
+        assert_eq!(oriented[0].lhs.as_ref().map(|lhs| lhs.as_str()), Some("a"));
+        let rhs_name = target_expr_name(&oriented[0].rhs)?;
+        assert_eq!(rhs_name.as_ref().map(|name| name.as_str()), Some("b"));
+        assert_eq!(oriented[0].rhs.span(), Some(span));
+        Ok(())
+    }
+
+    #[test]
+    fn target_expr_name_accepts_spanned_index_base_ref() -> Result<(), LowerError> {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_9.mo"),
+            2,
+            10,
+        );
+        let expr = rumoca_core::Expression::Index {
+            base: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("tail"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            subscripts: vec![rumoca_core::Subscript::index(2, span)],
+            span,
+        };
+
+        let name = target_expr_name(&expr)?;
+
+        assert_eq!(name.as_ref().map(|name| name.as_str()), Some("tail[2]"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_tail_aliases_leave_disconnected_aliases_unchanged() -> Result<(), LowerError> {
+        let dae_model = dae_with_discrete_reals(&["a", "b"]);
+        let equations = vec![dae::Equation::explicit(
+            rumoca_core::Reference::new("a"),
+            var_ref("b"),
+            runtime_assignment_test_span(),
+            "runtime alias",
+        )];
+
+        let oriented = orient_runtime_tail_aliases(&dae_model, equations)?;
+
+        assert_eq!(oriented[0].lhs.as_ref().map(|lhs| lhs.as_str()), Some("a"));
+        let rhs_name = target_expr_name(&oriented[0].rhs)?;
+        assert_eq!(rhs_name.as_ref().map(|name| name.as_str()), Some("b"));
+        Ok(())
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn runtime_assignment_len_dim_rejects_modelica_dimension_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_19.mo"),
+            8,
+            16,
+        );
+
+        let err = runtime_assignment_len_dim(usize::MAX, "runtime assignment array length", span)
+            .expect_err("oversized runtime assignment dimension should fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
+        assert!(err.reason().contains("runtime assignment array length"));
+        assert!(err.reason().contains("exceeds Modelica dimension range"));
+    }
+
+    #[test]
+    fn runtime_assignment_equation_reports_shape_size_overflow_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_17.mo"),
+            3,
+            14,
+        );
+        let mut dae_model = dae::Dae::new();
+        dae_model.variables.discrete_reals.insert(
+            rumoca_core::VarName::new("tail"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("tail"),
+                dims: vec![i64::MAX, 3],
+                source_span: span,
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+        let eq = dae::Equation::explicit(
+            rumoca_core::Reference::new("tail"),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            },
+            span,
+            "runtime tail overflow",
+        );
+
+        let err = runtime_assignment_equation(&dae_model, &HashSet::new(), &eq)
+            .expect_err("oversized runtime assignment target shape should fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("runtime assignment shape scalar count overflows")
+        );
+    }
+
+    #[test]
+    fn runtime_assignment_equation_reports_negative_dimension_with_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_solve_runtime_assignments_source_18.mo"),
+            5,
+            21,
+        );
+        let mut dae_model = dae::Dae::new();
+        dae_model.variables.discrete_reals.insert(
+            rumoca_core::VarName::new("tail"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("tail"),
+                dims: vec![-1],
+                source_span: span,
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+        let eq = dae::Equation::explicit(
+            rumoca_core::Reference::new("tail"),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            },
+            span,
+            "runtime tail negative dimension",
+        );
+
+        let err = runtime_assignment_equation(&dae_model, &HashSet::new(), &eq)
+            .expect_err("negative runtime assignment target dimension should fail");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
+        assert!(
+            err.reason()
+                .contains("runtime assignment dimension -1 is invalid")
         );
     }
 }

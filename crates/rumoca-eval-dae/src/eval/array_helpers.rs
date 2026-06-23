@@ -330,11 +330,16 @@ pub(super) fn try_eval_field_access_array_values<T: SimFloat>(
                     Err(EvalError::UnsupportedExpression {
                         kind: "field access array value",
                     }) => {
+                        let span = expression_source_span(element).ok_or(
+                            EvalError::UnsupportedExpression {
+                                kind: "field access array element missing source span",
+                            },
+                        )?;
                         values.push(eval_expr::<T>(
                             &Expression::FieldAccess {
                                 base: Box::new(element.clone()),
                                 field: field.to_string(),
-                                span: element.span().unwrap_or(rumoca_core::Span::DUMMY),
+                                span,
                             },
                             env,
                         )?);

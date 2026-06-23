@@ -193,9 +193,9 @@ names. New Solve-IR APIs must use `ScalarProgram` / `ScalarProgramBlock`
 terminology and must not reintroduce `RowBlock` / `ScalarRows` naming.
 
 `ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
-`for_equations` domains plus affine operand proofs. It carries the source
+structured-family domains plus affine operand proofs. It carries the compact
 iteration domain and strides; Solve lowering must not recover stencils by
-scanning unstructured scalar rows after loop metadata is discarded.
+scanning unstructured scalar rows after structured-family metadata is discarded.
 
 The root `schema_version` field is mandatory on serialized Solve payloads.
 Deserializers reject unsupported versions and the Solve wire format does not
@@ -217,7 +217,7 @@ Jacobian products.
 | No flow-action calls (`assert`, `terminate`, `reinit`) in Solve-IR scalar programs | `reinit` is already a guarded discrete update; `assert` and `terminate` lower from DAE `events.event_actions` into action metadata plus pure action-condition scalar programs |
 | `__pre__.*` parameters in `p[]` hold discrete/continuous pre-values | Runtime writes slots at event entry via `SolveLayout::pre_param_bindings` |
 | Event timing is partitioned into root conditions, static arbitrary time instants, dynamic time-event rows, and periodic clock schedules | `events` owns zero-crossing and one-shot/dynamic time events; `clocks` owns periodic schedules derived from `sample`/clock metadata |
-| Every `ComputeBlock` scalarizable via `rumoca-eval-solve::to_scalar_program_block(&block)` | Execution adapters that can't consume tensor ops call the Solve-IR evaluator utility at their boundary |
+| Valid `ComputeBlock`s scalarize via fallible `rumoca-eval-solve::to_scalar_program_block(&block)` | Tensor-agnostic adapters call it and propagate span-bearing metadata errors |
 | Scalarization is a backend/evaluator choice, not an IR or lowering choice | Do not flatten tensor nodes in `rumoca-ir-solve` / `rumoca-phase-solve`; IR crates must not define scalarization helpers |
 | Forward and reverse AD products are Solve artifacts, not base Solve IR fields | Keeps base Solve payloads lean while allowing Rumoca-owned JVP/VJP/adjoint paths for runtime and generated targets |
 | Jacobian products live in `SolveArtifacts`, not base `SolveProblem` | Avoids unconditional AD materialization for codegen/IDE paths that do not consume them |
@@ -255,9 +255,9 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
 
 3. **Scalarization happens at the backend/evaluator boundary.** Call
    `rumoca_eval_solve::to_scalar_program_block(&compute_block)` from the backend
-   or evaluator crate that needs scalar programs. Do not define scalarization
-   methods/functions in IR crates, and do not flatten tensor nodes in
-   `rumoca-phase-solve` lowering.
+   or evaluator crate that needs scalar programs, and propagate its `Result`.
+   Do not define scalarization helpers in IR crates, and do not
+   flatten tensor nodes in `rumoca-phase-solve` lowering.
 
 4. **Each stage's output is serializable.** All IR types implement
    `serde::Serialize` / `Deserialize`. Serialized DAE and Solve root payloads

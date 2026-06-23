@@ -1,8 +1,11 @@
 use super::*;
 
+mod complex_projection;
+
 #[test]
 fn lower_expression_handles_projected_array_output_with_indexed_assignments() {
     let mut functions = IndexMap::new();
+    let span = lower_test_span();
     let random_like = random_like_function();
     functions.insert(random_like.name.clone(), random_like);
     let expr = rumoca_core::Expression::FunctionCall {
@@ -13,22 +16,22 @@ fn lower_expression_handles_projected_array_output_with_indexed_assignments() {
             elements: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(3),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
 
     let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
@@ -41,18 +44,19 @@ fn lower_expression_handles_projected_array_output_with_indexed_assignments() {
 #[test]
 fn lower_discrete_rhs_expands_tuple_function_assignment_outputs() {
     let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
     let random_like = random_like_function();
     dae_model
         .symbols
         .functions
         .insert(random_like.name.clone(), random_like);
-    dae_model
-        .variables
-        .discrete_reals
-        .insert(rumoca_core::VarName::new("noise"), scalar_var("noise"));
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("noise"),
+        source_scalar_var("noise"),
+    );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("seedState"),
-        array_var("seedState", &[3]),
+        source_array_var("seedState", &[3]),
     );
     dae_model
         .discrete
@@ -60,36 +64,36 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_outputs() {
         .push(dae::Equation::residual(
             sub(
                 rumoca_core::Expression::Tuple {
-                    elements: vec![var("noise"), var("seedState")],
-                    span: rumoca_core::Span::DUMMY,
+                    elements: vec![source_var("noise"), source_var("seedState")],
+                    span,
                 },
                 rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("Pkg.randomLike"),
+                        source_component_ref_from_name("Pkg.randomLike"),
                     ),
                     args: vec![rumoca_core::Expression::Array {
                         elements: vec![
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(1),
-                                span: rumoca_core::Span::DUMMY,
+                                span,
                             },
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(2),
-                                span: rumoca_core::Span::DUMMY,
+                                span,
                             },
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(3),
-                                span: rumoca_core::Span::DUMMY,
+                                span,
                             },
                         ],
                         is_matrix: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
             ),
-            Default::default(),
+            span,
             // MLS §12.4.3: multiple function outputs may be assigned by tuple;
             // each output component becomes an equivalent scalar update row.
             "tuple function update",
@@ -126,7 +130,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(rumoca_core::Expression::Tuple {
                     elements: vec![var("noise"), var("seedState")],
-                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 28),
+                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 10, 28),
                 }),
                 rhs: Box::new(rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(
@@ -137,7 +141,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(1),
                                 span: rumoca_core::Span::from_offsets(
-                                    rumoca_core::SourceId(1),
+                                    rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"),
                                     45,
                                     46,
                                 ),
@@ -145,7 +149,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(2),
                                 span: rumoca_core::Span::from_offsets(
-                                    rumoca_core::SourceId(1),
+                                    rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"),
                                     48,
                                     49,
                                 ),
@@ -153,21 +157,21 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
                             rumoca_core::Expression::Literal {
                                 value: rumoca_core::Literal::Integer(3),
                                 span: rumoca_core::Span::from_offsets(
-                                    rumoca_core::SourceId(1),
+                                    rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"),
                                     51,
                                     52,
                                 ),
                             },
                         ],
                         is_matrix: false,
-                        span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 44, 53),
+                        span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 44, 53),
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 30, 54),
+                    span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 30, 54),
                 }),
-                span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 54),
+                span: rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 10, 54),
             },
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId(1), 10, 54),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_projection_runtime_tests_source_1.mo"), 10, 54),
             "tuple function update with source span",
         ));
 
@@ -181,28 +185,8 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_with_real_span() {
 #[test]
 fn lower_discrete_rhs_expands_external_random_tuple_outputs() {
     let mut dae_model = dae::Dae::default();
-    let mut random = rumoca_core::Function::new(
-        "Modelica.Math.Random.Generators.Xorshift64star.random",
-        Default::default(),
-    );
-    random.external = Some(Default::default());
-    random
-        .inputs
-        .push(rumoca_core::FunctionParam::new("stateIn", "Integer").with_dims(vec![2]));
-    random
-        .inputs
-        .push(rumoca_core::FunctionParam::new("nState", "Integer"));
-    random
-        .outputs
-        .push(rumoca_core::FunctionParam::new("result", "Real"));
-    random.outputs.push(
-        rumoca_core::FunctionParam::new("stateOut", "Integer")
-            .with_dims(vec![0])
-            .with_shape_expr(vec![rumoca_core::Subscript::Expr {
-                expr: Box::new(var("nState")),
-                span: rumoca_core::Span::DUMMY,
-            }]),
-    );
+    let span = lower_test_span();
+    let random = xorshift64star_random_function(span);
     dae_model
         .symbols
         .functions
@@ -210,10 +194,10 @@ fn lower_discrete_rhs_expands_external_random_tuple_outputs() {
     dae_model
         .variables
         .discrete_reals
-        .insert(rumoca_core::VarName::new("r64"), scalar_var("r64"));
+        .insert(rumoca_core::VarName::new("r64"), source_scalar_var("r64"));
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("state64"),
-        array_var("state64", &[2]),
+        source_array_var("state64", &[2]),
     );
     dae_model
         .discrete
@@ -222,7 +206,7 @@ fn lower_discrete_rhs_expands_external_random_tuple_outputs() {
             sub(
                 rumoca_core::Expression::Tuple {
                     elements: vec![var("r64"), var("state64")],
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
                 rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::VarName::new(
@@ -232,23 +216,22 @@ fn lower_discrete_rhs_expands_external_random_tuple_outputs() {
                     args: vec![
                         rumoca_core::Expression::FunctionCall {
                             name: rumoca_core::Reference::from_component_reference(
-                                test_component_ref_from_name("previous"),
+                                source_component_ref_from_name("previous"),
                             ),
-                            args: vec![var("state64")],
+                            args: vec![source_var("state64")],
                             is_constructor: false,
-
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                         },
                         rumoca_core::Expression::Literal {
                             value: rumoca_core::Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
+                            span,
                         },
                     ],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
             ),
-            Default::default(),
+            span,
             // MLS §12.9 allows external functions. MSL random is a pure external
             // tuple function, so solve-lower represents its result and state outputs
             // explicitly instead of trying to inline an unavailable function body.
@@ -282,6 +265,44 @@ fn lower_discrete_rhs_expands_external_random_tuple_outputs() {
     );
 }
 
+fn xorshift64star_random_function(span: rumoca_core::Span) -> rumoca_core::Function {
+    let mut random = rumoca_core::Function::new(
+        "Modelica.Math.Random.Generators.Xorshift64star.random",
+        span,
+    );
+    random.external = Some(Default::default());
+    random
+        .inputs
+        .push(integer_param_with_dims("stateIn", &[2], span));
+    random.inputs.push(integer_param("nState", span));
+    random.outputs.push(real_param("result", span));
+    random.outputs.push(
+        integer_param("stateOut", span)
+            .with_dims(vec![0])
+            .with_shape_expr(vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(var("nState")),
+                span,
+            }]),
+    );
+    random
+}
+
+fn integer_param(name: &str, span: rumoca_core::Span) -> rumoca_core::FunctionParam {
+    rumoca_core::FunctionParam::new(name, "Integer", span)
+}
+
+fn integer_param_with_dims(
+    name: &str,
+    dims: &[i64],
+    span: rumoca_core::Span,
+) -> rumoca_core::FunctionParam {
+    integer_param(name, span).with_dims(dims.to_vec())
+}
+
+fn real_param(name: &str, span: rumoca_core::Span) -> rumoca_core::FunctionParam {
+    rumoca_core::FunctionParam::new(name, "Real", span)
+}
+
 #[test]
 fn lower_discrete_rhs_lowers_impure_random_event_call() {
     let mut dae_model = dae::Dae::default();
@@ -303,9 +324,9 @@ fn lower_discrete_rhs_lowers_impure_random_event_call() {
                     .into(),
                 args: vec![var("globalSeed.id_impure")],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
-            Default::default(),
+            lower_test_span(),
             // MLS §12.3: impure calls are legal in event contexts. Lower the
             // event RHS to an explicit solve-IR impure-random op instead of
             // routing through external-function string fallback.
@@ -327,34 +348,45 @@ fn lower_discrete_rhs_lowers_impure_random_event_call() {
 #[test]
 fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
     let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
     let mut impure_random = rumoca_core::Function::new(
         "Modelica.Math.Random.Utilities.impureRandom",
-        Default::default(),
+        lower_test_span(),
     );
     impure_random.pure = false;
     impure_random.external = Some(Default::default());
-    impure_random
-        .inputs
-        .push(rumoca_core::FunctionParam::new("id", "Integer"));
-    impure_random
-        .outputs
-        .push(rumoca_core::FunctionParam::new("y", "Real"));
+    impure_random.inputs.push(rumoca_core::FunctionParam::new(
+        "id",
+        "Integer",
+        lower_test_span(),
+    ));
+    impure_random.outputs.push(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        lower_test_span(),
+    ));
     dae_model
         .symbols
         .functions
         .insert(impure_random.name.clone(), impure_random);
 
-    let mut wrapper = rumoca_core::Function::new("Pkg.impureWrapper", Default::default());
+    let mut wrapper = rumoca_core::Function::new("Pkg.impureWrapper", lower_test_span());
     wrapper.pure = false;
-    wrapper
-        .inputs
-        .push(rumoca_core::FunctionParam::new("id", "Integer"));
-    wrapper
-        .outputs
-        .push(rumoca_core::FunctionParam::new("y", "Real"));
-    wrapper
-        .locals
-        .push(rumoca_core::FunctionParam::new("r", "Real"));
+    wrapper.inputs.push(rumoca_core::FunctionParam::new(
+        "id",
+        "Integer",
+        lower_test_span(),
+    ));
+    wrapper.outputs.push(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        lower_test_span(),
+    ));
+    wrapper.locals.push(rumoca_core::FunctionParam::new(
+        "r",
+        "Real",
+        lower_test_span(),
+    ));
     wrapper.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("r"),
         value: rumoca_core::Expression::FunctionCall {
@@ -363,14 +395,14 @@ fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
             )),
             args: vec![named_arg("id", var("id"))],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
-        span: rumoca_core::Span::DUMMY,
+        span,
     });
     wrapper.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("y"),
         value: var("r"),
-        span: rumoca_core::Span::DUMMY,
+        span,
     });
     dae_model
         .symbols
@@ -396,9 +428,9 @@ fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
                 ),
                 args: vec![named_arg("id", var("id"))],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            Default::default(),
+            lower_test_span(),
             // MSL random integer wrappers are scalar functions that assign a
             // local from impureRandom before computing their output. The
             // record-assignment fast path must not reject the scalar external
@@ -421,20 +453,24 @@ fn lower_discrete_rhs_lowers_impure_random_call_inside_scalar_wrapper() {
 #[test]
 fn lower_discrete_rhs_expands_random_state_out_array_projection() {
     let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
     let mut random = rumoca_core::Function::new(
         "Modelica.Math.Random.Generators.Xorshift64star.random",
-        Default::default(),
+        lower_test_span(),
     );
     random.external = Some(Default::default());
-    random
-        .inputs
-        .push(rumoca_core::FunctionParam::new("stateIn", "Integer").with_dims(vec![2]));
-    random
-        .outputs
-        .push(rumoca_core::FunctionParam::new("result", "Real"));
-    random
-        .outputs
-        .push(rumoca_core::FunctionParam::new("stateOut", "Integer").with_dims(vec![2]));
+    random.inputs.push(
+        rumoca_core::FunctionParam::new("stateIn", "Integer", lower_test_span()).with_dims(vec![2]),
+    );
+    random.outputs.push(rumoca_core::FunctionParam::new(
+        "result",
+        "Real",
+        lower_test_span(),
+    ));
+    random.outputs.push(
+        rumoca_core::FunctionParam::new("stateOut", "Integer", lower_test_span())
+            .with_dims(vec![2]),
+    );
     dae_model
         .symbols
         .functions
@@ -459,13 +495,12 @@ fn lower_discrete_rhs_expands_random_state_out_array_projection() {
                     ),
                     args: vec![var("state64")],
                     is_constructor: false,
-
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }],
                 is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            Default::default(),
+            lower_test_span(),
             // MLS §12.4.3: selecting one array-valued output from a multi-output
             // function is still array-valued. The solve-IR lowerer must project
             // each stateOut element, not treat `.stateOut` as a separate function.
@@ -485,52 +520,54 @@ fn lower_discrete_rhs_expands_random_state_out_array_projection() {
 }
 
 fn random_like_function() -> rumoca_core::Function {
-    let mut random_like = rumoca_core::Function::new("Pkg.randomLike", Default::default());
-    random_like
-        .inputs
-        .push(rumoca_core::FunctionParam::new("seedIn", "Integer").with_dims(vec![3]));
-    random_like
-        .outputs
-        .push(rumoca_core::FunctionParam::new("x", "Real"));
-    random_like
-        .outputs
-        .push(rumoca_core::FunctionParam::new("seedOut", "Integer").with_dims(vec![3]));
+    let mut random_like = rumoca_core::Function::new("Pkg.randomLike", lower_test_span());
+    random_like.inputs.push(
+        rumoca_core::FunctionParam::new("seedIn", "Integer", lower_test_span()).with_dims(vec![3]),
+    );
+    random_like.outputs.push(rumoca_core::FunctionParam::new(
+        "x",
+        "Real",
+        lower_test_span(),
+    ));
+    random_like.outputs.push(
+        rumoca_core::FunctionParam::new("seedOut", "Integer", lower_test_span()).with_dims(vec![3]),
+    );
     random_like.body = vec![
         rumoca_core::Statement::Assignment {
             comp: component_ref("x"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.25),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref_index("seedOut", 1),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(11),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref_index("seedOut", 2),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(22),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref_index("seedOut", 3),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(33),
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
 
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
     ];
     random_like
@@ -539,7 +576,7 @@ fn random_like_function() -> rumoca_core::Function {
 #[test]
 fn lower_expression_binds_named_function_arguments_by_name() {
     let mut functions = IndexMap::new();
-    let mut function = rumoca_core::Function::new("Pkg.f", Default::default());
+    let mut function = rumoca_core::Function::new("Pkg.f", lower_test_span());
     function.inputs.push(function_param("a"));
     function.inputs.push(function_param("b"));
     function.outputs.push(function_param("y"));
@@ -552,19 +589,19 @@ fn lower_expression_binds_named_function_arguments_by_name() {
                     test_component_ref_from_name("a"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
             rhs: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(
                     test_component_ref_from_name("b"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
 
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     });
     functions.insert(rumoca_core::VarName::new("Pkg.f"), function);
 
@@ -577,19 +614,19 @@ fn lower_expression_binds_named_function_arguments_by_name() {
                 "b",
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(2.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ),
             named_arg(
                 "a",
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(7.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ),
         ],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
         .expect("named args should lower");
@@ -610,9 +647,9 @@ fn lower_initial_expression_rows_read_lowered_pre_parameter() {
         lhs: Box::new(pre_var("x")),
         rhs: Box::new(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }];
     let rows =
         lower_initial_expression_rows_from_expressions(&expressions, &layout, &IndexMap::new())
@@ -626,7 +663,7 @@ fn lower_initial_expression_rows_read_lowered_pre_parameter() {
 #[test]
 fn lower_expression_handles_constructor_field_access_by_signature() {
     let mut dae_model = dae::Dae::default();
-    let mut constructor = rumoca_core::Function::new("My.Record", Default::default());
+    let mut constructor = rumoca_core::Function::new("My.Record", lower_test_span());
     constructor.inputs.push(function_param("R"));
     constructor.inputs.push(function_param("C"));
     dae_model
@@ -642,18 +679,18 @@ fn lower_expression_handles_constructor_field_access_by_signature() {
             args: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(2.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(3.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         field: "C".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     };
 
     let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
@@ -663,6 +700,7 @@ fn lower_expression_handles_constructor_field_access_by_signature() {
 }
 #[test]
 fn lower_expression_handles_index_projection() {
+    let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -675,13 +713,13 @@ fn lower_expression_handles_index_projection() {
                 "xs",
             )),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             2,
-            rumoca_core::Span::DUMMY,
+            lower_test_span(),
         )],
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new()).expect("index should lower");
     let (regs, _) = eval_linear_ops(&lowered.ops, &[10.0, 20.0], &[], 0.0);
@@ -690,6 +728,7 @@ fn lower_expression_handles_index_projection() {
 
 #[test]
 fn lower_expression_handles_indexed_record_field_array_binding() {
+    let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -698,15 +737,12 @@ fn lower_expression_handles_indexed_record_field_array_binding() {
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let expr = rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::Index {
-            base: Box::new(var("z")),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                1,
-                rumoca_core::Span::DUMMY,
-            )],
-            span: rumoca_core::Span::DUMMY,
+            base: Box::new(source_var("z")),
+            subscripts: vec![rumoca_core::Subscript::generated_index(1, span)],
+            span,
         }),
         field: "re".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
 
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
@@ -732,7 +768,8 @@ fn lower_expression_handles_scalar_field_on_indexed_component_binding() {
         )]),
         1,
         0,
-    );
+    )
+    .expect("indexed component scalar fixture layout should satisfy shape contract");
     let lowered = lower_expression(&var(key), &layout, &IndexMap::new())
         .expect("scalar field on indexed component should lower as a scalar binding");
     let (regs, _) = eval_linear_ops(&lowered.ops, &[17.0], &[], 0.0);
@@ -740,31 +777,60 @@ fn lower_expression_handles_scalar_field_on_indexed_component_binding() {
     assert!((read_reg(&regs, lowered.result) - 17.0).abs() < 1e-12);
 }
 
+fn source_array_var(name: &str, dims: &[i64]) -> dae::Variable {
+    dae::Variable {
+        component_ref: Some(source_component_ref_from_name(name)),
+        source_span: lower_test_span(),
+        dims: dims.to_vec(),
+        origin: dae::VariableOrigin::Source,
+        ..dae::Variable::new(
+            rumoca_core::VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        )
+    }
+}
+
+fn source_scalar_var(name: &str) -> dae::Variable {
+    dae::Variable {
+        component_ref: Some(source_component_ref_from_name(name)),
+        source_span: lower_test_span(),
+        origin: dae::VariableOrigin::Source,
+        ..dae::Variable::new(
+            rumoca_core::VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        )
+    }
+}
+
 #[test]
 fn lower_expression_handles_dynamic_varref_subscript_expr() {
     let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(rumoca_core::VarName::new("xs"), array_var("xs", &[3]));
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("xs"),
+        source_array_var("xs", &[3]),
+    );
     dae_model
         .variables
         .parameters
-        .insert(rumoca_core::VarName::new("i"), scalar_var("i"));
+        .insert(rumoca_core::VarName::new("i"), source_scalar_var("i"));
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let span = lower_test_span();
     let expr = rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name("xs")),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-            rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(source_component_ref_from_name(
+            "xs",
+        )),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(
-                    test_component_ref_from_name("i"),
+                    source_component_ref_from_name("i"),
                 ),
                 subscripts: vec![],
 
-                span: rumoca_core::Span::DUMMY,
-            },
-        ))],
-        span: rumoca_core::Span::DUMMY,
+                span,
+            }),
+            span,
+        )],
+        span,
     };
     let lowered =
         lower_expression(&expr, &layout, &IndexMap::new()).expect("dynamic varref should lower");
@@ -785,6 +851,80 @@ fn lower_expression_handles_dynamic_varref_subscript_expr() {
         );
     }
 }
+
+/// A runtime subscript into a constant *parameter* array lowers to a single
+/// `LoadIndexedP` (an O(1) indexed load) instead of an N-deep select chain,
+/// and reads the same element the select chain would for in-range indices.
+#[test]
+fn lower_expression_dynamic_param_subscript_emits_indexed_load() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("tbl"),
+        source_array_var("tbl", &[3]),
+    );
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("i"), source_scalar_var("i"));
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let span = lower_test_span();
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(source_component_ref_from_name(
+            "tbl",
+        )),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::from_component_reference(
+                    source_component_ref_from_name("i"),
+                ),
+                subscripts: vec![],
+                span,
+            }),
+            span,
+        )],
+        span,
+    };
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("dynamic parameter varref should lower");
+
+    // The hallmark of the fix: one indexed load, no per-element select chain.
+    let indexed = lowered
+        .ops
+        .iter()
+        .filter(|op| matches!(op, LinearOp::LoadIndexedP { .. }))
+        .count();
+    let selects = lowered
+        .ops
+        .iter()
+        .filter(|op| matches!(op, LinearOp::Select { .. }))
+        .count();
+    assert_eq!(
+        indexed, 1,
+        "expected exactly one LoadIndexedP, got {indexed}"
+    );
+    assert_eq!(
+        selects, 0,
+        "parameter-array dynamic subscript must not emit a select chain"
+    );
+
+    // `tbl` occupies the first three parameter slots, `i` the fourth.
+    let i_slot = 3usize;
+    for idx in [1.0, 2.0, 2.7, 3.0] {
+        let mut p = vec![10.0, 20.0, 30.0, 0.0];
+        p[i_slot] = idx;
+        let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+        let compiled = read_reg(&regs, lowered.result);
+        let expected = match rounded_index(idx) {
+            1 => 10.0,
+            2 => 20.0,
+            _ => 30.0,
+        };
+        assert!(
+            (compiled - expected).abs() < 1e-12,
+            "indexed-load mismatch for i={idx}: compiled={compiled}, expected={expected}"
+        );
+    }
+}
 #[test]
 fn lower_expression_handles_binary_operand_with_dynamic_varref_subscript() {
     // Shape inference of a binary operand like `t - tg[i]` must not require
@@ -792,32 +932,36 @@ fn lower_expression_handles_binary_operand_with_dynamic_varref_subscript() {
     // matter what it evaluates to. Regression: SE_2(3) quadrotor table
     // interpolation `(tt - tg[i-1]) / (tg[i] - tg[i-1])`.
     let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(rumoca_core::VarName::new("xs"), array_var("xs", &[3]));
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("xs"),
+        source_array_var("xs", &[3]),
+    );
     dae_model
         .variables
         .parameters
-        .insert(rumoca_core::VarName::new("i"), scalar_var("i"));
+        .insert(rumoca_core::VarName::new("i"), source_scalar_var("i"));
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let span = lower_test_span();
     let indexed = rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name("xs")),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-            rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(source_component_ref_from_name(
+            "xs",
+        )),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(
-                    test_component_ref_from_name("i"),
+                    source_component_ref_from_name("i"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            },
-        ))],
-        span: rumoca_core::Span::DUMMY,
+                span,
+            }),
+            span,
+        )],
+        span,
     };
     let expr = sub(
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(100.0),
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
         indexed,
     );
@@ -836,6 +980,7 @@ fn lower_expression_handles_binary_operand_with_dynamic_varref_subscript() {
 
 #[test]
 fn lower_expression_handles_dynamic_index_subscript_expr() {
+    let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -852,18 +997,19 @@ fn lower_expression_handles_dynamic_index_subscript_expr() {
                 "xs",
             )),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-            rumoca_core::Expression::VarRef {
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(
                     test_component_ref_from_name("i"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            },
-        ))],
-        span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
+            }),
+            lower_test_span(),
+        )],
+        span,
     };
     let lowered =
         lower_expression(&expr, &layout, &IndexMap::new()).expect("dynamic index should lower");
@@ -886,6 +1032,7 @@ fn lower_expression_handles_dynamic_index_subscript_expr() {
 }
 #[test]
 fn lower_expression_handles_dynamic_index_over_array_literal() {
+    let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -897,30 +1044,31 @@ fn lower_expression_handles_dynamic_index_over_array_literal() {
             elements: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(10.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(20.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(30.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: lower_test_span(),
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-            rumoca_core::Expression::VarRef {
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(
                     test_component_ref_from_name("i"),
                 ),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            },
-        ))],
-        span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
+            }),
+            lower_test_span(),
+        )],
+        span,
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("dynamic array literal index should lower");
@@ -1009,10 +1157,13 @@ fn nested_ux01_conversion(input: rumoca_core::Expression) -> rumoca_core::Expres
                 nested_ux01_expr("X"),
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(input))],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(input),
+            lower_test_span(),
+        )],
+        span: lower_test_span(),
     }
 }
 
@@ -1026,7 +1177,7 @@ fn nested_table_plane(selected: rumoca_core::Expression) -> rumoca_core::Express
                     nested_logic_expr("0"),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1035,20 +1186,21 @@ fn nested_table_plane(selected: rumoca_core::Expression) -> rumoca_core::Express
                     nested_logic_expr("1"),
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![selected, nested_logic_expr("1"), nested_logic_expr("U")],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
 fn nested_enum_table_expr() -> rumoca_core::Expression {
+    let span = lower_test_span();
     rumoca_core::Expression::Index {
         base: Box::new(rumoca_core::Expression::Array {
             elements: vec![
@@ -1057,14 +1209,20 @@ fn nested_enum_table_expr() -> rumoca_core::Expression {
                 nested_table_plane(nested_logic_expr("U")),
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(Box::new(var("strength"))),
-            rumoca_core::Subscript::generated_expr(Box::new(nested_ux01_conversion(var("enable")))),
-            rumoca_core::Subscript::generated_expr(Box::new(nested_ux01_conversion(var("x")))),
+            rumoca_core::Subscript::generated_expr(Box::new(var("strength")), lower_test_span()),
+            rumoca_core::Subscript::generated_expr(
+                Box::new(nested_ux01_conversion(var("enable"))),
+                lower_test_span(),
+            ),
+            rumoca_core::Subscript::generated_expr(
+                Box::new(nested_ux01_conversion(var("x"))),
+                lower_test_span(),
+            ),
         ],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -1123,10 +1281,13 @@ fn msl_buf3s_ux01_conversion(input: rumoca_core::Expression) -> rumoca_core::Exp
                 msl_ux01_expr("X"),
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(input))],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(input),
+            lower_test_span(),
+        )],
+        span: lower_test_span(),
     }
 }
 
@@ -1142,7 +1303,7 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1153,7 +1314,7 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1164,7 +1325,7 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -1175,15 +1336,16 @@ fn msl_buf3s_truth_plane() -> rumoca_core::Expression {
                 ],
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             },
         ],
         is_matrix: true,
-        span: rumoca_core::Span::DUMMY,
+        span: lower_test_span(),
     }
 }
 
 fn msl_buf3s_truth_expr() -> rumoca_core::Expression {
+    let span = lower_test_span();
     let plane = msl_buf3s_truth_plane();
     rumoca_core::Expression::Index {
         base: Box::new(rumoca_core::Expression::Array {
@@ -1191,19 +1353,23 @@ fn msl_buf3s_truth_expr() -> rumoca_core::Expression {
                 elements: std::iter::repeat_n(plane, 10).collect(),
                 is_matrix: false,
 
-                span: rumoca_core::Span::DUMMY,
+                span: lower_test_span(),
             }],
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         }),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(Box::new(var("strength"))),
-            rumoca_core::Subscript::generated_expr(Box::new(msl_buf3s_ux01_conversion(var(
-                "enable",
-            )))),
-            rumoca_core::Subscript::generated_expr(Box::new(msl_buf3s_ux01_conversion(var("x")))),
+            rumoca_core::Subscript::generated_expr(Box::new(var("strength")), lower_test_span()),
+            rumoca_core::Subscript::generated_expr(
+                Box::new(msl_buf3s_ux01_conversion(var("enable"))),
+                lower_test_span(),
+            ),
+            rumoca_core::Subscript::generated_expr(
+                Box::new(msl_buf3s_ux01_conversion(var("x"))),
+                lower_test_span(),
+            ),
         ],
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
@@ -1226,551 +1392,4 @@ fn lower_expression_handles_msl_buf3s_enum_truth_table_indexing() {
     // array dimension. MSL Digital BUF3S relies on enum conversion subscripts
     // feeding the 10x4x4 truth table without flatten-order drift.
     assert!((read_reg(&regs, lowered.result) - 5.0).abs() < 1e-12);
-}
-
-#[test]
-fn lower_expression_handles_projected_field_after_array_literal_index() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("i"), scalar_var("i"));
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("left.im"), scalar_var("left.im"));
-    dae_model.variables.parameters.insert(
-        rumoca_core::VarName::new("right.im"),
-        scalar_var("right.im"),
-    );
-    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(rumoca_core::Expression::Index {
-            base: Box::new(rumoca_core::Expression::Array {
-                elements: vec![
-                    rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::from_component_reference(
-                            test_component_ref_from_name("left"),
-                        ),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::from_component_reference(
-                            test_component_ref_from_name("right"),
-                        ),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                ],
-                is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                rumoca_core::Expression::VarRef {
-                    name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("i"),
-                    ),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ))],
-            span: rumoca_core::Span::DUMMY,
-        }),
-        field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("projected field after array literal index should lower");
-
-    for i in [1.0, 2.0, 3.0] {
-        let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[i, 4.0, 9.0], 0.0);
-        let compiled = read_reg(&regs, lowered.result);
-        let expected = match rounded_index(i) {
-            1 => 4.0,
-            2 => 9.0,
-            _ => 0.0,
-        };
-        assert!(
-            (compiled - expected).abs() < 1e-12,
-            "projected field after array literal index mismatch for i={i}: compiled={compiled}, expected={expected}"
-        );
-    }
-}
-
-#[test]
-fn lower_expression_collapses_singleton_colon_projection() {
-    let mut dae_model = dae::Dae::default();
-    dae_model.variables.algebraics.insert(
-        rumoca_core::VarName::new("flow"),
-        array_var("flow", &[2, 1]),
-    );
-    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let expr = rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-            "flow",
-        )),
-        subscripts: vec![
-            rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
-            rumoca_core::Subscript::Colon {
-                span: rumoca_core::Span::DUMMY,
-            },
-        ],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("singleton colon projection should resolve from layout shape");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[42.0, 7.0], &[], 0.0);
-
-    assert_eq!(read_reg(&regs, lowered.result), 42.0);
-}
-
-#[test]
-fn lower_expression_handles_nested_structural_index_over_array_literal() {
-    let layout = VarLayout::default();
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::Index {
-        base: Box::new(rumoca_core::Expression::Index {
-            base: Box::new(rumoca_core::Expression::Array {
-                elements: vec![
-                    rumoca_core::Expression::Array {
-                        elements: vec![lit(1.0), lit(2.0)],
-                        is_matrix: false,
-
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    rumoca_core::Expression::Array {
-                        elements: vec![lit(3.0), lit(4.0)],
-                        is_matrix: false,
-
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                ],
-                is_matrix: true,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(lit(2.0)))],
-
-            span: rumoca_core::Span::DUMMY,
-        }),
-        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(lit(1.0)))],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("nested structural index should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) - 3.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_complex_sum_over_array_comprehension() {
-    let layout = VarLayout::default();
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "Modelica.ComplexMath.sum",
-            )),
-            args: vec![rumoca_core::Expression::ArrayComprehension {
-                expr: Box::new(rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("Complex"),
-                    ),
-                    args: vec![
-                        rumoca_core::Expression::VarRef {
-                            name: rumoca_core::Reference::from_component_reference(
-                                test_component_ref_from_name("k"),
-                            ),
-                            subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                        lit(1.0),
-                    ],
-                    is_constructor: true,
-
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                indices: vec![rumoca_core::ComprehensionIndex {
-                    name: "k".to_string(),
-                    range: rumoca_core::Expression::Range {
-                        start: Box::new(lit(1.0)),
-                        step: None,
-                        end: Box::new(lit(2.0)),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                }],
-                filter: None,
-                span: rumoca_core::Span::DUMMY,
-            }],
-            is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
-        }),
-        field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("projected complex sum over array comprehension should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) - 2.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_complex_division_component() {
-    let layout = VarLayout::default();
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Div,
-            lhs: Box::new(lit(1.0)),
-            rhs: Box::new(rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::from_component_reference(
-                    test_component_ref_from_name("Complex"),
-                ),
-                args: vec![lit(2.0), lit(3.0)],
-                is_constructor: true,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("projected complex division component should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) + 3.0 / 13.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_complex_operator_call() {
-    let layout = VarLayout::default();
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "Complex.'+'",
-            )),
-            args: vec![
-                rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("Complex"),
-                    ),
-                    args: vec![lit(1.0), lit(2.0)],
-                    is_constructor: true,
-
-                    span: rumoca_core::Span::DUMMY,
-                },
-                rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("Complex"),
-                    ),
-                    args: vec![lit(3.0), lit(4.0)],
-                    is_constructor: true,
-
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ],
-            is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
-        }),
-        field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("projected complex operator call should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) - 6.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_field_over_array_literal_in_scalar_context() {
-    let layout = VarLayout::default();
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(rumoca_core::Expression::Array {
-            elements: vec![
-                rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("Complex"),
-                    ),
-                    args: vec![lit(2.0), lit(3.0)],
-                    is_constructor: true,
-                    span: rumoca_core::Span::DUMMY,
-                },
-                rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_component_reference(
-                        test_component_ref_from_name("Complex"),
-                    ),
-                    args: vec![lit(5.0), lit(7.0)],
-                    is_constructor: true,
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ],
-            is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
-        }),
-        field: "im".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("projected field over array literal should lower in scalar context");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) - 3.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_complex_division_over_array_literal_in_scalar_context() {
-    let layout = VarLayout::default();
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let complex_div = |re: f64, im: f64| rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Div,
-        lhs: Box::new(lit(1.0)),
-        rhs: Box::new(rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "Complex",
-            )),
-            args: vec![lit(re), lit(im)],
-            is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
-        }),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FieldAccess {
-        base: Box::new(rumoca_core::Expression::Array {
-            elements: vec![complex_div(2.0, 3.0), complex_div(5.0, 7.0)],
-            is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
-        }),
-        field: "re".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("projected complex division over array literal should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) - (2.0 / 13.0)).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_complex_output_with_array_literal_field_input() {
-    let mut functions = IndexMap::new();
-    let mut function = rumoca_core::Function::new("Pkg.pickFirstComplexField", Default::default());
-    function.inputs.push(
-        rumoca_core::FunctionParam::new("c", "Modelica.ComplexMath.Complex").with_dims(vec![1]),
-    );
-    function.outputs.push(rumoca_core::FunctionParam::new(
-        "result",
-        "Modelica.ComplexMath.Complex",
-    ));
-    function.body.push(rumoca_core::Statement::Assignment {
-        comp: component_ref("result"),
-        value: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "Complex",
-            )),
-            args: vec![
-                rumoca_core::Expression::FieldAccess {
-                    base: Box::new(rumoca_core::Expression::Index {
-                        base: Box::new(rumoca_core::Expression::VarRef {
-                            name: rumoca_core::Reference::from_component_reference(
-                                test_component_ref_from_name("c"),
-                            ),
-                            subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        subscripts: vec![rumoca_core::Subscript::generated_index(
-                            1,
-                            rumoca_core::Span::DUMMY,
-                        )],
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    field: "re".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                },
-                rumoca_core::Expression::FieldAccess {
-                    base: Box::new(rumoca_core::Expression::Index {
-                        base: Box::new(rumoca_core::Expression::VarRef {
-                            name: rumoca_core::Reference::from_component_reference(
-                                test_component_ref_from_name("c"),
-                            ),
-                            subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        subscripts: vec![rumoca_core::Subscript::generated_index(
-                            1,
-                            rumoca_core::Span::DUMMY,
-                        )],
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    field: "im".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ],
-            is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
-        },
-
-        span: rumoca_core::Span::DUMMY,
-    });
-    functions.insert(function.name.clone(), function);
-
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let arg = rumoca_core::Expression::Array {
-        elements: vec![rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "Complex",
-            )),
-            args: vec![lit(2.0), lit(-3.0)],
-            is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
-        }],
-        is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-            "Pkg.pickFirstComplexField.result.im",
-        )),
-        args: vec![arg],
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered =
-        lower_expression(&expr, &VarLayout::default(), &functions).expect("function should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) + 3.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_handles_projected_complex_sum_with_encoded_slice_varref() {
-    let mut functions = IndexMap::new();
-    let mut function = rumoca_core::Function::new("Pkg.sumComplexEncoded", Default::default());
-    function.inputs.push(
-        rumoca_core::FunctionParam::new("v", "Modelica.ComplexMath.Complex").with_dims(vec![3]),
-    );
-    function.outputs.push(rumoca_core::FunctionParam::new(
-        "result",
-        "Modelica.ComplexMath.Complex",
-    ));
-    function.body.push(rumoca_core::Statement::Assignment {
-        comp: component_ref("result"),
-        value: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "Complex",
-            )),
-            args: vec![
-                rumoca_core::Expression::BuiltinCall {
-                    function: rumoca_core::BuiltinFunction::Sum,
-                    args: vec![rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::from_component_reference(
-                            test_component_ref_from_name("v[:].re"),
-                        ),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    }],
-                    span: rumoca_core::Span::DUMMY,
-                },
-                rumoca_core::Expression::BuiltinCall {
-                    function: rumoca_core::BuiltinFunction::Sum,
-                    args: vec![rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::from_component_reference(
-                            test_component_ref_from_name("v[:].im"),
-                        ),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    }],
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ],
-            is_constructor: true,
-            span: rumoca_core::Span::DUMMY,
-        },
-
-        span: rumoca_core::Span::DUMMY,
-    });
-    functions.insert(function.name.clone(), function);
-
-    let lit = |value: f64| rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let arg = rumoca_core::Expression::Array {
-        elements: vec![
-            rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::from_component_reference(
-                    test_component_ref_from_name("Complex"),
-                ),
-                args: vec![lit(2.0), lit(-3.0)],
-                is_constructor: true,
-                span: rumoca_core::Span::DUMMY,
-            },
-            rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::from_component_reference(
-                    test_component_ref_from_name("Complex"),
-                ),
-                args: vec![lit(1.0), lit(4.0)],
-                is_constructor: true,
-                span: rumoca_core::Span::DUMMY,
-            },
-            rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::from_component_reference(
-                    test_component_ref_from_name("Complex"),
-                ),
-                args: vec![lit(-5.0), lit(2.0)],
-                is_constructor: true,
-                span: rumoca_core::Span::DUMMY,
-            },
-        ],
-        is_matrix: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-            "Pkg.sumComplexEncoded.result.re",
-        )),
-        args: vec![arg],
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered =
-        lower_expression(&expr, &VarLayout::default(), &functions).expect("function should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) + 2.0).abs() < 1e-12);
-}
-#[test]
-fn lower_expression_der_builtin_returns_zero() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
-    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let expr = rumoca_core::Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Der,
-        args: vec![rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
-                "x",
-            )),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        }],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let lowered =
-        lower_expression(&expr, &layout, &IndexMap::new()).expect("der builtin should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[1.2], &[], 0.0);
-    assert!(read_reg(&regs, lowered.result).abs() < 1e-12);
 }

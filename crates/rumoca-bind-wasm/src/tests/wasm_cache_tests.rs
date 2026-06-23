@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
 
     let source = r#"
@@ -61,13 +61,13 @@ fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
         "warm completion should still avoid the standard resolved session"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]
 fn test_wasm_lsp_diagnostics_reuse_semantic_diagnostics_cache() {
     let _guard = session_test_guard();
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
     reset_session_cache_stats();
 
     let source = r#"
@@ -134,5 +134,5 @@ fn test_wasm_lsp_diagnostics_reuse_semantic_diagnostics_cache() {
         "warm diagnostics should reuse the model-stage diagnostics cache"
     );
 
-    clear_source_root_cache();
+    clear_source_root_cache().expect("clear source-root cache");
 }

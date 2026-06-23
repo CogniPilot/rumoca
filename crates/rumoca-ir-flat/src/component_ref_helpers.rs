@@ -57,7 +57,10 @@ fn component_ref_with_dynamic_final_subscripts(cr: &ast::ComponentReference) -> 
         return None;
     }
 
-    let last_subs: Vec<Subscript> = last_subs_ast.iter().map(subscript_from_ast).collect();
+    let last_subs: Vec<Subscript> = last_subs_ast
+        .iter()
+        .map(|sub| subscript_from_ast(sub, cr.span))
+        .collect();
     let has_dynamic = last_subs
         .iter()
         .any(|sub| !matches!(sub, Subscript::Index { .. }));

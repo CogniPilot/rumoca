@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 /// Phase 5.2 tests: compile solve-IR to GPU-native code blobs (PTX / AMDGPU ISA).
 ///
 /// These tests exercise the full GPU compilation pipeline
@@ -21,6 +22,7 @@ fn compile_to_gpu_blob(
 }
 
 fn decay_solve() -> SolveProblem {
+    let label = "gpu_ptx_decay.mo";
     let row = vec![
         LinearOp::LoadY { dst: 0, index: 0 },
         LinearOp::Unary {
@@ -31,7 +33,10 @@ fn decay_solve() -> SolveProblem {
         LinearOp::StoreOutput { src: 1 },
     ];
     SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![row]),
+        ScalarProgramBlock::with_source_span(
+            vec![row],
+            Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        ),
     ))
 }
 

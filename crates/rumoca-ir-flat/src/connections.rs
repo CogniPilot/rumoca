@@ -6,7 +6,7 @@
 //! - Spanning trees for equation generation
 
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{DefId, Span};
+use rumoca_core::{DefId, ProvenanceSpan, Span};
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
@@ -109,10 +109,10 @@ impl Hash for ConnectedVariable {
 
 impl ConnectedVariable {
     /// Create a new connected variable.
-    pub fn new(name: VarName, is_inside: bool) -> Self {
+    pub fn new(name: VarName, source_span: ProvenanceSpan, is_inside: bool) -> Self {
         Self {
             name,
-            source_span: Span::DUMMY,
+            source_span: source_span.span(),
             is_inside,
             connector_type: None,
         }
@@ -262,11 +262,11 @@ pub struct GraphEdge {
 
 impl GraphEdge {
     /// Create a new edge.
-    pub fn new(a: VarName, b: VarName) -> Self {
+    pub fn new(a: VarName, b: VarName, source_span: ProvenanceSpan) -> Self {
         Self {
             a,
             b,
-            source_span: Span::DUMMY,
+            source_span: source_span.span(),
             in_spanning_tree: false,
         }
     }
@@ -330,11 +330,16 @@ pub struct SpanningTreeEdge {
 
 impl SpanningTreeEdge {
     /// Create a new spanning tree edge.
-    pub fn new(parent: VarName, child: VarName, required: bool) -> Self {
+    pub fn new(
+        parent: VarName,
+        child: VarName,
+        source_span: ProvenanceSpan,
+        required: bool,
+    ) -> Self {
         Self {
             parent,
             child,
-            source_span: Span::DUMMY,
+            source_span: source_span.span(),
             required,
         }
     }
@@ -361,10 +366,10 @@ pub struct EqualityConstraint {
 
 impl EqualityConstraint {
     /// Create a new equality constraint definition.
-    pub fn new(num_constraints: usize) -> Self {
+    pub fn new(num_constraints: usize, source_span: ProvenanceSpan) -> Self {
         Self {
             function_def: None,
-            source_span: Span::DUMMY,
+            source_span: source_span.span(),
             num_constraints,
         }
     }

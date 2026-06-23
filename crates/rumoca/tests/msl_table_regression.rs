@@ -1,20 +1,24 @@
 //! Regression tests for MSL table-driven no-state simulation behavior.
 
-use rumoca_core::Span;
+use rumoca_core::{SourceId, Span};
 use rumoca_ir_dae as dae;
 use rumoca_sim::{SimOptions, simulate_dae};
+
+fn fixture_span() -> Span {
+    Span::from_offsets(SourceId::from_source_name("msl_table_regression.rs"), 0, 1)
+}
 
 fn real_lit(value: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
 fn int_lit(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -22,7 +26,7 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -30,7 +34,7 @@ fn array_expr(elements: Vec<rumoca_core::Expression>, is_matrix: bool) -> rumoca
     rumoca_core::Expression::Array {
         elements,
         is_matrix,
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -39,7 +43,7 @@ fn call_expr(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Exp
         name: rumoca_core::VarName::new(name).into(),
         args,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -51,7 +55,10 @@ fn scalar_var(name: &str, start: Option<rumoca_core::Expression>) -> dae::Variab
     dae::Variable {
         name: rumoca_core::VarName::new(name),
         start,
-        ..dae::Variable::new(rumoca_core::VarName::new(name))
+        ..dae::Variable::new(
+            rumoca_core::VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        )
     }
 }
 
@@ -60,7 +67,10 @@ fn array_var(name: &str, dims: Vec<i64>, start: rumoca_core::Expression) -> dae:
         name: rumoca_core::VarName::new(name),
         dims,
         start: Some(start),
-        ..dae::Variable::new(rumoca_core::VarName::new(name))
+        ..dae::Variable::new(
+            rumoca_core::VarName::new(name),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        )
     }
 }
 
@@ -69,7 +79,7 @@ fn ge_time_expr(value: f64) -> rumoca_core::Expression {
         op: rumoca_core::OpBinary::Ge,
         lhs: Box::new(var_ref("time")),
         rhs: Box::new(real_lit(value)),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -81,19 +91,20 @@ fn index_expr(
         base: Box::new(base),
         subscripts: subscripts
             .into_iter()
-            .map(|expr| rumoca_core::Subscript::generated_expr(Box::new(expr)))
+            .map(|expr| rumoca_core::Subscript::generated_expr(Box::new(expr), fixture_span()))
             .collect(),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
 fn explicit_eq(lhs: &str, rhs: rumoca_core::Expression, origin: &str) -> dae::Equation {
-    dae::Equation::explicit(rumoca_core::VarName::new(lhs), rhs, Span::DUMMY, origin)
+    dae::Equation::explicit(rumoca_core::VarName::new(lhs), rhs, fixture_span(), origin)
 }
 
 #[test]
 fn native_no_state_simulation_recomputes_external_constant_segment_time_table() {
     let mut dae_model = dae::Dae::default();
+    let span = fixture_span();
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("tableID"),
         dae::Variable {
@@ -116,24 +127,24 @@ fn native_no_state_simulation_recomputes_external_constant_segment_time_table() 
                     int_lit(1), // HoldLastPoint
                 ],
             )),
-            ..dae::Variable::new(rumoca_core::VarName::new("tableID"))
+            ..dae::Variable::new(rumoca_core::VarName::new("tableID"), span)
         },
     );
     dae_model.variables.outputs.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(rumoca_core::VarName::new("y"), span),
     );
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("u"),
-        dae::Variable::new(rumoca_core::VarName::new("u")),
+        dae::Variable::new(rumoca_core::VarName::new("u"), span),
     );
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("b"),
-        dae::Variable::new(rumoca_core::VarName::new("b")),
+        dae::Variable::new(rumoca_core::VarName::new("b"), span),
     );
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("c"),
-        dae::Variable::new(rumoca_core::VarName::new("c")),
+        dae::Variable::new(rumoca_core::VarName::new("c"), span),
     );
     dae_model.continuous.equations.push(explicit_eq(
         "y",
@@ -155,12 +166,12 @@ fn native_no_state_simulation_recomputes_external_constant_segment_time_table() 
                     op: rumoca_core::OpBinary::Ge,
                     lhs: Box::new(var_ref("u")),
                     rhs: Box::new(real_lit(0.5)),
-                    span: rumoca_core::Span::DUMMY,
+                    span: fixture_span(),
                 },
                 real_lit(1.0),
             )],
             else_branch: Box::new(real_lit(0.0)),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         },
         "b = u >= threshold",
     ));
@@ -383,7 +394,7 @@ fn table_output_expr(
             })
             .collect(),
         else_branch: Box::new(var_ref(fallback)),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -472,6 +483,7 @@ fn native_no_state_simulation_settles_msl_buf3s_truth_table_alias_chain() {
 #[test]
 fn native_no_state_simulation_refreshes_table_driven_boolean_discrete_chain() {
     let mut dae_model = dae::Dae::default();
+    let span = fixture_span();
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("tableID"),
         dae::Variable {
@@ -494,24 +506,24 @@ fn native_no_state_simulation_refreshes_table_driven_boolean_discrete_chain() {
                     int_lit(1), // HoldLastPoint
                 ],
             )),
-            ..dae::Variable::new(rumoca_core::VarName::new("tableID"))
+            ..dae::Variable::new(rumoca_core::VarName::new("tableID"), span)
         },
     );
     dae_model.variables.outputs.insert(
         rumoca_core::VarName::new("y"),
-        dae::Variable::new(rumoca_core::VarName::new("y")),
+        dae::Variable::new(rumoca_core::VarName::new("y"), span),
     );
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("u"),
-        dae::Variable::new(rumoca_core::VarName::new("u")),
+        dae::Variable::new(rumoca_core::VarName::new("u"), span),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("b"),
-        dae::Variable::new(rumoca_core::VarName::new("b")),
+        dae::Variable::new(rumoca_core::VarName::new("b"), span),
     );
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new("c"),
-        dae::Variable::new(rumoca_core::VarName::new("c")),
+        dae::Variable::new(rumoca_core::VarName::new("c"), span),
     );
     dae_model.continuous.equations.push(explicit_eq(
         "y",
@@ -531,7 +543,7 @@ fn native_no_state_simulation_refreshes_table_driven_boolean_discrete_chain() {
             op: rumoca_core::OpBinary::Ge,
             lhs: Box::new(var_ref("u")),
             rhs: Box::new(real_lit(0.5)),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         },
         "b = u >= threshold",
     ));

@@ -115,21 +115,24 @@ pub struct GamepadButton {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeyboardConfig {
     #[serde(default)]
-    pub decay: Option<KeyDecay>,
+    pub decay: Option<KeyboardDecay>,
     #[serde(default)]
     pub keys: HashMap<String, KeyBinding>,
     #[serde(default)]
     pub integrators: HashMap<String, Integrator>,
 }
 
-/// Each frame, multiply `targets` by `factor^(dt/ref_dt)`.
 #[derive(Debug, Deserialize)]
-pub struct KeyDecay {
-    pub targets: Vec<String>,
-    pub factor: f64,
-    pub ref_dt: f64,
+pub struct KeyboardDecay {
+    #[serde(default)]
+    pub factor: Option<f64>,
+    #[serde(default)]
+    pub ref_dt: Option<f64>,
+    #[serde(default)]
+    pub targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

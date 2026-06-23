@@ -1,6 +1,14 @@
 use super::*;
 use rumoca_core::Span;
 
+fn test_span() -> Span {
+    Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_flatten_substitute_constant_source_91.mo"),
+        10,
+        22,
+    )
+}
+
 fn simple_assignment(value: rumoca_core::Expression) -> rumoca_core::Statement {
     rumoca_core::Statement::Assignment {
         comp: rumoca_core::ComponentReference {
@@ -23,6 +31,17 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
         name: rumoca_core::Reference::new(name),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn spanned_var_ref(name: &str) -> rumoca_core::Expression {
+    let var_name = rumoca_core::VarName::new(name);
+    let component_ref = rumoca_core::component_reference_from_flat_name(&var_name, test_span())
+        .expect("test reference should parse as a component reference");
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(component_ref),
+        subscripts: vec![],
+        span: test_span(),
     }
 }
 
@@ -55,7 +74,7 @@ fn add_primitive_variable(model: &mut flat::Model, name: &str) {
         flat::Variable {
             name: rumoca_core::VarName::new(name),
             is_primitive: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
 }
@@ -68,7 +87,7 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
         flat::Variable {
             name: rumoca_core::VarName::new("port_a[1].Q_flow"),
             is_primitive: true,
-            ..Default::default()
+            ..flat::Variable::empty_with_span(test_span())
         },
     );
     model.add_equation(flat::Equation::new(
@@ -139,13 +158,15 @@ fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
 fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("u", "Real").with_default(
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("Pkg.Constants.k"),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        },
-    ));
+    function.add_input(
+        rumoca_core::FunctionParam::new("u", "Real", test_span()).with_default(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("Pkg.Constants.k"),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+    );
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -164,7 +185,7 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -201,7 +222,8 @@ fn substitutes_scoped_relative_constant_alias_field() {
         &rustc_hash::FxHashSet::default(),
         &HashSet::new(),
         "medium",
-    );
+    )
+    .unwrap();
 
     assert!(matches!(
         substituted,
@@ -216,13 +238,15 @@ fn substitutes_scoped_relative_constant_alias_field() {
 fn substitutes_function_scope_constants_inside_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("u", "Real").with_default(
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("reference_X"),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        },
-    ));
+    function.add_input(
+        rumoca_core::FunctionParam::new("u", "Real", test_span()).with_default(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("reference_X"),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+    );
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -244,7 +268,7 @@ fn substitutes_function_scope_constants_inside_defaults_and_body() {
     ctx.constant_values
         .insert("Pkg.reference_X".to_string(), reference_x.clone());
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -264,7 +288,7 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("u", "Real")
+        rumoca_core::FunctionParam::new("u", "Real", test_span())
             .with_default(var_ref("ConcreteMedium.data.MM")),
     );
     model.add_function(function);
@@ -297,7 +321,7 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
         var_ref("PartialMedium.data"),
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -319,7 +343,7 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("k", "Real"));
+    function.add_input(rumoca_core::FunctionParam::new("k", "Real", test_span()));
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -338,7 +362,7 @@ fn does_not_substitute_function_local_names() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -357,17 +381,22 @@ fn does_not_substitute_function_local_names() {
 fn does_not_substitute_indexed_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g_indexed", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("table", "Real").with_dims(vec![7, 2]));
+    function.add_input(
+        rumoca_core::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]),
+    );
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("table"),
             subscripts: vec![
-                rumoca_core::Subscript::generated_expr(Box::new(rumoca_core::Expression::VarRef {
-                    name: rumoca_core::Reference::new("next"),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                })),
+                rumoca_core::Subscript::generated_expr(
+                    Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("next"),
+                        subscripts: vec![],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    rumoca_core::Span::DUMMY,
+                ),
                 rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
             ],
             span: rumoca_core::Span::DUMMY,
@@ -397,7 +426,7 @@ fn does_not_substitute_indexed_function_local_names() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -426,7 +455,7 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
         .push(simple_assignment(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("Modelica.Blocks.Sources.IntegerTable.table[1,1]"),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }));
     model.add_function(function);
 
@@ -449,7 +478,7 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -484,6 +513,38 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
 }
 
 #[test]
+fn rejects_unspanned_inline_indexed_constant_varref_names() {
+    let mut model = flat::Model::new();
+    let mut function = rumoca_core::Function::new("Pkg.unspanned_inline", Span::DUMMY);
+    function
+        .body
+        .push(simple_assignment(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("Pkg.table[1]"),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }));
+    model.add_function(function);
+
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        "Pkg.table".to_string(),
+        rumoca_core::Expression::Array {
+            elements: vec![int_literal(1)],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    match substitute_known_constants_in_flat(&mut model, &ctx) {
+        Err(FlattenError::MissingSourceContext { reason }) => assert!(
+            reason.contains("flatten inline indexed constant"),
+            "unexpected reason: {reason}"
+        ),
+        other => panic!("expected missing-source-context error, got {other:?}"),
+    }
+}
+
+#[test]
 fn inline_indexed_name_uses_structured_scalar_name_parser() {
     assert_eq!(
         split_inline_indexed_name("table[1, 2]"),
@@ -503,7 +564,9 @@ fn inline_indexed_name_uses_structured_scalar_name_parser() {
 fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.inline_local", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("table", "Real").with_dims(vec![7, 2]));
+    function.add_input(
+        rumoca_core::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]),
+    );
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -536,7 +599,7 @@ fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -569,7 +632,7 @@ fn substitutes_variable_attribute_constants_in_variable_scope() {
     );
     ctx.parameter_values.insert("tank.medium.nS".to_string(), 1);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let start = model
         .variables
@@ -606,7 +669,7 @@ fn substitutes_component_equation_constants_in_origin_scope() {
     );
     ctx.parameter_values.insert("tank.medium.nS".to_string(), 1);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let residual = &model.equations[0].residual;
     assert!(!expr_contains_var_ref(residual, "reference_X"));
@@ -632,7 +695,7 @@ fn substitutes_fully_qualified_constant_alias_in_declaration_scope() {
     );
     ctx.parameter_values.insert("Pkg.Medium.nS".to_string(), 1);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let start = model
         .variables
@@ -650,7 +713,7 @@ fn substitutes_fully_qualified_constant_alias_in_declaration_scope() {
 fn does_not_substitute_array_shaped_scalar_parameter_ref() {
     let mut model = flat::Model::new();
     model.equations.push(flat::Equation::new(
-        var_ref("CriticalDamping.c0"),
+        spanned_var_ref("CriticalDamping.c0"),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
             component: "CriticalDamping".to_string(),
@@ -663,7 +726,7 @@ fn does_not_substitute_array_shaped_scalar_parameter_ref() {
     ctx.real_parameter_values
         .insert("CriticalDamping.c0".to_string(), 0.0);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     assert!(matches!(
         model.equations[0].residual,
@@ -689,7 +752,7 @@ fn does_not_substitute_scoped_zero_length_array_parameter_ref() {
     ctx.real_parameter_values
         .insert("CriticalDamping.c0".to_string(), 0.0);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     assert!(matches!(
         model.equations[0].residual,
@@ -720,7 +783,7 @@ fn does_not_substitute_array_shaped_scalar_constant_expr() {
         },
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     assert!(matches!(
         model.equations[0].residual,
@@ -733,7 +796,7 @@ fn does_not_substitute_array_shaped_scalar_constant_expr() {
 fn materializes_referenced_zero_sized_array_declaration() {
     let mut model = flat::Model::new();
     model.equations.push(flat::Equation::new(
-        var_ref("CriticalDamping.c0"),
+        spanned_var_ref("CriticalDamping.c0"),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
             component: "CriticalDamping".to_string(),
@@ -744,7 +807,7 @@ fn materializes_referenced_zero_sized_array_declaration() {
     ctx.array_dimensions
         .insert("CriticalDamping.c0".to_string(), vec![0]);
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let var = model
         .variables
@@ -781,7 +844,7 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
         false,
     );
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions
@@ -803,7 +866,11 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
 fn does_not_resolve_function_local_record_root_through_constant_alias() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
-    function.add_output(rumoca_core::FunctionParam::new("g", "Common.GibbsDerivs"));
+    function.add_output(rumoca_core::FunctionParam::new(
+        "g",
+        "Common.GibbsDerivs",
+        test_span(),
+    ));
     function.body.push(simple_assignment(var_ref("g.tau")));
     model.add_function(function);
 
@@ -811,7 +878,7 @@ fn does_not_resolve_function_local_record_root_through_constant_alias() {
     ctx.constant_values
         .insert("g".to_string(), var_ref("Modelica.Constants.g_n"));
 
-    substitute_known_constants_in_flat(&mut model, &ctx);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
     let function = model
         .functions

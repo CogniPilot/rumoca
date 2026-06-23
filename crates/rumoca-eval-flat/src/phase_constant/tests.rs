@@ -1,5 +1,13 @@
 use super::*;
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("eval_flat_phase_constant_source_7.mo"),
+        0,
+        1,
+    )
+}
+
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
@@ -114,7 +122,7 @@ fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core:
         name: rumoca_core::Reference::new(name),
         args,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -123,9 +131,17 @@ fn scalar_indexing_function(
     input_type: &str,
     output_type: &str,
 ) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new(name, rumoca_core::Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("x", input_type));
-    function.add_output(rumoca_core::FunctionParam::new("y", output_type));
+    let mut function = rumoca_core::Function::new(name, test_span());
+    function.add_input(rumoca_core::FunctionParam::new(
+        "x",
+        input_type,
+        test_span(),
+    ));
+    function.add_output(rumoca_core::FunctionParam::new(
+        "y",
+        output_type,
+        test_span(),
+    ));
     function.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("y"),
         value: indexed_var("x", 1),
@@ -190,10 +206,10 @@ fn eval_integer_exponentiation_for_structural_dimensions() {
 #[test]
 fn infer_user_function_output_dims_from_shape_expr() {
     let mut functions = FxHashMap::default();
-    let mut function = rumoca_core::Function::new("Pkg.indices", rumoca_core::Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("m", "Integer"));
+    let mut function = rumoca_core::Function::new("Pkg.indices", test_span());
+    function.add_input(rumoca_core::FunctionParam::new("m", "Integer", test_span()));
     function.add_output(
-        rumoca_core::FunctionParam::new("ind", "Integer")
+        rumoca_core::FunctionParam::new("ind", "Integer", test_span())
             .with_dims(vec![0])
             .with_shape_expr(vec![rumoca_core::Subscript::expr(
                 Box::new(binary(rumoca_core::OpBinary::Add, var("m"), int(1))),
@@ -229,9 +245,17 @@ fn infer_user_function_output_dims_from_shape_expr() {
 #[test]
 fn infer_scalar_user_function_broadcasts_array_argument_dims() {
     let mut functions = FxHashMap::default();
-    let mut function = rumoca_core::Function::new("Cv.from_deg", rumoca_core::Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("degree", "Real"));
-    function.add_output(rumoca_core::FunctionParam::new("radian", "Real"));
+    let mut function = rumoca_core::Function::new("Cv.from_deg", test_span());
+    function.add_input(rumoca_core::FunctionParam::new(
+        "degree",
+        "Real",
+        test_span(),
+    ));
+    function.add_output(rumoca_core::FunctionParam::new(
+        "radian",
+        "Real",
+        test_span(),
+    ));
     functions.insert("Cv.from_deg".to_string(), function);
 
     let known_ints = FxHashMap::default();

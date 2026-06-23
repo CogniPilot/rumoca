@@ -204,8 +204,8 @@ fn literal_shape_expr(shape_expr: &[Subscript]) -> Option<Vec<usize>> {
     Some(dims)
 }
 
-impl Default for Component {
-    fn default() -> Self {
+impl Component {
+    pub fn empty_with_span(start_span: Span) -> Self {
         Self {
             def_id: None,
             type_id: None,
@@ -217,7 +217,7 @@ impl Default for Component {
             causality: Causality::Empty,
             connection: Connection::default(),
             description: Vec::new(),
-            start: Expression::default(),
+            start: Expression::Empty { span: start_span },
             start_is_modification: false,
             start_has_each: false,
             has_explicit_binding: false,
@@ -251,6 +251,14 @@ impl Default for Component {
 mod component_shape_contract_tests {
     use super::*;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("component_shape_test.mo"),
+            1,
+            2,
+        )
+    }
+
     fn int_dim(value: usize) -> Subscript {
         Subscript::Expression(Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
@@ -268,7 +276,7 @@ mod component_shape_contract_tests {
             name: "x".to_string(),
             shape: vec![2, 3],
             shape_expr: vec![int_dim(2), int_dim(3)],
-            ..Default::default()
+            ..Component::empty_with_span(test_span())
         };
 
         assert_eq!(component.validate_shape_contract(), Ok(()));
@@ -279,7 +287,7 @@ mod component_shape_contract_tests {
         let component = Component {
             name: "x".to_string(),
             shape: vec![2],
-            ..Default::default()
+            ..Component::empty_with_span(test_span())
         };
 
         assert_eq!(
@@ -296,7 +304,7 @@ mod component_shape_contract_tests {
             name: "x".to_string(),
             shape: vec![2],
             shape_expr: vec![int_dim(3)],
-            ..Default::default()
+            ..Component::empty_with_span(test_span())
         };
 
         assert_eq!(
@@ -602,19 +610,6 @@ pub struct ExtendModification {
     pub redeclare: bool,
 }
 
-impl Default for ExtendModification {
-    fn default() -> Self {
-        Self {
-            expr: Expression::Empty {
-                span: rumoca_core::Span::DUMMY,
-            },
-            each: false,
-            final_: false,
-            redeclare: false,
-        }
-    }
-}
-
 /// Import clause for bringing names into scope
 /// Modelica supports several import styles:
 /// - `import A.B.C;` - qualified import (use as C)
@@ -720,7 +715,7 @@ fn format_subscripts(subs: &[Subscript]) -> String {
         .join(",")
 }
 
-#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct ComponentReference {
     /// Whether this reference starts with a `.` (local lookup).
@@ -761,21 +756,21 @@ impl ComponentReference {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct EquationBlock {
     pub cond: Expression,
     pub eqs: Vec<Equation>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct StatementBlock {
     pub cond: Expression,
     pub stmts: Vec<Statement>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct ForIndex {
     pub ident: Token,
@@ -973,12 +968,6 @@ pub enum Expression {
         field: String,
         span: Span,
     },
-}
-
-impl Default for Expression {
-    fn default() -> Self {
-        Self::Empty { span: Span::DUMMY }
-    }
 }
 
 impl Debug for Expression {

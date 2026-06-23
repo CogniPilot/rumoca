@@ -3,6 +3,14 @@ use super::*;
 #[cfg(test)]
 mod clocked_initial_tests;
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("lower_intrinsics_test.mo"),
+        0,
+        1,
+    )
+}
+
 #[test]
 fn lower_expression_supports_interval_intrinsic() {
     let layout = VarLayout::default();
@@ -12,19 +20,118 @@ fn lower_expression_supports_interval_intrinsic() {
             name: rumoca_core::VarName::new("Clock").into(),
             args: vec![rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.2),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
             is_constructor: false,
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered =
         lower_expression(&expr, &layout, &IndexMap::new()).expect("interval should lower");
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
     assert!((read_reg(&regs, lowered.result) - 0.2).abs() < 1e-12);
+}
+
+#[test]
+fn malformed_synchronous_intrinsics_report_call_span() {
+    let layout = VarLayout::default();
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("missing_sync_arg.mo"),
+        5,
+        19,
+    );
+    for name in ["previous", "hold", "noClock", "superSample"] {
+        let expr = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new(name).into(),
+            args: Vec::new(),
+            is_constructor: false,
+            span,
+        };
+        let result = lower_expression(&expr, &layout, &IndexMap::new());
+        let Err(err) = result else {
+            panic!("{name} without required arguments should fail");
+        };
+        assert_eq!(err.source_span(), Some(span), "{name} should use call span");
+        assert!(
+            err.reason().contains("requires argument 1"),
+            "{name} error should describe missing argument: {}",
+            err.reason()
+        );
+    }
+}
+
+#[test]
+fn malformed_synchronous_builtins_report_call_span() {
+    let layout = VarLayout::default();
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("missing_sync_builtin_arg.mo"),
+        11,
+        25,
+    );
+    for function in [
+        rumoca_core::BuiltinFunction::Sample,
+        rumoca_core::BuiltinFunction::Edge,
+        rumoca_core::BuiltinFunction::Change,
+    ] {
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function,
+            args: Vec::new(),
+            span,
+        };
+        let result = lower_expression(&expr, &layout, &IndexMap::new());
+        let Err(err) = result else {
+            panic!("{} without required arguments should fail", function.name());
+        };
+        assert_eq!(
+            err.source_span(),
+            Some(span),
+            "{} should use call span",
+            function.name()
+        );
+        assert!(
+            err.reason().contains("requires argument 1"),
+            "{} error should describe missing argument: {}",
+            function.name(),
+            err.reason()
+        );
+    }
+}
+
+#[test]
+fn malformed_complex_projection_intrinsics_report_call_span() {
+    let layout = VarLayout::default();
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("missing_complex_arg.mo"),
+        7,
+        29,
+    );
+    for name in ["Modelica.ComplexMath.sum", "Complex.'+'"] {
+        let expr = rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name(name),
+                ),
+                args: Vec::new(),
+                is_constructor: false,
+                span,
+            }),
+            field: "re".to_string(),
+            span,
+        };
+        let result = lower_expression(&expr, &layout, &IndexMap::new());
+        let Err(err) = result else {
+            panic!("{name}.re without required arguments should fail");
+        };
+        assert_eq!(err.source_span(), Some(span), "{name} should use call span");
+        assert!(
+            err.reason().contains("requires"),
+            "{name} error should describe missing argument: {}",
+            err.reason()
+        );
+    }
 }
 
 #[test]
@@ -35,14 +142,14 @@ fn lower_expression_supports_sample_start_interval_tick() {
         args: vec![
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.2),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.1),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("MLS §16.5.1 sample(start, interval) should lower");
@@ -67,9 +174,9 @@ fn lower_expression_samples_time_from_runtime_clock_not_pre_parameter() {
         args: vec![rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("time").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("sample(time) should lower to the runtime time scalar");
@@ -101,17 +208,17 @@ fn lower_discrete_rhs_holds_clocked_sample_between_clock_ticks() {
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("clock").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = sample(u, clock)".to_string(),
         scalar_count: 1,
     });
@@ -160,17 +267,17 @@ fn lower_discrete_rhs_holds_vector_clocked_sample_elements_between_ticks() {
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("clock").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         // MLS §10.6 and §16.5.1: array-valued sample equations denote
         // element-wise clocked sample equations; each scalar target holds
         // between ticks and samples the corresponding source left limit.
@@ -225,18 +332,18 @@ fn lower_discrete_rhs_samples_internal_vector_current_elements_at_initial_clock_
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("clock").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = __rumoca_sample(u, clock)".to_string(),
         scalar_count: 2,
     });
@@ -299,12 +406,12 @@ fn lower_discrete_rhs_reads_previous_array_from_pre_slots() {
             args: vec![rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("u").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = previous(u)".to_string(),
         scalar_count: 2,
     });
@@ -355,17 +462,17 @@ fn lower_discrete_rhs_samples_current_value_at_initial_clock_tick() {
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("clock").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = sample(u, clock)".to_string(),
         scalar_count: 1,
     });
@@ -423,17 +530,17 @@ fn lower_discrete_rhs_uses_dynamic_clock_var_for_sample_clock() {
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("clock").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = sample(u, clock)".to_string(),
         scalar_count: 1,
     });
@@ -483,17 +590,17 @@ fn lower_discrete_rhs_treats_sample_parameter_interval_as_periodic_tick() {
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("startTime").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("period").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = sample(startTime, period)".to_string(),
         scalar_count: 1,
     });
@@ -526,7 +633,7 @@ fn lower_expression_supports_terminal_builtin_as_runtime_false() {
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Terminal,
         args: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("MLS §8.6 terminal() should lower for ordinary simulation rows");
@@ -542,10 +649,10 @@ fn lower_expression_maps_capitalized_integer_intrinsic_function_call() {
         name: rumoca_core::VarName::new("Integer").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(3.7),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
         .expect("Integer should lower as intrinsic");
@@ -559,10 +666,10 @@ fn lower_expression_maps_strings_length_runtime_special() {
         name: rumoca_core::VarName::new("Modelica.Utilities.Strings.length").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("hello".to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
         .expect("Modelica.Utilities.Strings.length should lower");
@@ -578,18 +685,18 @@ fn lower_expression_does_not_fold_vector_length_as_string_length() {
             elements: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(3.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(4.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     assert!(
@@ -604,10 +711,10 @@ fn lower_expression_maps_strings_hash_string_runtime_special() {
         name: rumoca_core::VarName::new("Modelica.Utilities.Strings.hashString").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("Controller.noise1".to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
         .expect("Modelica.Utilities.Strings.hashString should lower");
@@ -622,7 +729,7 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
             .into(),
         args: vec![],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&global, &VarLayout::default(), &IndexMap::new())
         .expect("automaticGlobalSeed should lower");
@@ -633,10 +740,16 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
         name: rumoca_core::VarName::new("Modelica.Math.Random.Utilities.automaticLocalSeed").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("Controller.noise1".to_string()),
-            span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(92), 10, 29),
+            span: rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(
+                    "phase_solve_lower_tests_intrinsics_source_92.mo",
+                ),
+                10,
+                29,
+            ),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&local, &VarLayout::default(), &IndexMap::new())
         .expect("automaticLocalSeed should lower");
@@ -646,12 +759,16 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
 
 #[test]
 fn lower_expression_rejects_unlowered_full_path_name_runtime_special() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 10, 40);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_intrinsics_source_91.mo"),
+        10,
+        40,
+    );
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Files.fullPathName").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("a.txt".to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
         span,
@@ -663,12 +780,16 @@ fn lower_expression_rejects_unlowered_full_path_name_runtime_special() {
 
 #[test]
 fn lower_expression_rejects_unlowered_streams_read_line_runtime_special() {
-    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 50, 90);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_intrinsics_source_91.mo"),
+        50,
+        90,
+    );
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Streams.readLine").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("memory.txt".to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
         span,
@@ -689,10 +810,10 @@ fn lower_expression_maps_stream_connector_intrinsics_to_source_value() {
             args: vec![rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("port.h_outflow").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let lowered = lower_expression(&expr, &layout, &IndexMap::new())
             .expect("stream connector intrinsic should lower");
@@ -712,15 +833,15 @@ fn lower_expression_rejects_unlowered_advanced_string_scanner_runtime_specials()
             args: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::String("1".to_string()),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         let err = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
             .expect_err("unlowered scanner intrinsic should be rejected");
@@ -732,7 +853,7 @@ fn lower_expression_rejects_unlowered_advanced_string_scanner_runtime_specials()
 fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() {
     let mut functions = IndexMap::new();
     let mut find_last =
-        rumoca_core::Function::new("Modelica.Utilities.Strings.findLast", Default::default());
+        rumoca_core::Function::new("Modelica.Utilities.Strings.findLast", test_span());
     find_last.inputs.push(function_param("string"));
     find_last.inputs.push(function_param("searchString"));
     find_last.inputs.push(function_param("startIndex"));
@@ -742,18 +863,18 @@ fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() 
         block: rumoca_core::StatementBlock {
             cond: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(true),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             stmts: vec![rumoca_core::Statement::Assignment {
                 comp: component_ref("index"),
                 value: rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(1.0),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     });
     functions.insert(
         rumoca_core::VarName::new("Modelica.Utilities.Strings.findLast"),
@@ -765,22 +886,22 @@ fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() 
         args: vec![
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::String("file.csv".to_string()),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::String(".csv".to_string()),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
             named_arg(
                 "caseSensitive",
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(false),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
         ],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
         .expect("findLast should lower through runtime special override");
@@ -798,17 +919,17 @@ fn lower_expression_supports_edge_of_sample_start_interval_tick() {
             args: vec![
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(0.2),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Real(0.1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
 
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("MLS §8.6 and §16.5.1 edge(sample(...)) should lower");
@@ -826,10 +947,10 @@ fn lower_expression_supports_clock_constructor_tick() {
         name: rumoca_core::VarName::new("Clock").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(0.25),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&expr, &layout, &IndexMap::new())
         .expect("MLS §16.5.1 Clock(period) should lower");
@@ -854,10 +975,10 @@ fn lower_expression_supports_synchronous_value_intrinsics() {
         args: vec![rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("u").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&previous, &layout, &IndexMap::new())
         .expect("MLS §16.4 previous(v) should lower through solve-IR pre values");
@@ -868,10 +989,10 @@ fn lower_expression_supports_synchronous_value_intrinsics() {
         name: rumoca_core::VarName::new("hold").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(3.0),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&hold, &layout, &IndexMap::new())
         .expect("MLS §16.5.1 hold(v) should lower");
@@ -882,7 +1003,7 @@ fn lower_expression_supports_synchronous_value_intrinsics() {
         name: rumoca_core::VarName::new("firstTick").into(),
         args: vec![],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let lowered = lower_expression(&first_tick, &layout, &IndexMap::new())
         .expect("MLS §16.5.1 firstTick() should lower");
@@ -907,12 +1028,12 @@ fn lower_discrete_rhs_supports_interval_intrinsic_for_clocked_varref_metadata() 
             args: vec![rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("PI.u").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         // MLS §16.5.1: interval(v) uses the associated clock interval of v.
         origin: "test interval metadata".to_string(),
         scalar_count: 1,
@@ -945,17 +1066,17 @@ fn lower_discrete_rhs_preserves_super_sample_value_form_for_clocked_varref() {
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "y = superSample(u, 2)".to_string(),
         scalar_count: 1,
     });
@@ -990,7 +1111,7 @@ fn lower_discrete_rhs_uses_target_timing_for_inferred_clock_constructor() {
         dae::ClockSchedule {
             period_seconds: 0.02 / 3.0,
             phase_seconds: 0.0,
-            source_span: rumoca_core::Span::DUMMY,
+            source_span: test_span(),
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
@@ -1003,24 +1124,24 @@ fn lower_discrete_rhs_uses_target_timing_for_inferred_clock_constructor() {
                         name: rumoca_core::VarName::new("Clock").into(),
                         args: vec![],
                         is_constructor: false,
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     }],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 rumoca_core::Expression::VarRef {
                     name: rumoca_core::VarName::new("u").into(),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             )],
             else_branch: Box::new(rumoca_core::Expression::VarRef {
                 name: rumoca_core::VarName::new("y").into(),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "when Clock() then y = u".to_string(),
         scalar_count: 1,
     });
@@ -1059,7 +1180,7 @@ fn lower_discrete_rhs_uses_triggered_condition_for_event_clock_constructor() {
     let condition = rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new("u").into(),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     dae_model
         .clocks
@@ -1071,9 +1192,9 @@ fn lower_discrete_rhs_uses_triggered_condition_for_event_clock_constructor() {
             name: rumoca_core::VarName::new("Clock").into(),
             args: vec![condition],
             is_constructor: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: Default::default(),
+        span: test_span(),
         origin: "tick = Clock(u)".to_string(),
         scalar_count: 1,
     });

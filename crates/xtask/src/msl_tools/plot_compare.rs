@@ -12,7 +12,7 @@ use rumoca_sim::sim_trace_compare::{
     ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
 };
 use rumoca_sim::simulate_dae;
-use rumoca_sim::viz_web::{UPLOT_CSS, UPLOT_JS};
+use rumoca_sim::web::{uplot_css, uplot_js};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -90,6 +90,7 @@ pub fn run(args: Args) -> Result<()> {
         }
     };
     let payload = build_plot_payload(aligned, metric);
+    crate::web_assets::ensure_web_vendor_assets(&paths.repo_root)?;
     let html = generate_html(&args.model, &payload)?;
     let output_path = resolve_output_path(&paths, &args);
     write_output_html(&output_path, &html)?;
@@ -711,11 +712,13 @@ fn generate_html(model_name: &str, payload: &PlotPayload) -> Result<String> {
         serde_json::to_string(payload).context("failed to serialize plot payload")?;
     let model_json =
         serde_json::to_string(model_name).context("failed to serialize model name for JS")?;
+    let uplot_css = uplot_css().context("failed to load uPlot CSS from web package assets")?;
+    let uplot_js = uplot_js().context("failed to load uPlot JS from web package assets")?;
     Ok(format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <title>{model_name} — OMC vs Rumoca</title>\n\
-         <style>{UPLOT_CSS}</style>\n\
+         <style>{uplot_css}</style>\n\
          <style>{}</style>\n\
          </head>\n<body>\n\
          <div id=\"sidebar\">\n\
@@ -728,14 +731,12 @@ fn generate_html(model_name: &str, payload: &PlotPayload) -> Result<String> {
          <div id=\"header\">OMC vs Rumoca trace overlay</div>\n\
          <div id=\"plot\"></div>\n\
          </div>\n\
-         <script>{UPLOT_JS}</script>\n\
+         <script>{uplot_js}</script>\n\
          <script>{}</script>\n\
          </body>\n</html>",
         app_css(),
         app_js(&payload_json, &model_json),
         model_name = model_name,
-        UPLOT_CSS = UPLOT_CSS,
-        UPLOT_JS = UPLOT_JS,
     ))
 }
 

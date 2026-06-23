@@ -20,7 +20,7 @@
 //! - Outside connector (model boundary): sign = -1
 
 use indexmap::IndexSet;
-use rumoca_core::{Span, TypeId};
+use rumoca_core::{ProvenanceSpan, Span, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_flat as flat;
@@ -1671,16 +1671,15 @@ fn build_connection_sets(
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> (Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>, usize) {
+) -> Result<(Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>), FlattenError> {
     let mut potential_uf = UnionFind::new();
     let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
     let mut stream_interface_equation_count = 0usize;
 
-    // SPEC_0008: every generated connection equation carries the originating
-    // connect() span. Track the first connect() span seen for each variable
-    // (in input order) — this gives a deterministic representative span per
-    // set, computed as the min over each set's members.
+    // SPEC_0008: every generated connection equation carries real provenance.
+    // Track direct connect() spans first; scalarized array members that do not
+    // appear as direct endpoints use their owning flat variable span.
     let mut var_first_span: FxHashMap<rumoca_core::VarName, rumoca_core::Span> =
         FxHashMap::default();
     let record_var_span = |map: &mut FxHashMap<rumoca_core::VarName, rumoca_core::Span>,
@@ -1700,14 +1699,6 @@ fn build_connection_sets(
             conn.span,
         );
     }
-    let representative_span =
-        |vars: &[rumoca_core::VarName],
-         var_first_span: &FxHashMap<rumoca_core::VarName, rumoca_core::Span>| {
-            vars.iter()
-                .filter_map(|v| var_first_span.get(v).copied())
-                .min_by_key(|s| (s.start.0, s.end.0))
-                .unwrap_or(rumoca_core::Span::DUMMY)
-        };
 
     // Group connections by scope (hierarchy level where connect was declared).
     let mut connections_by_scope: IndexMap<&str, Vec<&ast::InstanceConnection>> =
@@ -1741,7 +1732,7 @@ fn build_connection_sets(
         }
         for (_root, vars) in scope_uf.get_sets() {
             if vars.len() >= 2 {
-                let span = representative_span(&vars, &var_first_span);
+                let span = representative_connection_span(&vars, &var_first_span, flat)?;
                 result.push(ConnectionSet {
                     variables: vars,
                     kind: ConnectionKind::Flow,
@@ -1756,7 +1747,7 @@ fn build_connection_sets(
     // is the same whether merged or split: N-1 for N variables either way)
     for (_root, vars) in potential_uf.get_sets() {
         if vars.len() >= 2 {
-            let span = representative_span(&vars, &var_first_span);
+            let span = representative_connection_span(&vars, &var_first_span, flat)?;
             result.push(ConnectionSet {
                 variables: vars,
                 kind: ConnectionKind::Potential,
@@ -1776,7 +1767,7 @@ fn build_connection_sets(
         stream_interface_equation_count = interface_stream_vars.len();
         for (_root, vars) in stream_sets {
             raw_stream_groups.push(vars.clone());
-            let span = representative_span(&vars, &var_first_span);
+            let span = representative_connection_span(&vars, &var_first_span, flat)?;
             append_stream_connection_sets_for_group(
                 flat,
                 vars,
@@ -1789,7 +1780,69 @@ fn build_connection_sets(
         }
     }
 
-    (result, raw_stream_groups, stream_interface_equation_count)
+    Ok((result, raw_stream_groups))
+}
+
+fn representative_connection_span(
+    vars: &[rumoca_core::VarName],
+    var_first_span: &FxHashMap<rumoca_core::VarName, rumoca_core::Span>,
+    flat: &flat::Model,
+) -> Result<rumoca_core::Span, FlattenError> {
+    vars.iter()
+        .filter_map(|var| {
+            var_first_span
+                .get(var)
+                .copied()
+                .filter(|span| !span.is_dummy())
+                .or_else(|| flat_variable_source_span(flat, var))
+        })
+        .min_by_key(|span| (span.source.0, span.start.0, span.end.0))
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "connection set `{}` has no source span",
+                vars.iter()
+                    .map(rumoca_core::VarName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
+fn flat_variable_source_span(
+    flat: &flat::Model,
+    var: &rumoca_core::VarName,
+) -> Option<rumoca_core::Span> {
+    flat.variables
+        .get(var)
+        .map(|variable| variable.source_span)
+        .or_else(|| {
+            subscripted_base_var(var, flat)
+                .and_then(|base| flat.variables.get(&base))
+                .map(|variable| variable.source_span)
+        })
+        .filter(|span| !span.is_dummy())
+}
+
+fn require_connection_provenance(
+    span: Span,
+    context: &'static str,
+) -> Result<ProvenanceSpan, FlattenError> {
+    span.require_provenance(context)
+        .map_err(|err| FlattenError::missing_source_context(err.to_string()))
+}
+
+fn require_flat_variable_provenance(
+    flat: &flat::Model,
+    var: &rumoca_core::VarName,
+    context: &'static str,
+) -> Result<ProvenanceSpan, FlattenError> {
+    let span = flat_variable_source_span(flat, var).ok_or_else(|| {
+        FlattenError::missing_source_context(format!(
+            "{context} for `{}` has no source span",
+            var.as_str()
+        ))
+    })?;
+    require_connection_provenance(span, context)
 }
 
 // =============================================================================
@@ -1797,11 +1850,11 @@ fn build_connection_sets(
 // =============================================================================
 
 /// Create a component reference expression for a variable name.
-fn var_to_expr(var_name: &rumoca_core::VarName) -> rumoca_core::Expression {
+fn var_to_expr(var_name: &rumoca_core::VarName, span: ProvenanceSpan) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: var_name.clone().into(),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span: span.span(),
     }
 }
 
@@ -1809,21 +1862,25 @@ fn var_to_expr(var_name: &rumoca_core::VarName) -> rumoca_core::Expression {
 fn create_equality_residual(
     lhs: rumoca_core::Expression,
     rhs: rumoca_core::Expression,
+    span: ProvenanceSpan,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: span.span(),
     }
 }
 
 /// Create a sum expression: a + b + c + ...
-fn create_sum(exprs: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+fn create_sum(
+    exprs: Vec<rumoca_core::Expression>,
+    span: ProvenanceSpan,
+) -> rumoca_core::Expression {
     if exprs.is_empty() {
         return rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(0),
-            span: rumoca_core::Span::DUMMY,
+            span: span.span(),
         };
     }
 
@@ -1836,7 +1893,7 @@ fn create_sum(exprs: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
             op: rumoca_core::OpBinary::Add,
             lhs: Box::new(result),
             rhs: Box::new(expr),
-            span: rumoca_core::Span::DUMMY,
+            span: span.span(),
         };
     }
 

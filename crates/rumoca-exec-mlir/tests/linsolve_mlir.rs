@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 /// Phase 6.5: ComputeNode::LinSolve and LinearSolveComponent end-to-end tests.
 ///
 /// Model: xdot = A⁻¹ · b(y)   where A = [[2,1],[1,3]]
@@ -41,6 +42,7 @@ fn eval_at(compiled: &rumoca_exec_mlir::CompiledMlirResidual, y: &[f64]) -> Vec<
 /// A = [[2, 1], [1, 3]]  (registers 0-3, row-major)
 /// b = [y[0], y[1]]       (registers 4-5)
 fn linsolve_block() -> ComputeBlock {
+    let label = "linsolve_mlir_node.mo";
     // setup_ops loads A and b into registers 0..5
     let setup_ops = vec![
         // A row-major: [2, 1, 1, 3]
@@ -60,7 +62,7 @@ fn linsolve_block() -> ComputeBlock {
             n: 2,
             next_reg: 6,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
         }],
     }
 }
@@ -68,7 +70,10 @@ fn linsolve_block() -> ComputeBlock {
 /// Scalarized version — exercises LinearSolveComponent.
 fn linsolve_scalar_block() -> ComputeBlock {
     let node_block = linsolve_block();
-    ComputeBlock::from_scalar_program_block(rumoca_eval_solve::to_scalar_program_block(&node_block))
+    ComputeBlock::from_scalar_program_block(
+        rumoca_eval_solve::to_scalar_program_block(&node_block)
+            .expect("valid LinSolve fixture should scalarize"),
+    )
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -183,6 +188,7 @@ fn linsolve_partial_pivoting_correctness() {
         LinearOp::Const { dst: 4, value: 1.0 },
         LinearOp::Const { dst: 5, value: 0.0 },
     ];
+    let label = "linsolve_mlir_pivot.mo";
     let block = ComputeBlock {
         nodes: vec![ComputeNode::LinSolve {
             setup_ops,
@@ -191,7 +197,7 @@ fn linsolve_partial_pivoting_correctness() {
             n: 2,
             next_reg: 6,
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
         }],
     };
     let problem = solve_problem_for(block);

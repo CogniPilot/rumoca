@@ -1,55 +1,198 @@
 // Rover scene for the rumoca sim viewer.
 //
-// Matches the dessert environment used by the quadrotor demo (sky, sun,
-// dunes, rocks, cacti) so a rover and a drone can share the same world.
+// Matches the desert environment used by the quadrotor demo (skybox, haze,
+// clouds, PBR sand, rocks, cacti) so a rover and a drone can share the same
+// world.
 //
-// Expects these state keys from rum.toml `[signals.viewer]`:
-//   x, y             — planar world position [m]
-//   theta            — heading [rad] (0 = +x axis)
-//   wheel_rpm        — rear-wheel angular velocity [rad/s] (rolling)
-//   front_wheel_yaw  — front steering angle [rad]
+// Expects the "chassis" viewer frame from rumoca-scenario.toml to place the
+// buggy model in the world. The visual model is loaded from /assets/models.
 
-// "Buggy" by Nick Slough (poly.pizza) — https://poly.pizza/m/eZ_13w7qZh7, CC-BY 3.0.
-// The GLB has 101 un-transformed nodes (geometry baked in world coords),
-// so we load it, then for each wheel node: compute its bbox centroid,
-// shift geometry so the centroid is at origin, wrap in a pivot Group at
-// the original centroid. After that, pivot.rotation.y = steering yaw and
-// wheel.rotation.z = rolling — same animation as the procedural rover.
-const JEEP_URL = "https://static.poly.pizza/8036e526-b08a-4d8c-a4b3-0214097cbc18.glb";
-const JEEP_SCALE = 0.30;  // tune to match Rover.mo physical dimensions
-// Wheel node indices, identified from the GLB by bbox analysis. The jeep
-// model's nose points at GLB -X, and the viewer frame convention puts
-// model-forward on renderer +Z at identity, so we rotate 90° about Y below
-// (Ry(π/2): GLB (x,z) → renderer (z,-x)). GLB cz=-c lands at renderer
-// X=-c, the left side (model FLU +y/left is renderer -X).
-//   Front wheels (thin, narrower track): nodes 82, 83 at cx≈-1.27
-//   Rear wheels  (fat off-road tires):   nodes 76, 77 at cx≈+0.78
-const WHEEL_NODES = {
-  frontLeft:  83,  // GLB cz=-0.58 → renderer -X (left)
-  frontRight: 82,  // GLB cz=+0.59 → renderer +X (right)
-  rearLeft:   77,  // GLB cz=-0.78 → renderer -X (left)
-  rearRight:  76,  // GLB cz=+0.75 → renderer +X (right)
-};
+function deterministicUnit(seed) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function createCloudTexture(THREE) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+
+  const lobes = [
+    { x: 140, y: 138, r: 82, a: 0.54 },
+    { x: 210, y: 105, r: 98, a: 0.62 },
+    { x: 295, y: 118, r: 90, a: 0.58 },
+    { x: 365, y: 145, r: 76, a: 0.46 },
+    { x: 250, y: 158, r: 126, a: 0.34 },
+  ];
+  for (const lobe of lobes) {
+    const gradient = ctx2d.createRadialGradient(lobe.x, lobe.y, 0, lobe.x, lobe.y, lobe.r);
+    gradient.addColorStop(0, `rgba(255, 255, 255, ${lobe.a})`);
+    gradient.addColorStop(0.55, `rgba(245, 247, 244, ${lobe.a * 0.45})`);
+    gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx2d.fillStyle = gradient;
+    ctx2d.beginPath();
+    ctx2d.arc(lobe.x, lobe.y, lobe.r, 0, Math.PI * 2);
+    ctx2d.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  return texture;
+}
 
 ctx.onInit = async function(api) {
   const THREE = api.THREE;
   const scene = api.scene;
   const s = api.state;
+  const buggyFrontWheelMeshNames = new Set([
+    "group1531753807",
+    "group722579550",
+  ]);
 
-  // ── Desert sky (matches quadrotor_scene.js) ───────────────────────
-  const skyGeo = new THREE.SphereGeometry(200, 32, 16);
-  const skyColors = [];
-  const posAttr = skyGeo.getAttribute("position");
-  for (let i = 0; i < posAttr.count; i++) {
-    const y = posAttr.getY(i);
-    const t = Math.max(0, Math.min(1, (y / 200 + 1) * 0.5));
-    const r = 0.94 + (0.29 - 0.94) * Math.pow(t, 0.6);
-    const g = 0.85 + (0.56 - 0.85) * Math.pow(t, 0.6);
-    const b = 0.69 + (0.78 - 0.69) * Math.pow(t, 0.6);
-    skyColors.push(r, g, b);
+  function frontWheelCandidates(root) {
+    root.updateWorldMatrix(true, true);
+    const rootBox = new THREE.Box3().setFromObject(root);
+    const rootCenter = new THREE.Vector3();
+    const rootSize = new THREE.Vector3();
+    rootBox.getCenter(rootCenter);
+    rootBox.getSize(rootSize);
+
+    const candidates = [];
+    const namedFrontWheels = [];
+    root.traverse((object) => {
+      if (!object.isMesh || object === root) return;
+      const box = new THREE.Box3().setFromObject(object);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+      const candidate = { object, center, longitudinal: center.x };
+      if (buggyFrontWheelMeshNames.has(object.name)) {
+        namedFrontWheels.push(candidate);
+      }
+      const wheelDiameter = Math.max(size.x, size.y);
+      const wheelThickness = Math.min(size.x, size.y, size.z);
+      const outboard = Math.abs(center.z - rootCenter.z) > rootSize.z * 0.25;
+      const roundish = wheelDiameter > rootSize.x * 0.14 && wheelDiameter < rootSize.x * 0.24;
+      const compact = wheelThickness > rootSize.z * 0.06 && wheelThickness < rootSize.z * 0.25;
+      if (outboard && roundish && compact) {
+        candidates.push(candidate);
+      }
+    });
+
+    if (namedFrontWheels.length === 2) {
+      return namedFrontWheels;
+    }
+
+    // Fallback for compatible buggy-like assets: use the remaining central
+    // outboard pair rather than either extreme fixed-wheel pair.
+    return candidates
+      .sort((a, b) => Math.abs(a.longitudinal - rootCenter.x) - Math.abs(b.longitudinal - rootCenter.x))
+      .slice(0, 2);
   }
-  skyGeo.setAttribute("color", new THREE.Float32BufferAttribute(skyColors, 3));
-  scene.add(new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+
+  function createSteeringPivots(root) {
+    return frontWheelCandidates(root).map(({ object, center }) => {
+      const parent = object.parent;
+      const pivot = new THREE.Group();
+      pivot.name = `${object.name || "front_wheel"}_steer_pivot`;
+      parent.add(pivot);
+      pivot.position.copy(parent.worldToLocal(center.clone()));
+      pivot.attach(object);
+      return pivot;
+    });
+  }
+
+  // ── Desert skybox ───────────────────────────────────────────────
+  const skybox = new THREE.CubeTextureLoader().load([
+    "/assets/skybox/arid2_rt.jpg",
+    "/assets/skybox/arid2_lf.jpg",
+    "/assets/skybox/arid2_up.jpg",
+    "/assets/skybox/arid2_dn.jpg",
+    "/assets/skybox/arid2_bk.jpg",
+    "/assets/skybox/arid2_ft.jpg",
+  ]);
+  skybox.colorSpace = THREE.SRGBColorSpace;
+  scene.background = skybox;
+  scene.fog = new THREE.FogExp2(0xc9d4c4, 0.0022);
+
+  const horizonHaze = new THREE.Mesh(
+    new THREE.SphereGeometry(460, 64, 32),
+    new THREE.ShaderMaterial({
+      uniforms: {
+        hazeColor: { value: new THREE.Color(0xc9d4c4) },
+      },
+      vertexShader: `
+        varying vec3 vWorldDir;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldDir = normalize(worldPos.xyz - cameraPosition);
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 hazeColor;
+        varying vec3 vWorldDir;
+        void main() {
+          float lowerSky = 1.0 - smoothstep(0.04, 0.30, vWorldDir.y);
+          float horizonCore = 1.0 - smoothstep(0.02, 0.16, abs(vWorldDir.y));
+          float alpha = max(0.12 * horizonCore, 0.84 * lowerSky);
+          if (alpha < 0.01) discard;
+          gl_FragColor = vec4(hazeColor, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.BackSide,
+    })
+  );
+  horizonHaze.name = "horizon_haze";
+  horizonHaze.renderOrder = 900;
+  scene.add(horizonHaze);
+  s.horizonHaze = horizonHaze;
+
+  const lowerSkyOccluder = new THREE.Mesh(
+    new THREE.SphereGeometry(450, 64, 24),
+    new THREE.ShaderMaterial({
+      uniforms: {
+        groundColor: { value: new THREE.Color(0xb99c6c) },
+        hazeColor: { value: new THREE.Color(0xc9d4c4) },
+      },
+      vertexShader: `
+        varying vec3 vWorldDir;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldDir = normalize(worldPos.xyz - cameraPosition);
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 groundColor;
+        uniform vec3 hazeColor;
+        varying vec3 vWorldDir;
+        void main() {
+          float below = 1.0 - smoothstep(0.02, 0.16, vWorldDir.y);
+          if (below < 0.01) discard;
+          float deep = smoothstep(0.02, -0.5, vWorldDir.y);
+          vec3 color = mix(hazeColor, groundColor, deep);
+          gl_FragColor = vec4(color, below);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.BackSide,
+    })
+  );
+  lowerSkyOccluder.name = "lower_sky_occluder";
+  lowerSkyOccluder.renderOrder = 890;
+  scene.add(lowerSkyOccluder);
+  s.lowerSkyOccluder = lowerSkyOccluder;
 
   // ── Desert lighting ───────────────────────────────────────────────
   const sun = new THREE.DirectionalLight(0xfff0d0, 1.8);
@@ -60,71 +203,132 @@ ctx.onInit = async function(api) {
   rim.position.set(0, -1, -6); scene.add(rim);
   scene.add(new THREE.HemisphereLight(0x87ceeb, 0xc2956b, 0.5));
 
-  // ── Desert ground ─────────────────────────────────────────────────
-  const sandMat = new THREE.MeshStandardMaterial({ color: 0xd4a860, roughness: 0.95, metalness: 0.02 });
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), sandMat);
-  floor.rotation.x = -Math.PI / 2; floor.position.y = -0.01; scene.add(floor);
-  const grid = new THREE.GridHelper(50, 50, 0xc49850, 0xc49850);
-  grid.material.transparent = true; grid.material.opacity = 0.12;
-  scene.add(grid);
-
-  // ── Sand dunes ────────────────────────────────────────────────────
-  const duneMat = new THREE.MeshStandardMaterial({ color: 0xd9b06a, roughness: 0.9 });
-  const duneDarkMat = new THREE.MeshStandardMaterial({ color: 0xc49850, roughness: 0.95 });
-  [
-    { x:-18,z:20,sx:12,sy:1.5,sz:5,ry:0.3 }, { x:22,z:15,sx:15,sy:2.0,sz:6,ry:-0.2 },
-    { x:-25,z:-10,sx:10,sy:1.2,sz:4,ry:0.5 }, { x:15,z:-22,sx:18,sy:2.5,sz:7,ry:0.1 },
-    { x:-10,z:-25,sx:14,sy:1.8,sz:5,ry:-0.4 }, { x:30,z:-5,sx:8,sy:1.0,sz:4,ry:0.6 },
-    { x:-30,z:5,sx:11,sy:1.3,sz:5,ry:-0.1 }, { x:0,z:30,sx:20,sy:2.2,sz:6,ry:0.15 },
-  ].forEach((d) => {
-    const dune = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 16, 8, 0, Math.PI*2, 0, Math.PI/2),
-      Math.random() > 0.5 ? duneMat : duneDarkMat
+  // ── High clouds ─────────────────────────────────────────────────
+  const cloudTexture = createCloudTexture(THREE);
+  const cloudGroup = new THREE.Group();
+  cloudGroup.name = "cloud_layer";
+  scene.add(cloudGroup);
+  Array.from({ length: 36 }, (_, i) => {
+    const angle = deterministicUnit(i * 11 + 201) * Math.PI * 2;
+    const radius = 220 + deterministicUnit(i * 11 + 202) * 760;
+    const cloud = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: cloudTexture,
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.22 + deterministicUnit(i * 11 + 203) * 0.26,
+      depthWrite: false,
+      fog: true,
+    }));
+    cloud.position.set(
+      Math.cos(angle) * radius,
+      95 + deterministicUnit(i * 11 + 204) * 75,
+      Math.sin(angle) * radius
     );
-    dune.scale.set(d.sx, d.sy, d.sz);
-    dune.position.set(d.x, -0.01, d.z); dune.rotation.y = d.ry;
-    scene.add(dune);
+    const scale = 70 + deterministicUnit(i * 11 + 205) * 130;
+    cloud.scale.set(scale * (1.5 + deterministicUnit(i * 11 + 206)), scale, 1);
+    cloudGroup.add(cloud);
   });
 
-  // ── Desert rocks ──────────────────────────────────────────────────
+  // ── Desert ground ───────────────────────────────────────────────
+  const textureLoader = new THREE.TextureLoader();
+  const configureGroundMap = (texture, color = false) => {
+    if (color) texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(100, 100);
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.anisotropy = api.renderer?.capabilities?.getMaxAnisotropy?.() ?? 1;
+    return texture;
+  };
+  const sandMat = new THREE.MeshStandardMaterial({
+    map: configureGroundMap(textureLoader.load("/assets/sand_pbr/GroundSand005_COL_1K.jpg"), true),
+    normalMap: configureGroundMap(textureLoader.load("/assets/sand_pbr/GroundSand005_NRM_1K.jpg")),
+    aoMap: configureGroundMap(textureLoader.load("/assets/sand_pbr/GroundSand005_AO_1K.jpg")),
+    bumpMap: configureGroundMap(textureLoader.load("/assets/sand_pbr/GroundSand005_BUMP_1K.jpg")),
+    color: 0xffffff,
+    roughness: 0.82,
+    bumpScale: 0.035,
+    metalness: 0.02,
+  });
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), sandMat);
+  floor.geometry.setAttribute("uv2", new THREE.BufferAttribute(floor.geometry.attributes.uv.array, 2));
+  floor.rotation.x = -Math.PI / 2; floor.position.y = -0.01; scene.add(floor);
+  const grid = new THREE.GridHelper(2000, 200, 0xe2bc72, 0xb78945);
+  grid.material.transparent = true; grid.material.opacity = 0.18;
+  scene.add(grid);
+
+  // ── Desert rocks ────────────────────────────────────────────────
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x8b7355, roughness: 0.85, metalness: 0.05 });
   const rockDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b5740, roughness: 0.9, metalness: 0.05 });
-  [
-    {x:5,z:8,sc:0.3},{x:-7,z:6,sc:0.5},{x:9,z:-4,sc:0.2},{x:-4,z:-8,sc:0.4},
-    {x:12,z:3,sc:0.35},{x:-11,z:-3,sc:0.25},{x:3,z:-10,sc:0.45},{x:-8,z:10,sc:0.3},
-  ].forEach((r) => {
+  Array.from({ length: 180 }, (_, i) => {
+    const angle = deterministicUnit(i * 3 + 1) * Math.PI * 2;
+    const radius = 8 + deterministicUnit(i * 3 + 2) ** 0.65 * 420;
+    return {
+      x: Math.cos(angle) * radius,
+      z: Math.sin(angle) * radius,
+      s: 0.18 + deterministicUnit(i * 3 + 3) * 0.85,
+      squash: 0.35 + deterministicUnit(i * 3 + 4) * 0.35,
+      yaw: deterministicUnit(i * 3 + 5) * Math.PI,
+      tint: deterministicUnit(i * 3 + 6),
+    };
+  }).forEach((r) => {
     const rock = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(r.sc, 1),
-      Math.random() > 0.5 ? rockMat : rockDarkMat
+      new THREE.DodecahedronGeometry(r.s, 1),
+      r.tint > 0.45 ? rockMat : rockDarkMat
     );
-    rock.position.set(r.x, r.sc*0.3, r.z);
-    rock.scale.set(1+Math.random()*0.5, 0.5+Math.random()*0.4, 1+Math.random()*0.3);
-    rock.rotation.set(Math.random()*0.3, Math.random()*Math.PI, Math.random()*0.2);
+    rock.position.set(r.x, r.s*0.3, r.z);
+    rock.scale.set(1.0 + r.tint * 0.7, r.squash, 0.8 + r.tint * 0.6);
+    rock.rotation.set(0.08 + r.tint * 0.18, r.yaw, 0.04 + r.tint * 0.12);
     scene.add(rock);
   });
 
-  // ── Cacti ─────────────────────────────────────────────────────────
-  const cactusMat = new THREE.MeshStandardMaterial({ color: 0x3a6b35, roughness: 0.8, metalness: 0.05 });
-  [{x:-6,z:12},{x:14,z:7},{x:-13,z:-6},{x:8,z:-12},{x:-3,z:-15}].forEach((c) => {
-    const h = 0.8 + Math.random() * 1.2;
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, h, 8), cactusMat);
-    trunk.position.set(c.x, h/2, c.z); scene.add(trunk);
-    const top = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), cactusMat);
-    top.position.set(c.x, h, c.z); scene.add(top);
-    if (Math.random() > 0.3) {
-      const armH = 0.4 + Math.random()*0.4;
-      const armY = h*0.4 + Math.random()*h*0.3;
-      const dir = Math.random() > 0.5 ? 1 : -1;
-      const aH = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.3, 6), cactusMat);
-      aH.rotation.z = dir*Math.PI/2; aH.position.set(c.x+dir*0.2, armY, c.z); scene.add(aH);
-      const aV = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, armH, 6), cactusMat);
-      aV.position.set(c.x+dir*0.35, armY+armH/2, c.z); scene.add(aV);
-      const aT = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 4), cactusMat);
-      aT.position.set(c.x+dir*0.35, armY+armH, c.z); scene.add(aT);
+  // ── Cacti ───────────────────────────────────────────────────────
+  const cactusMat = new THREE.MeshStandardMaterial({ color: 0x2f6b35, roughness: 0.82, metalness: 0.02 });
+  Array.from({ length: 85 }, (_, i) => {
+    const angle = deterministicUnit(i * 7 + 101) * Math.PI * 2;
+    const radius = 20 + deterministicUnit(i * 7 + 102) ** 0.7 * 460;
+    return {
+      x: Math.cos(angle) * radius,
+      z: Math.sin(angle) * radius,
+      h: 0.7 + deterministicUnit(i * 7 + 103) * 1.6,
+      yaw: deterministicUnit(i * 7 + 104) * Math.PI * 2,
+      arms: deterministicUnit(i * 7 + 105) > 0.35,
+      side: deterministicUnit(i * 7 + 106) > 0.5 ? 1 : -1,
+      armScale: 0.55 + deterministicUnit(i * 7 + 107) * 0.6,
+    };
+  }).forEach((c) => {
+    const cactus = new THREE.Group();
+    cactus.position.set(c.x, 0, c.z);
+    cactus.rotation.y = c.yaw;
+
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.13, c.h, 8), cactusMat);
+    trunk.position.y = c.h / 2;
+    cactus.add(trunk);
+    const top = new THREE.Mesh(new THREE.SphereGeometry(0.105, 8, 6), cactusMat);
+    top.position.y = c.h;
+    cactus.add(top);
+
+    if (c.arms) {
+      const armY = c.h * 0.45;
+      const armOut = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.07, 0.42 * c.armScale, 7), cactusMat);
+      armOut.rotation.z = c.side * Math.PI / 2;
+      armOut.position.set(c.side * 0.22 * c.armScale, armY, 0);
+      cactus.add(armOut);
+
+      const armUpHeight = 0.38 * c.armScale;
+      const armUp = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, armUpHeight, 7), cactusMat);
+      armUp.position.set(c.side * 0.42 * c.armScale, armY + armUpHeight / 2, 0);
+      cactus.add(armUp);
+      const armTop = new THREE.Mesh(new THREE.SphereGeometry(0.055, 7, 5), cactusMat);
+      armTop.position.set(c.side * 0.42 * c.armScale, armY + armUpHeight, 0);
+      cactus.add(armTop);
     }
+
+    scene.add(cactus);
   });
 
-  // ── Rover (GLB jeep) ──────────────────────────────────────────────
+  // ── Rover buggy GLB ───────────────────────────────────────────────
   const rover = new THREE.Group(); rover.name = "rover";
   scene.add(rover);
 
@@ -138,42 +342,29 @@ ctx.onInit = async function(api) {
   scene.add(s.shadow);
 
   const loader = new api.GLTFLoader();
-  const gltf = await loader.loadAsync(JEEP_URL);
-  const model = gltf.scene;
+  const gltf = await loader.loadAsync("/assets/models/buggy.glb");
+  const buggy = gltf.scene;
+  buggy.name = "buggy_glb";
+  buggy.traverse((object) => {
+    if (object.isMesh) {
+      object.castShadow = true;
+      object.receiveShadow = true;
+    }
+  });
 
-  // Recenter each wheel's geometry onto its hub, reparent into a pivot.
-  // Done in GLB local space (before we apply model scale/position) so bbox
-  // math is in the coordinates the vertices were authored in.
-  const wheelPivots = {};
-  for (const [slot, nodeIdx] of Object.entries(WHEEL_NODES)) {
-    const node = await gltf.parser.getDependency("node", nodeIdx);
-    const box = new THREE.Box3().setFromObject(node);
-    const centroid = new THREE.Vector3();
-    box.getCenter(centroid);
-
-    node.traverse((c) => {
-      if (c.isMesh && c.geometry) {
-        c.geometry.translate(-centroid.x, -centroid.y, -centroid.z);
-      }
-    });
-
-    const pivot = new THREE.Group();
-    pivot.position.copy(centroid);
-    if (node.parent) node.parent.remove(node);
-    pivot.add(node);
-    model.add(pivot);
-    wheelPivots[slot] = { pivot, wheel: node };
-  }
-
-  // Fit the jeep onto the rover group: the viewer's frame convention puts
-  // model-forward on renderer +Z at identity, and the GLB nose is authored
-  // on -X, so rotate 90° about Y; scale, then lift so the lowest vertex
-  // sits on y=0.
-  model.rotation.y = Math.PI / 2;
-  model.scale.setScalar(JEEP_SCALE);
-  rover.add(model);
-  const box = new THREE.Box3().setFromObject(model);
-  model.position.y -= box.min.y;
+  const buggyBounds = new THREE.Box3().setFromObject(buggy);
+  const buggyCenter = new THREE.Vector3();
+  const buggySize = new THREE.Vector3();
+  buggyBounds.getCenter(buggyCenter);
+  buggyBounds.getSize(buggySize);
+  const buggyFrame = new THREE.Group();
+  buggyFrame.name = "buggy_frame";
+  buggyFrame.rotation.y = Math.PI / 2;
+  buggyFrame.scale.setScalar(1.15 / Math.max(buggySize.x, 1e-6));
+  buggy.position.set(-buggyCenter.x, -buggyBounds.min.y, -buggyCenter.z);
+  s.frontWheelPivots = createSteeringPivots(buggy);
+  buggyFrame.add(buggy);
+  rover.add(buggyFrame);
 
   // Trail
   s.maxTrail = 512;
@@ -186,11 +377,6 @@ ctx.onInit = async function(api) {
   scene.add(s.trail);
 
   s.rover = rover;
-  s.wheels = wheelPivots;
-
-  // Rolling-phase integration (wall-time) from wheel_rpm.
-  s.rollPhase = 0;
-  s.lastWall = null;
 
   if (api.cam) {
     api.cam.dist = 3.5;
@@ -204,12 +390,7 @@ ctx.onFrame = function(api) {
   const s = api.state;
   const get = api.get;
 
-  // onInit is async (GLB load); the viewer calls onFrame without awaiting,
-  // so early-return until the model is ready.
-  if (!s.rover || !s.wheels) return;
-
-  const rpm   = get("wheel_rpm") ?? 0;
-  const steer = get("front_wheel_yaw") ?? 0;
+  if (!s.rover) return;
 
   // The chassis pose comes from the viewer's [[viewer.frame]] "chassis"
   // (planar x/y + heading in model FLU coordinates); the viewer owns the
@@ -220,27 +401,13 @@ ctx.onFrame = function(api) {
   s.rover.matrixAutoUpdate = false;
   s.rover.matrix.copy(chassis);
   s.rover.matrixWorldNeedsUpdate = true;
+  const steering = Number(get("front_wheel_yaw") ?? get("steering") ?? 0);
+  for (const pivot of s.frontWheelPivots || []) {
+    pivot.rotation.y = steering;
+  }
   if (!s.chassisPos) s.chassisPos = new THREE.Vector3();
   const pos = s.chassisPos.setFromMatrixPosition(chassis);
   s.shadow.position.set(pos.x, 0.001, pos.z);
-
-  // Integrate rolling phase from wheel_rpm (wall-time so it's smooth
-  // regardless of sim realtime ratio).
-  const nowMs = (typeof performance !== "undefined") ? performance.now() : Date.now();
-  const dtWall = s.lastWall == null ? 0 : Math.min(0.1, (nowMs - s.lastWall) / 1000);
-  s.lastWall = nowMs;
-  s.rollPhase += rpm * dtWall;
-  // Wheels' axle is along their local Z (smallest bbox dimension from the
-  // GLB analysis), so rolling is rotation about Z.
-  s.wheels.rearLeft.wheel.rotation.z   = s.rollPhase;
-  s.wheels.rearRight.wheel.rotation.z  = s.rollPhase;
-  s.wheels.frontLeft.wheel.rotation.z  = s.rollPhase;
-  s.wheels.frontRight.wheel.rotation.z = s.rollPhase;
-
-  // Front pivots yaw with steering angle. Model CCW yaw (about FLU +z) maps
-  // to renderer rotation.y = -angle under the viewer frame convention.
-  s.wheels.frontLeft.pivot.rotation.y  = -steer;
-  s.wheels.frontRight.pivot.rotation.y = -steer;
 
   // Trail
   const idx = s.trailCount % s.maxTrail;

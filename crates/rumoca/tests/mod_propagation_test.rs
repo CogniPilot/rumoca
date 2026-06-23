@@ -209,7 +209,8 @@ fn test_modification_propagation_nested() {
     "#;
 
     let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
-    let tree = ast::ClassTree::from_parsed(stored_def);
+    let mut tree = ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
     let tree = resolved.into_inner();
@@ -317,7 +318,8 @@ fn test_array_modifier_distribution_preserves_binding_source_scope() {
     "#;
 
     let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
-    let tree = ast::ClassTree::from_parsed(stored_def);
+    let mut tree = ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
     let tree = resolved.into_inner();
@@ -374,7 +376,8 @@ fn test_dimension_evaluation_after_typecheck() {
     "#;
 
     let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
-    let tree = ast::ClassTree::from_parsed(stored_def);
+    let mut tree = ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
     let tree = resolved.into_inner();
@@ -491,7 +494,8 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
     "#;
 
     let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
-    let tree = ast::ClassTree::from_parsed(stored_def);
+    let mut tree = ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
     let tree = resolved.into_inner();
@@ -1136,7 +1140,8 @@ fn instantiate_test_model(
     model_name: &str,
 ) -> (ast::ClassTree, ast::InstanceOverlay) {
     let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
-    let tree = ast::ClassTree::from_parsed(stored_def);
+    let mut tree = ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
     let tree = resolved.into_inner();

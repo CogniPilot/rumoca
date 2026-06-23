@@ -1,4 +1,8 @@
 //! C and MLIR rendering for solver-facing row IR.
+//!
+//! SPEC_0021 file-size exception: solve rendering still shares scalar, tensor,
+//! and runtime helper objects. split plan: move C, MLIR, and tensor object
+//! renderers into separate modules behind this facade.
 
 use std::sync::Arc;
 
@@ -8,7 +12,46 @@ use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
 
 use super::render_expr::get_field;
-use super::{RenderResult, value_to_string};
+use super::render_solve_ops::{
+    render_solve_binary_c, render_solve_binary_py, render_solve_binary_rust,
+    render_solve_binary_wgsl, render_solve_compare, render_solve_compare_py,
+    render_solve_compare_wgsl, render_solve_unary_c, render_solve_unary_py,
+    render_solve_unary_rust, render_solve_unary_wgsl,
+};
+use super::{RenderResult, render_vec_with_capacity, reserve_render_capacity, value_to_string};
+
+mod dense_solve_render;
+#[cfg(test)]
+#[path = "render_solve_tests.rs"]
+mod render_solve_tests;
+mod template_partition;
+pub(super) use dense_solve_render::{
+    LinSolveRenderShape, SolveOutputTargets, checked_linsolve_product,
+    checked_linsolve_render_count, checked_linsolve_sum, render_linsolve_mlir_function,
+    render_matmul_c_function, render_matmul_mlir_function,
+    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
+    render_solve_block_py_function, render_solve_block_rust_function,
+    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
+    render_solve_row_output_wgsl_function, render_solve_row_rust_function,
+    render_solve_row_wgsl_function, render_solve_slot_assign_c_function, required_bool_field,
+    required_string_field, required_usize_field, solve_block_output_count_function,
+    validate_linsolve_render_shape,
+};
+#[cfg(test)]
+pub(super) use dense_solve_render::{MatMulRenderShape, solve_output_targets};
+pub(super) use template_partition::{
+    RenderNativeAffineFamily, SolveNativeFamiliesValue, SolveRowsValue,
+    SolveScalarFallbackRowsValue, native_family_template_partition,
+    render_solve_native_family_output_index_wgsl_function,
+    render_solve_native_family_output_map_start_function, render_solve_native_family_wgsl_function,
+    render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
+    render_wgsl_native_family_inventory_json_function,
+};
+#[cfg(test)]
+pub(super) use template_partition::{
+    kernel_workgroup_count, scalar_kernel_chunk_count, scalar_program_block_source_span,
+    scalar_program_row_span, wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
+};
 
 // ─── Typed scalar-program rows ───────────────────────────────────────────────
 //
@@ -19,130 +62,17 @@ use super::{RenderResult, value_to_string};
 // custom contexts) keep the original walk.
 
 #[derive(Debug)]
-pub(super) struct SolveRowsValue {
-    rows: Arc<Vec<Vec<solve::LinearOp>>>,
-}
 
-impl SolveRowsValue {
-    pub(super) fn new(rows: Vec<Vec<solve::LinearOp>>) -> Self {
-        Self {
-            rows: Arc::new(rows),
-        }
-    }
-}
-
-impl Object for SolveRowsValue {
-    fn repr(self: &Arc<Self>) -> ObjectRepr {
-        ObjectRepr::Seq
-    }
-
-    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
-        let index = key.as_usize()?;
-        (index < self.rows.len()).then(|| {
-            Value::from_object(SolveRowValue {
-                rows: self.rows.clone(),
-                index,
-            })
-        })
-    }
-
-    fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Seq(self.rows.len())
-    }
-}
-
-/// Affine row families exposed to templates as a typed sequence; each
-/// element is a `SolveStencilValue` the stencil renderer can downcast.
-#[derive(Debug)]
-pub(super) struct SolveStencilsValue {
-    families: Arc<Vec<RenderAffineStencil>>,
-}
-
-impl SolveStencilsValue {
-    pub(super) fn new(families: Vec<RenderAffineStencil>) -> Self {
-        Self {
-            families: Arc::new(families),
-        }
-    }
-}
-
-impl Object for SolveStencilsValue {
-    fn repr(self: &Arc<Self>) -> ObjectRepr {
-        ObjectRepr::Seq
-    }
-
-    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
-        let index = key.as_usize()?;
-        (index < self.families.len()).then(|| {
-            Value::from_object(SolveStencilValue {
-                families: self.families.clone(),
-                index,
-            })
-        })
-    }
-
-    fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Seq(self.families.len())
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct SolveStencilValue {
-    families: Arc<Vec<RenderAffineStencil>>,
-    index: usize,
-}
-
-impl SolveStencilValue {
-    fn family(&self) -> &RenderAffineStencil {
-        &self.families[self.index]
-    }
-}
-
-impl Object for SolveStencilValue {
-    fn repr(self: &Arc<Self>) -> ObjectRepr {
-        ObjectRepr::Map
-    }
-
-    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
-        match key.as_str()? {
-            "start_row" => Some(Value::from(self.family().start_row)),
-            "count" => Some(Value::from(self.family().count)),
-            _ => None,
-        }
-    }
-
-    fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Str(&["start_row", "count"])
-    }
-}
-
-/// Template function: render a stencil family as a WGSL expression
-/// parametric in the kernel-local row offset `r`.
-pub(super) fn render_solve_stencil_wgsl_function(stencil: Value, config: Value) -> RenderResult {
-    let Some(stencil) = stencil.downcast_object_ref::<SolveStencilValue>() else {
-        return Err(render_err(
-            "render_solve_stencil_wgsl expects a stencil from solve_blocks",
-        ));
-    };
-    render_stencil_family_expr_wgsl(stencil.family(), &config)
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct RenderAffineStencil {
-    pub(super) start_row: usize,
-    pub(super) count: usize,
-    pub(super) base_ops: Vec<solve::LinearOp>,
-    pub(super) load_strides: Vec<solve::AffineStencilLoadStride>,
-    pub(super) const_strides: Vec<solve::AffineStencilConstStride>,
-}
-
-#[derive(Debug)]
 pub(super) struct SolveRowValue {
     rows: Arc<Vec<Vec<solve::LinearOp>>>,
     index: usize,
 }
 
 impl SolveRowValue {
+    pub(in crate::codegen) fn new(rows: Arc<Vec<Vec<solve::LinearOp>>>, index: usize) -> Self {
+        Self { rows, index }
+    }
+
     fn ops(&self) -> &[solve::LinearOp] {
         &self.rows[self.index]
     }
@@ -161,687 +91,6 @@ impl Object for SolveRowValue {
     fn enumerate(self: &Arc<Self>) -> Enumerator {
         Enumerator::Seq(self.ops().len())
     }
-}
-
-#[derive(Clone, Copy)]
-struct MatMulRenderShape {
-    lhs_start: usize,
-    rhs_start: usize,
-    m: usize,
-    k: usize,
-    n: usize,
-    offset: usize,
-}
-
-// ─── MatMul MLIR emitter ─────────────────────────────────────────────────────
-
-/// Render a `ComputeNode::MatMul` inner value as MLIR textual IR.
-///
-/// Three dispatch paths:
-/// - `Diagonal` lhs (n=1, m=k): element-wise scalar multiplies (no GEMM)
-/// - `Explicit { nnz }` lhs: scalar FMA over each nonzero position
-/// - `Dense` (default): `linalg.matmul` with alloca'd temporaries
-///
-/// Called from the MLIR template as `render_matmul_mlir(node.MatMul, node_id, output_offset)`.
-///
-/// Pass pipeline required (in addition to the standard scalar passes):
-/// `--linalg-generalize-named-ops --convert-linalg-to-loops --convert-scf-to-cf --convert-cf-to-llvm`
-pub(super) fn render_matmul_mlir_function(
-    node: Value,
-    node_id: Value,
-    output_offset: Value,
-) -> Result<String, minijinja::Error> {
-    let id = required_usize_arg(&node_id, "MatMul node_id")?;
-    let offset = required_usize_arg(&output_offset, "MatMul output_offset")?;
-
-    let lhs_ops = get_field(&node, "lhs_ops")?;
-    let lhs_start = solve_field_usize(&node, "lhs_start")?;
-    let rhs_ops = get_field(&node, "rhs_ops")?;
-    let rhs_start = solve_field_usize(&node, "rhs_start")?;
-    let m = solve_field_usize(&node, "m")?;
-    let k = solve_field_usize(&node, "k")?;
-    let n = solve_field_usize(&node, "n")?;
-
-    let lhs_sparsity_val = get_field(&node, "lhs_sparsity")
-        .map_err(|err| render_err(format!("MatMul missing lhs_sparsity: {err}")))?;
-    let lhs_sparsity_str = value_to_string(&lhs_sparsity_val);
-    let is_diagonal_matvec = lhs_sparsity_str.contains("Diagonal") && n == 1 && m == k;
-    let explicit_nnz = if !is_diagonal_matvec && lhs_sparsity_str.contains("Explicit") {
-        extract_explicit_nnz(&lhs_sparsity_val)
-    } else {
-        None
-    };
-
-    let pfx = format!("mm{id}");
-    let mut out = format!(
-        "    // MatMul {}x{}x{} → out[{}..{}]\n",
-        m,
-        k,
-        n,
-        offset,
-        offset + m * n
-    );
-
-    // Emit scalar ops that build the A and B register values.
-    emit_linear_ops_mlir(&lhs_ops, &pfx, &mut out)?;
-    emit_linear_ops_mlir(&rhs_ops, &pfx, &mut out)?;
-
-    if is_diagonal_matvec {
-        // Diagonal A (m×m) * x (m×1): out[offset+i] = A[i,i] * x[i]
-        for i in 0..m {
-            let a_reg = lhs_start + i * (m + 1); // diagonal element index
-            let b_reg = rhs_start + i;
-            out.push_str(&format!(
-                "    %{pfx}_diag{i} = arith.mulf %{pfx}_r{a_reg}, %{pfx}_r{b_reg} : f64\n"
-            ));
-            out.push_str(&format!(
-                "    %{pfx}_douti{i} = arith.constant {} : index\n",
-                offset + i
-            ));
-            out.push_str(&format!(
-                "    memref.store %{pfx}_diag{i}, %out[%{pfx}_douti{i}] : memref<?xf64>\n"
-            ));
-        }
-        return Ok(out);
-    }
-
-    if let Some(nnz) = explicit_nnz {
-        render_explicit_sparse_matmul_mlir(
-            &mut out,
-            &pfx,
-            &nnz,
-            MatMulRenderShape {
-                lhs_start,
-                rhs_start,
-                m,
-                k,
-                n,
-                offset,
-            },
-        );
-        return Ok(out);
-    }
-
-    render_dense_matmul_mlir(
-        &mut out,
-        &pfx,
-        MatMulRenderShape {
-            lhs_start,
-            rhs_start,
-            m,
-            k,
-            n,
-            offset,
-        },
-    );
-    Ok(out)
-}
-
-fn render_dense_matmul_mlir(out: &mut String, pfx: &str, shape: MatMulRenderShape) {
-    let MatMulRenderShape {
-        lhs_start,
-        rhs_start,
-        m,
-        k,
-        n,
-        offset,
-    } = shape;
-    out.push_str(&format!(
-        "    %{pfx}_A = memref.alloca() : memref<{m}x{k}xf64>\n"
-    ));
-    for i in 0..m {
-        for j in 0..k {
-            let reg = lhs_start + i * k + j;
-            out.push_str(&format!(
-                "    %{pfx}_Ai{i}_{j} = arith.constant {i} : index\n\
-                 \t%{pfx}_Aj{i}_{j} = arith.constant {j} : index\n\
-                 \tmemref.store %{pfx}_r{reg}, %{pfx}_A[%{pfx}_Ai{i}_{j}, %{pfx}_Aj{i}_{j}] : memref<{m}x{k}xf64>\n"
-            ));
-        }
-    }
-
-    out.push_str(&format!(
-        "    %{pfx}_B = memref.alloca() : memref<{k}x{n}xf64>\n"
-    ));
-    for i in 0..k {
-        for j in 0..n {
-            let reg = rhs_start + i * n + j;
-            out.push_str(&format!(
-                "    %{pfx}_Bi{i}_{j} = arith.constant {i} : index\n\
-                 \t%{pfx}_Bj{i}_{j} = arith.constant {j} : index\n\
-                 \tmemref.store %{pfx}_r{reg}, %{pfx}_B[%{pfx}_Bi{i}_{j}, %{pfx}_Bj{i}_{j}] : memref<{k}x{n}xf64>\n"
-            ));
-        }
-    }
-
-    out.push_str(&format!(
-        "    %{pfx}_zero = arith.constant 0.0 : f64\n\
-         \t%{pfx}_C = memref.alloca() : memref<{m}x{n}xf64>\n\
-         \tlinalg.fill ins(%{pfx}_zero : f64) outs(%{pfx}_C : memref<{m}x{n}xf64>)\n\
-         \tlinalg.matmul ins(%{pfx}_A, %{pfx}_B : memref<{m}x{k}xf64>, memref<{k}x{n}xf64>) \
-                        outs(%{pfx}_C : memref<{m}x{n}xf64>)\n"
-    ));
-
-    // Load C results into output memref.
-    for i in 0..m {
-        for j in 0..n {
-            let output_idx = offset + i * n + j;
-            out.push_str(&format!(
-                "    %{pfx}_Ci{i}_{j} = arith.constant {i} : index\n\
-                 \t%{pfx}_Cj{i}_{j} = arith.constant {j} : index\n\
-                 \t%{pfx}_Cv{i}_{j} = memref.load %{pfx}_C[%{pfx}_Ci{i}_{j}, %{pfx}_Cj{i}_{j}] : memref<{m}x{n}xf64>\n\
-                 \t%{pfx}_oi{i}_{j} = arith.constant {output_idx} : index\n\
-                 \tmemref.store %{pfx}_Cv{i}_{j}, %out[%{pfx}_oi{i}_{j}] : memref<?xf64>\n"
-            ));
-        }
-    }
-}
-
-fn render_explicit_sparse_matmul_mlir(
-    out: &mut String,
-    pfx: &str,
-    nnz: &[(usize, usize)],
-    shape: MatMulRenderShape,
-) {
-    out.push_str(&format!("    // Explicit sparse: {} nnz\n", nnz.len()));
-    for slot in 0..shape.m * shape.n {
-        let out_row = slot / shape.n;
-        let out_col = slot % shape.n;
-        let output_idx = shape.offset + slot;
-        let row_nzs: Vec<(usize, usize)> =
-            nnz.iter().filter(|(r, _)| *r == out_row).copied().collect();
-        render_sparse_matmul_cell_mlir(out, pfx, shape, out_row, out_col, output_idx, &row_nzs);
-    }
-}
-
-fn render_sparse_matmul_cell_mlir(
-    out: &mut String,
-    pfx: &str,
-    shape: MatMulRenderShape,
-    out_row: usize,
-    out_col: usize,
-    output_idx: usize,
-    nzs: &[(usize, usize)],
-) {
-    if nzs.is_empty() {
-        out.push_str(&format!(
-            "    %{pfx}_ez{out_row}_{out_col} = arith.constant 0.0 : f64\n\
-             \t%{pfx}_eoi{out_row}_{out_col} = arith.constant {output_idx} : index\n\
-             \tmemref.store %{pfx}_ez{out_row}_{out_col}, %out[%{pfx}_eoi{out_row}_{out_col}] : memref<?xf64>\n"
-        ));
-        return;
-    }
-
-    let (_, k0) = nzs[0];
-    let a0 = shape.lhs_start + out_row * shape.k + k0;
-    let b0 = shape.rhs_start + k0 * shape.n + out_col;
-    out.push_str(&format!(
-        "    %{pfx}_eacc{out_row}_{out_col}_0 = arith.mulf %{pfx}_r{a0}, %{pfx}_r{b0} : f64\n"
-    ));
-    for (nz_idx, (_, ki)) in nzs.iter().enumerate().skip(1) {
-        let a_reg = shape.lhs_start + out_row * shape.k + ki;
-        let b_reg = shape.rhs_start + ki * shape.n + out_col;
-        let prev = nz_idx - 1;
-        let curr = nz_idx;
-        out.push_str(&format!(
-            "    %{pfx}_eprod{out_row}_{out_col}_{curr} = arith.mulf %{pfx}_r{a_reg}, %{pfx}_r{b_reg} : f64\n\
-             \t%{pfx}_eacc{out_row}_{out_col}_{curr} = arith.addf %{pfx}_eacc{out_row}_{out_col}_{prev}, %{pfx}_eprod{out_row}_{out_col}_{curr} : f64\n"
-        ));
-    }
-    let last = nzs.len() - 1;
-    out.push_str(&format!(
-        "    %{pfx}_eoi{out_row}_{out_col} = arith.constant {output_idx} : index\n\
-         \tmemref.store %{pfx}_eacc{out_row}_{out_col}_{last}, %out[%{pfx}_eoi{out_row}_{out_col}] : memref<?xf64>\n"
-    ));
-}
-
-/// Emit MLIR textual IR for a flat `Vec<LinearOp>` into `out`.
-///
-/// Uses `%{pfx}_r{dst}` as the SSA name for register `dst`.
-/// `StoreOutput` is skipped — in MatMul context the register file holds
-/// the matrix operand values; no output memref store is emitted here.
-/// Render a `ComputeNode::LinSolve` inner value as MLIR textual IR.
-///
-/// Emits `setup_ops`, allocas flat A (n×n) and b (n) memrefs, fills them
-/// from computed registers, then calls `@rumoca_solve_linear_component` (the
-/// Gaussian-elimination runtime) once per output component.
-///
-/// Pointers are passed as `i64` to avoid the MLIR memref-descriptor ABI:
-///   `memref.extract_aligned_pointer_as_index` → `arith.index_cast` → `i64`
-///
-/// Called from the MLIR template as `render_linsolve_mlir(node.LinSolve, node_id, output_offset)`.
-pub(super) fn render_linsolve_mlir_function(
-    node: Value,
-    node_id: Value,
-    output_offset: Value,
-) -> Result<String, minijinja::Error> {
-    let id = required_usize_arg(&node_id, "LinSolve node_id")?;
-    let offset = required_usize_arg(&output_offset, "LinSolve output_offset")?;
-
-    let setup_ops = get_field(&node, "setup_ops")?;
-    let matrix_start = solve_field_usize(&node, "matrix_start")?;
-    let rhs_start = solve_field_usize(&node, "rhs_start")?;
-    let n = solve_field_usize(&node, "n")?;
-    let n2 = n * n;
-
-    let pfx = format!("ls{id}");
-    let mut out = format!("    // LinSolve {n}×{n} → out[{offset}..{}]\n", offset + n);
-
-    // Evaluate setup_ops → fills registers matrix_start..+n*n and rhs_start..+n
-    emit_linear_ops_mlir(&setup_ops, &pfx, &mut out)?;
-
-    // Alloca flat A (n×n) and b (n) buffers on the stack
-    out.push_str(&format!(
-        "    %{pfx}_A = memref.alloca() : memref<{n2}xf64>\n"
-    ));
-    for i in 0..n2 {
-        let reg = matrix_start + i;
-        out.push_str(&format!(
-            "    %{pfx}_Ai{i} = arith.constant {i} : index\n\
-             \tmemref.store %{pfx}_r{reg}, %{pfx}_A[%{pfx}_Ai{i}] : memref<{n2}xf64>\n"
-        ));
-    }
-    out.push_str(&format!(
-        "    %{pfx}_b = memref.alloca() : memref<{n}xf64>\n"
-    ));
-    for i in 0..n {
-        let reg = rhs_start + i;
-        out.push_str(&format!(
-            "    %{pfx}_bi{i} = arith.constant {i} : index\n\
-             \tmemref.store %{pfx}_r{reg}, %{pfx}_b[%{pfx}_bi{i}] : memref<{n}xf64>\n"
-        ));
-    }
-
-    // Extract aligned pointers as i64 (avoids memref-descriptor ABI complexity)
-    out.push_str(&format!(
-        "    %{pfx}_Aidx = memref.extract_aligned_pointer_as_index %{pfx}_A : memref<{n2}xf64> -> index\n\
-         \t%{pfx}_Ai64 = arith.index_cast %{pfx}_Aidx : index to i64\n\
-         \t%{pfx}_bidx = memref.extract_aligned_pointer_as_index %{pfx}_b : memref<{n}xf64> -> index\n\
-         \t%{pfx}_bi64 = arith.index_cast %{pfx}_bidx : index to i64\n\
-         \t%{pfx}_nn = arith.constant {n} : i64\n"
-    ));
-
-    // Call runtime once per component, store each result to output
-    for comp in 0..n {
-        let output_idx = offset + comp;
-        out.push_str(&format!(
-            "    %{pfx}_comp{comp} = arith.constant {comp} : i64\n\
-             \t%{pfx}_x{comp} = func.call @rumoca_solve_linear_component(%{pfx}_Ai64, %{pfx}_bi64, %{pfx}_nn, %{pfx}_comp{comp}) : (i64, i64, i64, i64) -> f64\n\
-             \t%{pfx}_oi{comp} = arith.constant {output_idx} : index\n\
-             \tmemref.store %{pfx}_x{comp}, %out[%{pfx}_oi{comp}] : memref<?xf64>\n"
-        ));
-    }
-
-    Ok(out)
-}
-
-fn required_usize_arg(value: &Value, context: &'static str) -> Result<usize, minijinja::Error> {
-    value
-        .as_usize()
-        .ok_or_else(|| render_err(format!("{context} must be a non-negative integer")))
-}
-
-fn emit_linear_ops_mlir(ops: &Value, pfx: &str, out: &mut String) -> Result<(), minijinja::Error> {
-    for op in ops
-        .try_iter()
-        .map_err(|_| render_err("MatMul lhs_ops/rhs_ops must be iterable"))?
-    {
-        emit_one_linear_op_mlir(&op, pfx, out)?;
-    }
-    Ok(())
-}
-
-fn emit_one_linear_op_mlir(
-    op: &Value,
-    pfx: &str,
-    out: &mut String,
-) -> Result<(), minijinja::Error> {
-    if let Ok(v) = get_field(op, "Const") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let val = solve_const_value_string(&v, "INFINITY")?;
-        out.push_str(&format!("    %{pfx}_r{dst} = arith.constant {val} : f64\n"));
-    } else if let Ok(v) = get_field(op, "LoadY") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let idx = solve_field_usize(&v, "index")?;
-        out.push_str(&format!(
-            "    %{pfx}_iy{dst} = arith.constant {idx} : index\n\
-             \t%{pfx}_r{dst} = memref.load %y[%{pfx}_iy{dst}] : memref<?xf64>\n"
-        ));
-    } else if let Ok(v) = get_field(op, "LoadP") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let idx = solve_field_usize(&v, "index")?;
-        out.push_str(&format!(
-            "    %{pfx}_ip{dst} = arith.constant {idx} : index\n\
-             \t%{pfx}_r{dst} = memref.load %p[%{pfx}_ip{dst}] : memref<?xf64>\n"
-        ));
-    } else if let Ok(v) = get_field(op, "Move") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let src = solve_field_usize(&v, "src")?;
-        out.push_str(&format!(
-            "    %{pfx}_mz{dst} = arith.constant 0.0 : f64\n\
-             \t%{pfx}_r{dst} = arith.addf %{pfx}_r{src}, %{pfx}_mz{dst} : f64\n"
-        ));
-    } else if let Ok(v) = get_field(op, "Unary") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let arg = solve_field_usize(&v, "arg")?;
-        let op_name = solve_variant_name(&get_field(&v, "op")?)?;
-        let mop = unary_to_mlir_op(&op_name)
-            .ok_or_else(|| render_err(format!("unsupported unary in MatMul ops: {op_name}")))?;
-        out.push_str(&format!("    %{pfx}_r{dst} = {mop} %{pfx}_r{arg} : f64\n"));
-    } else if let Ok(v) = get_field(op, "Binary") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let lhs = solve_field_usize(&v, "lhs")?;
-        let rhs = solve_field_usize(&v, "rhs")?;
-        let op_name = solve_variant_name(&get_field(&v, "op")?)?;
-        let mop = binary_to_mlir_op(&op_name)
-            .ok_or_else(|| render_err(format!("unsupported binary in MatMul ops: {op_name}")))?;
-        out.push_str(&format!(
-            "    %{pfx}_r{dst} = {mop} %{pfx}_r{lhs}, %{pfx}_r{rhs} : f64\n"
-        ));
-    } else if get_field(op, "StoreOutput").is_ok() {
-        // In MatMul context the register file holds the matrix values — no output store here.
-    } else {
-        return Err(render_err(format!(
-            "unsupported LinearOp in MatMul lhs/rhs: {op}"
-        )));
-    }
-    Ok(())
-}
-
-fn unary_to_mlir_op(op: &str) -> Option<&'static str> {
-    match op {
-        "Neg" => Some("arith.negf"),
-        "Abs" => Some("math.absf"),
-        "Sqrt" => Some("math.sqrt"),
-        "Sin" => Some("math.sin"),
-        "Cos" => Some("math.cos"),
-        "Tan" => Some("math.tan"),
-        "Exp" => Some("math.exp"),
-        "Log" => Some("math.log"),
-        "Floor" => Some("math.floor"),
-        "Ceil" => Some("math.ceil"),
-        "Trunc" => Some("math.trunc"),
-        _ => None,
-    }
-}
-
-fn binary_to_mlir_op(op: &str) -> Option<&'static str> {
-    match op {
-        "Add" => Some("arith.addf"),
-        "Sub" => Some("arith.subf"),
-        "Mul" => Some("arith.mulf"),
-        "Div" => Some("arith.divf"),
-        "Pow" => Some("math.powf"),
-        "Min" => Some("arith.minimumf"),
-        "Max" => Some("arith.maximumf"),
-        _ => None,
-    }
-}
-
-/// Extract `(row, col)` nonzero pairs from a serialized `SparsityPattern::Explicit`.
-///
-/// Expects the minijinja `Value` to represent `{"Explicit": {"nnz": [[r,c], ...]}}`.
-/// Returns `None` if the value is not an `Explicit` variant or cannot be parsed.
-fn extract_explicit_nnz(sparsity: &Value) -> Option<Vec<(usize, usize)>> {
-    let explicit = get_field(sparsity, "Explicit").ok()?;
-    let nnz_val = get_field(&explicit, "nnz").ok()?;
-    let len = nnz_val.len()?;
-    let mut nnz = Vec::with_capacity(len);
-    for i in 0..len {
-        let pair = nnz_val.get_item(&minijinja::Value::from(i)).ok()?;
-        let row = pair.get_item(&minijinja::Value::from(0)).ok()?.as_usize()?;
-        let col = pair.get_item(&minijinja::Value::from(1)).ok()?.as_usize()?;
-        nnz.push((row, col));
-    }
-    Some(nnz)
-}
-
-pub(super) fn render_solve_row_c_function(row: Value, config: Value) -> RenderResult {
-    let cfg = SolveRowCConfig::from_value(&config);
-    render_solve_row_c(&row, &cfg)
-}
-
-pub(super) fn render_solve_row_wgsl_function(row: Value, config: Value) -> RenderResult {
-    let cfg = SolveRowCConfig::from_value(&config);
-    render_solve_row_for(&row, &cfg, SolveRowDialect::Wgsl)
-}
-
-pub(super) fn render_solve_row_rust_function(row: Value, config: Value) -> RenderResult {
-    let cfg = SolveRowCConfig::from_value(&config);
-    render_solve_row_for(&row, &cfg, SolveRowDialect::Rust)
-}
-
-pub(super) fn render_solve_slot_assign_c_function(
-    slot: Value,
-    value: Value,
-    config: Value,
-) -> RenderResult {
-    render_solve_slot_assign_c_required(&slot, &value, &config)
-}
-
-pub(super) fn render_solve_pre_param_binding_c_function(
-    binding: Value,
-    access_config: Value,
-    assign_config: Value,
-) -> RenderResult {
-    let access_cfg = SolveRowCConfig::from_value(&access_config);
-    let assign_cfg = SolveSlotAssignCConfig::from_value(&assign_config);
-    let dest = solve_field_usize(&binding, "dest_p_index")?;
-    let source = get_field(&binding, "source")?;
-    let value = if let Ok(slot) = get_field(&source, "Y") {
-        access_cfg.y_access(solve_field_usize(&slot, "index")?)
-    } else if let Ok(slot) = get_field(&source, "P") {
-        access_cfg.p_access(solve_field_usize(&slot, "index")?)
-    } else {
-        return Err(render_err(format!(
-            "unsupported pre-parameter source slot: {source}"
-        )));
-    };
-
-    Ok(format!(
-        "{};",
-        format_solve_set(&assign_cfg.p_set_pattern, dest, &value)
-    ))
-}
-
-pub(super) fn render_optional_solve_slot_assign_c_function(
-    slot: Value,
-    value: Value,
-    config: Value,
-) -> RenderResult {
-    if slot.is_none() || slot.is_undefined() {
-        return Ok(String::new());
-    }
-    render_solve_slot_assign_c_required(&slot, &value, &config)
-}
-
-fn render_solve_slot_assign_c_required(
-    slot: &Value,
-    value: &Value,
-    config: &Value,
-) -> RenderResult {
-    let cfg = SolveSlotAssignCConfig::from_value(config);
-    let value = value_to_string(value);
-    if let Ok(slot) = get_field(slot, "Y") {
-        let index = solve_field_usize(&slot, "index")?;
-        return Ok(format!(
-            "{};",
-            format_solve_set(&cfg.y_set_pattern, index, &value)
-        ));
-    }
-    if let Ok(slot) = get_field(slot, "P") {
-        let index = solve_field_usize(&slot, "index")?;
-        return Ok(format!(
-            "{};",
-            format_solve_set(&cfg.p_set_pattern, index, &value)
-        ));
-    }
-    Err(render_err(format!(
-        "unsupported solve assignment target slot: {slot}"
-    )))
-}
-
-/// Render a `ComputeNode::MatMul` inner value as a C block.
-///
-/// Three dispatch paths:
-/// - `Diagonal` lhs (n=1, m=k): element-wise scalar multiplies (no GEMM call)
-/// - `Explicit { nnz }` lhs: scalar accumulate over each nonzero position
-/// - `Dense` (default): `__rumoca_dgemm` call
-///
-/// `node` is the inner struct of the `MatMul` variant.  `output_offset` is the first
-/// output array index this node writes to.
-pub(super) fn render_matmul_c_function(
-    node: Value,
-    output_offset: Value,
-    config: Value,
-) -> Result<String, minijinja::Error> {
-    let cfg = SolveRowCConfig::from_value(&config);
-    let offset: usize = output_offset
-        .as_usize()
-        .ok_or_else(|| render_err("output_offset must be a non-negative integer"))?;
-
-    let lhs_ops = get_field(&node, "lhs_ops")?;
-    let lhs_start = solve_field_usize(&node, "lhs_start")?;
-    let rhs_ops = get_field(&node, "rhs_ops")?;
-    let rhs_start = solve_field_usize(&node, "rhs_start")?;
-    let m = solve_field_usize(&node, "m")?;
-    let k = solve_field_usize(&node, "k")?;
-    let n = solve_field_usize(&node, "n")?;
-
-    let lhs_sparsity_val = get_field(&node, "lhs_sparsity")
-        .map_err(|err| render_err(format!("MatMul missing lhs_sparsity: {err}")))?;
-    let lhs_sparsity_str = value_to_string(&lhs_sparsity_val);
-    let is_diagonal_matvec = lhs_sparsity_str.contains("Diagonal") && n == 1 && m == k;
-    let explicit_nnz = if !is_diagonal_matvec && lhs_sparsity_str.contains("Explicit") {
-        extract_explicit_nnz(&lhs_sparsity_val)
-    } else {
-        None
-    };
-
-    // Evaluate lhs_ops into a register file.
-    let mut regs = Vec::<String>::new();
-    for op in lhs_ops
-        .try_iter()
-        .map_err(|_| render_err("MatMul lhs_ops must be iterable"))?
-    {
-        render_solve_op_c(&op, &cfg, &mut regs, None)?;
-    }
-
-    // Evaluate rhs_ops into the same register file.
-    for op in rhs_ops
-        .try_iter()
-        .map_err(|_| render_err("MatMul rhs_ops must be iterable"))?
-    {
-        render_solve_op_c(&op, &cfg, &mut regs, None)?;
-    }
-
-    let end_offset = offset + m * n;
-
-    if is_diagonal_matvec {
-        // A (m×m diagonal) * x (m×1): output[i] = A[i,i] * x[i].
-        // Only diagonal elements of lhs are needed: positions i*k+i = i*(m+1).
-        let mut lines = format!("    /* DiagonalMul {m}x{m}: output[{offset}..{end_offset}] */\n");
-        for i in 0..m {
-            let diag_reg = solve_reg(&regs, lhs_start + i * (m + 1))?;
-            let rhs_reg = solve_reg(&regs, rhs_start + i)?;
-            lines.push_str(&format!(
-                "\tm->xdot[{out}] = ({diag_reg}) * ({rhs_reg});\n",
-                out = offset + i,
-            ));
-        }
-        Ok(lines.trim_end().to_string())
-    } else if let Some(nnz) = explicit_nnz {
-        let lines = render_explicit_sparse_matmul_c(
-            &regs,
-            &nnz,
-            MatMulRenderShape {
-                lhs_start,
-                rhs_start,
-                m,
-                k,
-                n,
-                offset,
-            },
-            end_offset,
-        )?;
-        Ok(lines.trim_end().to_string())
-    } else {
-        let lhs_elems: Result<Vec<_>, _> = (0..m * k)
-            .map(|i| solve_reg(&regs, lhs_start + i))
-            .collect();
-        let rhs_elems: Result<Vec<_>, _> = (0..k * n)
-            .map(|i| solve_reg(&regs, rhs_start + i))
-            .collect();
-        let lhs_array = lhs_elems?.join(", ");
-        let rhs_array = rhs_elems?.join(", ");
-        let mk = m * k;
-        let kn = k * n;
-        Ok(format!(
-            "    /* MatMul {m}x{k}x{n}: output[{offset}..{end_offset}] */\n\
-             \t{{\n\
-             \t\tdouble __lhs[{mk}] = {{{lhs_array}}};\n\
-             \t\tdouble __rhs[{kn}] = {{{rhs_array}}};\n\
-             \t\t__rumoca_dgemm({m}, {n}, {k}, __lhs, __rhs, &m->xdot[{offset}]);\n\
-             \t}}"
-        ))
-    }
-}
-
-fn render_explicit_sparse_matmul_c(
-    regs: &[String],
-    nnz: &[(usize, usize)],
-    shape: MatMulRenderShape,
-    end_offset: usize,
-) -> Result<String, minijinja::Error> {
-    let mut lines = format!(
-        "    /* SparseMul {}x{}x{} ({} nnz): output[{}..{}] */\n",
-        shape.m,
-        shape.k,
-        shape.n,
-        nnz.len(),
-        shape.offset,
-        end_offset
-    );
-    for slot in 0..shape.m * shape.n {
-        let out_row = slot / shape.n;
-        let out_col = slot % shape.n;
-        let output_idx = shape.offset + slot;
-        let row_nzs: Vec<(usize, usize)> =
-            nnz.iter().filter(|(r, _)| *r == out_row).copied().collect();
-        render_sparse_matmul_cell_c(
-            &mut lines, regs, shape, out_row, out_col, output_idx, &row_nzs,
-        )?;
-    }
-    Ok(lines)
-}
-
-fn render_sparse_matmul_cell_c(
-    lines: &mut String,
-    regs: &[String],
-    shape: MatMulRenderShape,
-    out_row: usize,
-    out_col: usize,
-    output_idx: usize,
-    nzs: &[(usize, usize)],
-) -> Result<(), minijinja::Error> {
-    if nzs.is_empty() {
-        lines.push_str(&format!("\tm->xdot[{output_idx}] = 0.0;\n"));
-        return Ok(());
-    }
-
-    let terms: Result<Vec<String>, minijinja::Error> = nzs
-        .iter()
-        .map(|(_, ki)| {
-            let a = solve_reg(regs, shape.lhs_start + out_row * shape.k + ki)?;
-            let b = solve_reg(regs, shape.rhs_start + ki * shape.n + out_col)?;
-            Ok(format!("({a}) * ({b})"))
-        })
-        .collect();
-    lines.push_str(&format!(
-        "\tm->xdot[{output_idx}] = {};\n",
-        terms?.join(" + ")
-    ));
-    Ok(())
 }
 
 fn render_solve_row_c(row: &Value, cfg: &SolveRowCConfig) -> RenderResult {
@@ -867,15 +116,42 @@ fn render_solve_row_for(
     output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
 }
 
+fn render_solve_row_output_for(
+    row: &Value,
+    output_ordinal: usize,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+) -> RenderResult {
+    if let Some(typed) = row.downcast_object_ref::<SolveRowValue>() {
+        return render_solve_row_typed_output(typed.ops(), output_ordinal, cfg, dialect);
+    }
+    let mut regs = Vec::<String>::new();
+    let mut seen_outputs = 0usize;
+    let iter = row
+        .try_iter()
+        .map_err(|_| render_err("solve row must be an array of LinearOp values"))?;
+    for op in iter {
+        let output = render_solve_op_for(&op, cfg, dialect, &mut regs, None)?;
+        if get_field(&op, "StoreOutput").is_ok() {
+            if seen_outputs == output_ordinal {
+                return output.ok_or_else(|| render_err("solve StoreOutput did not yield a value"));
+            }
+            seen_outputs = next_store_output_ordinal(seen_outputs)?;
+        }
+    }
+    missing_store_output_ordinal(output_ordinal)
+}
+
 /// Render an affine row family as one WGSL expression parametric in the
-/// row offset `r` (a `u32` in the emitting kernel): loads with stride 0
-/// keep their literal index; stride 1 renders `base + r`; larger strides
-/// render `base + r * stride`.
-fn render_stencil_family_expr_wgsl(family: &RenderAffineStencil, config: &Value) -> RenderResult {
+/// compact-domain row offset `r` (a `u32` in the emitting kernel).
+fn render_native_family_expr_wgsl(
+    family: &RenderNativeAffineFamily,
+    config: &Value,
+) -> RenderResult {
     let cfg = SolveRowCConfig::from_value(config);
     let mut overrides = std::collections::HashMap::new();
     for stride in &family.load_strides {
-        if stride.stride == 0 {
+        if stride.terms.is_empty() {
             continue;
         }
         let (pattern_is_y, base_index) = match &family.base_ops[stride.op_position] {
@@ -883,15 +159,12 @@ fn render_stencil_family_expr_wgsl(family: &RenderAffineStencil, config: &Value)
             solve::LinearOp::LoadP { index, .. } => (false, *index),
             other => {
                 return Err(render_err(format!(
-                    "stencil stride targets a non-load op: {other:?}"
+                    "native family stride targets a non-load op: {}",
+                    other.kind_name()
                 )));
             }
         };
-        let index_expr = if stride.stride == 1 {
-            format!("{base_index}u + r")
-        } else {
-            format!("{}u + r * {}u", base_index, stride.stride)
-        };
+        let index_expr = affine_load_index_expr(base_index, &stride.terms, &family.domain)?;
         let access = if pattern_is_y {
             cfg.y_access_expr(&index_expr)
         } else {
@@ -900,25 +173,167 @@ fn render_stencil_family_expr_wgsl(family: &RenderAffineStencil, config: &Value)
         overrides.insert(stride.op_position, access);
     }
     for stride in &family.const_strides {
-        if stride.stride == 0.0 {
+        if stride.terms.is_empty() {
             continue;
         }
         let base_value = match &family.base_ops[stride.op_position] {
             solve::LinearOp::Const { value, .. } => *value,
             other => {
                 return Err(render_err(format!(
-                    "stencil const stride targets a non-const op: {other:?}"
+                    "native family const stride targets a non-const op: {}",
+                    other.kind_name()
                 )));
             }
         };
-        let value_expr = if stride.stride == 1.0 {
-            format!("{base_value:?} + f32(r)")
-        } else {
-            format!("{base_value:?} + f32(r) * {:?}", stride.stride)
-        };
+        let value_expr = affine_const_expr(base_value, &stride.terms, &family.domain)?;
         overrides.insert(stride.op_position, value_expr);
     }
     render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+}
+
+fn affine_load_index_expr(
+    base_index: usize,
+    terms: &[solve::AffineStencilIndexStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<String, minijinja::Error> {
+    let mut expr = format!("i32({base_index}u)");
+    for term in terms {
+        let contribution = domain_coordinate_contribution(term.dimension, term.stride, domain)?;
+        expr = format!("{expr} + {contribution}");
+    }
+    Ok(format!("u32({expr})"))
+}
+
+fn affine_output_index_expr(
+    output_map: &solve::TensorOutputMap,
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<String, minijinja::Error> {
+    let mut expr = format!("i32({}u)", output_map.start);
+    for term in &output_map.strides {
+        let contribution = domain_coordinate_contribution(term.dimension, term.stride, domain)?;
+        expr = format!("{expr} + {contribution}");
+    }
+    Ok(format!("u32({expr})"))
+}
+
+fn affine_const_expr(
+    base_value: f64,
+    terms: &[solve::AffineStencilConstStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<String, minijinja::Error> {
+    let mut expr = format!("{base_value:?}");
+    for term in terms {
+        let contribution = domain_coordinate_contribution_f32(term.dimension, term.stride, domain)?;
+        expr = format!("{expr} + {contribution}");
+    }
+    Ok(expr)
+}
+
+fn domain_coordinate_contribution(
+    dimension: usize,
+    stride: isize,
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<String, minijinja::Error> {
+    if domain.binders.get(dimension).is_none() {
+        return Err(render_err(format!(
+            "affine stride dimension {dimension} out of bounds"
+        )));
+    }
+    let scale = stride;
+    Ok(format!(
+        "i32({}) * {}",
+        domain_ordinal_expr(dimension, domain)?,
+        scale
+    ))
+}
+
+fn domain_coordinate_contribution_f32(
+    dimension: usize,
+    stride: f64,
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<String, minijinja::Error> {
+    if domain.binders.get(dimension).is_none() {
+        return Err(render_err(format!(
+            "affine stride dimension {dimension} out of bounds"
+        )));
+    }
+    let scale = stride;
+    Ok(format!(
+        "f32({}) * {:?}",
+        domain_ordinal_expr(dimension, domain)?,
+        scale
+    ))
+}
+
+fn domain_ordinal_expr(
+    dimension: usize,
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<String, minijinja::Error> {
+    let binder = domain
+        .binders
+        .get(dimension)
+        .ok_or_else(|| render_err(format!("affine stride dimension {dimension} out of bounds")))?;
+    let len = binder.value_count_for_render()?;
+    let later = domain.binders[dimension + 1..]
+        .iter()
+        .try_fold(1usize, |acc, binder| {
+            let count = binder.value_count_for_render()?;
+            acc.checked_mul(count).ok_or_else(|| {
+                render_err("structured domain suffix count overflows host index range")
+            })
+        })?;
+    let base = if later == 1 {
+        "r".to_string()
+    } else {
+        format!("r / {later}u")
+    };
+    Ok(if len == 1 {
+        "0u".to_string()
+    } else {
+        format!("({base}) % {len}u")
+    })
+}
+
+trait RenderStructuredIndexBinderExt {
+    fn value_count_for_render(&self) -> Result<usize, minijinja::Error>;
+}
+
+impl RenderStructuredIndexBinderExt for rumoca_core::StructuredIndexBinder {
+    fn value_count_for_render(&self) -> Result<usize, minijinja::Error> {
+        if self.step == 0 {
+            return Err(render_err("structured domain step cannot be zero"));
+        }
+        let count = if self.step > 0 {
+            structured_binder_value_count(self.lower, self.upper, self.step)?
+        } else if self.lower < self.upper {
+            0
+        } else {
+            let step = self
+                .step
+                .checked_neg()
+                .ok_or_else(|| render_err("structured domain step magnitude overflows"))?;
+            structured_binder_value_count(self.upper, self.lower, step)?
+        };
+        usize::try_from(count)
+            .map_err(|_| render_err("structured domain count exceeds host index range"))
+    }
+}
+
+fn structured_binder_value_count(
+    lower: i64,
+    upper: i64,
+    positive_step: i64,
+) -> Result<i64, minijinja::Error> {
+    if lower > upper {
+        return Ok(0);
+    }
+    let distance = upper
+        .checked_sub(lower)
+        .ok_or_else(|| render_err("structured domain extent overflows"))?;
+    distance
+        .checked_div(positive_step)
+        .and_then(|steps| steps.checked_add(1))
+        .ok_or_else(|| render_err("structured domain count overflows"))
 }
 
 fn render_solve_row_typed(
@@ -929,9 +344,41 @@ fn render_solve_row_typed(
     render_solve_row_typed_with_overrides(ops, &std::collections::HashMap::new(), cfg, dialect)
 }
 
+fn render_solve_row_typed_output(
+    ops: &[solve::LinearOp],
+    output_ordinal: usize,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut seen_outputs = 0usize;
+    for op in ops {
+        let output = render_solve_op_typed(op, cfg, dialect, &mut regs, None)?;
+        if matches!(op, solve::LinearOp::StoreOutput { .. }) {
+            if seen_outputs == output_ordinal {
+                return output.ok_or_else(|| render_err("solve StoreOutput did not yield a value"));
+            }
+            seen_outputs = next_store_output_ordinal(seen_outputs)?;
+        }
+    }
+    missing_store_output_ordinal(output_ordinal)
+}
+
+fn next_store_output_ordinal(value: usize) -> Result<usize, minijinja::Error> {
+    value
+        .checked_add(1)
+        .ok_or_else(|| render_err("solve StoreOutput ordinal overflows host range"))
+}
+
+fn missing_store_output_ordinal(output_ordinal: usize) -> RenderResult {
+    Err(render_err(format!(
+        "solve row did not contain StoreOutput #{output_ordinal}"
+    )))
+}
+
 /// Typed row render where selected load ops (by op position) use a caller
 /// provided access expression instead of their literal index — the
-/// mechanism behind parametric stencil-kernel emission.
+/// mechanism behind parametric native-kernel emission.
 fn render_solve_row_typed_with_overrides(
     ops: &[solve::LinearOp],
     access_overrides: &std::collections::HashMap<usize, String>,
@@ -948,11 +395,16 @@ fn render_solve_row_typed_with_overrides(
                 | solve::LinearOp::Const { dst, .. } => *dst,
                 other => {
                     return Err(render_err(format!(
-                        "stencil override targets a non-load/non-const op: {other:?}"
+                        "native family override targets a non-load/non-const op: {}",
+                        other.kind_name()
                     )));
                 }
             };
-            store_solve_reg(regs.as_mut(), dst as usize, access.clone());
+            store_solve_reg(
+                regs.as_mut(),
+                solve_reg_index(dst, "native override destination register")?,
+                access.clone(),
+            )?;
             continue;
         }
         output = render_solve_op_typed(op, cfg, dialect, &mut regs, output)?;
@@ -964,6 +416,9 @@ fn render_solve_row_typed_with_overrides(
 /// byte-identical to the value-walk path (`{:?}` on f64 prints the same
 /// shortest round-trip form serde_json uses; non-finite constants render
 /// as the dialect infinity, matching serde_json's null for non-finite).
+// SPEC_0021: Exception - typed solve op rendering mirrors the serialized
+// value-walk renderer variant-for-variant for byte-identical template output.
+#[allow(clippy::too_many_lines)]
 fn render_solve_op_typed(
     op: &solve::LinearOp,
     cfg: &SolveRowCConfig,
@@ -972,6 +427,10 @@ fn render_solve_op_typed(
     output: Option<String>,
 ) -> Result<Option<String>, minijinja::Error> {
     use solve::LinearOp;
+    // Runtime-indexed parameter/seed loads are handled by a shared renderer.
+    if render_indexed_load_op(op, cfg, dialect, regs)? {
+        return Ok(output);
+    }
     match op {
         LinearOp::Const { dst, value } => {
             let text = if value.is_finite() {
@@ -979,16 +438,32 @@ fn render_solve_op_typed(
             } else {
                 dialect.infinity().to_string()
             };
-            store_solve_reg(regs, *dst as usize, dialect.format_const(text));
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "const destination register")?,
+                dialect.format_const(text),
+            )?;
         }
         LinearOp::LoadTime { dst } => {
-            store_solve_reg(regs, *dst as usize, cfg.time.clone());
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "time destination register")?,
+                cfg.time.clone(),
+            )?;
         }
         LinearOp::LoadY { dst, index } => {
-            store_solve_reg(regs, *dst as usize, cfg.y_access(*index));
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "Y-load destination register")?,
+                cfg.y_access(*index),
+            )?;
         }
         LinearOp::LoadP { dst, index } => {
-            store_solve_reg(regs, *dst as usize, cfg.p_access(*index));
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "parameter-load destination register")?,
+                cfg.p_access(*index),
+            )?;
         }
         LinearOp::LoadSeed { dst, index } => {
             let Some(seed) = cfg.seed_access(*index) else {
@@ -996,11 +471,19 @@ fn render_solve_op_typed(
                     "LoadSeed requires a `seed` access pattern in solve-row C output",
                 ));
             };
-            store_solve_reg(regs, *dst as usize, seed);
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "seed-load destination register")?,
+                seed,
+            )?;
         }
         LinearOp::Move { dst, src } => {
-            let value = solve_reg(regs, *src as usize)?;
-            store_solve_reg(regs, *dst as usize, value);
+            let value = solve_reg(regs, solve_reg_index(*src, "move source register")?)?;
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "move destination register")?,
+                value,
+            )?;
         }
         LinearOp::LinearSolveComponent {
             dst,
@@ -1011,38 +494,42 @@ fn render_solve_op_typed(
         } => {
             let expr = dialect.render_linear_solve_component(
                 regs,
-                *matrix_start as usize,
-                *rhs_start as usize,
+                solve_reg_index(*matrix_start, "linear-solve matrix register")?,
+                solve_reg_index(*rhs_start, "linear-solve RHS register")?,
                 *n,
                 *component,
             )?;
-            store_solve_reg(regs, *dst as usize, expr);
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "linear-solve destination register")?,
+                expr,
+            )?;
         }
         LinearOp::Unary { dst, op, arg } => {
-            let arg = solve_reg(regs, *arg as usize)?;
+            let arg = solve_reg(regs, solve_reg_index(*arg, "unary argument register")?)?;
             store_solve_reg(
                 regs,
-                *dst as usize,
-                dialect.render_unary(&format!("{op:?}"), arg)?,
-            );
+                solve_reg_index(*dst, "unary destination register")?,
+                dialect.render_unary(op.kind_name(), arg)?,
+            )?;
         }
         LinearOp::Binary { dst, op, lhs, rhs } => {
-            let lhs = solve_reg(regs, *lhs as usize)?;
-            let rhs = solve_reg(regs, *rhs as usize)?;
+            let lhs = solve_reg(regs, solve_reg_index(*lhs, "binary lhs register")?)?;
+            let rhs = solve_reg(regs, solve_reg_index(*rhs, "binary rhs register")?)?;
             store_solve_reg(
                 regs,
-                *dst as usize,
-                dialect.render_binary(&format!("{op:?}"), lhs, rhs)?,
-            );
+                solve_reg_index(*dst, "binary destination register")?,
+                dialect.render_binary(op.kind_name(), lhs, rhs)?,
+            )?;
         }
         LinearOp::Compare { dst, op, lhs, rhs } => {
-            let lhs = solve_reg(regs, *lhs as usize)?;
-            let rhs = solve_reg(regs, *rhs as usize)?;
+            let lhs = solve_reg(regs, solve_reg_index(*lhs, "compare lhs register")?)?;
+            let rhs = solve_reg(regs, solve_reg_index(*rhs, "compare rhs register")?)?;
             store_solve_reg(
                 regs,
-                *dst as usize,
-                dialect.render_compare(&format!("{op:?}"), lhs, rhs)?,
-            );
+                solve_reg_index(*dst, "compare destination register")?,
+                dialect.render_compare(op.kind_name(), lhs, rhs)?,
+            )?;
         }
         LinearOp::Select {
             dst,
@@ -1050,23 +537,116 @@ fn render_solve_op_typed(
             if_true,
             if_false,
         } => {
-            let cond = solve_reg(regs, *cond as usize)?;
-            let if_true = solve_reg(regs, *if_true as usize)?;
-            let if_false = solve_reg(regs, *if_false as usize)?;
+            let cond = solve_reg(regs, solve_reg_index(*cond, "select condition register")?)?;
+            let if_true = solve_reg(regs, solve_reg_index(*if_true, "select true register")?)?;
+            let if_false = solve_reg(regs, solve_reg_index(*if_false, "select false register")?)?;
             store_solve_reg(
                 regs,
-                *dst as usize,
+                solve_reg_index(*dst, "select destination register")?,
                 dialect.render_select(cond, if_true, if_false),
-            );
+            )?;
         }
         LinearOp::StoreOutput { src } => {
-            return Ok(Some(solve_reg(regs, *src as usize)?));
+            return Ok(Some(solve_reg(
+                regs,
+                solve_reg_index(*src, "store-output source register")?,
+            )?));
         }
         other => {
-            return Err(render_err(format!("unsupported solve LinearOp: {other:?}")));
+            return Err(render_err(format!(
+                "unsupported solve LinearOp: {}",
+                other.kind_name()
+            )));
         }
     }
     Ok(output)
+}
+
+/// Render the array-access expression for a runtime-indexed parameter (or seed)
+/// load: `array[base + clamp(round(index_expr), 0, count-1)]`.
+fn render_indexed_access(
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    index_expr: &str,
+    base: usize,
+    count: usize,
+    is_seed: bool,
+) -> Result<String, minijinja::Error> {
+    let slot = dialect.render_indexed_index(index_expr, base, count);
+    if is_seed {
+        cfg.seed_access_expr(&slot).ok_or_else(|| {
+            render_err("LoadIndexedSeed requires a `seed` access pattern in solve-row output")
+        })
+    } else {
+        Ok(cfg.p_access_expr(&slot))
+    }
+}
+
+/// Typed-renderer handler for runtime-indexed parameter/seed loads: stores the
+/// access expression into `regs` and returns `true` when `op` is such a load.
+fn render_indexed_load_op(
+    op: &solve::LinearOp,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    regs: &mut Vec<String>,
+) -> Result<bool, minijinja::Error> {
+    use solve::LinearOp;
+    let (dst, base, count, index, is_seed) = match op {
+        LinearOp::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        } => (*dst, *base, *count, *index, false),
+        LinearOp::LoadIndexedSeed {
+            dst,
+            base,
+            count,
+            index,
+        } => (*dst, *base, *count, *index, true),
+        _ => return Ok(false),
+    };
+    let index_expr = solve_reg(regs, index as usize)?;
+    let expr = render_indexed_access(cfg, dialect, &index_expr, base, count, is_seed)?;
+    store_solve_reg(regs, dst as usize, expr)?;
+    Ok(true)
+}
+
+/// Value-renderer (`get_field`) handler for a runtime-indexed load, mirroring
+/// [`render_indexed_load_op`] but producing a [`SolveOpEffect`] from the lazy op
+/// `Value`. The caller dispatches on op kind, so this always handles an indexed
+/// load (no optional-miss return).
+/// Value-renderer handler for a `LinearSolveComponent` op, extracted from the
+/// `solve_op_expr` chain to keep it within the complexity budget.
+fn solve_linsolve_effect(
+    value: &Value,
+    dialect: SolveRowDialect,
+    regs: &[String],
+) -> Result<SolveOpEffect, minijinja::Error> {
+    let dst = solve_field_usize(value, "dst")?;
+    let matrix_start = solve_field_usize(value, "matrix_start")?;
+    let rhs_start = solve_field_usize(value, "rhs_start")?;
+    let n = solve_field_usize(value, "n")?;
+    let component = solve_field_usize(value, "component")?;
+    let expr =
+        dialect.render_linear_solve_component(regs, matrix_start, rhs_start, n, component)?;
+    Ok(SolveOpEffect::Compute { dst, expr })
+}
+
+fn solve_indexed_effect(
+    value: &Value,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    regs: &[String],
+    is_seed: bool,
+) -> Result<SolveOpEffect, minijinja::Error> {
+    let dst = solve_field_usize(value, "dst")?;
+    let base = solve_field_usize(value, "base")?;
+    let count = solve_field_usize(value, "count")?;
+    let index = solve_field_usize(value, "index")?;
+    let index_expr = solve_reg(regs, index)?;
+    let expr = render_indexed_access(cfg, dialect, &index_expr, base, count, is_seed)?;
+    Ok(SolveOpEffect::Compute { dst, expr })
 }
 
 fn render_solve_op_c(
@@ -1078,36 +658,57 @@ fn render_solve_op_c(
     render_solve_op_for(op, cfg, SolveRowDialect::C, regs, output)
 }
 
-#[allow(clippy::too_many_lines)]
-fn render_solve_op_for(
+/// The effect of a single `LinearOp` when rendering a solve program: either it
+/// computes a value into register `dst`, or it stores a register to an output.
+enum SolveOpEffect {
+    Compute { dst: usize, expr: String },
+    Store { src: usize },
+}
+
+/// Compute the rendered expression (and destination register) for one solve op,
+/// reading operand registers from `regs` (their already-rendered expressions or
+/// temp names). Shared by the single-output expression renderer
+/// ([`render_solve_op_for`]) and the multi-output block renderer
+/// ([`render_solve_block_for`]).
+fn solve_op_expr(
     op: &Value,
     cfg: &SolveRowCConfig,
     dialect: SolveRowDialect,
-    regs: &mut Vec<String>,
-    output: Option<String>,
-) -> Result<Option<String>, minijinja::Error> {
+    regs: &[String],
+) -> Result<SolveOpEffect, minijinja::Error> {
     if let Ok(value) = get_field(op, "Const") {
         let dst = solve_field_usize(&value, "dst")?;
-        let value = solve_const_value_string(&value, dialect.infinity())?;
-        store_solve_reg(regs, dst, dialect.format_const(value));
-        return Ok(output);
+        let expr = dialect.format_const(solve_const_value_string(&value, dialect.infinity())?);
+        return Ok(SolveOpEffect::Compute { dst, expr });
     }
     if let Ok(value) = get_field(op, "LoadTime") {
         let dst = solve_field_usize(&value, "dst")?;
-        store_solve_reg(regs, dst, cfg.time.clone());
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.time.clone(),
+        });
     }
     if let Ok(value) = get_field(op, "LoadY") {
         let dst = solve_field_usize(&value, "dst")?;
         let index = solve_field_usize(&value, "index")?;
-        store_solve_reg(regs, dst, cfg.y_access(index));
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.y_access(index),
+        });
     }
     if let Ok(value) = get_field(op, "LoadP") {
         let dst = solve_field_usize(&value, "dst")?;
         let index = solve_field_usize(&value, "index")?;
-        store_solve_reg(regs, dst, cfg.p_access(index));
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: cfg.p_access(index),
+        });
+    }
+    if let Ok(value) = get_field(op, "LoadIndexedP") {
+        return solve_indexed_effect(&value, cfg, dialect, regs, false);
+    }
+    if let Ok(value) = get_field(op, "LoadIndexedSeed") {
+        return solve_indexed_effect(&value, cfg, dialect, regs, true);
     }
     if let Ok(value) = get_field(op, "LoadSeed") {
         let dst = solve_field_usize(&value, "dst")?;
@@ -1117,25 +718,15 @@ fn render_solve_op_for(
                 "LoadSeed requires a `seed` access pattern in solve-row C output",
             ));
         };
-        store_solve_reg(regs, dst, seed);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute { dst, expr: seed });
     }
     if let Ok(value) = get_field(op, "Move") {
         let dst = solve_field_usize(&value, "dst")?;
         let src = solve_reg(regs, solve_field_usize(&value, "src")?)?;
-        store_solve_reg(regs, dst, src);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute { dst, expr: src });
     }
     if let Ok(value) = get_field(op, "LinearSolveComponent") {
-        let dst = solve_field_usize(&value, "dst")?;
-        let matrix_start = solve_field_usize(&value, "matrix_start")?;
-        let rhs_start = solve_field_usize(&value, "rhs_start")?;
-        let n = solve_field_usize(&value, "n")?;
-        let component = solve_field_usize(&value, "component")?;
-        let expr =
-            dialect.render_linear_solve_component(regs, matrix_start, rhs_start, n, component)?;
-        store_solve_reg(regs, dst, expr);
-        return Ok(output);
+        return solve_linsolve_effect(&value, dialect, regs);
     }
     if let Ok(value) = get_field(op, "ExternalCall") {
         let dst = solve_field_usize(&value, "dst")?;
@@ -1166,51 +757,345 @@ fn render_solve_op_for(
         } else {
             format!("(double[]){{{}}}", rendered_args.join(", "))
         };
-        store_solve_reg(
-            regs,
+        return Ok(SolveOpEffect::Compute {
             dst,
-            format!(
+            expr: format!(
                 "RUMOCA_SOLVE_EXTERNAL_CALL(\"{function}\", {output_index}, {arg_count}, {args_expr})"
             ),
-        );
-        return Ok(output);
+        });
     }
     if let Ok(value) = get_field(op, "Unary") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let arg = solve_reg(regs, solve_field_usize(&value, "arg")?)?;
-        store_solve_reg(regs, dst, dialect.render_unary(&op, arg)?);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: dialect.render_unary(&op, arg)?,
+        });
     }
     if let Ok(value) = get_field(op, "Binary") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let lhs = solve_reg(regs, solve_field_usize(&value, "lhs")?)?;
         let rhs = solve_reg(regs, solve_field_usize(&value, "rhs")?)?;
-        store_solve_reg(regs, dst, dialect.render_binary(&op, lhs, rhs)?);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: dialect.render_binary(&op, lhs, rhs)?,
+        });
     }
     if let Ok(value) = get_field(op, "Compare") {
         let dst = solve_field_usize(&value, "dst")?;
         let op = solve_variant_name(&get_field(&value, "op")?)?;
         let lhs = solve_reg(regs, solve_field_usize(&value, "lhs")?)?;
         let rhs = solve_reg(regs, solve_field_usize(&value, "rhs")?)?;
-        store_solve_reg(regs, dst, dialect.render_compare(&op, lhs, rhs)?);
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: dialect.render_compare(&op, lhs, rhs)?,
+        });
     }
     if let Ok(value) = get_field(op, "Select") {
         let dst = solve_field_usize(&value, "dst")?;
         let cond = solve_reg(regs, solve_field_usize(&value, "cond")?)?;
         let if_true = solve_reg(regs, solve_field_usize(&value, "if_true")?)?;
         let if_false = solve_reg(regs, solve_field_usize(&value, "if_false")?)?;
-        store_solve_reg(regs, dst, dialect.render_select(cond, if_true, if_false));
-        return Ok(output);
+        return Ok(SolveOpEffect::Compute {
+            dst,
+            expr: dialect.render_select(cond, if_true, if_false),
+        });
     }
     if let Ok(value) = get_field(op, "StoreOutput") {
         let src = solve_field_usize(&value, "src")?;
-        return Ok(Some(solve_reg(regs, src)?));
+        return Ok(SolveOpEffect::Store { src });
     }
     Err(render_err(format!("unsupported solve LinearOp: {op}")))
+}
+
+fn render_solve_op_for(
+    op: &Value,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    regs: &mut Vec<String>,
+    output: Option<String>,
+) -> Result<Option<String>, minijinja::Error> {
+    match solve_op_expr(op, cfg, dialect, regs)? {
+        SolveOpEffect::Compute { dst, expr } => {
+            store_solve_reg(regs, dst, expr)?;
+            Ok(output)
+        }
+        SolveOpEffect::Store { src } => Ok(Some(solve_reg(regs, src)?)),
+    }
+}
+
+/// Render a (possibly multi-output) scalar program block as a statement block
+/// using register temporaries.
+///
+/// Non-leaf computed registers (those with register operands) are materialized
+/// into a temporary (`double __rN = ...;` / `let __rN = ...;`) whenever read at
+/// least once, and any register read two or more times is materialized
+/// regardless. Leaf ops (Const / Load*) read once are inlined since their
+/// expression is O(1). This computes each value ONCE (shared across outputs) AND
+/// keeps every emitted expression O(1): inlining non-leaf single-use registers
+/// as nested strings would re-expand deep single-use chains (common in Lie-group
+/// control math) into O(n^2) text — gigabytes for a 150k-op program. A temp read
+/// once is still used once, so no unused-variable warnings are introduced.
+///
+/// `out_set` is the assignment pattern with two `{}` placeholders (index, value),
+/// e.g. `"out[{}] = {}"` or `"m->xdot[{}] = {}"`. Outputs are numbered by a
+/// running counter across all programs (the `StoreOutput` running-counter
+/// invariant).
+fn render_solve_block_for(
+    programs: &Value,
+    cfg: &SolveRowCConfig,
+    dialect: SolveRowDialect,
+    out_set: &str,
+    output_targets: SolveOutputTargets,
+) -> RenderResult {
+    let mut body = String::new();
+    let mut temp_counter = 0usize;
+    let mut output_ordinal = 0usize;
+    for program in programs
+        .try_iter()
+        .map_err(|_| render_err("solve programs must be an array"))?
+    {
+        let ops = solve_program_ops(&program)?;
+        let read_counts = collect_solve_read_counts(&ops)?;
+        let mut rendered = SolveProgramRender {
+            body: &mut body,
+            regs: Vec::new(),
+            temp_counter: &mut temp_counter,
+            output_ordinal: &mut output_ordinal,
+            output_targets: &output_targets,
+        };
+        for op in &ops {
+            rendered.render_op(op, cfg, dialect, out_set, &read_counts)?;
+        }
+    }
+    Ok(body)
+}
+
+fn solve_program_ops(program: &Value) -> Result<Vec<Value>, minijinja::Error> {
+    let mut ops = Vec::new();
+    for op in program
+        .try_iter()
+        .map_err(|_| render_err("solve program must be an array of LinearOp values"))?
+    {
+        reserve_render_capacity(&mut ops, 1, "solve program op count")?;
+        ops.push(op);
+    }
+    Ok(ops)
+}
+
+/// Mutable state threaded while rendering one solve program's ops: the output
+/// buffer plus the register file and the running temp / output counters (the
+/// counters are shared across programs, so they are borrowed from the caller).
+struct SolveProgramRender<'a> {
+    body: &'a mut String,
+    regs: Vec<String>,
+    temp_counter: &'a mut usize,
+    output_ordinal: &'a mut usize,
+    output_targets: &'a SolveOutputTargets,
+}
+
+impl SolveProgramRender<'_> {
+    /// Render a single solve op into `body`. Pulling this out of the per-program
+    /// loop keeps the loop body shallow: the materialization decision is one
+    /// level deep here instead of four levels deep inside two nested `for`s and a
+    /// `match`.
+    fn render_op(
+        &mut self,
+        op: &Value,
+        cfg: &SolveRowCConfig,
+        dialect: SolveRowDialect,
+        out_set: &str,
+        read_counts: &[usize],
+    ) -> Result<(), minijinja::Error> {
+        // A leaf op (Const / Load*) has no register operands; its expression is
+        // O(1) and safe to inline. Non-leaf ops carry register operands, so
+        // inlining them as nested strings would re-expand deep single-use chains
+        // into O(n^2) text — materialize those into a temp instead.
+        let is_leaf = solve_op_read_regs(op)?.is_empty();
+        match solve_op_expr(op, cfg, dialect, &self.regs)? {
+            SolveOpEffect::Compute { dst, expr } => {
+                let reads = read_counts
+                    .get(dst)
+                    .copied()
+                    .ok_or_else(|| render_err(format!("read-count metadata missing r{dst}")))?;
+                if reads >= 2 || (reads >= 1 && !is_leaf) {
+                    let next_temp_counter = (*self.temp_counter)
+                        .checked_add(1)
+                        .ok_or_else(|| render_err("solve temporary register count overflow"))?;
+                    let name = format!("__r{}", *self.temp_counter);
+                    self.body.push_str(&dialect.temp_decl(&name, &expr));
+                    *self.temp_counter = next_temp_counter;
+                    store_solve_reg(&mut self.regs, dst, name)?;
+                } else {
+                    store_solve_reg(&mut self.regs, dst, expr)?;
+                }
+            }
+            SolveOpEffect::Store { src } => {
+                let value = solve_reg(&self.regs, src)?;
+                let output_index = self.output_targets.target_for(*self.output_ordinal)?;
+                let next_output_ordinal = (*self.output_ordinal)
+                    .checked_add(1)
+                    .ok_or_else(|| render_err("solve StoreOutput ordinal overflows host range"))?;
+                self.body.push_str(&format!(
+                    "\t{};\n",
+                    format_solve_set(out_set, output_index, &value)
+                ));
+                *self.output_ordinal = next_output_ordinal;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Count how many times each register is read across a program's ops.
+fn collect_solve_read_counts(ops: &[Value]) -> Result<Vec<usize>, minijinja::Error> {
+    let mut counts = Vec::<usize>::new();
+    for op in ops {
+        if let Some(dst) = solve_op_write_reg(op)? {
+            ensure_solve_read_count_len(&mut counts, dst)?;
+        }
+        for reg in solve_op_read_regs(op)? {
+            bump_solve_read_count(&mut counts, reg)?;
+        }
+    }
+    Ok(counts)
+}
+
+fn ensure_solve_read_count_len(
+    counts: &mut Vec<usize>,
+    reg: usize,
+) -> Result<(), minijinja::Error> {
+    let target_len = reg
+        .checked_add(1)
+        .ok_or_else(|| render_err("solve read-count register index overflows host range"))?;
+    if counts.len() < target_len {
+        reserve_render_capacity(
+            counts,
+            target_len - counts.len(),
+            "solve read-count register count",
+        )?;
+        counts.resize(target_len, 0);
+    }
+    Ok(())
+}
+
+fn bump_solve_read_count(counts: &mut Vec<usize>, reg: usize) -> Result<(), minijinja::Error> {
+    ensure_solve_read_count_len(counts, reg)?;
+    counts[reg] = counts[reg]
+        .checked_add(1)
+        .ok_or_else(|| render_err("solve register read count overflow"))?;
+    Ok(())
+}
+
+fn solve_op_write_reg(op: &Value) -> Result<Option<usize>, minijinja::Error> {
+    for field in [
+        "Const",
+        "LoadTime",
+        "LoadY",
+        "LoadP",
+        "LoadIndexedP",
+        "LoadSeed",
+        "LoadIndexedSeed",
+        "Move",
+        "LinearSolveComponent",
+        "Unary",
+        "Binary",
+        "Compare",
+        "Select",
+    ] {
+        if let Ok(value) = get_field(op, field) {
+            return Ok(Some(solve_field_usize(&value, "dst")?));
+        }
+    }
+    solve_op_has_no_write_reg()
+}
+
+fn solve_op_has_no_write_reg() -> Result<Option<usize>, minijinja::Error> {
+    Ok(Option::None)
+}
+
+/// The operand registers read by a single solve op.
+fn solve_op_read_regs(op: &Value) -> Result<Vec<usize>, minijinja::Error> {
+    if let Ok(value) = get_field(op, "Move") {
+        return solve_read_regs_from_slice(&[solve_field_usize(&value, "src")?]);
+    }
+    if let Ok(value) = get_field(op, "LoadIndexedP") {
+        return solve_read_regs_from_slice(&[solve_field_usize(&value, "index")?]);
+    }
+    if let Ok(value) = get_field(op, "LoadIndexedSeed") {
+        return solve_read_regs_from_slice(&[solve_field_usize(&value, "index")?]);
+    }
+    if let Ok(value) = get_field(op, "Unary") {
+        return solve_read_regs_from_slice(&[solve_field_usize(&value, "arg")?]);
+    }
+    if let Ok(value) = get_field(op, "Binary") {
+        return solve_read_regs_from_slice(&[
+            solve_field_usize(&value, "lhs")?,
+            solve_field_usize(&value, "rhs")?,
+        ]);
+    }
+    if let Ok(value) = get_field(op, "Compare") {
+        return solve_read_regs_from_slice(&[
+            solve_field_usize(&value, "lhs")?,
+            solve_field_usize(&value, "rhs")?,
+        ]);
+    }
+    if let Ok(value) = get_field(op, "Select") {
+        return solve_read_regs_from_slice(&[
+            solve_field_usize(&value, "cond")?,
+            solve_field_usize(&value, "if_true")?,
+            solve_field_usize(&value, "if_false")?,
+        ]);
+    }
+    if let Ok(value) = get_field(op, "LinearSolveComponent") {
+        let matrix_start = solve_field_usize(&value, "matrix_start")?;
+        let rhs_start = solve_field_usize(&value, "rhs_start")?;
+        let n = solve_field_usize(&value, "n")?;
+        return solve_linsolve_read_regs(matrix_start, rhs_start, n);
+    }
+    if let Ok(value) = get_field(op, "StoreOutput") {
+        return solve_read_regs_from_slice(&[solve_field_usize(&value, "src")?]);
+    }
+    Ok(Vec::new())
+}
+
+fn solve_read_regs_from_slice(regs: &[usize]) -> Result<Vec<usize>, minijinja::Error> {
+    let mut out = render_vec_with_capacity(regs.len(), "solve op read register count")?;
+    out.extend(regs.iter().copied());
+    Ok(out)
+}
+
+fn solve_linsolve_read_regs(
+    matrix_start: usize,
+    rhs_start: usize,
+    n: usize,
+) -> Result<Vec<usize>, minijinja::Error> {
+    let matrix_count = checked_linsolve_render_count(
+        checked_linsolve_product(n, n, "LinearSolveComponent read matrix count")?,
+        "LinearSolveComponent read matrix count",
+    )?;
+    let rhs_count = checked_linsolve_render_count(n, "LinearSolveComponent read RHS count")?;
+    let total_count = checked_linsolve_sum(
+        matrix_count,
+        rhs_count,
+        "LinearSolveComponent read register count",
+    )?;
+    let matrix_end = checked_linsolve_sum(
+        matrix_start,
+        matrix_count,
+        "LinearSolveComponent read matrix register end",
+    )?;
+    let rhs_end = checked_linsolve_sum(
+        rhs_start,
+        rhs_count,
+        "LinearSolveComponent read RHS register end",
+    )?;
+    let mut regs = render_vec_with_capacity(total_count, "LinearSolveComponent read registers")?;
+    regs.extend(matrix_start..matrix_end);
+    regs.extend(rhs_start..rhs_end);
+    Ok(regs)
 }
 
 #[derive(Clone, Copy)]
@@ -1220,6 +1105,13 @@ enum SolveRowDialect {
     /// WGSL compute-shader dialect (WebGPU). f32 baseline precision; boolean
     /// values keep the numeric 0.0/1.0 encoding via `select`.
     Wgsl,
+    /// Python dialect for symbolic array backends (CasADi, JAX). Emits bare
+    /// function names (`sin`, `fabs`, `atan2`, `if_else`, `fmin`, …) that the
+    /// consuming template binds to the appropriate namespace (`ca.*` / `jnp.*`),
+    /// so one dialect serves both. Comparisons/select stay value-style (no
+    /// ternary) since the operands are symbolic, matching the reference
+    /// `rumoca_backend` interpreter.
+    Python,
 }
 
 impl SolveRowDialect {
@@ -1229,6 +1121,8 @@ impl SolveRowDialect {
             Self::Rust => "f64::INFINITY",
             // WGSL has no portable infinity literal; f32::MAX approximates it.
             Self::Wgsl => "3.4028235e38",
+            // Bound to ca.inf / jnp.inf by the consuming template.
+            Self::Python => "inf",
         }
     }
 
@@ -1236,7 +1130,7 @@ impl SolveRowDialect {
     /// form for integer-looking constants. C and Rust are unchanged.
     fn format_const(self, value: String) -> String {
         match self {
-            Self::C | Self::Rust => value,
+            Self::C | Self::Rust | Self::Python => value,
             Self::Wgsl => {
                 let looks_integer = !value.is_empty()
                     && !value.contains(['.', 'e', 'E'])
@@ -1258,6 +1152,7 @@ impl SolveRowDialect {
         match self {
             Self::C | Self::Rust => render_solve_compare(op, lhs, rhs),
             Self::Wgsl => render_solve_compare_wgsl(op, lhs, rhs),
+            Self::Python => render_solve_compare_py(op, lhs, rhs),
         }
     }
 
@@ -1268,6 +1163,32 @@ impl SolveRowDialect {
             }
             Self::Wgsl => {
                 format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
+            }
+            // if_else bound to ca.if_else / jnp.where; both take a boolean/0-1
+            // condition and return the symbolic branch value.
+            Self::Python => format!("if_else({cond}, {if_true}, {if_false})"),
+        }
+    }
+
+    /// Render the integer array index for a runtime-indexed load:
+    /// `base + clamp(round(index_expr), 0, count-1)`, matching
+    /// [`rumoca_ir_solve::resolve_indexed_slot`]. The result is an integer-typed
+    /// expression suitable to substitute into a `p[...]` / `seed[...]` access.
+    fn render_indexed_index(self, index_expr: &str, base: usize, count: usize) -> String {
+        let last = if count == 0 { 0 } else { count - 1 };
+        match self {
+            // round + clamp in f64, then cast to a size_t array offset.
+            Self::C => {
+                format!("({base} + (size_t)fmin(fmax(round({index_expr}), 0.0), (double){last}.0))")
+            }
+            Self::Rust => {
+                format!("({base} + (({index_expr}).round().clamp(0.0, {last} as f64) as usize))")
+            }
+            // WGSL indices are u32 and arithmetic is f32.
+            Self::Wgsl => format!("({base}u + u32(clamp(round({index_expr}), 0.0, f32({last}))))"),
+            // Python integer index; valid for a constant-folded index_expr.
+            Self::Python => {
+                format!("({base} + int(min(max(round({index_expr}), 0.0), {last}.0)))")
             }
         }
     }
@@ -1285,13 +1206,17 @@ impl SolveRowDialect {
                 "LinearSolveComponent component is out of bounds",
             ));
         }
-        let matrix = (0..n * n)
-            .map(|offset| solve_reg(regs, matrix_start + offset))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", ");
-        let rhs = (0..n)
-            .map(|offset| solve_reg(regs, rhs_start + offset))
-            .collect::<Result<Vec<_>, _>>()?
+        let shape = LinSolveRenderShape {
+            matrix_start,
+            rhs_start,
+            n,
+            output_offset: 0,
+        };
+        let (matrix_count, rhs_count, _) = validate_linsolve_render_shape(shape)?;
+        let matrix =
+            render_linsolve_register_array(regs, shape, matrix_count, LinSolveOperand::Matrix)?
+                .join(", ");
+        let rhs = render_linsolve_register_array(regs, shape, rhs_count, LinSolveOperand::Rhs)?
             .join(", ");
         match self {
             Self::C => Ok(format!(
@@ -1304,6 +1229,11 @@ impl SolveRowDialect {
                 "LinearSolveComponent is not supported by the WGSL dialect yet; \
                  models with implicit linear blocks cannot target wgsl-solve",
             )),
+            // `_linsolve_component` is bound by the consuming template (a small
+            // Gaussian-elimination helper over the chosen array namespace).
+            Self::Python => Ok(format!(
+                "_linsolve_component([{matrix}], [{rhs}], {n}, {component})"
+            )),
         }
     }
 
@@ -1312,6 +1242,7 @@ impl SolveRowDialect {
             Self::C => render_solve_unary_c(op, arg),
             Self::Rust => render_solve_unary_rust(op, arg),
             Self::Wgsl => render_solve_unary_wgsl(op, arg),
+            Self::Python => render_solve_unary_py(op, arg),
         }
     }
 
@@ -1320,179 +1251,66 @@ impl SolveRowDialect {
             Self::C => render_solve_binary_c(op, lhs, rhs),
             Self::Rust => render_solve_binary_rust(op, lhs, rhs),
             Self::Wgsl => render_solve_binary_wgsl(op, lhs, rhs),
+            Self::Python => render_solve_binary_py(op, lhs, rhs),
+        }
+    }
+
+    /// A temporary-register declaration line, e.g. `double __r0 = expr;`.
+    fn temp_decl(self, name: &str, expr: &str) -> String {
+        match self {
+            Self::C => format!("\tdouble {name} = {expr};\n"),
+            Self::Rust => format!("\tlet {name} = {expr};\n"),
+            Self::Wgsl => format!("\tlet {name} = {expr};\n"),
+            Self::Python => format!("\t{name} = {expr}\n"),
         }
     }
 }
 
-fn render_solve_unary_wgsl(op: &str, arg: String) -> RenderResult {
-    match op {
-        "Neg" => Ok(format!("(-({arg}))")),
-        "Not" => Ok(format!("select(0.0, 1.0, ({arg}) == 0.0)")),
-        "Abs" => Ok(format!("abs({arg})")),
-        "Sign" => Ok(format!("sign({arg})")),
-        "Sqrt" => Ok(format!("sqrt({arg})")),
-        "Floor" => Ok(format!("floor({arg})")),
-        "Ceil" => Ok(format!("ceil({arg})")),
-        "Trunc" => Ok(format!("trunc({arg})")),
-        "Sin" => Ok(format!("sin({arg})")),
-        "Cos" => Ok(format!("cos({arg})")),
-        "Tan" => Ok(format!("tan({arg})")),
-        "Asin" => Ok(format!("asin({arg})")),
-        "Acos" => Ok(format!("acos({arg})")),
-        "Atan" => Ok(format!("atan({arg})")),
-        "Sinh" => Ok(format!("sinh({arg})")),
-        "Cosh" => Ok(format!("cosh({arg})")),
-        "Tanh" => Ok(format!("tanh({arg})")),
-        "Exp" => Ok(format!("exp({arg})")),
-        "Log" => Ok(format!("log({arg})")),
-        "Log10" => Ok(format!("(log({arg}) / log(10.0))")),
-        _ => Err(render_err(format!("unsupported solve unary op: {op}"))),
+#[derive(Clone, Copy)]
+enum LinSolveOperand {
+    Matrix,
+    Rhs,
+}
+
+fn render_linsolve_register_array(
+    regs: &[String],
+    shape: LinSolveRenderShape,
+    count: usize,
+    operand: LinSolveOperand,
+) -> Result<Vec<String>, minijinja::Error> {
+    let mut values = render_vec_with_capacity(count, "LinSolve operand value count")?;
+    for offset in 0..count {
+        let reg = match operand {
+            LinSolveOperand::Matrix => shape.matrix_reg(offset)?,
+            LinSolveOperand::Rhs => shape.rhs_reg(offset)?,
+        };
+        values.push(solve_reg(regs, reg)?);
     }
+    Ok(values)
 }
 
-fn render_solve_binary_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
-    match op {
-        "Add" => Ok(format!("(({lhs}) + ({rhs}))")),
-        "Sub" => Ok(format!("(({lhs}) - ({rhs}))")),
-        "Mul" => Ok(format!("(({lhs}) * ({rhs}))")),
-        "Div" => Ok(format!("(({lhs}) / ({rhs}))")),
-        "Pow" => Ok(format!("pow({lhs}, {rhs})")),
-        "And" => Ok(format!(
-            "select(0.0, 1.0, (({lhs}) != 0.0) && (({rhs}) != 0.0))"
-        )),
-        "Or" => Ok(format!(
-            "select(0.0, 1.0, (({lhs}) != 0.0) || (({rhs}) != 0.0))"
-        )),
-        "Atan2" => Ok(format!("atan2({lhs}, {rhs})")),
-        "Min" => Ok(format!("min({lhs}, {rhs})")),
-        "Max" => Ok(format!("max({lhs}, {rhs})")),
-        _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
-    }
+fn solve_reg_index(reg: solve::Reg, context: &'static str) -> Result<usize, minijinja::Error> {
+    usize::try_from(reg).map_err(|_| render_err(format!("{context} exceeds host usize")))
 }
 
-fn render_solve_compare_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
-    let op = match op {
-        "Lt" => "<",
-        "Le" => "<=",
-        "Gt" => ">",
-        "Ge" => ">=",
-        "Eq" => "==",
-        "Ne" => "!=",
-        _ => return Err(render_err(format!("unsupported solve compare op: {op}"))),
-    };
-    Ok(format!("select(0.0, 1.0, ({lhs}) {op} ({rhs}))"))
-}
-
-fn render_solve_unary_c(op: &str, arg: String) -> RenderResult {
-    match op {
-        "Neg" => Ok(format!("(-({arg}))")),
-        "Not" => Ok(format!("(({arg}) == 0.0 ? 1.0 : 0.0)")),
-        "Abs" => Ok(format!("fabs({arg})")),
-        "Sign" => Ok(format!(
-            "(({arg}) > 0.0 ? 1.0 : (({arg}) < 0.0 ? -1.0 : 0.0))"
-        )),
-        "Sqrt" => Ok(format!("sqrt({arg})")),
-        "Floor" => Ok(format!("floor({arg})")),
-        "Ceil" => Ok(format!("ceil({arg})")),
-        "Trunc" => Ok(format!("trunc({arg})")),
-        "Sin" => Ok(format!("sin({arg})")),
-        "Cos" => Ok(format!("cos({arg})")),
-        "Tan" => Ok(format!("tan({arg})")),
-        "Asin" => Ok(format!("asin({arg})")),
-        "Acos" => Ok(format!("acos({arg})")),
-        "Atan" => Ok(format!("atan({arg})")),
-        "Sinh" => Ok(format!("sinh({arg})")),
-        "Cosh" => Ok(format!("cosh({arg})")),
-        "Tanh" => Ok(format!("tanh({arg})")),
-        "Exp" => Ok(format!("exp({arg})")),
-        "Log" => Ok(format!("log({arg})")),
-        "Log10" => Ok(format!("log10({arg})")),
-        _ => Err(render_err(format!("unsupported solve unary op: {op}"))),
-    }
-}
-
-fn render_solve_unary_rust(op: &str, arg: String) -> RenderResult {
-    match op {
-        "Neg" => Ok(format!("(-({arg}))")),
-        "Not" => Ok(format!("if ({arg}) == 0.0 {{ 1.0 }} else {{ 0.0 }}")),
-        "Abs" => Ok(format!("({arg}).abs()")),
-        "Sign" => Ok(format!(
-            "if ({arg}) > 0.0 {{ 1.0 }} else if ({arg}) < 0.0 {{ -1.0 }} else {{ 0.0 }}"
-        )),
-        "Sqrt" => Ok(format!("({arg}).sqrt()")),
-        "Floor" => Ok(format!("({arg}).floor()")),
-        "Ceil" => Ok(format!("({arg}).ceil()")),
-        "Trunc" => Ok(format!("({arg}).trunc()")),
-        "Sin" => Ok(format!("({arg}).sin()")),
-        "Cos" => Ok(format!("({arg}).cos()")),
-        "Tan" => Ok(format!("({arg}).tan()")),
-        "Asin" => Ok(format!("({arg}).asin()")),
-        "Acos" => Ok(format!("({arg}).acos()")),
-        "Atan" => Ok(format!("({arg}).atan()")),
-        "Sinh" => Ok(format!("({arg}).sinh()")),
-        "Cosh" => Ok(format!("({arg}).cosh()")),
-        "Tanh" => Ok(format!("({arg}).tanh()")),
-        "Exp" => Ok(format!("({arg}).exp()")),
-        "Log" => Ok(format!("({arg}).ln()")),
-        "Log10" => Ok(format!("({arg}).log10()")),
-        _ => Err(render_err(format!("unsupported solve unary op: {op}"))),
-    }
-}
-
-fn render_solve_binary_c(op: &str, lhs: String, rhs: String) -> RenderResult {
-    match op {
-        "Add" => Ok(format!("(({lhs}) + ({rhs}))")),
-        "Sub" => Ok(format!("(({lhs}) - ({rhs}))")),
-        "Mul" => Ok(format!("(({lhs}) * ({rhs}))")),
-        "Div" => Ok(format!("(({lhs}) / ({rhs}))")),
-        "Pow" => Ok(format!("pow({lhs}, {rhs})")),
-        "And" => Ok(format!("((({lhs}) != 0.0 && ({rhs}) != 0.0) ? 1.0 : 0.0)")),
-        "Or" => Ok(format!("((({lhs}) != 0.0 || ({rhs}) != 0.0) ? 1.0 : 0.0)")),
-        "Atan2" => Ok(format!("atan2({lhs}, {rhs})")),
-        "Min" => Ok(format!("fmin({lhs}, {rhs})")),
-        "Max" => Ok(format!("fmax({lhs}, {rhs})")),
-        _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
-    }
-}
-
-fn render_solve_binary_rust(op: &str, lhs: String, rhs: String) -> RenderResult {
-    match op {
-        "Add" => Ok(format!("(({lhs}) + ({rhs}))")),
-        "Sub" => Ok(format!("(({lhs}) - ({rhs}))")),
-        "Mul" => Ok(format!("(({lhs}) * ({rhs}))")),
-        "Div" => Ok(format!("(({lhs}) / ({rhs}))")),
-        "Pow" => Ok(format!("({lhs}).powf({rhs})")),
-        "And" => Ok(format!(
-            "if ({lhs}) != 0.0 && ({rhs}) != 0.0 {{ 1.0 }} else {{ 0.0 }}"
-        )),
-        "Or" => Ok(format!(
-            "if ({lhs}) != 0.0 || ({rhs}) != 0.0 {{ 1.0 }} else {{ 0.0 }}"
-        )),
-        "Atan2" => Ok(format!("({lhs}).atan2({rhs})")),
-        "Min" => Ok(format!("({lhs}).min({rhs})")),
-        "Max" => Ok(format!("({lhs}).max({rhs})")),
-        _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
-    }
-}
-
-fn render_solve_compare(op: &str, lhs: String, rhs: String) -> RenderResult {
-    let op = match op {
-        "Lt" => "<",
-        "Le" => "<=",
-        "Gt" => ">",
-        "Ge" => ">=",
-        "Eq" => "==",
-        "Ne" => "!=",
-        _ => return Err(render_err(format!("unsupported solve compare op: {op}"))),
-    };
-    Ok(format!("((({lhs}) {op} ({rhs})) ? 1.0 : 0.0)"))
-}
-
-fn store_solve_reg(regs: &mut Vec<String>, dst: usize, expr: String) {
+fn store_solve_reg(
+    regs: &mut Vec<String>,
+    dst: usize,
+    expr: String,
+) -> Result<(), minijinja::Error> {
     if regs.len() <= dst {
-        regs.resize(dst + 1, String::new());
+        let target_len = dst
+            .checked_add(1)
+            .ok_or_else(|| render_err("solve row register index overflows"))?;
+        reserve_render_capacity(
+            regs,
+            target_len - regs.len(),
+            "solve row register file size",
+        )?;
+        regs.resize(target_len, String::new());
     }
     regs[dst] = expr;
+    Ok(())
 }
 
 fn solve_reg(regs: &[String], reg: usize) -> RenderResult {
@@ -1581,6 +1399,12 @@ impl SolveRowCConfig {
         self.seed_pattern
             .as_ref()
             .map(|pattern| format_solve_access(pattern, index))
+    }
+
+    fn seed_access_expr(&self, index_expr: &str) -> Option<String> {
+        self.seed_pattern
+            .as_ref()
+            .map(|pattern| pattern.replace("{}", index_expr))
     }
 }
 

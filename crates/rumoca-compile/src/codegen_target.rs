@@ -70,6 +70,7 @@ pub struct TensorCapabilities {
     pub matmul: Option<TensorCapability>,
     pub linsolve: Option<TensorCapability>,
     pub elementwise: Option<TensorCapability>,
+    pub stencil: Option<TensorCapability>,
     pub reductions: Option<TensorCapability>,
     pub layout: Option<TensorLayoutCapability>,
     pub supports_dynamic_shapes: Option<bool>,
@@ -129,6 +130,7 @@ pub struct TargetCompatibilityEntry {
     pub matmul: TargetFeatureSupport,
     pub linsolve: TargetFeatureSupport,
     pub elementwise: TargetFeatureSupport,
+    pub stencil: TargetFeatureSupport,
     pub reductions: TargetFeatureSupport,
     pub supports_dynamic_shapes: Option<bool>,
     pub sparse: TargetFeatureSupport,
@@ -278,6 +280,11 @@ fn target_compatibility_entry(id: &str, manifest: &TargetManifest) -> TargetComp
             scalar_fallback,
             tensor.and_then(|tensor| tensor.elementwise),
         ),
+        stencil: tensor_feature_support(
+            manifest.ir,
+            scalar_fallback,
+            tensor.and_then(|tensor| tensor.stencil),
+        ),
         reductions: tensor_feature_support(
             manifest.ir,
             scalar_fallback,
@@ -285,9 +292,7 @@ fn target_compatibility_entry(id: &str, manifest: &TargetManifest) -> TargetComp
         ),
         supports_dynamic_shapes: tensor.and_then(|tensor| tensor.supports_dynamic_shapes),
         sparse: feature_support(tensor.and_then(|tensor| tensor.sparse)),
-        dtypes: tensor
-            .and_then(|tensor| tensor.dtypes.clone())
-            .unwrap_or_default(),
+        dtypes: tensor_dtypes(tensor),
         events: feature_support(capabilities.and_then(|capabilities| capabilities.events)),
         runtime_events: feature_support(
             capabilities.and_then(|capabilities| capabilities.runtime_events),
@@ -300,6 +305,13 @@ fn target_compatibility_entry(id: &str, manifest: &TargetManifest) -> TargetComp
         host_callbacks: feature_support(
             capabilities.and_then(|capabilities| capabilities.host_callbacks),
         ),
+    }
+}
+
+fn tensor_dtypes(tensor: Option<&TensorCapabilities>) -> Vec<String> {
+    match tensor.and_then(|tensor| tensor.dtypes.as_ref()) {
+        Some(dtypes) => dtypes.clone(),
+        None => Vec::new(),
     }
 }
 
@@ -538,6 +550,7 @@ fn validate_target_capabilities(
             ("tensor.matmul", tensor.matmul),
             ("tensor.linsolve", tensor.linsolve),
             ("tensor.elementwise", tensor.elementwise),
+            ("tensor.stencil", tensor.stencil),
             ("tensor.reductions", tensor.reductions),
         ]
         .into_iter()
@@ -632,7 +645,7 @@ fn is_random_call(name: &str) -> bool {
 }
 
 fn dae_has_initialization(dae: &dae::Dae) -> bool {
-    !dae.initialization.equations.is_empty() || !dae.initialization.for_equations.is_empty()
+    !dae.initialization.equations.is_empty() || !dae.initialization.structured_equations.is_empty()
 }
 
 fn dae_has_events(dae: &dae::Dae) -> bool {
@@ -1033,6 +1046,16 @@ host_callbacks = false
         assert_eq!(cuda_nvrtc.deployment_class.as_deref(), Some("gpu"));
         assert_eq!(cuda_nvrtc.matmul, TargetFeatureSupport::Native);
 
+        let wgsl_solve = matrix
+            .iter()
+            .find(|entry| entry.id == "wgsl-solve")
+            .expect("wgsl-solve target should be listed");
+        assert_eq!(wgsl_solve.readiness_level, Some(0));
+        assert_eq!(wgsl_solve.deployment_class.as_deref(), Some("gpu"));
+        assert_eq!(wgsl_solve.matmul, TargetFeatureSupport::Scalar);
+        assert_eq!(wgsl_solve.elementwise, TargetFeatureSupport::Native);
+        assert_eq!(wgsl_solve.stencil, TargetFeatureSupport::Native);
+
         let sympy = matrix
             .iter()
             .find(|entry| entry.id == "sympy")
@@ -1053,6 +1076,7 @@ scalar_fallback = true
 [capabilities.tensor]
 matmul = "native"
 linsolve = "scalar"
+stencil = "native"
 layout = "row-major"
 supports_dynamic_shapes = false
 sparse = false
@@ -1066,6 +1090,7 @@ dtypes = ["f32", "f64"]
         assert_eq!(capabilities.scalar_fallback, Some(true));
         assert_eq!(tensor.matmul, Some(TensorCapability::Native));
         assert_eq!(tensor.linsolve, Some(TensorCapability::Scalar));
+        assert_eq!(tensor.stencil, Some(TensorCapability::Native));
         assert_eq!(tensor.layout, Some(TensorLayoutCapability::RowMajor));
         assert_eq!(tensor.supports_dynamic_shapes, Some(false));
         assert_eq!(tensor.sparse, Some(false));
@@ -1236,7 +1261,7 @@ external_functions = false
         );
         let capabilities = manifest.capabilities.as_ref().expect("capabilities");
         let mut dae = Dae::new();
-        let mut function = Function::new("ExternalUser", Default::default());
+        let mut function = Function::new("ExternalUser", rumoca_core::Span::DUMMY);
         function.external = Some(ExternalFunction::default());
         dae.symbols
             .functions
@@ -1351,7 +1376,10 @@ dynamic_derivative_subscripts = false
                 function: BuiltinFunction::Der,
                 args: vec![Expression::VarRef {
                     name: Reference::new("x"),
-                    subscripts: vec![Subscript::generated_expr(Box::new(var("i")))],
+                    subscripts: vec![Subscript::generated_expr(
+                        Box::new(var("i")),
+                        rumoca_core::Span::DUMMY,
+                    )],
                     span: Span::DUMMY,
                 }],
                 span: Span::DUMMY,

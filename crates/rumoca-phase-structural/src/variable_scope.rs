@@ -47,19 +47,15 @@ impl<'a> DaeVariableScope<'a> {
         if let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) {
             let base_name = VarName::new(scalar.base);
             let Some(base_var) = self.exact(&base_name) else {
-                return Err(missing_dae_variable_metadata(name, Span::DUMMY));
+                return Err(missing_dae_variable_metadata(name, None));
             };
             if scalar.indices.len() > base_var.dims.len() {
-                return Err(invalid_scalarized_reference(
-                    name,
-                    &base_var.dims,
-                    Span::DUMMY,
-                ));
+                return Err(invalid_scalarized_reference(name, &base_var.dims, None));
             }
-            validate_scalarized_indices(name, &scalar.indices, &base_var.dims, Span::DUMMY)?;
+            validate_scalarized_indices(name, &scalar.indices, &base_var.dims, None)?;
             return Ok(base_var.dims[scalar.indices.len()..].to_vec());
         }
-        Err(missing_dae_variable_metadata(name, Span::DUMMY))
+        Err(missing_dae_variable_metadata(name, None))
     }
 
     pub(crate) fn size(&self, name: &VarName) -> Result<usize, StructuralError> {
@@ -79,10 +75,7 @@ impl<'a> DaeVariableScope<'a> {
         if name.as_str() == "time" || self.has_descendant_reference(name) {
             return Ok(DaeVariableShape::StructuredAggregate);
         }
-        Err(missing_dae_variable_metadata(
-            name.var_name(),
-            name.component_ref().map_or(Span::DUMMY, |comp| comp.span),
-        ))
+        Err(missing_dae_variable_metadata(name.var_name(), name.span()))
     }
 
     pub(crate) fn dims_for_reference(
@@ -225,14 +218,14 @@ impl<'a> DaeVariableScope<'a> {
             return Err(invalid_scalarized_reference(
                 name.var_name(),
                 &base_var.dims,
-                component_ref.span,
+                Some(component_ref.span),
             ));
         }
         validate_scalarized_indices(
             name.var_name(),
             &scalar_indices,
             &base_var.dims,
-            component_ref.span,
+            Some(component_ref.span),
         )?;
         Ok(Some(base_var.dims[scalar_indices.len()..].to_vec()))
     }
@@ -252,28 +245,39 @@ pub(crate) fn scalar_count_from_dims(
     Ok(count)
 }
 
-fn missing_dae_variable_metadata(name: &VarName, span: Span) -> StructuralError {
-    StructuralError::ContractViolation {
-        reason: format!("missing DAE variable metadata for `{}`", name.as_str()),
+fn missing_dae_variable_metadata(name: &VarName, span: Option<Span>) -> StructuralError {
+    structural_contract_violation(
+        format!("missing DAE variable metadata for `{}`", name.as_str()),
         span,
-    }
+    )
 }
 
 fn invalid_dae_dimensions(name: &VarName, dims: &[i64]) -> StructuralError {
-    StructuralError::ContractViolation {
-        reason: format!("invalid DAE dimensions {:?} for `{}`", dims, name.as_str()),
-        span: Span::DUMMY,
-    }
+    structural_contract_violation(
+        format!("invalid DAE dimensions {:?} for `{}`", dims, name.as_str()),
+        None,
+    )
 }
 
-fn invalid_scalarized_reference(name: &VarName, base_dims: &[i64], span: Span) -> StructuralError {
-    StructuralError::ContractViolation {
-        reason: format!(
+fn invalid_scalarized_reference(
+    name: &VarName,
+    base_dims: &[i64],
+    span: Option<Span>,
+) -> StructuralError {
+    structural_contract_violation(
+        format!(
             "scalarized DAE reference `{}` does not match base dimensions {:?}",
             name.as_str(),
             base_dims
         ),
         span,
+    )
+}
+
+fn structural_contract_violation(reason: String, span: Option<Span>) -> StructuralError {
+    match span {
+        Some(span) if !span.is_dummy() => StructuralError::ContractViolation { reason, span },
+        Some(_) | None => StructuralError::UnspannedContractViolation { reason },
     }
 }
 
@@ -281,7 +285,7 @@ fn validate_scalarized_indices(
     name: &VarName,
     indices: &[i64],
     base_dims: &[i64],
-    span: Span,
+    span: Option<Span>,
 ) -> Result<(), StructuralError> {
     for (index, dim) in indices.iter().zip(base_dims) {
         if *index < 1 || *index > *dim {
@@ -436,6 +440,23 @@ mod tests {
         }
     }
 
+    fn component_ref_with_span(parts: Vec<ComponentRefPart>, span: Span) -> ComponentReference {
+        ComponentReference {
+            local: false,
+            span,
+            parts,
+            def_id: None,
+        }
+    }
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("variable_scope_test.mo"),
+            4,
+            9,
+        )
+    }
+
     #[test]
     fn aggregate_prefix_matches_indexed_descendant_component_ref() {
         let prefix = component_ref(vec![
@@ -485,15 +506,42 @@ mod tests {
             dae::Variable {
                 name: VarName::new("x"),
                 dims: vec![0],
-                ..Default::default()
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         let scope = DaeVariableScope::new(&dae_model);
 
         assert!(matches!(
             scope.dims(&VarName::new("x[1]")),
-            Err(StructuralError::ContractViolation { reason, .. })
+            Err(StructuralError::UnspannedContractViolation { reason })
                 if reason.contains("does not match base dimensions [0]")
+        ));
+    }
+
+    #[test]
+    fn missing_structured_reference_metadata_preserves_reference_span() {
+        let span = test_span();
+        let reference = Reference::from_component_reference(component_ref_with_span(
+            vec![ComponentRefPart {
+                ident: "missing".to_string(),
+                span,
+                subs: Vec::new(),
+            }],
+            span,
+        ));
+        let dae_model = dae::Dae::default();
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert!(matches!(
+            scope.shape_for_reference(&reference),
+            Err(StructuralError::ContractViolation {
+                reason,
+                span: actual
+            }) if reason.contains("missing DAE variable metadata for `missing`") && actual == span
         ));
     }
 }

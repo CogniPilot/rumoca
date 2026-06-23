@@ -318,7 +318,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     },
     VerifyStep {
         label: "WASM gate",
-        args: &["wasm", "test"],
+        args: &["playground", "test"],
         include_in_full: true,
         include_in_quick: false,
     },
@@ -330,7 +330,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     },
 ];
 
-const WASM_SMOKE_SERVER_READY_PATH: &str = "/editors/wasm/index.html";
+const WASM_SMOKE_SERVER_READY_PATH: &str = "/rumoca/";
 const WASM_SMOKE_SERVER_START_ATTEMPTS: usize = 3;
 const WASM_SMOKE_SERVER_START_TIMEOUT: Duration = Duration::from_secs(20);
 const MSL_RESOURCE_CPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
@@ -902,13 +902,13 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let (port, _child_guard) = start_wasm_smoke_server(root)?;
 
-    let wasm_dir = root.join("editors/wasm");
+    let wasm_dir = root.join("packages/playground");
     ensure_wasm_browser_smoke_npm_dependencies(&wasm_dir)?;
     let browser = detect_browser_binary()?;
     let result_path = output_dir.join("wasm-browser-result.json");
     let smoke_model = "SmokeHarness";
     let smoke_url = format!(
-        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_model={smoke_model}&smoke_source_url=/target/editor-msl-smoke/SmokeHarness.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
+        "http://127.0.0.1:{port}/rumoca/?rumoca_smoke=1&smoke_model={smoke_model}&smoke_source_url=/target/editor-msl-smoke/SmokeHarness.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
     );
     let mut smoke = Command::new("node");
     smoke
@@ -921,7 +921,7 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
         .arg(&result_path)
         .current_dir(&wasm_dir);
     run_status_quiet(smoke)
-        .with_context(|| "failed to launch Playwright-driven wasm editor smoke".to_string())?;
+        .with_context(|| "failed to launch Playwright-driven playground smoke".to_string())?;
     let callback = fs::read_to_string(&result_path)
         .with_context(|| format!("failed to read wasm smoke result {}", result_path.display()))
         .and_then(|raw| {
@@ -1057,13 +1057,13 @@ fn start_wasm_smoke_server(root: &Path) -> Result<(u16, ChildGuard)> {
     println!("Prebuilding WASM module for browser smoke...");
     let mut build = Command::new(&xtask_exe);
     build
-        .arg("wasm")
+        .arg("playground")
         .arg("build")
         // Browser smoke validates the default editor/runtime flow on the
         // non-threaded package (the build default, no --rayon).
         .current_dir(root);
     run_status(build).with_context(|| {
-        "failed to prebuild `cargo xtask wasm build` for browser smoke".to_string()
+        "failed to prebuild `cargo xtask playground build` for browser smoke".to_string()
     })?;
     let mut last_error = None;
 
@@ -1071,9 +1071,8 @@ fn start_wasm_smoke_server(root: &Path) -> Result<(u16, ChildGuard)> {
         let port = reserve_local_port()?;
         let mut server = Command::new(&xtask_exe);
         server
-            .arg("wasm")
+            .arg("playground")
             .arg("edit")
-            .arg("--skip-build")
             .arg("--port")
             .arg(port.to_string())
             .stdout(Stdio::null())
@@ -1081,7 +1080,7 @@ fn start_wasm_smoke_server(root: &Path) -> Result<(u16, ChildGuard)> {
             .current_dir(root);
         let child = server
             .spawn()
-            .context("failed to launch `cargo xtask wasm edit` for browser smoke")?;
+            .context("failed to launch `cargo xtask playground edit` for browser smoke")?;
         let mut child_guard = ChildGuard::new(child);
 
         match wait_for_http_ready(
@@ -1681,7 +1680,7 @@ mod tests {
         assert!(!steps.contains(&vec!["verify", "docs"]));
         assert!(!steps.contains(&vec!["vscode", "test"]));
         assert!(!steps.contains(&vec!["coverage", "run"]));
-        assert!(!steps.contains(&vec!["wasm", "test"]));
+        assert!(!steps.contains(&vec!["playground", "test"]));
         assert!(!steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
     }
 
@@ -1695,6 +1694,7 @@ mod tests {
         assert!(steps.contains(&vec!["verify", "binaries"]));
         assert!(steps.contains(&vec!["verify", "template-runtimes"]));
         assert!(steps.contains(&vec!["coverage", "run"]));
+        assert!(steps.contains(&vec!["playground", "test"]));
         assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
         assert!(steps.contains(&vec!["verify", "msl-parity"]));
     }

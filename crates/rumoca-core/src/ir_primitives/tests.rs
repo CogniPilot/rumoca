@@ -1,7 +1,7 @@
 use super::{
     BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
     Function, FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, Literal,
-    OpBinary, Reference, Span, Subscript, VarName, component_path_base_name,
+    OpBinary, Reference, SourceId, Span, Subscript, VarName, component_path_base_name,
     expressions_semantically_equal, parse_scalar_name, scoped_component_path_candidates,
     split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
 };
@@ -11,6 +11,43 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static INTERNER_STRESS_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+fn test_span() -> Span {
+    Span::from_offsets(SourceId::from_source_name("ir_primitives_test.mo"), 1, 2)
+}
+
+#[test]
+fn expression_require_span_accepts_real_span() {
+    let span = Span::from_offsets(
+        SourceId::from_source_name("core_ir_primitives_source_7.mo"),
+        3,
+        7,
+    );
+    let expr = Expression::Literal {
+        value: Literal::Integer(1),
+        span,
+    };
+
+    assert_eq!(
+        expr.require_span("literal expression")
+            .expect("literal span should be accepted")
+            .span(),
+        span
+    );
+}
+
+#[test]
+fn expression_require_span_rejects_dummy_span() {
+    let expr = Expression::Literal {
+        value: Literal::Integer(1),
+        span: Span::DUMMY,
+    };
+    let err = expr
+        .require_span("literal expression")
+        .expect_err("dummy span should be rejected");
+
+    assert_eq!(err.context(), "literal expression");
+}
 
 #[test]
 fn builtin_function_all_entries_round_trip_by_name() {
@@ -78,42 +115,105 @@ fn reference_carries_component_ref_and_target_def_id_without_owning_def_id() {
 }
 
 #[test]
+fn reference_appended_index_uses_required_owner_provenance() {
+    let owner_span = Span::from_offsets(SourceId::from_source_name("append_ref.mo"), 20, 28);
+    let component_ref = ComponentReference {
+        local: false,
+        span: Span::DUMMY,
+        parts: vec![ComponentRefPart {
+            ident: "body".to_string(),
+            span: Span::DUMMY,
+            subs: Vec::new(),
+        }],
+        def_id: Some(DefId::new(42)),
+    };
+    let reference = Reference::with_component_reference("body", component_ref);
+
+    let indexed = reference.with_appended_index(
+        2,
+        owner_span
+            .require_provenance("test appended index")
+            .expect("test span is real"),
+    );
+
+    let component_ref = indexed
+        .component_ref()
+        .expect("appended structured reference keeps component metadata");
+    assert_eq!(component_ref.span, Span::DUMMY);
+    assert_eq!(component_ref.parts[0].span, Span::DUMMY);
+    assert_eq!(
+        component_ref.parts[0].subs,
+        vec![Subscript::generated_index_with_provenance(
+            2,
+            owner_span
+                .require_provenance("test appended index")
+                .expect("test span is real"),
+        )]
+    );
+}
+
+#[test]
+fn expression_span_recovers_reference_component_span() {
+    let span = Span::from_offsets(SourceId::from_source_name("ref_span.mo"), 12, 18);
+    let component_ref = ComponentReference {
+        local: false,
+        span,
+        parts: vec![ComponentRefPart {
+            ident: "z".to_string(),
+            span,
+            subs: Vec::new(),
+        }],
+        def_id: Some(DefId::new(7)),
+    };
+    let expr = Expression::VarRef {
+        name: Reference::from_component_reference(component_ref),
+        subscripts: Vec::new(),
+        span: Span::DUMMY,
+    };
+
+    assert_eq!(expr.span(), Some(span));
+}
+
+#[test]
 fn function_param_shape_contract_accepts_zero_dynamic_sentinel() {
-    let param = FunctionParam::new("x", "Real").with_dims(vec![0, 3]);
+    let param = FunctionParam::new("x", "Real", test_span()).with_dims(vec![0, 3]);
 
     assert_eq!(param.validate_shape_contract(), Ok(()));
 }
 
 #[test]
 fn function_param_shape_contract_rejects_negative_dims() {
-    let param = FunctionParam::new("x", "Real").with_dims(vec![2, -1]);
+    let span = test_span();
+    let param = FunctionParam::new("x", "Real", span).with_dims(vec![2, -1]);
 
     assert_eq!(
         param.validate_shape_contract(),
         Err(FunctionParamShapeContractError::NegativeDimension {
             param: "x".to_string(),
             dimension: -1,
-            span: Span::DUMMY,
+            span,
         })
     );
 }
 
 #[test]
 fn function_param_shape_contract_rejects_missing_type() {
-    let param = FunctionParam::new("x", "");
+    let span = test_span();
+    let param = FunctionParam::new("x", "", span);
 
     assert_eq!(
         param.validate_shape_contract(),
         Err(FunctionParamShapeContractError::EmptyTypeName {
             param: "x".to_string(),
-            span: Span::DUMMY,
+            span,
         })
     );
 }
 
 #[test]
 fn function_param_shape_contract_rejects_mismatched_shape_expr() {
-    let param = FunctionParam::new("x", "Real")
+    let span = test_span();
+    let param = FunctionParam::new("x", "Real", span)
         .with_dims(vec![0, 3])
         .with_shape_expr(vec![Subscript::colon(Span::DUMMY)]);
 
@@ -123,14 +223,15 @@ fn function_param_shape_contract_rejects_mismatched_shape_expr() {
             param: "x".to_string(),
             dims: 2,
             shape_expr: 1,
-            span: Span::DUMMY,
+            span,
         })
     );
 }
 
 #[test]
 fn function_param_shape_contract_rejects_negative_shape_index() {
-    let param = FunctionParam::new("x", "Real")
+    let span = test_span();
+    let param = FunctionParam::new("x", "Real", span)
         .with_dims(vec![0])
         .with_shape_expr(vec![Subscript::generated_index(-1, Span::DUMMY)]);
 
@@ -139,15 +240,16 @@ fn function_param_shape_contract_rejects_negative_shape_index() {
         Err(FunctionParamShapeContractError::NegativeShapeIndex {
             param: "x".to_string(),
             index: -1,
-            span: Span::DUMMY,
+            span,
         })
     );
 }
 
 #[test]
 fn function_shape_contract_reports_bad_local_param() {
+    let span = test_span();
     let mut function = Function::new("Pkg.f", Span::DUMMY);
-    function.add_local(FunctionParam::new("tmp", "Real").with_dims(vec![-1]));
+    function.add_local(FunctionParam::new("tmp", "Real", span).with_dims(vec![-1]));
 
     assert_eq!(
         function.validate_shape_contract(),
@@ -156,9 +258,45 @@ fn function_shape_contract_reports_bad_local_param() {
             source: FunctionParamShapeContractError::NegativeDimension {
                 param: "tmp".to_string(),
                 dimension: -1,
-                span: Span::DUMMY,
+                span,
             },
         })
+    );
+}
+
+#[test]
+fn function_param_shape_contract_error_displays_reason() {
+    let error = FunctionParamShapeContractError::NegativeDimension {
+        param: "tmp".to_string(),
+        dimension: -1,
+        span: Span::DUMMY,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "function parameter `tmp` has negative dimension -1"
+    );
+}
+
+#[test]
+fn function_shape_contract_error_displays_nested_reason() {
+    let error = FunctionShapeContractError::Param {
+        function: VarName::new("Pkg.f"),
+        source: FunctionParamShapeContractError::NegativeShapeIndex {
+            param: "tmp".to_string(),
+            index: -1,
+            span: Span::DUMMY,
+        },
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "function `Pkg.f` parameter shape contract failed: \
+         function parameter `tmp` has negative shape index -1"
+    );
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string),
+        Some("function parameter `tmp` has negative shape index -1".to_string())
     );
 }
 
@@ -294,11 +432,17 @@ fn expression_semantic_equality_ignores_spans() {
             value: Literal::Real(0.0),
             span: Span::DUMMY,
         }),
-        span: Span::from_offsets(super::SourceId(1), 1, 2),
+        span: Span::from_offsets(
+            super::SourceId::from_source_name("core_ir_primitives_source_1.mo"),
+            1,
+            2,
+        ),
     };
-    let rhs = lhs
-        .clone()
-        .with_span(Span::from_offsets(super::SourceId(1), 3, 4));
+    let rhs = lhs.clone().with_span(Span::from_offsets(
+        super::SourceId::from_source_name("core_ir_primitives_source_1.mo"),
+        3,
+        4,
+    ));
 
     assert!(expressions_semantically_equal(&lhs, &rhs));
     assert!(lhs.semantically_eq_ignoring_spans(&rhs));

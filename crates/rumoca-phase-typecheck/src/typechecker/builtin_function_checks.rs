@@ -163,11 +163,9 @@ impl TypeChecker {
             return;
         }
         let location = &comp.parts[0].ident.location;
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "builtin arity validation") else {
+            return;
+        };
         let expected = if min == max {
             format!("{min}")
         } else {
@@ -329,11 +327,10 @@ impl TypeChecker {
             .get_location()
             .or_else(|| comp.get_location())
             .unwrap_or(&comp.parts[0].ident.location);
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "builtin argument validation")
+        else {
+            return;
+        };
         let found = Self::format_type_name(type_table, found_type);
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET002",
@@ -579,11 +576,9 @@ impl TypeChecker {
         let Some(location) = expr.get_location() else {
             return;
         };
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "expression validation") else {
+            return;
+        };
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET009",
             message,
@@ -598,11 +593,9 @@ impl TypeChecker {
         message: String,
     ) {
         let location = &comp.parts[0].ident.location;
-        let span = self.source_map.location_to_span(
-            &location.file_name,
-            location.start as usize,
-            location.end as usize,
-        );
+        let Some(span) = self.diagnostic_location_span(location, "array builtin validation") else {
+            return;
+        };
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET009",
             message,

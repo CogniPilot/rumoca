@@ -160,27 +160,28 @@ fn compile_cpu(
     model_name: &str,
     opts: &MlirBackendOptions,
 ) -> Result<CompiledMlirResidual, MlirError> {
-    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template(), model_name)
+    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template()?, model_name)
         .map_err(|e| MlirError::Template(e.to_string()))?;
-    let rows = derivative_row_count(solve);
-    let implicit_rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.implicit_rhs)
-        .programs
-        .len();
+    let rows = solve
+        .continuous
+        .derivative_rhs
+        .output_count("mlir derivative_rhs output count")?;
+    let implicit_rows = solve
+        .continuous
+        .implicit_rhs
+        .output_count("mlir implicit_rhs output count")?;
     let artifacts = compile_cpu_shared_library(&mlir_text, opts)?;
 
     load_compiled_residual(artifacts, rows, implicit_rows)
 }
 
-fn mlir_template() -> &'static str {
+fn mlir_template() -> Result<&'static str, MlirError> {
     templates::builtin_target("mlir")
         .and_then(|target| target.template_source("mlir.mlir.jinja"))
-        .expect("built-in mlir target must provide mlir.mlir.jinja")
-}
-
-fn derivative_row_count(solve: &SolveProblem) -> usize {
-    rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
-        .programs
-        .len()
+        .ok_or(MlirError::MissingBuiltinTemplate {
+            target: "mlir",
+            template: "mlir.mlir.jinja",
+        })
 }
 
 fn compile_cpu_shared_library(

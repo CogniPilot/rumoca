@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 /// Tests for MlirBackendOptions: CpuVectorized produces identical results to
 /// CpuNative for the decay model, and GPU stubs return ToolNotFound.
+use rumoca_core::{SourceId, Span};
 use rumoca_exec_mlir::{
     MlirBackendOptions, MlirError, MlirTarget, OptLevel, build_ode_model_with_opts,
 };
@@ -9,6 +10,13 @@ use rumoca_ir_solve::{
     ScalarProgramBlock, SolveClockPartition, SolveEventPartition, SolveLayout, SolveProblem,
     SolverNameIndexMaps, UnaryOp,
 };
+
+fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+    )
+}
 
 fn decay_model() -> rumoca_ir_solve::SolveModel {
     let rhs_rows = vec![vec![
@@ -20,16 +28,19 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         },
         LinearOp::StoreOutput { src: 1 },
     ]];
-    let zero_rb = ScalarProgramBlock::new(vec![vec![
-        LinearOp::Const { dst: 0, value: 0.0 },
-        LinearOp::StoreOutput { src: 0 },
-    ]]);
+    let zero_rb = spb(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        "options_zero_row.mo",
+    );
     let zero_block = ComputeBlock::from_scalar_program_block(zero_rb.clone());
 
     let implicit_rhs_cb =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(rhs_rows.clone()));
+        ComputeBlock::from_scalar_program_block(spb(rhs_rows.clone(), "options_implicit.mo"));
     let derivative_rhs_cb =
-        ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(rhs_rows.clone()));
+        ComputeBlock::from_scalar_program_block(spb(rhs_rows.clone(), "options_derivative.mo"));
 
     rumoca_ir_solve::SolveModel {
         problem: SolveProblem {
@@ -38,7 +49,10 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             continuous: ContinuousSolveSystem {
                 implicit_rhs: implicit_rhs_cb,
                 implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
-                residual: ScalarProgramBlock::new(rhs_rows),
+                residual: ComputeBlock::from_scalar_program_block(spb(
+                    rhs_rows,
+                    "options_residual.mo",
+                )),
                 derivative_rhs: derivative_rhs_cb,
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },

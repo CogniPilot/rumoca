@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_spans::required_location_span;
 
 /// Convert an AST ExternalFunction to ExternalFunction.
 pub(super) fn convert_external_function(
@@ -444,27 +445,31 @@ fn required_param_dim(
     context_name: &str,
     source_map: &rumoca_core::SourceMap,
 ) -> Result<i64, FlattenError> {
-    extract_integer_from_subscript(subscript).ok_or_else(|| {
-        FlattenError::unresolved_component_dimension(
-            context_name,
-            format!("{subscript:?}"),
-            ast_subscript_span(subscript, source_map),
-        )
-    })
+    if let Some(dim) = extract_integer_from_subscript(subscript) {
+        return Ok(dim);
+    }
+    let span = ast_subscript_span(subscript, source_map)?;
+    Err(FlattenError::unresolved_component_dimension(
+        context_name,
+        format!("{subscript:?}"),
+        span,
+    ))
 }
 
 fn ast_subscript_span(
     subscript: &rumoca_ir_ast::Subscript,
     source_map: &rumoca_core::SourceMap,
-) -> rumoca_core::Span {
+) -> Result<rumoca_core::Span, FlattenError> {
     match subscript {
-        rumoca_ir_ast::Subscript::Expression(expr) => expr.span(),
-        rumoca_ir_ast::Subscript::Range { token } => source_map.location_to_span(
-            &token.location.file_name,
-            token.location.start as usize,
-            token.location.end as usize,
+        rumoca_ir_ast::Subscript::Expression(expr) => Ok(expr.span()),
+        rumoca_ir_ast::Subscript::Range { token } => required_location_span(
+            source_map,
+            &token.location,
+            "function parameter range subscript",
         ),
-        rumoca_ir_ast::Subscript::Empty => rumoca_core::Span::DUMMY,
+        rumoca_ir_ast::Subscript::Empty => Err(FlattenError::missing_source_context(
+            "empty function parameter subscript has no source token",
+        )),
     }
 }
 
@@ -487,12 +492,12 @@ pub(super) fn convert_component_to_param(
         .collect::<Vec<_>>()
         .join(".");
 
-    let mut param =
-        rumoca_core::FunctionParam::new(name, type_name).with_span(source_map.location_to_span(
-            &component.location.file_name,
-            component.location.start as usize,
-            component.location.end as usize,
-        ));
+    let span = required_location_span(
+        source_map,
+        &component.location,
+        "function parameter declaration",
+    )?;
+    let mut param = rumoca_core::FunctionParam::new(name, type_name, span);
     if let Some(def_id) = component.def_id {
         param = param.with_def_id(def_id);
     }
@@ -510,7 +515,9 @@ pub(super) fn convert_component_to_param(
         let shape_expr = component
             .shape_expr
             .iter()
-            .map(|sub| lower_function_shape_subscript(sub, class_index, imports, locals, def_map))
+            .map(|sub| {
+                lower_function_shape_subscript(sub, class_index, imports, locals, def_map, span)
+            })
             .collect::<Result<Vec<_>, FlattenError>>()?;
         param_dims = shape_expr.iter().map(function_shape_dim).collect();
         param = param.with_shape_expr(shape_expr);
@@ -570,6 +577,7 @@ pub(super) fn lower_function_shape_subscript(
     imports: &qualify::ImportMap,
     locals: &HashSet<String>,
     def_map: &crate::ResolveDefMap,
+    owner_span: rumoca_core::Span,
 ) -> Result<rumoca_core::Subscript, FlattenError> {
     match subscript {
         ast::Subscript::Expression(expr) => {
@@ -586,9 +594,13 @@ pub(super) fn lower_function_shape_subscript(
                 span,
             ))
         }
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => Ok(
-            rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
-        ),
+        ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+            Ok(rumoca_core::Subscript::try_generated_colon(
+                owner_span,
+                "flat function metadata subscript",
+            )
+            .map_err(|err| FlattenError::missing_source_context(err.to_string()))?)
+        }
     }
 }
 

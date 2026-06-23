@@ -22,12 +22,12 @@
 use indexmap::IndexMap;
 use rumoca_core::{
     ComponentReference, DefId, Expression, Function, FunctionShapeContractError, Reference, Span,
-    Statement, VarName, component_reference_from_flat_name, extract_algorithm_outputs,
+    Statement, VarName, extract_algorithm_outputs,
 };
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 3;
+pub const DAE_SCHEMA_VERSION: u16 = 5;
 
 mod event_threshold;
 mod expr_query;
@@ -40,7 +40,9 @@ pub use expr_query::{
     parse_embedded_subscripts, split_complex_field_suffix, subscripts_all_one,
     subscripts_match_indices, var_ref_matches_unknown,
 };
-pub use types::{ForEquation, ForEquationIteration, component_base_name};
+pub use types::{
+    StructuredEquationFamily, StructuredEquationSlot, component_base_name, structured_equation_slot,
+};
 pub use visitor::{
     AlgorithmOutputCollector, ContainsDerChecker, ContainsDerOfStateChecker, DaeExpressionRewriter,
     DaeVariableMutVisitor, DaeVisitor, ImplicitSampleChecker, StateVariableCollector,
@@ -125,12 +127,11 @@ struct DaeWire {
     discrete_valued: IndexMap<VarName, Variable>,
     #[serde(rename = "f_x")]
     continuous_equations: Vec<Equation>,
-    #[serde(default)]
-    for_equations: Vec<ForEquation>,
+    structured_equations: Vec<StructuredEquationFamily>,
     #[serde(rename = "initial_equations")]
     initial_equations: Vec<Equation>,
-    #[serde(default, rename = "initial_for_equations")]
-    initial_for_equations: Vec<ForEquation>,
+    #[serde(rename = "initial_structured_equations")]
+    initial_structured_equations: Vec<StructuredEquationFamily>,
     #[serde(rename = "f_z")]
     real_updates: Vec<Equation>,
     #[serde(rename = "f_m")]
@@ -190,9 +191,9 @@ impl Serialize for Dae {
             tuple.serialize_element(&self.variables.discrete_reals)?;
             tuple.serialize_element(&self.variables.discrete_valued)?;
             tuple.serialize_element(&self.continuous.equations)?;
-            tuple.serialize_element(&self.continuous.for_equations)?;
+            tuple.serialize_element(&self.continuous.structured_equations)?;
             tuple.serialize_element(&self.initialization.equations)?;
-            tuple.serialize_element(&self.initialization.for_equations)?;
+            tuple.serialize_element(&self.initialization.structured_equations)?;
             tuple.serialize_element(&self.discrete.real_updates)?;
             tuple.serialize_element(&self.discrete.valued_updates)?;
             tuple.serialize_element(&self.conditions.equations)?;
@@ -222,9 +223,15 @@ impl Serialize for Dae {
         state.serialize_field("z", &self.variables.discrete_reals)?;
         state.serialize_field("m", &self.variables.discrete_valued)?;
         state.serialize_field("f_x", &self.continuous.equations)?;
-        state.serialize_field("for_equations", &self.continuous.for_equations)?;
+        state.serialize_field(
+            "structured_equations",
+            &self.continuous.structured_equations,
+        )?;
         state.serialize_field("initial_equations", &self.initialization.equations)?;
-        state.serialize_field("initial_for_equations", &self.initialization.for_equations)?;
+        state.serialize_field(
+            "initial_structured_equations",
+            &self.initialization.structured_equations,
+        )?;
         state.serialize_field("f_z", &self.discrete.real_updates)?;
         state.serialize_field("f_m", &self.discrete.valued_updates)?;
         state.serialize_field("f_c", &self.conditions.equations)?;
@@ -274,11 +281,11 @@ impl<'de> Deserialize<'de> for Dae {
             },
             continuous: DaeContinuousPartition {
                 equations: wire.continuous_equations,
-                for_equations: wire.for_equations,
+                structured_equations: wire.structured_equations,
             },
             initialization: DaeInitializationPartition {
                 equations: wire.initial_equations,
-                for_equations: wire.initial_for_equations,
+                structured_equations: wire.initial_structured_equations,
             },
             discrete: DaeDiscretePartition {
                 real_updates: wire.real_updates,
@@ -379,6 +386,54 @@ impl DaeShapeContractError {
     }
 }
 
+impl std::fmt::Display for DaeVariablePartition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let partition = match self {
+            Self::State => "state",
+            Self::Algebraic => "algebraic",
+            Self::Input => "input",
+            Self::Output => "output",
+            Self::Parameter => "parameter",
+            Self::Constant => "constant",
+            Self::DiscreteReal => "discrete Real",
+            Self::DiscreteValued => "discrete-valued",
+        };
+        f.write_str(partition)
+    }
+}
+
+impl std::fmt::Display for DaeShapeContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Variable(error) => write!(f, "DAE variable shape contract failed: {error}"),
+            Self::Function(error) => write!(f, "DAE function shape contract failed: {error}"),
+            Self::VariableKeyNameMismatch {
+                partition,
+                key,
+                name,
+                ..
+            } => write!(
+                f,
+                "DAE {partition} variable key `{key}` does not match variable name `{name}`"
+            ),
+            Self::FunctionKeyNameMismatch { key, name, .. } => write!(
+                f,
+                "DAE function key `{key}` does not match function name `{name}`"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DaeShapeContractError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Variable(error) => Some(error),
+            Self::Function(error) => Some(error),
+            Self::VariableKeyNameMismatch { .. } | Self::FunctionKeyNameMismatch { .. } => None,
+        }
+    }
+}
+
 impl DaeVariables {
     pub fn validate_shape_contract(&self) -> Result<(), DaeShapeContractError> {
         validate_partition_shape_contract(DaeVariablePartition::State, &self.states)?;
@@ -425,13 +480,8 @@ pub struct DaeContinuousPartition {
     /// All continuous equations in one unified set — no ODE/algebraic/output split.
     #[serde(rename = "f_x")]
     pub equations: Vec<Equation>,
-    /// Preserved source grouping metadata for for-equations whose expanded
-    /// continuous equations are present in `f_x`.
-    ///
-    /// This lets code generators decide whether to emit the grouped loop or
-    /// scalarize it for a target that cannot handle structured loops.
-    #[serde(default)]
-    pub for_equations: Vec<ForEquation>,
+    /// Structured source equation families whose scalar views are present in `f_x`.
+    pub structured_equations: Vec<StructuredEquationFamily>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -439,10 +489,10 @@ pub struct DaeInitializationPartition {
     /// Initial equations.
     #[serde(rename = "initial_equations")]
     pub equations: Vec<Equation>,
-    /// Preserved source grouping metadata for initial for-equations whose
-    /// expanded equations are present in `initial_equations`.
-    #[serde(default, rename = "initial_for_equations")]
-    pub for_equations: Vec<ForEquation>,
+    /// Structured source equation families whose scalar views are present in
+    /// `initial_equations`.
+    #[serde(rename = "initial_structured_equations")]
+    pub structured_equations: Vec<StructuredEquationFamily>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -693,7 +743,7 @@ impl Dae {
 }
 
 /// A variable in the DAE system.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Variable {
     /// Variable name.
     pub name: VarName,
@@ -706,7 +756,6 @@ pub struct Variable {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component_ref: Option<ComponentReference>,
     /// Source span for the variable declaration.
-    #[serde(default)]
     pub source_span: Span,
     /// Array dimensions (empty for scalars).
     pub dims: Vec<i64>,
@@ -746,6 +795,32 @@ pub struct Variable {
     /// compiler-generated Appendix B/backend slot.
     #[serde(default)]
     pub origin: VariableOrigin,
+}
+
+impl Variable {
+    pub fn empty_with_span(source_span: Span) -> Self {
+        Self {
+            name: VarName::default(),
+            component_ref: None,
+            source_span,
+            dims: Vec::new(),
+            start: None,
+            start_span: None,
+            fixed: None,
+            min: None,
+            min_span: None,
+            max: None,
+            max_span: None,
+            nominal: None,
+            nominal_span: None,
+            unit: None,
+            state_select: rumoca_core::StateSelect::default(),
+            description: None,
+            causality: VariableCausality::default(),
+            is_tunable: bool::default(),
+            origin: VariableOrigin::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -802,13 +877,12 @@ impl Serialize for Variable {
 }
 
 impl Variable {
-    /// Create a new variable with the given name.
-    pub fn new(name: VarName) -> Self {
-        let component_ref = component_reference_from_flat_name(&name, Span::DUMMY);
+    /// Create a generated variable with the given name and owner/context span.
+    pub fn new(name: VarName, source_span: Span) -> Self {
         Self {
             name,
-            component_ref,
-            ..Default::default()
+            origin: VariableOrigin::Generated,
+            ..Self::empty_with_span(source_span)
         }
     }
 
@@ -860,6 +934,23 @@ impl VariableShapeContractError {
         }
     }
 }
+
+impl std::fmt::Display for VariableShapeContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NegativeDimension {
+                variable,
+                dimension,
+                ..
+            } => write!(
+                f,
+                "DAE variable `{variable}` has negative dimension {dimension}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VariableShapeContractError {}
 
 fn shape_size(
     name: &VarName,
@@ -947,12 +1038,20 @@ pub fn scalar_name_text_for_flat_index(name: &str, dims: &[i64], flat_index: usi
 mod variable_shape_contract_tests {
     use super::*;
 
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("dae_variable_test.mo"),
+            1,
+            2,
+        )
+    }
+
     #[test]
     fn dae_variable_size_preserves_zero_sized_arrays() {
         let variable = Variable {
             name: VarName::new("x"),
             dims: vec![0, 3],
-            ..Default::default()
+            ..Variable::empty_with_span(test_span())
         };
 
         assert_eq!(variable.try_size(), Ok(0));
@@ -963,7 +1062,7 @@ mod variable_shape_contract_tests {
         let variable = Variable {
             name: VarName::new("x"),
             dims: vec![2, -1],
-            ..Default::default()
+            ..Variable::empty_with_span(test_span())
         };
 
         assert_eq!(
@@ -971,8 +1070,22 @@ mod variable_shape_contract_tests {
             Err(VariableShapeContractError::NegativeDimension {
                 variable: VarName::new("x"),
                 dimension: -1,
-                span: Span::DUMMY,
+                span: test_span(),
             })
+        );
+    }
+
+    #[test]
+    fn dae_variable_shape_contract_error_displays_reason() {
+        let error = VariableShapeContractError::NegativeDimension {
+            variable: VarName::new("x"),
+            dimension: -1,
+            span: Span::DUMMY,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "DAE variable `x` has negative dimension -1"
         );
     }
 
@@ -983,7 +1096,7 @@ mod variable_shape_contract_tests {
             VarName::new("key"),
             Variable {
                 name: VarName::new("stored"),
-                ..Default::default()
+                ..Variable::empty_with_span(test_span())
             },
         );
 
@@ -993,8 +1106,42 @@ mod variable_shape_contract_tests {
                 partition: DaeVariablePartition::State,
                 key: VarName::new("key"),
                 name: VarName::new("stored"),
-                span: Span::DUMMY,
+                span: test_span(),
             })
+        );
+    }
+
+    #[test]
+    fn dae_shape_contract_error_displays_key_mismatch() {
+        let error = DaeShapeContractError::VariableKeyNameMismatch {
+            partition: DaeVariablePartition::State,
+            key: VarName::new("key"),
+            name: VarName::new("stored"),
+            span: Span::DUMMY,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "DAE state variable key `key` does not match variable name `stored`"
+        );
+    }
+
+    #[test]
+    fn dae_shape_contract_error_displays_nested_variable_reason() {
+        let error =
+            DaeShapeContractError::Variable(VariableShapeContractError::NegativeDimension {
+                variable: VarName::new("x"),
+                dimension: -1,
+                span: Span::DUMMY,
+            });
+
+        assert_eq!(
+            error.to_string(),
+            "DAE variable shape contract failed: DAE variable `x` has negative dimension -1"
+        );
+        assert_eq!(
+            std::error::Error::source(&error).map(ToString::to_string),
+            Some("DAE variable `x` has negative dimension -1".to_string())
         );
     }
 
@@ -1002,7 +1149,9 @@ mod variable_shape_contract_tests {
     fn dae_model_shape_contract_rejects_function_param_negative_dims() {
         let mut dae = Dae::new();
         let mut function = Function::new("Pkg.f", Span::DUMMY);
-        function.add_output(rumoca_core::FunctionParam::new("y", "Real").with_dims(vec![-1]));
+        function.add_output(
+            rumoca_core::FunctionParam::new("y", "Real", test_span()).with_dims(vec![-1]),
+        );
         dae.symbols
             .functions
             .insert(VarName::new("Pkg.f"), function);
@@ -1054,7 +1203,8 @@ pub enum WhenEquationInactiveRhs {
 mod tests {
     use super::{
         Algorithm, ClockSchedule, DAE_SCHEMA_VERSION, Dae, Equation, VarName, Variable,
-        VariableCausality, flat_index_to_subscripts, scalar_name_text_for_flat_index,
+        VariableCausality, VariableOrigin, flat_index_to_subscripts,
+        scalar_name_text_for_flat_index,
     };
     use rumoca_core::{Expression, Literal, OpBinary, OpUnary, Reference, Span};
 
@@ -1066,7 +1216,11 @@ mod tests {
     }
 
     fn fixture_span() -> Span {
-        Span::from_offsets(rumoca_core::SourceId(1), 10, 20)
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("ir_dae_lib_source_1.mo"),
+            10,
+            20,
+        )
     }
 
     fn lit_real(value: f64) -> Expression {
@@ -1111,7 +1265,7 @@ mod tests {
                 unit: Some("s".to_string()),
                 description: Some("Periodic Boolean sample interval".to_string()),
                 causality: VariableCausality::CalculatedParameter,
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.discrete_reals.insert(
@@ -1120,7 +1274,7 @@ mod tests {
                 name: VarName::new("hold.y"),
                 start: Some(lit_real(0.0)),
                 description: Some("Latched numeric visualization of logical state".to_string()),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.discrete_valued.insert(
@@ -1129,7 +1283,7 @@ mod tests {
                 name: VarName::new("and1.y"),
                 start: Some(lit_bool(false)),
                 description: Some("Logical block output".to_string()),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.discrete_valued.insert(
@@ -1138,7 +1292,7 @@ mod tests {
                 name: VarName::new("not1.y"),
                 start: Some(lit_bool(true)),
                 description: Some("Logical inversion output".to_string()),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
 
@@ -1242,11 +1396,21 @@ mod tests {
         let variable = Variable {
             name: VarName::new("u"),
             causality: VariableCausality::Input,
-            ..Default::default()
+            ..Variable::empty_with_span(fixture_span())
         };
         let value = serde_json::to_value(variable).expect("variable should serialize");
 
         assert_eq!(value["causality"], serde_json::json!("input"));
+    }
+
+    #[test]
+    fn variable_new_does_not_synthesize_component_reference() {
+        let variable = Variable::new(VarName::new("plant.motor[1].w"), fixture_span());
+
+        assert_eq!(variable.name, VarName::new("plant.motor[1].w"));
+        assert_eq!(variable.component_ref, None);
+        assert_eq!(variable.origin, VariableOrigin::Generated);
+        assert_eq!(variable.source_span, fixture_span());
     }
 
     #[test]
@@ -1312,14 +1476,14 @@ mod tests {
             VarName::new("p"),
             Variable {
                 name: VarName::new("p"),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.constants.insert(
             VarName::new("c"),
             Variable {
                 name: VarName::new("c"),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.states.insert(
@@ -1327,21 +1491,21 @@ mod tests {
             Variable {
                 name: VarName::new("x"),
                 dims: vec![2],
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.algebraics.insert(
             VarName::new("y"),
             Variable {
                 name: VarName::new("y"),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.outputs.insert(
             VarName::new("w"),
             Variable {
                 name: VarName::new("w"),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.discrete_reals.insert(
@@ -1349,14 +1513,14 @@ mod tests {
             Variable {
                 name: VarName::new("z"),
                 dims: vec![3],
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
         dae.variables.discrete_valued.insert(
             VarName::new("m"),
             Variable {
                 name: VarName::new("m"),
-                ..Default::default()
+                ..Variable::empty_with_span(fixture_span())
             },
         );
 

@@ -594,6 +594,16 @@ end DotProductResidual;
             r.balance, 0,
             "vector dot-product residual should contribute one scalar equation"
         );
+        assert_eq!(
+            r.dae
+                .continuous
+                .equations
+                .iter()
+                .map(|eq| eq.scalar_count)
+                .collect::<Vec<_>>(),
+            vec![3, 3, 1],
+            "array assignments should stay vector-sized while the dot-product residual is scalar"
+        );
     }
 
     /// Non-`each` fill() modifiers on arrayed components must distribute per element.
@@ -1366,7 +1376,7 @@ mod tier_10h4_subscripted_record_scalar_count {
                 rhs: Box::new(rhs),
                 span: rumoca_core::Span::DUMMY,
             },
-            span: Default::default(),
+            span: rumoca_core::Span::DUMMY,
             origin: EquationOrigin::ComponentEquation {
                 component: String::new(),
             },
@@ -1456,7 +1466,11 @@ mod tier_10h4_subscripted_record_scalar_count {
                     rumoca_core::Causality::Empty
                 },
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             });
             variable
                 .component_ref
@@ -1553,7 +1567,7 @@ mod tier_10h5_connected_toplevel_input {
                 }),
                 span: rumoca_core::Span::DUMMY,
             },
-            span: Default::default(),
+            span: rumoca_core::Span::DUMMY,
             origin: EquationOrigin::Connection {
                 lhs: lhs_name.to_string(),
                 rhs: rhs_name.to_string(),
@@ -1578,7 +1592,7 @@ mod tier_10h5_connected_toplevel_input {
                 }),
                 span: rumoca_core::Span::DUMMY,
             },
-            span: Default::default(),
+            span: rumoca_core::Span::DUMMY,
             origin: EquationOrigin::ComponentEquation {
                 component: String::new(),
             },
@@ -1600,79 +1614,58 @@ mod tier_10h5_connected_toplevel_input {
     #[test]
     fn t10h5_01_connected_toplevel_complex_input() {
         let mut flat = Model::new();
+        let span =
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2);
 
-        // Top-level input connector fields (like ComplexInput u)
-        flat.add_variable(
-            VarName::new("u.re"),
-            with_component_ref(flat::Variable {
-                name: VarName::new("u.re"),
-                causality: rumoca_core::Causality::Input(Default::default()),
-                is_primitive: true,
-                connected: true,
-                ..Default::default()
-            }),
-        );
-        flat.add_variable(
-            VarName::new("u.im"),
-            with_component_ref(flat::Variable {
-                name: VarName::new("u.im"),
-                causality: rumoca_core::Causality::Input(Default::default()),
-                is_primitive: true,
-                connected: true,
-                ..Default::default()
-            }),
-        );
+        for (name, causality, connected) in [
+            (
+                "u.re",
+                rumoca_core::Causality::Input(Default::default()),
+                true,
+            ),
+            (
+                "u.im",
+                rumoca_core::Causality::Input(Default::default()),
+                true,
+            ),
+            (
+                "division.u1.re",
+                rumoca_core::Causality::Input(Default::default()),
+                true,
+            ),
+            (
+                "division.u1.im",
+                rumoca_core::Causality::Input(Default::default()),
+                true,
+            ),
+            (
+                "y.re",
+                rumoca_core::Causality::Output(Default::default()),
+                false,
+            ),
+            (
+                "y.im",
+                rumoca_core::Causality::Output(Default::default()),
+                false,
+            ),
+        ] {
+            flat.add_variable(
+                VarName::new(name),
+                with_component_ref(flat::Variable {
+                    name: VarName::new(name),
+                    causality,
+                    is_primitive: true,
+                    connected,
+                    ..rumoca_ir_flat::Variable::empty_with_span(span)
+                }),
+            );
+        }
 
-        // Sub-component input fields (like division.u1)
-        flat.add_variable(
-            VarName::new("division.u1.re"),
-            with_component_ref(flat::Variable {
-                name: VarName::new("division.u1.re"),
-                causality: rumoca_core::Causality::Input(Default::default()),
-                is_primitive: true,
-                connected: true,
-                ..Default::default()
-            }),
-        );
-        flat.add_variable(
-            VarName::new("division.u1.im"),
-            with_component_ref(flat::Variable {
-                name: VarName::new("division.u1.im"),
-                causality: rumoca_core::Causality::Input(Default::default()),
-                is_primitive: true,
-                connected: true,
-                ..Default::default()
-            }),
-        );
-
-        // Output fields
-        flat.add_variable(
-            VarName::new("y.re"),
-            with_component_ref(flat::Variable {
-                name: VarName::new("y.re"),
-                causality: rumoca_core::Causality::Output(Default::default()),
-                is_primitive: true,
-                ..Default::default()
-            }),
-        );
-        flat.add_variable(
-            VarName::new("y.im"),
-            with_component_ref(flat::Variable {
-                name: VarName::new("y.im"),
-                causality: rumoca_core::Causality::Output(Default::default()),
-                is_primitive: true,
-                ..Default::default()
-            }),
-        );
-
-        // Register "u" as a top-level connector
         flat.top_level_connectors.insert("u".to_string());
 
-        // Connection equations: sub.u1 = u (propagates external input inward)
         flat.add_equation(make_connection_eq("division.u1.re", "u.re"));
         flat.add_equation(make_connection_eq("division.u1.im", "u.im"));
 
-        // Component equations: y = division.u1
         flat.add_equation(make_component_eq("y.re", "division.u1.re"));
         flat.add_equation(make_component_eq("y.im", "division.u1.im"));
 

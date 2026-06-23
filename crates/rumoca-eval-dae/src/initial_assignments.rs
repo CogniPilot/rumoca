@@ -130,10 +130,13 @@ mod tests {
                 op: OpBinary::Sub,
                 lhs: Box::new(Expression::VarRef {
                     name: Reference::new("state"),
-                    subscripts: vec![Subscript::generated_expr(Box::new(Expression::Literal {
-                        value: Literal::Integer(2),
-                        span: Span::DUMMY,
-                    }))],
+                    subscripts: vec![Subscript::generated_expr(
+                        Box::new(Expression::Literal {
+                            value: Literal::Integer(2),
+                            span: Span::DUMMY,
+                        }),
+                        rumoca_core::Span::DUMMY,
+                    )],
                     span: Span::DUMMY,
                 }),
                 rhs: Box::new(Expression::Literal {
@@ -142,7 +145,7 @@ mod tests {
                 }),
                 span: Span::DUMMY,
             },
-            Default::default(),
+            rumoca_core::Span::DUMMY,
             "state[2] = 7",
         );
 

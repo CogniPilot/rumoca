@@ -9,8 +9,8 @@ directly.
 | File | Role |
 |---|---|
 | `Rover.mo` | Plant model (kinematic bicycle; 5 states: x, y, theta, v, delta) |
-| `rum.toml` | Config: locals, input bindings, direct `[signals.stepper_inputs]` |
-| `rover_scene.js` | Three.js desert scene: rover body + 4 wheels (front pair steers) + chase camera |
+| `rumoca-scenario.toml` | Config: locals, input bindings, direct `[signals.stepper_inputs]` |
+| `rover_scene.js` | Three.js desert scene: buggy GLB model + chase camera |
 
 ## Controls
 
@@ -30,7 +30,7 @@ standalone mode, and binding it to reset led to accidental resets.
 
 ```
 cargo run -p rumoca --release -- \
-  sim -c examples/interactive/rover/rum.toml
+  sim -c examples/interactive/rover/rumoca-scenario.toml
 ```
 
 The `[model].file` and `[transport.http].scene` values in the config
@@ -77,25 +77,19 @@ loop applies them to the stepper each frame. No external process.
 
 ## Scene-visualization helpers
 
-`Rover.mo` exposes three derived outputs purely for the viewer:
+`Rover.mo` exposes three derived outputs that are available to the viewer:
 
-- `wheel_rpm = v / wheel_radius` — drives wheel-roll animation
-- `front_wheel_yaw = delta` — yaws the two front-wheel pivot groups
-- `yaw_rate = der(theta)` — available for HUDs / chase-cam smoothing
+- `wheel_rpm = v / wheel_radius`
+- `front_wheel_yaw = delta`
+- `yaw_rate = der(theta)`
 
 The Three.js scene uses the same desert environment as the quadrotor
 example.
 
-## 3D Model Attribution
+## 3D Model Assets
 
-The viewer loads a model from Poly Pizza:
+The rover visual model uses `examples/assets/models/buggy.glb`, loaded by
+`rover_scene.js`.
 
-- Title: `Buggy`
-- Source: <https://poly.pizza/m/eZ_13w7qZh7>
-- Author: Nick Slough
-- License: CC-BY-3.0 (<http://creativecommons.org/licenses/by/3.0/>)
-
-Credit text:
-
-This work is based on "Buggy" (<https://poly.pizza/m/eZ_13w7qZh7>) by Nick
-Slough licensed under CC-BY-3.0 (<http://creativecommons.org/licenses/by/3.0/>).
+Model asset licenses and attributions are recorded in
+[`../../assets/models/README.md`](../../assets/models/README.md).

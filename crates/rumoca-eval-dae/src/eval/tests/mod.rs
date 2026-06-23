@@ -110,6 +110,14 @@ fn var(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn field(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::FieldAccess {
+        base: Box::new(base),
+        field: field.to_string(),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn indexed_var(name: &str, indices: &[i64]) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
@@ -227,11 +235,15 @@ fn strict_eval_accepts_array_literal_for_user_function_input() {
     let mut functions = IndexMap::new();
     let mut function = Function::new("Pkg.firstTwoSum", rumoca_core::Span::DUMMY);
     function.add_input(
-        FunctionParam::new("X", "Real")
+        FunctionParam::new("X", "Real", rumoca_core::Span::source_free_serde_default())
             .with_dims(vec![0])
             .with_shape_expr(vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)]),
     );
-    function.add_output(FunctionParam::new("y", "Real"));
+    function.add_output(FunctionParam::new(
+        "y",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     function.body = vec![Statement::Assignment {
         comp: comp_ref("y"),
         value: Expression::Binary {
@@ -261,15 +273,32 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
     let mut functions = IndexMap::new();
 
     let mut orientation = Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
-    orientation.add_input(FunctionParam::new("T", "Real").with_dims(vec![3, 3]));
-    orientation.add_input(FunctionParam::new("w", "Real").with_dims(vec![3]));
+    orientation.add_input(
+        FunctionParam::new("T", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3, 3]),
+    );
+    orientation.add_input(
+        FunctionParam::new("w", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
     functions.insert("Pkg.Orientation".to_string(), orientation);
 
     let mut from_q = Function::new("Pkg.from_Q", rumoca_core::Span::DUMMY);
-    from_q.add_input(FunctionParam::new("Q", "Real").with_dims(vec![4]));
-    from_q.add_input(FunctionParam::new("w", "Real").with_dims(vec![3]));
+    from_q.add_input(
+        FunctionParam::new("Q", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![4]),
+    );
+    from_q.add_input(
+        FunctionParam::new("w", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
     from_q.add_output(
-        FunctionParam::new("R", "Orientation").with_type_class(rumoca_core::ClassType::Record),
+        FunctionParam::new(
+            "R",
+            "Orientation",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record),
     );
     from_q.body = vec![Statement::Assignment {
         comp: comp_ref("R"),
@@ -392,7 +421,7 @@ fn table_entry(row: rumoca_core::Expression, col: i64) -> rumoca_core::Expressio
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new("table"),
         subscripts: vec![
-            rumoca_core::Subscript::generated_expr(Box::new(row)),
+            rumoca_core::Subscript::generated_expr(Box::new(row), rumoca_core::Span::DUMMY),
             rumoca_core::Subscript::generated_index(col, rumoca_core::Span::DUMMY),
         ],
         span: rumoca_core::Span::DUMMY,
@@ -417,18 +446,43 @@ fn statement_block(
 
 fn interaction_time_table_locals() -> Vec<rumoca_core::FunctionParam> {
     vec![
-        rumoca_core::FunctionParam::new("columns", "Integer").with_default(int_lit(2)),
-        rumoca_core::FunctionParam::new("ncol", "Integer").with_default(int_lit(2)),
-        rumoca_core::FunctionParam::new("nrow", "Integer").with_default(
-            rumoca_core::Expression::BuiltinCall {
-                function: rumoca_core::BuiltinFunction::Size,
-                args: vec![var("table"), int_lit(1)],
-                span: rumoca_core::Span::DUMMY,
-            },
+        rumoca_core::FunctionParam::new(
+            "columns",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(int_lit(2)),
+        rumoca_core::FunctionParam::new(
+            "ncol",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(int_lit(2)),
+        rumoca_core::FunctionParam::new(
+            "nrow",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![var("table"), int_lit(1)],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rumoca_core::FunctionParam::new(
+            "next0",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
         ),
-        rumoca_core::FunctionParam::new("next0", "Integer"),
-        rumoca_core::FunctionParam::new("tp", "Real"),
-        rumoca_core::FunctionParam::new("dt", "Real"),
+        rumoca_core::FunctionParam::new(
+            "tp",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ),
+        rumoca_core::FunctionParam::new(
+            "dt",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ),
     ]
 }
 
@@ -604,19 +658,66 @@ fn interaction_time_table_body() -> Vec<rumoca_core::Statement> {
 fn interaction_time_table_coeff_function() -> rumoca_core::Function {
     let mut f = rumoca_core::Function::new(
         "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients",
-        Default::default(),
+        rumoca_core::Span::DUMMY,
     );
-    f.add_input(rumoca_core::FunctionParam::new("table", "Real").with_dims(vec![6, 2]));
-    f.add_input(rumoca_core::FunctionParam::new("offset", "Real"));
-    f.add_input(rumoca_core::FunctionParam::new("startTimeScaled", "Real"));
-    f.add_input(rumoca_core::FunctionParam::new("timeScaled", "Real"));
-    f.add_input(rumoca_core::FunctionParam::new("last", "Integer"));
-    f.add_input(rumoca_core::FunctionParam::new("TimeEps", "Real"));
-    f.add_input(rumoca_core::FunctionParam::new("shiftTimeScaled", "Real"));
-    f.add_output(rumoca_core::FunctionParam::new("a", "Real"));
-    f.add_output(rumoca_core::FunctionParam::new("b", "Real"));
-    f.add_output(rumoca_core::FunctionParam::new("nextEventScaled", "Real"));
-    f.add_output(rumoca_core::FunctionParam::new("next", "Integer"));
+    f.add_input(
+        rumoca_core::FunctionParam::new(
+            "table",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![6, 2]),
+    );
+    f.add_input(rumoca_core::FunctionParam::new(
+        "offset",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "startTimeScaled",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "timeScaled",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "last",
+        "Integer",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "TimeEps",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_input(rumoca_core::FunctionParam::new(
+        "shiftTimeScaled",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_output(rumoca_core::FunctionParam::new(
+        "a",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_output(rumoca_core::FunctionParam::new(
+        "b",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_output(rumoca_core::FunctionParam::new(
+        "nextEventScaled",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_output(rumoca_core::FunctionParam::new(
+        "next",
+        "Integer",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     for local in interaction_time_table_locals() {
         f.add_local(local);
     }
@@ -886,9 +987,16 @@ fn test_eval_array_values_vectorizes_scalar_function_call() {
     set_array_entries(&mut env, "a", &[3], &[4.0, 5.0, 6.0]);
     set_array_entries(&mut env, "b", &[3], &[1.0, 2.0, 3.0]);
 
-    let mut f = Function::new("Pkg.toUnit", Default::default());
-    f.add_input(FunctionParam::new("u", "Real"));
-    f.add_output(FunctionParam::new("y", "Real").with_default(var("u")));
+    let mut f = Function::new("Pkg.toUnit", rumoca_core::Span::DUMMY);
+    f.add_input(FunctionParam::new(
+        "u",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    f.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(var("u")),
+    );
     f.body = vec![Statement::Empty {
         span: rumoca_core::Span::DUMMY,
     }];
@@ -909,15 +1017,22 @@ fn test_eval_array_values_vectorizes_scalar_function_call() {
 fn test_eval_function_array_output_preserves_local_array_default_shape() {
     let mut env = VarEnv::<f64>::new();
     let mut function = Function::new("Pkg.matrixFromLocalDefault", rumoca_core::Span::DUMMY);
-    function.add_output(FunctionParam::new("y", "Real").with_dims(vec![2, 2]));
+    function.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![2, 2]),
+    );
     function.locals.push(
-        FunctionParam::new("col", "Real")
-            .with_dims(vec![2])
-            .with_default(rumoca_core::Expression::Array {
-                elements: vec![lit(1.0), lit(2.0)],
-                is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
+        FunctionParam::new(
+            "col",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![2])
+        .with_default(rumoca_core::Expression::Array {
+            elements: vec![lit(1.0), lit(2.0)],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
     );
     function.body = vec![Statement::Assignment {
         comp: comp_ref("y"),
@@ -945,11 +1060,18 @@ fn test_eval_function_array_output_preserves_local_array_default_shape() {
 fn test_eval_array_values_dynamic_function_output_uses_shape_expr() {
     let mut env = VarEnv::<f64>::new();
     let mut function = Function::new("Pkg.dynamicVector", rumoca_core::Span::DUMMY);
-    function.add_input(FunctionParam::new("m", "Integer"));
+    function.add_input(FunctionParam::new(
+        "m",
+        "Integer",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
     function.add_output(
-        FunctionParam::new("y", "Real")
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
             .with_dims(vec![0])
-            .with_shape_expr(vec![Subscript::generated_expr(Box::new(var("m")))]),
+            .with_shape_expr(vec![Subscript::generated_expr(
+                Box::new(var("m")),
+                rumoca_core::Span::DUMMY,
+            )]),
     );
     function.body = vec![Statement::Assignment {
         comp: comp_ref("y"),
@@ -1000,17 +1122,21 @@ fn test_eval_function_dynamic_vector_input_binds_expression_shape() {
 
     let mut function = Function::new("Pkg.normalizeLike", rumoca_core::Span::DUMMY);
     function.add_input(
-        FunctionParam::new("v", "Real")
+        FunctionParam::new("v", "Real", rumoca_core::Span::source_free_serde_default())
             .with_dims(vec![0])
             .with_shape_expr(vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)]),
     );
     function.add_output(
-        FunctionParam::new("result", "Real")
-            .with_dims(vec![0])
-            .with_shape_expr(vec![Subscript::generated_expr(Box::new(builtin(
-                BuiltinFunction::Size,
-                vec![var("v"), int_lit(1)],
-            )))]),
+        FunctionParam::new(
+            "result",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![0])
+        .with_shape_expr(vec![Subscript::generated_expr(
+            Box::new(builtin(BuiltinFunction::Size, vec![var("v"), int_lit(1)])),
+            rumoca_core::Span::DUMMY,
+        )]),
     );
     function.body = vec![Statement::Assignment {
         comp: comp_ref("result"),
@@ -1074,13 +1200,18 @@ fn test_eval_array_values_expands_range() {
 }
 
 fn user_function_with_default_output(name: &str, output_value: f64) -> rumoca_core::Function {
-    let mut func = rumoca_core::Function::new(name, Default::default());
-    func.add_output(rumoca_core::FunctionParam::new("y", "Real").with_default(
-        rumoca_core::Expression::Literal {
+    let mut func = rumoca_core::Function::new(name, rumoca_core::Span::DUMMY);
+    func.add_output(
+        rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(output_value),
             span: rumoca_core::Span::DUMMY,
-        },
-    ));
+        }),
+    );
     // Non-empty body is required for function-body evaluation path.
     func.body = vec![rumoca_core::Statement::Empty {
         span: rumoca_core::Span::DUMMY,
@@ -1254,7 +1385,10 @@ fn test_eval_var_ref_rejects_ambiguous_local_enum_alias_literal() {
 fn test_map_var_to_env_size1_array_populates_indexed_alias() {
     let mut env = VarEnv::<f64>::new();
     let mut idx = 0usize;
-    let mut arr1 = rumoca_ir_dae::Variable::new(rumoca_core::VarName::new("arr1"));
+    let mut arr1 = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("arr1"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     arr1.dims = vec![1];
     map_var_to_env(&mut env, "arr1", &arr1, &[2.5], &mut idx);
     assert_eq!(idx, 1);
@@ -1265,19 +1399,25 @@ fn test_map_var_to_env_size1_array_populates_indexed_alias() {
 #[test]
 fn test_build_env_seeds_discrete_start_values() {
     let mut dae = rumoca_ir_dae::Dae::default();
-    let mut off = rumoca_ir_dae::Variable::new(rumoca_core::VarName::new("off"));
+    let mut off = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("off"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     off.start = Some(dae_bool_lit(true));
     dae.variables
         .discrete_valued
         .insert(rumoca_core::VarName::new("off"), off);
 
-    let mut z = rumoca_ir_dae::Variable::new(rumoca_core::VarName::new("z"));
+    let mut z = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("z"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     z.start = Some(dae_lit(2.5));
     dae.variables
         .discrete_reals
         .insert(rumoca_core::VarName::new("z"), z);
 
-    let env = build_env(&dae, &[], &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
     assert_eq!(env_value(&env, "off"), 1.0);
     assert!((env_value(&env, "z") - 2.5).abs() < 1e-12);
 }
@@ -1312,7 +1452,10 @@ fn test_build_env_seeds_fill_start_sized_by_string_array_literal() {
         span: rumoca_core::Span::DUMMY,
     };
     let mut dae = rumoca_ir_dae::Dae::default();
-    let mut x = rumoca_ir_dae::Variable::new(rumoca_core::VarName::new("X"));
+    let mut x = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("X"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     x.dims = vec![4];
     x.start = Some(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
@@ -1331,7 +1474,7 @@ fn test_build_env_seeds_fill_start_sized_by_string_array_literal() {
     });
     dae.variables.parameters.insert("X".into(), x);
 
-    let env = build_env(&dae, &[], &[], 0.0);
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
     assert_eq!(
         eval_shaped_array_values::<f64>(&var("X"), &env, 4),
         Ok(vec![0.25; 4])
@@ -1345,19 +1488,25 @@ fn test_build_env_discrete_start_forward_ref_re_evaluates_and_preserves_pre_seed
     let mut dae = rumoca_ir_dae::Dae::default();
 
     // Insert dependent start first to exercise forward-reference handling.
-    let mut a = rumoca_ir_dae::Variable::new(rumoca_core::VarName::new("a"));
+    let mut a = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("a"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     a.start = Some(dae_var("b"));
     dae.variables
         .discrete_valued
         .insert(rumoca_core::VarName::new("a"), a);
 
-    let mut b = rumoca_ir_dae::Variable::new(rumoca_core::VarName::new("b"));
+    let mut b = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("b"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
     b.start = Some(dae_bool_lit(true));
     dae.variables
         .discrete_valued
         .insert(rumoca_core::VarName::new("b"), b);
 
-    let env = build_env(&dae, &[], &[], 0.0);
+    let env = build_env(&dae, &[], &[], 0.0).expect("test env should build");
     assert_eq!(env_value(&env, "b"), 1.0);
     assert_eq!(env_value(&env, "a"), 1.0);
 
@@ -1367,7 +1516,8 @@ fn test_build_env_discrete_start_forward_ref_re_evaluates_and_preserves_pre_seed
     pre_env.set("b", 0.0);
     seed_pre_values_from_env(&pre_env);
 
-    let env_from_pre = build_env_with_runtime(&dae, &[], &[], 1.0, pre_env.runtime.clone());
+    let env_from_pre = build_env_with_runtime(&dae, &[], &[], 1.0, pre_env.runtime.clone())
+        .expect("test env should build");
     assert_eq!(env_value(&env_from_pre, "a"), 0.0);
     assert_eq!(env_value(&env_from_pre, "b"), 0.0);
 

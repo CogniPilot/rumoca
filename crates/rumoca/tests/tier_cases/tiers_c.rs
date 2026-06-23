@@ -9,16 +9,20 @@ mod tier_10h6_range_subscript_der {
     type Expression = rumoca_core::Expression;
     type Literal = rumoca_core::Literal;
     type Model = flat::Model;
+    type SourceId = rumoca_core::SourceId;
+    type Span = rumoca_core::Span;
     type VarName = rumoca_core::VarName;
     type Variability = rumoca_core::Variability;
+
+    fn fixture_span() -> Span {
+        Span::from_offsets(SourceId::from_source_name("tier_cases/tiers_c.rs"), 0, 1)
+    }
 
     /// Fixtures mirror flatten output, which always carries the structured
     /// component reference alongside the rendered flat name.
     fn with_component_ref(mut variable: flat::Variable) -> flat::Variable {
-        variable.component_ref = rumoca_core::component_reference_from_flat_name(
-            &variable.name,
-            rumoca_core::Span::DUMMY,
-        );
+        variable.component_ref =
+            rumoca_core::component_reference_from_flat_name(&variable.name, fixture_span());
         variable
     }
 
@@ -28,9 +32,9 @@ mod tier_10h6_range_subscript_der {
                 op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             },
-            span: Default::default(),
+            span: fixture_span(),
             origin: EquationOrigin::ComponentEquation {
                 component: String::new(),
             },
@@ -42,21 +46,21 @@ mod tier_10h6_range_subscript_der {
         Expression::VarRef {
             name: VarName::new(name).into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
     fn int(value: i64) -> Expression {
         Expression::Literal {
             value: Literal::Integer(value),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
     fn real(value: f64) -> Expression {
         Expression::Literal {
             value: Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -64,7 +68,7 @@ mod tier_10h6_range_subscript_der {
         Expression::BuiltinCall {
             function: BuiltinFunction::Der,
             args: vec![expr],
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -73,7 +77,7 @@ mod tier_10h6_range_subscript_der {
             op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }
     }
 
@@ -85,19 +89,20 @@ mod tier_10h6_range_subscript_der {
             name: rumoca_core::Reference::from_component_reference(
                 rumoca_core::component_reference_from_flat_name(
                     &VarName::new(name),
-                    rumoca_core::Span::DUMMY,
+                    fixture_span(),
                 )
                 .expect("fixture name must form a component reference"),
             ),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
-                Expression::Range {
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(Expression::Range {
                     start: Box::new(start),
                     step: None,
                     end: Box::new(end),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ))],
-            span: rumoca_core::Span::DUMMY,
+                    span: fixture_span(),
+                }),
+                fixture_span(),
+            )],
+            span: fixture_span(),
         }
     }
 
@@ -107,12 +112,15 @@ mod tier_10h6_range_subscript_der {
             name: rumoca_core::Reference::from_component_reference(
                 rumoca_core::component_reference_from_flat_name(
                     &VarName::new(name),
-                    rumoca_core::Span::DUMMY,
+                    fixture_span(),
                 )
                 .expect("fixture name must form a component reference"),
             ),
-            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(subscript))],
-            span: rumoca_core::Span::DUMMY,
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(subscript),
+                fixture_span(),
+            )],
+            span: fixture_span(),
         }
     }
 
@@ -140,7 +148,11 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("x"),
                 dims: vec![4],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -152,10 +164,14 @@ mod tier_10h6_range_subscript_der {
                 variability: Variability::Parameter(Default::default()),
                 binding: Some(Expression::Literal {
                     value: Literal::Integer(4),
-                    span: rumoca_core::Span::DUMMY,
+                    span: fixture_span(),
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -166,7 +182,11 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("u"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -226,10 +246,14 @@ mod tier_10h6_range_subscript_der {
                 binding: Some(Expression::Array {
                     elements: vec![real(1.0), real(2.0), real(3.0)],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: fixture_span(),
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -244,13 +268,17 @@ mod tier_10h6_range_subscript_der {
                     lhs: Box::new(Expression::BuiltinCall {
                         function: BuiltinFunction::Size,
                         args: vec![var("a"), int(1)],
-                        span: rumoca_core::Span::DUMMY,
+                        span: fixture_span(),
                     }),
                     rhs: Box::new(int(1)),
-                    span: rumoca_core::Span::DUMMY,
+                    span: fixture_span(),
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -261,7 +289,11 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("x_scaled"),
                 dims: vec![2],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -272,7 +304,11 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("u"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -327,10 +363,14 @@ mod tier_10h6_range_subscript_der {
                 variability: Variability::Parameter(Default::default()),
                 binding: Some(Expression::Literal {
                     value: Literal::Integer(3),
-                    span: rumoca_core::Span::DUMMY,
+                    span: fixture_span(),
                 }),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -341,7 +381,11 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("x"),
                 dims: vec![3],
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -352,7 +396,11 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("u"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             }),
         );
 
@@ -368,7 +416,7 @@ mod tier_10h6_range_subscript_der {
             Expression::BuiltinCall {
                 function: BuiltinFunction::Zeros,
                 args: vec![binary_sub(var("nx"), int(1))],
-                span: rumoca_core::Span::DUMMY,
+                span: fixture_span(),
             },
         ));
 
@@ -833,6 +881,27 @@ end MiniBusTranscriptionArr;
         assert_eq!(
             r.balance, 0,
             "output-to-bus connection should not overconstrain when output already has a defining equation"
+        );
+        let origins = r
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .map(|eq| eq.origin.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            origins
+                .iter()
+                .any(|origin| origin.contains("equation from g")),
+            "source model should retain the component equation defining g.y; origins={origins:?}"
+        );
+        assert!(
+            origins.iter().all(|origin| {
+                !(origin.contains("connection equation")
+                    && origin.contains("g")
+                    && origin.contains("outBus.x"))
+            }),
+            "redundant output-to-known bus connection should be skipped; origins={origins:?}"
         );
     }
 }

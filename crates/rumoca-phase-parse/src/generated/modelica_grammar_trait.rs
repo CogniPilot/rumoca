@@ -2657,7 +2657,9 @@ pub struct ArrayArgumentsNonFirstOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayPrimary {
+    pub l_brace: crate::ParserToken, /* { */
     pub array_primary_opt: Option<ArrayPrimaryOpt>,
+    pub r_brace: crate::ParserToken, /* } */
 }
 
 ///
@@ -2769,7 +2771,9 @@ pub struct ClassDefinitionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassModification {
+    pub l_paren: crate::ParserToken, /* ( */
     pub class_modification_opt: Option<ClassModificationOpt>,
+    pub r_paren: crate::ParserToken, /* ) */
 }
 
 ///
@@ -4765,7 +4769,9 @@ pub struct OutputExpressionListOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputPrimary {
+    pub l_paren: crate::ParserToken, /* ( */
     pub output_expression_list: crate::ExpressionList,
+    pub r_paren: crate::ParserToken, /* ) */
     pub output_primary_opt: Option<OutputPrimaryOpt>,
 }
 
@@ -11197,21 +11203,31 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 253:
     ///
-    /// `class_modification: '('^ /* Clipped */ class_modificationOpt /* Option */ ')'^ /* Clipped */;`
+    /// `class_modification: '(' class_modificationOpt /* Option */ ')';`
     ///
     #[parol_runtime::function_name::named]
     fn class_modification(
         &mut self,
-        _l_paren: &ParseTreeType<'t>,
+        l_paren: &ParseTreeType<'t>,
         _class_modification_opt: &ParseTreeType<'t>,
-        _r_paren: &ParseTreeType<'t>,
+        r_paren: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let l_paren = l_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
+        let r_paren = r_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let class_modification_opt =
             pop_item!(self, class_modification_opt, ClassModificationOpt, context);
         let class_modification_built = ClassModification {
+            l_paren,
             class_modification_opt,
+            r_paren,
         };
         // Calling user action here
         self.user_grammar
@@ -15097,25 +15113,35 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 425:
     ///
-    /// `output_primary: '('^ /* Clipped */ output_expression_list ')'^ /* Clipped */ output_primaryOpt /* Option */;`
+    /// `output_primary: '(' output_expression_list ')' output_primaryOpt /* Option */;`
     ///
     #[parol_runtime::function_name::named]
     fn output_primary(
         &mut self,
-        _l_paren: &ParseTreeType<'t>,
+        l_paren: &ParseTreeType<'t>,
         _output_expression_list: &ParseTreeType<'t>,
-        _r_paren: &ParseTreeType<'t>,
+        r_paren: &ParseTreeType<'t>,
         _output_primary_opt: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let l_paren = l_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
+        let r_paren = r_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let output_primary_opt = pop_item!(self, output_primary_opt, OutputPrimaryOpt, context);
         let output_expression_list =
             pop_item!(self, output_expression_list, OutputExpressionList, context);
         let output_primary_built = OutputPrimary {
+            l_paren,
             output_expression_list: (&output_expression_list)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
+            r_paren,
             output_primary_opt,
         };
         // Calling user action here
@@ -15280,19 +15306,31 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 433:
     ///
-    /// `array_primary: '{'^ /* Clipped */ array_primaryOpt /* Option */ '}'^ /* Clipped */;`
+    /// `array_primary: '{' array_primaryOpt /* Option */ '}';`
     ///
     #[parol_runtime::function_name::named]
     fn array_primary(
         &mut self,
-        _l_brace: &ParseTreeType<'t>,
+        l_brace: &ParseTreeType<'t>,
         _array_primary_opt: &ParseTreeType<'t>,
-        _r_brace: &ParseTreeType<'t>,
+        r_brace: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let l_brace = l_brace
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
+        let r_brace = r_brace
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let array_primary_opt = pop_item!(self, array_primary_opt, ArrayPrimaryOpt, context);
-        let array_primary_built = ArrayPrimary { array_primary_opt };
+        let array_primary_built = ArrayPrimary {
+            l_brace,
+            array_primary_opt,
+            r_brace,
+        };
         // Calling user action here
         self.user_grammar.array_primary(&array_primary_built)?;
         self.push(ASTType::ArrayPrimary(array_primary_built), context);

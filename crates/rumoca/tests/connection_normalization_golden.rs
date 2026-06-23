@@ -8,7 +8,8 @@ use rumoca_phase_typecheck::typecheck_instanced;
 fn flatten_model(source: &str, model_name: &str) -> rumoca_ir_flat::Model {
     let def = rumoca_phase_parse::parse_to_ast(source, "connection_golden.mo")
         .expect("parse should succeed");
-    let tree = ast::ClassTree::from_parsed(def);
+    let mut tree = ast::ClassTree::from_parsed(def);
+    tree.source_map.add("connection_golden.mo", source);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let tree = &resolved.0;

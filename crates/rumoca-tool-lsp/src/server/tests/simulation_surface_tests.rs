@@ -64,6 +64,198 @@ fn write_simulation_subtree_workspace(temp: &Path) -> (PathBuf, PathBuf, PathBuf
     (workspace_root, model_path, focus)
 }
 
+#[test]
+fn render_scenario_config_command_renders_shared_toml() {
+    run_async_test(async {
+        let service = new_test_service();
+        let server = service.inner();
+
+        let response = server
+            .execute_render_scenario_config(Some(serde_json::json!({
+                "config": {
+                    "rumoca": { "version": "1", "task": "simulate" },
+                    "model": { "file": "Ball.mo", "name": "Ball" },
+                    "sim": { "solver": "auto", "t_end": 10.0 },
+                    "viewer": { "mode": "results_panel" },
+                    "plot": {
+                        "views": [{
+                            "id": "states_time",
+                            "title": "States vs Time",
+                            "type": "timeseries",
+                            "x": "time",
+                            "y": ["*states"]
+                        }]
+                    }
+                }
+            })))
+            .await
+            .expect("scenario render response");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        let content = response
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .expect("rendered content");
+        assert!(content.contains("[rumoca]"));
+        assert!(content.contains("task = \"simulate\""));
+        assert!(content.contains("[[plot.views]]"));
+
+        let commands = ModelicaLanguageServer::server_capabilities()
+            .execute_command_provider
+            .expect("execute command provider")
+            .commands;
+        assert!(
+            commands.contains(&"rumoca.scenario.renderScenarioConfig".to_string()),
+            "render scenario config command must be advertised"
+        );
+    });
+}
+
+#[test]
+fn full_scenario_config_commands_round_trip_shared_toml() {
+    run_async_test(async {
+        let temp = new_temp_dir("full-scenario-config-command");
+        let scenario_path = temp.join("rumoca-scenario.toml");
+        let original_scenario = scenario_config_text("Ball.mo", "Ball", Some("auto"));
+        std::fs::write(&scenario_path, &original_scenario).expect("write scenario");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut workspace_root = server.workspace_root.write().await;
+            *workspace_root = Some(temp);
+        }
+
+        let uri = Url::from_file_path(&scenario_path)
+            .expect("scenario uri")
+            .to_string();
+        let full = server
+            .execute_get_scenario_config_full(Some(serde_json::json!({ "uri": uri })))
+            .await
+            .expect("full scenario response");
+        assert_eq!(
+            full.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            full.pointer("/config/model/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Ball")
+        );
+        let live_scenario = scenario_config_text("Live.mo", "Live", None);
+        let live_full = server
+            .execute_get_scenario_config_full(Some(serde_json::json!({
+                "uri": uri,
+                "source": live_scenario,
+            })))
+            .await
+            .expect("live full scenario response");
+        assert_eq!(
+            live_full
+                .pointer("/config/model/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Live"),
+            "explicit scenario source should take precedence over disk contents"
+        );
+
+        let mut config = full.get("config").cloned().expect("config tree");
+        config["sim"]["solver"] = serde_json::Value::String("bdf".to_string());
+        let saved = server
+            .execute_set_scenario_config(Some(serde_json::json!({
+                "uri": uri,
+                "config": config,
+            })))
+            .await
+            .expect("set scenario response");
+        assert_eq!(
+            saved.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        let updated = std::fs::read_to_string(&scenario_path).expect("read updated scenario");
+        assert!(updated.contains("solver = \"bdf\""));
+
+        let scenario_uri = Url::parse(&uri).expect("scenario uri parse");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: scenario_uri,
+                    language_id: "toml".to_string(),
+                    version: 1,
+                    text: original_scenario,
+                },
+            })
+            .await;
+        let rejected = server
+            .execute_set_scenario_config(Some(serde_json::json!({
+                "uri": uri,
+                "config": config,
+            })))
+            .await
+            .expect("open set scenario response");
+        assert_eq!(
+            rejected.get("ok").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert!(
+            rejected
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|error| error.contains("open in the editor")),
+            "open scenario save should require an editor edit"
+        );
+        let disk_after_rejected_save =
+            std::fs::read_to_string(&scenario_path).expect("read scenario after rejected save");
+        assert!(disk_after_rejected_save.contains("solver = \"bdf\""));
+
+        assert_full_scenario_config_commands_advertised();
+    });
+}
+
+fn scenario_config_text(model_file: &str, model_name: &str, solver: Option<&str>) -> String {
+    let mut lines = vec![
+        "[rumoca]".to_string(),
+        "version = \"1\"".to_string(),
+        "task = \"simulate\"".to_string(),
+        String::new(),
+        "[model]".to_string(),
+        format!("file = \"{model_file}\""),
+        format!("name = \"{model_name}\""),
+        String::new(),
+    ];
+    if let Some(solver) = solver {
+        lines.extend([
+            "[sim]".to_string(),
+            format!("solver = \"{solver}\""),
+            String::new(),
+        ]);
+    }
+    lines.join("\n")
+}
+
+fn assert_full_scenario_config_commands_advertised() {
+    let commands = ModelicaLanguageServer::server_capabilities()
+        .execute_command_provider
+        .expect("execute command provider")
+        .commands;
+    for command in [
+        "rumoca.scenario.getScenarioConfigFull",
+        "rumoca.scenario.setScenarioConfig",
+        "rumoca.scenario.getCodegenConfig",
+        "rumoca.scenario.setCodegenConfig",
+        "rumoca.scenario.getSourceRoots",
+        "rumoca.scenario.setSourceRoots",
+        "rumoca.model.parameterMetadata",
+    ] {
+        assert!(
+            commands.contains(&command.to_string()),
+            "{command} must be advertised"
+        );
+    }
+}
+
 fn apply_structural_subtree_edit(session: &mut Session, model_uri: &str) {
     let open_error = session.update_document(
         model_uri,
@@ -509,7 +701,7 @@ fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
         std::fs::create_dir_all(&model_dir).expect("mkdir models");
         std::fs::create_dir_all(&scenario_dir).expect("mkdir codegen");
         let model_path = model_dir.join("Decay.mo");
-        let scenario_path = scenario_dir.join("rum.toml");
+        let scenario_path = scenario_dir.join("rumoca-scenario.toml");
         let template_path = scenario_dir.join("custom.py.jinja");
         std::fs::write(
             &model_path,
@@ -585,7 +777,7 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
         std::fs::create_dir_all(&model_dir).expect("mkdir models");
         std::fs::create_dir_all(&target_dir).expect("mkdir target");
         let model_path = model_dir.join("Decay.mo");
-        let scenario_path = scenario_dir.join("rum.toml");
+        let scenario_path = scenario_dir.join("rumoca-scenario.toml");
         std::fs::write(
             &model_path,
             "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
@@ -782,7 +974,7 @@ fn simulate_rum_scenario_can_use_closed_model_file() {
     run_async_test(async {
         let temp = new_temp_dir("simulate-rum-closed-model");
         let model_path = temp.join("Decay.mo");
-        let scenario_path = temp.join("rum.toml");
+        let scenario_path = temp.join("rumoca-scenario.toml");
         std::fs::write(
             &model_path,
             "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
@@ -825,16 +1017,16 @@ fn simulate_rum_scenario_can_use_closed_model_file() {
         assert_eq!(
             response.get("ok").and_then(serde_json::Value::as_bool),
             Some(true),
-            "simulation from a rum.toml scenario should not require the referenced model file to be open: {response:#?}"
+            "simulation from a rumoca-scenario.toml scenario should not require the referenced model file to be open: {response:#?}"
         );
     });
 }
 
 #[test]
-fn scenario_config_reports_external_web_viewer_mode_for_interactive_rum() {
+fn scenario_config_defaults_input_scenarios_to_embedded_viewer() {
     run_async_test(async {
-        let temp = new_temp_dir("scenario-external-web-viewer");
-        let scenario_path = temp.join("rum.toml");
+        let temp = new_temp_dir("scenario-embedded-input-viewer");
+        let scenario_path = temp.join("rumoca-scenario.toml");
         let scenario = [
             "[rumoca]",
             "version = \"1\"",
@@ -853,9 +1045,6 @@ fn scenario_config_reports_external_web_viewer_mode_for_interactive_rum() {
             "[transport.http]",
             "port = 8080",
             "scene = \"rover_scene.js\"",
-            "",
-            "[viewer]",
-            "prefer_external = true",
             "",
         ]
         .join("\n");
@@ -885,7 +1074,7 @@ fn scenario_config_reports_external_web_viewer_mode_for_interactive_rum() {
             response
                 .get("viewerMode")
                 .and_then(serde_json::Value::as_str),
-            Some("external_web")
+            Some("results_panel")
         );
         assert_eq!(
             response.get("simMode").and_then(serde_json::Value::as_str),
@@ -903,7 +1092,7 @@ fn scenario_config_reports_external_web_viewer_mode_for_interactive_rum() {
         );
         assert_eq!(
             response
-                .get("viewerPreferExternal")
+                .get("inputEnabled")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
@@ -911,10 +1100,10 @@ fn scenario_config_reports_external_web_viewer_mode_for_interactive_rum() {
 }
 
 #[test]
-fn scenario_config_explicit_results_panel_overrides_interactive_inference() {
+fn scenario_config_explicit_results_panel_overrides_input_inference() {
     run_async_test(async {
         let temp = new_temp_dir("scenario-results-panel-viewer");
-        let scenario_path = temp.join("rum.toml");
+        let scenario_path = temp.join("rumoca-scenario.toml");
         let scenario = [
             "[rumoca]",
             "version = \"1\"",
@@ -962,7 +1151,7 @@ fn scenario_config_explicit_results_panel_overrides_interactive_inference() {
         );
         assert_eq!(
             response
-                .get("interactive")
+                .get("inputEnabled")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
@@ -1219,6 +1408,7 @@ fn prepare_simulation_models_populates_cache_for_each_requested_model() {
                     t_end: 10.0,
                     dt: None,
                     source_root_paths: Vec::new(),
+                    parameter_overrides: Vec::new(),
                 },
                 None,
             )
@@ -1468,6 +1658,7 @@ fn prepare_simulation_models_request_returns_stale_error_after_revision_bump() {
                             t_end: 10.0,
                             dt: None,
                             source_root_paths: Vec::new(),
+                            parameter_overrides: Vec::new(),
                         },
                         Some(token),
                     )

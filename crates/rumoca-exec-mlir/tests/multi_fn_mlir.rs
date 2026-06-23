@@ -1,3 +1,4 @@
+use rumoca_core::{SourceId, Span};
 /// Phase 6.6: Multi-function MLIR module tests.
 ///
 /// The MLIR shared library now exports three functions from a single compilation:
@@ -12,6 +13,13 @@ use rumoca_exec_mlir::{MlirError, compile_derivative_rhs as exec_compile_derivat
 use rumoca_ir_solve::{
     ComputeBlock, ContinuousSolveSystem, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp,
 };
+
+fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+    )
+}
 
 fn decay_solve_problem() -> SolveProblem {
     // derivative_rhs: xdot = -y[0]
@@ -28,12 +36,14 @@ fn decay_solve_problem() -> SolveProblem {
     let impl_row = drv_row.clone();
     SolveProblem {
         continuous: ContinuousSolveSystem {
-            derivative_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
-                drv_row,
-            ])),
-            implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(vec![
-                impl_row,
-            ])),
+            derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
+                vec![drv_row],
+                "multi_fn_derivative.mo",
+            )),
+            implicit_rhs: ComputeBlock::from_scalar_program_block(spb(
+                vec![impl_row],
+                "multi_fn_implicit.mo",
+            )),
             ..Default::default()
         },
         ..Default::default()
@@ -152,12 +162,13 @@ fn multi_fn_derivative_still_correct() {
 #[test]
 fn multi_fn_empty_implicit_no_symbol() {
     // A SolveProblem with no implicit_rhs rows should NOT export eval_implicit_rhs.
-    let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::new(vec![vec![
+    let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
+        vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
             LinearOp::StoreOutput { src: 0 },
-        ]]),
-    ));
+        ]],
+        "multi_fn_empty_implicit.mo",
+    )));
     // implicit_rhs left as default (empty)
 
     let compiled = match compile_or_skip(&solve, "multi_empty_impl") {

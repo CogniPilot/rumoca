@@ -21,6 +21,20 @@ pub enum PreparedVectorError {
     NotAParameter { name: String },
     #[error("parameter settle failed: {message}")]
     Settle { message: String },
+    #[error("runtime preparation failed: {message}")]
+    Runtime {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+}
+
+impl PreparedVectorError {
+    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+        match self {
+            Self::Runtime { span, .. } => *span,
+            _ => None,
+        }
+    }
 }
 
 /// Override named parameters and return freshly settled `(y0, p0)`.
@@ -38,7 +52,10 @@ pub fn refresh_prepared_vectors(
     }
 
     let mut y = model.initial_y.clone();
-    let runtime = SolveRuntime::new(model);
+    let runtime = SolveRuntime::new(model).map_err(|error| PreparedVectorError::Runtime {
+        message: error.to_string(),
+        span: error.source_span(),
+    })?;
     let settle = |message: String| PreparedVectorError::Settle { message };
     runtime
         .apply_initialization_updates(&mut y, &mut params, t_start, SETTLE_TOL, SETTLE_MAX_ITERS)

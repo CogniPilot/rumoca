@@ -315,7 +315,10 @@ jobs:
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # This gate runs full-MSL LSP probes, VS Code smoke, and a WASM browser
+    # smoke. Hosted runners can exhaust 30 minutes before the browser smoke
+    # finishes its playground build on a cold wasm cache.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:
@@ -792,8 +795,8 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run WASM CI gate
-        run: cargo xtask wasm test
+      - name: Run playground CI gate
+        run: cargo xtask playground test
 
       - name: Build optimized npm packages
         # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
@@ -810,53 +813,69 @@ jobs:
         # get the optimized build.
         if: github.event_name == 'push'
         run: |
-          node packaging/npm/build.mjs --profile release --variant full-web --optimize
-          node packaging/npm/build.mjs --profile release --variant core --optimize
+          node packages/rumoca/build.mjs --profile release --variant full-web --optimize
+          node packages/rumoca/build.mjs --profile release --variant core --optimize
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
 
       - name: Prepare GitHub Pages content
         run: |
-          if [ -d pkg/release-full-web ]; then
+          if [ -d packages/rumoca/dist/release-full-web ]; then
             PKG_SUBDIR="release-full-web"
-          elif [ -d pkg/release-full-web-rayon ]; then
+          elif [ -d packages/rumoca/dist/release-full-web-rayon ]; then
             PKG_SUBDIR="release-full-web-rayon"
           else
-            echo "Missing expected WASM package subdir under pkg/"
-            find pkg -maxdepth 2 -type f || true
+            echo "Missing expected WASM package subdir under packages/rumoca/dist/"
+            find packages/rumoca/dist -maxdepth 2 -type f || true
             exit 1
           fi
           echo "Using pkg subdir: $PKG_SUBDIR"
 
           mkdir -p "gh-pages/pkg/$PKG_SUBDIR"
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "pkg/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "pkg/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "pkg/$PKG_SUBDIR/rumoca_gpu.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_runtime.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_interactive.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/modelica_language.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_gpu.js" "gh-pages/pkg/$PKG_SUBDIR/"
           # Lazy diffsol addon (driver + its separate relaxed-SIMD module), so
           # the live examples can run stiff solves on supporting browsers.
-          cp "pkg/$PKG_SUBDIR/rumoca_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_diffsol_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp "pkg/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "pkg/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp -r "pkg/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm_diffsol_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp "packages/rumoca/dist/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp -r "packages/rumoca/dist/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
 
-          cp editors/wasm/rumoca.png gh-pages/
-          cp editors/wasm/coi-serviceworker.js gh-pages/
-          cp -r editors/wasm/src gh-pages/
-          cp -r editors/wasm/vendor gh-pages/
+          mkdir -p gh-pages/assets/brand
+          cp assets/brand/rumoca.svg gh-pages/assets/brand/
+          cp packages/playground/coi-serviceworker.js gh-pages/
+          cp -r packages/playground/src gh-pages/
+          cp -r examples gh-pages/examples/
+          # vendor/ is generated by packages/rumoca/build.mjs (run earlier in this
+          # job) from the single-source web/ package, so it holds real files.
+          cp -r packages/playground/vendor gh-pages/
 
           sed \
-              -e "s|window.rumocaWasmPkgBase = '../../pkg';|window.rumocaWasmPkgBase = './pkg';|g" \
+              -e "s|window.rumocaWasmPkgBase = '../rumoca/dist';|window.rumocaWasmPkgBase = './pkg';|g" \
               -e "s|window.rumocaWasmPkgSubdir = 'release-full-web';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
               -e "s|window.rumocaWasmPkgSubdir = 'release-full-web-rayon';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
-              editors/wasm/index.html > gh-pages/index.html
+              -e "s|window.rumocaRepoAssetBase = '../../';|window.rumocaRepoAssetBase = './';|g" \
+              -e "s|../../assets/brand/rumoca.svg|assets/brand/rumoca.svg|g" \
+              packages/playground/index.html > gh-pages/index.html
 
-          mdbook build docs/user-guide -d "$GITHUB_WORKSPACE/gh-pages/user-guide"
-          mdbook build docs/dev-guide -d "$GITHUB_WORKSPACE/gh-pages/dev-guide"
+          cargo xtask repo modelica-deps ensure
+          mkdir -p gh-pages/target/cmm
+          cp -a target/cmm/CMM-v0.0.2 gh-pages/target/cmm/
+
+          cargo xtask docs build --book user
+          cargo xtask docs build --book dev
+          mkdir -p "$GITHUB_WORKSPACE/gh-pages/user-guide" "$GITHUB_WORKSPACE/gh-pages/dev-guide"
+          cp -a docs/user-guide/book/. "$GITHUB_WORKSPACE/gh-pages/user-guide/"
+          cp -a docs/dev-guide/book/. "$GITHUB_WORKSPACE/gh-pages/dev-guide/"
 
           echo "=== GitHub Pages content ==="
           find gh-pages -type f
@@ -865,7 +884,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: wasm-package
-          path: pkg/
+          path: packages/rumoca/dist/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -1029,21 +1048,50 @@ jobs:
     # Built on PRs and on the release tag only (see Build WASM note).
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
+    # The natively-built/tested wheels (x86_64 glibc, macOS x2, Windows) gate the
+    # PR; the cross-compiled aarch64 and musllinux targets are best-effort
+    # (non-blocking) until CI proves them green, then flip them to required.
+    continue-on-error: ${{ !matrix.native }}
     strategy:
+      # One target's build failure (e.g. a cross target) must not cancel the
+      # others — abi3 + the mainstream wheels still publish.
+      fail-fast: false
       matrix:
         include:
+          # Linux glibc (manylinux) — abi3, one wheel per arch for Python >= 3.10.
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            name: linux-x86_64
+            manylinux: auto
+            name: linux-x86_64-gnu
+            native: true
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            manylinux: auto
+            name: linux-aarch64-gnu
+            native: false
+          # Linux musl (musllinux) — Alpine / musl Docker base images.
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            name: linux-x86_64-musl
+            native: false
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            name: linux-aarch64-musl
+            native: false
           - os: macos-15-intel
             target: x86_64-apple-darwin
             name: macos-x86_64
+            native: true
           - os: macos-15
             target: aarch64-apple-darwin
             name: macos-aarch64
+            native: true
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             name: windows-x64
+            native: true
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1054,48 +1102,45 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-        shell: bash
-
-      - name: Add target
-        if: matrix.target != 'x86_64-pc-windows-msvc'
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Install maturin
-        run: pip install maturin
-
+      # maturin-action builds Linux wheels inside manylinux/musllinux containers
+      # (and cross-compiles aarch64), so it handles the platform tags and the
+      # cross toolchain. abi3 is picked up from the crate's pyo3 feature, giving
+      # one wheel per platform for all CPython >= 3.10.
       - name: Build wheels
-        shell: bash
-        run: |
-          cd crates/rumoca-bind-python
-          rm -rf dist
-          mkdir -p dist
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            maturin build --release --out dist
-          else
-            maturin build --release --out dist --target ${{ matrix.target }}
-          fi
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --manifest-path crates/rumoca-bind-python/Cargo.toml
+          # libudev (pulled in via the `rumoca` crate) inside the Linux build
+          # containers: systemd-devel on manylinux (yum), eudev-dev on musllinux
+          # (apk). No-op on macOS/Windows runners.
+          before-script-linux: |
+            if command -v yum >/dev/null 2>&1; then yum install -y systemd-devel; fi
+            if command -v apk >/dev/null 2>&1; then apk add --no-cache eudev-dev; fi
 
+      # The wheel is only installable/runnable on a host matching its arch+libc,
+      # so smoke-test just the native rows; cross/musl rows build-and-upload.
       - name: Smoke test installed wheel
+        if: matrix.native
         shell: bash
         run: |
-          python -m pip install --force-reinstall crates/rumoca-bind-python/dist/*.whl
+          # Install the `notebook` extra (real %%modelica magic) plus `data` so
+          # the smoke test exercises numpy/pandas-backed Result paths. The export
+          # test skips casadi/jax/sympy gracefully when those extras are absent.
+          # maturin-action writes wheels to ./dist at the repo root.
+          WHEEL=$(ls dist/*.whl | head -1)
+          python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
           python crates/rumoca-bind-python/tests/smoke_test.py
+          python crates/rumoca-bind-python/tests/api_test.py
+          python crates/rumoca-bind-python/tests/magic_test.py
+          python crates/rumoca-bind-python/tests/export_test.py
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.name }}
-          path: crates/rumoca-bind-python/dist
+          path: dist
 
   build-python-sdist:
     name: Build Python sdist
@@ -1200,8 +1245,9 @@ jobs:
       - name: Install VS Code extension dependencies
         shell: bash
         run: |
-          cd editors/vscode
+          cd packages/vscode
           npm ci
+          npm run esbuild-base -- --minify
 
       - name: Organize artifacts
         shell: bash
@@ -1272,17 +1318,17 @@ jobs:
             fi
 
             echo "Packaging VSIX for $vscode_target from $source_file"
-            rm -f editors/vscode/bin/* editors/vscode/*.vsix
-            mkdir -p editors/vscode/bin
-            cp "$source_file" "editors/vscode/bin/$binary_name"
-            chmod +x "editors/vscode/bin/$binary_name" 2>/dev/null || true
+            rm -f packages/vscode/bin/* packages/vscode/*.vsix
+            mkdir -p packages/vscode/bin
+            cp "$source_file" "packages/vscode/bin/$binary_name"
+            chmod +x "packages/vscode/bin/$binary_name" 2>/dev/null || true
 
             (
-              cd editors/vscode
+              cd packages/vscode
               npx @vscode/vsce package --target "$vscode_target" --no-dependencies --no-yarn
             )
 
-            vsix_file="$(find editors/vscode -maxdepth 1 -type f -name '*.vsix' -print -quit)"
+            vsix_file="$(find packages/vscode -maxdepth 1 -type f -name '*.vsix' -print -quit)"
             if [ -z "$vsix_file" ]; then
               echo "::error::VSIX packaging did not produce an artifact for $vscode_target"
               exit 1
@@ -1340,7 +1386,7 @@ jobs:
             for vsix_file in "${vsix_files[@]}"; do
               echo "Publishing $(basename "$vsix_file") to Visual Studio Marketplace"
               (
-                cd editors/vscode
+                cd packages/vscode
                 npx @vscode/vsce publish --packagePath "../../${vsix_file}" --no-dependencies --no-yarn
               )
             done
@@ -1352,7 +1398,7 @@ jobs:
             for vsix_file in "${vsix_files[@]}"; do
               echo "Publishing $(basename "$vsix_file") to Open VSX"
               (
-                cd editors/vscode
+                cd packages/vscode
                 npx --yes ovsx publish "../../${vsix_file}" -p "${OVSX_TOKEN}"
               )
             done

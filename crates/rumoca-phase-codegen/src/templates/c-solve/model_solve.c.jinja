@@ -82,9 +82,14 @@ void {{ model_name | sanitize }}_derivative_rhs(
     (void)y;
     (void)p;
 {%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
-{%- for row in solve_blocks.continuous.derivative_rhs.scalar_programs.programs %}
-    out[{{ loop.index0 }}] = {{ render_solve_row_c(row, cfg) }};
+{%- set output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices %}
+    for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN; ++i) {
+        out[i] = 0.0;
+    }
+{%- set solve_body = render_solve_block_c(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}", output_indices) %}
+{%- if solve_body %}
+{{ solve_body }}
 {%- else %}
     (void)out;
-{%- endfor %}
+{%- endif %}
 }

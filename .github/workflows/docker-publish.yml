@@ -47,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: packaging/docker/Dockerfile
+          file: infra/docker/Dockerfile
           target: ${{ matrix.target }}
           push: true
           provenance: false

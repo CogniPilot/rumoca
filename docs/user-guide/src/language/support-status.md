@@ -5,7 +5,7 @@ This page describes what you can rely on today and where the edges are. The
 ground truth is the continuously-run Modelica Standard Library (MSL) quality
 gate, which compiles and simulates MSL models on every change and blocks
 regressions (documented in the
-[Rumoca Internals](https://cognipilot.github.io/rumoca/dev-guide/) book).
+[Rumoca Dev Guide](https://cognipilot.github.io/rumoca/dev-guide/) book).
 
 ## What Works Well
 
@@ -17,8 +17,10 @@ regressions (documented in the
   index reduction for many higher-index systems.
 - **Events** — `when`/`elsewhen`, `pre`, `edge`, `reinit`, `sample`,
   if-expressions with event generation, `assert`, `terminate`.
-- **Arrays** — declarations, slicing, and the common array builtins, with
-  scalarization where targets require it.
+- **Arrays and regular stencil loops** — declarations, slicing, common array
+  builtins, and source-proven affine stencils from `for`-equation domains.
+  Targets that do not have native stencil kernels still receive exact scalar
+  fallback code.
 - **Initialization** — `start` attributes and initial equation handling.
 - **Experiment annotations** — `StopTime`, `StartTime`, `Tolerance`,
   `Interval`, `Solver` are parsed and used by scenario and browser runs.

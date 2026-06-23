@@ -7,7 +7,7 @@ use rumoca_core::{ComponentPath, SourceMap, Span, scoped_component_path_candidat
 use rumoca_ir_ast as ast;
 
 use crate::errors::{InstantiateError, InstantiateResult};
-use crate::inheritance::option_location_to_span;
+use crate::inheritance::required_location_to_span;
 
 /// Parameters for connection extraction, including both boolean and integer values.
 #[derive(Debug, Clone, Default)]
@@ -94,7 +94,8 @@ fn extract_connections_from_equation(
 ) -> InstantiateResult<()> {
     match eq {
         ast::Equation::Connect { lhs, rhs, .. } => {
-            let span = option_location_to_span(eq.get_location(), source_map);
+            let span =
+                required_location_to_span(eq.get_location(), source_map, "connect equation")?;
 
             // Check if either side has range subscripts (e.g., u[1:2])
             // If so, expand into individual scalar connections
@@ -271,7 +272,11 @@ fn extract_connections_from_for_equation(
             "cannot evaluate connection for-equation range `{}` in `{prefix}`",
             first_index.range
         ),
-        option_location_to_span(first_index.range.get_location(), source_map),
+        required_location_to_span(
+            first_index.range.get_location(),
+            source_map,
+            "connection for-equation range",
+        )?,
     )))
 }
 
@@ -1029,10 +1034,26 @@ pub fn filter_out_connections(equations: &[ast::Equation]) -> Vec<ast::Equation>
 mod tests {
     use super::*;
 
+    const TEST_FILE: &str = "connections.mo";
+
+    fn test_source_map() -> SourceMap {
+        let mut source_map = SourceMap::new();
+        source_map.add(TEST_FILE, "connect(a.p, b.n); for i in 1:2 loop end for;");
+        source_map
+    }
+
     fn make_token(text: &str) -> rumoca_core::Token {
         rumoca_core::Token {
             text: std::sync::Arc::from(text),
-            location: rumoca_core::Location::default(),
+            location: rumoca_core::Location {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 2,
+                start: 0,
+                end: 1,
+                file_name: TEST_FILE.to_string(),
+            },
             token_number: 0,
             token_type: 0,
         }
@@ -1110,7 +1131,7 @@ mod tests {
         };
 
         let prefix = ast::QualifiedName::new();
-        let source_map = SourceMap::new();
+        let source_map = test_source_map();
         let connections =
             extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
 
@@ -1143,7 +1164,7 @@ mod tests {
         };
 
         let prefix = ast::QualifiedName::new();
-        let source_map = SourceMap::new();
+        let source_map = test_source_map();
         let connections =
             extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
 
@@ -1166,7 +1187,7 @@ mod tests {
     fn test_extract_connections_nested_for_range_depends_on_outer_index() {
         let eq = nested_dependent_for_connection_eq();
         let prefix = ast::QualifiedName::new();
-        let source_map = SourceMap::new();
+        let source_map = test_source_map();
         let params = ConnectionParams::new();
         let conns = extract_connections(&[eq], &prefix, &params, &source_map).unwrap();
 
@@ -1188,7 +1209,7 @@ mod tests {
     fn test_extract_connections_multi_index_range_depends_on_prior_index() {
         let eq = multi_index_dependent_for_connection_eq();
         let prefix = ast::QualifiedName::new();
-        let source_map = SourceMap::new();
+        let source_map = test_source_map();
         let params = ConnectionParams::new();
         let conns = extract_connections(&[eq], &prefix, &params, &source_map).unwrap();
 

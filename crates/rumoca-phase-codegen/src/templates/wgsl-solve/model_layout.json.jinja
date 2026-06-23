@@ -1,33 +1,68 @@
 {%- set derivative = solve_blocks.continuous.derivative_rhs %}
-{%- set residual = derivative.stencil_residual_rows %}
-{%- set row_count = derivative.scalar_programs.programs | length %}
-{%- set residual_chunks = ((residual | length + 63) // 64) if residual | length > 0 else 0 %}
+{%- set fallback = derivative.scalar_fallback_rows %}
+{%- set workgroup_size = 64 %}
+{%- set chunk_size = workgroup_size %}
+{%- set fallback_chunks = ((fallback | length + chunk_size - 1) // chunk_size) if fallback | length > 0 else 0 %}
+{%- set derivative_kernel_count = ((derivative.native_families | length) + fallback_chunks) if (derivative.native_families | length) > 0 or fallback | length > 0 else 1 %}
+{%- set implicit = solve_blocks.continuous.implicit_rhs %}
+{%- set implicit_fallback = implicit.scalar_fallback_rows %}
+{%- set implicit_fallback_chunks = ((implicit_fallback | length + chunk_size - 1) // chunk_size) if implicit_fallback | length > 0 else 0 %}
+{%- set implicit_kernel_count = (implicit.native_families | length) + implicit_fallback_chunks %}
 {
   "model": "{{ model_name | default("model") }}",
-  "kernel_prefix": "derivative_rhs_chunk",
-  "workgroup_size": 64,
-  "chunk_size": 64,
-  "chunks": {{ residual_chunks if (derivative.stencils | length) > 0 or residual | length > 0 else 1 }},
-  "kernels": [
-{%- for st in derivative.stencils %}
-    { "entry": "derivative_rhs_stencil{{ loop.index0 }}", "rows": {{ st.count }} }{{ "," if not loop.last or residual_chunks > 0 }}
-{%- endfor %}
-{%- for start in range(0, residual | length, 64) %}
-    { "entry": "derivative_rhs_chunk{{ loop.index0 }}", "rows": {{ [start + 64, residual | length] | min - start }} }{{ "," if not loop.last }}
-{%- endfor %}
-{%- if (derivative.stencils | length) == 0 and (residual | length) == 0 %}
-    { "entry": "derivative_rhs_chunk0", "rows": 0 }
-{%- endif %}
-  ],
+  "entry_prefixes": {
+    "native": ["derivative_rhs_map", "derivative_rhs_stencil"],
+    "scalar": "derivative_rhs_chunk"
+  },
+  "workgroup_size": {{ workgroup_size }},
+  "chunk_size": {{ chunk_size }},
+  "chunks": {{ fallback_chunks if (derivative.native_families | length) > 0 or fallback | length > 0 else 1 }},
+  "kernel_count": {{ derivative_kernel_count }},
+  "workgroup_total": {{ wgsl_kernel_workgroup_total(derivative.native_families, fallback, {
+    "workgroup_size": workgroup_size
+  }) }},
+  "kernels": {{ wgsl_kernel_schedule_json(derivative.native_families, fallback, {
+    "native_entry_prefix": "derivative_rhs",
+    "scalar_entry_prefix": "derivative_rhs_chunk",
+    "workgroup_size": workgroup_size,
+    "include_empty_scalar_chunk": true
+  }) }},
+  "native_families": {{ wgsl_native_family_inventory_json(derivative.native_families) }},
   "rows": {{ derivative.output_count }},
   "y_len": {{ solve.layout.y_scalars }},
   "p_len": {{ solve.layout.p_scalars }},
+  "tensor_nodes": {{ derivative.tensor_node_count }},
+  "tensor_families": {{ derivative.native_families | length }},
+  "map_families": {{ derivative.map_family_count }},
+  "stencil_families": {{ derivative.stencil_family_count }},
+  "scalar_fallback_rows": {{ fallback | length }},
   "runtime_event_roots": {{ solve.events.root_conditions.programs | length }},
   "scheduled_time_events": {{ solve.events.scheduled_time_events | length }},
   "discrete_update_rows": {{ solve.discrete.rhs.programs | length }},
-  "bindings": {
-{%- for name, slot in solve.layout.bindings | items %}
-    "{{ name }}": {% if slot.Y is defined %}{ "kind": "y", "index": {{ slot.Y.index }} }{% elif slot.P is defined %}{ "kind": "p", "index": {{ slot.P.index }} }{% elif slot.Constant is defined %}{ "kind": "constant", "value": {{ slot.Constant }} }{% else %}{ "kind": "time" }{% endif %}{{ "," if not loop.last }}
-{%- endfor %}
+  "implicit_rhs": {
+    "rows": {{ implicit.output_count }},
+    "entry_prefixes": {
+      "native": ["implicit_rhs_map", "implicit_rhs_stencil"],
+      "scalar": "implicit_rhs_chunk"
+    },
+    "workgroup_size": {{ workgroup_size }},
+    "chunk_size": {{ chunk_size }},
+    "tensor_nodes": {{ implicit.tensor_node_count }},
+    "tensor_families": {{ implicit.native_families | length }},
+    "map_families": {{ implicit.map_family_count }},
+    "stencil_families": {{ implicit.stencil_family_count }},
+    "scalar_fallback_rows": {{ implicit_fallback | length }},
+    "chunks": {{ implicit_fallback_chunks }},
+    "kernel_count": {{ implicit_kernel_count }},
+    "workgroup_total": {{ wgsl_kernel_workgroup_total(implicit.native_families, implicit_fallback, {
+      "workgroup_size": workgroup_size
+    }) }},
+    "kernels": {{ wgsl_kernel_schedule_json(implicit.native_families, implicit_fallback, {
+      "native_entry_prefix": "implicit_rhs",
+      "scalar_entry_prefix": "implicit_rhs_chunk",
+      "workgroup_size": workgroup_size,
+      "include_empty_scalar_chunk": false
+    }) }},
+    "native_families": {{ wgsl_native_family_inventory_json(implicit.native_families) }}
   }
 }

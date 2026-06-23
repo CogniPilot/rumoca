@@ -1,14 +1,29 @@
+#[cfg(test)]
+mod assignment_shape_tests;
+#[cfg(test)]
+mod prepared_compute_block_tests;
+
 use std::cell::RefCell;
 
-use rumoca_ir_solve::{ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock};
+use rumoca_core::StructuredIndexDomain;
+use rumoca_ir_solve::{
+    AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
+    ScalarProgramBlock, SparsityPattern, TensorOutputMap,
+};
 use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
 use crate::{
-    EvalSolveError, PreparedRowEval, RowEvalContext, RowEvalScratch, RowInputRequirements,
-    SimulationRuntimeState, compute_block_scalarize::scalarize_affine_stencil,
-    eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked, record_solve_block_eval,
-    required_registers, row_input_requirements, row_register_flow_is_valid,
-    to_scalar_program_block, validate_input_requirements, validate_output_len,
+    EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
+    RowInputRequirements, SimulationRuntimeState,
+    compute_block_scalarize::{
+        checked_contiguous_output_count, checked_tensor_output_count, scalar_program_output_count,
+        scalar_program_output_indices, scalarize_affine_rows, tensor_output_indices,
+    },
+    eval_program_single, eval_row_prepared_maybe_fast,
+    linear_solve::solve_all_unchecked,
+    record_solve_block_eval, required_registers, row_input_requirements,
+    row_register_flow_is_valid, validate_input_requirements, validate_input_requirements_with_span,
+    validate_output_len,
 };
 
 /// Reusable evaluator for one Solve-IR row block.
@@ -37,21 +52,36 @@ impl Clone for PreparedScalarProgramBlock {
 }
 
 impl PreparedScalarProgramBlock {
-    pub fn new(block: ScalarProgramBlock) -> Self {
-        let mut row_registers = Vec::with_capacity(block.programs.len());
-        let mut row_requirements = Vec::with_capacity(block.programs.len());
-        let mut row_register_safe = Vec::with_capacity(block.programs.len());
-        let mut row_assignment_shapes = Vec::with_capacity(block.programs.len());
+    pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
+        let row_count = block.programs.len();
+        let block_span = block.program_span(0);
+        let mut row_registers =
+            prepared_vec_with_capacity(row_count, "prepared row register count", block_span)?;
+        let mut row_requirements =
+            prepared_vec_with_capacity(row_count, "prepared row requirement count", block_span)?;
+        let mut row_register_safe =
+            prepared_vec_with_capacity(row_count, "prepared row flow metadata count", block_span)?;
+        let mut row_assignment_shapes = prepared_vec_with_capacity(
+            row_count,
+            "prepared row assignment shape count",
+            block_span,
+        )?;
         let mut requirements = RowInputRequirements::default();
-        for row in &block.programs {
-            let row_requirement = row_input_requirements(row);
-            row_registers.push(required_registers(row));
+        for (row_idx, row) in block.programs.iter().enumerate() {
+            let span = block.program_span(row_idx);
+            let row_requirement =
+                row_input_requirements(row).map_err(|error| error.with_source_span(span))?;
+            row_registers
+                .push(required_registers(row).map_err(|error| error.with_source_span(span))?);
             row_requirements.push(row_requirement);
-            row_register_safe.push(row_register_flow_is_valid(row));
-            row_assignment_shapes.push(target_assignment_shape(row));
+            row_register_safe.push(
+                row_register_flow_is_valid(row).map_err(|error| error.with_source_span(span))?,
+            );
+            row_assignment_shapes
+                .push(target_assignment_shape(row).map_err(|error| error.with_source_span(span))?);
             requirements = requirements.merge(row_requirement);
         }
-        Self {
+        Ok(Self {
             block,
             row_registers,
             row_requirements,
@@ -59,19 +89,22 @@ impl PreparedScalarProgramBlock {
             row_assignment_shapes,
             requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
-        }
+        })
     }
 
-    pub fn from_compute_block(block: &ComputeBlock) -> Self {
-        Self::new(to_scalar_program_block(block))
+    pub fn from_compute_block(block: &ComputeBlock) -> Result<Self, EvalSolveError> {
+        Self::new(crate::to_scalar_program_block(block)?)
     }
 
     pub fn block(&self) -> &ScalarProgramBlock {
         &self.block
     }
 
+    /// Number of outputs this block produces (one per `StoreOutput`), which a
+    /// matmul/linsolve program may exceed its program count for. Consumers size
+    /// their output buffers from this.
     pub fn len(&self) -> usize {
-        self.block.len()
+        self.block.output_count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -98,7 +131,7 @@ impl PreparedScalarProgramBlock {
                 context.with_runtime_state(&local_runtime_state)
             }
         };
-        validate_output_len(out, self.block.len())?;
+        validate_output_len(out, self.block.output_count())?;
         validate_input_requirements(self.requirements, y, p, context.seed)?;
         out.fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
@@ -114,7 +147,12 @@ impl PreparedScalarProgramBlock {
         context: RowEvalContext<'_>,
         out: &mut [f64],
     ) -> Result<(), EvalSolveError> {
-        let rows = rows.min(self.block.len());
+        let rows = rows.min(self.block.row_count());
+        let prefix = &self.block.programs[..rows];
+        let stored_output_count: usize = prefix
+            .iter()
+            .map(|program| ScalarProgramBlock::program_output_count(program))
+            .sum();
         let local_runtime_state;
         let context = match context.runtime_state {
             Some(_) => context,
@@ -123,7 +161,23 @@ impl PreparedScalarProgramBlock {
                 context.with_runtime_state(&local_runtime_state)
             }
         };
-        validate_output_len(out, rows)?;
+        let prefix_output_indices = self
+            .block
+            .output_indices
+            .get(..stored_output_count)
+            .ok_or_else(|| EvalSolveError::ShapeContract {
+                message: format!(
+                    "prepared prefix has {stored_output_count} stored outputs but only {} output indices",
+                    self.block.output_indices.len()
+                ),
+                span: self.block.program_span(0),
+            })?;
+        let output_count = prefix_output_indices
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |index| index + 1);
+        validate_output_len(out, output_count)?;
         let requirements = self
             .row_requirements
             .iter()
@@ -131,15 +185,19 @@ impl PreparedScalarProgramBlock {
             .copied()
             .fold(RowInputRequirements::default(), RowInputRequirements::merge);
         validate_input_requirements(requirements, y, p, context.seed)?;
-        out[..rows].fill(0.0);
+        out[..output_count].fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval("scalar_prefix", self.block.len(), rows);
-        for (row_idx, row) in self.block.programs.iter().take(rows).enumerate() {
-            out[row_idx] = eval_row_prepared_maybe_fast(
-                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context),
+        record_solve_block_eval("scalar_prefix", self.block.len(), output_count);
+        let mut sink = OutputCursor::with_output_indices(out, prefix_output_indices);
+        for (row_idx, row) in prefix.iter().enumerate() {
+            eval_row_prepared_maybe_fast(
+                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                    .with_source_span(self.block.program_span(row_idx)),
                 self.row_register_safe[row_idx],
                 &mut scratch,
-            )?;
+                &mut sink,
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))?;
         }
         Ok(())
     }
@@ -182,25 +240,102 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    pub fn eval_row_output_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, EvalSolveError> {
+        self.eval_row_output_inner(RowOutputRequest {
+            row_idx,
+            output_offset,
+            y,
+            p,
+            t,
+            context,
+            validate_inputs: false,
+            label: "scalar_row_output_unchecked",
+        })
+    }
+
     fn eval_row_inner(&self, request: RowEvalRequest<'_>) -> Result<f64, EvalSolveError> {
         let row =
             self.block
                 .programs
                 .get(request.row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
-                    required: request.row_idx.saturating_add(1),
-                    len: self.block.len(),
+                    required: checked_required_row_count(request.row_idx)?,
+                    len: self.block.row_count(),
+                    span: self.block.program_span(request.row_idx),
                 })?;
         if request.validate_inputs {
-            validate_input_requirements(
+            validate_input_requirements_with_span(
                 self.row_requirements[request.row_idx],
                 request.y,
                 request.p,
                 request.context.seed,
+                self.block.program_span(request.row_idx),
             )?;
         }
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(request.label, self.block.len(), 1);
+        eval_program_single(
+            PreparedRowEval::new(
+                row,
+                self.row_registers[request.row_idx],
+                request.y,
+                request.p,
+                request.t,
+                request.context,
+            )
+            .with_source_span(self.block.program_span(request.row_idx)),
+            self.row_register_safe[request.row_idx],
+            &mut scratch,
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
+    }
+
+    fn eval_row_output_inner(&self, request: RowOutputRequest<'_>) -> Result<f64, EvalSolveError> {
+        let row =
+            self.block
+                .programs
+                .get(request.row_idx)
+                .ok_or(EvalSolveError::OutputTooSmall {
+                    required: checked_required_row_count(request.row_idx)?,
+                    len: self.block.row_count(),
+                    span: self.block.program_span(request.row_idx),
+                })?;
+        if request.validate_inputs {
+            validate_input_requirements_with_span(
+                self.row_requirements[request.row_idx],
+                request.y,
+                request.p,
+                request.context.seed,
+                self.block.program_span(request.row_idx),
+            )?;
+        }
+        let output_count = ScalarProgramBlock::program_output_count(row);
+        if request.output_offset >= output_count {
+            return Err(EvalSolveError::OutputTooSmall {
+                required: request.output_offset.checked_add(1).ok_or_else(|| {
+                    invalid_prepared_row("row output offset overflows output count")
+                })?,
+                len: output_count,
+                span: self.block.program_span(request.row_idx),
+            });
+        }
+        let mut out = prepared_vec_with_capacity(
+            output_count,
+            "prepared row output scratch count",
+            self.block.program_span(request.row_idx),
+        )?;
+        out.resize(output_count, 0.0);
+        let mut scratch = self.scratch.borrow_mut();
+        record_solve_block_eval(request.label, self.block.len(), output_count);
+        let mut sink = OutputCursor::new(&mut out);
         eval_row_prepared_maybe_fast(
             PreparedRowEval::new(
                 row,
@@ -209,10 +344,14 @@ impl PreparedScalarProgramBlock {
                 request.p,
                 request.t,
                 request.context,
-            ),
+            )
+            .with_source_span(self.block.program_span(request.row_idx)),
             self.row_register_safe[request.row_idx],
             &mut scratch,
+            &mut sink,
         )
+        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+        Ok(out[request.output_offset])
     }
 
     pub fn eval_target_assignment_row_with_context(
@@ -293,15 +432,17 @@ impl PreparedScalarProgramBlock {
                 .programs
                 .get(request.row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
-                    required: request.row_idx.saturating_add(1),
-                    len: self.block.len(),
+                    required: checked_required_row_count(request.row_idx)?,
+                    len: self.block.row_count(),
+                    span: self.block.program_span(request.row_idx),
                 })?;
         if request.validate_inputs {
-            validate_input_requirements(
+            validate_input_requirements_with_span(
                 self.row_requirements[request.row_idx],
                 request.y,
                 request.p,
                 request.context.seed,
+                self.block.program_span(request.row_idx),
             )?;
         }
         let mut scratch = self.scratch.borrow_mut();
@@ -310,7 +451,7 @@ impl PreparedScalarProgramBlock {
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.
-            let output = eval_row_prepared_maybe_fast(
+            let output = eval_program_single(
                 PreparedRowEval::new(
                     row,
                     self.row_registers[request.row_idx],
@@ -318,16 +459,18 @@ impl PreparedScalarProgramBlock {
                     request.p,
                     request.t,
                     request.context,
-                ),
+                )
+                .with_source_span(self.block.program_span(request.row_idx)),
                 self.row_register_safe[request.row_idx],
                 &mut scratch,
-            )?;
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
             return Ok((!row_loads_y_index(row, request.target_y_index)).then_some(output));
         };
         if shape.target_y_index() != request.target_y_index {
             return Ok(None);
         }
-        eval_row_prepared_maybe_fast(
+        eval_program_single(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -335,11 +478,20 @@ impl PreparedScalarProgramBlock {
                 request.p,
                 request.t,
                 request.context,
-            ),
+            )
+            .with_source_span(self.block.program_span(request.row_idx)),
             self.row_register_safe[request.row_idx],
             &mut scratch,
-        )?;
-        Ok(Some(shape.eval_value(request.row_idx, &scratch.regs)?))
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+        let value = shape
+            .eval_value(
+                request.row_idx,
+                &scratch.regs,
+                self.block.program_span(request.row_idx),
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+        Ok(Some(value))
     }
 
     fn eval_rows_unchecked(
@@ -351,13 +503,21 @@ impl PreparedScalarProgramBlock {
         out: &mut [f64],
         scratch: &mut RowEvalScratch,
     ) -> Result<(), EvalSolveError> {
-        record_solve_block_eval("scalar_rows_unchecked", self.block.len(), self.block.len());
+        record_solve_block_eval(
+            "scalar_rows_unchecked",
+            self.block.len(),
+            self.block.output_count(),
+        );
+        let mut sink = OutputCursor::with_output_indices(out, &self.block.output_indices);
         for (row_idx, row) in self.block.programs.iter().enumerate() {
-            out[row_idx] = eval_row_prepared_maybe_fast(
-                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context),
+            eval_row_prepared_maybe_fast(
+                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                    .with_source_span(self.block.program_span(row_idx)),
                 self.row_register_safe[row_idx],
                 scratch,
-            )?;
+                &mut sink,
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))?;
         }
         Ok(())
     }
@@ -365,6 +525,17 @@ impl PreparedScalarProgramBlock {
 
 struct RowEvalRequest<'a> {
     row_idx: usize,
+    y: &'a [f64],
+    p: &'a [f64],
+    t: f64,
+    context: RowEvalContext<'a>,
+    validate_inputs: bool,
+    label: &'static str,
+}
+
+struct RowOutputRequest<'a> {
+    row_idx: usize,
+    output_offset: usize,
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
@@ -418,9 +589,14 @@ impl TargetAssignmentShape {
         }
     }
 
-    fn eval_value(self, row_idx: usize, regs: &[f64]) -> Result<f64, EvalSolveError> {
+    fn eval_value(
+        self,
+        row_idx: usize,
+        regs: &[f64],
+        span: Option<rumoca_core::Span>,
+    ) -> Result<f64, EvalSolveError> {
         match self {
-            Self::Direct { expr_reg, .. } => read_shape_reg(regs, expr_reg),
+            Self::Direct { expr_reg, .. } => read_shape_reg(regs, expr_reg, span),
             Self::Affine {
                 target_y_index,
                 offset_reg,
@@ -429,14 +605,15 @@ impl TargetAssignmentShape {
                 coefficient_scale,
                 ..
             } => {
-                let offset = offset_scale * read_shape_reg(regs, offset_reg)?;
+                let offset = offset_scale * read_shape_reg(regs, offset_reg, span)?;
                 let coefficient = coefficient_scale
-                    * coefficient_reg.map_or(Ok(1.0), |reg| read_shape_reg(regs, reg))?;
+                    * coefficient_reg.map_or(Ok(1.0), |reg| read_shape_reg(regs, reg, span))?;
                 if coefficient == 0.0 || !coefficient.is_finite() {
                     return Err(EvalSolveError::SingularTargetAssignment {
                         row: row_idx,
                         target_y_index,
                         coefficient,
+                        span,
                     });
                 }
                 Ok(-offset / coefficient)
@@ -445,34 +622,64 @@ impl TargetAssignmentShape {
     }
 }
 
-fn target_assignment_shape(row: &[LinearOp]) -> Option<TargetAssignmentShape> {
-    let output_reg = store_output_reg(row)?;
-    direct_assignment_shape(row, output_reg).or_else(|| affine_assignment_shape(row, output_reg))
+fn target_assignment_shape(
+    row: &[LinearOp],
+) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
+    if ScalarProgramBlock::program_output_count(row) > 1 {
+        return Ok(None);
+    }
+    let Some(output_reg) = store_output_reg(row) else {
+        return Ok(None);
+    };
+    if let Some(shape) = direct_assignment_shape(row, output_reg)? {
+        return Ok(Some(shape));
+    }
+    affine_assignment_shape(row, output_reg)
 }
 
-fn read_shape_reg(regs: &[f64], reg: u32) -> Result<f64, EvalSolveError> {
+fn read_shape_reg(
+    regs: &[f64],
+    reg: u32,
+    span: Option<rumoca_core::Span>,
+) -> Result<f64, EvalSolveError> {
     regs.get(reg as usize)
         .copied()
         .ok_or(EvalSolveError::RegisterOutOfBounds {
             access: "read",
             register: reg,
             len: regs.len(),
+            span,
         })
 }
 
-fn direct_assignment_shape(row: &[LinearOp], output_reg: u32) -> Option<TargetAssignmentShape> {
-    let (target_reg, expr_reg) = assignment_expr_reg(row, output_reg)?;
-    let target_y_index = target_load_index(row, target_reg)?;
-    let expr_eval_len = producer_pos(row, expr_reg)?.saturating_add(1);
-    Some(TargetAssignmentShape::Direct {
+fn direct_assignment_shape(
+    row: &[LinearOp],
+    output_reg: u32,
+) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
+    let Some((target_reg, expr_reg)) = assignment_expr_reg(row, output_reg) else {
+        return Ok(None);
+    };
+    let Some(target_y_index) = target_load_index(row, target_reg) else {
+        return Ok(None);
+    };
+    let Some(expr_pos) = producer_pos(row, expr_reg) else {
+        return Ok(None);
+    };
+    let expr_eval_len = checked_expr_eval_len(expr_pos)?;
+    Ok(Some(TargetAssignmentShape::Direct {
         target_y_index,
         expr_reg,
         expr_eval_len,
-    })
+    }))
 }
 
-fn affine_assignment_shape(row: &[LinearOp], output_reg: u32) -> Option<TargetAssignmentShape> {
-    let output_op = producer(row, output_reg)?;
+fn affine_assignment_shape(
+    row: &[LinearOp],
+    output_reg: u32,
+) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
+    let Some(output_op) = producer(row, output_reg) else {
+        return Ok(None);
+    };
     let (lhs, rhs, lhs_scale, rhs_scale) = match *output_op {
         LinearOp::Binary {
             op: rumoca_ir_solve::BinaryOp::Add,
@@ -486,7 +693,7 @@ fn affine_assignment_shape(row: &[LinearOp], output_reg: u32) -> Option<TargetAs
             rhs,
             ..
         } => (lhs, rhs, 1.0, -1.0),
-        _ => return None,
+        _ => return Ok(None),
     };
     affine_sum_shape(row, lhs, rhs, lhs_scale, rhs_scale)
 }
@@ -497,11 +704,13 @@ fn affine_sum_shape(
     rhs: u32,
     lhs_scale: f64,
     rhs_scale: f64,
-) -> Option<TargetAssignmentShape> {
+) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
     if let Some((target_reg, coefficient_reg)) = affine_target_term(row, lhs) {
         return affine_sum_side_shape(row, target_reg, coefficient_reg, lhs_scale, rhs, rhs_scale);
     }
-    let (target_reg, coefficient_reg) = affine_target_term(row, rhs)?;
+    let Some((target_reg, coefficient_reg)) = affine_target_term(row, rhs) else {
+        return Ok(None);
+    };
     affine_sum_side_shape(row, target_reg, coefficient_reg, rhs_scale, lhs, lhs_scale)
 }
 
@@ -512,27 +721,35 @@ fn affine_sum_side_shape(
     coefficient_scale: f64,
     offset_reg: u32,
     offset_scale: f64,
-) -> Option<TargetAssignmentShape> {
-    let target_y_index = target_load_index(row, target_reg)?;
+) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
+    let Some(target_y_index) = target_load_index(row, target_reg) else {
+        return Ok(None);
+    };
     if coefficient_reg.is_some_and(|reg| reg_depends_on_y_index(row, reg, target_y_index))
         || reg_depends_on_y_index(row, offset_reg, target_y_index)
     {
-        return None;
+        return Ok(None);
     }
     let coefficient_pos = coefficient_reg
         .and_then(|reg| producer_pos(row, reg))
         .unwrap_or(0);
-    let expr_eval_len = coefficient_pos
-        .max(producer_pos(row, offset_reg)?)
-        .saturating_add(1);
-    Some(TargetAssignmentShape::Affine {
+    let Some(offset_pos) = producer_pos(row, offset_reg) else {
+        return Ok(None);
+    };
+    let expr_eval_len = checked_expr_eval_len(coefficient_pos.max(offset_pos))?;
+    Ok(Some(TargetAssignmentShape::Affine {
         target_y_index,
         offset_reg,
         coefficient_reg,
         offset_scale,
         coefficient_scale,
         expr_eval_len,
-    })
+    }))
+}
+
+fn checked_expr_eval_len(pos: usize) -> Result<usize, EvalSolveError> {
+    pos.checked_add(1)
+        .ok_or_else(|| invalid_prepared_row("target assignment expression length overflows"))
 }
 
 fn affine_target_term(row: &[LinearOp], reg: u32) -> Option<(u32, Option<u32>)> {
@@ -602,7 +819,13 @@ fn reg_depends_on_y_index_memo(
     memo.insert(reg, false);
     let result = producer(row, reg).is_some_and(|op| match *op {
         LinearOp::LoadY { index, .. } => index == target_y_index,
-        LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. } => {
+        // Indexed loads structurally depend on y exactly when their index
+        // register does — preserving the sparsity the equivalent select chain
+        // (whose `cond` carried that dependency) would have produced.
+        LinearOp::Move { src, .. }
+        | LinearOp::Unary { arg: src, .. }
+        | LinearOp::LoadIndexedP { index: src, .. }
+        | LinearOp::LoadIndexedSeed { index: src, .. } => {
             reg_depends_on_y_index_memo(row, src, target_y_index, memo)
         }
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
@@ -625,7 +848,10 @@ fn reg_depends_on_y_index_memo(
             n,
             ..
         } => {
-            reg_range_depends_on_y_index(row, matrix_start, n * n, target_y_index, memo)
+            let Some(matrix_len) = n.checked_mul(n) else {
+                return true;
+            };
+            reg_range_depends_on_y_index(row, matrix_start, matrix_len, target_y_index, memo)
                 || reg_range_depends_on_y_index(row, rhs_start, n, target_y_index, memo)
         }
         LinearOp::TableBounds { table_id, .. } => {
@@ -705,13 +931,16 @@ fn reg_range_depends_on_y_index(
     memo: &mut std::collections::HashMap<u32, bool>,
 ) -> bool {
     (0..len).any(|offset| {
-        reg_depends_on_y_index_memo(
-            row,
-            start.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX)),
-            target_y_index,
-            memo,
-        )
+        let Some(reg) = checked_reg_offset(start, offset) else {
+            return true;
+        };
+        reg_depends_on_y_index_memo(row, reg, target_y_index, memo)
     })
+}
+
+fn checked_reg_offset(start: u32, offset: usize) -> Option<u32> {
+    let offset = u32::try_from(offset).ok()?;
+    start.checked_add(offset)
 }
 
 fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> {
@@ -794,30 +1023,45 @@ impl Clone for PreparedComputeBlock {
 }
 
 impl PreparedComputeBlock {
-    pub fn new(block: &ComputeBlock) -> Self {
+    pub fn new(block: &ComputeBlock) -> Result<Self, EvalSolveError> {
         Self::new_with_label(block, "compute_block")
     }
 
-    pub fn new_with_label(block: &ComputeBlock, label: &'static str) -> Self {
-        let mut len = 0;
+    pub fn new_with_label(
+        block: &ComputeBlock,
+        label: &'static str,
+    ) -> Result<Self, EvalSolveError> {
+        let declared_len = block.len().map_err(EvalSolveError::from)?;
         let mut requirements = RowInputRequirements::default();
-        let nodes = block
-            .nodes
-            .iter()
-            .map(|node| {
-                let prepared = PreparedComputeNode::new(node);
-                len += prepared.len();
-                requirements = requirements.merge(prepared.requirements());
-                prepared
-            })
-            .collect();
-        Self {
+        let mut output_cursor = 0usize;
+        let mut nodes = prepared_vec_with_capacity(
+            block.nodes.len(),
+            "prepared compute node count",
+            first_compute_node_span(block),
+        )?;
+        for node in &block.nodes {
+            let (prepared, next_output_cursor) =
+                PreparedComputeNode::new_at_output_cursor(node, output_cursor)?;
+            output_cursor = next_output_cursor;
+            requirements = requirements.merge(prepared.requirements());
+            nodes.push(prepared);
+        }
+        if output_cursor > declared_len {
+            return Err(EvalSolveError::ShapeContract {
+                message: format!(
+                    "prepared {label} advanced to {output_cursor} outputs, beyond declared \
+                     ComputeBlock length {declared_len}"
+                ),
+                span: first_compute_node_span(block),
+            });
+        }
+        Ok(Self {
             label,
             nodes,
-            len,
+            len: declared_len,
             requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
-        }
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -849,18 +1093,8 @@ impl PreparedComputeBlock {
         out.fill(0.0);
         record_solve_block_eval(self.label, self.len, self.len);
         let mut scratch = self.scratch.borrow_mut();
-        let mut offset = 0;
         for node in &self.nodes {
-            let node_len = node.len();
-            node.eval_into(
-                y,
-                p,
-                t,
-                context,
-                &mut out[offset..offset + node_len],
-                &mut scratch,
-            )?;
-            offset += node_len;
+            node.eval_into(y, p, t, context, out, &mut scratch)?;
         }
         Ok(())
     }
@@ -873,6 +1107,10 @@ enum PreparedComputeNode {
         setup: PreparedLinearOps,
         lhs_start: u32,
         rhs_start: u32,
+        output_start: usize,
+        lhs_len: usize,
+        rhs_len: usize,
+        output_len: usize,
         m: usize,
         k: usize,
         n: usize,
@@ -882,16 +1120,161 @@ enum PreparedComputeNode {
         setup: PreparedLinearOps,
         matrix_start: u32,
         rhs_start: u32,
+        output_start: usize,
+        matrix_len: usize,
         n: usize,
     },
 }
 
+struct PreparedMatMulInput<'a> {
+    lhs_ops: &'a [LinearOp],
+    lhs_start: u32,
+    rhs_ops: &'a [LinearOp],
+    rhs_start: u32,
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs_sparsity: &'a SparsityPattern,
+    rhs_sparsity: &'a SparsityPattern,
+    span: rumoca_core::Span,
+}
+
+fn prepared_scalar_programs(
+    block: &ScalarProgramBlock,
+    output_cursor: usize,
+) -> Result<(PreparedComputeNode, usize), EvalSolveError> {
+    let output_indices =
+        scalar_program_output_indices(block, output_cursor, "prepared scalar programs")?;
+    let next_output_cursor =
+        scalar_program_output_count(block, output_cursor, "prepared scalar programs")?;
+    let placed = ScalarProgramBlock::with_output_indices(
+        block.programs.clone(),
+        block.program_spans.clone(),
+        output_indices,
+    )?;
+    Ok((
+        PreparedComputeNode::ScalarPrograms(PreparedScalarProgramBlock::new(placed)?),
+        next_output_cursor,
+    ))
+}
+
+fn prepared_matmul(
+    input: PreparedMatMulInput<'_>,
+    output_cursor: usize,
+) -> Result<(PreparedComputeNode, usize), EvalSolveError> {
+    let PreparedMatMulInput {
+        lhs_ops,
+        lhs_start,
+        rhs_ops,
+        rhs_start,
+        m,
+        k,
+        n,
+        lhs_sparsity,
+        rhs_sparsity,
+        span,
+    } = input;
+    let setup_op_count = checked_prepared_sum(
+        lhs_ops.len(),
+        rhs_ops.len(),
+        "prepared matmul setup op count",
+        Some(span),
+    )?;
+    let mut setup_ops =
+        prepared_vec_with_capacity(setup_op_count, "prepared matmul setup op count", Some(span))?;
+    setup_ops.extend_from_slice(lhs_ops);
+    setup_ops.extend_from_slice(rhs_ops);
+    let lhs_len = checked_product(m, k, "prepared matmul lhs", span)?;
+    let rhs_len = checked_product(k, n, "prepared matmul rhs", span)?;
+    let output_len = checked_product(m, n, "prepared matmul output", span)?;
+    let next_output_cursor =
+        checked_contiguous_output_count(output_cursor, output_len, "prepared matmul output", span)?;
+    let kernel = select_matmul_kernel(m, k, n, lhs_sparsity, rhs_sparsity).map_err(|err| {
+        EvalSolveError::ShapeContract {
+            message: format!("prepared MatMul tensor policy failed: {err}"),
+            span: Some(span),
+        }
+    })?;
+    Ok((
+        PreparedComputeNode::MatMul {
+            setup: PreparedLinearOps::new(setup_ops)?,
+            lhs_start,
+            rhs_start,
+            output_start: output_cursor,
+            lhs_len,
+            rhs_len,
+            output_len,
+            m,
+            k,
+            n,
+            kernel,
+        },
+        next_output_cursor,
+    ))
+}
+
+fn prepared_linsolve(
+    setup_ops: &[LinearOp],
+    matrix_start: u32,
+    rhs_start: u32,
+    n: usize,
+    span: rumoca_core::Span,
+    output_cursor: usize,
+) -> Result<(PreparedComputeNode, usize), EvalSolveError> {
+    let matrix_len = checked_product(n, n, "prepared linsolve matrix", span)?;
+    let next_output_cursor =
+        checked_contiguous_output_count(output_cursor, n, "prepared linsolve output", span)?;
+    Ok((
+        PreparedComputeNode::LinSolve {
+            setup: PreparedLinearOps::new(setup_ops.to_vec())?,
+            matrix_start,
+            rhs_start,
+            output_start: output_cursor,
+            matrix_len,
+            n,
+        },
+        next_output_cursor,
+    ))
+}
+
+fn prepared_affine(
+    domain: &StructuredIndexDomain,
+    output_map: &TensorOutputMap,
+    base_ops: &[LinearOp],
+    load_strides: &[AffineStencilLoadStride],
+    const_strides: &[AffineStencilConstStride],
+    span: rumoca_core::Span,
+    output_cursor: usize,
+) -> Result<(PreparedComputeNode, usize), EvalSolveError> {
+    let output_indices = tensor_output_indices(domain, output_map, "prepared affine", span)?;
+    let next_output_cursor = output_cursor.max(checked_tensor_output_count(
+        &output_indices,
+        output_cursor,
+        "prepared affine",
+        span,
+    )?);
+    let scalar_count = prepared_domain_scalar_count(domain, span)?;
+    let mut spans = prepared_vec_with_capacity(
+        scalar_count,
+        "prepared affine scalar span count",
+        Some(span),
+    )?;
+    spans.extend(std::iter::repeat_n(span, scalar_count));
+    let rows = scalarize_affine_rows(domain, base_ops, load_strides, const_strides, span)?;
+    let block = ScalarProgramBlock::with_output_indices(rows, spans, output_indices)?;
+    Ok((
+        PreparedComputeNode::ScalarPrograms(PreparedScalarProgramBlock::new(block)?),
+        next_output_cursor,
+    ))
+}
+
 impl PreparedComputeNode {
-    fn new(node: &ComputeNode) -> Self {
-        match node {
-            ComputeNode::ScalarPrograms(block) => {
-                Self::ScalarPrograms(PreparedScalarProgramBlock::new(block.clone()))
-            }
+    fn new_at_output_cursor(
+        node: &ComputeNode,
+        output_cursor: usize,
+    ) -> Result<(Self, usize), EvalSolveError> {
+        Ok(match node {
+            ComputeNode::ScalarPrograms(block) => prepared_scalar_programs(block, output_cursor)?,
             ComputeNode::MatMul {
                 lhs_ops,
                 lhs_start,
@@ -902,55 +1285,65 @@ impl PreparedComputeNode {
                 n,
                 lhs_sparsity,
                 rhs_sparsity,
+                span,
                 ..
-            } => {
-                let mut setup_ops = Vec::with_capacity(lhs_ops.len() + rhs_ops.len());
-                setup_ops.extend_from_slice(lhs_ops);
-                setup_ops.extend_from_slice(rhs_ops);
-                Self::MatMul {
-                    setup: PreparedLinearOps::new(setup_ops),
+            } => prepared_matmul(
+                PreparedMatMulInput {
+                    lhs_ops,
                     lhs_start: *lhs_start,
+                    rhs_ops,
                     rhs_start: *rhs_start,
                     m: *m,
                     k: *k,
                     n: *n,
-                    kernel: select_matmul_kernel(*m, *k, *n, lhs_sparsity, rhs_sparsity),
-                }
-            }
+                    lhs_sparsity,
+                    rhs_sparsity,
+                    span: *span,
+                },
+                output_cursor,
+            )?,
             ComputeNode::LinSolve {
                 setup_ops,
                 matrix_start,
                 rhs_start,
                 n,
+                span,
                 ..
-            } => Self::LinSolve {
-                setup: PreparedLinearOps::new(setup_ops.clone()),
-                matrix_start: *matrix_start,
-                rhs_start: *rhs_start,
-                n: *n,
-            },
-            ComputeNode::AffineStencil {
-                count,
+            } => prepared_linsolve(
+                setup_ops,
+                *matrix_start,
+                *rhs_start,
+                *n,
+                *span,
+                output_cursor,
+            )?,
+            ComputeNode::Map {
+                domain,
+                output_map,
                 base_ops,
                 load_strides,
                 const_strides,
                 span,
                 ..
-            } => Self::ScalarPrograms(PreparedScalarProgramBlock::new(
-                ScalarProgramBlock::with_program_spans(
-                    scalarize_affine_stencil(base_ops, load_strides, const_strides, *count),
-                    std::iter::repeat_n(*span, *count).collect(),
-                ),
-            )),
-        }
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            Self::ScalarPrograms(block) => block.len(),
-            Self::MatMul { m, n, .. } => m * n,
-            Self::LinSolve { n, .. } => *n,
-        }
+            }
+            | ComputeNode::AffineStencil {
+                domain,
+                output_map,
+                base_ops,
+                load_strides,
+                const_strides,
+                span,
+                ..
+            } => prepared_affine(
+                domain,
+                output_map,
+                base_ops,
+                load_strides,
+                const_strides,
+                *span,
+                output_cursor,
+            )?,
+        })
     }
 
     fn requirements(&self) -> RowInputRequirements {
@@ -977,14 +1370,21 @@ impl PreparedComputeNode {
                 setup,
                 lhs_start,
                 rhs_start,
+                output_start,
+                lhs_len,
+                rhs_len,
+                output_len,
                 m,
                 k,
                 n,
                 kernel,
             } => {
                 setup.eval(y, p, t, context, scratch)?;
-                ensure_register_range(&scratch.regs, "read", *lhs_start, m.saturating_mul(*k))?;
-                ensure_register_range(&scratch.regs, "read", *rhs_start, k.saturating_mul(*n))?;
+                ensure_register_range(&scratch.regs, "read", *lhs_start, *lhs_len)?;
+                ensure_register_range(&scratch.regs, "read", *rhs_start, *rhs_len)?;
+                let output_end = output_start.checked_add(*output_len).ok_or_else(|| {
+                    invalid_prepared_row("prepared matmul output range overflows")
+                })?;
                 eval_matmul_with_policy(
                     &scratch.regs,
                     *lhs_start as usize,
@@ -993,23 +1393,45 @@ impl PreparedComputeNode {
                     *k,
                     *n,
                     *kernel,
-                    out,
+                    &mut out[*output_start..output_end],
                 )
             }
             Self::LinSolve {
                 setup,
                 matrix_start,
                 rhs_start,
+                output_start,
+                matrix_len,
                 n,
             } => {
                 setup.eval(y, p, t, context, scratch)?;
-                ensure_register_range(&scratch.regs, "read", *matrix_start, n.saturating_mul(*n))?;
+                ensure_register_range(&scratch.regs, "read", *matrix_start, *matrix_len)?;
                 ensure_register_range(&scratch.regs, "read", *rhs_start, *n)?;
-                solve_all_unchecked(&scratch.regs, *matrix_start, *rhs_start, *n, out);
-                Ok(())
+                let output_end = output_start.checked_add(*n).ok_or_else(|| {
+                    invalid_prepared_row("prepared linsolve output range overflows")
+                })?;
+                solve_all_unchecked(
+                    &scratch.regs,
+                    *matrix_start,
+                    *rhs_start,
+                    *n,
+                    &mut out[*output_start..output_end],
+                )
             }
         }
     }
+}
+
+fn prepared_domain_scalar_count(
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<usize, EvalSolveError> {
+    domain
+        .scalar_count()
+        .map_err(|err| EvalSolveError::ShapeContract {
+            message: format!("prepared affine structured index domain is invalid: {err}"),
+            span: Some(span),
+        })
 }
 
 #[derive(Clone)]
@@ -1021,13 +1443,13 @@ struct PreparedLinearOps {
 }
 
 impl PreparedLinearOps {
-    fn new(ops: Vec<LinearOp>) -> Self {
-        Self {
-            register_count: required_registers(&ops),
-            register_safe: row_register_flow_is_valid(&ops),
-            requirements: row_input_requirements(&ops),
+    fn new(ops: Vec<LinearOp>) -> Result<Self, EvalSolveError> {
+        Ok(Self {
+            register_count: required_registers(&ops)?,
+            register_safe: row_register_flow_is_valid(&ops)?,
+            requirements: row_input_requirements(&ops)?,
             ops,
-        }
+        })
     }
 
     fn eval(
@@ -1038,7 +1460,11 @@ impl PreparedLinearOps {
         context: RowEvalContext<'_>,
         scratch: &mut RowEvalScratch,
     ) -> Result<(), EvalSolveError> {
-        eval_row_prepared_maybe_fast(
+        // Operand setup ops compute matrix/rhs entries into the register file
+        // and contain no `StoreOutput`; the matmul/linsolve kernel reads the
+        // registers afterward. The single-output helper drives the op loop and
+        // its (unused) return value is discarded.
+        eval_program_single(
             PreparedRowEval::new(&self.ops, self.register_count, y, p, t, context),
             self.register_safe,
             scratch,
@@ -1060,7 +1486,13 @@ fn eval_matmul_with_policy(
     kernel: MatMulKernel,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
-    validate_output_len(out, m.saturating_mul(n))?;
+    let output_len = m
+        .checked_mul(n)
+        .ok_or_else(|| EvalSolveError::Scalarization {
+            message: format!("matmul output shape {m}x{n} overflows output vector length"),
+            span: None,
+        })?;
+    validate_output_len(out, output_len)?;
     match kernel {
         MatMulKernel::DiagonalLeft => {
             return eval_left_diagonal_matmul(regs, lhs_start, rhs_start, m, n, out);
@@ -1080,6 +1512,21 @@ fn eval_matmul_with_policy(
         }
     }
     Ok(())
+}
+
+fn checked_product(
+    lhs: usize,
+    rhs: usize,
+    kind: &'static str,
+    span: rumoca_core::Span,
+) -> Result<usize, crate::ScalarizeError> {
+    lhs.checked_mul(rhs)
+        .ok_or(crate::ScalarizeError::ProductOverflow {
+            kind,
+            lhs,
+            rhs,
+            span,
+        })
 }
 
 fn eval_left_diagonal_matmul(
@@ -1130,69 +1577,79 @@ fn ensure_register_range(
     }
     Err(EvalSolveError::RegisterOutOfBounds {
         access,
-        register: start.saturating_add(len.saturating_sub(1) as u32),
+        register: checked_register_range_last(start, len)?,
         len: regs.len(),
+        span: None,
     })
 }
 
-#[cfg(test)]
-mod assignment_shape_tests {
-    use super::*;
-    use rumoca_ir_solve::{BinaryOp, LinearOp};
+fn checked_required_row_count(row_idx: usize) -> Result<usize, EvalSolveError> {
+    row_idx
+        .checked_add(1)
+        .ok_or_else(|| invalid_prepared_row("row index overflows row count"))
+}
 
-    // Regression: `reg_depends_on_y_index` used to recurse over the register DAG
-    // without memoization, so a row whose affine coefficient/offset is a deeply
-    // shared sub-expression (typical of inlined matrix products) took O(2^depth)
-    // and hung `PreparedScalarProgramBlock::new`. A 40-deep doubling chain has
-    // 2^40 distinct root-to-leaf paths; the memoized walk must still finish
-    // instantly and classify the row correctly.
-    #[test]
-    fn affine_shape_with_deep_shared_dag_terminates() {
-        let depth: u32 = 40;
-        let mut ops = vec![LinearOp::Const { dst: 0, value: 1.0 }];
-        // reg i = reg(i-1) + reg(i-1): a register reused twice at every level.
-        for i in 1..=depth {
-            ops.push(LinearOp::Binary {
-                dst: i,
-                op: BinaryOp::Add,
-                lhs: i - 1,
-                rhs: i - 1,
-            });
-        }
-        let deep = depth; // root of the shared DAG (no LoadY inside -> full traversal)
-        let y_reg = depth + 1;
-        let mul_reg = depth + 2;
-        let out_reg = depth + 3;
-        // out = (y[7] * deep) + deep  -> affine: coefficient `deep`, offset `deep`.
-        ops.push(LinearOp::LoadY {
-            dst: y_reg,
-            index: 7,
-        });
-        ops.push(LinearOp::Binary {
-            dst: mul_reg,
-            op: BinaryOp::Mul,
-            lhs: y_reg,
-            rhs: deep,
-        });
-        ops.push(LinearOp::Binary {
-            dst: out_reg,
-            op: BinaryOp::Add,
-            lhs: mul_reg,
-            rhs: deep,
-        });
-        ops.push(LinearOp::StoreOutput { src: out_reg });
+fn checked_register_range_last(start: u32, len: usize) -> Result<u32, EvalSolveError> {
+    let Some(offset) = len.checked_sub(1) else {
+        return Ok(start);
+    };
+    let offset = u32::try_from(offset).map_err(|_| {
+        invalid_prepared_row(format!(
+            "register range offset {offset} exceeds register index type"
+        ))
+    })?;
+    start.checked_add(offset).ok_or_else(|| {
+        invalid_prepared_row(format!("register range starting at {start} overflows"))
+    })
+}
 
-        // Would hang pre-fix; must return promptly now.
-        let shape = target_assignment_shape(&ops);
-        match shape {
-            Some(TargetAssignmentShape::Affine { target_y_index, .. }) => {
-                assert_eq!(target_y_index, 7);
-            }
-            _ => panic!("expected Affine shape for y[7]"),
-        }
+fn prepared_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<T>, EvalSolveError> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|_| {
+        invalid_prepared_row_with_span(format!("{context} exceeds host memory limits"), span)
+    })?;
+    Ok(values)
+}
 
-        // And the public preparation path must also complete.
-        let _ =
-            PreparedScalarProgramBlock::new(rumoca_ir_solve::ScalarProgramBlock::new(vec![ops]));
+fn checked_prepared_sum(
+    lhs: usize,
+    rhs: usize,
+    context: &'static str,
+    span: Option<rumoca_core::Span>,
+) -> Result<usize, EvalSolveError> {
+    lhs.checked_add(rhs).ok_or_else(|| {
+        invalid_prepared_row_with_span(format!("{context} overflows host index range"), span)
+    })
+}
+
+fn first_compute_node_span(block: &ComputeBlock) -> Option<rumoca_core::Span> {
+    block.nodes.iter().find_map(compute_node_span)
+}
+
+fn compute_node_span(node: &ComputeNode) -> Option<rumoca_core::Span> {
+    match node {
+        ComputeNode::ScalarPrograms(block) => block.program_span(0),
+        ComputeNode::MatMul { span, .. }
+        | ComputeNode::LinSolve { span, .. }
+        | ComputeNode::Map { span, .. }
+        | ComputeNode::AffineStencil { span, .. } => Some(*span),
+    }
+}
+
+fn invalid_prepared_row(message: impl Into<String>) -> EvalSolveError {
+    invalid_prepared_row_with_span(message, None)
+}
+
+fn invalid_prepared_row_with_span(
+    message: impl Into<String>,
+    span: Option<rumoca_core::Span>,
+) -> EvalSolveError {
+    EvalSolveError::InvalidRow {
+        message: message.into(),
+        span,
     }
 }

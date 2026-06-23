@@ -17,11 +17,13 @@ use std::{
 
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
-    SolveEventMessagePart, SolveEventPartition, UnaryOp,
+    SolveEventMessagePart, SolveEventPartition, SolveProblemShapeContractError, UnaryOp,
+    resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
 pub mod eval_at;
+mod inspect_alloc;
 pub mod jacobian;
 mod linear_solve;
 pub mod nan_trace;
@@ -30,13 +32,18 @@ mod random_runtime;
 mod refresh_plan;
 mod runtime;
 mod runtime_events;
+pub mod sim_driver;
 mod sparsity;
 mod table_runtime;
 mod update_rows;
-pub use compute_block_scalarize::to_scalar_program_block;
+pub use compute_block_scalarize::{
+    ScalarizeError, checked_contiguous_output_count, checked_tensor_output_count,
+    scalar_program_output_count, scalar_program_output_indices, tensor_output_indices,
+    to_scalar_program_block,
+};
 pub use eval_at::{EvalAtReport, EvalAtSlot};
 pub use jacobian::JacobianReport;
-use linear_solve::{solve_component, solve_component_unchecked};
+use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{PreparedComputeBlock, PreparedScalarProgramBlock};
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
@@ -55,8 +62,8 @@ pub use sparsity::{
     row_seed_dependencies,
 };
 pub use table_runtime::{
-    try_eval_table_bound_value_in, try_eval_table_lookup_slope_value_in,
-    try_eval_table_lookup_value_in, try_eval_time_table_next_event_value_in,
+    TableRuntimeError, eval_table_bound_value_in, eval_table_lookup_slope_value_in,
+    eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
 pub use update_rows::{
     UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_values,
@@ -80,6 +87,7 @@ pub enum EvalSolveError {
         operation: &'static str,
         table_id: f64,
         column: Option<f64>,
+        reason: String,
     },
     ExternalFunction {
         function: rumoca_ir_solve::ExternalFunctionKind,
@@ -88,18 +96,22 @@ pub enum EvalSolveError {
         vector: &'static str,
         index: usize,
         len: usize,
+        span: Option<rumoca_core::Span>,
     },
     RegisterOutOfBounds {
         access: &'static str,
         register: Reg,
         len: usize,
+        span: Option<rumoca_core::Span>,
     },
     UninitializedRegister {
         register: Reg,
+        span: Option<rumoca_core::Span>,
     },
     OutputTooSmall {
         required: usize,
         len: usize,
+        span: Option<rumoca_core::Span>,
     },
     UpdateRowTargetMismatch {
         rows: usize,
@@ -113,6 +125,7 @@ pub enum EvalSolveError {
         row: usize,
         target_y_index: usize,
         coefficient: f64,
+        span: Option<rumoca_core::Span>,
     },
     EventActionConditionMismatch {
         rows: usize,
@@ -125,6 +138,94 @@ pub enum EvalSolveError {
         index: usize,
         len: usize,
     },
+    InvalidLinearOp {
+        helper: &'static str,
+        op: &'static str,
+    },
+    InvalidRow {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+    Scalarization {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+    ShapeContract {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+}
+
+impl EvalSolveError {
+    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+        match self {
+            Self::MissingInput { span, .. } => *span,
+            Self::RegisterOutOfBounds { span, .. } => *span,
+            Self::UninitializedRegister { span, .. } => *span,
+            Self::OutputTooSmall { span, .. } => *span,
+            Self::SingularTargetAssignment { span, .. } => *span,
+            Self::InvalidRow { span, .. } => *span,
+            Self::Scalarization { span, .. } => *span,
+            Self::ShapeContract { span, .. } => *span,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_source_span(self, span: Option<rumoca_core::Span>) -> Self {
+        match self {
+            Self::MissingInput {
+                vector,
+                index,
+                len,
+                span: None,
+            } => Self::MissingInput {
+                vector,
+                index,
+                len,
+                span,
+            },
+            Self::RegisterOutOfBounds {
+                access,
+                register,
+                len,
+                span: None,
+            } => Self::RegisterOutOfBounds {
+                access,
+                register,
+                len,
+                span,
+            },
+            Self::UninitializedRegister {
+                register,
+                span: None,
+            } => Self::UninitializedRegister { register, span },
+            Self::OutputTooSmall {
+                required,
+                len,
+                span: None,
+            } => Self::OutputTooSmall {
+                required,
+                len,
+                span,
+            },
+            Self::SingularTargetAssignment {
+                row,
+                target_y_index,
+                coefficient,
+                span: None,
+            } => Self::SingularTargetAssignment {
+                row,
+                target_y_index,
+                coefficient,
+                span,
+            },
+            Self::InvalidRow {
+                message,
+                span: None,
+            } => Self::InvalidRow { message, span },
+            error => error,
+        }
+    }
 }
 
 impl std::fmt::Display for EvalSolveError {
@@ -134,24 +235,29 @@ impl std::fmt::Display for EvalSolveError {
                 operation,
                 table_id,
                 column,
+                reason,
             } => {
                 if let Some(column) = column {
                     write!(
                         f,
-                        "external table {operation} failed for table id {table_id} column {column}"
+                        "external table {operation} failed for table id {table_id} column {column}: {reason}"
                     )
                 } else {
                     write!(
                         f,
-                        "external table {operation} failed for table id {table_id}"
+                        "external table {operation} failed for table id {table_id}: {reason}"
                     )
                 }
             }
-            Self::ExternalFunction { function } => write!(
-                f,
-                "external function {function:?} requires a native runtime bridge"
-            ),
-            Self::MissingInput { vector, index, len } => write!(
+            Self::ExternalFunction { function } => {
+                write!(
+                    f,
+                    "native external solve function {function:?} requires an external runtime bridge"
+                )
+            }
+            Self::MissingInput {
+                vector, index, len, ..
+            } => write!(
                 f,
                 "missing {vector}[{index}] while evaluating Solve-IR row; vector length is {len}"
             ),
@@ -159,14 +265,15 @@ impl std::fmt::Display for EvalSolveError {
                 access,
                 register,
                 len,
+                ..
             } => write!(
                 f,
                 "cannot {access} Solve-IR register r{register}; register file length is {len}"
             ),
-            Self::UninitializedRegister { register } => {
+            Self::UninitializedRegister { register, .. } => {
                 write!(f, "cannot read uninitialized Solve-IR register r{register}")
             }
-            Self::OutputTooSmall { required, len } => write!(
+            Self::OutputTooSmall { required, len, .. } => write!(
                 f,
                 "output buffer too small while evaluating Solve-IR row block: {len} < {required}"
             ),
@@ -182,6 +289,7 @@ impl std::fmt::Display for EvalSolveError {
                 row,
                 target_y_index,
                 coefficient,
+                ..
             } => write!(
                 f,
                 "cannot isolate target y[{target_y_index}] from Solve-IR row {row}: singular coefficient {coefficient}"
@@ -198,11 +306,39 @@ impl std::fmt::Display for EvalSolveError {
                 f,
                 "random state projection index {index} is out of bounds for state length {len}"
             ),
+            Self::InvalidLinearOp { helper, op } => {
+                write!(f, "Solve-IR {helper} helper cannot evaluate {op} op")
+            }
+            Self::InvalidRow { message, .. } => write!(f, "invalid Solve-IR row: {message}"),
+            Self::Scalarization { message, .. } => {
+                write!(f, "Solve-IR scalarization failed: {message}")
+            }
+            Self::ShapeContract { message, .. } => {
+                write!(f, "Solve-IR shape contract failed: {message}")
+            }
         }
     }
 }
 
 impl std::error::Error for EvalSolveError {}
+
+impl From<ScalarizeError> for EvalSolveError {
+    fn from(value: ScalarizeError) -> Self {
+        Self::Scalarization {
+            message: value.to_string(),
+            span: value.source_span(),
+        }
+    }
+}
+
+impl From<SolveProblemShapeContractError> for EvalSolveError {
+    fn from(value: SolveProblemShapeContractError) -> Self {
+        Self::ShapeContract {
+            message: value.to_string(),
+            span: value.source_span(),
+        }
+    }
+}
 
 pub fn reset_solve_row_eval_trace() {
     if !solve_row_eval_trace_enabled() {
@@ -395,13 +531,81 @@ pub fn eval_scalar_program_block_with_context(
     validate_scalar_program_block_io(block, y, p, context.seed, out)?;
     out.fill(0.0);
     let mut scratch = RowEvalScratch::default();
+    let mut sink = OutputCursor::with_output_indices(out, &block.output_indices);
     for (row_idx, row) in block.programs.iter().enumerate() {
-        out[row_idx] = eval_row_prepared_with_context(
-            PreparedRowEval::new(row, required_registers(row), y, p, t, context),
+        eval_row_prepared_with_context(
+            PreparedRowEval::new(
+                row,
+                required_registers(row)
+                    .map_err(|error| error.with_source_span(block.program_span(row_idx)))?,
+                y,
+                p,
+                t,
+                context,
+            )
+            .with_source_span(block.program_span(row_idx)),
             &mut scratch,
+            &mut sink,
         )?;
     }
     Ok(())
+}
+
+/// Output sink for a (possibly multi-output) scalar program block.
+///
+/// `StoreOutput` ops write to the next free slot in order (the running-counter
+/// invariant on [`rumoca_ir_solve::ScalarProgramBlock::output_count`]). One
+/// cursor is shared across all programs of a block so a matmul/linsolve program
+/// that emits several outputs lands in consecutive slots.
+pub(crate) struct OutputCursor<'out> {
+    out: &'out mut [f64],
+    output_indices: Option<&'out [usize]>,
+    cursor: usize,
+}
+
+impl<'out> OutputCursor<'out> {
+    pub(crate) fn new(out: &'out mut [f64]) -> Self {
+        Self {
+            out,
+            output_indices: None,
+            cursor: 0,
+        }
+    }
+
+    pub(crate) fn with_output_indices(out: &'out mut [f64], output_indices: &'out [usize]) -> Self {
+        Self {
+            out,
+            output_indices: Some(output_indices),
+            cursor: 0,
+        }
+    }
+
+    fn store(&mut self, value: f64) -> Result<(), EvalSolveError> {
+        let output_index = match self.output_indices {
+            Some(indices) => indices
+                .get(self.cursor)
+                .copied()
+                .ok_or_else(|| invalid_row("StoreOutput exceeded scalar program output_indices"))?,
+            None => self.cursor,
+        };
+        match self.out.get_mut(output_index) {
+            Some(slot) => {
+                *slot = value;
+                self.cursor += 1;
+                Ok(())
+            }
+            None => {
+                let required = output_index
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_row("scalar output index exceeds host limits"))?;
+                Err(EvalSolveError::OutputTooSmall {
+                    required,
+                    len: self.out.len(),
+                    span: None,
+                })
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -418,6 +622,7 @@ pub(crate) struct PreparedRowEval<'row, 'ctx> {
     p: &'row [f64],
     t: f64,
     context: RowEvalContext<'ctx>,
+    source_span: Option<rumoca_core::Span>,
 }
 
 impl<'row, 'ctx> PreparedRowEval<'row, 'ctx> {
@@ -436,7 +641,34 @@ impl<'row, 'ctx> PreparedRowEval<'row, 'ctx> {
             p,
             t,
             context,
+            source_span: None,
         }
+    }
+
+    pub(crate) fn with_source_span(mut self, span: Option<rumoca_core::Span>) -> Self {
+        self.source_span = span;
+        self
+    }
+
+    fn missing_input(&self, vector: &'static str, index: usize, len: usize) -> EvalSolveError {
+        EvalSolveError::MissingInput {
+            vector,
+            index,
+            len,
+            span: self.source_span,
+        }
+    }
+
+    fn read_input(
+        &self,
+        vector: &'static str,
+        values: &[f64],
+        index: usize,
+    ) -> Result<f64, EvalSolveError> {
+        values
+            .get(index)
+            .copied()
+            .ok_or_else(|| self.missing_input(vector, index, values.len()))
     }
 }
 
@@ -463,7 +695,8 @@ pub fn eval_event_action_request(
             actions: events.actions.len(),
         });
     }
-    let mut values = vec![0.0; events.actions.len()];
+    let mut values =
+        eval_solve_f64_values(events.actions.len(), 0.0, "event action condition values")?;
     eval_scalar_program_block_with_context(
         &events.action_conditions,
         y,
@@ -558,22 +791,43 @@ pub fn eval_row_with_context(
     };
     validate_row_inputs(row, y, p, context.seed)?;
     let mut scratch = RowEvalScratch::default();
-    eval_row_prepared_with_context(
-        PreparedRowEval::new(row, required_registers(row), y, p, t, context),
+    eval_program_single(
+        PreparedRowEval::new(row, required_registers(row)?, y, p, t, context),
+        false,
         &mut scratch,
     )
+}
+
+/// Evaluate a single-output program and return its stored value.
+///
+/// Convenience for callers that operate on programs with exactly one
+/// `StoreOutput` (residual rows, root conditions, event-message numbers,
+/// target-assignment rows). Returns the last value stored, matching the
+/// historical "last `StoreOutput` wins" behavior for those programs.
+pub(crate) fn eval_program_single(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<f64, EvalSolveError> {
+    let mut buf = [0.0f64];
+    {
+        let mut sink = OutputCursor::new(&mut buf);
+        eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)?;
+    }
+    Ok(buf[0])
 }
 
 pub(crate) fn eval_row_prepared_maybe_fast(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
-) -> Result<f64, EvalSolveError> {
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
     let start = solve_row_eval_trace_enabled().then(Instant::now);
     let result = if register_safe {
-        eval_row_prepared_fast(input, scratch)
+        eval_row_prepared_fast(input, scratch, sink)
     } else {
-        eval_row_prepared_with_context(input, scratch)
+        eval_row_prepared_with_context(input, scratch, sink)
     };
     if let Some(start) = start {
         ROW_EVAL_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -585,7 +839,8 @@ pub(crate) fn eval_row_prepared_maybe_fast(
 fn eval_row_prepared_with_context(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
-) -> Result<f64, EvalSolveError> {
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
     scratch.regs.resize(input.register_count, 0.0);
     scratch.initialized.resize(input.register_count, false);
     scratch.regs.fill(0.0);
@@ -594,24 +849,24 @@ fn eval_row_prepared_with_context(
         regs: &mut scratch.regs,
         initialized: &mut scratch.initialized,
         input,
-        output: 0.0,
+        sink,
     }
     .eval()
 }
 
-struct CheckedRowEvaluator<'scratch, 'row, 'ctx> {
+struct CheckedRowEvaluator<'scratch, 'row, 'ctx, 'out> {
     regs: &'scratch mut [f64],
     initialized: &'scratch mut [bool],
     input: PreparedRowEval<'row, 'ctx>,
-    output: f64,
+    sink: &'scratch mut OutputCursor<'out>,
 }
 
-impl CheckedRowEvaluator<'_, '_, '_> {
-    fn eval(mut self) -> Result<f64, EvalSolveError> {
+impl CheckedRowEvaluator<'_, '_, '_, '_> {
+    fn eval(mut self) -> Result<(), EvalSolveError> {
         for op in self.input.row {
             self.eval_op(*op)?;
         }
-        Ok(self.output)
+        Ok(())
     }
 
     fn eval_op(&mut self, op: LinearOp) -> Result<(), EvalSolveError> {
@@ -621,22 +876,30 @@ impl CheckedRowEvaluator<'_, '_, '_> {
             }
             LinearOp::LoadTime { dst } => self.set(dst, self.input.t)?,
             LinearOp::LoadY { dst, index } => {
-                self.set(dst, read_input("y", self.input.y, index)?)?;
+                self.set(dst, self.input.read_input("y", self.input.y, index)?)?;
             }
             LinearOp::LoadP { dst, index } => {
-                self.set(dst, read_input("p", self.input.p, index)?)?;
+                self.set(dst, self.input.read_input("p", self.input.p, index)?)?;
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => self.eval_load_indexed_p(dst, base, count, index)?,
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => self.eval_load_indexed_seed(dst, base, count, index)?,
             LinearOp::LoadSeed { dst, index } => {
                 let seed = self
                     .input
                     .context
                     .seed
-                    .ok_or(EvalSolveError::MissingInput {
-                        vector: "seed",
-                        index,
-                        len: 0,
-                    })?;
-                self.set(dst, read_input("seed", seed, index)?)?;
+                    .ok_or_else(|| self.input.missing_input("seed", index, 0))?;
+                self.set(dst, self.input.read_input("seed", seed, index)?)?;
             }
             LinearOp::Move { dst, src } => {
                 self.set(dst, self.get(src)?)?;
@@ -648,14 +911,18 @@ impl CheckedRowEvaluator<'_, '_, '_> {
                 n,
                 component,
             } => {
-                let value = solve_component(
+                let value = solve_component_op(
                     self.regs,
                     self.initialized,
-                    matrix_start,
-                    rhs_start,
-                    n,
-                    component,
-                )?;
+                    LinearOp::LinearSolveComponent {
+                        dst,
+                        matrix_start,
+                        rhs_start,
+                        n,
+                        component,
+                    },
+                )
+                .map_err(|error| error.with_source_span(self.input.source_span))?;
                 self.set(dst, value)?;
             }
             LinearOp::Unary { dst, op, arg } => {
@@ -684,7 +951,7 @@ impl CheckedRowEvaluator<'_, '_, '_> {
             | LinearOp::TableLookup { .. }
             | LinearOp::TableLookupSlope { .. }
             | LinearOp::TableNextEvent { .. } => {
-                apply_table_op(self.regs, self.initialized, &op, self.input.context)?;
+                self.eval_table_op(&op)?;
             }
             LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
@@ -692,40 +959,89 @@ impl CheckedRowEvaluator<'_, '_, '_> {
             | LinearOp::ImpureRandomInit { .. }
             | LinearOp::ImpureRandom { .. }
             | LinearOp::ImpureRandomInteger { .. } => {
-                apply_random_op(
-                    self.regs,
-                    self.initialized,
-                    &op,
-                    self.input.t,
-                    self.input.context,
-                )?;
+                self.eval_random_op(&op)?;
             }
             LinearOp::ExternalCall { function, .. } => {
                 return Err(EvalSolveError::ExternalFunction { function });
             }
             LinearOp::StoreOutput { src } => {
-                self.output = self.get(src)?;
+                let value = self.get(src)?;
+                self.sink.store(value)?;
             }
         }
         Ok(())
     }
 
+    fn eval_table_op(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
+        apply_table_op(
+            self.regs,
+            self.initialized,
+            op,
+            self.input.context,
+            self.input.source_span,
+        )
+    }
+
+    fn eval_random_op(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
+        apply_random_op(
+            self.regs,
+            self.initialized,
+            op,
+            self.input.t,
+            self.input.context,
+            self.input.source_span,
+        )
+    }
+
+    fn eval_load_indexed_p(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), EvalSolveError> {
+        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        self.set(dst, self.input.read_input("p", self.input.p, slot)?)
+    }
+
+    fn eval_load_indexed_seed(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), EvalSolveError> {
+        let seed = self
+            .input
+            .context
+            .seed
+            .ok_or_else(|| self.input.missing_input("seed", base, 0))?;
+        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        self.set(dst, self.input.read_input("seed", seed, slot)?)
+    }
+
     fn get(&self, reg: Reg) -> Result<f64, EvalSolveError> {
-        get(self.regs, self.initialized, reg)
+        get(self.regs, self.initialized, reg, self.input.source_span)
     }
 
     fn set(&mut self, reg: Reg, value: f64) -> Result<(), EvalSolveError> {
-        set(self.regs, self.initialized, reg, value)
+        set(
+            self.regs,
+            self.initialized,
+            reg,
+            value,
+            self.input.source_span,
+        )
     }
 }
 
 fn eval_row_prepared_fast(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
-) -> Result<f64, EvalSolveError> {
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
     scratch.regs.resize(input.register_count, 0.0);
     let regs = &mut scratch.regs;
-    let mut output = 0.0;
     for op in input.row {
         match *op {
             LinearOp::Const { dst, value } => regs[dst as usize] = value,
@@ -736,12 +1052,33 @@ fn eval_row_prepared_fast(
             LinearOp::LoadP { dst, index } => {
                 regs[dst as usize] = input.p[index];
             }
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = resolve_indexed_slot(regs[index as usize], base, count);
+                regs[dst as usize] = input.read_input("p", input.p, slot)?;
+            }
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let seed = input
+                    .context
+                    .seed
+                    .ok_or_else(|| input.missing_input("seed", base, 0))?;
+                let slot = resolve_indexed_slot(regs[index as usize], base, count);
+                regs[dst as usize] = input.read_input("seed", seed, slot)?;
+            }
             LinearOp::LoadSeed { dst, index } => {
-                let seed = input.context.seed.ok_or(EvalSolveError::MissingInput {
-                    vector: "seed",
-                    index,
-                    len: 0,
-                })?;
+                let seed = input
+                    .context
+                    .seed
+                    .ok_or_else(|| input.missing_input("seed", index, 0))?;
                 regs[dst as usize] = seed[index];
             }
             LinearOp::Move { dst, src } => regs[dst as usize] = regs[src as usize],
@@ -753,7 +1090,8 @@ fn eval_row_prepared_fast(
                 component,
             } => {
                 regs[dst as usize] =
-                    solve_component_unchecked(regs, matrix_start, rhs_start, n, component);
+                    solve_component_unchecked(regs, matrix_start, rhs_start, n, component)
+                        .map_err(|error| error.with_source_span(input.source_span))?;
             }
             LinearOp::Unary { dst, op, arg } => {
                 regs[dst as usize] = eval_unary(op, regs[arg as usize]);
@@ -780,8 +1118,7 @@ fn eval_row_prepared_fast(
             | LinearOp::TableLookup { .. }
             | LinearOp::TableLookupSlope { .. }
             | LinearOp::TableNextEvent { .. } => {
-                scratch.initialized.resize(input.register_count, true);
-                apply_table_op(regs, &mut scratch.initialized, op, input.context)?
+                eval_fast_table_op(regs, &mut scratch.initialized, input, op)?
             }
             LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
@@ -789,16 +1126,42 @@ fn eval_row_prepared_fast(
             | LinearOp::ImpureRandomInit { .. }
             | LinearOp::ImpureRandom { .. }
             | LinearOp::ImpureRandomInteger { .. } => {
-                scratch.initialized.resize(input.register_count, true);
-                apply_random_op(regs, &mut scratch.initialized, op, input.t, input.context)?
+                eval_fast_random_op(regs, &mut scratch.initialized, input, op)?
             }
             LinearOp::ExternalCall { function, .. } => {
                 return Err(EvalSolveError::ExternalFunction { function });
             }
-            LinearOp::StoreOutput { src } => output = regs[src as usize],
+            LinearOp::StoreOutput { src } => sink.store(regs[src as usize])?,
         }
     }
-    Ok(output)
+    Ok(())
+}
+
+fn eval_fast_table_op(
+    regs: &mut [f64],
+    initialized: &mut Vec<bool>,
+    input: PreparedRowEval<'_, '_>,
+    op: &LinearOp,
+) -> Result<(), EvalSolveError> {
+    initialized.resize(input.register_count, true);
+    apply_table_op(regs, initialized, op, input.context, input.source_span)
+}
+
+fn eval_fast_random_op(
+    regs: &mut [f64],
+    initialized: &mut Vec<bool>,
+    input: PreparedRowEval<'_, '_>,
+    op: &LinearOp,
+) -> Result<(), EvalSolveError> {
+    initialized.resize(input.register_count, true);
+    apply_random_op(
+        regs,
+        initialized,
+        op,
+        input.t,
+        input.context,
+        input.source_span,
+    )
 }
 
 fn apply_table_op(
@@ -806,19 +1169,16 @@ fn apply_table_op(
     initialized: &mut [bool],
     op: &LinearOp,
     context: RowEvalContext<'_>,
+    span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
     match *op {
         LinearOp::TableBounds { dst, table_id, max } => {
-            let table_id = get(regs, initialized, table_id)?;
+            let table_id = get(regs, initialized, table_id, span)?;
             let tables = context.external_tables.unwrap_or(&[]);
-            let value = try_eval_table_bound_value_in(table_id, max, tables).ok_or(
-                EvalSolveError::ExternalTable {
-                    operation: if max { "bounds max" } else { "bounds min" },
-                    table_id,
-                    column: None,
-                },
-            )?;
-            set(regs, initialized, dst, value)?;
+            let operation = if max { "bounds max" } else { "bounds min" };
+            let value = eval_table_bound_value_in(table_id, max, tables)
+                .map_err(|error| external_table_error(operation, table_id, None, error))?;
+            set(regs, initialized, dst, value, span)?;
         }
         LinearOp::TableLookup {
             dst,
@@ -826,18 +1186,13 @@ fn apply_table_op(
             column,
             input,
         } => {
-            let table_id = get(regs, initialized, table_id)?;
-            let column = get(regs, initialized, column)?;
-            let input = get(regs, initialized, input)?;
+            let table_id = get(regs, initialized, table_id, span)?;
+            let column = get(regs, initialized, column, span)?;
+            let input = get(regs, initialized, input, span)?;
             let tables = context.external_tables.unwrap_or(&[]);
-            let value = try_eval_table_lookup_value_in(table_id, column, input, tables).ok_or(
-                EvalSolveError::ExternalTable {
-                    operation: "lookup",
-                    table_id,
-                    column: Some(column),
-                },
-            )?;
-            set(regs, initialized, dst, value)?;
+            let value = eval_table_lookup_value_in(table_id, column, input, tables)
+                .map_err(|error| external_table_error("lookup", table_id, Some(column), error))?;
+            set(regs, initialized, dst, value, span)?;
         }
         LinearOp::TableLookupSlope {
             dst,
@@ -845,38 +1200,49 @@ fn apply_table_op(
             column,
             input,
         } => {
-            let table_id = get(regs, initialized, table_id)?;
-            let column = get(regs, initialized, column)?;
-            let input = get(regs, initialized, input)?;
+            let table_id = get(regs, initialized, table_id, span)?;
+            let column = get(regs, initialized, column, span)?;
+            let input = get(regs, initialized, input, span)?;
             let tables = context.external_tables.unwrap_or(&[]);
-            let value = try_eval_table_lookup_slope_value_in(table_id, column, input, tables)
-                .ok_or(EvalSolveError::ExternalTable {
-                    operation: "lookup slope",
-                    table_id,
-                    column: Some(column),
-                })?;
-            set(regs, initialized, dst, value)?;
+            let value = eval_table_lookup_slope_value_in(table_id, column, input, tables).map_err(
+                |error| external_table_error("lookup slope", table_id, Some(column), error),
+            )?;
+            set(regs, initialized, dst, value, span)?;
         }
         LinearOp::TableNextEvent {
             dst,
             table_id,
             time,
         } => {
-            let table_id = get(regs, initialized, table_id)?;
-            let time = get(regs, initialized, time)?;
+            let table_id = get(regs, initialized, table_id, span)?;
+            let time = get(regs, initialized, time, span)?;
             let tables = context.external_tables.unwrap_or(&[]);
-            let value = try_eval_time_table_next_event_value_in(table_id, time, tables).ok_or(
-                EvalSolveError::ExternalTable {
-                    operation: "next event",
-                    table_id,
-                    column: None,
-                },
-            )?;
-            set(regs, initialized, dst, value)?;
+            let value = eval_time_table_next_event_value_in(table_id, time, tables)
+                .map_err(|error| external_table_error("next event", table_id, None, error))?;
+            set(regs, initialized, dst, value, span)?;
         }
-        _ => unreachable!("table opcode helper called with non-table opcode"),
+        _ => {
+            return Err(EvalSolveError::InvalidLinearOp {
+                helper: "table",
+                op: linear_op_name(op),
+            });
+        }
     }
     Ok(())
+}
+
+fn external_table_error(
+    operation: &'static str,
+    table_id: f64,
+    column: Option<f64>,
+    error: TableRuntimeError,
+) -> EvalSolveError {
+    EvalSolveError::ExternalTable {
+        operation,
+        table_id,
+        column,
+        reason: error.to_string(),
+    }
 }
 
 fn apply_random_op(
@@ -885,6 +1251,7 @@ fn apply_random_op(
     op: &LinearOp,
     t: f64,
     context: RowEvalContext<'_>,
+    span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
     match *op {
         LinearOp::RandomInitialState {
@@ -897,15 +1264,16 @@ fn apply_random_op(
         } => {
             let values = initial_state_values(
                 generator,
-                get(regs, initialized, local_seed)?.round() as i64,
-                get(regs, initialized, global_seed)?.round() as i64,
+                get(regs, initialized, local_seed, span)?.round() as i64,
+                get(regs, initialized, global_seed, span)?.round() as i64,
                 state_len,
-            );
+            )?;
             set(
                 regs,
                 initialized,
                 dst,
                 projected_random_value(&values, state_index)?,
+                span,
             )?;
         }
         LinearOp::RandomResult {
@@ -914,9 +1282,10 @@ fn apply_random_op(
             state_start,
             state_len,
         } => {
-            let state = read_reg_range(regs, initialized, state_start, state_len)?;
-            let (result, _) = random_result_and_state(generator, &state);
-            set(regs, initialized, dst, result)?;
+            let state = read_reg_range(regs, initialized, state_start, state_len)
+                .map_err(|error| error.with_source_span(span))?;
+            let (result, _) = random_result_and_state(generator, &state)?;
+            set(regs, initialized, dst, result, span)?;
         }
         LinearOp::RandomState {
             dst,
@@ -925,26 +1294,30 @@ fn apply_random_op(
             state_len,
             state_index,
         } => {
-            let state = read_reg_range(regs, initialized, state_start, state_len)?;
-            let (_, next_state) = random_result_and_state(generator, &state);
+            let state = read_reg_range(regs, initialized, state_start, state_len)
+                .map_err(|error| error.with_source_span(span))?;
+            let (_, next_state) = random_result_and_state(generator, &state)?;
             set(
                 regs,
                 initialized,
                 dst,
                 projected_random_value(&next_state, state_index)?,
+                span,
             )?;
         }
         LinearOp::ImpureRandomInit { dst, seed } => {
-            let stream_id = impure_random_stream_id(get(regs, initialized, seed)?.round() as i64);
-            set(regs, initialized, dst, stream_id as f64)?;
+            let stream_id =
+                impure_random_stream_id(get(regs, initialized, seed, span)?.round() as i64);
+            set(regs, initialized, dst, stream_id as f64, span)?;
         }
         LinearOp::ImpureRandom { dst, id, call_site } => {
-            let id = get(regs, initialized, id)?.round() as i64;
+            let id = get(regs, initialized, id, span)?.round() as i64;
             set(
                 regs,
                 initialized,
                 dst,
                 impure_random_sample(id, call_site, t, impure_random_mutex(context)?),
+                span,
             )?;
         }
         LinearOp::ImpureRandomInteger {
@@ -954,30 +1327,76 @@ fn apply_random_op(
             imax,
             call_site,
         } => {
-            let id = get(regs, initialized, id)?.round() as i64;
-            let imin = get(regs, initialized, imin)?.round() as i64;
-            let imax = get(regs, initialized, imax)?.round() as i64;
+            let id = get(regs, initialized, id, span)?.round() as i64;
+            let imin = get(regs, initialized, imin, span)?.round() as i64;
+            let imax = get(regs, initialized, imax, span)?.round() as i64;
             let (lo, hi) = if imin <= imax {
                 (imin, imax)
             } else {
                 (imax, imin)
             };
-            let span = (hi - lo + 1).max(1) as f64;
+            let random_span = (hi - lo + 1).max(1) as f64;
             let y = lo as f64
-                + (impure_random_sample(id, call_site, t, impure_random_mutex(context)?) * span)
+                + (impure_random_sample(id, call_site, t, impure_random_mutex(context)?)
+                    * random_span)
                     .floor();
-            set(regs, initialized, dst, y.clamp(lo as f64, hi as f64))?;
+            set(regs, initialized, dst, y.clamp(lo as f64, hi as f64), span)?;
         }
-        _ => unreachable!("random opcode helper called with non-random opcode"),
+        _ => {
+            return Err(EvalSolveError::InvalidLinearOp {
+                helper: "random",
+                op: linear_op_name(op),
+            });
+        }
     }
     Ok(())
 }
 
-pub(crate) fn required_registers(row: &[LinearOp]) -> usize {
+fn linear_op_name(op: &LinearOp) -> &'static str {
+    match op {
+        LinearOp::Const { .. } => "Const",
+        LinearOp::LoadTime { .. } => "LoadTime",
+        LinearOp::LoadY { .. } => "LoadY",
+        LinearOp::LoadP { .. } => "LoadP",
+        LinearOp::LoadIndexedP { .. } => "LoadIndexedP",
+        LinearOp::LoadSeed { .. } => "LoadSeed",
+        LinearOp::LoadIndexedSeed { .. } => "LoadIndexedSeed",
+        LinearOp::Move { .. } => "Move",
+        LinearOp::LinearSolveComponent { .. } => "LinearSolveComponent",
+        LinearOp::TableBounds { .. } => "TableBounds",
+        LinearOp::TableLookup { .. } => "TableLookup",
+        LinearOp::TableLookupSlope { .. } => "TableLookupSlope",
+        LinearOp::TableNextEvent { .. } => "TableNextEvent",
+        LinearOp::RandomInitialState { .. } => "RandomInitialState",
+        LinearOp::RandomResult { .. } => "RandomResult",
+        LinearOp::RandomState { .. } => "RandomState",
+        LinearOp::ImpureRandomInit { .. } => "ImpureRandomInit",
+        LinearOp::ImpureRandom { .. } => "ImpureRandom",
+        LinearOp::ImpureRandomInteger { .. } => "ImpureRandomInteger",
+        LinearOp::ExternalCall { .. } => "ExternalCall",
+        LinearOp::Unary { .. } => "Unary",
+        LinearOp::Binary { .. } => "Binary",
+        LinearOp::Compare { .. } => "Compare",
+        LinearOp::Select { .. } => "Select",
+        LinearOp::StoreOutput { .. } => "StoreOutput",
+    }
+}
+
+pub(crate) fn required_registers(row: &[LinearOp]) -> Result<usize, EvalSolveError> {
     row.iter()
         .map(max_register)
-        .max()
-        .map_or(0, |reg| reg as usize + 1)
+        .try_fold(None, |max_reg: Option<u32>, reg| {
+            let reg = reg?;
+            Ok::<Option<u32>, EvalSolveError>(Some(max_reg.map_or(reg, |current| current.max(reg))))
+        })?
+        .map_or(Ok(0), checked_required_register_count)
+}
+
+fn checked_required_register_count(reg: Reg) -> Result<usize, EvalSolveError> {
+    usize::try_from(reg)
+        .ok()
+        .and_then(|reg| reg.checked_add(1))
+        .ok_or_else(|| invalid_row(format!("register index {reg} overflows register count")))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -997,37 +1416,74 @@ impl RowInputRequirements {
     }
 }
 
-pub fn scalar_program_block_input_requirements(block: &ScalarProgramBlock) -> RowInputRequirements {
+pub fn scalar_program_block_input_requirements(
+    block: &ScalarProgramBlock,
+) -> Result<RowInputRequirements, EvalSolveError> {
     block
         .programs
         .iter()
-        .map(|row| row_input_requirements(row))
-        .fold(RowInputRequirements::default(), RowInputRequirements::merge)
+        .enumerate()
+        .map(|(row_idx, row)| (row_idx, row_input_requirements(row)))
+        .try_fold(
+            RowInputRequirements::default(),
+            |requirements, (row_idx, row)| {
+                row.map(|row_requirements| requirements.merge(row_requirements))
+                    .map_err(|error| error.with_source_span(block.program_span(row_idx)))
+            },
+        )
 }
 
-pub fn row_input_requirements(row: &[LinearOp]) -> RowInputRequirements {
+pub fn row_input_requirements(row: &[LinearOp]) -> Result<RowInputRequirements, EvalSolveError> {
     row.iter()
         .copied()
         .map(input_requirements_for_op)
-        .fold(RowInputRequirements::default(), RowInputRequirements::merge)
+        .try_fold(RowInputRequirements::default(), |requirements, op| {
+            op.map(|op_requirements| requirements.merge(op_requirements))
+        })
 }
 
-fn input_requirements_for_op(op: LinearOp) -> RowInputRequirements {
+fn input_requirements_for_op(op: LinearOp) -> Result<RowInputRequirements, EvalSolveError> {
     match op {
-        LinearOp::LoadY { index, .. } => RowInputRequirements {
-            y_len: index.saturating_add(1),
+        LinearOp::LoadY { index, .. } => Ok(RowInputRequirements {
+            y_len: checked_required_len("y", index)?,
             ..Default::default()
-        },
-        LinearOp::LoadP { index, .. } => RowInputRequirements {
-            p_len: index.saturating_add(1),
+        }),
+        LinearOp::LoadP { index, .. } => Ok(RowInputRequirements {
+            p_len: checked_required_len("p", index)?,
             ..Default::default()
-        },
-        LinearOp::LoadSeed { index, .. } => RowInputRequirements {
-            seed_len: index.saturating_add(1),
+        }),
+        LinearOp::LoadIndexedP { base, count, .. } => Ok(RowInputRequirements {
+            p_len: checked_required_indexed_len("p", base, count)?,
             ..Default::default()
-        },
-        _ => RowInputRequirements::default(),
+        }),
+        LinearOp::LoadSeed { index, .. } => Ok(RowInputRequirements {
+            seed_len: checked_required_len("seed", index)?,
+            ..Default::default()
+        }),
+        LinearOp::LoadIndexedSeed { base, count, .. } => Ok(RowInputRequirements {
+            seed_len: checked_required_indexed_len("seed", base, count)?,
+            ..Default::default()
+        }),
+        _ => Ok(RowInputRequirements::default()),
     }
+}
+
+fn checked_required_len(vector: &'static str, index: usize) -> Result<usize, EvalSolveError> {
+    index
+        .checked_add(1)
+        .ok_or_else(|| invalid_row(format!("{vector} input requirement overflow")))
+}
+
+fn checked_required_indexed_len(
+    vector: &'static str,
+    base: usize,
+    count: usize,
+) -> Result<usize, EvalSolveError> {
+    let last_offset = if count == 0 { 0 } else { count - 1 };
+    let last_index = base
+        .checked_add(last_offset)
+        .ok_or_else(|| invalid_row(format!("{vector} indexed input requirement overflow")))?;
+    checked_required_len(vector, last_index)
 }
 
 pub fn validate_scalar_program_block_io(
@@ -1037,8 +1493,9 @@ pub fn validate_scalar_program_block_io(
     seed: Option<&[f64]>,
     out: &[f64],
 ) -> Result<(), EvalSolveError> {
-    validate_output_len(out, block.programs.len())?;
-    validate_input_requirements(scalar_program_block_input_requirements(block), y, p, seed)
+    block.validate_shape_contract("scalar program block eval")?;
+    validate_output_len(out, block.output_count())?;
+    validate_input_requirements(scalar_program_block_input_requirements(block)?, y, p, seed)
 }
 
 pub fn validate_row_inputs(
@@ -1047,7 +1504,7 @@ pub fn validate_row_inputs(
     p: &[f64],
     seed: Option<&[f64]>,
 ) -> Result<(), EvalSolveError> {
-    validate_input_requirements(row_input_requirements(row), y, p, seed)
+    validate_input_requirements(row_input_requirements(row)?, y, p, seed)
 }
 
 pub(crate) fn validate_output_len(out: &[f64], required: usize) -> Result<(), EvalSolveError> {
@@ -1057,6 +1514,7 @@ pub(crate) fn validate_output_len(out: &[f64], required: usize) -> Result<(), Ev
     Err(EvalSolveError::OutputTooSmall {
         required,
         len: out.len(),
+        span: None,
     })
 }
 
@@ -1066,52 +1524,102 @@ pub(crate) fn validate_input_requirements(
     p: &[f64],
     seed: Option<&[f64]>,
 ) -> Result<(), EvalSolveError> {
-    validate_input_len("y", y.len(), requirements.y_len)?;
-    validate_input_len("p", p.len(), requirements.p_len)?;
+    validate_input_requirements_with_span(requirements, y, p, seed, None)
+}
+
+pub(crate) fn validate_input_requirements_with_span(
+    requirements: RowInputRequirements,
+    y: &[f64],
+    p: &[f64],
+    seed: Option<&[f64]>,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    validate_input_len("y", y.len(), requirements.y_len, span)?;
+    validate_input_len("p", p.len(), requirements.p_len, span)?;
     if requirements.seed_len == 0 {
         return Ok(());
     }
-    validate_input_len("seed", seed.map_or(0, <[f64]>::len), requirements.seed_len)
+    validate_input_len(
+        "seed",
+        seed.map_or(0, <[f64]>::len),
+        requirements.seed_len,
+        span,
+    )
 }
 
 fn validate_input_len(
     vector: &'static str,
     actual_len: usize,
     required_len: usize,
+    span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
     if actual_len >= required_len {
         return Ok(());
     }
     Err(EvalSolveError::MissingInput {
         vector,
-        index: required_len.saturating_sub(1),
+        index: required_len - 1,
         len: actual_len,
+        span,
     })
 }
 
-fn max_register(op: &LinearOp) -> u32 {
+fn max_register(op: &LinearOp) -> Result<u32, EvalSolveError> {
     match *op {
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
         | LinearOp::LoadY { dst, .. }
         | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::Move { dst, .. }
-        | LinearOp::Unary { dst, .. }
-        | LinearOp::Binary { dst, .. }
-        | LinearOp::Compare { dst, .. }
-        | LinearOp::Select { dst, .. }
-        | LinearOp::LinearSolveComponent { dst, .. }
-        | LinearOp::TableBounds { dst, .. }
-        | LinearOp::TableLookup { dst, .. }
-        | LinearOp::TableLookupSlope { dst, .. }
-        | LinearOp::TableNextEvent { dst, .. } => dst,
+        | LinearOp::LoadSeed { dst, .. } => Ok(dst),
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(dst.max(index)),
+        LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => Ok(dst.max(src)),
+        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
+            Ok(dst.max(lhs).max(rhs))
+        }
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => Ok(dst.max(cond).max(if_true).max(if_false)),
+        LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start,
+            rhs_start,
+            n,
+            ..
+        } => Ok(dst
+            .max(checked_reg_range_last(
+                matrix_start,
+                checked_square_len(n, "linear solve matrix")?,
+                "linear solve matrix",
+            )?)
+            .max(checked_reg_range_last(rhs_start, n, "linear solve rhs")?)),
+        LinearOp::TableBounds { dst, table_id, .. } => Ok(dst.max(table_id)),
+        LinearOp::TableLookup {
+            dst,
+            table_id,
+            column,
+            input,
+        }
+        | LinearOp::TableLookupSlope {
+            dst,
+            table_id,
+            column,
+            input,
+        } => Ok(dst.max(table_id).max(column).max(input)),
+        LinearOp::TableNextEvent {
+            dst,
+            table_id,
+            time,
+        } => Ok(dst.max(table_id).max(time)),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
             global_seed,
             ..
-        } => dst.max(local_seed).max(global_seed),
+        } => Ok(dst.max(local_seed).max(global_seed)),
         LinearOp::RandomResult {
             dst,
             state_start,
@@ -1123,36 +1631,105 @@ fn max_register(op: &LinearOp) -> u32 {
             state_start,
             state_len,
             ..
-        } => dst.max(state_start.saturating_add(state_len.saturating_sub(1) as u32)),
-        LinearOp::ImpureRandomInit { dst, seed } => dst.max(seed),
-        LinearOp::ImpureRandom { dst, id, .. } => dst.max(id),
+        } => Ok(dst.max(checked_reg_range_last(
+            state_start,
+            state_len,
+            "random state",
+        )?)),
+        LinearOp::ImpureRandomInit { dst, seed } => Ok(dst.max(seed)),
+        LinearOp::ImpureRandom { dst, id, .. } => Ok(dst.max(id)),
         LinearOp::ImpureRandomInteger {
             dst,
             id,
             imin,
             imax,
             ..
-        } => dst.max(id).max(imin).max(imax),
+        } => Ok(dst.max(id).max(imin).max(imax)),
         LinearOp::ExternalCall {
             dst,
             args,
             arg_count,
             ..
-        } => args.iter().copied().take(arg_count).fold(dst, u32::max),
-        LinearOp::StoreOutput { src } => src,
+        } => args
+            .iter()
+            .take(arg_count)
+            .copied()
+            .try_fold(dst, |max_reg, arg| Ok(max_reg.max(arg))),
+        LinearOp::StoreOutput { src } => Ok(src),
     }
 }
 
-pub(crate) fn row_register_flow_is_valid(row: &[LinearOp]) -> bool {
-    let register_count = required_registers(row);
-    let mut initialized = vec![false; register_count];
+fn checked_square_len(n: usize, kind: &'static str) -> Result<usize, EvalSolveError> {
+    n.checked_mul(n)
+        .ok_or_else(|| invalid_row(format!("{kind} size overflow")))
+}
+
+fn checked_reg_range_last(
+    start: Reg,
+    len: usize,
+    kind: &'static str,
+) -> Result<Reg, EvalSolveError> {
+    let Some(offset) = len.checked_sub(1) else {
+        return Ok(start);
+    };
+    let offset = Reg::try_from(offset).map_err(|_| {
+        invalid_row(format!(
+            "{kind} offset {offset} exceeds register index type"
+        ))
+    })?;
+    start
+        .checked_add(offset)
+        .ok_or_else(|| invalid_row(format!("{kind} range starting at {start} overflows")))
+}
+
+fn invalid_row(message: impl Into<String>) -> EvalSolveError {
+    EvalSolveError::InvalidRow {
+        message: message.into(),
+        span: None,
+    }
+}
+
+fn eval_solve_f64_values(
+    len: usize,
+    value: f64,
+    context: &'static str,
+) -> Result<Vec<f64>, EvalSolveError> {
+    let mut values = eval_solve_vec_with_capacity(len, context)?;
+    values.resize(len, value);
+    Ok(values)
+}
+
+fn eval_solve_bool_values(
+    len: usize,
+    value: bool,
+    context: &'static str,
+) -> Result<Vec<bool>, EvalSolveError> {
+    let mut values = eval_solve_vec_with_capacity(len, context)?;
+    values.resize(len, value);
+    Ok(values)
+}
+
+fn eval_solve_vec_with_capacity<T>(
+    capacity: usize,
+    context: &'static str,
+) -> Result<Vec<T>, EvalSolveError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| invalid_row(format!("{context} exceeds host memory limits")))?;
+    Ok(values)
+}
+
+pub(crate) fn row_register_flow_is_valid(row: &[LinearOp]) -> Result<bool, EvalSolveError> {
+    let register_count = required_registers(row)?;
+    let mut initialized = eval_solve_bool_values(register_count, false, "row register flow state")?;
     for op in row {
         if !op_sources_initialized(op, &initialized) {
-            return false;
+            return Ok(false);
         }
         mark_op_dests_initialized(op, &mut initialized);
     }
-    true
+    Ok(true)
 }
 
 fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
@@ -1164,6 +1741,8 @@ fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
         | LinearOp::LoadSeed { .. } => true,
         LinearOp::Move { src, .. }
         | LinearOp::Unary { arg: src, .. }
+        | LinearOp::LoadIndexedP { index: src, .. }
+        | LinearOp::LoadIndexedSeed { index: src, .. }
         | LinearOp::StoreOutput { src } => reg_initialized(initialized, src),
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
             reg_initialized(initialized, lhs) && reg_initialized(initialized, rhs)
@@ -1185,8 +1764,11 @@ fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
             component,
             ..
         } => {
+            let Some(matrix_len) = n.checked_mul(n) else {
+                return false;
+            };
             component < n
-                && reg_range_initialized(initialized, matrix_start, n.saturating_mul(n))
+                && reg_range_initialized(initialized, matrix_start, matrix_len)
                 && reg_range_initialized(initialized, rhs_start, n)
         }
         LinearOp::TableBounds { table_id, .. } => reg_initialized(initialized, table_id),
@@ -1260,22 +1842,12 @@ fn reg_range_initialized(initialized: &[bool], start: Reg, len: usize) -> bool {
         .is_some_and(|end| end <= initialized.len() && initialized[start..end].iter().all(|v| *v))
 }
 
-fn read_input(vector: &'static str, values: &[f64], index: usize) -> Result<f64, EvalSolveError> {
-    values
-        .get(index)
-        .copied()
-        .ok_or(EvalSolveError::MissingInput {
-            vector,
-            index,
-            len: values.len(),
-        })
-}
-
 fn set(
     regs: &mut [f64],
     initialized: &mut [bool],
     reg: Reg,
     value: f64,
+    span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
     let index = reg as usize;
     let len = regs.len();
@@ -1285,6 +1857,7 @@ fn set(
             access: "write",
             register: reg,
             len,
+            span,
         })?;
     *slot = value;
     if let Some(init) = initialized.get_mut(index) {
@@ -1293,7 +1866,12 @@ fn set(
     Ok(())
 }
 
-fn get(regs: &[f64], initialized: &[bool], reg: Reg) -> Result<f64, EvalSolveError> {
+fn get(
+    regs: &[f64],
+    initialized: &[bool],
+    reg: Reg,
+    span: Option<rumoca_core::Span>,
+) -> Result<f64, EvalSolveError> {
     let index = reg as usize;
     let value = regs
         .get(index)
@@ -1302,9 +1880,13 @@ fn get(regs: &[f64], initialized: &[bool], reg: Reg) -> Result<f64, EvalSolveErr
             access: "read",
             register: reg,
             len: regs.len(),
+            span,
         })?;
     if !initialized.get(index).copied().unwrap_or(false) {
-        return Err(EvalSolveError::UninitializedRegister { register: reg });
+        return Err(EvalSolveError::UninitializedRegister {
+            register: reg,
+            span,
+        });
     }
     Ok(value)
 }

@@ -7,6 +7,7 @@ use rumoca_core::{ExpressionRewriter, ExpressionVisitor, Span};
 use rumoca_ir_dae as dae;
 
 use crate::condition_activation;
+use crate::errors::ToDaeError;
 
 const DEFAULT_CONDITION_VAR_NAME: &str = "c";
 const GENERATED_CONDITION_VAR_PREFIX: &str = "__rumoca_c";
@@ -18,7 +19,7 @@ struct ConditionCandidate {
     source: String,
 }
 
-pub(crate) fn populate_canonical_conditions(dae_model: &mut dae::Dae) {
+pub(crate) fn populate_canonical_conditions(dae_model: &mut dae::Dae) -> Result<(), ToDaeError> {
     let mut candidates = Vec::new();
 
     // DAE buckets are the semantic source of truth here. Looking back at flat
@@ -58,53 +59,74 @@ pub(crate) fn populate_canonical_conditions(dae_model: &mut dae::Dae) {
         .map(|candidate| candidate.expr.clone())
         .collect();
     let Some(condition_name) = canonical_condition_variable_name(dae_model) else {
-        return;
+        return Ok(());
     };
     dae_model.conditions.equations = event_candidates
         .iter()
         .enumerate()
         .map(|(idx, candidate)| build_condition_equation(candidate, idx + 1, &condition_name))
-        .collect();
+        .collect::<Result<Vec<_>, ToDaeError>>()?;
+    Ok(())
 }
 
-pub(crate) fn finalize_canonical_condition_variables(dae_model: &mut dae::Dae) {
+pub(crate) fn finalize_canonical_condition_variables(
+    dae_model: &mut dae::Dae,
+) -> Result<(), ToDaeError> {
     let Some(requested_name) = condition_variable_name_from_fc(dae_model) else {
-        return;
+        return Ok(());
     };
+    let owner_span = condition_memory_owner_span(dae_model)?;
     let condition_name = if dae_variable_name_exists(dae_model, &requested_name) {
         let Some(name) = generated_condition_variable_name(dae_model) else {
-            return;
+            return Err(ToDaeError::runtime_metadata_violation_at(
+                "could not allocate generated condition variable name",
+                owner_span,
+            ));
         };
         name
     } else {
         requested_name
     };
-    rename_condition_equations(dae_model, &condition_name);
-    declare_condition_variable(dae_model, &condition_name);
+    rename_condition_equations(dae_model, &condition_name)?;
+    declare_condition_variable(dae_model, &condition_name, owner_span);
     declare_condition_pre_parameter(dae_model, &condition_name);
-    rewrite_continuous_event_conditions(dae_model, &condition_name);
+    rewrite_continuous_event_conditions(dae_model, &condition_name)?;
+    Ok(())
 }
 
 fn build_condition_equation(
     candidate: &ConditionCandidate,
     condition_index: usize,
     condition_name: &str,
-) -> dae::Equation {
-    dae::Equation::explicit(
-        generated_condition_reference(condition_name, condition_index, candidate.span),
+) -> Result<dae::Equation, ToDaeError> {
+    Ok(dae::Equation::explicit(
+        generated_condition_reference(condition_name, condition_index, candidate.span)?,
         candidate.expr.clone(),
         candidate.span,
         format!("condition equation from {}", candidate.source),
-    )
+    ))
 }
 
-fn generated_single_part_ref(ident: &str) -> rumoca_core::ComponentReference {
+fn condition_memory_owner_span(dae_model: &dae::Dae) -> Result<Span, ToDaeError> {
+    dae_model
+        .conditions
+        .equations
+        .first()
+        .map(|equation| equation.span)
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation(
+                "condition variable finalize requested without condition equations",
+            )
+        })
+}
+
+fn generated_single_part_ref(ident: &str, span: Span) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
         parts: vec![rumoca_core::ComponentRefPart {
             ident: ident.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span,
             subs: Vec::new(),
         }],
         def_id: None,
@@ -116,50 +138,53 @@ fn generated_single_part_ref(ident: &str) -> rumoca_core::ComponentReference {
 pub(crate) fn generated_pre_component_ref(
     source: Option<&rumoca_core::ComponentReference>,
     source_name: &str,
+    owner_span: Span,
 ) -> rumoca_core::ComponentReference {
     let mut parts = vec![rumoca_core::ComponentRefPart {
         ident: "__pre__".to_string(),
-        span: rumoca_core::Span::DUMMY,
+        span: owner_span,
         subs: Vec::new(),
     }];
     match source {
         Some(reference) => parts.extend(reference.parts.iter().cloned()),
         None => parts.push(rumoca_core::ComponentRefPart {
             ident: source_name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: owner_span,
             subs: Vec::new(),
         }),
     }
     rumoca_core::ComponentReference {
         local: false,
-        span: rumoca_core::Span::DUMMY,
+        span: owner_span,
         parts,
         def_id: None,
     }
 }
 
-fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
+fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str, owner_span: Span) {
     // MLS Appendix B: event-generating relations are represented by Boolean
     // condition variables c(t_e) that are updated only at event instants.
     dae_model.variables.discrete_valued.insert(
         rumoca_core::VarName::new(condition_name),
         dae::Variable {
             name: rumoca_core::VarName::new(condition_name),
-            component_ref: Some(generated_single_part_ref(condition_name)),
+            component_ref: Some(generated_single_part_ref(condition_name, owner_span)),
+            source_span: owner_span,
             dims: vec![dae_model.conditions.relations.len() as i64],
             start: Some(rumoca_core::Expression::Array {
                 elements: vec![
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Boolean(false),
-                        span: rumoca_core::Span::DUMMY
+                        span: owner_span
                     };
                     dae_model.conditions.relations.len()
                 ],
                 is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
+                span: owner_span,
             }),
+            start_span: Some(owner_span),
             origin: dae::VariableOrigin::Generated,
-            ..Default::default()
+            ..dae::Variable::empty_with_span(owner_span)
         },
     );
 }
@@ -170,7 +195,11 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
         return;
     };
     let pre_name = rumoca_core::VarName::new(format!("__pre__.{condition_name}"));
-    let pre_ref = generated_pre_component_ref(condition_var.component_ref.as_ref(), condition_name);
+    let pre_ref = generated_pre_component_ref(
+        condition_var.component_ref.as_ref(),
+        condition_name,
+        condition_var.source_span,
+    );
     dae_model
         .variables
         .parameters
@@ -223,29 +252,54 @@ fn generated_condition_variable_name(dae_model: &dae::Dae) -> Option<String> {
     None
 }
 
-fn rename_condition_equations(dae_model: &mut dae::Dae, condition_name: &str) {
+fn rename_condition_equations(
+    dae_model: &mut dae::Dae,
+    condition_name: &str,
+) -> Result<(), ToDaeError> {
     for (idx, eq) in dae_model.conditions.equations.iter_mut().enumerate() {
         eq.lhs = Some(generated_condition_reference(
             condition_name,
             idx.saturating_add(1),
             eq.span,
-        ));
+        )?);
     }
+    Ok(())
 }
 
 fn generated_condition_reference(
     condition_name: &str,
     condition_index: usize,
     span: Span,
-) -> rumoca_core::Reference {
-    rumoca_core::Reference::generated_component(
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    Ok(rumoca_core::Reference::generated_component(
         condition_name,
-        vec![rumoca_core::Subscript::generated_index(
-            condition_index as i64,
+        vec![condition_index_subscript(
+            condition_index,
             span,
-        )],
+            "canonical condition reference",
+        )?],
         span,
-    )
+    ))
+}
+
+fn condition_index_subscript(
+    condition_index: usize,
+    span: Span,
+    context: &'static str,
+) -> Result<rumoca_core::Subscript, ToDaeError> {
+    let index = i64::try_from(condition_index).map_err(|_| {
+        ToDaeError::runtime_metadata_violation_at(
+            format!("{context} index exceeds i64 range"),
+            span,
+        )
+    })?;
+    rumoca_core::Subscript::try_generated_index(index, span, context).map_err(|err| {
+        if span.is_dummy() {
+            ToDaeError::runtime_metadata_violation(err.to_string())
+        } else {
+            ToDaeError::runtime_metadata_violation_at(err.to_string(), span)
+        }
+    })
 }
 
 fn dae_variable_name_exists(dae_model: &dae::Dae, name: &str) -> bool {
@@ -408,19 +462,34 @@ fn is_time_varying_var_ref(name: &rumoca_core::VarName, dae_model: &dae::Dae) ->
         })
 }
 
-fn rewrite_continuous_event_conditions(dae_model: &mut dae::Dae, condition_name: &str) {
+fn rewrite_continuous_event_conditions(
+    dae_model: &mut dae::Dae,
+    condition_name: &str,
+) -> Result<(), ToDaeError> {
     if dae_model.conditions.relations.is_empty() {
-        return;
+        return Ok(());
     }
+    let relation_spans: Vec<_> = dae_model
+        .conditions
+        .equations
+        .iter()
+        .map(|equation| equation.span)
+        .collect();
 
     for eq in &mut dae_model.continuous.equations {
         let mut rewriter = ConditionRewriter {
             relations: &dae_model.conditions.relations,
+            relation_spans: &relation_spans,
             suppress_events: false,
             condition_name,
+            error: None,
         };
         eq.rhs = rewriter.rewrite_expression(&eq.rhs);
+        if let Some(error) = rewriter.error {
+            return Err(error);
+        }
     }
+    Ok(())
 }
 
 fn is_event_suppressed_wrapper(expr: &rumoca_core::Expression) -> bool {
@@ -474,21 +543,45 @@ fn is_sample_tick_condition(expr: &rumoca_core::Expression) -> bool {
     }
 }
 
-fn c_var_ref(condition_name: &str, condition_index: usize, span: Span) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
+fn c_var_ref(
+    condition_name: &str,
+    condition_index: usize,
+    span: Span,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    Ok(rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::generated_component(condition_name, Vec::new(), span),
-        subscripts: vec![rumoca_core::Subscript::generated_index(
-            condition_index as i64,
+        subscripts: vec![condition_index_subscript(
+            condition_index,
             span,
-        )],
+            "canonical condition variable reference",
+        )?],
         span,
-    }
+    })
 }
 
 struct ConditionRewriter<'a> {
     relations: &'a [rumoca_core::Expression],
+    relation_spans: &'a [Span],
     suppress_events: bool,
     condition_name: &'a str,
+    error: Option<ToDaeError>,
+}
+
+impl ConditionRewriter<'_> {
+    fn condition_replacement(
+        &mut self,
+        original: &rumoca_core::Expression,
+        condition_index: usize,
+        span: Span,
+    ) -> rumoca_core::Expression {
+        match c_var_ref(self.condition_name, condition_index, span) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                self.error = Some(error);
+                original.clone()
+            }
+        }
+    }
 }
 
 impl ExpressionRewriter for ConditionRewriter<'_> {
@@ -497,9 +590,14 @@ impl ExpressionRewriter for ConditionRewriter<'_> {
             rumoca_core::Expression::Binary { op, span, .. } => {
                 if !self.suppress_events
                     && op.is_relational()
-                    && let Some(condition_index) = matching_relation_index(expr, self.relations)
+                    && let Some((condition_index, relation_span)) =
+                        matching_relation_index(expr, self.relations, self.relation_spans)
                 {
-                    return c_var_ref(self.condition_name, condition_index, *span);
+                    return self.condition_replacement(
+                        expr,
+                        condition_index,
+                        relation_span.unwrap_or(*span),
+                    );
                 }
                 self.walk_expression(expr)
             }
@@ -512,14 +610,20 @@ impl ExpressionRewriter for ConditionRewriter<'_> {
                     || matches!(function, rumoca_core::BuiltinFunction::NoEvent);
                 let mut arg_rewriter = ConditionRewriter {
                     relations: self.relations,
+                    relation_spans: self.relation_spans,
                     suppress_events: suppressed,
                     condition_name: self.condition_name,
+                    error: None,
                 };
-                rumoca_core::Expression::BuiltinCall {
+                let rewritten = rumoca_core::Expression::BuiltinCall {
                     function: *function,
                     args: arg_rewriter.rewrite_expressions(args),
                     span: *span,
+                };
+                if let Some(error) = arg_rewriter.error {
+                    self.error = Some(error);
                 }
+                rewritten
             }
             _ => self.walk_expression(expr),
         }
@@ -529,11 +633,18 @@ impl ExpressionRewriter for ConditionRewriter<'_> {
 fn matching_relation_index(
     expr: &rumoca_core::Expression,
     relations: &[rumoca_core::Expression],
-) -> Option<usize> {
+    relation_spans: &[Span],
+) -> Option<(usize, Option<Span>)> {
     relations
         .iter()
         .position(|relation| rumoca_core::expressions_semantically_equal(relation, expr))
-        .map(|idx| idx + 1)
+        .map(|idx| {
+            let span = relation_spans
+                .get(idx)
+                .copied()
+                .filter(|span| !span.is_dummy());
+            (idx + 1, span)
+        })
 }
 
 fn collect_if_condition_candidates(
@@ -564,11 +675,12 @@ impl ConditionCandidateCollector<'_> {
         if self.suppress_events {
             return;
         }
+        let span = expr.span().unwrap_or(self.current_span);
         insert_condition_candidate(
             self.out,
             ConditionCandidate {
-                expr,
-                span: self.current_span,
+                expr: expr.with_span(span),
+                span,
                 source: self.source.clone(),
             },
         );
@@ -645,5 +757,45 @@ impl ExpressionVisitor for ConditionCandidateCollector<'_> {
         for arg in args {
             self.visit_with_suppression(arg, suppressed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time_gt_zero(span: Span) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Gt,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("time").into(),
+                subscripts: vec![],
+                span,
+            }),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(0.0),
+                span,
+            }),
+            span,
+        }
+    }
+
+    #[test]
+    fn canonical_condition_subscript_requires_source_provenance() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            time_gt_zero(Span::DUMMY),
+            Span::DUMMY,
+            "time > 0",
+        ));
+
+        let err = populate_canonical_conditions(&mut dae_model)
+            .expect_err("source-derived condition subscripts require provenance");
+
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+        assert!(
+            err.to_string().contains("canonical condition reference"),
+            "unexpected error: {err}"
+        );
     }
 }

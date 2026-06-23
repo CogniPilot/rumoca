@@ -32,30 +32,39 @@ fn when_target_scalar_count(target: &rumoca_core::VarName, flat: &flat::Model) -
     1
 }
 
-fn target_ref(target: &rumoca_core::VarName) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
-        name: crate::convert::structured_target_reference(target),
+fn target_ref(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    flat: &flat::Model,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    Ok(rumoca_core::Expression::VarRef {
+        name: crate::convert::structured_target_reference_with_flat_metadata(target, span, flat)?,
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
-    }
+        span,
+    })
 }
 
 /// Build `pre(target)` expression used for conditional when branches without assignment.
-fn pre_of_target(target: &rumoca_core::VarName) -> rumoca_core::Expression {
-    rumoca_core::Expression::BuiltinCall {
+fn pre_of_target(
+    target: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    flat: &flat::Model,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    Ok(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Pre,
-        args: vec![target_ref(target)],
-        span: rumoca_core::Span::DUMMY,
-    }
+        args: vec![target_ref(target, span, flat)?],
+        span,
+    })
 }
 
 fn missing_when_branch_rhs(
     target: &rumoca_core::VarName,
     state_vars: &IndexSet<rumoca_core::VarName>,
     flat: &flat::Model,
+    span: Span,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     if state_vars.contains(target) {
-        return Ok(target_ref(target));
+        return target_ref(target, span, flat);
     }
     if flat
         .variables
@@ -64,7 +73,7 @@ fn missing_when_branch_rhs(
         || is_clocked_assignment_target(target, flat)
         || is_when_only_memory_target(target, flat)
     {
-        return Ok(pre_of_target(target));
+        return pre_of_target(target, span, flat);
     }
     Err(ToDaeError::internal(format!(
         "MLS §8.3.5 violation: conditional when-equation target '{}' is not assigned in every branch and is not a discrete variable",
@@ -108,21 +117,25 @@ fn build_when_assignment_eq(
     origin: &str,
     inactive_rhs: dae::WhenEquationInactiveRhs,
     flat: &flat::Model,
-) -> Option<ConvertedWhenEquation> {
+) -> Result<Option<ConvertedWhenEquation>, ToDaeError> {
     let scalar_count = when_target_scalar_count(target, flat);
     if scalar_count == 0 {
-        return None;
+        return Ok(None);
     }
-    Some(ConvertedWhenEquation {
+    Ok(Some(ConvertedWhenEquation {
         equation: dae::Equation::explicit_with_scalar_count(
-            crate::convert::structured_target_reference(&flat_to_dae_var_name(target)),
-            flat_to_dae_expression_with_refs(rhs, flat),
+            crate::convert::structured_target_reference_with_flat_metadata(
+                &flat_to_dae_var_name(target),
+                span,
+                flat,
+            )?,
+            flat_to_dae_expression_with_refs(rhs, flat)?,
             span,
             origin.to_string(),
             scalar_count,
         ),
         inactive_rhs,
-    })
+    }))
 }
 
 fn build_when_function_call_output_eqs(
@@ -186,7 +199,7 @@ fn build_when_function_call_output_eqs(
             &output_origin,
             dae::WhenEquationInactiveRhs::Pre,
             flat,
-        ) {
+        )? {
             equations.push(eq);
         }
     }
@@ -239,8 +252,9 @@ fn build_conditional_when_rhs(
     else_branch: &IndexMap<rumoca_core::VarName, ConvertedWhenEquation>,
     state_vars: &IndexSet<rumoca_core::VarName>,
     flat: &flat::Model,
+    span: Span,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
-    let fallback = missing_when_branch_rhs(target, state_vars, flat)?;
+    let fallback = missing_when_branch_rhs(target, state_vars, flat, span)?;
     let branches = branches
         .iter()
         .map(|(condition, assignments)| {
@@ -260,7 +274,7 @@ fn build_conditional_when_rhs(
     Ok(rumoca_core::Expression::If {
         branches,
         else_branch: Box::new(else_rhs),
-        span: rumoca_core::Span::DUMMY,
+        span,
     })
 }
 
@@ -302,6 +316,7 @@ fn convert_conditional_when_equation(
             &converted_else,
             state_vars,
             flat,
+            span,
         )?;
         let conditional_origin = format!("conditional when assignment to {} ({})", target, origin);
         let inactive_rhs = if state_vars.contains(target) {
@@ -310,7 +325,7 @@ fn convert_conditional_when_equation(
             dae::WhenEquationInactiveRhs::Pre
         };
         if let Some(converted_eq) =
-            build_when_assignment_eq(target, &rhs, span, &conditional_origin, inactive_rhs, flat)
+            build_when_assignment_eq(target, &rhs, span, &conditional_origin, inactive_rhs, flat)?
         {
             converted.push(converted_eq);
         }
@@ -326,7 +341,7 @@ pub(crate) fn convert_when_clause(
     flat: &flat::Model,
 ) -> Result<dae::WhenClause, ToDaeError> {
     let mut dae_when = dae::WhenClause::new(
-        flat_to_dae_expression_with_refs(&when.condition, flat),
+        flat_to_dae_expression_with_refs(&when.condition, flat)?,
         when.span,
         "when clause".to_string(),
     );
@@ -366,9 +381,9 @@ fn collect_when_actions(
                     condition: flat_to_dae_expression_with_refs(
                         &and_expr(guard.clone(), not_expr(condition.clone(), *span), *span),
                         flat,
-                    ),
+                    )?,
                     kind: dae::DaeEventActionKind::Assert {
-                        message: flat_to_dae_expression_with_refs(message, flat),
+                        message: flat_to_dae_expression_with_refs(message, flat)?,
                     },
                     span: *span,
                     origin: origin.clone(),
@@ -379,9 +394,9 @@ fn collect_when_actions(
                 span,
                 origin,
             } => actions.push(dae::DaeEventAction {
-                condition: flat_to_dae_expression_with_refs(guard, flat),
+                condition: flat_to_dae_expression_with_refs(guard, flat)?,
                 kind: dae::DaeEventActionKind::Terminate {
-                    message: flat_to_dae_expression_with_refs(message, flat),
+                    message: flat_to_dae_expression_with_refs(message, flat)?,
                 },
                 span: *span,
                 origin: origin.clone(),
@@ -459,7 +474,7 @@ fn convert_when_equation(
             origin,
             dae::WhenEquationInactiveRhs::Pre,
             flat,
-        )
+        )?
         .into_iter()
         .collect()),
         flat::WhenEquation::Reinit {
@@ -479,7 +494,7 @@ fn convert_when_equation(
                 origin,
                 dae::WhenEquationInactiveRhs::Current,
                 flat,
-            )
+            )?
             .into_iter()
             .collect())
         }
@@ -517,17 +532,27 @@ mod tests {
 
     use super::*;
 
+    fn test_span(start: usize) -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("when_conversion_test.mo"),
+            start,
+            start + 7,
+        )
+    }
+
     #[test]
     fn test_insert_when_assignment_rejects_duplicate_targets() {
         let mut assignments = IndexMap::new();
         let target = rumoca_core::VarName::new("x");
+        let span = test_span(10);
         let eq = dae::Equation::explicit(
-            crate::convert::structured_target_reference(&flat_to_dae_var_name(&target)),
+            crate::convert::structured_target_reference(&flat_to_dae_var_name(&target), span)
+                .expect("test target reference should keep source provenance"),
             flat_to_dae_expression(&rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
+                span,
             }),
-            Span::default(),
+            span,
             "test".to_string(),
         );
         insert_when_assignment(
@@ -552,9 +577,10 @@ mod tests {
     #[test]
     fn test_build_when_assignment_eq_uses_target_scalar_size() {
         let target = rumoca_core::VarName::new("x");
+        let span = test_span(30);
         let rhs = rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span,
         };
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -562,24 +588,30 @@ mod tests {
             flat::Variable {
                 name: target.clone(),
                 dims: vec![3],
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
         let eq = build_when_assignment_eq(
             &target,
             &rhs,
-            Span::default(),
+            span,
             "test",
             dae::WhenEquationInactiveRhs::Pre,
             &flat,
         )
+        .expect("array target should be evaluated")
         .expect("array target should produce explicit equation");
         assert_eq!(eq.equation.scalar_count, 3);
     }
 
     #[test]
     fn missing_conditional_when_branch_uses_pre_only_for_discrete_targets() {
+        let span = test_span(10);
         let target = rumoca_core::VarName::new("d");
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -587,24 +619,35 @@ mod tests {
             flat::Variable {
                 name: target.clone(),
                 variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
-        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat)
+        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, span)
             .expect("discrete targets may hold their previous value");
 
         assert!(matches!(
-            rhs,
+            &rhs,
             rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Pre,
-                ..
-            }
+                span: rhs_span,
+                args,
+            } if *rhs_span == span
+                && matches!(
+                    args.as_slice(),
+                    [rumoca_core::Expression::VarRef { span: target_span, .. }]
+                        if *target_span == span
+                )
         ));
     }
 
     #[test]
     fn missing_conditional_when_branch_uses_pre_for_clocked_binding_targets() {
+        let span = test_span(50);
         let target = rumoca_core::VarName::new("u_super");
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -616,18 +659,22 @@ mod tests {
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::VarName::new("u").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
                 variability: rumoca_core::Variability::Continuous(rumoca_core::Token::default()),
                 is_discrete_type: false,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
-        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat)
+        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, span)
             .expect("clocked binding targets may hold their previous value");
 
         assert!(matches!(
@@ -641,6 +688,7 @@ mod tests {
 
     #[test]
     fn missing_conditional_when_branch_uses_pre_for_clocked_equation_targets() {
+        let span = test_span(70);
         let target = rumoca_core::VarName::new("u_super");
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -649,33 +697,40 @@ mod tests {
                 name: target.clone(),
                 variability: rumoca_core::Variability::Continuous(rumoca_core::Token::default()),
                 is_discrete_type: false,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         flat.equations.push(flat::Equation {
             residual: rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Sub,
-                lhs: Box::new(target_ref(&target)),
+                lhs: Box::new(
+                    target_ref(&target, span, &flat)
+                        .expect("test target reference should keep source provenance"),
+                ),
                 rhs: Box::new(rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::VarName::new("superSample").into(),
                     args: vec![rumoca_core::Expression::VarRef {
                         name: rumoca_core::VarName::new("u").into(),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     }],
                     is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            span: rumoca_core::Span::DUMMY,
+            span,
             origin: flat::EquationOrigin::ComponentEquation {
                 component: "clocked".to_string(),
             },
             scalar_count: 1,
         });
 
-        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat)
+        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, span)
             .expect("clocked equation targets may hold their previous value");
 
         assert!(matches!(
@@ -689,6 +744,7 @@ mod tests {
 
     #[test]
     fn missing_conditional_when_branch_uses_pre_for_when_only_targets() {
+        let span = test_span(90);
         let target = rumoca_core::VarName::new("u_super");
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -697,39 +753,43 @@ mod tests {
                 name: target.clone(),
                 variability: rumoca_core::Variability::Continuous(rumoca_core::Token::default()),
                 is_discrete_type: false,
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
         let mut when_clause = flat::WhenClause::new(
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(true),
-                span: rumoca_core::Span::DUMMY,
+                span,
             },
-            Span::DUMMY,
+            span,
         );
         when_clause.add_equation(flat::WhenEquation::Conditional {
             branches: vec![(
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Boolean(true),
-                    span: rumoca_core::Span::DUMMY,
+                    span,
                 },
                 vec![flat::WhenEquation::assign(
                     target.clone(),
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Real(1.0),
-                        span: rumoca_core::Span::DUMMY,
+                        span,
                     },
-                    Span::DUMMY,
+                    span,
                     "clocked branch",
                 )],
             )],
             else_branch: vec![],
-            span: Span::DUMMY,
+            span,
             origin: "conditional clocked memory".to_string(),
         });
         flat.when_clauses.push(when_clause);
 
-        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat)
+        let rhs = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, span)
             .expect("when-only targets may hold their previous value");
 
         assert!(matches!(
@@ -743,21 +803,24 @@ mod tests {
 
     #[test]
     fn missing_conditional_reinit_branch_uses_current_state_not_pre() {
+        let span = test_span(40);
         let target = rumoca_core::VarName::new("x");
         let mut state_vars = IndexSet::new();
         state_vars.insert(target.clone());
 
-        let rhs = missing_when_branch_rhs(&target, &state_vars, &flat::Model::new())
+        let rhs = missing_when_branch_rhs(&target, &state_vars, &flat::Model::new(), span)
             .expect("state reinit branches may retain current state");
 
         assert!(matches!(
             rhs,
-            rumoca_core::Expression::VarRef { name, .. } if name.var_name() == &target
+            rumoca_core::Expression::VarRef { name, span: rhs_span, .. }
+                if name.var_name() == &target && rhs_span == span
         ));
     }
 
     #[test]
     fn missing_conditional_when_branch_rejects_continuous_non_state_targets() {
+        let span = test_span(110);
         let target = rumoca_core::VarName::new("y");
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -765,11 +828,15 @@ mod tests {
             flat::Variable {
                 name: target.clone(),
                 variability: rumoca_core::Variability::Continuous(rumoca_core::Token::default()),
-                ..Default::default()
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
             },
         );
 
-        let err = missing_when_branch_rhs(&target, &IndexSet::new(), &flat)
+        let err = missing_when_branch_rhs(&target, &IndexSet::new(), &flat, span)
             .expect_err("continuous non-state target must not synthesize pre(target)");
 
         assert!(err.to_string().contains("not assigned in every branch"));

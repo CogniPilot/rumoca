@@ -10,7 +10,6 @@
 //!   7. push to WebSocket
 //!   8. optional realtime pacing
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -33,6 +32,13 @@ use serde::Deserialize;
 use crate::runner::devices::{self, Devices};
 
 use crate::runner::config::{ResetConfig, SimulationConfig};
+
+fn wall_ms_since_unix_epoch() -> Result<f64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("read wall clock time since Unix epoch")?
+        .as_millis() as f64)
+}
 
 // ── External-interface subprocess ──────────────────────────────────────────
 
@@ -160,17 +166,18 @@ impl TraceLogger {
         })
     }
 
-    fn record(&mut self, engine: &InputEngine, rt: &RuntimeContext<'_>) {
+    fn record(&mut self, engine: &InputEngine, rt: &RuntimeContext<'_>) -> Result<()> {
         let mut first = true;
         for name in &self.fields {
             if !first {
-                let _ = self.writer.write_all(b",");
+                self.writer.write_all(b",")?;
             }
             first = false;
-            let v = resolve_trace_field(name, engine, rt);
-            let _ = write!(self.writer, "{v}");
+            let v = resolve_trace_field(name, engine, rt)?;
+            write!(self.writer, "{v}")?;
         }
-        let _ = self.writer.write_all(b"\n");
+        self.writer.write_all(b"\n")?;
+        Ok(())
     }
 }
 
@@ -195,27 +202,31 @@ impl Drop for TraceLogger {
 /// Resolve a `debug_log.capture` field to an f64 using the same prefix
 /// scheme as signal mapper: `stepper:`, `local:` (supports `.idx`),
 /// `runtime:frame_num|wall_ms|input_connected|stepper_time`. Missing
-/// values log as `nan` rather than failing the row.
-fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>) -> f64 {
+fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>) -> Result<f64> {
     if let Some(rest) = name.strip_prefix("stepper:") {
         if rest == "time" {
-            return rt.stepper_time;
+            return Ok(rt.stepper_time);
         }
-        return (rt.stepper_get)(rest).unwrap_or(f64::NAN);
+        return (rt.stepper_get)(rest)?
+            .ok_or_else(|| anyhow::anyhow!("trace field stepper:{rest} did not resolve"));
     }
     if let Some(rest) = name.strip_prefix("local:") {
-        return engine.get(rest).unwrap_or(f64::NAN);
+        return engine
+            .get(rest)
+            .ok_or_else(|| anyhow::anyhow!("trace field local:{rest} did not resolve"));
     }
     if let Some(rest) = name.strip_prefix("runtime:") {
         return match rest {
-            "frame_num" => rt.frame_num as f64,
-            "wall_ms" => rt.wall_ms,
-            "input_connected" => f64::from(u8::from(rt.input_connected)),
-            "stepper_time" => rt.stepper_time,
-            _ => f64::NAN,
+            "frame_num" => Ok(rt.frame_num as f64),
+            "wall_ms" => Ok(rt.wall_ms),
+            "input_connected" => Ok(f64::from(u8::from(rt.input_connected))),
+            "stepper_time" => Ok(rt.stepper_time),
+            _ => Err(anyhow::anyhow!("unknown trace runtime field '{rest}'")),
         };
     }
-    f64::NAN
+    Err(anyhow::anyhow!(
+        "trace field '{name}' must use stepper:, local:, or runtime:"
+    ))
 }
 
 // ── UDP config resolution ───────────────────────────────────────────────────
@@ -387,21 +398,25 @@ pub struct SimLoopArgs<'a> {
 }
 
 struct StepperFrameSnapshot {
-    values: Option<HashMap<String, f64>>,
+    values: Option<indexmap::IndexMap<String, f64>>,
 }
 
 impl StepperFrameSnapshot {
-    fn new(stepper: &impl InteractiveStepper, names: &[String]) -> Self {
-        Self {
-            values: stepper.values_for(names),
-        }
+    fn new(stepper: &impl InteractiveStepper, names: &[String]) -> Result<Self> {
+        Ok(Self {
+            values: stepper.values_for(names)?,
+        })
     }
 
-    fn get(&self, stepper: &impl InteractiveStepper, name: &str) -> Option<f64> {
-        self.values
+    fn get(&self, stepper: &impl InteractiveStepper, name: &str) -> Result<Option<f64>> {
+        if let Some(value) = self
+            .values
             .as_ref()
             .and_then(|values| values.get(name).copied())
-            .or_else(|| stepper.get(name))
+        {
+            return Ok(Some(value));
+        }
+        stepper.get(name).map_err(Into::into)
     }
 }
 
@@ -607,10 +622,10 @@ impl FrameCtx<'_> {
         // Pacing-specific receive + step gate.
         match self.mode {
             SimPacingMode::AsFastAsPossible | SimPacingMode::Realtime => {
-                self.drain_udp(state, stepper, engine);
+                self.drain_udp(state, stepper, engine)?;
             }
             SimPacingMode::Lockstep => {
-                let transport_packet = self.wait_for_command(state, stepper, engine);
+                let transport_packet = self.wait_for_command(state, stepper, engine)?;
                 if !viewer_packet && !transport_packet {
                     // No input packet arrived — try again. Physics and input
                     // integrators stay paused (lockstep semantics).
@@ -630,7 +645,7 @@ impl FrameCtx<'_> {
         if let FrameControl::Break = self.handle_signals(engine, stepper)? {
             return Ok(FrameControl::Break);
         }
-        self.apply_stepper_inputs(state, stepper, engine, input_runtime);
+        self.apply_stepper_inputs(state, stepper, engine, input_runtime)?;
         step_substeps(stepper, self.dt)?;
 
         self.emit_payloads(state, stepper, engine, input_runtime)?;
@@ -667,13 +682,10 @@ impl FrameCtx<'_> {
         stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
         input_runtime: &Devices,
-    ) {
-        let wall_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as f64;
+    ) -> Result<()> {
+        let wall_ms = wall_ms_since_unix_epoch()?;
         let stepper_time = stepper.time();
-        let stepper_get = |name: &str| stepper.get(name);
+        let stepper_get = |name: &str| stepper.get(name).map_err(Into::into);
         let rt = RuntimeContext {
             frame_num: state.frame_num,
             wall_ms,
@@ -683,9 +695,12 @@ impl FrameCtx<'_> {
             stepper_time,
             stepper_get: &stepper_get,
         };
-        for (name, val) in self.mapper.build_stepper_inputs(engine, &rt) {
-            let _ = stepper.set_input(&name, val);
+        for (name, val) in self.mapper.build_stepper_inputs(engine, &rt)? {
+            stepper
+                .set_input(&name, val)
+                .with_context(|| format!("set stepper input '{name}'"))?;
         }
+        Ok(())
     }
 
     /// Build payloads + send FB + push viewer JSON.
@@ -697,13 +712,10 @@ impl FrameCtx<'_> {
         engine: &mut InputEngine,
         input_runtime: &Devices,
     ) -> Result<()> {
-        let wall_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as f64;
+        let wall_ms = wall_ms_since_unix_epoch()?;
         let (send_frame, json) = {
             let stepper_time = stepper.time();
-            let snapshot = StepperFrameSnapshot::new(stepper, self.mapper.stepper_lookup_names());
+            let snapshot = StepperFrameSnapshot::new(stepper, self.mapper.stepper_lookup_names())?;
             let stepper_get = |name: &str| snapshot.get(stepper, name);
             let rt = RuntimeContext {
                 frame_num: state.frame_num,
@@ -714,10 +726,13 @@ impl FrameCtx<'_> {
                 stepper_time,
                 stepper_get: &stepper_get,
             };
-            let send_frame = self.fb.map(|_| self.mapper.build_send(engine, &rt));
-            let json = self.mapper.build_viewer_json(engine, &rt);
+            let send_frame = self
+                .fb
+                .map(|_| self.mapper.build_send(engine, &rt))
+                .transpose()?;
+            let json = self.mapper.build_viewer_json(engine, &rt)?;
             if let Some(trace) = state.trace.as_mut() {
-                trace.record(engine, &rt);
+                trace.record(engine, &rt)?;
             }
             (send_frame, json)
         };
@@ -735,19 +750,16 @@ impl FrameCtx<'_> {
         state: &mut FrameState,
         stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
-    ) -> bool {
+    ) -> Result<bool> {
         let Some(fb) = self.fb else {
-            return false;
+            return Ok(false);
         };
         let Some(n) = fb.udp.recv_blocking(&mut state.recv_buf) else {
-            return false;
+            return Ok(false);
         };
         state.pkt_count += 1;
-        if n == fb.recv_expected {
-            let values = fb.unpack.unpack(&state.recv_buf[..n]);
-            apply_received(&values, stepper, engine);
-        }
-        true
+        apply_fb_datagram(fb, &state.recv_buf[..n], stepper, engine)?;
+        Ok(true)
     }
 
     fn handle_signals(
@@ -790,18 +802,23 @@ impl FrameCtx<'_> {
         state: &mut FrameState,
         stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
-    ) {
+    ) -> Result<()> {
         let Some(fb) = self.fb else {
-            return;
+            return Ok(());
         };
         let expected = fb.recv_expected;
+        let mut error = None;
         fb.udp.drain(&mut state.recv_buf, |datagram| {
             state.pkt_count += 1;
-            if datagram.len() == expected {
-                let values = fb.unpack.unpack(datagram);
-                apply_received(&values, stepper, engine);
+            if datagram.len() != expected || error.is_some() {
+                return;
             }
+            error = apply_fb_datagram(fb, datagram, stepper, engine).err();
         });
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
@@ -883,6 +900,20 @@ fn spawn_cleanup_thread(external_interface: Arc<Mutex<Option<ExternalInterfacePr
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/// Decode and apply a received flatbuffer datagram when it matches the schema.
+fn apply_fb_datagram(
+    fb: &FbTransport,
+    datagram: &[u8],
+    stepper: &mut impl InteractiveStepper,
+    engine: &mut InputEngine,
+) -> Result<()> {
+    if datagram.len() != fb.recv_expected {
+        return Ok(());
+    }
+    let values = fb.unpack.unpack(datagram);
+    apply_received(&values, stepper, engine)
+}
+
 /// Apply a received SignalFrame to the stepper or locals based on the key
 /// prefix. Keys like `"stepper:omega_m1"` are applied to the stepper; keys
 /// like `"local:armed"` go to the engine's locals; bare names default to
@@ -891,16 +922,21 @@ fn apply_received(
     values: &rumoca_codec::SignalFrame,
     stepper: &mut impl InteractiveStepper,
     engine: &mut InputEngine,
-) {
+) -> Result<()> {
     for (key, val) in values.iter() {
         if let Some(rest) = key.strip_prefix("stepper:") {
-            let _ = stepper.set_input(rest, val);
+            stepper
+                .set_input(rest, val)
+                .with_context(|| format!("set received stepper input '{rest}'"))?;
         } else if let Some(rest) = key.strip_prefix("local:") {
             engine.set_local(rest, val);
         } else {
-            let _ = stepper.set_input(key, val);
+            stepper
+                .set_input(key, val)
+                .with_context(|| format!("set received stepper input '{key}'"))?;
         }
     }
+    Ok(())
 }
 
 struct ResetRuntime<'a> {
@@ -965,7 +1001,7 @@ fn step_substeps(stepper: &mut impl InteractiveStepper, dt: f64) -> Result<()> {
 }
 
 // WebSocket server lives in rumoca-transport-websocket.
-// HTTP viewer server lives in rumoca-viz-web.
+// HTTP viewer server lives in rumoca-sim::web.
 
 #[cfg(test)]
 mod tests {
