@@ -7,7 +7,7 @@
 
 use super::render_expr::{
     get_binop_string, get_field, get_unop_string, is_exp_op, is_mul_elem_op, is_variant,
-    render_args, render_expression,
+    render_args, render_expression, subscript_index_value,
 };
 use super::{ExprConfig, IfStyle, RenderResult, render_vec_with_capacity};
 use crate::errors::render_err;
@@ -782,6 +782,9 @@ pub(super) fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> RenderResu
             "ComponentReference resolved to empty name: {comp}"
         )));
     }
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &joined) {
+        return Ok(symbol);
+    }
     super::emitted_symbol(&joined, cfg)
 }
 
@@ -850,7 +853,12 @@ fn render_part_subscripts(part: &Value, cfg: &ExprConfig) -> RenderResult {
 /// Render an AST subscript.
 fn render_ast_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Ok(index) = get_field(sub, "Index") {
-        return Ok(index.to_string());
+        let value = subscript_index_value(&index)?;
+        return if cfg.one_based_index || cfg.subscript_underscore {
+            Ok((value + 1).to_string())
+        } else {
+            Ok(value.to_string())
+        };
     }
     if let Ok(expr) = get_field(sub, "Expr") {
         return render_expression(&expr, cfg);

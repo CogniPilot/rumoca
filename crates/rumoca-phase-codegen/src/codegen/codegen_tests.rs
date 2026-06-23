@@ -1304,6 +1304,78 @@ fn test_render_expr_uses_template_symbol_map_for_indexed_refs() {
 }
 
 #[test]
+fn test_render_expr_uses_symbol_map_for_structured_indexed_var_ref() {
+    let expr = serde_json::json!({
+        "VarRef": {
+            "name": {
+                "name": "control.initial_active",
+                "component_ref": {
+                    "local": false,
+                    "parts": [
+                        {"ident": "control", "subs": []},
+                        {"ident": "initial_active", "subs": []}
+                    ],
+                    "def_id": 1
+                }
+            },
+            "subscripts": [{"Index": {"value": 1}}]
+        }
+    });
+    let symbols = serde_json::json!({
+        "control.initial_active[1]": "initial_active_1"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "initial_active_1");
+}
+
+#[test]
+fn test_render_component_ref_uses_symbol_map_before_c_bracket_fallback() {
+    let component_ref = serde_json::json!({
+        "parts": [
+            {"ident": {"text": "plant"}, "subscripts": []},
+            {"ident": {"text": "arr"}, "subscripts": [{"Index": {"value": 0}}]},
+            {"ident": {"text": "field"}, "subscripts": []}
+        ]
+    });
+    let symbols = serde_json::json!({
+        "plant.arr[1].field": "plant_arr_1_field",
+        "plant.arr[2].field": "plant_arr_2_field"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&component_ref), &cfg).unwrap();
+    assert_eq!(rendered, "plant_arr_1_field");
+}
+
+#[test]
+fn test_render_component_ref_canonicalizes_zero_based_source_without_symbol_map() {
+    let component_ref = serde_json::json!({
+        "parts": [
+            {"ident": "plant", "subs": []},
+            {"ident": "arr", "subs": [{"Index": {"value": 0}}]},
+            {"ident": "field", "subs": []}
+        ]
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&component_ref), &cfg).unwrap();
+    assert_eq!(rendered, "plant_arr_1_field");
+}
+
+#[test]
 fn test_fmi3_initialize_defaults_uses_allocated_symbols_for_start_aliases() {
     let mut dae = dae::Dae::new();
     for (name, start) in [
