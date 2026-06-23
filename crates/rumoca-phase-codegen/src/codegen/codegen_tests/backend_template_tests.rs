@@ -825,6 +825,33 @@ fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
 }
 
 #[test]
+fn test_fmi_build_scripts_package_only_needed_external_libraries() {
+    for target in ["fmi2", "fmi3"] {
+        let script = builtin_template(target, "build.sh.jinja");
+        assert!(
+            script.contains("UNRESOLVED_SYMBOLS_FILE")
+                && script.contains("external_library_declares_unresolved_symbol")
+                && script.contains("external_library_exports_unresolved_symbol"),
+            "{target} shell build should inspect unresolved symbols before linking external libraries"
+        );
+        assert!(
+            script.contains("EXTERNAL_LIBS_NEEDED=0")
+                && script.contains(r#"cp "$external_lib_file" "binaries/$PLATFORM/$(basename "$external_lib_file")""#),
+            "{target} shell build should copy only external libraries needed by the FMU binary"
+        );
+        assert!(
+            script.contains("RUNTIME_PATH_FLAGS")
+                && script.contains("rewrite_darwin_runtime_paths"),
+            "{target} shell build should make copied runtime libraries loader-relative"
+        );
+        assert!(
+            !script.contains("EXTERNAL_LIB_ARGS=\"$EXTERNAL_LIB_ARGS"),
+            "{target} shell build should not accumulate every declared external library unconditionally"
+        );
+    }
+}
+
+#[test]
 fn test_fmi3_initial_builtin_tracks_initialization_mode() {
     assert!(
         builtin_template("fmi3", "model.c.jinja").contains("modelInitializationMode"),
