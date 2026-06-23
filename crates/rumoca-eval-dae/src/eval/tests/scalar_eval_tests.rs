@@ -368,6 +368,35 @@ fn test_checked_eval_var_ref_singleton_range_slice_as_scalar() {
 }
 
 #[test]
+fn test_checked_eval_var_ref_subscript_expressions() {
+    let mut env = VarEnv::<f64>::new();
+    env.vars.insert("x[1]".to_string(), 42.0);
+    env.vars.insert("x[2]".to_string(), 99.0);
+    env.vars.insert("n".to_string(), 2.0);
+    env.dims = Arc::new(IndexMap::from([("x".to_string(), vec![2])]));
+
+    let arithmetic_subscript = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("x"),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(binop(rumoca_core::OpBinary::Sub, int_lit(2), int_lit(1))),
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let variable_subscript = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("x"),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(var("n")),
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&arithmetic_subscript, &env), Ok(42.0));
+    assert_eq!(eval_expr::<f64>(&variable_subscript, &env), Ok(99.0));
+}
+
+#[test]
 fn test_eval_comparison() {
     let lt = binop(rumoca_core::OpBinary::Lt, lit(1.0), lit(2.0));
     assert_eq!(eval_expr_value::<f64>(&lt, &VarEnv::new()), 1.0);
