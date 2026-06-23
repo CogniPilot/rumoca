@@ -593,6 +593,7 @@ static void initialize_defaults(ModelInstance* m);
 static void compute_algebraics(ModelInstance* m);
 static void compute_derivatives(ModelInstance* m);
 static void compute_outputs(ModelInstance* m);
+static void compute_initial_updates(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
 
@@ -937,6 +938,54 @@ static void initialize_defaults(ModelInstance* m) {
     m->clocks[{{ loop.index0 }}] = 0;
 {% endfor %}
 #endif
+}
+
+/* =========================================================================
+ * Apply explicit initial equations after parameters have their start values.
+ * ========================================================================= */
+static void compute_initial_updates(ModelInstance* m) {
+{% if dae.initial_equations | default([]) | length > 0 %}
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
+{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
+{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
+
+{% set ns_init = namespace(offset=0) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+{% set scalar_symbol = symbol(symbols, scalar_name) %}
+{% for eq in dae.initial_equations | default([]) %}
+{% if eq.lhs is defined and eq.rhs is defined and render_expr(eq.lhs, cfg) == scalar_symbol %}
+    m->x[{{ ns_init.offset }}] = {{ render_expr(eq.rhs, cfg) }};  /* initial equation: {{ scalar_name }} */
+{% endif %}
+{% endfor %}
+{% set ns_init.offset = ns_init.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set scalar_symbol = symbol(symbols, name) %}
+{% for eq in dae.initial_equations | default([]) %}
+{% if eq.lhs is defined and eq.rhs is defined and render_expr(eq.lhs, cfg) == scalar_symbol %}
+    m->x[{{ ns_init.offset }}] = {{ render_expr(eq.rhs, cfg) }};  /* initial equation: {{ name }} */
+{% endif %}
+{% endfor %}
+{% set ns_init.offset = ns_init.offset + 1 %}
+{% endif %}
+{% endfor %}
+    m->dirty_values = 1;
+{% else %}
+    (void)m;
+{% endif %}
 }
 
 /* =========================================================================
@@ -1465,6 +1514,7 @@ FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     snapshot_pre_parameters(m);
 
     /* Compute initial derivatives and outputs */
+    compute_initial_updates(m);
     compute_derivatives(m);
     compute_event_indicators(m);
     memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));

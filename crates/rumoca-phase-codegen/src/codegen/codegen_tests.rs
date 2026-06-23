@@ -945,6 +945,101 @@ fn test_fmi_solve_y_runtime_cases_do_not_count_zero_length_arrays() {
     }
 }
 
+#[test]
+fn test_fmi_templates_apply_explicit_state_initial_equations() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "initial_equations": [{
+            "lhs": {
+                "VarRef": {
+                    "name": "x",
+                    "subscripts": []
+                }
+            },
+            "rhs": {
+                "VarRef": {
+                    "name": "p",
+                    "subscripts": []
+                }
+            }
+        }],
+        "x": {
+            "x": {
+                "name": "x",
+                "dims": [],
+                "start": null,
+                "unit": null,
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null
+            }
+        },
+        "y": {},
+        "w": {},
+        "u": {},
+        "p": {
+            "p": {
+                "name": "p",
+                "dims": [],
+                "unit": null,
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null,
+                "start": {
+                    "Literal": {
+                        "value": {
+                            "Real": 292.15
+                        }
+                    }
+                }
+            }
+        },
+        "z": {},
+        "m": {},
+        "constants": {},
+        "functions": {},
+        "symbol_refs": ["x", "p"],
+        "symbol_aliases": [],
+        "enum_literal_ordinals": {},
+        "enum_type_names": []
+    });
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .unwrap();
+        assert!(
+            rendered.contains("m->x[0] = p;  /* initial equation: x */"),
+            "{target} should assign explicit state initial equations to state storage:\n{rendered}"
+        );
+
+        let exit_initialization = rendered
+            .split(if target == "fmi2" {
+                "FMI2_EXPORT fmi2Status fmi2ExitInitializationMode"
+            } else {
+                "FMI3_EXPORT fmi3Status fmi3ExitInitializationMode"
+            })
+            .nth(1)
+            .expect("template should define exit initialization");
+        assert!(
+            exit_initialization.contains("compute_initial_updates(m);"),
+            "{target} should apply explicit state initial equations before initial derivatives:\n{exit_initialization}"
+        );
+        assert!(
+            exit_initialization
+                .find("compute_initial_updates(m);")
+                .unwrap()
+                < exit_initialization.find("compute_derivatives(m);").unwrap(),
+            "{target} should apply explicit state initial equations before initial derivatives:\n{exit_initialization}"
+        );
+    }
+}
+
 fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
     template
         .split(marker)
