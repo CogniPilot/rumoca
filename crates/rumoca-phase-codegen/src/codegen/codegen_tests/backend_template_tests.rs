@@ -751,6 +751,59 @@ fn test_fmi3_model_description_exports_dae_inputs_as_inputs() {
 }
 
 #[test]
+fn test_fmi_model_description_escapes_expression_attributes() {
+    let less_than_expression = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Lt,
+        lhs: Box::new(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(2.0),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let mut dae = dae::Dae::new();
+    dae.variables.inputs.insert(
+        "u".into(),
+        rumoca_ir_dae::Variable {
+            name: "u".into(),
+            min: Some(less_than_expression),
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+
+    let fmi2_xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi2", "modelDescription.xml.jinja"),
+        "M",
+    )
+    .expect("render FMI2 modelDescription");
+    let fmi3_xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi3", "modelDescription.xml.jinja"),
+        "M",
+    )
+    .expect("render FMI3 modelDescription");
+
+    for xml in [fmi2_xml, fmi3_xml] {
+        assert!(
+            xml.contains(r#"min="(1.0 &lt; 2.0)""#),
+            "modelDescription expression attributes must be XML escaped:\n{xml}"
+        );
+        assert!(
+            !xml.contains(r#"min="(1.0 < 2.0)""#),
+            "modelDescription must not emit raw '<' inside attributes:\n{xml}"
+        );
+    }
+}
+
+#[test]
 fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
     assert!(
         builtin_template("fmi3", "CMakeLists.txt.jinja")
@@ -780,6 +833,18 @@ fn test_fmi3_initial_builtin_tracks_initialization_mode() {
     assert!(
         !builtin_template("fmi3", "model.c.jinja").contains("#define initial() 0"),
         "MLS initial() cannot be hard-coded false in FMI 3 initialization"
+    );
+}
+
+#[test]
+fn test_fmi2_initial_builtin_tracks_initialization_mode() {
+    assert!(
+        builtin_template("fmi2", "model.c.jinja").contains("modelInitializationMode"),
+        "FMI 2 generated C must evaluate initial() from the FMI initialization state"
+    );
+    assert!(
+        !builtin_template("fmi2", "model.c.jinja").contains("#define initial() 0"),
+        "MLS initial() cannot be hard-coded false in FMI 2 initialization"
     );
 }
 

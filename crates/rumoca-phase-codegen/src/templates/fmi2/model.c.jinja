@@ -54,8 +54,8 @@
 /* change(x): true when x changed value */
 #define change(x) ((x) != pre(x))
 
-/* initial(): true only during initialization (always false in continuous mode) */
-#define initial() 0
+/* initial(): true during FMI initialization mode (MLS §3.7.3.1). */
+#define initial() ((m->state == modelInitializationMode) ? 1 : 0)
 
 /* terminal(): true only at end of simulation (always false in continuous mode) */
 #define terminal() 0

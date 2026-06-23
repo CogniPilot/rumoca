@@ -1213,6 +1213,11 @@ fn create_environment() -> Environment<'static> {
 
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
+    env.add_function("render_xml_attr_expr", render_xml_attr_expr_function);
+    env.add_function(
+        "render_xml_attr_expr_at_index",
+        render_xml_attr_expr_at_index_function,
+    );
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
@@ -1628,6 +1633,32 @@ fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinj
 fn render_expr_function(expr: Value, config: Value) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
     render_expression(&expr, &cfg)
+}
+
+fn render_xml_attr_expr_function(expr: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    xml_attr_expr(render_expression(&expr, &cfg)?)
+}
+
+fn render_xml_attr_expr_at_index_function(
+    expr: Value,
+    index: Value,
+    config: Value,
+) -> RenderResult {
+    xml_attr_expr(render_c::render_expr_at_index_function(
+        expr, index, config,
+    )?)
+}
+
+fn xml_attr_expr(mut rendered: String) -> RenderResult {
+    if rendered.len() >= 2 && rendered.starts_with('"') && rendered.ends_with('"') {
+        rendered = rendered[1..rendered.len() - 1].to_string();
+    }
+    Ok(rendered
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;"))
 }
 
 /// Render a relation as a numeric root function for FMI event indicators.
