@@ -13,7 +13,13 @@ use rumoca_ir_dae::DaeExpressionRewriter;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 type Dae = dae::Dae;
-type RecordArgMap = HashMap<String, Vec<(usize, Vec<String>)>>;
+type RecordArgMap = HashMap<String, Vec<RecordArgDecomposition>>;
+
+struct RecordArgDecomposition {
+    original_index: usize,
+    param_name: String,
+    fields: Vec<String>,
+}
 
 mod record_field_inference;
 use record_field_inference::{FieldUseMap, infer_record_fields_by_function};
@@ -160,7 +166,7 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError>
         infer_record_fields_by_function(&dae.symbols.functions, &record_fields_by_type);
 
     // Identify functions with record params and rewrite their signatures.
-    let mut decomp_map: HashMap<String, Vec<(usize, Vec<String>)>> = HashMap::new();
+    let mut decomp_map = RecordArgMap::new();
 
     for (func_name, func) in dae.symbols.functions.iter_mut() {
         let decomposed = record_inputs_to_decompose(
@@ -177,9 +183,13 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError>
             continue;
         }
 
-        let entry: Vec<(usize, Vec<String>)> = decomposed
+        let entry: Vec<RecordArgDecomposition> = decomposed
             .iter()
-            .map(|(idx, _, fields)| (*idx, fields.clone()))
+            .map(|(idx, param_name, fields)| RecordArgDecomposition {
+                original_index: *idx,
+                param_name: param_name.clone(),
+                fields: fields.clone(),
+            })
             .collect();
         decomp_map.insert(func_name.as_str().to_string(), entry);
     }
@@ -462,26 +472,69 @@ impl DaeExpressionRewriter for DaeRecordArgDecomposer<'_> {}
 
 fn decompose_dae_record_args(
     old_args: &[rumoca_core::Expression],
-    decomposed: &[(usize, Vec<String>)],
+    decomposed: &[RecordArgDecomposition],
     call_span: rumoca_core::Span,
 ) -> Result<Vec<rumoca_core::Expression>, ToDaeError> {
     let mut args = Vec::new();
-    let mut old_idx = 0;
-    for (param_idx, fields) in decomposed {
-        while old_idx < *param_idx && old_idx < old_args.len() {
-            args.push(old_args[old_idx].clone());
-            old_idx += 1;
+    let positional_args = old_args
+        .iter()
+        .filter(|arg| named_function_arg_value(arg).is_none())
+        .collect::<Vec<_>>();
+    let mut consumed_named_args = HashSet::new();
+    let mut positional_idx = 0;
+    for entry in decomposed {
+        while positional_idx < entry.original_index && positional_idx < positional_args.len() {
+            args.push(positional_args[positional_idx].clone());
+            positional_idx += 1;
         }
-        if old_idx < old_args.len() {
-            expand_dae_record_arg(&old_args[old_idx], fields, &mut args, call_span)?;
-            old_idx += 1;
+        if let Some(named_arg) = named_record_arg_value(old_args, &entry.param_name) {
+            consumed_named_args.insert(entry.param_name.as_str());
+            expand_dae_record_arg(named_arg, &entry.fields, &mut args, call_span)?;
+        } else if positional_idx < positional_args.len() {
+            expand_dae_record_arg(
+                positional_args[positional_idx],
+                &entry.fields,
+                &mut args,
+                call_span,
+            )?;
+            positional_idx += 1;
         }
     }
-    while old_idx < old_args.len() {
-        args.push(old_args[old_idx].clone());
-        old_idx += 1;
+    while positional_idx < positional_args.len() {
+        args.push(positional_args[positional_idx].clone());
+        positional_idx += 1;
     }
+    args.extend(old_args.iter().filter_map(|arg| {
+        let (name, _) = named_function_arg_value(arg)?;
+        (!consumed_named_args.contains(name)).then(|| arg.clone())
+    }));
     Ok(args)
+}
+
+fn named_record_arg_value<'a>(
+    args: &'a [rumoca_core::Expression],
+    param_name: &str,
+) -> Option<&'a rumoca_core::Expression> {
+    args.iter().find_map(|arg| {
+        let (name, value) = named_function_arg_value(arg)?;
+        (name == param_name).then_some(value)
+    })
+}
+
+fn named_function_arg_value(
+    arg: &rumoca_core::Expression,
+) -> Option<(&str, &rumoca_core::Expression)> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: true,
+        ..
+    } = arg
+    else {
+        return None;
+    };
+    let param_name = name.as_str().strip_prefix("__rumoca_named_arg__.")?;
+    Some((param_name, args.first()?))
 }
 
 fn named_constructor_arg_dae<'a>(
@@ -547,21 +600,6 @@ fn expand_dae_record_arg(
             out.push(rumoca_core::Expression::VarRef {
                 name: name.with_appended_field(field),
                 subscripts: vec![],
-                span: owner_span,
-            });
-        }
-        return Ok(());
-    }
-
-    // Check for FieldAccess on the record variable (e.g. `c.re` passed directly)
-    if let rumoca_core::Expression::FieldAccess { .. } = arg {
-        // Single field access on a record — just push the base.field expression
-        // This handles cases like passing `c.re` where `c` was the original record param.
-        out.push(arg.clone());
-        // Pad remaining fields with 0.0
-        for _ in 1..fields.len() {
-            out.push(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(0.0),
                 span: owner_span,
             });
         }
