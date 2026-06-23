@@ -95,6 +95,82 @@ fn expr_if_branch_mentions_var(expr: &rumoca_core::Expression, var_name: &str) -
     }
 }
 
+fn find_function_call_args<'a>(
+    expr: &'a rumoca_core::Expression,
+    target_name: &str,
+) -> Option<&'a [rumoca_core::Expression]> {
+    match expr {
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            if name.as_str() == target_name || name.as_str().ends_with(&format!(".{target_name}")) {
+                Some(args)
+            } else {
+                args.iter()
+                    .find_map(|arg| find_function_call_args(arg, target_name))
+            }
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            find_function_call_args(lhs, target_name)
+                .or_else(|| find_function_call_args(rhs, target_name))
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => find_function_call_args(rhs, target_name),
+        rumoca_core::Expression::BuiltinCall { args, .. } => args
+            .iter()
+            .find_map(|arg| find_function_call_args(arg, target_name)),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => branches
+            .iter()
+            .find_map(|(_, value)| find_function_call_args(value, target_name))
+            .or_else(|| find_function_call_args(else_branch, target_name)),
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => elements
+            .iter()
+            .find_map(|element| find_function_call_args(element, target_name)),
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => find_function_call_args(start, target_name)
+            .or_else(|| {
+                step.as_ref()
+                    .and_then(|step| find_function_call_args(step, target_name))
+            })
+            .or_else(|| find_function_call_args(end, target_name)),
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => find_function_call_args(expr, target_name)
+            .or_else(|| {
+                indices
+                    .iter()
+                    .find_map(|range_idx| find_function_call_args(&range_idx.range, target_name))
+            })
+            .or_else(|| {
+                filter
+                    .as_ref()
+                    .and_then(|filter| find_function_call_args(filter, target_name))
+            }),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => find_function_call_args(base, target_name).or_else(|| {
+            subscripts.iter().find_map(|subscript| match subscript {
+                rumoca_core::Subscript::Expr { expr, .. } => {
+                    find_function_call_args(expr, target_name)
+                }
+                _ => None,
+            })
+        }),
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            find_function_call_args(base, target_name)
+        }
+        rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Literal { .. }
+        | rumoca_core::Expression::Empty { .. } => None,
+    }
+}
+
 // =============================================================================
 // Basic pipeline tests
 // =============================================================================
@@ -769,6 +845,75 @@ end P;
         "array-comprehension equation must preserve function call expression, found: {:?}",
         function_names
     );
+}
+
+#[test]
+fn test_named_record_actual_is_decomposed_by_callee_parameter_name() {
+    let source = r#"
+package P
+  record R
+    Real a;
+    Real b;
+  end R;
+
+  function f
+    input R r;
+    output Real y;
+  algorithm
+    y := r.a;
+  end f;
+
+  model NamedRecordActual
+    R rec(a = 1, b = 2);
+    Real y;
+  equation
+    y = P.f(r = P.R(rec.a, rec.b));
+  end NamedRecordActual;
+end P;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse/resolve/typecheck failed");
+
+    let phase_result = session
+        .compile_model_phases("P.NamedRecordActual")
+        .expect("phase compilation should succeed");
+    let result = match phase_result {
+        PhaseResult::Success(result) => result,
+        other => panic!(
+            "expected successful phase result, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    };
+
+    let function = result
+        .flat
+        .functions
+        .get(&rumoca_core::VarName::new("P.f"))
+        .expect("function P.f should remain in flat IR");
+    let input_names = function
+        .inputs
+        .iter()
+        .map(|input| input.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(input_names, vec!["r_a", "r_b"]);
+
+    let call_args = result
+        .flat
+        .equations
+        .iter()
+        .find_map(|eq| find_function_call_args(&eq.residual, "P.f"))
+        .expect("flat equation should contain rewritten P.f call");
+    let actual_names = call_args
+        .iter()
+        .map(|arg| match arg {
+            rumoca_core::Expression::VarRef { name, .. } => name.as_str().to_string(),
+            other => format!("{other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual_names, vec!["rec.a", "rec.b"]);
 }
 
 #[test]
