@@ -14,6 +14,22 @@ pub(crate) fn build_fmu(
 ) -> Result<()> {
     use std::process::Command;
 
+    let build_script = out_dir.join("build.sh");
+    if build_script.is_file() {
+        eprintln!("  running {}", build_script.display());
+        let status = Command::new("sh")
+            .arg("build.sh")
+            .current_dir(out_dir)
+            .status()?;
+        if !status.success() {
+            bail!(
+                "FMU build script failed with exit code {}",
+                status.code().unwrap_or(-1)
+            );
+        }
+        return Ok(());
+    }
+
     let (platform, lib_ext) = fmu_binary_platform(target_name)?;
 
     // Compile shared library
@@ -115,4 +131,26 @@ fn create_fmu_zip(out_dir: &Path, fmu_path: &Path) -> Result<()> {
 
     zip.finish()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_fmu_runs_target_build_script_when_present() {
+        let dir = tempfile::tempdir().expect("temp fmu dir");
+        let script = dir.path().join("build.sh");
+        std::fs::write(&script, "printf ran > build-script-marker\n").expect("write build script");
+
+        build_fmu(dir.path(), "Demo", Some("fmi2")).expect("build script should run");
+
+        let marker =
+            std::fs::read_to_string(dir.path().join("build-script-marker")).expect("read marker");
+        assert_eq!(marker, "ran");
+        assert!(
+            !dir.path().join("binaries").exists(),
+            "target-provided build script should own FMU build outputs"
+        );
+    }
 }
