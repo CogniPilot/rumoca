@@ -122,7 +122,11 @@ fn validate_expr<T: SimFloat>(
         } => {
             for subscript in subscripts {
                 if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                    validate_expr(expr, env)?;
+                    if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
+                        validate_array_argument(expr, env)?;
+                    } else {
+                        validate_expr(expr, env)?;
+                    }
                 }
             }
             try_eval_var_ref(name.var_name(), subscripts, env).map(|_| ())
@@ -1578,6 +1582,25 @@ fn try_eval_var_ref<T: SimFloat>(
     {
         return Err(EvalError::UnsupportedExpression {
             kind: "colon subscript",
+        });
+    }
+    if subscripts.len() == 1
+        && let rumoca_core::Subscript::Expr { expr, .. } = &subscripts[0]
+        && matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+    {
+        let values = eval_array_values(
+            &rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(name.as_str()),
+                subscripts: subscripts.to_vec(),
+                span: rumoca_core::Span::DUMMY,
+            },
+            env,
+        )?;
+        if let [value] = values.as_slice() {
+            return Ok(*value);
+        }
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice scalar value",
         });
     }
     let indices = try_eval_index_subscripts(subscripts, env)?;

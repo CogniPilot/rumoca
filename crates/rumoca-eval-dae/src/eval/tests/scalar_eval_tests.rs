@@ -320,6 +320,30 @@ fn test_checked_eval_field_access_projects_nested_constructor_field() {
 }
 
 #[test]
+fn test_checked_eval_var_ref_singleton_range_slice_as_scalar() {
+    let mut env = VarEnv::<f64>::new();
+    env.vars.insert("x[1]".to_string(), 0.42);
+    env.vars.insert("x[2]".to_string(), 0.99);
+    env.dims = Arc::new(IndexMap::from([("x".to_string(), vec![2])]));
+
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("x"),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(1)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(0.42));
+}
+
+#[test]
 fn test_eval_comparison() {
     let lt = binop(rumoca_core::OpBinary::Lt, lit(1.0), lit(2.0));
     assert_eq!(eval_expr_value::<f64>(&lt, &VarEnv::new()), 1.0);
