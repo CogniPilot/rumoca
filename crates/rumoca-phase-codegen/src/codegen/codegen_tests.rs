@@ -843,6 +843,54 @@ fn test_fmi3_event_indicators_render_from_solver_ir() {
 }
 
 #[test]
+fn test_fmi_getters_refresh_outputs_when_dirty() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let get_real = template_section(fmi2, "FMI2_EXPORT fmi2Status fmi2GetReal");
+    assert!(
+        get_real.contains(
+            "compute_derivatives(m);\n        compute_outputs(m);\n        m->dirty_values = 0;"
+        ),
+        "FMI 2 fmi2GetReal must refresh output storage before reading value references:\n{get_real}"
+    );
+
+    let fmi3 = builtin_template("fmi3", "model.c.jinja");
+    let get_float64 = template_section(fmi3, "FMI3_EXPORT fmi3Status fmi3GetFloat64");
+    assert!(
+        get_float64.contains(
+            "compute_derivatives(m);\n        compute_outputs(m);\n        m->dirty_values = 0;"
+        ),
+        "FMI 3 fmi3GetFloat64 must refresh output storage before reading value references:\n{get_float64}"
+    );
+}
+
+#[test]
+fn test_fmi_real_setters_mark_values_dirty() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let set_real = template_section(fmi2, "FMI2_EXPORT fmi2Status fmi2SetReal");
+    assert!(
+        set_real.contains("m->dirty_values = 1;\n    return fmi2OK;"),
+        "FMI 2 fmi2SetReal must mark cached derivatives and outputs dirty after accepted inputs:\n{set_real}"
+    );
+
+    let fmi3 = builtin_template("fmi3", "model.c.jinja");
+    let set_float64 = template_section(fmi3, "FMI3_EXPORT fmi3Status fmi3SetFloat64");
+    assert!(
+        set_float64.contains("m->dirty_values = 1;\n    return fmi3OK;"),
+        "FMI 3 fmi3SetFloat64 must mark cached derivatives and outputs dirty after accepted inputs:\n{set_float64}"
+    );
+}
+
+fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
+    template
+        .split(marker)
+        .nth(1)
+        .unwrap_or_else(|| panic!("template should define {marker}"))
+        .split("\nFMI")
+        .next()
+        .expect("template section should be present")
+}
+
+#[test]
 fn test_fmi3_derivative_api_renders_from_solver_ad_ir() {
     let dae = dae::Dae::new();
     let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");

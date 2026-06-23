@@ -1434,6 +1434,8 @@ FMI3_EXPORT fmi3Status fmi3GetFloat64(
 
     if (m->dirty_values) {
         compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
     }
 
     size_t val_idx = 0;
@@ -1461,6 +1463,7 @@ FMI3_EXPORT fmi3Status fmi3SetFloat64(
         if (s != fmi3OK) return s;
         val_idx += count;
     }
+    m->dirty_values = 1;
     return fmi3OK;
 }
 
@@ -1468,7 +1471,11 @@ FMI3_EXPORT fmi3Status fmi3GetFloat32(fmi3Instance instance, const fmi3ValueRefe
     /* Delegate to Float64 with lossy downcast */
     ModelInstance* m = (ModelInstance*)instance;
     (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
+    if (m->dirty_values) {
+        compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
+    }
     size_t val_idx = 0;
     for (size_t i = 0; i < nvr; i++) {
         fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
@@ -1500,7 +1507,11 @@ FMI3_EXPORT fmi3Status fmi3GetInt32(fmi3Instance instance, const fmi3ValueRefere
     /* Delegate to Float64 with truncation cast */
     ModelInstance* m = (ModelInstance*)instance;
     (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
+    if (m->dirty_values) {
+        compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
+    }
     size_t val_idx = 0;
     for (size_t i = 0; i < nvr; i++) {
         fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
@@ -1532,7 +1543,11 @@ FMI3_EXPORT fmi3Status fmi3GetBoolean(fmi3Instance instance, const fmi3ValueRefe
     /* Delegate to Float64 with boolean cast */
     ModelInstance* m = (ModelInstance*)instance;
     (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
+    if (m->dirty_values) {
+        compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
+    }
     size_t val_idx = 0;
     for (size_t i = 0; i < nvr; i++) {
         fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];

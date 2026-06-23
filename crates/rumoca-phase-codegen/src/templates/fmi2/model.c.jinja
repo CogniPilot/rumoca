@@ -1086,6 +1086,8 @@ FMI2_EXPORT fmi2Status fmi2GetReal(
 
     if (m->dirty_values) {
         compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
     }
 
     for (size_t i = 0; i < nvr; i++) {
@@ -1106,6 +1108,7 @@ FMI2_EXPORT fmi2Status fmi2SetReal(
         fmi2Status s = set_real_by_vr(m, vr[i], value[i]);
         if (s != fmi2OK) return s;
     }
+    m->dirty_values = 1;
     return fmi2OK;
 }
 
