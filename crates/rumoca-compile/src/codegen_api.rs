@@ -6,7 +6,8 @@ use serde_json::Value;
 pub use rumoca_phase_codegen::CodegenError;
 
 pub fn dae_to_template_json(dae_model: &dae::Dae) -> Result<Value, CodegenError> {
-    rumoca_phase_codegen::dae_template_json(dae_model)
+    let prepared = rumoca_phase_dae::prepare_dae_for_codegen(dae_model);
+    rumoca_phase_codegen::dae_template_json(prepared.as_dae())
 }
 
 pub fn render_dae_template(dae_model: &dae::Dae, template: &str) -> Result<String, CodegenError> {

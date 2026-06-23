@@ -417,6 +417,9 @@ impl<'a> LowerBuilder<'a> {
             return Ok(*value);
         }
         let key = compile_time_var_key(name, subscripts, const_scope)?;
+        if let Some(value) = self.local_size_binding_value_for_key(key.as_str()) {
+            return Ok(value);
+        }
         if let Some(value) = self.structural_bindings.get(key.as_str()) {
             return Ok(*value);
         }
@@ -633,6 +636,9 @@ impl<'a> LowerBuilder<'a> {
             return Ok(1.0);
         }
         let key = size_binding_key(name.as_str(), dim);
+        if let Some(value) = self.local_size_binding_value_for_key(key.as_str()) {
+            return Ok(value);
+        }
         self.structural_bindings
             .get(key.as_str())
             .copied()

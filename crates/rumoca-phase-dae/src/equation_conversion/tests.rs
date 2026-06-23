@@ -767,7 +767,6 @@ fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
     );
 }
 
-#[test]
 fn test_output_alias_skip_applies_when_both_sides_are_component_defined() {
     let flat_model = flat::Model::new();
     let outputs_with_component_eqs: HashSet<rumoca_core::VarName> = [

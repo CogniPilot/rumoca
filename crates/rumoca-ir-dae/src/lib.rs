@@ -550,6 +550,9 @@ pub struct DaeMetadata {
     /// The class type of the root model.
     #[serde(default)]
     pub class_type: rumoca_core::ClassType,
+    /// Qualified name of the root model instance context.
+    #[serde(default)]
+    pub root_model_name: Option<String>,
     /// Start expressions for source variables, including variables that may be
     /// eliminated from runtime partitions by aliasing.
     ///

@@ -14,7 +14,8 @@ pub(crate) mod trace;
 
 pub use eval::{
     EvalError, EvalRuntimeState, IMPLICIT_CLOCK_ACTIVE_ENV_KEY, INIT_HOMOTOPY_LAMBDA_KEY,
-    MODELICA_COMPLEX_CONSTANTS, MODELICA_CONSTANTS, VarEnv, build_env, build_env_with_runtime,
+    MODELICA_COMPLEX_CONSTANTS, MODELICA_CONSTANTS, VarEnv, bind_runtime_start_aliases,
+    bind_runtime_start_aliases_from_sources, build_env, build_env_with_runtime,
     build_runtime_parameter_tail_env, build_runtime_parameter_tail_env_with_runtime,
     can_broadcast_start_value, clear_pre_values, clear_pre_values_in_env_runtime,
     clear_runtime_state, clear_runtime_state_in_env_runtime, collect_user_functions,

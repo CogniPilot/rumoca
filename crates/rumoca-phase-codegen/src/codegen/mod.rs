@@ -14,7 +14,7 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 mod render_c;
@@ -222,6 +222,7 @@ fn add_function_output_projection_refs(
     refs: &mut HashSet<String>,
 ) {
     for output in &func.outputs {
+        refs.insert(format!("{func_name}.{}", output.name.as_str()));
         let dims: Vec<usize> = output
             .dims
             .iter()
@@ -593,6 +594,13 @@ pub(crate) fn emitted_symbol_or_fallback(reference: &str, cfg: &ExprConfig) -> S
     })
 }
 
+/// Convert a Modelica variable reference name into the local C alias format
+/// used by templates when `subscript_underscore = true`.
+/// Examples: `x` -> `x`, `x[1]` -> `x_1`, `a.b[1,2]` -> `a_b_1_2`.
+pub(crate) fn var_name_to_c_alias(name: &str) -> String {
+    sanitize_name(name)
+}
+
 fn dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
     Ok(Value::from_serialize(dae_template_json(dae)?))
 }
@@ -604,15 +612,11 @@ fn reject_external_functions_for_simulation_template(
     if !template_emits_simulation_function_bodies(template) {
         return Ok(());
     }
-    if external_function_codegen_opt_in_enabled() {
-        return Ok(());
-    }
-    if let Some((name, _)) = dae_model
-        .symbols
-        .functions
-        .iter()
-        .find(|(_, function)| function.external.is_some())
-    {
+    let opt_in_enabled = external_function_codegen_opt_in_enabled();
+    if let Some((name, _)) = dae_model.symbols.functions.iter().find(|(name, function)| {
+        function.external.is_some()
+            && simulation_template_external_function_rejected(name.as_str(), opt_in_enabled)
+    }) {
         return Err(CodegenError::external_function_not_callable(name.as_str()));
     }
     Ok(())
@@ -625,23 +629,101 @@ fn reject_external_functions_in_json_for_simulation_template(
     if !template_emits_simulation_function_bodies(template) {
         return Ok(());
     }
-    if external_function_codegen_opt_in_enabled() {
-        return Ok(());
-    }
     let Some(functions) = dae_json
         .get("functions")
         .and_then(serde_json::Value::as_object)
     else {
         return Ok(());
     };
-    if let Some((name, _)) = functions.iter().find(|(_, function)| {
-        function
+    let opt_in_enabled = external_function_codegen_opt_in_enabled();
+    let energyplus_runtime_bridge_enabled =
+        json_template_supports_energyplus_runtime_bridge(dae_json, template);
+    let fmi_native_external_dependencies_enabled =
+        json_template_supports_fmi_native_external_dependencies(template);
+    if let Some((name, _)) = functions.iter().find(|(name, function)| {
+        if !function
             .get("external")
             .is_some_and(|external| !external.is_null())
+        {
+            return false;
+        }
+        if energyplus_runtime_bridge_enabled
+            && simulation_template_energyplus_external_function(name.as_str())
+        {
+            return false;
+        }
+        if fmi_native_external_dependencies_enabled
+            && !simulation_template_energyplus_external_function(name.as_str())
+        {
+            return false;
+        }
+        simulation_template_external_function_rejected(name.as_str(), opt_in_enabled)
     }) {
         return Err(CodegenError::external_function_not_callable(name.as_str()));
     }
     Ok(())
+}
+
+fn json_template_supports_energyplus_runtime_bridge(
+    dae_json: &serde_json::Value,
+    template: &str,
+) -> bool {
+    if !template.contains("RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE")
+        || !template.contains("runtime_external_objects")
+    {
+        return false;
+    }
+    dae_json
+        .get("solve")
+        .and_then(|solve| solve.get("external_objects"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|objects| {
+            objects.iter().any(|object| {
+                object
+                    .get("constructor")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("BuildingsEnergyPlusSpawnExternalObject")
+            })
+        })
+}
+
+fn json_template_supports_fmi_native_external_dependencies(template: &str) -> bool {
+    (template.contains("FMI 2.0 API") || template.contains("FMI 3.0 API"))
+        && template.contains("func.external")
+}
+
+fn simulation_template_energyplus_external_function(name: &str) -> bool {
+    matches!(
+        name,
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange"
+    )
+}
+
+fn simulation_template_external_function_rejected(name: &str, opt_in_enabled: bool) -> bool {
+    if simulation_template_energyplus_external_function(name) {
+        return true;
+    }
+    !opt_in_enabled && !simulation_template_internal_external_function(name)
+}
+
+fn simulation_template_internal_external_function(name: &str) -> bool {
+    matches!(
+        name,
+        "Modelica.Utilities.Strings.skipWhiteSpace"
+            | "Modelica.Utilities.Strings.compare"
+            | "Modelica.Utilities.Strings.length"
+            | "Modelica.Utilities.Strings.find"
+            | "Modelica.Utilities.Strings.substring"
+            | "Modelica.Utilities.Strings.scanReal"
+            | "Modelica.Utilities.Strings.scanInteger"
+            | "Modelica.Utilities.Strings.Advanced.skipWhiteSpace"
+            | "Modelica.Utilities.Strings.Advanced.scanReal"
+            | "Modelica.Utilities.Strings.Advanced.scanInteger"
+            | "Modelica.Utilities.Files.fullPathName"
+    )
 }
 
 fn external_function_codegen_opt_in_enabled() -> bool {
@@ -655,6 +737,33 @@ fn template_emits_simulation_function_bodies(template: &str) -> bool {
         && (template.contains("FMI 2.0 API")
             || template.contains("FMI 3.0 API")
             || template.contains("step("))
+}
+
+#[cfg(test)]
+mod internal_external_function_tests {
+    use super::simulation_template_internal_external_function;
+
+    #[test]
+    fn modelica_strings_compare_is_internal_to_simulation_template() {
+        assert!(simulation_template_internal_external_function(
+            "Modelica.Utilities.Strings.compare"
+        ));
+        assert!(simulation_template_internal_external_function(
+            "Modelica.Utilities.Strings.Advanced.skipWhiteSpace"
+        ));
+        assert!(simulation_template_internal_external_function(
+            "Modelica.Utilities.Strings.Advanced.scanReal"
+        ));
+        assert!(simulation_template_internal_external_function(
+            "Modelica.Utilities.Strings.Advanced.scanInteger"
+        ));
+        assert!(simulation_template_internal_external_function(
+            "Modelica.Utilities.Files.fullPathName"
+        ));
+        assert!(!simulation_template_internal_external_function(
+            "External.UserFunction"
+        ));
+    }
 }
 
 fn render_with_input_context(
@@ -980,6 +1089,8 @@ fn solve_blocks_from_dae_json(dae_json: &serde_json::Value) -> Result<Value, Cod
     let mut problem_json = solve_json.clone();
     if let Some(object) = problem_json.as_object_mut() {
         object.remove("artifacts");
+        object.remove("visible_names");
+        object.remove("visible_value_rows");
     }
     let problem: solve::SolveProblem =
         serde_json::from_value(problem_json).map_err(|err| CodegenError::SerializationFailed {
@@ -1139,13 +1250,38 @@ fn create_environment() -> Environment<'static> {
     env.add_function("allocate_symbols", allocate_symbols_function);
     env.add_function("target_symbols", target_symbols_function);
     env.add_function("symbol", symbol_function);
+    env.add_function("resolve_modelica_uri", resolve_modelica_uri_function);
     env.add_function("source_ref", source_ref_function);
+    env.add_function("c_type", c_type_function);
+    env.add_function("c_array_len", c_array_len_function);
+    env.add_function(
+        "c_array_default_assignments",
+        c_array_default_assignments_function,
+    );
+    env.add_function(
+        "function_array_output_refs",
+        function_array_output_refs_function,
+    );
+    env.add_function("function_array_vars", function_array_vars_function);
 
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
+    env.add_function("render_xml_attr_expr", render_xml_attr_expr_function);
+    env.add_function(
+        "render_xml_attr_expr_at_index",
+        render_xml_attr_expr_at_index_function,
+    );
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
+    env.add_function(
+        "render_runtime_external_value_c",
+        render_runtime_external_value_c_function,
+    );
+    env.add_function(
+        "render_energyplus_allocate_call_c",
+        render_energyplus_allocate_call_c_function,
+    );
     env.add_function(
         "render_solve_slot_assign_c",
         render_solve_slot_assign_c_function,
@@ -1158,6 +1294,8 @@ fn create_environment() -> Environment<'static> {
         "render_solve_pre_param_binding_c",
         render_solve_pre_param_binding_c_function,
     );
+    env.add_function("solve_y_get_cases", render_c::solve_y_get_cases_function);
+    env.add_function("solve_y_set_cases", render_c::solve_y_set_cases_function);
     env.add_function("render_matmul_c", render_matmul_c_function);
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
@@ -1194,6 +1332,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("ode_rhs", render_c::ode_rhs_function);
     // Find derivative expression for a specific state variable
     env.add_function("ode_rhs_for_state", render_c::ode_rhs_for_state_function);
+    env.add_function(
+        "ode_rhs_override_for_state",
+        render_c::ode_rhs_override_for_state_function,
+    );
 
     // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
     env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
@@ -1202,12 +1344,20 @@ fn create_environment() -> Environment<'static> {
         render_c::alg_rhs_for_var_with_dae_function,
     );
     env.add_function(
+        "output_rhs_for_var_with_solve",
+        render_c::output_rhs_for_var_with_solve_function,
+    );
+    env.add_function(
         "alg_rhs_for_var_or_self",
         render_c::alg_rhs_for_var_or_self_function,
     );
     env.add_function(
         "discrete_rhs_for_var",
         render_c::discrete_rhs_for_var_function,
+    );
+    env.add_function(
+        "discrete_valued_rhs_for_var",
+        render_c::discrete_valued_rhs_for_var_function,
     );
     env.add_function(
         "event_indicator_expr",
@@ -1240,6 +1390,194 @@ fn create_environment() -> Environment<'static> {
     env.add_function("has_complex_params", render_c::has_complex_params_function);
 
     env
+}
+
+fn c_type_function(param: Value) -> Result<String, minijinja::Error> {
+    let type_name = get_field(&param, "type_name")
+        .ok()
+        .map(|value| value_to_string(&value))
+        .unwrap_or_else(|| "Real".to_string());
+    Ok(match type_name.trim_matches('"') {
+        "Integer" | "Boolean" => "int".to_string(),
+        _ => "double".to_string(),
+    })
+}
+
+fn c_array_len_function(param: Value, config: Value) -> Result<String, minijinja::Error> {
+    let dims = get_field(&param, "dims").ok();
+    if let Some(dims) = dims.as_ref() {
+        let len = dims.len().unwrap_or(0);
+        let mut product = 1usize;
+        let mut all_static = len > 0;
+        for i in 0..len {
+            let dim = dims
+                .get_item(&Value::from(i))
+                .ok()
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            if dim <= 0 {
+                all_static = false;
+                break;
+            }
+            product *= dim as usize;
+        }
+        if all_static {
+            return Ok(product.to_string());
+        }
+    }
+
+    if let Ok(shape_expr) = get_field(&param, "shape_expr")
+        && let Some(len) = shape_expr.len()
+        && len > 0
+        && let Ok(first) = shape_expr.get_item(&Value::from(0))
+    {
+        if let Ok(expr) = get_field(&first, "Expr").and_then(|value| get_field(&value, "expr")) {
+            let cfg = ExprConfig::from_value(&config);
+            return render_expression(&expr, &cfg);
+        }
+        if get_field(&first, "Colon").is_ok() {
+            if let Ok(default) = get_field(&param, "default")
+                && let Ok(array) = get_field(&default, "Array")
+                && let Ok(elements) = get_field(&array, "elements")
+                && let Some(len) = elements.len()
+            {
+                return Ok(len.to_string());
+            }
+            let name = get_field(&param, "name")
+                .ok()
+                .map(|value| value_to_string(&value))
+                .unwrap_or_default();
+            if !name.is_empty() {
+                let cfg = ExprConfig::from_value(&config);
+                return Ok(format!("{}_size", emitted_symbol_or_fallback(&name, &cfg)));
+            }
+        }
+    }
+
+    Err(render_err(format!(
+        "dynamic array parameter missing renderable shape expression: {param}"
+    )))
+}
+
+fn c_array_default_assignments_function(
+    param: Value,
+    config: Value,
+    indent: Value,
+) -> Result<String, minijinja::Error> {
+    let indent = indent.as_str().unwrap_or("    ");
+    let Ok(default) = get_field(&param, "default") else {
+        return Ok(String::new());
+    };
+    let Ok(array) = get_field(&default, "Array") else {
+        return Ok(String::new());
+    };
+    let Ok(elements) = get_field(&array, "elements") else {
+        return Ok(String::new());
+    };
+    let Some(len) = elements.len() else {
+        return Ok(String::new());
+    };
+    let name = get_field(&param, "name")
+        .ok()
+        .map(|value| value_to_string(&value))
+        .unwrap_or_default();
+    if name.is_empty() {
+        return Ok(String::new());
+    }
+    let cfg = ExprConfig::from_value(&config);
+    let symbol = emitted_symbol_or_fallback(&name, &cfg);
+    let mut lines = Vec::with_capacity(len);
+    for i in 0..len {
+        let elem = elements.get_item(&Value::from(i))?;
+        let rendered = render_expression(&elem, &cfg)?;
+        lines.push(format!("{indent}{symbol}[{i}] = {rendered};"));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn function_array_output_refs_function(
+    functions: Value,
+    symbols: Value,
+) -> Result<Value, minijinja::Error> {
+    let mut refs = BTreeMap::new();
+    let Some(object) = functions.as_object() else {
+        return Ok(Value::from_serialize(refs));
+    };
+    let Some(iter) = object.try_iter_pairs() else {
+        return Ok(Value::from_serialize(refs));
+    };
+    for (func_name, func) in iter {
+        let func_name = value_to_string(&func_name);
+        let outputs = get_field(&func, "outputs").ok();
+        let Some(outputs) = outputs else {
+            continue;
+        };
+        if outputs.len().unwrap_or(0) != 1 {
+            continue;
+        }
+        let Ok(output) = outputs.get_item(&Value::from(0)) else {
+            continue;
+        };
+        let dims = get_field(&output, "dims").ok();
+        if dims.as_ref().and_then(Value::len).unwrap_or(0) == 0 {
+            continue;
+        }
+        let output_name = get_field(&output, "name")
+            .ok()
+            .map(|value| value_to_string(&value))
+            .unwrap_or_default();
+        if output_name.is_empty() {
+            continue;
+        }
+        let projection_ref = format!("{func_name}.{output_name}");
+        let symbol = lookup_symbol_value(Some(&symbols), &projection_ref)
+            .unwrap_or_else(|| sanitize_name(&projection_ref));
+        refs.insert(func_name, symbol);
+    }
+    Ok(Value::from_serialize(refs))
+}
+
+fn function_array_vars_function(functions: Value) -> Result<Value, minijinja::Error> {
+    let mut vars = HashSet::new();
+    let Some(object) = functions.as_object() else {
+        return Ok(Value::from_serialize(Vec::<String>::new()));
+    };
+    let Some(iter) = object.try_iter_pairs() else {
+        return Ok(Value::from_serialize(Vec::<String>::new()));
+    };
+    for (_, func) in iter {
+        for field in ["inputs", "outputs", "locals"] {
+            let Ok(items) = get_field(&func, field) else {
+                continue;
+            };
+            let Some(len) = items.len() else {
+                continue;
+            };
+            for i in 0..len {
+                let Ok(item) = items.get_item(&Value::from(i)) else {
+                    continue;
+                };
+                if get_field(&item, "dims")
+                    .ok()
+                    .and_then(|dims| dims.len())
+                    .unwrap_or(0)
+                    == 0
+                {
+                    continue;
+                }
+                let name = get_field(&item, "name")
+                    .ok()
+                    .map(|value| value_to_string(&value))
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    vars.insert(name);
+                }
+            }
+        }
+    }
+    let mut vars = vars.into_iter().collect::<Vec<_>>();
+    vars.sort();
+    Ok(Value::from_serialize(vars))
 }
 
 /// Sanitize a name for use as a simple emitted identifier.
@@ -1395,33 +1733,9 @@ fn unsupported_c_function_body_function(func: Value) -> Result<bool, minijinja::
         return Ok(true);
     }
 
-    if let Ok(inputs) = get_field(&func, "inputs")
-        && let Some(len) = inputs.len()
-    {
-        for i in 0..len {
-            let Ok(input) = inputs.get_item(&Value::from(i)) else {
-                continue;
-            };
-            if let Ok(dims) = get_field(&input, "dims")
-                && dims.len().unwrap_or(0) > 0
-            {
-                return Ok(true);
-            }
-        }
-    }
-
-    if let Ok(locals) = get_field(&func, "locals")
-        && let Some(len) = locals.len()
-    {
-        for i in 0..len {
-            let Ok(local) = locals.get_item(&Value::from(i)) else {
-                continue;
-            };
-            if let Ok(dims) = get_field(&local, "dims")
-                && dims.len().unwrap_or(0) > 0
-            {
-                return Ok(true);
-            }
+    for field in ["inputs", "outputs", "locals"] {
+        if variables_include_unsupported_c_type(&func, field)? {
+            return Ok(true);
         }
     }
 
@@ -1429,13 +1743,43 @@ fn unsupported_c_function_body_function(func: Value) -> Result<bool, minijinja::
         return Ok(false);
     };
     let body_debug = body.to_string();
-    Ok(body_debug.contains("NamedArgument")
-        || body_debug.contains("FieldAccess")
-        || body_debug.contains("Assert")
+    Ok(body_debug.contains("FieldAccess")
         || body_debug.contains("outputs")
         || body_debug.contains("String(")
         || body_debug.contains("Modelica.Utilities.Strings")
         || body_debug.contains("Modelica_Utilities_Strings"))
+}
+
+fn variables_include_unsupported_c_type(
+    func: &Value,
+    field: &str,
+) -> Result<bool, minijinja::Error> {
+    let Ok(vars) = get_field(func, field) else {
+        return Ok(false);
+    };
+    let Some(len) = vars.len() else {
+        return Ok(false);
+    };
+    for i in 0..len {
+        let Ok(var) = vars.get_item(&Value::from(i)) else {
+            continue;
+        };
+        let type_name = get_field(&var, "type_name")
+            .ok()
+            .map(|value| value_to_string(&value))
+            .unwrap_or_default();
+        if type_name.trim_matches('"') == "String" {
+            return Ok(true);
+        }
+        let type_class = get_field(&var, "type_class")
+            .ok()
+            .map(|value| value_to_string(&value))
+            .unwrap_or_default();
+        if type_class.trim_matches('"') == "Record" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn unsupported_c_function_name_function(func_name: Value) -> Result<bool, minijinja::Error> {
@@ -1453,6 +1797,240 @@ fn value_to_string(value: &Value) -> String {
         .as_str()
         .map(str::to_owned)
         .unwrap_or_else(|| value.to_string().trim_matches('"').to_string())
+}
+
+fn resolve_modelica_uri_function(uri: Value) -> String {
+    resolve_modelica_uri(&value_to_string(&uri))
+}
+
+fn resolve_modelica_uri(uri: &str) -> String {
+    let Some(rest) = uri.strip_prefix("modelica://") else {
+        return uri.to_string();
+    };
+    let Some((package, relative)) = rest.split_once('/') else {
+        return uri.to_string();
+    };
+    let Some(source_roots) = std::env::var_os("RUMOCA_MODELICA_SOURCE_ROOTS") else {
+        return uri.to_string();
+    };
+    for root in std::env::split_paths(&source_roots) {
+        let direct = root.join(relative);
+        if direct.exists() {
+            return direct.to_string_lossy().into_owned();
+        }
+        let nested = root.join(package).join(relative);
+        if nested.exists() {
+            return nested.to_string_lossy().into_owned();
+        }
+        let root_name_matches_package = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == package || name.starts_with(&format!("{package} ")));
+        if root_name_matches_package && direct.parent().is_some_and(Path::exists) {
+            return direct.to_string_lossy().into_owned();
+        }
+    }
+    uri.to_string()
+}
+
+fn render_runtime_external_value_c_function(value: Value) -> RenderResult {
+    render_runtime_external_value_c(&value)
+}
+
+fn render_energyplus_allocate_call_c_function(object: Value) -> RenderResult {
+    render_energyplus_allocate_call_c(&object)
+}
+
+fn render_energyplus_allocate_call_c(object: &Value) -> RenderResult {
+    let args = get_field(object, "args")?;
+    let derivatives_structure_len = runtime_external_arg_array_len(&args, "derivatives_structure")?;
+    let derivatives_k = 2;
+    let derivatives_n = derivatives_structure_len / derivatives_k;
+    let values = [
+        runtime_external_arg_c(&args, "objectType", "0")?,
+        runtime_external_arg_c(&args, "startTime", "0.0")?,
+        runtime_external_arg_c(&args, "modelicaNameBuilding", "\"\"")?,
+        runtime_external_arg_alias_c(
+            &args,
+            &["modelicaNameThermalZone", "modelicaInstanceName"],
+            "\"\"",
+        )?,
+        runtime_external_arg_c(&args, "spawnExe", "\"\"")?,
+        runtime_external_arg_c(&args, "idfVersion", "\"\"")?,
+        runtime_external_arg_c(&args, "idfName", "\"\"")?,
+        runtime_external_arg_c(&args, "epwName", "\"\"")?,
+        runtime_external_arg_c(&args, "relativeSurfaceTolerance", "0.0")?,
+        runtime_external_arg_c(&args, "epName", "\"\"")?,
+        runtime_external_arg_c(&args, "usePrecompiledFMU", "0")?,
+        runtime_external_arg_c(&args, "fmuName", "\"\"")?,
+        runtime_external_arg_c(&args, "buildingsRootFileLocation", "\"\"")?,
+        runtime_external_arg_c(&args, "logLevel", "0")?,
+        runtime_external_arg_c(&args, "printUnit", "0")?,
+        runtime_external_arg_c(&args, "jsonName", "\"\"")?,
+        runtime_external_arg_c(&args, "jsonKeysValues", "\"\"")?,
+        runtime_external_arg_c(&args, "parOutNames", "NULL")?,
+        runtime_external_arg_len_c(&args, "nParOut", "parOutNames")?,
+        runtime_external_arg_c(&args, "parOutUnits", "NULL")?,
+        runtime_external_arg_len_c(&args, "nParOutUni", "parOutUnits")?,
+        runtime_external_arg_c(&args, "inpNames", "NULL")?,
+        runtime_external_arg_len_c(&args, "nInp", "inpNames")?,
+        runtime_external_arg_c(&args, "inpUnits", "NULL")?,
+        runtime_external_arg_len_c(&args, "nInpUni", "inpUnits")?,
+        runtime_external_arg_c(&args, "outNames", "NULL")?,
+        runtime_external_arg_len_c(&args, "nOut", "outNames")?,
+        runtime_external_arg_c(&args, "outUnits", "NULL")?,
+        runtime_external_arg_len_c(&args, "nOutUni", "outUnits")?,
+        runtime_external_arg_c(&args, "derivatives_structure", "NULL")?,
+        derivatives_k.to_string(),
+        derivatives_n.to_string(),
+        runtime_external_arg_c(&args, "derivatives_delta", "NULL")?,
+        runtime_external_arg_len_c(&args, "nDer", "derivatives_delta")?,
+    ];
+    Ok(format!(
+        "allocate_Modelica_EnergyPlus_9_6_0({})",
+        values.join(", ")
+    ))
+}
+
+fn runtime_external_arg_c(args: &Value, name: &str, default: &str) -> RenderResult {
+    match runtime_external_arg_value(args, name)? {
+        Some(value) => render_runtime_external_value_c(&value),
+        None => Ok(default.to_string()),
+    }
+}
+
+fn runtime_external_arg_alias_c(args: &Value, names: &[&str], default: &str) -> RenderResult {
+    for name in names {
+        if let Some(value) = runtime_external_arg_value(args, name)? {
+            return render_runtime_external_value_c(&value);
+        }
+    }
+    Ok(default.to_string())
+}
+
+fn runtime_external_arg_len_c(args: &Value, explicit_name: &str, array_name: &str) -> RenderResult {
+    if let Some(value) = runtime_external_arg_value(args, explicit_name)? {
+        return render_runtime_external_value_c(&value);
+    }
+    Ok(runtime_external_arg_array_len(args, array_name)?.to_string())
+}
+
+fn runtime_external_arg_array_len(args: &Value, name: &str) -> Result<usize, minijinja::Error> {
+    let Some(value) = runtime_external_arg_value(args, name)? else {
+        return Ok(0);
+    };
+    if let Ok(inner) = get_field(&value, "Array") {
+        return inner
+            .len()
+            .ok_or_else(|| render_err(format!("runtime external arg `{name}` is not an array")));
+    }
+    Ok(0)
+}
+
+fn runtime_external_arg_value(args: &Value, name: &str) -> Result<Option<Value>, minijinja::Error> {
+    let Some(len) = args.len() else {
+        return Err(render_err("runtime external args is not a sequence"));
+    };
+    for index in 0..len {
+        let arg = args
+            .get_item(&Value::from(index))
+            .map_err(|err| render_err(format!("runtime external arg {index}: {err}")))?;
+        let Ok(arg_name) = get_field(&arg, "name") else {
+            continue;
+        };
+        if arg_name.as_str() == Some(name) {
+            return get_field(&arg, "value").map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn render_runtime_external_value_c(value: &Value) -> RenderResult {
+    if let Ok(inner) = get_field(value, "Real") {
+        return Ok(value_to_string(&inner));
+    }
+    if let Ok(inner) = get_field(value, "Integer") {
+        return Ok(value_to_string(&inner));
+    }
+    if let Ok(inner) = get_field(value, "Boolean") {
+        return Ok(if value_to_string(&inner) == "true" {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        });
+    }
+    if let Ok(inner) = get_field(value, "String") {
+        let raw = inner.as_str().unwrap_or("");
+        return serde_json::to_string(raw).map_err(|err| render_err(format!("{err}")));
+    }
+    if value.as_str() == Some("SimulationTime") {
+        return Ok("m->time".to_string());
+    }
+    if let Ok(inner) = get_field(value, "Array") {
+        return render_runtime_external_array_c(&inner);
+    }
+    Err(render_err(format!(
+        "unsupported runtime external value: {}",
+        value_to_string(value)
+    )))
+}
+
+fn render_runtime_external_array_c(value: &Value) -> RenderResult {
+    let Some(len) = value.len() else {
+        return Err(render_err("runtime external Array value is not a sequence"));
+    };
+    if len == 0 {
+        return Ok("NULL".to_string());
+    }
+    let mut rendered = Vec::with_capacity(len);
+    let mut kind: Option<&'static str> = None;
+    for index in 0..len {
+        let item = value
+            .get_item(&Value::from(index))
+            .map_err(|err| render_err(format!("runtime external Array item {index}: {err}")))?;
+        let item_kind = runtime_external_value_c_kind(&item)?;
+        if let Some(existing) = kind {
+            if existing != item_kind {
+                return Err(render_err(
+                    "runtime external Array values must have a homogeneous C representation",
+                ));
+            }
+        } else {
+            kind = Some(item_kind);
+        }
+        rendered.push(render_runtime_external_value_c(&item)?);
+    }
+    let c_type = match kind.unwrap_or("double") {
+        "string" => "const char*",
+        "integer" => "int",
+        "boolean" => "int",
+        "real" => "double",
+        other => {
+            return Err(render_err(format!(
+                "unsupported runtime external Array C element kind: {other}"
+            )));
+        }
+    };
+    Ok(format!("({c_type}[]){{{}}}", rendered.join(", ")))
+}
+
+fn runtime_external_value_c_kind(value: &Value) -> Result<&'static str, minijinja::Error> {
+    if get_field(value, "Real").is_ok() {
+        return Ok("real");
+    }
+    if get_field(value, "Integer").is_ok() {
+        return Ok("integer");
+    }
+    if get_field(value, "Boolean").is_ok() {
+        return Ok("boolean");
+    }
+    if get_field(value, "String").is_ok() {
+        return Ok("string");
+    }
+    Err(render_err(format!(
+        "unsupported runtime external Array item: {}",
+        value_to_string(value)
+    )))
 }
 
 fn dims_from_value(value: &Value) -> Vec<usize> {
@@ -1606,6 +2184,32 @@ fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinj
 fn render_expr_function(expr: Value, config: Value) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
     render_expression(&expr, &cfg)
+}
+
+fn render_xml_attr_expr_function(expr: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    xml_attr_expr(render_expression(&expr, &cfg)?)
+}
+
+fn render_xml_attr_expr_at_index_function(
+    expr: Value,
+    index: Value,
+    config: Value,
+) -> RenderResult {
+    xml_attr_expr(render_c::render_expr_at_index_function(
+        expr, index, config,
+    )?)
+}
+
+fn xml_attr_expr(mut rendered: String) -> RenderResult {
+    if rendered.len() >= 2 && rendered.starts_with('"') && rendered.ends_with('"') {
+        rendered = rendered[1..rendered.len() - 1].to_string();
+    }
+    Ok(rendered
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;"))
 }
 
 /// Render a relation as a numeric root function for FMI event indicators.
@@ -1769,6 +2373,8 @@ pub(crate) struct ExprConfig {
     pub(crate) substitutions: Vec<(String, String)>,
     /// Optional C/Python expression returned for bare Modelica `return` statements.
     pub(crate) return_value: Option<String>,
+    /// Function-scope variable names that are arrays in generated C.
+    pub(crate) array_vars: HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1807,6 +2413,7 @@ impl Default for ExprConfig {
             symbols: None,
             substitutions: Vec::new(),
             return_value: None,
+            array_vars: HashSet::new(),
         }
     }
 }
@@ -1922,6 +2529,12 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.return_value = Some(s);
+        }
+        if let Ok(val) = v.get_attr("array_vars")
+            && !val.is_undefined()
+            && !val.is_none()
+        {
+            cfg.array_vars = value_list_strings(&val).into_iter().collect();
         }
 
         cfg

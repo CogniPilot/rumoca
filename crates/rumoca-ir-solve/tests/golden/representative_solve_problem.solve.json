@@ -102,6 +102,7 @@
       }
     ]
   },
+  "external_objects": [],
   "continuous": {
     "implicit_rhs": {
       "nodes": [

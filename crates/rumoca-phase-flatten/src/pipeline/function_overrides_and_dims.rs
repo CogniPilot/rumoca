@@ -15,7 +15,7 @@ use named_args::{named_function_arg, named_function_arg_names};
 pub(crate) type ComponentOverrideMap =
     rustc_hash::FxHashMap<ComponentPath, rustc_hash::FxHashMap<String, OverrideTarget>>;
 type OverrideFunctionMap = rustc_hash::FxHashMap<String, OverrideTarget>;
-type OverrideContext = (Vec<OverrideTarget>, OverrideFunctionMap);
+pub(crate) type OverrideContext = (Vec<OverrideTarget>, OverrideFunctionMap);
 type ConstructorOverrideCache =
     rustc_hash::FxHashMap<rumoca_core::DefId, rustc_hash::FxHashMap<String, OverrideTarget>>;
 
@@ -788,9 +788,13 @@ pub(crate) fn override_aliases_for_component_path(
     component_override_map: &ComponentOverrideMap,
 ) -> Vec<(String, String)> {
     let (packages, _) = override_context_for_component_path(scope_path, component_override_map);
+    override_aliases_from_packages(&packages)
+}
+
+pub(crate) fn override_aliases_from_packages(packages: &[OverrideTarget]) -> Vec<(String, String)> {
     packages
-        .into_iter()
-        .map(|target| (target.alias, target.name))
+        .iter()
+        .map(|target| (target.alias.clone(), target.name.clone()))
         .collect()
 }
 
@@ -848,7 +852,7 @@ fn override_scope_entry_count(
             .unwrap_or(0)
 }
 
-fn override_context_cache_key(
+pub(crate) fn override_context_cache_key(
     scope_path: &ComponentPath,
     component_override_map: &ComponentOverrideMap,
 ) -> ComponentPath {
@@ -905,24 +909,6 @@ fn collect_package_chain_from_class(
             collect_package_chain_from_class(tree, class_index, base_class, chain, visited);
         }
     }
-}
-
-pub(crate) fn package_chain_contains(
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    package_name: &str,
-    query_prefix: &str,
-) -> bool {
-    let mut chain = Vec::new();
-    let mut visited = FxHashSet::default();
-    collect_package_chain(tree, class_index, package_name, &mut chain, &mut visited);
-    let Some(query_def_id) = class_index
-        .get_by_qualified_name(query_prefix)
-        .and_then(|class_def| class_def.def_id)
-    else {
-        return false;
-    };
-    chain.contains(&query_def_id)
 }
 
 fn package_chain_contains_def_id(

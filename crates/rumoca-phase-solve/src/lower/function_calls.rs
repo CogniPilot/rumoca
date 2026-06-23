@@ -1,4 +1,4 @@
-use super::function_projection::FunctionOutputProjection;
+use super::function_projection::{FunctionOutputProjection, format_subscript_binding_key};
 use super::*;
 use rumoca_ir_solve::RandomGenerator;
 mod random;
@@ -834,6 +834,22 @@ impl<'a> LowerBuilder<'a> {
         let Some(arg_expr) = request.positional_args.get(*request.positional_idx) else {
             return Ok(false);
         };
+        if !self
+            .infer_expr_dims(arg_expr, request.caller_scope)
+            .is_empty()
+            && !self.is_record_like_function_actual(arg_expr, field, request.caller_scope)
+        {
+            self.bind_function_input_arg_or_closure(
+                state,
+                request.function_name,
+                request.input,
+                arg_expr,
+                request.caller_scope,
+                request.call_depth,
+            )?;
+            *request.positional_idx += 1;
+            return Ok(true);
+        }
         let projected = flattened_record_positional_projected_arg(
             arg_expr,
             prefix,
@@ -1429,6 +1445,26 @@ impl<'a> LowerBuilder<'a> {
             bound_any = true;
         }
 
+        let local_components = self
+            .local_indexed_bindings
+            .iter()
+            .filter_map(|(key, bindings)| {
+                key.strip_prefix(prefix.as_str())
+                    .map(|suffix| (suffix.to_string(), bindings.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (suffix, bindings) in local_components {
+            let local_key = format!("{input_name}.{suffix}");
+            for binding in &bindings {
+                let indexed_key = format_subscript_binding_key(&local_key, &binding.indices);
+                scope.insert(ComponentPath::from_flat_path(&indexed_key), binding.reg);
+            }
+            self.local_indexed_bindings
+                .insert(local_key.clone(), bindings);
+            self.copy_record_input_component_dims(&format!("{base_key}.{suffix}"), &local_key);
+            bound_any = true;
+        }
+
         Ok(bound_any)
     }
 
@@ -1649,8 +1685,8 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, LowerError>,
     ) -> Result<T, LowerError> {
+        let structural_checkpoint = self.structural_binding_checkpoint();
         let frame = LocalLowerFrame {
-            structural_bindings: self.structural_bindings.clone(),
             local_indexed_bindings: self.local_indexed_bindings.clone(),
             local_binding_dims: self.local_binding_dims.clone(),
             known_empty_local_arrays: self.known_empty_local_arrays.clone(),
@@ -1658,7 +1694,7 @@ impl<'a> LowerBuilder<'a> {
             function_closures: self.function_closures.clone(),
         };
         let result = f(self);
-        self.structural_bindings = frame.structural_bindings;
+        self.rollback_structural_bindings(structural_checkpoint);
         self.local_indexed_bindings = frame.local_indexed_bindings;
         self.local_binding_dims = frame.local_binding_dims;
         self.known_empty_local_arrays = frame.known_empty_local_arrays;
@@ -1735,33 +1771,14 @@ impl<'a> LowerBuilder<'a> {
 
     pub(super) fn bind_local_array_shape(&mut self, name: &str, dims: &[i64], value_count: usize) {
         let resolved_dims = resolve_array_dims_for_value_count(dims, value_count);
-        for (idx, dim) in resolved_dims.iter().enumerate() {
-            let dim = if *dim > 0 {
-                *dim as f64
-            } else if idx == 0 {
-                value_count as f64
-            } else {
-                0.0
-            };
-            self.structural_bindings
-                .insert(super::size_binding_key(name, idx + 1), dim);
-        }
+        self.local_binding_dims
+            .insert(name.to_string(), resolved_dims);
     }
 
     pub(super) fn clear_local_array_metadata(&mut self, name: &str) {
         self.local_binding_dims.shift_remove(name);
         self.local_indexed_bindings.shift_remove(name);
         self.known_empty_local_arrays.shift_remove(name);
-        let prefix = format!("{}{}.", super::SIZE_BINDING_PREFIX, name);
-        let keys = self
-            .structural_bindings
-            .keys()
-            .filter(|key| key.starts_with(prefix.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in keys {
-            self.structural_bindings.shift_remove(key.as_str());
-        }
     }
 
     pub(super) fn set_known_local_array_dims(

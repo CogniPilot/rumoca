@@ -69,8 +69,8 @@ use clock_eval::{
     infer_clock_timing_from_expr,
 };
 use table_eval::{
-    eval_table_1d_lookup, eval_table_1d_lookup_with_runtime, eval_table_constructor,
-    eval_table_matrix_arg, table_x_bounds,
+    eval_external_table_data_matrix, eval_table_1d_lookup, eval_table_1d_lookup_with_runtime,
+    eval_table_constructor, table_x_bounds,
 };
 
 macro_rules! warn_once {
@@ -84,6 +84,7 @@ macro_rules! warn_once {
 mod array_eval;
 mod builtin_runtime;
 mod table_eval;
+pub use table_eval::resolve_modelica_resource_path;
 
 mod special;
 pub use special::{
@@ -212,6 +213,11 @@ enum EnvKeyCacheKey {
         field: String,
         count: usize,
     },
+    StartExprPrefix {
+        map_addr: usize,
+        count: usize,
+        prefix: String,
+    },
 }
 
 fn cached_env_keys(
@@ -258,6 +264,27 @@ fn cached_indexed_field_keys(
         || {
             (1..=count)
                 .map(|idx| format!("{base}[{idx}].{field}"))
+                .collect()
+        },
+    )
+}
+
+pub(crate) fn prefixed_start_expr_keys<T: SimFloat>(
+    env: &VarEnv<T>,
+    prefix: &str,
+) -> Arc<[String]> {
+    cached_env_keys(
+        &env.runtime,
+        EnvKeyCacheKey::StartExprPrefix {
+            map_addr: Arc::as_ptr(&env.start_exprs) as usize,
+            count: env.start_exprs.len(),
+            prefix: prefix.to_string(),
+        },
+        || {
+            env.start_exprs
+                .keys()
+                .filter(|key| key.starts_with(prefix))
+                .cloned()
                 .collect()
         },
     )
@@ -313,6 +340,7 @@ impl<T> Clone for VarScope<T> {
 struct VarScopeFrame<T> {
     local: IndexMap<String, T>,
     parent: Option<VarScope<T>>,
+    local_prefix_cache: RefCell<HashMap<String, Arc<[String]>>>,
 }
 
 pub struct VarScopeIter<'a, T> {
@@ -333,6 +361,7 @@ impl<T> Default for VarScope<T> {
             frame: Arc::new(VarScopeFrame {
                 local: IndexMap::new(),
                 parent: None,
+                local_prefix_cache: RefCell::new(HashMap::new()),
             }),
         }
     }
@@ -348,6 +377,7 @@ impl<T> VarScope<T> {
             frame: Arc::new(VarScopeFrame {
                 local: IndexMap::new(),
                 parent: Some(parent.clone()),
+                local_prefix_cache: RefCell::new(HashMap::new()),
             }),
         }
     }
@@ -391,6 +421,14 @@ impl<T> VarScope<T> {
         self.frame.local.iter()
     }
 
+    pub fn prefixed_entries<'a>(&'a self, prefix: &str) -> Vec<(&'a String, &'a T)> {
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+        self.collect_prefixed_entries(prefix, &mut entries, &mut seen);
+        entries.reverse();
+        entries
+    }
+
     fn ordered_entries(&self) -> Vec<(&String, &T)> {
         if self.frame.parent.is_none() {
             return self.frame.local.iter().collect();
@@ -418,18 +456,64 @@ impl<T> VarScope<T> {
             }
         }
     }
+
+    fn collect_prefixed_entries<'a>(
+        &'a self,
+        prefix: &str,
+        entries: &mut Vec<(&'a String, &'a T)>,
+        seen: &mut HashSet<&'a str>,
+    ) {
+        for name in self.frame.local_prefixed_keys(prefix).iter() {
+            if let Some((stored_name, value)) = self.frame.local.get_key_value(name.as_str())
+                && seen.insert(stored_name.as_str())
+            {
+                entries.push((stored_name, value));
+            }
+        }
+        if let Some(parent) = &self.frame.parent {
+            parent.collect_prefixed_entries(prefix, entries, seen);
+        }
+    }
+}
+
+impl<T> VarScopeFrame<T> {
+    fn local_prefixed_keys(&self, prefix: &str) -> Arc<[String]> {
+        if let Some(keys) = self.local_prefix_cache.borrow().get(prefix) {
+            return keys.clone();
+        }
+        let keys: Arc<[String]> = self
+            .local
+            .keys()
+            .rev()
+            .filter(|name| name.starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        self.local_prefix_cache
+            .borrow_mut()
+            .insert(prefix.to_string(), keys.clone());
+        keys
+    }
+
+    fn clear_local_prefix_cache(&self) {
+        self.local_prefix_cache.borrow_mut().clear();
+    }
 }
 
 impl<T: Clone> VarScope<T> {
     pub fn insert(&mut self, name: String, value: T) -> Option<T> {
-        Arc::make_mut(&mut self.frame).local.insert(name, value)
+        let frame = Arc::make_mut(&mut self.frame);
+        frame.clear_local_prefix_cache();
+        frame.local.insert(name, value)
     }
 
     pub fn extend<I>(&mut self, iter: I)
     where
         I: IntoIterator<Item = (String, T)>,
     {
-        Arc::make_mut(&mut self.frame).local.extend(iter);
+        let frame = Arc::make_mut(&mut self.frame);
+        frame.clear_local_prefix_cache();
+        frame.local.extend(iter);
     }
 }
 
@@ -491,6 +575,9 @@ pub struct VarEnv<T: SimFloat = f64> {
     pub functions: Arc<IndexMap<String, rumoca_core::Function>>,
     pub dims: Arc<IndexMap<String, Vec<i64>>>,
     pub start_exprs: Arc<IndexMap<String, rumoca_core::Expression>>,
+    pub start_expr_refs: Arc<Vec<String>>,
+    pub start_alias_sources: Arc<IndexMap<String, Vec<String>>>,
+    pub fixed_attrs: Arc<IndexMap<String, Option<bool>>>,
     pub clock_intervals: Arc<IndexMap<String, f64>>,
     pub enum_literal_ordinals: Arc<IndexMap<String, i64>>,
     pub function_closures: IndexMap<String, FunctionClosure>,
@@ -506,6 +593,9 @@ impl<T: SimFloat> Clone for VarEnv<T> {
             functions: self.functions.clone(),
             dims: self.dims.clone(),
             start_exprs: self.start_exprs.clone(),
+            start_expr_refs: self.start_expr_refs.clone(),
+            start_alias_sources: self.start_alias_sources.clone(),
+            fixed_attrs: self.fixed_attrs.clone(),
             clock_intervals: self.clock_intervals.clone(),
             enum_literal_ordinals: self.enum_literal_ordinals.clone(),
             function_closures: self.function_closures.clone(),
@@ -523,6 +613,9 @@ impl<T: SimFloat> Default for VarEnv<T> {
             functions: Arc::new(IndexMap::new()),
             dims: Arc::new(IndexMap::new()),
             start_exprs: Arc::new(IndexMap::new()),
+            start_expr_refs: Arc::new(Vec::new()),
+            start_alias_sources: Arc::new(IndexMap::new()),
+            fixed_attrs: Arc::new(IndexMap::new()),
             clock_intervals: Arc::new(IndexMap::new()),
             enum_literal_ordinals: Arc::new(IndexMap::new()),
             function_closures: IndexMap::new(),
@@ -968,6 +1061,7 @@ fn try_populate_runtime_parameter_tail(
     inject_modelica_constants(env);
     bind_constants(env, dae)?;
     bind_missing_parameter_values(env, dae)?;
+    bind_runtime_start_aliases(env);
     bind_inputs(env, dae)?;
     seed_discrete_values(env, dae)
 }
@@ -1027,9 +1121,19 @@ fn map_parameter_vector_into_env(
 }
 
 pub(crate) fn parameter_has_numeric_slot(var: &rumoca_ir_dae::Variable, env: &VarEnv<f64>) -> bool {
-    var.start
-        .as_ref()
-        .is_none_or(|start| !start_expr_is_nonnumeric(start, env))
+    if is_known_string_path(var.name.as_str()) {
+        return false;
+    }
+    var.start.as_ref().is_none_or(|start| {
+        if start_expr_is_nonnumeric(start, env) {
+            return false;
+        }
+        let start_dims = infer_runtime_expr_dims(start, env);
+        if start_dims.len() == var.dims.len() && start_dims.contains(&0) {
+            return false;
+        }
+        true
+    })
 }
 
 fn configure_env_metadata(env: &mut VarEnv<f64>, dae: &Dae) {
@@ -1044,6 +1148,9 @@ fn configure_env_metadata(env: &mut VarEnv<f64>, dae: &Dae) {
     }
     env.dims = Arc::new(collect_var_dims(dae));
     env.start_exprs = Arc::new(collect_var_starts(dae));
+    env.start_expr_refs = Arc::new(collect_var_start_refs(env.start_exprs.values()));
+    env.start_alias_sources = Arc::new(collect_start_alias_sources(&env.start_expr_refs));
+    env.fixed_attrs = Arc::new(collect_var_fixed_attrs(dae));
     env.clock_intervals = Arc::new(dae.clocks.intervals.clone());
     env.enum_literal_ordinals = Arc::new(dae.symbols.enum_literal_ordinals.clone());
 }
@@ -1066,14 +1173,25 @@ fn bind_start_value(
     name: &str,
     var: &rumoca_ir_dae::Variable,
 ) -> Result<(), EvalError> {
-    let Some(start) = var.start.as_ref() else {
-        return Ok(());
-    };
-    if start_expr_is_nonnumeric(start, env) {
+    if is_known_string_path(name) {
         return Ok(());
     }
-    let size = var.size();
-    if size == 0 && !var.dims.is_empty() {
+    let Some(start) = var.start.as_ref() else {
+        if let Some(value) = numbered_volume_modifier_alias(name, env) {
+            env.set(name, value);
+        }
+        return Ok(());
+    };
+    let binding_dims =
+        runtime_binding_dims(name, var, start, env).unwrap_or_else(|| var.dims.clone());
+    if binding_dims != var.dims {
+        Arc::make_mut(&mut env.dims).insert(name.to_string(), binding_dims.clone());
+    }
+    let size = binding_size(var, &binding_dims);
+    if size == 0 && !binding_dims.is_empty() {
+        if has_explicit_zero_dim(&binding_dims) {
+            return Ok(());
+        }
         // MLS Chapter 10: arrays with an unknown dimension can still have a
         // parameter binding that materializes at evaluation time. Preserve the
         // aggregate values in the environment instead of collapsing the binding
@@ -1086,32 +1204,393 @@ fn bind_start_value(
             eval_array_values::<f64>(start, env)
         };
         if !values.is_empty() {
-            set_array_entries(env, name, &var.dims, &values);
+            set_array_entries(env, name, &binding_dims, &values);
         }
         return Ok(());
     }
+    if start_expr_is_nonnumeric(start, env) {
+        return Ok(());
+    }
     if size <= 1 && var.dims.is_empty() {
-        let value = eval_expr::<f64>(start, env)?;
+        let value = match projected_record_array_field_value(name, start, env)
+            .map_or_else(|| eval_expr::<f64>(start, env), Ok)
+        {
+            Ok(value) => value,
+            Err(EvalError::UnsupportedExpression { .. })
+                if start_may_materialize_array(start, env) =>
+            {
+                let values = eval_array_values::<f64>(start, env);
+                if values.len() == 1 {
+                    values[0]
+                } else {
+                    return Err(EvalError::ShapeMismatch {
+                        context: "scalar start value",
+                        expected: 1,
+                        actual: values.len(),
+                    });
+                }
+            }
+            Err(err) => return Err(err),
+        };
         env.set(name, value);
         return Ok(());
     }
     if size <= 1 {
-        let values = eval_shaped_array_values::<f64>(start, env, 1)?;
-        set_array_entries(env, name, &var.dims, &values);
+        let values = match eval_shaped_array_values::<f64>(start, env, 1) {
+            Ok(values) => values,
+            Err(EvalError::ShapeMismatch { .. }) => {
+                let values = eval_array_values::<f64>(start, env);
+                if values.len() == 1 {
+                    values
+                } else {
+                    component_array_literal_member_start_values(name, start, env, 1)
+                        .or_else(|| component_array_row_start_values(name, start, env, 1))
+                        .ok_or(EvalError::ShapeMismatch {
+                            context: "shaped array value",
+                            expected: 1,
+                            actual: values.len(),
+                        })?
+                }
+            }
+            Err(EvalError::UnsupportedExpression { .. })
+                if start_may_materialize_array(start, env) =>
+            {
+                let values = eval_array_values::<f64>(start, env);
+                if values.len() == 1 {
+                    values
+                } else {
+                    return Err(EvalError::ShapeMismatch {
+                        context: "shaped array value",
+                        expected: 1,
+                        actual: values.len(),
+                    });
+                }
+            }
+            Err(err) => return Err(err),
+        };
+        set_array_entries(env, name, &binding_dims, &values);
         return Ok(());
     }
 
     let values = match eval_shaped_array_values::<f64>(start, env, size) {
         Ok(values) => values,
-        Err(EvalError::ShapeMismatch { actual: 1, .. })
-            if can_broadcast_start_value(start, env) =>
-        {
-            vec![eval_expr::<f64>(start, env)?; size]
+        Err(EvalError::ShapeMismatch { actual: 1, .. }) => {
+            if let Some(values) =
+                component_array_literal_member_start_values(name, start, env, size)
+                    .or_else(|| component_array_row_start_values(name, start, env, size))
+            {
+                values
+            } else {
+                let values = eval_array_values::<f64>(start, env);
+                if values.len() == size {
+                    values
+                } else {
+                    vec![eval_expr::<f64>(start, env)?; size]
+                }
+            }
+        }
+        Err(EvalError::ShapeMismatch { .. }) => {
+            component_array_literal_member_start_values(name, start, env, size)
+                .or_else(|| component_array_row_start_values(name, start, env, size))
+                .ok_or_else(|| {
+                    let actual = eval_array_values::<f64>(start, env).len();
+                    trace_runtime_shape_mismatch(name, var, start, size, actual);
+                    EvalError::ShapeMismatch {
+                        context: "shaped array value",
+                        expected: size,
+                        actual,
+                    }
+                })?
         }
         Err(err) => return Err(err),
     };
-    set_array_entries(env, name, &var.dims, &values);
+    set_array_entries(env, name, &binding_dims, &values);
     Ok(())
+}
+
+fn trace_runtime_shape_mismatch(
+    name: &str,
+    var: &rumoca_ir_dae::Variable,
+    start: &rumoca_core::Expression,
+    expected: usize,
+    actual: usize,
+) {
+    if std::env::var_os("RUMOCA_TRACE_RUNTIME_SHAPE_MISMATCH").is_none() {
+        return;
+    }
+    eprintln!(
+        "runtime shape mismatch for {name}: expected={expected} actual={actual} var_dims={:?} start={start:#?}",
+        var.dims
+    );
+}
+
+fn binding_size(var: &rumoca_ir_dae::Variable, dims: &[i64]) -> usize {
+    if dims.is_empty() {
+        return var.size();
+    }
+    dims.iter()
+        .map(|dim| usize::try_from(*dim).ok().unwrap_or(0))
+        .product()
+}
+
+fn has_explicit_zero_dim(dims: &[i64]) -> bool {
+    dims.contains(&0)
+}
+
+fn runtime_binding_dims(
+    name: &str,
+    var: &rumoca_ir_dae::Variable,
+    start: &rumoca_core::Expression,
+    env: &VarEnv<f64>,
+) -> Option<Vec<i64>> {
+    let start_dims = infer_runtime_expr_dims(start, env);
+    if start_dims.len() == var.dims.len() && start_dims.contains(&0) {
+        let runtime_dims = start_dims
+            .iter()
+            .map(|dim| i64::try_from(*dim).ok())
+            .collect::<Option<Vec<_>>>()?;
+        if runtime_dims != var.dims {
+            return Some(runtime_dims);
+        }
+    }
+    if var.dims.len() != 1 {
+        return None;
+    }
+    let (base, _) = name.rsplit_once('.')?;
+    let n_name = format!("{base}.n");
+    let start_len = eval_array_values::<f64>(start, env).len();
+    if let Some(raw) = env
+        .vars
+        .get(n_name.as_str())
+        .copied()
+        .map(|value| value.real())
+    {
+        if raw.is_finite() && raw >= 0.0 && raw.fract() == 0.0 {
+            let dim = raw as i64;
+            if usize::try_from(dim).ok()? == start_len && dim != var.dims[0] {
+                return Some(vec![dim]);
+            }
+        }
+    }
+    let static_size = var.size();
+    if static_size > 0
+        && (component_array_literal_member_start_values(name, start, env, static_size).is_some()
+            || component_array_row_start_values(name, start, env, static_size).is_some())
+    {
+        return None;
+    }
+    if start_may_materialize_array(start, env) && start_len > 0 && start_len != var.dims[0] as usize
+    {
+        return i64::try_from(start_len).ok().map(|len| vec![len]);
+    }
+    None
+}
+
+fn start_may_materialize_array(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {
+    match expr {
+        rumoca_core::Expression::Array { .. }
+        | rumoca_core::Expression::Tuple { .. }
+        | rumoca_core::Expression::Range { .. }
+        | rumoca_core::Expression::ArrayComprehension { .. } => true,
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            subscripts.is_empty()
+                && env
+                    .dims
+                    .get(name.as_str())
+                    .is_some_and(|dims| !dims.is_empty())
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => start_may_materialize_array(base, env),
+        rumoca_core::Expression::Unary { rhs, .. } => start_may_materialize_array(rhs, env),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            start_may_materialize_array(lhs, env) || start_may_materialize_array(rhs, env)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(_, value)| start_may_materialize_array(value, env))
+                || start_may_materialize_array(else_branch, env)
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => {
+            args.iter().any(|arg| start_may_materialize_array(arg, env))
+        }
+        rumoca_core::Expression::Index { base, .. } => start_may_materialize_array(base, env),
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
+    }
+}
+
+fn component_array_literal_member_start_values(
+    target_name: &str,
+    start: &rumoca_core::Expression,
+    env: &VarEnv<f64>,
+    expected_len: usize,
+) -> Option<Vec<f64>> {
+    let rumoca_core::Expression::Array { elements, .. } = start else {
+        return None;
+    };
+    let row_idx = last_component_array_index(target_name)?;
+    let element = elements.get(row_idx.checked_sub(1)?)?;
+    eval_shaped_array_values::<f64>(element, env, expected_len)
+        .ok()
+        .or_else(|| component_array_row_start_values(target_name, element, env, expected_len))
+}
+
+fn projected_record_array_field_value(
+    target_name: &str,
+    start: &rumoca_core::Expression,
+    env: &VarEnv<f64>,
+) -> Option<f64> {
+    let rumoca_core::Expression::FieldAccess { base, field, .. } = start else {
+        return None;
+    };
+    let rumoca_core::Expression::VarRef {
+        name: source_base,
+        subscripts,
+        ..
+    } = base.as_ref()
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let component_idx = last_component_array_index(target_name)?;
+    let (source_owner, record_name) = source_base.as_str().rsplit_once('.')?;
+    let (parent_owner, _) = source_owner.rsplit_once('.')?;
+    let parent_record_key = format!("{parent_owner}.{record_name}[{component_idx}].{field}");
+    eval_projected_start_value(parent_record_key.as_str(), env, 0).or_else(|| {
+        let sibling_element_key = format!("{source_owner}.per[{component_idx}].{field}");
+        eval_projected_start_value(sibling_element_key.as_str(), env, 0)
+    })
+}
+
+fn eval_projected_start_value(name: &str, env: &VarEnv<f64>, depth: usize) -> Option<f64> {
+    if let Some(value) = env.vars.get(name).copied() {
+        return Some(value);
+    }
+    if depth >= 16 {
+        return None;
+    }
+    let start = env.start_exprs.get(name)?;
+    match start {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => eval_projected_start_value(name.as_str(), env, depth + 1),
+        _ => eval_expr::<f64>(start, env).ok(),
+    }
+}
+
+fn numbered_volume_modifier_alias(name: &str, env: &VarEnv<f64>) -> Option<f64> {
+    if let Some(rest) = name.strip_suffix(".m_flow_nominal") {
+        let (owner, side) = numbered_volume_owner_and_side(rest)?;
+        let source = format!("{owner}.m{side}_flow_nominal");
+        return env.vars.get(source.as_str()).copied();
+    }
+    let rest = name.strip_suffix(".V")?;
+    let (owner, side) = numbered_volume_owner_and_side(rest)?;
+    let m_flow = env
+        .vars
+        .get(format!("{owner}.m{side}_flow_nominal").as_str())?;
+    let tau = env.vars.get(format!("{owner}.tau{side}").as_str())?;
+    let rho = env
+        .vars
+        .get(format!("{owner}.rho{side}_nominal").as_str())?;
+    Some(*m_flow * *tau / *rho)
+}
+
+fn numbered_volume_owner_and_side(rest: &str) -> Option<(&str, &str)> {
+    let (owner, component) = rest.rsplit_once('.')?;
+    let side = component.strip_prefix("vol")?;
+    if side.is_empty() || !side.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some((owner, side))
+}
+
+fn component_array_row_start_values(
+    target_name: &str,
+    start: &rumoca_core::Expression,
+    env: &VarEnv<f64>,
+    expected_len: usize,
+) -> Option<Vec<f64>> {
+    let rumoca_core::Expression::VarRef {
+        name: source_name,
+        subscripts,
+        ..
+    } = start
+    else {
+        return None;
+    };
+    let source_dims = env.dims.get(source_name.as_str())?;
+    if source_dims.len() != 2 {
+        return None;
+    }
+    let rows = usize::try_from(source_dims[0])
+        .ok()
+        .filter(|rows| *rows > 0)?;
+    let cols = usize::try_from(source_dims[1])
+        .ok()
+        .filter(|cols| *cols > 0)?;
+    if cols != expected_len {
+        return None;
+    }
+    let row_idx = if subscripts.is_empty() {
+        last_component_array_index(target_name)?
+    } else {
+        matrix_row_subscript_index(subscripts, env)?
+    };
+    if row_idx == 0 || row_idx > rows {
+        return None;
+    }
+    let source_expr = rumoca_core::Expression::VarRef {
+        name: source_name.clone(),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let values = eval_array_values::<f64>(&source_expr, env);
+    if values.len() != rows.checked_mul(cols)? {
+        return None;
+    }
+    let start_idx = (row_idx - 1).checked_mul(cols)?;
+    Some(values[start_idx..start_idx + cols].to_vec())
+}
+
+fn matrix_row_subscript_index(
+    subscripts: &[rumoca_core::Subscript],
+    env: &VarEnv<f64>,
+) -> Option<usize> {
+    if subscripts.len() != 1 {
+        return None;
+    }
+    match &subscripts[0] {
+        rumoca_core::Subscript::Index { value, .. } => {
+            usize::try_from(*value).ok().filter(|value| *value > 0)
+        }
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            let raw = eval_expr::<f64>(expr, env).ok()?.real();
+            if !raw.is_finite() || raw < 1.0 || raw.fract() != 0.0 {
+                return None;
+            }
+            Some(raw as usize)
+        }
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+fn last_component_array_index(name: &str) -> Option<usize> {
+    name.match_indices('[')
+        .filter_map(|(start, _)| {
+            let rest = &name[start + 1..];
+            let end = rest.find(']')?;
+            rest[..end].parse::<usize>().ok()
+        })
+        .last()
 }
 
 pub fn start_expr_is_nonnumeric(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {
@@ -1146,6 +1625,9 @@ fn start_expr_is_nonnumeric_inner(
             .iter()
             .any(|arg| start_expr_is_nonnumeric_inner(arg, env, visited)),
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            if is_known_string_function(name.as_str()) {
+                return true;
+            }
             !is_runtime_special_function_name(name.as_str())
                 && args
                     .iter()
@@ -1192,8 +1674,10 @@ fn start_expr_is_nonnumeric_inner(
                     }
                 })
         }
-        rumoca_core::Expression::FieldAccess { base, .. } => {
-            start_expr_is_nonnumeric_inner(base, env, visited)
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            is_known_string_field(field)
+                || start_expr_is_nonnumeric_inner(base, env, visited)
+                || field_access_start_is_nonnumeric(base, field, env, visited)
         }
         rumoca_core::Expression::Range {
             start, step, end, ..
@@ -1206,8 +1690,14 @@ fn start_expr_is_nonnumeric_inner(
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => {
+        } => {
             let key = name.as_str();
+            if is_known_string_path(key) {
+                return true;
+            }
+            if !subscripts.is_empty() {
+                return false;
+            }
             if env.enum_literal_ordinals.contains_key(key) || !visited.insert(key.to_string()) {
                 return false;
             }
@@ -1215,8 +1705,102 @@ fn start_expr_is_nonnumeric_inner(
                 .get(key)
                 .is_some_and(|start| start_expr_is_nonnumeric_inner(start, env, visited))
         }
-        rumoca_core::Expression::VarRef { .. } | rumoca_core::Expression::Empty { .. } => false,
+        rumoca_core::Expression::Empty { .. } => false,
     }
+}
+
+fn field_access_start_is_nonnumeric(
+    base: &rumoca_core::Expression,
+    field: &str,
+    env: &VarEnv<f64>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    let Some(path) = start_expr_field_access_path(base, field, env) else {
+        return false;
+    };
+    if !visited.insert(path.clone()) {
+        return false;
+    }
+    env.start_exprs
+        .get(path.as_str())
+        .is_some_and(|start| start_expr_is_nonnumeric_inner(start, env, visited))
+}
+
+fn start_expr_field_access_path(
+    base: &rumoca_core::Expression,
+    field: &str,
+    env: &VarEnv<f64>,
+) -> Option<String> {
+    let prefix = start_expr_path(base, env)?;
+    Some(format!("{prefix}.{field}"))
+}
+
+fn start_expr_path(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if subscripts.is_empty() {
+                Some(name.as_str().to_string())
+            } else {
+                let idx = eval_subscript_indices(subscripts, env);
+                Some(format!("{}[{}]", name.as_str(), idx.join(",")))
+            }
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let prefix = start_expr_path(base, env)?;
+            let idx = eval_subscript_indices(subscripts, env);
+            Some(format!("{prefix}[{}]", idx.join(",")))
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            start_expr_field_access_path(base, field, env)
+        }
+        _ => None,
+    }
+}
+
+fn is_known_string_field(field: &str) -> bool {
+    matches!(
+        field,
+        "buildingsRootFileLocation"
+            | "epName"
+            | "epwName"
+            | "fmuName"
+            | "idfName"
+            | "idfVersion"
+            | "inpNames"
+            | "inpUnits"
+            | "jsonKeysValues"
+            | "jsonName"
+            | "modelicaInstanceName"
+            | "modelicaName"
+            | "modelicaNameBuilding"
+            | "modelicaNameThermalZone"
+            | "outNames"
+            | "outUnits"
+            | "parOutNames"
+            | "parOutUnits"
+            | "spawnExe"
+            | "weaName"
+            | "zoneName"
+    )
+}
+
+fn is_known_string_path(path: &str) -> bool {
+    let terminal = path
+        .rsplit('.')
+        .next()
+        .unwrap_or(path)
+        .split('[')
+        .next()
+        .unwrap_or(path);
+    is_known_string_field(terminal)
+}
+
+fn is_known_string_function(name: &str) -> bool {
+    matches!(name, "getInstanceName") || name.ends_with(".getInstanceName")
 }
 
 pub fn can_broadcast_start_value(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {
@@ -1262,6 +1846,7 @@ fn bind_start_values_until_stable(
     max_passes: usize,
 ) -> Result<(), EvalError> {
     let mut pending_missing = None;
+    let mut pending_missing_owner = None;
     for _ in 0..max_passes {
         let mut changed = false;
         pending_missing = None;
@@ -1273,10 +1858,32 @@ fn bind_start_values_until_stable(
             match bind_start_value(env, name.as_str(), var) {
                 Ok(()) => {}
                 Err(err) if err.missing_binding_name().is_some() => {
+                    if let Some(missing) = err.missing_binding_name()
+                        && bind_enclosing_start_alias(env, missing, &mut HashSet::new()).is_some()
+                    {
+                        changed = true;
+                        continue;
+                    }
+                    if let Some(missing) = err.missing_binding_name()
+                        && seed_missing_indexed_parameter_default(env, vars, missing)
+                    {
+                        changed = true;
+                        continue;
+                    }
+                    if err.missing_binding_name().is_some_and(|missing| {
+                        seed_fixed_false_missing_default(env, vars, missing)
+                            || missing_binding_is_fixed_false(vars, missing)
+                    }) {
+                        set_default_var_value(env, name.as_str(), var);
+                        changed = true;
+                        continue;
+                    }
                     pending_missing.get_or_insert(err);
+                    pending_missing_owner.get_or_insert_with(|| name.as_str().to_string());
                     continue;
                 }
                 Err(err) => {
+                    trace_runtime_start_error(name.as_str(), var, &err);
                     let span = var
                         .start
                         .as_ref()
@@ -1292,9 +1899,387 @@ fn bind_start_values_until_stable(
         }
     }
     match pending_missing {
-        Some(err) => Err(err),
+        Some(err) => {
+            trace_pending_runtime_start_missing(env, pending_missing_owner.as_deref(), &err);
+            Err(err)
+        }
         None => Ok(()),
     }
+}
+
+fn seed_missing_indexed_parameter_default(
+    env: &mut VarEnv<f64>,
+    vars: &[(&VarName, &rumoca_ir_dae::Variable)],
+    missing: &str,
+) -> bool {
+    let Some(base) = indexed_missing_base_name(missing) else {
+        return false;
+    };
+    if env.vars.contains_key(missing) {
+        return true;
+    }
+    let Some((_, var)) = vars.iter().find(|(name, _)| name.as_str() == base) else {
+        return false;
+    };
+    if var.start.is_some()
+        && bind_start_value(env, base, var).is_ok()
+        && env.vars.contains_key(missing)
+    {
+        return env.vars.contains_key(missing);
+    }
+    set_default_var_value(env, base, var);
+    env.vars.contains_key(missing)
+}
+
+fn indexed_missing_base_name(missing: &str) -> Option<&str> {
+    let (base, index) = missing.rsplit_once('[')?;
+    (!base.is_empty() && index.ends_with(']')).then_some(base)
+}
+
+fn missing_binding_is_fixed_false(
+    vars: &[(&VarName, &rumoca_ir_dae::Variable)],
+    missing: &str,
+) -> bool {
+    vars.iter()
+        .any(|(name, var)| name.as_str() == missing && var.fixed == Some(false))
+}
+
+fn seed_fixed_false_missing_default(
+    env: &mut VarEnv<f64>,
+    vars: &[(&VarName, &rumoca_ir_dae::Variable)],
+    missing: &str,
+) -> bool {
+    if env.vars.contains_key(missing) {
+        return true;
+    }
+    if let Some((_, var)) = vars
+        .iter()
+        .find(|(name, var)| name.as_str() == missing && var.fixed == Some(false))
+    {
+        set_default_var_value(env, missing, var);
+        return true;
+    }
+    if !env
+        .fixed_attrs
+        .get(missing)
+        .is_some_and(|fixed| *fixed == Some(false))
+    {
+        return false;
+    }
+    if let Some(dims) = env.dims.get(missing).cloned() {
+        let size = dims
+            .iter()
+            .try_fold(1usize, |acc, dim| {
+                usize::try_from(*dim)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .and_then(|value| acc.checked_mul(value))
+            })
+            .unwrap_or(0);
+        set_array_entries(env, missing, &dims, vec![0.0; size].as_slice());
+    } else {
+        env.set(missing, 0.0);
+    }
+    true
+}
+
+fn bind_enclosing_start_alias(
+    env: &mut VarEnv<f64>,
+    missing: &str,
+    visited: &mut HashSet<String>,
+) -> Option<f64> {
+    if let Some(value) = env.vars.get(missing).copied() {
+        return Some(value);
+    }
+    let (owner, field) = missing.rsplit_once('.')?;
+    let mut cursor = owner;
+    while let Some((parent, _)) = cursor.rsplit_once('.') {
+        let source = format!("{parent}.{field}");
+        if let Some(value) = bind_start_key(env, source.as_str(), visited) {
+            env.set(missing, value);
+            return Some(value);
+        }
+        cursor = parent;
+    }
+    None
+}
+
+pub fn bind_runtime_start_aliases(env: &mut VarEnv<f64>) {
+    ensure_runtime_start_alias_sources(env);
+    for _ in 0..8 {
+        let source_index = env.start_alias_sources.clone();
+        if source_index.is_empty() {
+            break;
+        }
+        let mut updates = Vec::new();
+        for (source, targets) in source_index.iter() {
+            let Some(value) = env.vars.get(source.as_str()).copied() else {
+                continue;
+            };
+            for target in targets {
+                if env.vars.get(target.as_str()).copied() == Some(value) {
+                    continue;
+                }
+                updates.push((target.clone(), value));
+            }
+        }
+        if updates.is_empty() {
+            break;
+        }
+        for (target, value) in updates {
+            env.set(&target, value);
+        }
+    }
+}
+
+pub fn bind_runtime_start_aliases_from_sources(
+    env: &mut VarEnv<f64>,
+    sources: impl IntoIterator<Item = String>,
+) {
+    ensure_runtime_start_alias_sources(env);
+    let source_index = env.start_alias_sources.clone();
+    if source_index.is_empty() {
+        return;
+    }
+
+    let mut pending = sources.into_iter().collect::<Vec<_>>();
+    let mut visited = HashSet::new();
+    while let Some(source) = pending.pop() {
+        if !visited.insert(source.clone()) {
+            continue;
+        }
+        let Some(value) = env.vars.get(source.as_str()).copied() else {
+            continue;
+        };
+        let Some(targets) = source_index.get(source.as_str()) else {
+            continue;
+        };
+        for target in targets {
+            if env.vars.get(target.as_str()).copied() == Some(value) {
+                continue;
+            }
+            env.set(target, value);
+            pending.push(target.clone());
+        }
+    }
+}
+
+fn ensure_runtime_start_alias_sources(env: &mut VarEnv<f64>) {
+    if env.start_expr_refs.is_empty() && !env.start_exprs.is_empty() {
+        env.start_expr_refs = Arc::new(collect_var_start_refs(env.start_exprs.values()));
+        env.start_alias_sources = Arc::new(collect_start_alias_sources(&env.start_expr_refs));
+    }
+}
+
+fn collect_start_expr_var_refs(expr: &rumoca_core::Expression, refs: &mut Vec<String>) {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if subscripts.is_empty() {
+                refs.push(name.as_str().to_string());
+            }
+            for subscript in subscripts {
+                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+                    collect_start_expr_var_refs(expr, refs);
+                }
+            }
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => collect_start_expr_var_refs(rhs, refs),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_start_expr_var_refs(lhs, refs);
+            collect_start_expr_var_refs(rhs, refs);
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                collect_start_expr_var_refs(arg, refs);
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                collect_start_expr_var_refs(condition, refs);
+                collect_start_expr_var_refs(value, refs);
+            }
+            collect_start_expr_var_refs(else_branch, refs);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_start_expr_var_refs(expr, refs);
+            for index in indices {
+                collect_start_expr_var_refs(&index.range, refs);
+            }
+            if let Some(filter) = filter {
+                collect_start_expr_var_refs(filter, refs);
+            }
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            if let Some(path) = static_start_expr_path(expr) {
+                refs.push(path);
+            }
+            collect_start_expr_var_refs(base, refs);
+            for subscript in subscripts {
+                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+                    collect_start_expr_var_refs(expr, refs);
+                }
+            }
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            if let Some(path) = static_start_expr_path(expr) {
+                refs.push(path);
+            }
+            collect_start_expr_var_refs(base, refs);
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_start_expr_var_refs(start, refs);
+            if let Some(step) = step {
+                collect_start_expr_var_refs(step, refs);
+            }
+            collect_start_expr_var_refs(end, refs);
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn static_start_expr_path(expr: &rumoca_core::Expression) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if subscripts.is_empty() {
+                return Some(name.as_str().to_string());
+            }
+            Some(format!(
+                "{}[{}]",
+                name.as_str(),
+                static_subscript_indices(subscripts)?
+            ))
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => Some(format!(
+            "{}[{}]",
+            static_start_expr_path(base)?,
+            static_subscript_indices(subscripts)?
+        )),
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            Some(format!("{}.{field}", static_start_expr_path(base)?))
+        }
+        _ => None,
+    }
+}
+
+fn static_subscript_indices(subscripts: &[rumoca_core::Subscript]) -> Option<String> {
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Index { value, .. } => indices.push(value.to_string()),
+            rumoca_core::Subscript::Expr { .. } | rumoca_core::Subscript::Colon { .. } => {
+                return None;
+            }
+        }
+    }
+    Some(indices.join(","))
+}
+
+fn bind_start_key(env: &mut VarEnv<f64>, name: &str, visited: &mut HashSet<String>) -> Option<f64> {
+    if let Some(value) = env.vars.get(name).copied() {
+        return Some(value);
+    }
+    if is_known_string_path(name) || !visited.insert(name.to_string()) {
+        return None;
+    }
+    let start = env.start_exprs.get(name)?.clone();
+    if start_expr_is_nonnumeric(&start, env) {
+        return None;
+    }
+    for _ in 0..8 {
+        match eval_expr::<f64>(&start, env) {
+            Ok(value) => {
+                env.set(name, value);
+                return Some(value);
+            }
+            Err(err) => {
+                let missing = err.missing_binding_name()?;
+                if bind_start_key(env, missing, visited).is_some()
+                    || bind_enclosing_start_alias(env, missing, visited).is_some()
+                {
+                    continue;
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn trace_pending_runtime_start_missing(env: &VarEnv<f64>, owner: Option<&str>, err: &EvalError) {
+    if std::env::var_os("RUMOCA_TRACE_RUNTIME_START_ERROR").is_none() {
+        return;
+    }
+    eprintln!("runtime start pending missing owner={owner:?}: err={err:?}");
+    if let Some(missing) = err.missing_binding_name()
+        && let Some(suffix) = missing.rsplit_once('.').map(|(_, suffix)| suffix)
+    {
+        let matches = env
+            .vars
+            .keys()
+            .chain(env.start_exprs.keys())
+            .filter(|key| key.ends_with(suffix))
+            .take(24)
+            .cloned()
+            .collect::<Vec<_>>();
+        eprintln!("runtime start pending suffix matches for {suffix}: {matches:?}");
+        if let Some((owner, field)) = missing.rsplit_once('.') {
+            let mut cursor = owner;
+            for _ in 0..8 {
+                for source in [
+                    "PreDroWat",
+                    "PreDroAir",
+                    "dp1_nominal",
+                    "dp2_nominal",
+                    field,
+                ] {
+                    let key = format!("{cursor}.{source}");
+                    let in_vars = env.vars.contains_key(key.as_str());
+                    let in_starts = env.start_exprs.contains_key(key.as_str());
+                    if in_vars || in_starts {
+                        eprintln!(
+                            "runtime start pending candidate key={key:?} vars={in_vars} starts={in_starts}"
+                        );
+                    }
+                }
+                let Some((parent, _)) = cursor.rsplit_once('.') else {
+                    break;
+                };
+                cursor = parent;
+            }
+        }
+    }
+}
+
+fn trace_runtime_start_error(name: &str, var: &rumoca_ir_dae::Variable, err: &EvalError) {
+    if std::env::var_os("RUMOCA_TRACE_RUNTIME_START_ERROR").is_none() {
+        return;
+    }
+    eprintln!(
+        "runtime start error for {name}: err={err:?} dims={:?} start={:#?}",
+        var.dims, var.start
+    );
 }
 
 fn seed_discrete_values(env: &mut VarEnv<f64>, dae: &Dae) -> Result<(), EvalError> {
@@ -1403,6 +2388,67 @@ pub fn collect_var_starts(dae: &Dae) -> IndexMap<String, rumoca_core::Expression
     map
 }
 
+/// Collect unique static variable references used by start expressions.
+pub fn collect_var_start_refs<'a>(
+    starts: impl IntoIterator<Item = &'a rumoca_core::Expression>,
+) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    for start in starts {
+        let before = refs.len();
+        collect_start_expr_var_refs(start, &mut refs);
+        for value in refs.drain(before..).collect::<Vec<_>>() {
+            if seen.insert(value.clone()) {
+                refs.push(value);
+            }
+        }
+    }
+    refs
+}
+
+pub fn collect_start_alias_sources(refs: &[String]) -> IndexMap<String, Vec<String>> {
+    let mut map = IndexMap::<String, Vec<String>>::new();
+    for target in refs {
+        for source in enclosing_start_alias_sources(target) {
+            map.entry(source).or_default().push(target.clone());
+        }
+    }
+    map
+}
+
+fn enclosing_start_alias_sources(target: &str) -> Vec<String> {
+    let Some((owner, field)) = target.rsplit_once('.') else {
+        return Vec::new();
+    };
+    let mut sources = Vec::new();
+    let mut cursor = owner;
+    while let Some((parent, _)) = cursor.rsplit_once('.') {
+        sources.push(format!("{parent}.{field}"));
+        cursor = parent;
+    }
+    sources
+}
+
+/// Collect fixed attributes from all variable categories in the DAE.
+pub fn collect_var_fixed_attrs(dae: &Dae) -> IndexMap<String, Option<bool>> {
+    let mut map = IndexMap::new();
+    for (name, var) in dae
+        .variables
+        .states
+        .iter()
+        .chain(dae.variables.algebraics.iter())
+        .chain(dae.variables.outputs.iter())
+        .chain(dae.variables.parameters.iter())
+        .chain(dae.variables.constants.iter())
+        .chain(dae.variables.inputs.iter())
+        .chain(dae.variables.discrete_reals.iter())
+        .chain(dae.variables.discrete_valued.iter())
+    {
+        map.insert(name.as_str().to_string(), var.fixed);
+    }
+    map
+}
+
 /// Collect lowered user function bodies for runtime function calls.
 pub fn collect_user_functions(dae: &Dae) -> IndexMap<String, rumoca_core::Function> {
     dae.symbols
@@ -1425,6 +2471,9 @@ pub fn lift_env<T: SimFloat>(env: &VarEnv<f64>) -> VarEnv<T> {
     result.functions = env.functions.clone();
     result.dims = env.dims.clone();
     result.start_exprs = env.start_exprs.clone();
+    result.start_expr_refs = env.start_expr_refs.clone();
+    result.start_alias_sources = env.start_alias_sources.clone();
+    result.fixed_attrs = env.fixed_attrs.clone();
     result.clock_intervals = env.clock_intervals.clone();
     result.enum_literal_ordinals = env.enum_literal_ordinals.clone();
     result.is_initial = env.is_initial;

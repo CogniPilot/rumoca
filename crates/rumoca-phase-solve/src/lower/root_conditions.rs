@@ -9,6 +9,7 @@ struct RootRuntime<'a> {
     triggered_clock_conditions: &'a [rumoca_core::Expression],
     variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
     scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
+    indexed_bindings: IndexedBindingMap,
 }
 
 pub(super) fn lower_root_conditions(
@@ -17,6 +18,7 @@ pub(super) fn lower_root_conditions(
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
+    let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
     let runtime = RootRuntime {
         functions: &dae_model.symbols.functions,
         clock_intervals: &dae_model.clocks.intervals,
@@ -24,6 +26,7 @@ pub(super) fn lower_root_conditions(
         triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
         variable_starts: &dae_model.metadata.variable_starts,
         scalarized_component_child_slots,
+        indexed_bindings,
     };
     let mut rows = Vec::with_capacity(
         dae_model.conditions.relations.len()
@@ -259,8 +262,11 @@ fn root_builder<'a>(layout: &'a VarLayout, runtime: &'a RootRuntime<'a>) -> Lowe
             triggered_clock_conditions: Some(runtime.triggered_clock_conditions),
             discrete_valued_names: None,
             variable_starts: Some(runtime.variable_starts),
-            indexed_bindings: None,
+            indexed_bindings: Some(&runtime.indexed_bindings),
+            indexed_record_field_key_index: None,
             scalarized_component_child_slots: Some(&runtime.scalarized_component_child_slots),
+            external_object_indices: None,
+            current_equation_origin: None,
             is_initial_mode: false,
         },
     )

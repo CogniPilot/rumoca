@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use indexmap::IndexMap;
 use rumoca_core::OpBinary;
@@ -8,15 +8,17 @@ use rumoca_ir_solve::{
 };
 
 use super::{
-    DirectAssignmentValue, IndexedBindingMap, LowerBuilder, LowerBuilderMetadata, LowerError,
-    ScalarizedComponentChildSlotMap, Scope, build_scalarized_component_child_slot_map,
-    compile_time, derivative_rhs,
+    DirectAssignmentValue, IndexedBindingMap, IndexedRecordFieldKeyIndex, LowerBuilder,
+    LowerBuilderMetadata, LowerError, ScalarizedComponentChildSlotMap, Scope,
+    array_values::build_indexed_record_field_key_index_for,
+    build_scalarized_component_child_slot_map, compile_time, derivative_rhs,
     helpers::{build_indexed_binding_map, parse_indexed_binding_key},
     unsupported_at,
 };
 
 pub(super) type LoweredRowsAndTargets = (Vec<Vec<LinearOp>>, Vec<Option<ScalarSlot>>);
 
+#[derive(Clone)]
 struct RowLoweringContext<'a> {
     layout: &'a VarLayout,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -27,10 +29,22 @@ struct RowLoweringContext<'a> {
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
     structural_bindings: Option<&'a IndexMap<String, f64>>,
     direct_assignments: Option<&'a IndexMap<String, DirectAssignmentValue>>,
+    external_object_indices: Option<&'a IndexMap<String, usize>>,
+    current_equation_origin: Option<&'a str>,
     indexed_bindings: IndexedBindingMap,
+    indexed_record_field_key_index: IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
+    scalarized_record_fields: Arc<HashMap<String, Vec<ScalarizedRecordField>>>,
     is_initial_mode: bool,
     guard_target_start_before_first_clock_tick: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct SharedRowLoweringIndexes {
+    indexed_bindings: IndexedBindingMap,
+    indexed_record_field_key_index: IndexedRecordFieldKeyIndex,
+    scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
+    scalarized_record_fields: Arc<HashMap<String, Vec<ScalarizedRecordField>>>,
 }
 
 pub(super) struct RuntimeRowMetadata<'a> {
@@ -40,7 +54,42 @@ pub(super) struct RuntimeRowMetadata<'a> {
     pub(super) discrete_valued_names: &'a IndexMap<rumoca_core::VarName, dae::Variable>,
     pub(super) variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
     pub(super) structural_bindings: Option<&'a IndexMap<String, f64>>,
+    pub(super) external_object_indices: Option<&'a IndexMap<String, usize>>,
     pub(super) guard_target_start_before_first_clock_tick: bool,
+}
+
+fn row_indexed_record_field_key_index(
+    layout: &VarLayout,
+    direct_assignments: Option<&IndexMap<String, DirectAssignmentValue>>,
+) -> IndexedRecordFieldKeyIndex {
+    let empty_direct_assignments = IndexMap::new();
+    Arc::new(build_indexed_record_field_key_index_for(
+        layout,
+        direct_assignments.unwrap_or(&empty_direct_assignments),
+    ))
+}
+
+fn row_scalarized_record_fields(
+    layout: &VarLayout,
+) -> Arc<HashMap<String, Vec<ScalarizedRecordField>>> {
+    Arc::new(build_scalarized_record_fields_index(layout))
+}
+
+pub(crate) fn shared_row_lowering_indexes(
+    layout: &VarLayout,
+    direct_assignments: Option<&IndexMap<String, DirectAssignmentValue>>,
+) -> SharedRowLoweringIndexes {
+    SharedRowLoweringIndexes {
+        indexed_bindings: Arc::new(build_indexed_binding_map(layout)),
+        indexed_record_field_key_index: row_indexed_record_field_key_index(
+            layout,
+            direct_assignments,
+        ),
+        scalarized_component_child_slots: Arc::new(build_scalarized_component_child_slot_map(
+            layout,
+        )),
+        scalarized_record_fields: row_scalarized_record_fields(layout),
+    }
 }
 
 pub fn lower_expression_rows_from_expressions(
@@ -48,9 +97,7 @@ pub fn lower_expression_rows_from_expressions(
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
+    let shared = shared_row_lowering_indexes(layout, None);
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -63,8 +110,12 @@ pub fn lower_expression_rows_from_expressions(
             variable_starts: None,
             structural_bindings: None,
             direct_assignments: None,
-            indexed_bindings,
-            scalarized_component_child_slots,
+            external_object_indices: None,
+            current_equation_origin: None,
+            indexed_bindings: shared.indexed_bindings,
+            indexed_record_field_key_index: shared.indexed_record_field_key_index,
+            scalarized_component_child_slots: shared.scalarized_component_child_slots,
+            scalarized_record_fields: shared.scalarized_record_fields,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -76,9 +127,7 @@ pub fn lower_initial_expression_rows_from_expressions(
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
+    let shared = shared_row_lowering_indexes(layout, None);
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -91,8 +140,12 @@ pub fn lower_initial_expression_rows_from_expressions(
             variable_starts: None,
             structural_bindings: None,
             direct_assignments: None,
-            indexed_bindings,
-            scalarized_component_child_slots,
+            external_object_indices: None,
+            current_equation_origin: None,
+            indexed_bindings: shared.indexed_bindings,
+            indexed_record_field_key_index: shared.indexed_record_field_key_index,
+            scalarized_component_child_slots: shared.scalarized_component_child_slots,
+            scalarized_record_fields: shared.scalarized_record_fields,
             is_initial_mode: true,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -108,8 +161,10 @@ pub fn lower_expression_rows_from_expressions_with_runtime_metadata(
     variable_starts: &IndexMap<String, rumoca_core::Expression>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let indexed_record_field_key_index = row_indexed_record_field_key_index(layout, None);
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
+    let scalarized_record_fields = row_scalarized_record_fields(layout);
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -122,8 +177,12 @@ pub fn lower_expression_rows_from_expressions_with_runtime_metadata(
             variable_starts: Some(variable_starts),
             structural_bindings: None,
             direct_assignments: None,
+            external_object_indices: None,
+            current_equation_origin: None,
             indexed_bindings,
+            indexed_record_field_key_index,
             scalarized_component_child_slots,
+            scalarized_record_fields,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -139,8 +198,10 @@ pub fn lower_initial_expression_rows_from_expressions_with_runtime_metadata(
     variable_starts: &IndexMap<String, rumoca_core::Expression>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let indexed_record_field_key_index = row_indexed_record_field_key_index(layout, None);
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
+    let scalarized_record_fields = row_scalarized_record_fields(layout);
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -153,8 +214,12 @@ pub fn lower_initial_expression_rows_from_expressions_with_runtime_metadata(
             variable_starts: Some(variable_starts),
             structural_bindings: None,
             direct_assignments: None,
+            external_object_indices: None,
+            current_equation_origin: None,
             indexed_bindings,
+            indexed_record_field_key_index,
             scalarized_component_child_slots,
+            scalarized_record_fields,
             is_initial_mode: true,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -171,8 +236,10 @@ pub(super) fn lower_expression_rows_from_expressions_with_structural_bindings(
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let indexed_record_field_key_index = row_indexed_record_field_key_index(layout, None);
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
+    let scalarized_record_fields = row_scalarized_record_fields(layout);
     lower_expression_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -185,15 +252,19 @@ pub(super) fn lower_expression_rows_from_expressions_with_structural_bindings(
             variable_starts: Some(variable_starts),
             structural_bindings: Some(structural_bindings),
             direct_assignments: None,
+            external_object_indices: None,
+            current_equation_origin: None,
             indexed_bindings,
+            indexed_record_field_key_index,
             scalarized_component_child_slots,
+            scalarized_record_fields,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: false,
         },
     )
 }
 
-pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
+pub(crate) fn lower_observation_rows_from_expressions_with_shared_indexes(
     expressions: &[rumoca_core::Expression],
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -201,10 +272,8 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
     clock_timings: &IndexMap<String, dae::ClockSchedule>,
     variable_starts: &IndexMap<String, rumoca_core::Expression>,
     structural_bindings: &IndexMap<String, f64>,
+    shared: &SharedRowLoweringIndexes,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let scalarized_component_child_slots =
-        Arc::new(build_scalarized_component_child_slot_map(layout));
     lower_observation_rows_from_expressions_with_context(
         expressions,
         RowLoweringContext {
@@ -217,8 +286,12 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
             variable_starts: Some(variable_starts),
             structural_bindings: Some(structural_bindings),
             direct_assignments: None,
-            indexed_bindings,
-            scalarized_component_child_slots,
+            external_object_indices: None,
+            current_equation_origin: None,
+            indexed_bindings: Arc::clone(&shared.indexed_bindings),
+            indexed_record_field_key_index: Arc::clone(&shared.indexed_record_field_key_index),
+            scalarized_component_child_slots: Arc::clone(&shared.scalarized_component_child_slots),
+            scalarized_record_fields: Arc::clone(&shared.scalarized_record_fields),
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -299,8 +372,10 @@ pub(super) fn lower_expression_rows_with_mode<'a>(
     let equations: Vec<&dae::Equation> = equations.into_iter().collect();
     let mut block = ComputeBlock::default();
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let indexed_record_field_key_index = row_indexed_record_field_key_index(layout, None);
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
+    let scalarized_record_fields = row_scalarized_record_fields(layout);
     let ctx = RowLoweringContext {
         layout,
         functions,
@@ -311,13 +386,21 @@ pub(super) fn lower_expression_rows_with_mode<'a>(
         variable_starts: Some(runtime.variable_starts),
         structural_bindings: runtime.structural_bindings,
         direct_assignments: None,
+        external_object_indices: runtime.external_object_indices,
+        current_equation_origin: None,
         indexed_bindings,
+        indexed_record_field_key_index,
         scalarized_component_child_slots,
+        scalarized_record_fields,
         is_initial_mode,
         guard_target_start_before_first_clock_tick: runtime
             .guard_target_start_before_first_clock_tick,
     };
     for (row_idx, equation) in equations.iter().enumerate() {
+        let ctx = RowLoweringContext {
+            current_equation_origin: Some(equation.origin.as_str()),
+            ..ctx.clone()
+        };
         block.nodes.extend(lower_equation_expression_rows(
             equation,
             row_idx as u64,
@@ -418,7 +501,7 @@ fn lower_scalarized_record_equation_rows(
     ctx: &RowLoweringContext<'_>,
 ) -> Result<Option<Vec<Vec<LinearOp>>>, LowerError> {
     if let Some(lhs) = equation.lhs.as_ref()
-        && let Some(fields) = scalarized_record_fields(lhs.as_str(), ctx.layout)
+        && let Some(fields) = scalarized_record_fields_for_context(lhs.as_str(), ctx)
     {
         let mut rows = Vec::with_capacity(fields.len());
         for (idx, field) in fields.iter().enumerate() {
@@ -454,7 +537,7 @@ fn lower_scalarized_record_equation_rows(
     if !subscripts.is_empty() {
         return Ok(None);
     }
-    let Some(fields) = scalarized_record_fields(name.as_str(), ctx.layout) else {
+    let Some(fields) = scalarized_record_fields_for_context(name.as_str(), ctx) else {
         return Ok(None);
     };
 
@@ -480,11 +563,49 @@ fn lower_scalarized_record_equation_rows(
     Ok(Some(rows))
 }
 
+#[derive(Clone)]
 struct ScalarizedRecordField {
     suffix: String,
     component: String,
     indices: Vec<usize>,
     field_index: usize,
+}
+
+fn build_scalarized_record_fields_index(
+    layout: &VarLayout,
+) -> HashMap<String, Vec<ScalarizedRecordField>> {
+    let mut fields_by_base: HashMap<String, Vec<ScalarizedRecordField>> = HashMap::new();
+    for name in layout.bindings().keys() {
+        let Some((base, suffix)) = rumoca_core::split_last_top_level(name.as_str()) else {
+            continue;
+        };
+        if layout.binding(base).is_some() && layout.shape(base).is_none() {
+            continue;
+        }
+        let fields = fields_by_base.entry(base.to_string()).or_default();
+        if fields
+            .iter()
+            .any(|existing: &ScalarizedRecordField| existing.suffix == suffix)
+        {
+            continue;
+        }
+        fields.push(parse_scalarized_record_field(suffix, fields.len()));
+    }
+    for fields in fields_by_base.values_mut() {
+        retain_highest_rank_component_fields(fields);
+    }
+    fields_by_base.retain(|_, fields| !fields.is_empty());
+    fields_by_base
+}
+
+fn scalarized_record_fields_for_context(
+    base: &str,
+    ctx: &RowLoweringContext<'_>,
+) -> Option<Vec<ScalarizedRecordField>> {
+    if ctx.layout.binding(base).is_some() && ctx.layout.shape(base).is_none() {
+        return None;
+    }
+    ctx.scalarized_record_fields.get(base).cloned()
 }
 
 fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<ScalarizedRecordField>> {
@@ -507,6 +628,11 @@ fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<Scalar
             fields.push(parse_scalarized_record_field(suffix, fields.len()));
         }
     }
+    retain_highest_rank_component_fields(&mut fields);
+    (!fields.is_empty()).then_some(fields)
+}
+
+fn retain_highest_rank_component_fields(fields: &mut Vec<ScalarizedRecordField>) {
     let component_ranks = fields
         .iter()
         .map(|field| (field.component.clone(), field.indices.len()))
@@ -523,7 +649,6 @@ fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<Scalar
             .get(&field.component)
             .is_none_or(|rank| field.indices.len() == *rank)
     });
-    (!fields.is_empty()).then_some(fields)
 }
 
 pub(super) fn scalarized_record_field_binding_names(
@@ -802,6 +927,7 @@ pub(super) fn lower_residual_rows_with_mode(
         dae_model.continuous.equations.iter().enumerate(),
         n_x,
         is_initial_mode,
+        None,
     )
 }
 
@@ -811,6 +937,7 @@ pub(super) fn lower_residual_rows_from_equations_with_mode<'a>(
     equations: impl IntoIterator<Item = (usize, &'a dae::Equation)>,
     state_scalar_count: usize,
     is_initial_mode: bool,
+    external_object_indices: Option<&IndexMap<String, usize>>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     lower_residual_rows_from_equations_core(
         dae_model,
@@ -818,6 +945,7 @@ pub(super) fn lower_residual_rows_from_equations_with_mode<'a>(
         equations,
         state_scalar_count,
         is_initial_mode,
+        external_object_indices,
         |_, _| Ok(()),
     )
 }
@@ -828,6 +956,7 @@ pub(super) fn lower_residual_rows_and_targets_from_equations_with_mode<'a>(
     equations: impl IntoIterator<Item = (usize, &'a dae::Equation)>,
     state_scalar_count: usize,
     is_initial_mode: bool,
+    external_object_indices: Option<&IndexMap<String, usize>>,
     mut target_rows_for_equation: impl FnMut(
         &dae::Equation,
         usize,
@@ -840,6 +969,7 @@ pub(super) fn lower_residual_rows_and_targets_from_equations_with_mode<'a>(
         equations,
         state_scalar_count,
         is_initial_mode,
+        external_object_indices,
         |eq, row_count| {
             let eq_targets = target_rows_for_equation(eq, row_count)?;
             if eq_targets.len() != row_count {
@@ -865,6 +995,7 @@ fn lower_residual_rows_from_equations_core<'a>(
     equations: impl IntoIterator<Item = (usize, &'a dae::Equation)>,
     state_scalar_count: usize,
     is_initial_mode: bool,
+    external_object_indices: Option<&IndexMap<String, usize>>,
     mut after_equation: impl FnMut(&dae::Equation, usize) -> Result<(), LowerError>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let structural_bindings = compile_time::structural_bindings(dae_model);
@@ -881,8 +1012,11 @@ fn lower_residual_rows_from_equations_core<'a>(
         layout,
         &structural_bindings,
     );
+    let indexed_record_field_key_index =
+        row_indexed_record_field_key_index(layout, Some(&direct_assignments));
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
+    let scalarized_record_fields = row_scalarized_record_fields(layout);
     let equations: Vec<(usize, &dae::Equation)> = equations.into_iter().collect();
     let mut rows = Vec::with_capacity(equations.len());
     for (row_idx, eq) in equations {
@@ -901,8 +1035,12 @@ fn lower_residual_rows_from_equations_core<'a>(
             variable_starts: Some(&dae_model.metadata.variable_starts),
             structural_bindings: Some(&structural_bindings),
             direct_assignments: Some(&direct_assignments),
+            external_object_indices,
+            current_equation_origin: Some(eq.origin.as_str()),
             indexed_bindings: Arc::clone(&indexed_bindings),
+            indexed_record_field_key_index: Arc::clone(&indexed_record_field_key_index),
             scalarized_component_child_slots: Arc::clone(&scalarized_component_child_slots),
+            scalarized_record_fields: Arc::clone(&scalarized_record_fields),
             is_initial_mode,
             guard_target_start_before_first_clock_tick: false,
         };
@@ -1059,7 +1197,7 @@ fn lower_scalarized_record_residual_rows(
     }
 
     if let Some(lhs) = eq.lhs.as_ref()
-        && let Some(fields) = scalarized_record_fields(lhs.as_str(), ctx.layout)
+        && let Some(fields) = scalarized_record_fields_for_context(lhs.as_str(), ctx)
     {
         let residuals = fields.iter().map(|field| {
             let lhs_base = rumoca_core::Expression::VarRef {
@@ -1097,7 +1235,7 @@ fn lower_scalarized_record_residual_rows(
     if !subscripts.is_empty() {
         return Ok(None);
     }
-    let Some(fields) = scalarized_record_fields(name.as_str(), ctx.layout) else {
+    let Some(fields) = scalarized_record_fields_for_context(name.as_str(), ctx) else {
         return Ok(None);
     };
 
@@ -1197,14 +1335,25 @@ fn lower_builder_for_context<'a>(
             discrete_valued_names: ctx.discrete_valued_names,
             variable_starts: ctx.variable_starts,
             indexed_bindings: Some(&ctx.indexed_bindings),
+            indexed_record_field_key_index: Some(&ctx.indexed_record_field_key_index),
             scalarized_component_child_slots: Some(&ctx.scalarized_component_child_slots),
+            external_object_indices: ctx.external_object_indices,
+            current_equation_origin: ctx.current_equation_origin,
             is_initial_mode: ctx.is_initial_mode,
         },
     )
-    .with_structural_bindings(ctx.structural_bindings.cloned().unwrap_or_default())
-    .with_direct_assignments(ctx.direct_assignments.cloned().unwrap_or_default())
+    .with_structural_bindings_ref(
+        ctx.structural_bindings
+            .unwrap_or(&EMPTY_STRUCTURAL_BINDINGS),
+    )
+    .with_direct_assignments_ref(ctx.direct_assignments.unwrap_or(&EMPTY_DIRECT_ASSIGNMENTS))
     .with_call_site_namespace(row_namespace)
 }
+
+static EMPTY_STRUCTURAL_BINDINGS: std::sync::LazyLock<IndexMap<String, f64>> =
+    std::sync::LazyLock::new(IndexMap::new);
+static EMPTY_DIRECT_ASSIGNMENTS: std::sync::LazyLock<IndexMap<String, DirectAssignmentValue>> =
+    std::sync::LazyLock::new(IndexMap::new);
 
 #[cfg(test)]
 mod tests {

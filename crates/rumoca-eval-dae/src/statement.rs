@@ -102,7 +102,8 @@ fn materialize_record_alias_assignment<T: SimFloat>(
     let target_prefix = format!("{target}.");
     let selected = env
         .vars
-        .iter()
+        .prefixed_entries(&source_prefix)
+        .into_iter()
         .filter_map(|(key, value)| {
             key.strip_prefix(source_prefix.as_str())
                 .map(|suffix| (format!("{target_prefix}{suffix}"), *value))

@@ -9,6 +9,15 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn named_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
+    rumoca_core::Expression::FunctionCall {
+        name: VarName::new(format!("__rumoca_named_arg__.{name}")).into(),
+        args: vec![value],
+        is_constructor: true,
+        span: Span::DUMMY,
+    }
+}
+
 fn record_constructor() -> rumoca_core::Function {
     let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
     constructor.is_constructor = true;
@@ -166,6 +175,91 @@ fn dae_record_param_lowering_uses_constructor_signature_metadata() {
     assert!(matches!(
         &args[1],
         rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
+    ));
+}
+
+#[test]
+fn dae_record_param_lowering_expands_named_record_actual_value() {
+    let mut dae = Dae::default();
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.Record"), record_constructor());
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.f"), function_with_record_input());
+    dae.continuous.equations.push(rumoca_ir_dae::Equation {
+        lhs: Some(VarName::new("x")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: VarName::new("Pkg.f").into(),
+            args: vec![named_arg("r", var_ref("rec"))],
+            is_constructor: false,
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "test".to_string(),
+        scalar_count: 1,
+    });
+
+    lower_record_function_params_dae(&mut dae);
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.continuous.equations[0].rhs
+    else {
+        panic!("expected function call");
+    };
+    assert_eq!(args.len(), 2);
+    assert!(matches!(
+        &args[0],
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.a"
+    ));
+    assert!(matches!(
+        &args[1],
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
+    ));
+}
+
+#[test]
+fn dae_record_param_lowering_expands_named_record_field_actual_value() {
+    let mut dae = Dae::default();
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.Record"), record_constructor());
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.f"), function_with_record_input());
+    dae.continuous.equations.push(rumoca_ir_dae::Equation {
+        lhs: Some(VarName::new("x")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: VarName::new("Pkg.f").into(),
+            args: vec![named_arg(
+                "r",
+                rumoca_core::Expression::FieldAccess {
+                    base: Box::new(var_ref("plant.unit")),
+                    field: "recordValue".to_string(),
+                    span: Span::DUMMY,
+                },
+            )],
+            is_constructor: false,
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "test".to_string(),
+        scalar_count: 1,
+    });
+
+    lower_record_function_params_dae(&mut dae);
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.continuous.equations[0].rhs
+    else {
+        panic!("expected function call");
+    };
+    assert_eq!(args.len(), 2);
+    assert!(matches!(
+        &args[0],
+        rumoca_core::Expression::FieldAccess { field, .. } if field == "a"
+    ));
+    assert!(matches!(
+        &args[1],
+        rumoca_core::Expression::FieldAccess { field, .. } if field == "b"
     ));
 }
 

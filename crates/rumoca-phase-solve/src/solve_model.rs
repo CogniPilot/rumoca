@@ -18,10 +18,13 @@ use rumoca_eval_dae::eval::{
     external_table_data_for_parameter_values_in,
 };
 use rumoca_eval_dae::{
-    can_broadcast_start_value, eval_array_values, eval_expr, start_expr_is_nonnumeric,
+    bind_runtime_start_aliases, bind_runtime_start_aliases_from_sources, can_broadcast_start_value,
+    eval_array_values, eval_expr, start_expr_is_nonnumeric,
     try_build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime,
     try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisibleExpression {
@@ -184,23 +187,35 @@ fn lower_dae_to_solve_model_inner(
     visible_expressions: Option<Vec<VisibleExpression>>,
     metadata_dae_model: Option<&dae::Dae>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
+    let mut timing = SolveModelTiming::from_env();
+    timing.begin("visible expression inventory");
     let visible_expressions =
         visible_expressions.unwrap_or_else(|| visible_expressions_for_dae(&dae_model));
+    timing.end("visible expression inventory");
     let state_count = scalar_count(dae_model.variables.states.values());
     let eval_runtime = Arc::new(EvalRuntimeState::default());
+    timing.begin("default parameter values");
     let base_parameters =
         default_parameter_values(&dae_model, metadata_dae_model, eval_runtime.clone())?;
+    timing.end("default parameter values");
+    timing.begin("order state derivative rows");
     order_state_derivative_rows(
         &mut dae_model,
         state_count,
         &base_parameters,
         eval_runtime.clone(),
     )?;
+    timing.end("order state derivative rows");
     let solver_len =
         solver_visible_scalar_count(&dae_model).max(dae_model.continuous.equations.len());
     let mass_matrix = state_identity_mass_matrix(state_count);
+    timing.begin("lower solve problem");
     let problem = crate::lower_solve_problem_with_solver_len(&dae_model, solver_len)?;
+    timing.end("lower solve problem");
+    timing.begin("lower solve artifacts");
     let artifacts = crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?;
+    timing.end("lower solve artifacts");
+    timing.begin("compiled parameter values");
     let mut parameters = compiled_parameter_values(
         &dae_model,
         metadata_dae_model,
@@ -208,6 +223,8 @@ fn lower_dae_to_solve_model_inner(
         base_parameters,
         eval_runtime.clone(),
     )?;
+    timing.end("compiled parameter values");
+    timing.begin("initial solver values");
     let mut initial_y = initial_solver_values(
         &dae_model,
         metadata_dae_model,
@@ -215,6 +232,8 @@ fn lower_dae_to_solve_model_inner(
         problem.solve_layout.solver_scalar_count(),
         eval_runtime.clone(),
     )?;
+    timing.end("initial solver values");
+    timing.begin("initial equations");
     apply_initial_equations_to_start_values(
         &dae_model,
         &problem.layout,
@@ -222,6 +241,8 @@ fn lower_dae_to_solve_model_inner(
         &mut initial_y,
         eval_runtime.clone(),
     )?;
+    timing.end("initial equations");
+    timing.begin("runtime parameter tail");
     let table_env = try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         &dae_model,
         &parameters,
@@ -230,10 +251,15 @@ fn lower_dae_to_solve_model_inner(
     )
     .map_err(|source| runtime_tail_error(&dae_model, source))?;
     let external_tables = external_table_data_for_parameter_values_in(&table_env, &parameters);
+    timing.end("runtime parameter tail");
+    timing.begin("visible observations");
     let (visible_names, visible_value_rows) =
         lower_visible_observations(&dae_model, &problem.layout, &visible_expressions)?;
+    timing.end("visible observations");
+    timing.begin("variable metadata");
     let variable_meta =
         build_variable_meta(metadata_dae_model.unwrap_or(&dae_model), &visible_names);
+    timing.end("variable metadata");
 
     Ok(solve::SolveModel {
         problem,
@@ -247,37 +273,105 @@ fn lower_dae_to_solve_model_inner(
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct SolveModelTiming {
+    enabled: bool,
+    stage: Option<(&'static str, Instant)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SolveModelTiming {
+    fn from_env() -> Self {
+        Self {
+            enabled: std::env::var_os("RUMOCA_SOLVE_MODEL_TIMING").is_some(),
+            stage: None,
+        }
+    }
+
+    fn begin(&mut self, stage: &'static str) {
+        if self.enabled {
+            self.stage = Some((stage, Instant::now()));
+        }
+    }
+
+    fn end(&mut self, stage: &'static str) {
+        if let Some((current, start)) = self.stage.take()
+            && self.enabled
+        {
+            eprintln!(
+                "rumoca solve-model stage {stage}: {:.3}s",
+                start.elapsed().as_secs_f64()
+            );
+            debug_assert_eq!(current, stage);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct SolveModelTiming;
+
+#[cfg(target_arch = "wasm32")]
+impl SolveModelTiming {
+    fn from_env() -> Self {
+        Self
+    }
+
+    fn begin(&mut self, _stage: &'static str) {}
+
+    fn end(&mut self, _stage: &'static str) {}
+}
+
 fn lower_visible_observations(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
     visible_expressions: &[VisibleExpression],
 ) -> Result<(Vec<String>, solve::ScalarProgramBlock), SolveModelLowerError> {
+    const VISIBLE_OBSERVATION_BATCH_SIZE: usize = 256;
+
+    let structural_bindings = crate::lower::observation_structural_bindings(dae_model);
+    let observation_indexes = crate::lower::observation_row_lowering_indexes(layout);
     let mut names = Vec::new();
     let mut rows = Vec::new();
     let mut program_spans = Vec::new();
-    for visible in visible_expressions {
-        if is_unbound_identity_observation(layout, visible) {
+    for batch in visible_expressions.chunks(VISIBLE_OBSERVATION_BATCH_SIZE) {
+        let batch = batch
+            .iter()
+            .filter(|visible| !is_unbound_identity_observation(layout, visible))
+            .collect::<Vec<_>>();
+        if batch.is_empty() {
             continue;
         }
-        match crate::lower::lower_observation_rhs(
+        let expressions = batch
+            .iter()
+            .map(|visible| visible.expr.clone())
+            .collect::<Vec<_>>();
+        match crate::lower::lower_observation_rhs_with_indexes(
             dae_model,
             layout,
-            std::slice::from_ref(&visible.expr),
+            &expressions,
+            &structural_bindings,
+            &observation_indexes,
         ) {
-            Ok(mut lowered) => {
-                append_visible_names(&mut names, &visible.name, lowered.len());
-                program_spans.extend(std::iter::repeat_n(
-                    visible.expr.span().unwrap_or(rumoca_core::Span::DUMMY),
-                    lowered.len(),
-                ));
-                rows.append(&mut lowered);
+            Ok(lowered) if lowered.len() == batch.len() => {
+                for (visible, row) in batch.into_iter().zip(lowered) {
+                    names.push(visible.name.clone());
+                    program_spans.push(visible.expr.span().unwrap_or(rumoca_core::Span::DUMMY));
+                    rows.push(row);
+                }
             }
-            Err(err) if should_skip_unbound_observation(layout, visible, &err) => {}
-            Err(err) if should_skip_unsupported_observation(&err) => {}
-            Err(err) => {
-                return Err(
-                    crate::lower_problem_context(err, "lower visible observation rows").into(),
-                );
+            Ok(_) | Err(_) => {
+                for visible in batch {
+                    lower_visible_observation_one(
+                        dae_model,
+                        layout,
+                        visible,
+                        &structural_bindings,
+                        &observation_indexes,
+                        &mut names,
+                        &mut rows,
+                        &mut program_spans,
+                    )?;
+                }
             }
         }
     }
@@ -285,6 +379,40 @@ fn lower_visible_observations(
         names,
         solve::ScalarProgramBlock::with_program_spans(rows, program_spans),
     ))
+}
+
+fn lower_visible_observation_one(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    visible: &VisibleExpression,
+    structural_bindings: &IndexMap<String, f64>,
+    observation_indexes: &crate::lower::SharedRowLoweringIndexes,
+    names: &mut Vec<String>,
+    rows: &mut Vec<Vec<solve::LinearOp>>,
+    program_spans: &mut Vec<rumoca_core::Span>,
+) -> Result<(), SolveModelLowerError> {
+    match crate::lower::lower_observation_rhs_with_indexes(
+        dae_model,
+        layout,
+        std::slice::from_ref(&visible.expr),
+        structural_bindings,
+        observation_indexes,
+    ) {
+        Ok(mut lowered) => {
+            append_visible_names(names, &visible.name, lowered.len());
+            program_spans.extend(std::iter::repeat_n(
+                visible.expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                lowered.len(),
+            ));
+            rows.append(&mut lowered);
+        }
+        Err(err) if should_skip_unbound_observation(layout, visible, &err) => {}
+        Err(err) if should_skip_unsupported_observation(&err) => {}
+        Err(err) => {
+            return Err(crate::lower_problem_context(err, "lower visible observation rows").into());
+        }
+    }
+    Ok(())
 }
 
 fn append_visible_names(names: &mut Vec<String>, base_name: &str, row_count: usize) {
@@ -348,9 +476,50 @@ fn is_unbound_identity_observation(layout: &solve::VarLayout, visible: &VisibleE
 pub fn visible_expressions_for_dae(dae_model: &dae::Dae) -> Vec<VisibleExpression> {
     let solver_len =
         solver_visible_scalar_count(dae_model).max(dae_model.continuous.equations.len());
+    let direct_output_definitions = direct_output_definition_expressions(dae_model);
     let mut names = collect_visible_solver_names(dae_model, solver_len);
     names.extend(collect_visible_runtime_names(dae_model));
-    names.into_iter().map(VisibleExpression::var_ref).collect()
+    names
+        .into_iter()
+        .map(|name| {
+            if let Some(expr) = direct_output_definitions.get(&name) {
+                VisibleExpression {
+                    name,
+                    expr: expr.clone(),
+                }
+            } else {
+                VisibleExpression::var_ref(name)
+            }
+        })
+        .collect()
+}
+
+fn direct_output_definition_expressions(
+    dae_model: &dae::Dae,
+) -> IndexMap<String, rumoca_core::Expression> {
+    let output_scalar_names = dae_model
+        .variables
+        .outputs
+        .iter()
+        .flat_map(|(name, var)| scalar_names(name.as_str(), var))
+        .collect::<IndexSet<_>>();
+    let definitions = continuous_definition_expressions(dae_model);
+    output_scalar_names
+        .into_iter()
+        .filter_map(|name| {
+            let candidates = definitions.get(&name)?;
+            let [expr] = candidates.as_slice() else {
+                return None;
+            };
+            (!expression_refs_name(expr, &name)).then(|| (name, expr.clone()))
+        })
+        .collect()
+}
+
+fn expression_refs_name(expr: &rumoca_core::Expression, name: &str) -> bool {
+    let mut refs = IndexSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.into_iter().any(|reference| reference.as_str() == name)
 }
 
 fn collect_visible_solver_names(dae_model: &dae::Dae, solver_len: usize) -> Vec<String> {
@@ -472,12 +641,15 @@ fn default_parameter_values(
     if let Some(metadata_dae_model) = metadata_dae_model {
         seed_missing_default_values_for_all_variables(metadata_dae_model, &mut env);
     }
+    bind_runtime_start_aliases(&mut env);
     for (name, var) in &dae_model.variables.parameters {
         let offset = params.len();
         let values = start_values(dae_model, var, &env)?;
         append_values_for_var(&mut params, var, &values);
         slots.push((name, var, offset));
+        let seeded_sources = scalar_names(name.as_str(), var);
         seed_var_values(&mut env, name.as_str(), var, &values)?;
+        bind_runtime_start_aliases_from_sources(&mut env, seeded_sources);
     }
     refine_parameter_start_values(dae_model, metadata_dae_model, &mut params, &slots, runtime)?;
     Ok(params)
@@ -528,6 +700,7 @@ fn compiled_parameter_values(
     if let Some(metadata_dae_model) = metadata_dae_model {
         seed_missing_default_values_for_all_variables(metadata_dae_model, &mut env);
     }
+    bind_runtime_start_aliases(&mut env);
     let runtime_parameters: Vec<_> = dae_model
         .variables
         .inputs
@@ -536,10 +709,13 @@ fn compiled_parameter_values(
         .chain(dae_model.variables.discrete_valued.iter())
         .collect();
     seed_default_values(dae_model, &mut env, &runtime_parameters)?;
+    bind_runtime_start_aliases(&mut env);
     for (name, var) in runtime_parameters {
         let var_values = start_values(dae_model, var, &env)?;
         append_values_for_var(&mut values, var, &var_values);
+        let seeded_sources = scalar_names(name.as_str(), var);
         seed_var_values(&mut env, name.as_str(), var, &var_values)?;
+        bind_runtime_start_aliases_from_sources(&mut env, seeded_sources);
     }
     values.resize(layout.compiled_parameter_len, 0.0);
     values.truncate(layout.compiled_parameter_len);
@@ -561,6 +737,7 @@ fn initial_solver_values(
     if let Some(metadata_dae_model) = metadata_dae_model {
         seed_missing_default_values_for_all_variables(metadata_dae_model, &mut env);
     }
+    bind_runtime_start_aliases(&mut env);
     let solver_variables: Vec<_> = dae_model
         .variables
         .states
@@ -569,10 +746,13 @@ fn initial_solver_values(
         .chain(dae_model.variables.outputs.iter())
         .collect();
     seed_default_values(dae_model, &mut env, &solver_variables)?;
+    bind_runtime_start_aliases(&mut env);
     for (name, var) in solver_variables {
         let var_values = start_values(dae_model, var, &env)?;
         append_values_for_var(&mut values, var, &var_values);
+        let seeded_sources = scalar_names(name.as_str(), var);
         seed_var_values(&mut env, name.as_str(), var, &var_values)?;
+        bind_runtime_start_aliases_from_sources(&mut env, seeded_sources);
         if values.len() >= solver_len {
             values.truncate(solver_len);
             break;
@@ -596,14 +776,16 @@ fn start_values(
     env: &rumoca_eval_dae::VarEnv<f64>,
 ) -> Result<Vec<f64>, SolveModelLowerError> {
     let default_start = default_start_value(dae_model, var);
+    let runtime_dims = runtime_start_dims(var, env);
+    let runtime_size = runtime_start_size(runtime_dims);
     let Some(expr) = var.start.as_ref() else {
         return Ok(default_start_values(var, default_start));
     };
     if start_expr_is_nonnumeric(expr, env) {
         return Ok(default_start_values(var, default_start));
     }
-    if var.size() == 0 && !var.dims.is_empty() {
-        let raw = if var.dims.len() >= 2 {
+    if runtime_size == 0 && !runtime_dims.is_empty() {
+        let raw = if runtime_dims.len() >= 2 {
             eval_matrix_values(expr, env)
                 .map(|matrix| matrix.into_iter().flatten().collect())
                 .unwrap_or_else(|| eval_array_values::<f64>(expr, env))
@@ -611,26 +793,79 @@ fn start_values(
             eval_array_values::<f64>(expr, env)
         };
         if raw.is_empty() {
-            return Err(eval_start_error(
-                var,
-                EvalError::UnsupportedExpression {
-                    kind: "array start value",
-                },
-            ));
+            return Ok(Vec::new());
         }
         return Ok(raw
             .into_iter()
             .map(|value| finite_start_value(value, default_start))
             .collect());
     }
-    if var.size() <= 1 && var.dims.is_empty() {
-        let value = eval_expr::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?;
+    if runtime_size <= 1 && runtime_dims.is_empty() {
+        let value = match projected_record_array_field_start_value(var.name.as_str(), expr, env)
+            .map_or_else(|| eval_expr::<f64>(expr, env), Ok)
+        {
+            Ok(value) => value,
+            Err(EvalError::UnsupportedExpression { .. })
+                if start_expr_may_materialize_array(expr, env, &mut IndexSet::new()) =>
+            {
+                let values = eval_array_values::<f64>(expr, env);
+                if values.len() == 1 {
+                    values[0]
+                } else {
+                    return Err(eval_start_error(
+                        var,
+                        EvalError::ShapeMismatch {
+                            context: "scalar start value",
+                            expected: 1,
+                            actual: values.len(),
+                        },
+                    ));
+                }
+            }
+            Err(err) if missing_binding_is_fixed_false_parameter(dae_model, &err) => {
+                return Ok(default_start_values(var, default_start));
+            }
+            Err(err) => return Err(eval_start_error(var, err)),
+        };
         return Ok(vec![finite_start_value(value, default_start)]);
     }
-    let raw = match shaped_start_values(expr, env, var.size()) {
+    let raw = match shaped_start_values(var.name.as_str(), expr, env, runtime_size) {
         Ok(values) => values,
         Err(EvalError::ShapeMismatch { actual: 1, .. }) if can_broadcast_start_value(expr, env) => {
-            vec![eval_expr::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?; var.size()]
+            vec![
+                eval_expr::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?;
+                runtime_size
+            ]
+        }
+        Err(EvalError::ShapeMismatch { actual: 1, .. }) => {
+            let values = eval_array_values::<f64>(expr, env);
+            if values.len() == 1 {
+                vec![values[0]; runtime_size]
+            } else {
+                return Err(eval_start_error(
+                    var,
+                    EvalError::ShapeMismatch {
+                        context: "shaped array value",
+                        expected: runtime_size,
+                        actual: values.len(),
+                    },
+                ));
+            }
+        }
+        Err(EvalError::ShapeMismatch { actual, .. }) if actual > runtime_size => {
+            dynamic_vector_start_values(var.name.as_str(), var, expr, env).ok_or_else(|| {
+                eval_start_error(
+                    var,
+                    EvalError::ShapeMismatch {
+                        context: "shaped array value",
+                        expected: runtime_size,
+                        actual,
+                    },
+                )
+            })?
+        }
+        Err(err) if missing_binding_is_fixed_false_parameter(dae_model, &err) => {
+            return Ok(default_start_values(var, default_start));
         }
         Err(err) => return Err(eval_start_error(var, err)),
     };
@@ -640,12 +875,277 @@ fn start_values(
         .collect())
 }
 
+fn runtime_start_dims<'a>(
+    var: &'a dae::Variable,
+    env: &'a rumoca_eval_dae::VarEnv<f64>,
+) -> &'a [i64] {
+    env.dims
+        .get(var.name.as_str())
+        .map(Vec::as_slice)
+        .unwrap_or(var.dims.as_slice())
+}
+
+fn runtime_start_size(dims: &[i64]) -> usize {
+    if dims.is_empty() {
+        return 1;
+    }
+    dims.iter()
+        .try_fold(1usize, |acc, dim| {
+            usize::try_from(*dim)
+                .ok()
+                .and_then(|dim| acc.checked_mul(dim))
+        })
+        .unwrap_or(0)
+}
+
+fn start_expr_may_materialize_array(
+    expr: &rumoca_core::Expression,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+    visited: &mut IndexSet<String>,
+) -> bool {
+    match expr {
+        rumoca_core::Expression::Array { .. }
+        | rumoca_core::Expression::Tuple { .. }
+        | rumoca_core::Expression::Range { .. }
+        | rumoca_core::Expression::ArrayComprehension { .. } => true,
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if !subscripts.is_empty() {
+                return false;
+            }
+            if env
+                .dims
+                .get(name.as_str())
+                .is_some_and(|dims| !dims.is_empty())
+            {
+                return true;
+            }
+            visited.insert(name.as_str().to_string())
+                && env
+                    .start_exprs
+                    .get(name.as_str())
+                    .is_some_and(|start| start_expr_may_materialize_array(start, env, visited))
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            start_expr_may_materialize_array(base, env, visited)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            start_expr_may_materialize_array(rhs, env, visited)
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            start_expr_may_materialize_array(lhs, env, visited)
+                || start_expr_may_materialize_array(rhs, env, visited)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(_, value)| start_expr_may_materialize_array(value, env, visited))
+                || start_expr_may_materialize_array(else_branch, env, visited)
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| start_expr_may_materialize_array(arg, env, visited)),
+        rumoca_core::Expression::Index { base, .. } => {
+            start_expr_may_materialize_array(base, env, visited)
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
+    }
+}
+
+fn missing_binding_is_fixed_false_parameter(dae_model: &dae::Dae, err: &EvalError) -> bool {
+    err.missing_binding_name()
+        .and_then(|name| {
+            dae_model
+                .variables
+                .parameters
+                .get(&rumoca_core::VarName::new(name))
+        })
+        .is_some_and(|var| var.fixed == Some(false))
+}
+
+fn projected_record_array_field_start_value(
+    target_name: &str,
+    start: &rumoca_core::Expression,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+) -> Option<f64> {
+    let rumoca_core::Expression::FieldAccess { base, field, .. } = start else {
+        return None;
+    };
+    let rumoca_core::Expression::VarRef {
+        name: source_base,
+        subscripts,
+        ..
+    } = base.as_ref()
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let component_idx = last_component_array_index(target_name)?;
+    let (source_owner, record_name) = source_base.as_str().rsplit_once('.')?;
+    let (parent_owner, _) = source_owner.rsplit_once('.')?;
+    let parent_record_key = format!("{parent_owner}.{record_name}[{component_idx}].{field}");
+    eval_projected_start_value(parent_record_key.as_str(), env, 0).or_else(|| {
+        let sibling_element_key = format!("{source_owner}.per[{component_idx}].{field}");
+        eval_projected_start_value(sibling_element_key.as_str(), env, 0)
+    })
+}
+
+fn eval_projected_start_value(
+    name: &str,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+    depth: usize,
+) -> Option<f64> {
+    if let Some(value) = env.vars.get(name).copied() {
+        return Some(value);
+    }
+    if depth >= 16 {
+        return None;
+    }
+    let start = env.start_exprs.get(name)?;
+    match start {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => eval_projected_start_value(name.as_str(), env, depth + 1),
+        _ => eval_expr::<f64>(start, env).ok(),
+    }
+}
+
+fn last_component_array_index(name: &str) -> Option<usize> {
+    let close = name.rfind(']')?;
+    let open = name[..close].rfind('[')?;
+    name[open + 1..close]
+        .parse::<usize>()
+        .ok()
+        .filter(|idx| *idx > 0)
+}
+
 fn shaped_start_values(
+    target_name: &str,
     expr: &rumoca_core::Expression,
     env: &rumoca_eval_dae::VarEnv<f64>,
     expected_len: usize,
 ) -> Result<Vec<f64>, EvalError> {
-    eval_shaped_array_values(expr, env, expected_len)
+    eval_shaped_array_values(expr, env, expected_len).or_else(|err| {
+        component_array_literal_member_start_values(target_name, expr, env, expected_len)
+            .or_else(|| component_array_row_start_values(target_name, expr, env, expected_len))
+            .ok_or(err)
+    })
+}
+
+fn dynamic_vector_start_values(
+    name: &str,
+    var: &dae::Variable,
+    expr: &rumoca_core::Expression,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+) -> Option<Vec<f64>> {
+    if var.dims.len() != 1 {
+        return None;
+    }
+    let values = eval_array_values::<f64>(expr, env);
+    if values.len() <= var.size() {
+        return None;
+    }
+    let (base, _) = name.rsplit_once('.')?;
+    let n_name = format!("{base}.n");
+    let raw = env.vars.get(n_name.as_str()).copied()?;
+    if raw.is_finite() && raw >= 0.0 && raw.fract() == 0.0 && raw as usize == values.len() {
+        return Some(values);
+    }
+    None
+}
+
+fn component_array_literal_member_start_values(
+    target_name: &str,
+    start: &rumoca_core::Expression,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+    expected_len: usize,
+) -> Option<Vec<f64>> {
+    let rumoca_core::Expression::Array { elements, .. } = start else {
+        return None;
+    };
+    let row_idx = last_component_array_index(target_name)?;
+    let element = elements.get(row_idx.checked_sub(1)?)?;
+    eval_shaped_array_values::<f64>(element, env, expected_len)
+        .ok()
+        .or_else(|| component_array_row_start_values(target_name, element, env, expected_len))
+}
+
+fn component_array_row_start_values(
+    target_name: &str,
+    start: &rumoca_core::Expression,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+    expected_len: usize,
+) -> Option<Vec<f64>> {
+    let rumoca_core::Expression::VarRef {
+        name: source_name,
+        subscripts,
+        ..
+    } = start
+    else {
+        return None;
+    };
+    let source_dims = env.dims.get(source_name.as_str())?;
+    if source_dims.len() != 2 {
+        return None;
+    }
+    let rows = usize::try_from(source_dims[0])
+        .ok()
+        .filter(|rows| *rows > 0)?;
+    let cols = usize::try_from(source_dims[1])
+        .ok()
+        .filter(|cols| *cols > 0)?;
+    if cols != expected_len {
+        return None;
+    }
+    let row_idx = if subscripts.is_empty() {
+        last_component_array_index(target_name)?
+    } else {
+        matrix_row_subscript_index(subscripts, env)?
+    };
+    if row_idx == 0 || row_idx > rows {
+        return None;
+    }
+    let source_expr = rumoca_core::Expression::VarRef {
+        name: source_name.clone(),
+        subscripts: Vec::new(),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let values = eval_array_values::<f64>(&source_expr, env);
+    if values.len() != rows.checked_mul(cols)? {
+        return None;
+    }
+    let start_idx = (row_idx - 1).checked_mul(cols)?;
+    Some(values[start_idx..start_idx + cols].to_vec())
+}
+
+fn matrix_row_subscript_index(
+    subscripts: &[rumoca_core::Subscript],
+    env: &rumoca_eval_dae::VarEnv<f64>,
+) -> Option<usize> {
+    if subscripts.len() != 1 {
+        return None;
+    }
+    match &subscripts[0] {
+        rumoca_core::Subscript::Index { value, .. } => {
+            usize::try_from(*value).ok().filter(|value| *value > 0)
+        }
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            let raw = eval_expr::<f64>(expr, env).ok()?;
+            if !raw.is_finite() || raw < 1.0 || raw.fract() != 0.0 {
+                return None;
+            }
+            Some(raw as usize)
+        }
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
 }
 
 fn seed_default_values(
@@ -1133,16 +1633,22 @@ fn continuous_real_role_is_event_discontinuous(
 
 fn event_discontinuous_scalar_names(dae_model: &dae::Dae) -> IndexSet<String> {
     let event_discrete_names = event_discrete_scalar_names(dae_model);
+    let event_discrete_index = EventNameIndex::from_names(&event_discrete_names);
     let mut definitions = continuous_definition_expressions(dae_model);
     let mut event_discontinuous = IndexSet::new();
     loop {
         let before = event_discontinuous.len();
+        let event_discontinuous_index = EventNameIndex::from_names(&event_discontinuous);
         for (scalar_name, exprs) in &definitions {
             if event_discontinuous.contains(scalar_name) {
                 continue;
             }
             if exprs.iter().any(|expr| {
-                expression_is_event_discontinuous(expr, &event_discrete_names, &event_discontinuous)
+                expression_is_event_discontinuous(
+                    expr,
+                    &event_discrete_index,
+                    &event_discontinuous_index,
+                )
             }) {
                 event_discontinuous.insert(scalar_name.clone());
             }
@@ -1180,15 +1686,43 @@ fn continuous_definition_expressions(
         .values()
         .flat_map(|names| names.iter().cloned())
         .collect::<IndexSet<_>>();
+    let continuous_index = ContinuousNameIndex::from_names(continuous_names);
     let mut definitions = IndexMap::new();
     for eq in &dae_model.continuous.equations {
         if let Some(lhs) = eq.lhs.as_ref() {
             add_continuous_lhs_definitions(&mut definitions, &continuous_vars, lhs, &eq.rhs);
             continue;
         }
-        collect_residual_continuous_definitions(&eq.rhs, &continuous_names, &mut definitions);
+        collect_residual_continuous_definitions(&eq.rhs, &continuous_index, &mut definitions);
     }
     definitions
+}
+
+struct ContinuousNameIndex {
+    exact: IndexSet<String>,
+    by_base: IndexMap<String, Vec<String>>,
+}
+
+impl ContinuousNameIndex {
+    fn from_names(names: IndexSet<String>) -> Self {
+        let mut by_base = IndexMap::<String, Vec<String>>::new();
+        for name in &names {
+            if let Some(base) = dae::component_base_name(name) {
+                by_base.entry(base).or_default().push(name.clone());
+            }
+        }
+        Self {
+            exact: names,
+            by_base,
+        }
+    }
+
+    fn matching_scalar_names(&self, candidate: &str) -> Vec<String> {
+        if self.exact.contains(candidate) {
+            return vec![candidate.to_string()];
+        }
+        self.by_base.get(candidate).cloned().unwrap_or_default()
+    }
 }
 
 fn add_continuous_lhs_definitions(
@@ -1218,7 +1752,7 @@ fn add_continuous_definition(
 
 fn collect_residual_continuous_definitions(
     expr: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
+    continuous_names: &ContinuousNameIndex,
     definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     match expr {
@@ -1240,7 +1774,7 @@ fn collect_residual_continuous_definitions(
 fn collect_sub_residual_definitions(
     lhs: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
+    continuous_names: &ContinuousNameIndex,
     definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     let mut targets = IndexSet::new();
@@ -1258,7 +1792,7 @@ fn collect_sub_residual_definitions(
 fn collect_if_residual_definitions(
     branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
     else_branch: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
+    continuous_names: &ContinuousNameIndex,
     definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
 ) -> IndexSet<String> {
     let mut guards = Vec::new();
@@ -1286,7 +1820,7 @@ fn collect_if_residual_definitions(
 
 fn continuous_ref_scalar_names(
     expr: &rumoca_core::Expression,
-    continuous_names: &IndexSet<String>,
+    continuous_names: &ContinuousNameIndex,
 ) -> Vec<String> {
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
@@ -1296,25 +1830,14 @@ fn continuous_ref_scalar_names(
     };
     event_dependency_ref_names(name, subscripts)
         .into_iter()
-        .flat_map(|candidate| matching_scalar_names(continuous_names, &candidate))
-        .collect()
-}
-
-fn matching_scalar_names(names: &IndexSet<String>, candidate: &str) -> Vec<String> {
-    if names.contains(candidate) {
-        return vec![candidate.to_string()];
-    }
-    names
-        .iter()
-        .filter(|name| dae::component_base_name(name).as_deref() == Some(candidate))
-        .cloned()
+        .flat_map(|candidate| continuous_names.matching_scalar_names(&candidate))
         .collect()
 }
 
 fn expression_is_event_discontinuous(
     expr: &rumoca_core::Expression,
-    event_discrete_names: &IndexSet<String>,
-    event_discontinuous_names: &IndexSet<String>,
+    event_discrete_names: &EventNameIndex,
+    event_discontinuous_names: &EventNameIndex,
 ) -> bool {
     let mut checker = EventDiscontinuityChecker {
         event_discrete_names,
@@ -1327,8 +1850,8 @@ fn expression_is_event_discontinuous(
 }
 
 struct EventDiscontinuityChecker<'a> {
-    event_discrete_names: &'a IndexSet<String>,
-    event_discontinuous_names: &'a IndexSet<String>,
+    event_discrete_names: &'a EventNameIndex,
+    event_discontinuous_names: &'a EventNameIndex,
     found: bool,
     no_event_depth: usize,
 }
@@ -1347,8 +1870,8 @@ impl ExpressionVisitor for EventDiscontinuityChecker<'_> {
     ) {
         let names = event_dependency_ref_names(name, subscripts);
         if names.iter().any(|name| {
-            event_name_set_contains(self.event_discrete_names, name)
-                || event_name_set_contains(self.event_discontinuous_names, name)
+            self.event_discrete_names.contains(name)
+                || self.event_discontinuous_names.contains(name)
         }) {
             self.found = true;
             return;
@@ -1432,11 +1955,29 @@ fn event_dependency_ref_names(
     names
 }
 
-fn event_name_set_contains(names: &IndexSet<String>, candidate: &str) -> bool {
-    names.contains(candidate)
-        || names
-            .iter()
-            .any(|name| dae::component_base_name(name).as_deref() == Some(candidate))
+#[derive(Clone, Debug, Default)]
+struct EventNameIndex {
+    exact: IndexSet<String>,
+    component_bases: IndexSet<String>,
+}
+
+impl EventNameIndex {
+    fn from_names(names: &IndexSet<String>) -> Self {
+        let mut component_bases = IndexSet::new();
+        for name in names {
+            if let Some(base) = dae::component_base_name(name) {
+                component_bases.insert(base);
+            }
+        }
+        Self {
+            exact: names.clone(),
+            component_bases,
+        }
+    }
+
+    fn contains(&self, candidate: &str) -> bool {
+        self.exact.contains(candidate) || self.component_bases.contains(candidate)
+    }
 }
 
 fn variable_meta_classification(

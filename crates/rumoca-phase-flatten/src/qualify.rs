@@ -26,6 +26,7 @@ type MemberDefIdMap<'tree> = Arc<FxHashMap<&'tree str, rumoca_core::DefId>>;
 #[derive(Default)]
 pub(crate) struct MemberDefIdCache<'tree> {
     maps: FxHashMap<rumoca_core::DefId, MemberDefIdMap<'tree>>,
+    package_chains: FxHashMap<String, Arc<Vec<rumoca_core::DefId>>>,
 }
 
 /// Add imports visible from a lexical class scope.
@@ -307,14 +308,19 @@ pub(crate) fn collect_lexical_constant_aliases_for_def_id_with_packages_and_memb
     source_def_id: rumoca_core::DefId,
     active_packages: &[String],
     imports: &mut ImportMap,
-    member_cache: Option<&mut MemberDefIdCache<'tree>>,
+    mut member_cache: Option<&mut MemberDefIdCache<'tree>>,
 ) {
     let Some(source_class) = class_index.get(source_def_id) else {
         return;
     };
 
-    let source_member_def_ids =
-        collect_class_or_base_member_def_ids(class_index, source_class, member_cache);
+    let source_member_def_ids = collect_class_or_base_member_def_ids(
+        class_index,
+        source_class,
+        member_cache.as_deref_mut(),
+    );
+    let active_package_chains =
+        collect_active_package_chains(tree, class_index, active_packages, member_cache);
     let mut ancestor_def_ids = Vec::new();
     let mut current = class_index.parent_def_id(source_def_id);
     while let Some(def_id) = current {
@@ -330,7 +336,7 @@ pub(crate) fn collect_lexical_constant_aliases_for_def_id_with_packages_and_memb
             .qualified_name(ancestor_def_id)
             .expect("class index ancestor must have a canonical qualified name");
         let target_scope =
-            lexical_constant_target_scope(tree, class_index, ancestor_name, active_packages);
+            lexical_constant_target_scope(class_index, ancestor_name, &active_package_chains);
         for (name, component) in &ancestor_class.components {
             if !matches!(
                 component.variability,
@@ -346,15 +352,68 @@ pub(crate) fn collect_lexical_constant_aliases_for_def_id_with_packages_and_memb
     }
 }
 
-fn lexical_constant_target_scope<'a>(
+fn collect_active_package_chains<'a, 'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    active_packages: &'a [String],
+    member_cache: Option<&mut MemberDefIdCache<'tree>>,
+) -> Vec<(&'a str, Arc<Vec<rumoca_core::DefId>>)> {
+    match member_cache {
+        Some(cache) => active_packages
+            .iter()
+            .map(|package_name| {
+                let chain = cache
+                    .package_chains
+                    .entry(package_name.clone())
+                    .or_insert_with(|| {
+                        Arc::new(collect_package_chain_vec(tree, class_index, package_name))
+                    })
+                    .clone();
+                (package_name.as_str(), chain)
+            })
+            .collect(),
+        None => active_packages
+            .iter()
+            .map(|package_name| {
+                (
+                    package_name.as_str(),
+                    Arc::new(collect_package_chain_vec(tree, class_index, package_name)),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn collect_package_chain_vec(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    package_name: &str,
+) -> Vec<rumoca_core::DefId> {
+    let mut chain = Vec::new();
+    let mut visited = FxHashSet::default();
+    crate::pipeline::collect_package_chain(
+        tree,
+        class_index,
+        package_name,
+        &mut chain,
+        &mut visited,
+    );
+    chain
+}
+
+fn lexical_constant_target_scope<'a>(
+    class_index: &ast::ClassDefIndex<'_>,
     canonical_scope: &'a str,
-    active_packages: &'a [String],
+    active_package_chains: &[(&'a str, Arc<Vec<rumoca_core::DefId>>)],
 ) -> &'a str {
-    for package_name in active_packages {
-        if crate::pipeline::package_chain_contains(tree, class_index, package_name, canonical_scope)
-        {
+    let Some(query_def_id) = class_index
+        .get_by_qualified_name(canonical_scope)
+        .and_then(|class_def| class_def.def_id)
+    else {
+        return canonical_scope;
+    };
+    for (package_name, chain) in active_package_chains {
+        if chain.contains(&query_def_id) {
             return package_name;
         }
     }

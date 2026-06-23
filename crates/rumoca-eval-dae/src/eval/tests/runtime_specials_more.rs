@@ -77,6 +77,37 @@ fn test_string_is_empty_runtime_special() {
 }
 
 #[test]
+fn test_water_specific_heat_capacity_ignores_zero_length_substance_slice() {
+    let substance_slice = rumoca_core::Expression::Index {
+        base: Box::new(rumoca_core::Expression::Array {
+            elements: vec![int_lit(1)],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
+            rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(0)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ))],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let state = fn_call(
+        "Medium.setState_pTX",
+        vec![
+            named_ctor_arg("T", lit(293.15)),
+            named_ctor_arg("p", lit(300000.0)),
+            named_ctor_arg("X", substance_slice),
+        ],
+    );
+    let cp = fn_call("Buildings.Media.Water.specificHeatCapacityCp", vec![state]);
+
+    assert_eq!(eval_expr::<f64>(&cp, &VarEnv::new()), Ok(4184.0));
+}
+
+#[test]
 fn test_random_runtime_special_seed_and_stream() {
     let env = VarEnv::<f64>::new();
     let seed = eval_expr_or_default::<f64>(&fn_call("automaticGlobalSeed", vec![]), &env);

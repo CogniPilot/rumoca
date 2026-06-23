@@ -905,8 +905,8 @@ fn compile_requested_model(
         PyRuntimeStringError("strict compile produced no cached resolved tree".to_string())
     })?;
     Ok(HighLevelCompilationResult {
-        dae: result.dae,
-        flat: result.flat,
+        dae: std::sync::Arc::unwrap_or_clone(result.dae),
+        flat: std::sync::Arc::unwrap_or_clone(result.flat),
         resolved,
     })
 }

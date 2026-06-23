@@ -766,7 +766,23 @@ fn render_solve_op_for(
     if let Ok(value) = get_field(op, "ExternalCall") {
         let dst = solve_field_usize(&value, "dst")?;
         let function = solve_variant_name(&get_field(&value, "function")?)?;
+        let external_object_index = match get_field(&value, "external_object_index") {
+            Ok(value) if value.is_none() => "-1".to_string(),
+            Ok(value) => value
+                .as_usize()
+                .map(|value| value.to_string())
+                .ok_or_else(|| {
+                    render_err("ExternalCall external_object_index is not a register index")
+                })?,
+            Err(_) => "-1".to_string(),
+        };
         let output_index = solve_field_usize(&value, "output_index")?;
+        let output_count = match get_field(&value, "output_count") {
+            Ok(value) => value.as_usize().ok_or_else(|| {
+                render_err("ExternalCall output_count is not a non-negative integer")
+            })?,
+            Err(_) => 1,
+        };
         let arg_count = solve_field_usize(&value, "arg_count")?;
         let args =
             get_field(&value, "args").map_err(|_| render_err("ExternalCall missing args field"))?;
@@ -790,15 +806,18 @@ fn render_solve_op_for(
         let args_expr = if rendered_args.is_empty() {
             "NULL".to_string()
         } else {
-            format!("(double[]){{{}}}", rendered_args.join(", "))
+            format!("((double[]){{{}}})", rendered_args.join(", "))
         };
-        store_solve_reg(
-            regs,
-            dst,
+        let call = if let Some(instance) = &cfg.external_call_instance {
             format!(
-                "RUMOCA_SOLVE_EXTERNAL_CALL(\"{function}\", {output_index}, {arg_count}, {args_expr})"
-            ),
-        );
+                "RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE({instance}, \"{function}\", {external_object_index}, {output_index}, {output_count}, {arg_count}, {args_expr})"
+            )
+        } else {
+            format!(
+                "RUMOCA_SOLVE_EXTERNAL_CALL(\"{function}\", {external_object_index}, {output_index}, {output_count}, {arg_count}, {args_expr})"
+            )
+        };
+        store_solve_reg(regs, dst, call);
         return Ok(output);
     }
     if let Ok(value) = get_field(op, "Unary") {
@@ -1067,6 +1086,7 @@ struct SolveRowCConfig {
     y_pattern: String,
     p_pattern: String,
     seed_pattern: Option<String>,
+    external_call_instance: Option<String>,
 }
 
 impl SolveRowCConfig {
@@ -1078,6 +1098,7 @@ impl SolveRowCConfig {
             p_pattern: config_string(value, "p")
                 .unwrap_or_else(|| "__rumoca_solve_p(m, {})".to_string()),
             seed_pattern: config_string(value, "seed"),
+            external_call_instance: config_string(value, "external_call_instance"),
         }
     }
 

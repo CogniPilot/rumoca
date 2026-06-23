@@ -335,8 +335,8 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                 );
             }
             let type_name = comp.type_name.to_string();
-            let cache_class_overrides =
-                !component_scope_has_descendants(&component_index, comp_scope_path);
+            let scope_has_descendants =
+                component_scope_has_descendants(&component_index, comp_scope_path);
 
             let class_def = comp
                 .type_def_id
@@ -374,7 +374,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                     classes_to_scan: &classes_to_scan,
                     class_context: &class_context,
                     comp_scope,
-                    cache_class_overrides,
+                    scope_has_descendants,
                     static_cache: &mut static_cache,
                     class_override_cache: &mut class_override_cache,
                     ctx,
@@ -392,7 +392,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                     &classes_to_scan,
                     &class_context,
                     comp_scope,
-                    cache_class_overrides,
+                    scope_has_descendants,
                     &mut class_override_cache,
                     ctx,
                 );
@@ -494,7 +494,7 @@ struct ComponentStaticInjectCtx<'a, 'tree> {
     classes_to_scan: &'a [&'a ClassDef],
     class_context: &'a str,
     comp_scope: &'a str,
-    cache_class_overrides: bool,
+    scope_has_descendants: bool,
     static_cache: &'a mut rustc_hash::FxHashMap<
         ComponentStaticConstantKey,
         ComponentStaticConstantCacheEntry,
@@ -541,7 +541,7 @@ fn inject_cached_component_static_constants(
         request.classes_to_scan,
         request.class_context,
         request.comp_scope,
-        request.cache_class_overrides,
+        request.scope_has_descendants,
         request.class_override_cache,
         request.ctx,
     );
@@ -663,6 +663,16 @@ fn cache_component_static_delta(
     cache_key: ComponentStaticConstantKey,
     before: &ScopedKeySnapshot,
 ) -> StaticInjectResult {
+    const MAX_STATIC_CACHE_CAPTURE_SOURCE_FOOTPRINT: usize = 150_000;
+    if component_constant_footprint(request.ctx) > MAX_STATIC_CACHE_CAPTURE_SOURCE_FOOTPRINT {
+        request
+            .static_cache
+            .insert(cache_key, ComponentStaticConstantCacheEntry::Uncacheable);
+        return StaticInjectResult {
+            injected: true,
+            cache_rejected: 1,
+        };
+    }
     if let Some(delta) = ScopedConstantDelta::capture(request.ctx, request.comp_scope, before) {
         request.static_cache.insert(
             cache_key,
@@ -704,7 +714,7 @@ fn inject_component_static_constants(
     classes_to_scan: &[&ClassDef],
     class_context: &str,
     comp_scope: &str,
-    cache_class_overrides: bool,
+    scope_has_descendants: bool,
     class_override_cache: &mut rustc_hash::FxHashMap<
         ClassOverrideConstantKey,
         ClassOverrideConstantCacheEntry,
@@ -717,7 +727,7 @@ fn inject_component_static_constants(
         comp_scope,
         comp,
         class_context,
-        cache_class_overrides,
+        scope_has_descendants,
         class_override_cache,
         ctx,
     );
@@ -728,7 +738,7 @@ fn inject_component_static_constants(
         comp_scope_path,
         comp_scope,
         classes_to_scan,
-        cache_class_overrides,
+        scope_has_descendants,
         class_override_cache,
         ctx,
     );
@@ -792,30 +802,20 @@ fn inject_component_declared_class_overrides(
     comp_scope: &str,
     comp: &rumoca_ir_ast::InstanceData,
     _resolve_context: &str,
-    cache_class_overrides: bool,
+    scope_has_descendants: bool,
     class_override_cache: &mut rustc_hash::FxHashMap<
         ClassOverrideConstantKey,
         ClassOverrideConstantCacheEntry,
     >,
     ctx: &mut Context,
 ) {
-    if !cache_class_overrides {
-        inject_class_override_constants_at_scope_uncached(
-            tree,
-            class_index,
-            comp_scope,
-            &comp.type_name,
-            &comp.class_overrides,
-            ctx,
-        );
-        return;
-    }
     inject_class_override_constants_at_scope_cached(
         tree,
         class_index,
         comp_scope,
         &comp.type_name,
         &comp.class_overrides,
+        scope_has_descendants,
         class_override_cache,
         ctx,
     );
@@ -834,7 +834,7 @@ fn inject_ancestor_class_override_constants(
     comp_scope_path: &rumoca_core::ComponentPath,
     comp_scope: &str,
     classes_to_scan: &[&ClassDef],
-    cache_class_overrides: bool,
+    scope_has_descendants: bool,
     class_override_cache: &mut rustc_hash::FxHashMap<
         ClassOverrideConstantKey,
         ClassOverrideConstantCacheEntry,
@@ -858,24 +858,13 @@ fn inject_ancestor_class_override_constants(
                 path = ancestor_path.parent();
                 continue;
             }
-            if !cache_class_overrides {
-                inject_class_override_constants_at_scope_uncached(
-                    tree,
-                    class_index,
-                    comp_scope,
-                    &ancestor.type_name,
-                    &filtered_overrides,
-                    ctx,
-                );
-                path = ancestor_path.parent();
-                continue;
-            }
             inject_class_override_constants_at_scope_cached(
                 tree,
                 class_index,
                 comp_scope,
                 &ancestor.type_name,
                 &filtered_overrides,
+                scope_has_descendants,
                 class_override_cache,
                 ctx,
             );
@@ -911,6 +900,7 @@ fn inject_class_override_constants_at_scope_cached(
     comp_scope: &str,
     active_type_name: &str,
     class_overrides: &rumoca_ir_ast::ClassOverrideMap,
+    _scope_has_descendants: bool,
     class_override_cache: &mut rustc_hash::FxHashMap<
         ClassOverrideConstantKey,
         ClassOverrideConstantCacheEntry,

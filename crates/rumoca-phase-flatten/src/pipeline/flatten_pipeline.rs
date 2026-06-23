@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_core::ComponentPath;
 
 pub(crate) struct FlattenGraphData {
     pub(crate) vcg_data: vcg::VcgPreScanData,
@@ -15,6 +16,8 @@ pub(crate) struct ImportCaches<'tree> {
     instance: rustc_hash::FxHashMap<ast::QualifiedName, qualify::ImportMap>,
     source: rustc_hash::FxHashMap<ast::QualifiedName, qualify::ImportMap>,
     lexical_packages: rustc_hash::FxHashMap<String, qualify::ImportMap>,
+    override_context_keys: rustc_hash::FxHashMap<ComponentPath, ComponentPath>,
+    override_contexts: rustc_hash::FxHashMap<ComponentPath, OverrideContext>,
     member_def_ids: qualify::MemberDefIdCache<'tree>,
 }
 
@@ -58,6 +61,7 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
         scope_index,
         &instance_scope,
         component_override_map,
+        import_cache,
     );
     let declaration_scope = instance
         .declaration_source_scope
@@ -183,8 +187,11 @@ fn binding_import_context_for_instance(
         request.import_cache,
         request.scope_index,
     );
-    let binding_override_imports =
-        override_import_data_for_qualified_scope(binding_scope, request.component_override_map);
+    let binding_override_imports = override_import_data_for_qualified_scope(
+        binding_scope,
+        request.component_override_map,
+        request.import_cache,
+    );
     add_package_override_aliases(
         request.class_index,
         &binding_override_imports.aliases,
@@ -216,8 +223,11 @@ fn attribute_import_contexts_for_instance(
                 request.import_cache,
                 request.scope_index,
             );
-            let override_imports =
-                override_import_data_for_qualified_scope(scope, request.component_override_map);
+            let override_imports = override_import_data_for_qualified_scope(
+                scope,
+                request.component_override_map,
+                request.import_cache,
+            );
             add_package_override_aliases(
                 request.class_index,
                 &override_imports.aliases,
@@ -282,30 +292,39 @@ fn override_import_data_for_instance(
     scope_index: &OverlayScopeIndex<'_>,
     scope: &rumoca_core::ComponentPath,
     component_override_map: &ComponentOverrideMap,
+    cache: &mut ImportCaches<'_>,
 ) -> OverrideImportData {
     let preferred_aliases = preferred_package_aliases_for_instance(instance, scope_index);
     override_import_data_for_component_path_with_preferred_aliases(
         scope,
         component_override_map,
         &preferred_aliases,
+        cache,
     )
 }
 
 fn override_import_data_for_qualified_scope(
     scope: &ast::QualifiedName,
     component_override_map: &ComponentOverrideMap,
+    cache: &mut ImportCaches<'_>,
 ) -> OverrideImportData {
-    override_import_data_for_component_path(&scope.to_component_path(), component_override_map)
+    override_import_data_for_component_path(
+        &scope.to_component_path(),
+        component_override_map,
+        cache,
+    )
 }
 
 fn override_import_data_for_component_path(
     scope: &rumoca_core::ComponentPath,
     component_override_map: &ComponentOverrideMap,
+    cache: &mut ImportCaches<'_>,
 ) -> OverrideImportData {
     override_import_data_for_component_path_with_preferred_aliases(
         scope,
         component_override_map,
         &[],
+        cache,
     )
 }
 
@@ -313,12 +332,33 @@ fn override_import_data_for_component_path_with_preferred_aliases(
     scope: &rumoca_core::ComponentPath,
     component_override_map: &ComponentOverrideMap,
     preferred_aliases: &[String],
+    cache: &mut ImportCaches<'_>,
 ) -> OverrideImportData {
-    let (packages, _) = override_context_for_component_path(scope, component_override_map);
+    let (packages, _) = cached_override_context_for_component_path(
+        scope,
+        component_override_map,
+        &mut cache.override_context_keys,
+        &mut cache.override_contexts,
+    );
     OverrideImportData {
         package_names: override_package_names_with_preferred_aliases(&packages, preferred_aliases),
-        aliases: override_aliases_for_component_path(scope, component_override_map),
+        aliases: override_aliases_from_packages(&packages),
     }
+}
+
+fn cached_override_context_for_component_path<'a>(
+    scope: &rumoca_core::ComponentPath,
+    component_override_map: &ComponentOverrideMap,
+    key_cache: &mut rustc_hash::FxHashMap<ComponentPath, ComponentPath>,
+    cache: &'a mut rustc_hash::FxHashMap<ComponentPath, OverrideContext>,
+) -> &'a OverrideContext {
+    let cache_key = key_cache
+        .entry(scope.clone())
+        .or_insert_with(|| override_context_cache_key(scope, component_override_map))
+        .clone();
+    cache.entry(cache_key).or_insert_with_key(|scope| {
+        override_context_for_component_path(scope, component_override_map)
+    })
 }
 
 fn preferred_package_aliases_for_instance(
@@ -812,7 +852,9 @@ pub(crate) fn prepare_context_for_equation_flattening(
             rumoca_core::ComponentPath::from_flat_path(inner),
         );
     }
+    ctx.alias_resolution_cache.borrow_mut().clear();
     compute_transitive_alias_closure(&mut ctx.record_aliases);
+    ctx.alias_resolution_cache.borrow_mut().clear();
     array_comprehension::extract_component_array_dimensions(ctx, overlay);
     let expanded_array_comprehension_bindings =
         if array_comprehension::has_expandable_array_comprehension_bindings(overlay) {
@@ -930,6 +972,7 @@ pub(crate) fn finalize_flat_model(
     rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index);
     functions::collect_functions(flat, tree, class_index)?;
     mark_record_constructor_calls(flat, tree);
+    functions::canonicalize_collected_function_calls(flat);
     functions::lower_record_function_params(flat);
     functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
@@ -976,6 +1019,7 @@ pub(crate) fn finalize_flat_model(
         canonicalize_varrefs_via_instantiated_def_ids(flat);
     }
     functions::canonicalize_collected_function_calls(flat);
+    functions::lower_record_function_params(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
 

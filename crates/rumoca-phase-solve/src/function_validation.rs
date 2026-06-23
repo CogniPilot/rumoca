@@ -261,6 +261,10 @@ pub(super) fn validate_sim_function_call_name(
         });
     };
 
+    if crate::lower::is_record_constructor_signature(name.as_str(), func) {
+        return Ok(());
+    }
+
     if func.external.is_some()
         && !eval::is_runtime_special_function_name(func.name.as_str())
         && !external_function_codegen_opt_in_enabled(func)
@@ -306,6 +310,27 @@ mod dynamic_projection_tests {
             span: rumoca_core::Span::DUMMY,
         });
         function
+    }
+
+    #[test]
+    fn validation_accepts_record_constructor_without_body() {
+        let mut dae = Dae::default();
+        let mut constructor =
+            rumoca_core::Function::new("Pkg.efficiencyParameters", Default::default());
+        constructor.is_constructor = true;
+        constructor
+            .inputs
+            .push(rumoca_core::FunctionParam::new("x", "Real"));
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.efficiencyParameters"), constructor);
+
+        validate_sim_function_call_name(
+            &dae,
+            &VarName::new("Pkg.efficiencyParameters").into(),
+            &HashSet::new(),
+        )
+        .expect("record constructors do not need executable bodies");
     }
 
     #[test]
@@ -412,6 +437,10 @@ pub(super) fn validate_sim_component_function_call_name(
             reason: "unresolved function call".to_string(),
         });
     };
+
+    if crate::lower::is_record_constructor_signature(name.as_str(), func) {
+        return Ok(());
+    }
 
     if func.external.is_some()
         && !eval::is_runtime_special_function_name(func.name.as_str())
@@ -756,7 +785,12 @@ pub(super) fn validate_nested_function_call(
         );
     }
 
-    if !is_constructor {
+    let effective_constructor = is_constructor
+        || resolve_dae_function(dae, name).is_some_and(|function| {
+            crate::lower::is_record_constructor_signature(name.as_str(), function)
+        });
+
+    if !effective_constructor {
         validate_sim_function_call_name(dae, name, function_param_aliases)?;
         if !is_builtin_or_runtime_special(name) && !function_param_aliases.contains(name.var_name())
         {

@@ -1981,6 +1981,8 @@ pub(crate) struct Context {
     /// "battery2.cellData.nRC" to "cellData2.nRC".
     pub record_aliases:
         rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+    /// Memoized string alias resolutions for repeated parameter/enum lookup.
+    pub(crate) alias_resolution_cache: std::cell::RefCell<rustc_hash::FxHashMap<String, String>>,
     /// VCG isRoot results: path -> true if this node is the root of its component (MLS §9.4).
     pub vcg_is_root: rustc_hash::FxHashMap<String, bool>,
     /// VCG rooted results: path -> true if this node is on the "rooted" side (MLS §9.4).

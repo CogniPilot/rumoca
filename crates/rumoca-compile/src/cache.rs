@@ -5,13 +5,18 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::source_root_cache::resolve_cache_root_dir;
 
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+pub const DEFAULT_AUTO_CACHE_MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const CACHE_ACCESS_METADATA_SUFFIX: &str = ".rumoca-access";
 const CACHE_PRUNE_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+const AUTO_PRUNE_MIN_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+static AUTO_PRUNE_LAST_CHECK: OnceLock<Mutex<HashMap<PathBuf, SystemTime>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct CacheStatus {
@@ -89,7 +94,7 @@ pub fn cache_status(root: Option<&Path>) -> Result<CacheStatus> {
 /// limits. Explicit limits come from `cache prune` CLI flags.
 fn default_prune_options() -> CachePruneOptions {
     CachePruneOptions {
-        max_bytes: DEFAULT_CACHE_MAX_BYTES,
+        max_bytes: DEFAULT_AUTO_CACHE_MAX_BYTES,
         max_age: None,
         family_budgets: Vec::new(),
     }
@@ -115,6 +120,9 @@ fn write_cache_file_access(path: &Path, accessed: SystemTime) -> std::io::Result
 pub(crate) fn maybe_prune_cache_after_write(root: Option<&Path>) {
     let options = default_prune_options();
     let prune_root = root.map(Path::to_path_buf).unwrap_or_else(cache_root_dir);
+    if !should_run_auto_prune_for_root(&prune_root, SystemTime::now()) {
+        return;
+    }
     let Some(_lock) = try_acquire_cache_prune_lock(&prune_root) else {
         return;
     };
@@ -129,6 +137,39 @@ pub(crate) fn maybe_prune_cache_after_write(root: Option<&Path>) {
         report.after.total_bytes,
         report.max_bytes
     );
+}
+
+fn should_run_auto_prune_for_root(root: &Path, now: SystemTime) -> bool {
+    let checks = AUTO_PRUNE_LAST_CHECK.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut checks = checks.lock().expect("auto-prune debounce state poisoned");
+    if let Some(last) = checks.get(root)
+        && now
+            .duration_since(*last)
+            .is_ok_and(|age| age < AUTO_PRUNE_MIN_INTERVAL)
+    {
+        return false;
+    }
+    checks.insert(root.to_path_buf(), now);
+    should_run_persistent_auto_prune_for_root(root, now)
+}
+
+fn should_run_persistent_auto_prune_for_root(root: &Path, now: SystemTime) -> bool {
+    let marker = cache_auto_prune_marker_path(root);
+    let last = fs::metadata(&marker)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let should_run = last
+        .and_then(|last| now.duration_since(last).ok())
+        .is_some_and(|age| age >= AUTO_PRUNE_MIN_INTERVAL);
+    let _ = touch_auto_prune_marker(&marker);
+    should_run
+}
+
+fn touch_auto_prune_marker(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, b"")
 }
 
 pub fn parse_byte_size(raw: &str) -> Result<u64> {
@@ -452,6 +493,18 @@ fn cache_prune_lock_path(root: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(lock_name))
 }
 
+fn cache_auto_prune_marker_path(root: &Path) -> PathBuf {
+    let marker_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(|name| format!(".{name}.rumoca-auto-prune-check"))
+        .unwrap_or_else(|| ".rumoca-cache.rumoca-auto-prune-check".to_string());
+    root.parent()
+        .map(|parent| parent.join(&marker_name))
+        .unwrap_or_else(|| PathBuf::from(marker_name))
+}
+
 #[cfg(test)]
 pub(crate) fn prune_cache_after_write(
     root: Option<&Path>,
@@ -715,6 +768,33 @@ mod tests {
 
         let second = prune_cache_after_write(Some(root), 8).expect("second prune");
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn auto_prune_uses_larger_budget_than_manual_default() {
+        let options = default_prune_options();
+
+        assert_eq!(options.max_bytes, DEFAULT_AUTO_CACHE_MAX_BYTES);
+        assert!(options.max_bytes > DEFAULT_CACHE_MAX_BYTES);
+        assert!(options.max_age.is_none());
+        assert!(options.family_budgets.is_empty());
+    }
+
+    #[test]
+    fn auto_prune_debounces_recent_root_checks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache-root");
+        let start = SystemTime::now();
+
+        assert!(!should_run_auto_prune_for_root(&root, start));
+        assert!(!should_run_auto_prune_for_root(
+            &root,
+            start + Duration::from_secs(60)
+        ));
+        assert!(should_run_auto_prune_for_root(
+            &root,
+            start + AUTO_PRUNE_MIN_INTERVAL + Duration::from_secs(1)
+        ));
     }
 
     #[test]

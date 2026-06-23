@@ -14,6 +14,22 @@ pub(crate) fn build_fmu(
 ) -> Result<()> {
     use std::process::Command;
 
+    let build_script = out_dir.join("build.sh");
+    if build_script.is_file() {
+        eprintln!("  running {}", build_script.display());
+        let status = Command::new("sh")
+            .arg("build.sh")
+            .current_dir(out_dir)
+            .status()?;
+        if !status.success() {
+            bail!(
+                "FMU build script failed with exit code {}",
+                status.code().unwrap_or(-1)
+            );
+        }
+        return Ok(());
+    }
+
     let (platform, lib_ext) = fmu_binary_platform(target_name)?;
 
     // Compile shared library

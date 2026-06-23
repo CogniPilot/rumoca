@@ -22,6 +22,14 @@ fn energyplus_external_function_kind(name: &str) -> Option<ExternalFunctionKind>
 fn energyplus_external_arg_is_native_handle(expr: &rumoca_core::Expression) -> bool {
     matches!(
         expr,
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if subscripts.is_empty()
+            && (name.as_str() == "adapter" || name.as_str().ends_with(".adapter"))
+    ) || matches!(
+        expr,
         rumoca_core::Expression::FunctionCall {
             name,
             is_constructor: true,
@@ -29,6 +37,29 @@ fn energyplus_external_arg_is_native_handle(expr: &rumoca_core::Expression) -> b
         } if name.as_str()
             == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
     )
+}
+
+fn energyplus_external_object_target(expr: &rumoca_core::Expression) -> Option<&str> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty()
+            && (name.as_str() == "adapter" || name.as_str().ends_with(".adapter")) =>
+        {
+            Some(name.as_str())
+        }
+        rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: true,
+            ..
+        } if name.as_str()
+            == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject" =>
+        {
+            args.first().and_then(energyplus_external_object_target)
+        }
+        _ => None,
+    }
 }
 
 fn energyplus_external_arg_name_is_non_numeric_metadata(
@@ -60,6 +91,19 @@ fn energyplus_external_arg_name_is_non_numeric_metadata(
     )
 }
 
+fn energyplus_external_arg_name_is_runtime_shape_only(function_name: &str, arg_name: &str) -> bool {
+    matches!(
+        (function_name, arg_name),
+        (
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange",
+            "nY"
+        ) | (
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters",
+            "nParOut"
+        )
+    )
+}
+
 impl<'a> LowerBuilder<'a> {
     pub(super) fn lower_function_call(
         &mut self,
@@ -70,6 +114,19 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
+        if is_constructor
+            && energyplus_external_function_kind(name.as_str()).is_some_and(|kind| {
+                matches!(
+                    kind,
+                    ExternalFunctionKind::BuildingsEnergyPlusSpawnExternalObject
+                )
+            })
+        {
+            return Err(LowerError::Unsupported {
+                reason: "EnergyPlus SpawnExternalObject constructor requires native external-object handle storage and string metadata support".to_string(),
+            });
+        }
+
         if self.is_record_constructor_call(name, is_constructor) {
             let (named_args, positional_args) =
                 function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
@@ -190,9 +247,25 @@ impl<'a> LowerBuilder<'a> {
         let Some(kind) = energyplus_external_function_kind(name.as_str()) else {
             return Ok(None);
         };
+        if matches!(
+            kind,
+            ExternalFunctionKind::BuildingsEnergyPlusSpawnExternalObject
+        ) {
+            return Err(LowerError::Unsupported {
+                reason: "EnergyPlus SpawnExternalObject constructor requires native external-object handle storage and string metadata support".to_string(),
+            });
+        }
+        let external_object_index = self.energyplus_external_object_index(name.as_str(), args)?;
         let scalar_args =
             self.lower_energyplus_external_scalar_args(name, args, caller_scope, call_depth)?;
-        self.emit_external_call(kind, &scalar_args).map(Some)
+        self.emit_external_call_output_with_external_object(
+            kind,
+            Some(external_object_index),
+            &scalar_args,
+            0,
+            1,
+        )
+        .map(Some)
     }
 
     pub(super) fn try_lower_energyplus_external_call_outputs(
@@ -206,13 +279,97 @@ impl<'a> LowerBuilder<'a> {
         let Some(kind) = energyplus_external_function_kind(name.as_str()) else {
             return Ok(None);
         };
+        let external_object_index = self.energyplus_external_object_index(name.as_str(), args)?;
         let scalar_args =
             self.lower_energyplus_external_scalar_args(name, args, caller_scope, call_depth)?;
         let mut outputs = Vec::with_capacity(output_count);
         for output_index in 0..output_count {
-            outputs.push(self.emit_external_call_output(kind, &scalar_args, output_index)?);
+            outputs.push(self.emit_external_call_output_with_external_object(
+                kind,
+                Some(external_object_index),
+                &scalar_args,
+                output_index,
+                output_count,
+            )?);
         }
         Ok(Some(outputs))
+    }
+
+    fn energyplus_external_object_index(
+        &self,
+        function_name: &str,
+        args: &[rumoca_core::Expression],
+    ) -> Result<usize, LowerError> {
+        let (named_args, positional_args) =
+            function_calls::split_named_and_positional_call_args(function_name, args)?;
+        let positional_arg_names = self
+            .lookup_function_key(function_name)
+            .map(|function| {
+                function
+                    .inputs
+                    .iter()
+                    .map(|input| input.name.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let adapter_expr = named_args.get("adapter").copied().or_else(|| {
+            positional_args.iter().enumerate().find_map(|(index, arg)| {
+                (positional_arg_names.get(index).copied() == Some("adapter")).then_some(*arg)
+            })
+        });
+        let Some(adapter_expr) = adapter_expr else {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "EnergyPlus external call `{function_name}` requires adapter external-object handle metadata"
+                ),
+            });
+        };
+        let Some(target) = energyplus_external_object_target(adapter_expr) else {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "EnergyPlus external call `{function_name}` adapter must reference a bound `.adapter` external object; got {adapter_expr:?}"
+                ),
+            });
+        };
+        let target = self.resolve_energyplus_adapter_target(target)?;
+        let Some(indices) = self.external_object_indices else {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "EnergyPlus adapter `{target}` has no runtime external-object index map"
+                ),
+            });
+        };
+        indices
+            .get(target.as_str())
+            .copied()
+            .ok_or_else(|| {
+                let available = indices.keys().cloned().collect::<Vec<_>>().join(", ");
+                LowerError::Unsupported {
+                    reason: format!(
+                        "EnergyPlus adapter `{target}` has no runtime external-object slot; available external-object targets: [{available}]"
+                    ),
+                }
+            })
+    }
+
+    fn resolve_energyplus_adapter_target(&self, target: &str) -> Result<String, LowerError> {
+        if target.ends_with(".adapter") {
+            return Ok(target.to_string());
+        }
+        let Some(origin) = self.current_equation_origin else {
+            return Err(LowerError::Unsupported {
+                reason: "EnergyPlus local `adapter` reference has no equation origin for scoping"
+                    .to_string(),
+            });
+        };
+        let Some(component) = origin.strip_prefix("equation from ").map(str::trim) else {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "EnergyPlus local `adapter` reference cannot be scoped from equation origin `{origin}`"
+                ),
+            });
+        };
+        Ok(format!("{component}.adapter"))
     }
 
     fn lower_energyplus_external_scalar_args(
@@ -236,12 +393,27 @@ impl<'a> LowerBuilder<'a> {
             .unwrap_or_default();
         let mut scalar_args = Vec::new();
         for (index, arg) in positional_args.into_iter().enumerate() {
-            if positional_arg_names.get(index).is_some_and(|arg_name| {
-                energyplus_external_arg_name_is_non_numeric_metadata(name.as_str(), arg_name)
-            }) {
+            let positional_arg_name = positional_arg_names.get(index).copied().unwrap_or("");
+            if energyplus_external_arg_name_is_non_numeric_metadata(
+                name.as_str(),
+                positional_arg_name,
+            ) || energyplus_external_arg_name_is_runtime_shape_only(
+                name.as_str(),
+                positional_arg_name,
+            ) {
                 continue;
             }
             if energyplus_external_arg_is_native_handle(arg) {
+                continue;
+            }
+            if name.as_str() == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange"
+                && positional_arg_name == "u"
+            {
+                scalar_args.extend(self.lower_array_like_values(
+                    arg,
+                    caller_scope,
+                    call_depth + 1,
+                )?);
                 continue;
             }
             scalar_args.push(self.lower_expr(arg, caller_scope, call_depth + 1)?);
@@ -249,8 +421,19 @@ impl<'a> LowerBuilder<'a> {
         for (arg_name, arg) in named_args {
             if arg_name == "adapter"
                 || energyplus_external_arg_name_is_non_numeric_metadata(name.as_str(), &arg_name)
+                || energyplus_external_arg_name_is_runtime_shape_only(name.as_str(), &arg_name)
                 || energyplus_external_arg_is_native_handle(arg)
             {
+                continue;
+            }
+            if name.as_str() == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange"
+                && arg_name == "u"
+            {
+                scalar_args.extend(self.lower_array_like_values(
+                    arg,
+                    caller_scope,
+                    call_depth + 1,
+                )?);
                 continue;
             }
             scalar_args.push(self.lower_expr(arg, caller_scope, call_depth + 1)?);

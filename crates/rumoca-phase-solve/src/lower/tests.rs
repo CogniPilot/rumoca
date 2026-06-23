@@ -6,7 +6,7 @@ use super::{
     lower_root_conditions, lower_runtime_assignment_rhs,
 };
 use crate::layout::build_var_layout;
-use crate::lower_solve_problem;
+use crate::{lower_runtime_external_objects, lower_solve_problem};
 use indexmap::IndexMap;
 use rumoca_core::ComponentPath;
 use rumoca_ir_dae as dae;
@@ -26,6 +26,48 @@ mod root_condition_tests;
 
 fn scalar_var(name: &str) -> dae::Variable {
     dae::Variable::new(rumoca_core::VarName::new(name))
+}
+
+fn add_energyplus_adapter_binding(dae_model: &mut dae::Dae) {
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("zone.fmuZon.adapter"),
+        scalar_var("zone.fmuZon.adapter"),
+    );
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+        rumoca_core::Span::DUMMY,
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("allocate_Modelica_EnergyPlus_9_6_0".to_string()),
+        arg_names: vec!["objectType".to_string(), "startTime".to_string()],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        ..Default::default()
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("zone.fmuZon.adapter")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new(
+                "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+            ),
+            args: vec![
+                named_arg("objectType", int_lit(1)),
+                named_arg("startTime", real_lit(0.0)),
+            ],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: "binding equation for zone.fmuZon.adapter".to_string(),
+        scalar_count: 1,
+    });
 }
 
 fn insert_pre_parameter(dae_model: &mut dae::Dae, name: &str, dims: &[i64]) {
@@ -2135,6 +2177,7 @@ fn function_output_shape_expr_uses_integer_input_start_actual() {
 #[test]
 fn energyplus_external_initialize_lowers_to_external_call_op() {
     let mut dae_model = dae::Dae::new();
+    add_energyplus_adapter_binding(&mut dae_model);
     for name in ["nObj", "isSynchronized"] {
         dae_model
             .variables
@@ -2175,14 +2218,7 @@ fn energyplus_external_initialize_lowers_to_external_call_op() {
                     "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
                 ),
                 args: vec![
-                    rumoca_core::Expression::FunctionCall {
-                        name: rumoca_core::Reference::new(
-                            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
-                        ),
-                        args: vec![var("adapter")],
-                        is_constructor: true,
-                        span: rumoca_core::Span::DUMMY,
-                    },
+                    var("zone.fmuZon.adapter"),
                     named_arg("isSynchronized", var("isSynchronized")),
                 ],
                 is_constructor: false,
@@ -2193,21 +2229,29 @@ fn energyplus_external_initialize_lowers_to_external_call_op() {
         "EnergyPlus initialize residual",
     ));
 
-    let layout = build_var_layout(&dae_model);
-    let rows = lower_residual(&dae_model, &layout)
+    let problem = lower_solve_problem(&dae_model)
         .expect("EnergyPlus external initialize should remain explicit in Solve IR");
 
-    assert!(rows[0].iter().any(|op| matches!(
-        op,
-        LinearOp::ExternalCall {
-            function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusInitialize,
-            ..
-        }
-    )));
+    assert!(
+        problem
+            .continuous
+            .residual
+            .programs
+            .iter()
+            .flatten()
+            .any(|op| matches!(
+                op,
+                LinearOp::ExternalCall {
+                    function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusInitialize,
+                    external_object_index: Some(0),
+                    ..
+                }
+            ))
+    );
 }
 
 #[test]
-fn energyplus_spawn_external_object_skips_string_metadata_args() {
+fn energyplus_spawn_external_object_constructor_requires_native_handle_support() {
     let mut function = rumoca_core::Function::new(
         "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
         rumoca_core::Span::DUMMY,
@@ -2281,8 +2325,114 @@ fn energyplus_spawn_external_object_skips_string_metadata_args() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let _lowered = lower_expression(&expr, &layout, &functions)
-        .expect("EnergyPlus spawn constructor string metadata should not require numeric slots");
+    let err = lower_expression(&expr, &layout, &functions)
+        .expect_err("EnergyPlus spawn constructor must not lower to a numeric fake handle");
+    assert!(
+        err.to_string().contains("external-object handle storage")
+            && err.to_string().contains("string metadata support"),
+        "unexpected EnergyPlus spawn constructor error: {err}"
+    );
+}
+
+#[test]
+fn energyplus_spawn_external_object_binding_lowers_to_runtime_metadata() {
+    let mut dae_model = dae::Dae::new();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("zone.fmuZon.adapter"),
+        scalar_var("zone.fmuZon.adapter"),
+    );
+    dae_model
+        .metadata
+        .variable_starts
+        .insert("idfName".to_string(), str_lit("Resources/model.idf"));
+
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+        rumoca_core::Span::DUMMY,
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("allocate_Modelica_EnergyPlus_9_6_0".to_string()),
+        arg_names: vec![
+            "objectType".to_string(),
+            "startTime".to_string(),
+            "idfName".to_string(),
+        ],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        ..Default::default()
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("zone.fmuZon.adapter")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new(
+                "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+            ),
+            args: vec![
+                named_arg("objectType", int_lit(1)),
+                named_arg("startTime", real_lit(0.0)),
+                named_arg("idfName", var("idfName")),
+                named_arg(
+                    "outNames",
+                    rumoca_core::Expression::Array {
+                        elements: vec![str_lit("TRad"), str_lit("QCon_flow")],
+                        is_matrix: false,
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                ),
+            ],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: "binding equation for zone.fmuZon.adapter".to_string(),
+        scalar_count: 1,
+    });
+
+    let objects = lower_runtime_external_objects(&dae_model)
+        .expect("EnergyPlus external object constructor metadata should lower");
+    assert_eq!(objects.len(), 1);
+    let object = &objects[0];
+    assert_eq!(object.target, "zone.fmuZon.adapter");
+    assert_eq!(
+        object.constructor,
+        rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusSpawnExternalObject
+    );
+    assert_eq!(object.symbol, "allocate_Modelica_EnergyPlus_9_6_0");
+    assert_eq!(
+        object
+            .args
+            .iter()
+            .map(|arg| (arg.name.as_deref(), &arg.value))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Some("objectType"),
+                &rumoca_ir_solve::RuntimeExternalValue::Integer(1)
+            ),
+            (
+                Some("startTime"),
+                &rumoca_ir_solve::RuntimeExternalValue::Real(0.0)
+            ),
+            (
+                Some("idfName"),
+                &rumoca_ir_solve::RuntimeExternalValue::String("Resources/model.idf".to_string())
+            ),
+            (
+                Some("outNames"),
+                &rumoca_ir_solve::RuntimeExternalValue::Array(vec![
+                    rumoca_ir_solve::RuntimeExternalValue::String("TRad".to_string()),
+                    rumoca_ir_solve::RuntimeExternalValue::String("QCon_flow".to_string())
+                ])
+            )
+        ]
+    );
 }
 
 #[test]
@@ -2303,8 +2453,346 @@ fn initial_residual_skips_energyplus_adapter_binding() {
 }
 
 #[test]
+fn energyplus_spawn_external_object_residual_binding_lowers_to_runtime_metadata() {
+    let mut dae_model = dae::Dae::new();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("zone.fmuZon.adapter"),
+        scalar_var("zone.fmuZon.adapter"),
+    );
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+        rumoca_core::Span::DUMMY,
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("allocate_Modelica_EnergyPlus_9_6_0".to_string()),
+        arg_names: vec!["objectType".to_string(), "startTime".to_string()],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        ..Default::default()
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    dae_model
+        .symbols
+        .enum_literal_ordinals
+        .insert("LogLevels.Warning".to_string(), 2);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(
+            var("zone.fmuZon.adapter"),
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new(
+                    "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+                ),
+                args: vec![
+                    named_arg("objectType", int_lit(1)),
+                    named_arg_constructor("startTime", real_lit(0.0)),
+                ],
+                is_constructor: true,
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+        rumoca_core::Span::DUMMY,
+        "binding equation for zone.fmuZon.adapter",
+    ));
+
+    let objects = lower_runtime_external_objects(&dae_model)
+        .expect("residual-form EnergyPlus external object binding should lower");
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].target, "zone.fmuZon.adapter");
+}
+
+#[test]
+fn scalarized_energyplus_spawn_external_object_residual_binding_lowers_to_runtime_metadata() {
+    let mut dae_model = dae::Dae::new();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("zone.fmuZon.adapter"),
+        scalar_var("zone.fmuZon.adapter"),
+    );
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+        rumoca_core::Span::DUMMY,
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("allocate_Modelica_EnergyPlus_9_6_0".to_string()),
+        arg_names: vec!["objectType".to_string(), "startTime".to_string()],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        ..Default::default()
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    dae_model
+        .symbols
+        .enum_literal_ordinals
+        .insert("LogLevels.Warning".to_string(), 2);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(
+            var("zone.fmuZon.adapter"),
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new(
+                    "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+                ),
+                args: vec![
+                    named_arg("objectType", int_lit(1)),
+                    named_arg_constructor("startTime", var("zone.fmuZon.startTime")),
+                    named_arg("modelicaNameBuilding", var("zone.modelicaNameBuilding")),
+                    named_arg("idfName", var("zone.fmuZon.idfName")),
+                    named_arg("epName", var("zone.fmuZon.zoneName")),
+                    named_arg("logLevel", var("LogLevels.Warning")),
+                    named_arg(
+                        "jsonKeysValues",
+                        add(
+                            str_lit("{\"name\":\""),
+                            add(var("zone.fmuZon.zoneName"), str_lit("\"}")),
+                        ),
+                    ),
+                    named_arg(
+                        "derivatives_structure",
+                        rumoca_core::Expression::BuiltinCall {
+                            function: rumoca_core::BuiltinFunction::Fill,
+                            args: vec![
+                                rumoca_core::Expression::BuiltinCall {
+                                    function: rumoca_core::BuiltinFunction::Fill,
+                                    args: vec![var("nDer"), int_lit(2)],
+                                    span: rumoca_core::Span::DUMMY,
+                                },
+                                var("nDer"),
+                            ],
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    ),
+                ],
+                is_constructor: true,
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+        rumoca_core::Span::DUMMY,
+        "binding equation for zone.fmuZon.adapter",
+    ));
+    dae_model.metadata.variable_starts.insert(
+        "zone.modelicaNameBuilding".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("getInstanceName"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("zone.fmuZon.idfName"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("zone.fmuZon.idfName"),
+            start: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::Index {
+                        base: Box::new(var("zone")),
+                        subscripts: vec![rumoca_core::Subscript::Index {
+                            value: 1,
+                            span: rumoca_core::Span::DUMMY,
+                        }],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    field: "building".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                field: "idfName".to_string(),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..Default::default()
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("building.idfName"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("building.idfName"),
+            start: Some(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Modelica.Utilities.Files.loadResource"),
+                args: vec![str_lit("modelica://Missing/Resources/model.idf")],
+                is_constructor: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..Default::default()
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("zone.fmuZon.zoneName"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("zone.fmuZon.zoneName"),
+            start: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("zoneName"),
+                subscripts: vec![rumoca_core::Subscript::Index {
+                    value: 1,
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..Default::default()
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("zoneName"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("zoneName"),
+            start: Some(rumoca_core::Expression::Array {
+                elements: vec![str_lit("Core_bot"), str_lit("Perimeter_bot_ZN_1")],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            dims: vec![2],
+            ..Default::default()
+        },
+    );
+    dae_model
+        .metadata
+        .variable_starts
+        .insert("nDer".to_string(), int_lit(0));
+    dae_model.metadata.variable_starts.insert(
+        "zone.fmuZon.epwName".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Modelica.Utilities.Files.loadResource"),
+            args: vec![str_lit("modelica://Missing/Resources/weather.epw")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            sub(var("zone.fmuZon.startTime"), var("time")),
+            rumoca_core::Span::DUMMY,
+            "equation from zone.fmuZon",
+        ));
+
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae_model);
+    let objects = lower_runtime_external_objects(&dae_model)
+        .expect("scalarized residual-form EnergyPlus external object binding should lower");
+    assert_eq!(
+        objects.len(),
+        1,
+        "scalarized equations: {:#?}",
+        dae_model.continuous.equations
+    );
+    assert_eq!(objects[0].target, "zone.fmuZon.adapter");
+    assert_eq!(
+        objects[0].args[1].value,
+        rumoca_ir_solve::RuntimeExternalValue::SimulationTime
+    );
+    assert_eq!(
+        objects[0].args[2].value,
+        rumoca_ir_solve::RuntimeExternalValue::String("zone".to_string())
+    );
+    assert_eq!(
+        objects[0].args[3].value,
+        rumoca_ir_solve::RuntimeExternalValue::String(
+            "modelica://Missing/Resources/model.idf".to_string()
+        )
+    );
+    assert_eq!(
+        objects[0].args[4].value,
+        rumoca_ir_solve::RuntimeExternalValue::String("Core_bot".to_string())
+    );
+    assert_eq!(
+        objects[0].args[5].value,
+        rumoca_ir_solve::RuntimeExternalValue::Integer(2)
+    );
+    assert_eq!(
+        objects[0].args[6].value,
+        rumoca_ir_solve::RuntimeExternalValue::String("{\"name\":\"Core_bot\"}".to_string())
+    );
+    assert_eq!(
+        objects[0].args[7].value,
+        rumoca_ir_solve::RuntimeExternalValue::Array(Vec::new())
+    );
+}
+
+#[test]
+fn energyplus_spawn_modelica_name_building_uses_inner_building_metadata() {
+    let mut dae_model = dae::Dae::new();
+    dae_model.metadata.root_model_name = Some("Root.Model".to_string());
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("zone.fmuZon.adapter"),
+        scalar_var("zone.fmuZon.adapter"),
+    );
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+        rumoca_core::Span::DUMMY,
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("allocate_Modelica_EnergyPlus_9_6_0".to_string()),
+        arg_names: vec!["modelicaNameBuilding".to_string()],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        ..Default::default()
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(
+            var("zone.fmuZon.adapter"),
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new(
+                    "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
+                ),
+                args: vec![named_arg(
+                    "modelicaNameBuilding",
+                    var("zone.fmuZon.modelicaNameBuilding"),
+                )],
+                is_constructor: true,
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+        rumoca_core::Span::DUMMY,
+        "binding equation for zone.fmuZon.adapter",
+    ));
+    dae_model.metadata.variable_starts.insert(
+        "zone.fmuZon.modelicaNameBuilding".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("getInstanceName"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model.metadata.variable_starts.insert(
+        "building.modelicaNameBuilding".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("getInstanceName"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let objects = lower_runtime_external_objects(&dae_model)
+        .expect("EnergyPlus building metadata should lower through inner building");
+
+    assert_eq!(objects.len(), 1);
+    assert_eq!(
+        objects[0].args[0].value,
+        rumoca_ir_solve::RuntimeExternalValue::String("Root.Model.building".to_string())
+    );
+}
+
+#[test]
 fn energyplus_external_get_parameters_lowers_vector_outputs() {
     let mut dae_model = dae::Dae::new();
+    add_energyplus_adapter_binding(&mut dae_model);
     dae_model.variables.algebraics.insert(
         rumoca_core::VarName::new("parOut"),
         dae::Variable {
@@ -2370,14 +2858,7 @@ fn energyplus_external_get_parameters_lowers_vector_outputs() {
                 "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters",
             ),
             args: vec![
-                rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::new(
-                        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject",
-                    ),
-                    args: vec![var("adapter")],
-                    is_constructor: true,
-                    span: rumoca_core::Span::DUMMY,
-                },
+                var("zone.fmuZon.adapter"),
                 named_arg("nParOut", var("nParOut")),
                 named_arg("isSynchronized", var("nObj")),
             ],
@@ -2389,15 +2870,18 @@ fn energyplus_external_get_parameters_lowers_vector_outputs() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
-    let rows = lower_residual(&dae_model, &layout)
+    let problem = lower_solve_problem(&dae_model)
         .expect("EnergyPlus getParameters vector output should remain explicit in Solve IR");
-    let output_indices = rows
+    let output_indices = problem
+        .continuous
+        .residual
+        .programs
         .iter()
         .flat_map(|row| row.iter())
         .filter_map(|op| match op {
             LinearOp::ExternalCall {
                 function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusGetParameters,
+                external_object_index: Some(0),
                 output_index,
                 ..
             } => Some(*output_index),
@@ -2405,8 +2889,181 @@ fn energyplus_external_get_parameters_lowers_vector_outputs() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(rows.len(), 3);
+    assert_eq!(problem.continuous.residual.programs.len(), 3);
     assert_eq!(output_indices, vec![0, 1, 2, 0, 1, 2, 0, 1, 2]);
+}
+
+#[test]
+fn energyplus_external_exchange_flattens_u_vector_and_skips_shape_only_ny() {
+    let mut dae_model = dae::Dae::new();
+    add_energyplus_adapter_binding(&mut dae_model);
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("yEP"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("yEP"),
+            dims: vec![5],
+            ..Default::default()
+        },
+    );
+    for name in [
+        "initialCall",
+        "nY",
+        "dummy",
+        "u1",
+        "u2",
+        "u3",
+        "u4",
+        "u5",
+        "u6",
+    ] {
+        dae_model
+            .variables
+            .parameters
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model
+        .metadata
+        .variable_starts
+        .insert("nY".to_string(), int_lit(5));
+
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange",
+        rumoca_core::Span::DUMMY,
+    );
+    function.inputs.push(function_param("adapter"));
+    function.inputs.push(function_param("initialCall"));
+    function.inputs.push(function_param("nY"));
+    function.inputs.push(rumoca_core::FunctionParam {
+        def_id: None,
+        name: "u".to_string(),
+        span: rumoca_core::Span::DUMMY,
+        type_name: "Real".to_string(),
+        type_class: None,
+        dims: vec![6],
+        shape_expr: Vec::new(),
+        default: None,
+        description: None,
+    });
+    function.inputs.push(function_param("dummy"));
+    function.outputs.push(rumoca_core::FunctionParam {
+        def_id: None,
+        name: "y".to_string(),
+        span: rumoca_core::Span::DUMMY,
+        type_name: "Real".to_string(),
+        type_class: None,
+        dims: vec![0],
+        shape_expr: vec![rumoca_core::Subscript::generated_expr(Box::new(var("nY")))],
+        default: None,
+        description: None,
+    });
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("exchange_Modelica_EnergyPlus_9_6_0".to_string()),
+        arg_names: vec![
+            "adapter".to_string(),
+            "initialCall".to_string(),
+            "u".to_string(),
+            "dummy".to_string(),
+            "y".to_string(),
+        ],
+        libraries: vec![
+            "ModelicaBuildingsEnergyPlus_9_6_0".to_string(),
+            "fmilib_shared".to_string(),
+        ],
+        ..Default::default()
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("yEP")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new(
+                "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange",
+            ),
+            args: vec![
+                var("zone.fmuZon.adapter"),
+                named_arg("initialCall", var("initialCall")),
+                named_arg("nY", var("nY")),
+                named_arg(
+                    "u",
+                    rumoca_core::Expression::Array {
+                        elements: vec![
+                            var("u1"),
+                            var("u2"),
+                            var("u3"),
+                            var("u4"),
+                            var("u5"),
+                            var("u6"),
+                        ],
+                        is_matrix: false,
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                ),
+                named_arg("dummy", var("dummy")),
+            ],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: "EnergyPlus exchange vector residual".to_string(),
+        scalar_count: 5,
+    });
+
+    let problem = lower_solve_problem(&dae_model)
+        .expect("EnergyPlus exchange vector input should remain explicit in Solve IR");
+    let calls = problem
+        .continuous
+        .residual
+        .programs
+        .iter()
+        .flat_map(|row| row.iter())
+        .filter_map(|op| match op {
+            LinearOp::ExternalCall {
+                function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusExchange,
+                external_object_index: Some(0),
+                arg_count,
+                output_index,
+                ..
+            } => Some((*arg_count, *output_index)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(problem.continuous.residual.programs.len(), 5);
+    assert_eq!(
+        calls,
+        vec![
+            (8, 0),
+            (8, 1),
+            (8, 2),
+            (8, 3),
+            (8, 4),
+            (8, 0),
+            (8, 1),
+            (8, 2),
+            (8, 3),
+            (8, 4),
+            (8, 0),
+            (8, 1),
+            (8, 2),
+            (8, 3),
+            (8, 4),
+            (8, 0),
+            (8, 1),
+            (8, 2),
+            (8, 3),
+            (8, 4),
+            (8, 0),
+            (8, 1),
+            (8, 2),
+            (8, 3),
+            (8, 4),
+        ],
+        "exchange should pass initialCall, flattened u[1..6], and dummy; nY is shape-only"
+    );
 }
 
 #[test]
@@ -2996,6 +3653,13 @@ fn int_lit(value: i64) -> rumoca_core::Expression {
 fn bool_lit(value: bool) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Boolean(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn str_lit(value: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(value.to_string()),
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -4167,10 +4831,22 @@ fn lower_discrete_rhs_preserves_pre_array_branch_values() {
 }
 
 fn named_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
+    named_arg_with_constructor_flag(name, value, false)
+}
+
+fn named_arg_constructor(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
+    named_arg_with_constructor_flag(name, value, true)
+}
+
+fn named_arg_with_constructor_flag(
+    name: &str,
+    value: rumoca_core::Expression,
+    is_constructor: bool,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new(format!("__rumoca_named_arg__.{name}")).into(),
         args: vec![value],
-        is_constructor: false,
+        is_constructor,
         span: rumoca_core::Span::DUMMY,
     }
 }

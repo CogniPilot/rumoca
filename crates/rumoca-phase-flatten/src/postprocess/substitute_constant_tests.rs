@@ -49,6 +49,25 @@ fn reference_x_fill_expr() -> rumoca_core::Expression {
     }
 }
 
+fn indexed_field_ref(base: &str, index: i64, fields: &[&str]) -> rumoca_core::Expression {
+    let mut expr = rumoca_core::Expression::Index {
+        base: Box::new(var_ref(base)),
+        subscripts: vec![rumoca_core::Subscript::generated_index(
+            index,
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+    for field in fields {
+        expr = rumoca_core::Expression::FieldAccess {
+            base: Box::new(expr),
+            field: (*field).to_string(),
+            span: rumoca_core::Span::DUMMY,
+        };
+    }
+    expr
+}
+
 fn add_primitive_variable(model: &mut flat::Model, name: &str) {
     model.add_variable(
         rumoca_core::VarName::new(name),
@@ -580,6 +599,43 @@ fn substitutes_variable_attribute_constants_in_variable_scope() {
         .expect("start attribute should remain");
     assert!(!expr_contains_var_ref(start, "reference_X"));
     assert!(!expr_contains_var_ref(start, "nS"));
+}
+
+#[test]
+fn substitutes_indexed_field_access_constants_in_variable_scope() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "tank.arr[1].medium.dT");
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("tank.arr[1].medium.dT"))
+        .expect("variable should exist")
+        .start = Some(rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(indexed_field_ref("tank.arr", 1, &["medium", "T_default"])),
+        rhs: Box::new(indexed_field_ref("tank.arr", 1, &["medium", "reference_T"])),
+        span: rumoca_core::Span::DUMMY,
+    });
+
+    let mut ctx = Context::new();
+    ctx.real_parameter_values
+        .insert("tank.arr[1].medium.T_default".to_string(), 295.15);
+    ctx.real_parameter_values
+        .insert("tank.arr[1].medium.reference_T".to_string(), 273.15);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let start = model
+        .variables
+        .get(&rumoca_core::VarName::new("tank.arr[1].medium.dT"))
+        .expect("variable should exist")
+        .start
+        .as_ref()
+        .expect("start attribute should remain");
+    let debug = format!("{start:?}");
+    assert!(
+        !debug.contains("T_default") && !debug.contains("reference_T"),
+        "indexed field constants should resolve through their flat path, got {debug}"
+    );
 }
 
 #[test]

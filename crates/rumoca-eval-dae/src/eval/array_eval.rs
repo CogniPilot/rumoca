@@ -49,6 +49,25 @@ pub(super) fn try_eval_array_like_values<T: SimFloat>(
             }
             Ok(vec![eval_expr(expr, env)?])
         }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts_are_all_colon(subscripts) => {
+            array_values_from_env_name_generic(name.as_str(), env).ok_or_else(|| {
+                EvalError::MissingBinding {
+                    name: name.to_string(),
+                }
+            })
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+            try_eval_var_ref_range_slice_values(name.as_str(), &subscripts[0], env)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+            try_eval_array_range_slice_values(base, &subscripts[0], env)
+        }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
             try_eval_field_access_array_values(base, field, env)
         }
@@ -87,12 +106,14 @@ fn try_eval_builtin_array_like_values<T: SimFloat>(
         | rumoca_core::BuiltinFunction::Ones
         | rumoca_core::BuiltinFunction::Fill
         | rumoca_core::BuiltinFunction::Identity
-        | rumoca_core::BuiltinFunction::Diagonal => eval_array_constructor_values(
-            &function, args, env,
-        )
-        .ok_or(EvalError::UnsupportedExpression {
-            kind: "array constructor shape",
-        }),
+        | rumoca_core::BuiltinFunction::Diagonal => {
+            eval_array_constructor_values(&function, args, env).ok_or_else(|| {
+                trace_array_constructor_shape(function, args);
+                EvalError::UnsupportedExpression {
+                    kind: "array constructor shape",
+                }
+            })
+        }
         rumoca_core::BuiltinFunction::Transpose => {
             eval_transpose_values(args, env).ok_or(EvalError::UnsupportedExpression {
                 kind: "transpose shape",
@@ -121,6 +142,16 @@ fn try_eval_builtin_array_like_values<T: SimFloat>(
         _ if args.len() == 1 => try_eval_unary_builtin_array_like_values(expr, function, args, env),
         _ => Ok(vec![eval_expr(expr, env)?]),
     }
+}
+
+fn trace_array_constructor_shape(
+    function: rumoca_core::BuiltinFunction,
+    args: &[rumoca_core::Expression],
+) {
+    if std::env::var_os("RUMOCA_TRACE_ARRAY_CONSTRUCTOR_SHAPE").is_none() {
+        return;
+    }
+    eprintln!("unsupported array constructor shape for {function:?}: {args:#?}");
 }
 
 fn try_eval_unary_builtin_array_like_values<T: SimFloat>(
@@ -208,6 +239,17 @@ fn collect_array_values<T: SimFloat>(
             name, subscripts, ..
         } if subscripts.is_empty() => {
             if let Some(values) = array_values_from_env_name_generic(name.as_str(), env) {
+                out.extend(values);
+            } else {
+                out.push(eval_expr_or_default::<T>(expr, env));
+            }
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+            if let Some(values) =
+                eval_var_ref_range_slice_values(name.as_str(), &subscripts[0], env)
+            {
                 out.extend(values);
             } else {
                 out.push(eval_expr_or_default::<T>(expr, env));
@@ -814,8 +856,8 @@ fn eval_elementwise_binary_array_values<T: SimFloat>(
     env: &VarEnv<T>,
     op: impl Fn(T, T) -> T,
 ) -> Option<Vec<T>> {
-    let lhs_values = eval_array_like_values(lhs, env);
-    let rhs_values = eval_array_like_values(rhs, env);
+    let lhs_values = eval_elementwise_operand_values(lhs, env);
+    let rhs_values = eval_elementwise_operand_values(rhs, env);
     let len = match (lhs_values.len(), rhs_values.len()) {
         (0, _) | (_, 0) => return None,
         (1, 1) => return None,
@@ -839,6 +881,21 @@ fn eval_elementwise_binary_array_values<T: SimFloat>(
             })
             .collect(),
     )
+}
+
+fn eval_elementwise_operand_values<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Vec<T> {
+    match expr {
+        rumoca_core::Expression::Array {
+            is_matrix: false, ..
+        }
+        | rumoca_core::Expression::Tuple { .. }
+        | rumoca_core::Expression::Range { .. }
+        | rumoca_core::Expression::ArrayComprehension { .. } => eval_array_values(expr, env),
+        _ => eval_array_like_values(expr, env),
+    }
 }
 
 fn try_eval_elementwise_binary_array_values<T: SimFloat>(
@@ -891,6 +948,24 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
                 return values;
             }
             vec![eval_expr_or_default::<T>(expr, env)]
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts_are_all_colon(subscripts) => {
+            array_values_from_env_name_generic(name.as_str(), env)
+                .unwrap_or_else(|| vec![eval_expr_or_default::<T>(expr, env)])
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+            eval_var_ref_range_slice_values(name.as_str(), &subscripts[0], env)
+                .unwrap_or_else(|| vec![eval_expr_or_default::<T>(expr, env)])
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+            eval_array_range_slice_values(base, &subscripts[0], env)
+                .unwrap_or_else(|| vec![eval_expr_or_default::<T>(expr, env)])
         }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
             if let Some(values) = eval_field_access_array_values(base, field, env) {
@@ -977,6 +1052,103 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
         | rumoca_core::Expression::ArrayComprehension { .. } => eval_array_values::<T>(expr, env),
         _ => vec![eval_expr_or_default::<T>(expr, env)],
     }
+}
+
+fn subscripts_are_all_colon(subscripts: &[rumoca_core::Subscript]) -> bool {
+    !subscripts.is_empty()
+        && subscripts
+            .iter()
+            .all(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+}
+
+fn subscript_is_range_expr(subscript: &rumoca_core::Subscript) -> bool {
+    matches!(
+        subscript,
+        rumoca_core::Subscript::Expr { expr, .. }
+            if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+    )
+}
+
+fn eval_var_ref_range_slice_values<T: SimFloat>(
+    name: &str,
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    try_eval_var_ref_range_slice_values(name, subscript, env).ok()
+}
+
+fn eval_array_range_slice_values<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    try_eval_array_range_slice_values(base, subscript, env).ok()
+}
+
+fn try_eval_array_range_slice_values<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let values = try_eval_array_like_values(base, env)?;
+    select_range_slice_values(values.as_slice(), subscript, env)
+}
+
+fn try_eval_var_ref_range_slice_values<T: SimFloat>(
+    name: &str,
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice",
+        });
+    };
+    if !matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice",
+        });
+    }
+    let values =
+        array_values_from_env_name_generic(name, env).ok_or_else(|| EvalError::MissingBinding {
+            name: name.to_string(),
+        })?;
+    select_range_slice_values(values.as_slice(), subscript, env)
+}
+
+fn select_range_slice_values<T: SimFloat>(
+    values: &[T],
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice",
+        });
+    };
+    if !matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice",
+        });
+    };
+    let mut out = Vec::new();
+    for raw in eval_array_values::<T>(expr, env) {
+        let idx = raw.real().round();
+        if !idx.is_finite() || idx < 1.0 {
+            return Err(EvalError::UnsupportedExpression {
+                kind: "range slice",
+            });
+        }
+        let zero_based = idx as usize - 1;
+        out.push(
+            *values
+                .get(zero_based)
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "range slice",
+                })?,
+        );
+    }
+    Ok(out)
 }
 
 fn eval_unary_array_values<T: SimFloat>(
@@ -1068,7 +1240,7 @@ fn constructor_extent<T: SimFloat>(
 
 fn constructor_dim<T: SimFloat>(arg: &rumoca_core::Expression, env: &VarEnv<T>) -> Option<usize> {
     let dim = eval_expr_or_default::<T>(arg, env).real().round();
-    (dim.is_finite() && dim > 0.0).then_some(dim as usize)
+    (dim.is_finite() && dim >= 0.0).then_some(dim as usize)
 }
 
 fn eval_function_call_array_values<T: SimFloat>(
@@ -1301,25 +1473,36 @@ pub(super) fn infer_runtime_expr_dims<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Vec<usize> {
-    let values = eval_array_like_values(expr, env);
     match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => env
             .dims
             .get(name.as_str())
-            .map(|dims| infer_declared_or_value_dims(dims, values.len()))
-            .unwrap_or_else(|| runtime_vector_dims(values.len())),
+            .map(|dims| infer_declared_or_value_dims(dims, eval_array_like_values(expr, env).len()))
+            .unwrap_or_else(|| runtime_vector_dims(eval_array_like_values(expr, env).len())),
         rumoca_core::Expression::Array {
             elements,
             is_matrix: true,
             ..
         } => runtime_matrix_literal_dims(elements, env),
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: false,
+            ..
+        } => vec![elements.len()],
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Cat,
             args,
             ..
-        } => infer_runtime_cat_dims(args, env).unwrap_or_else(|| runtime_vector_dims(values.len())),
+        } => infer_runtime_cat_dims(args, env)
+            .unwrap_or_else(|| runtime_vector_dims(eval_array_like_values(expr, env).len())),
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            ..
+        } => infer_runtime_fill_dims(args, env)
+            .unwrap_or_else(|| runtime_vector_dims(eval_array_like_values(expr, env).len())),
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args,
@@ -1344,17 +1527,42 @@ pub(super) fn infer_runtime_expr_dims<T: SimFloat>(
                     .collect::<Vec<_>>()
             })
             .filter(|dims| !dims.is_empty())
-            .unwrap_or_else(|| runtime_vector_dims(values.len())),
-        rumoca_core::Expression::Array { .. }
-        | rumoca_core::Expression::Tuple { .. }
+            .unwrap_or_else(|| runtime_vector_dims(eval_array_like_values(expr, env).len())),
+        rumoca_core::Expression::Tuple { .. }
         | rumoca_core::Expression::Range { .. }
-        | rumoca_core::Expression::ArrayComprehension { .. } => runtime_vector_dims(values.len()),
-        _ => runtime_vector_dims(values.len()),
+        | rumoca_core::Expression::ArrayComprehension { .. } => {
+            runtime_vector_dims(eval_array_like_values(expr, env).len())
+        }
+        _ => runtime_vector_dims(eval_array_like_values(expr, env).len()),
     }
 }
 
 fn runtime_vector_dims(len: usize) -> Vec<usize> {
     (len > 1).then_some(len).into_iter().collect()
+}
+
+fn infer_runtime_fill_dims<T: SimFloat>(
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Option<Vec<usize>> {
+    if args.len() < 2 {
+        return None;
+    }
+    args.iter()
+        .skip(1)
+        .map(|arg| constructor_shape_dim(arg, env))
+        .collect()
+}
+
+fn constructor_shape_dim<T: SimFloat>(
+    arg: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<usize> {
+    let dim = eval_expr_or_default::<T>(arg, env).real();
+    if !dim.is_finite() || dim < 0.0 || dim.fract() != 0.0 {
+        return None;
+    }
+    Some(dim as usize)
 }
 
 fn infer_declared_or_value_dims(dims: &[i64], value_count: usize) -> Vec<usize> {

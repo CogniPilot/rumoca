@@ -19,6 +19,8 @@
 //! | 8 | Inheritance | Extends, modifications, redeclarations |
 //! | 9 | Advanced | Algorithms, external functions |
 
+use std::sync::Arc;
+
 use rumoca_compile::{Session, SessionConfig};
 use rumoca_ir_dae::Dae;
 
@@ -128,7 +130,7 @@ fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
         .compile_model(model_name)
         .map_err(|e| format!("Instantiate/Flatten/ToDae: {:?}", e))?;
 
-    let dae = result.dae;
+    let dae = Arc::unwrap_or_clone(result.dae);
     Ok(CompileResult {
         states: dae.variables.states.len(),
         algebraics: dae.variables.algebraics.len(),

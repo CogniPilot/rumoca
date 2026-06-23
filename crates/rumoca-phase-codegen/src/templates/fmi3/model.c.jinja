@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 {# Configuration for render_expr - C style #}
 {% set c_symbol_policy = {
@@ -24,11 +25,15 @@
         "m", "t", "time", "i", "n", "arr", "s", "sz", "value", "set", "reset", "suspend",
         "resume", "active", "localActive", "newActive", "oldActive", "enableFire", "fire",
         "condition", "t_start", "ModelInstance", "Complex",
+        "x", "xdot", "y", "u", "w", "p", "z", "pre_z", "pre_m", "constants",
+        "event_indicators", "event_indicators_prev", "state", "fmu_type", "dirty_values",
+        "is_new_event_iteration", "root_event_pending", "instance_name", "guid",
         "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
     ]
 } %}
 {% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy) %}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
+{% set function_array_outputs = function_array_output_refs(dae.functions, symbols) %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols, "function_array_outputs": function_array_outputs} %}
 {% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
 {% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}
 {% set solve_discrete_rows = solve.discrete.rhs.programs if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined and solve.discrete.rhs.programs is defined else [] %}
@@ -37,7 +42,8 @@
 {% set solve_derivative_rows = solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else [] %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
 {% set solve_jacobian_rows = solve_jacobian_rows if solve_jacobian_rows is defined else (solve.artifacts.continuous.implicit_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.implicit_jacobian_v is defined and solve.artifacts.continuous.implicit_jacobian_v.programs is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else [])) %}
-{% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
+{% set runtime_external_objects = solve.external_objects if solve is defined and solve.external_objects is defined else [] %}
+{% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})", "external_call_instance": "m"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
 {% set solve_jacobian_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})", "seed": "seed[{}]"} %}
 
@@ -68,6 +74,260 @@ static inline double __rumoca_sum_d(const double* arr, int n) {
     for (int i = 0; i < n; i++) s += arr[i];
     return s;
 }
+
+void ModelicaMessage(const char *string) {
+    fputs(string ? string : "", stderr);
+}
+
+void ModelicaFormatMessage(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format ? format : "", args);
+    va_end(args);
+}
+
+void ModelicaVFormatMessage(const char *format, va_list args) {
+    vfprintf(stderr, format ? format : "", args);
+}
+
+void ModelicaWarning(const char *string) {
+    fputs(string ? string : "", stderr);
+}
+
+void ModelicaFormatWarning(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format ? format : "", args);
+    va_end(args);
+}
+
+void ModelicaVFormatWarning(const char *format, va_list args) {
+    vfprintf(stderr, format ? format : "", args);
+}
+
+void ModelicaError(const char *string) {
+    fputs(string ? string : "Modelica external function error", stderr);
+    fputc('\n', stderr);
+    abort();
+}
+
+void ModelicaFormatError(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format ? format : "Modelica external function error", args);
+    va_end(args);
+    fputc('\n', stderr);
+    abort();
+}
+
+void ModelicaVFormatError(const char *format, va_list args) {
+    vfprintf(stderr, format ? format : "Modelica external function error", args);
+    fputc('\n', stderr);
+    abort();
+}
+
+#if defined(__aarch64__) && !defined(ENVIRONMENT64)
+#define ENVIRONMENT64
+#endif
+
+{% for _func_name, func in dae.functions | items -%}
+{%- if func.external and func.external.includes is defined -%}
+{%- for include in func.external.includes -%}
+{%- if ".c" in include %}
+{{ include }}
+{%- endif -%}
+{%- endfor -%}
+{%- endif -%}
+{%- endfor %}
+
+static double __rumoca_interp_linear_d(int n, const double* xs, const double* ys, double x) {
+    if (n <= 0 || xs == NULL || ys == NULL) return 0.0;
+    if (n == 1) return ys[0];
+    if (x <= xs[0]) return ys[0];
+    for (int i = 0; i < n - 1; i++) {
+        double x0 = xs[i];
+        double x1 = xs[i + 1];
+        if (x <= x1) {
+            double dx = x1 - x0;
+            if (fabs(dx) < 1.0e-12) return ys[i];
+            double t = (x - x0) / dx;
+            return ys[i] + t * (ys[i + 1] - ys[i]);
+        }
+    }
+    return ys[n - 1];
+}
+
+static double __rumoca_network_resistance_dp(double dp_nominal, double volume_flow_nominal, double volume_flow) {
+    double nom = fmax(1.0e-12, fabs(volume_flow_nominal));
+    double ratio = volume_flow / nom;
+    return fmax(0.0, dp_nominal) * ratio * ratio;
+}
+
+static double __rumoca_mover_curve_value(
+    int n,
+    double volume_flow,
+    double speed,
+    const double* volume_curve,
+    const double* value_curve
+) {
+    if (n <= 0 || volume_curve == NULL || value_curve == NULL) return 0.0;
+    double spd = fmin(1.0, fmax(0.0, speed));
+    if (spd <= 1.0e-9) return value_curve[0];
+    double q_reduced = fmax(0.0, volume_flow) / spd;
+    return __rumoca_interp_linear_d(n, volume_curve, value_curve, q_reduced);
+}
+
+static double __rumoca_mover_pressure_curve(
+    int n,
+    double volume_flow,
+    double speed,
+    const double* volume_curve,
+    const double* pressure_curve
+) {
+    double spd = fmin(1.0, fmax(0.0, speed));
+    if (spd <= 1.0e-9) return 0.0;
+    return spd * spd * __rumoca_mover_curve_value(n, volume_flow, spd, volume_curve, pressure_curve);
+}
+
+static double __rumoca_mover_network_resistance_flow(
+    int n,
+    double measured_dp,
+    double network_dp_nominal,
+    double network_volume_flow_nominal,
+    double speed,
+    const double* volume_curve,
+    const double* pressure_curve
+) {
+    if (n <= 0 || volume_curve == NULL || pressure_curve == NULL) return 0.0;
+    double spd = fmin(1.0, fmax(0.0, speed));
+    if (spd <= 1.0e-9) return 0.0;
+    double q_hi = fmax(fabs(network_volume_flow_nominal), fabs(volume_curve[n - 1]) * spd);
+    if (q_hi <= 1.0e-12) return 0.0;
+    double dp_offset = fmax(0.0, measured_dp);
+    for (int iter = 0; iter < 48; iter++) {
+        double q = 0.5 * q_hi;
+        double q_reduced = q / fmax(spd, 1.0e-9);
+        double pump_dp = spd * spd * __rumoca_interp_linear_d(n, volume_curve, pressure_curve, q_reduced);
+        double net_dp = dp_offset + __rumoca_network_resistance_dp(network_dp_nominal, network_volume_flow_nominal, q);
+        if (pump_dp > net_dp) {
+            q_hi = fmax(q_hi, 2.0 * q);
+            break;
+        }
+        q_hi *= 2.0;
+        if (q_hi > fmax(1.0, fabs(network_volume_flow_nominal)) * 64.0) break;
+    }
+    double lo = 0.0;
+    double hi = q_hi;
+    for (int iter = 0; iter < 32; iter++) {
+        double mid = 0.5 * (lo + hi);
+        double q_reduced = mid / fmax(spd, 1.0e-9);
+        double pump_dp = spd * spd * __rumoca_interp_linear_d(n, volume_curve, pressure_curve, q_reduced);
+        double net_dp = dp_offset + __rumoca_network_resistance_dp(network_dp_nominal, network_volume_flow_nominal, mid);
+        if (pump_dp >= net_dp) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return fmax(0.0, lo);
+}
+
+static double __rumoca_mover_flow_at_common_pressure(
+    int n,
+    double common_dp,
+    double speed,
+    const double* volume_curve,
+    const double* pressure_curve
+) {
+    if (n <= 0 || volume_curve == NULL || pressure_curve == NULL) return 0.0;
+    double spd = fmin(1.0, fmax(0.0, speed));
+    if (spd <= 1.0e-9) return 0.0;
+    double target_dp = fmax(0.0, common_dp);
+    double reduced_target_dp = target_dp / fmax(spd * spd, 1.0e-18);
+    if (reduced_target_dp >= pressure_curve[0]) return 0.0;
+    for (int i = 0; i < n - 1; i++) {
+        double dp0 = pressure_curve[i];
+        double dp1 = pressure_curve[i + 1];
+        double q0 = volume_curve[i];
+        double q1 = volume_curve[i + 1];
+        if ((dp0 >= reduced_target_dp && reduced_target_dp >= dp1)
+            || (dp1 >= reduced_target_dp && reduced_target_dp >= dp0)) {
+            double ddp = dp1 - dp0;
+            double t = fabs(ddp) < 1.0e-12 ? 0.0 : (reduced_target_dp - dp0) / ddp;
+            t = fmin(1.0, fmax(0.0, t));
+            return fmax(0.0, (q0 + t * (q1 - q0)) * spd);
+        }
+    }
+    return fmax(0.0, volume_curve[n - 1] * spd);
+}
+
+static double __rumoca_parallel2_mover_network_dp(
+    int n,
+    double network_dp_nominal,
+    double network_volume_flow_nominal,
+    double speed1,
+    double speed2,
+    const double* volume_curve1,
+    const double* pressure_curve1,
+    const double* volume_curve2,
+    const double* pressure_curve2
+) {
+    if (n <= 0 || volume_curve1 == NULL || pressure_curve1 == NULL || volume_curve2 == NULL || pressure_curve2 == NULL) return 0.0;
+    double spd1 = fmin(1.0, fmax(0.0, speed1));
+    double spd2 = fmin(1.0, fmax(0.0, speed2));
+    if (spd1 <= 1.0e-9 && spd2 <= 1.0e-9) return 0.0;
+    double shutoff1 = spd1 * spd1 * __rumoca_interp_linear_d(n, volume_curve1, pressure_curve1, 0.0);
+    double shutoff2 = spd2 * spd2 * __rumoca_interp_linear_d(n, volume_curve2, pressure_curve2, 0.0);
+    double hi = fmax(0.0, fmax(shutoff1, shutoff2));
+    if (hi <= 1.0e-12) return 0.0;
+    double lo = 0.0;
+    for (int iter = 0; iter < 80; iter++) {
+        double mid = 0.5 * (lo + hi);
+        double q1 = __rumoca_mover_flow_at_common_pressure(n, mid, spd1, volume_curve1, pressure_curve1);
+        double q2 = __rumoca_mover_flow_at_common_pressure(n, mid, spd2, volume_curve2, pressure_curve2);
+        double network_dp = __rumoca_network_resistance_dp(network_dp_nominal, network_volume_flow_nominal, q1 + q2);
+        if (network_dp >= mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return fmax(0.0, lo);
+}
+
+static double __rumoca_parallel2_mover_network_flow(
+    int n,
+    int pump_index,
+    double network_dp_nominal,
+    double network_volume_flow_nominal,
+    double speed1,
+    double speed2,
+    const double* volume_curve1,
+    const double* pressure_curve1,
+    const double* volume_curve2,
+    const double* pressure_curve2
+) {
+    double common_dp = __rumoca_parallel2_mover_network_dp(n, network_dp_nominal, network_volume_flow_nominal, speed1, speed2, volume_curve1, pressure_curve1, volume_curve2, pressure_curve2);
+    if (pump_index == 2) {
+        return __rumoca_mover_flow_at_common_pressure(n, common_dp, speed2, volume_curve2, pressure_curve2);
+    }
+    return __rumoca_mover_flow_at_common_pressure(n, common_dp, speed1, volume_curve1, pressure_curve1);
+}
+
+static double __rumoca_mover_pressure(
+    double volume_flow,
+    double speed,
+    double dp_max,
+    double volume_flow_max
+) {
+    double spd = fmin(1.0, fmax(0.0, speed));
+    double q = fmax(0.0, volume_flow);
+    double q_max = fmax(1.0e-12, fabs(volume_flow_max));
+    double ratio = fmin(1.0, q / q_max);
+    return fmax(0.0, dp_max) * spd * spd * fmax(0.0, 1.0 - ratio * ratio);
+}
+
+#define __rumoca_media_density_pTX Air_density_pTX
 
 #define RUMOCA_MAX_LINEAR_SOLVE 8
 static double __rumoca_solve_linear_component(const double* A_in, const double* b_in, int n, int component) {
@@ -156,6 +416,7 @@ static inline double zeros(int n) { (void)n; return 0.0; }
 static inline double ones(int n) { (void)n; return 1.0; }
 static inline double fill(double val, int n) { (void)n; return val; }
 static inline int size(const double* arr, int dim) { (void)arr; (void)dim; return 0; }
+static inline double sign(double x) { return (x > 0.0) - (x < 0.0); }
 
 /* Modelica interval() builtin — clocked partition intrinsic (MLS §16.10). */
 static inline double interval(double u) { (void)u; return 0.0; }
@@ -214,14 +475,27 @@ static double Modelica_Blocks_Types_ExternalCombiTable1D() { return 0.0; }
 static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 
 #ifndef RUMOCA_SOLVE_EXTERNAL_CALL
-static double __rumoca_solve_external_call_default(const char* function, int output_index, int arg_count, const double* args) {
+static double __rumoca_solve_external_call_default(const char* function, int external_object_index, int output_index, int output_count, int arg_count, const double* args) {
+    (void)external_object_index;
+    (void)output_count;
     (void)args;
-    fprintf(stderr, "Rumoca solve ExternalCall requires native runtime bridge: %s output_index=%d arg_count=%d\n", function, output_index, arg_count);
+    fprintf(stderr, "Rumoca solve ExternalCall requires native runtime bridge: %s external_object_index=%d output_index=%d output_count=%d arg_count=%d\n", function, external_object_index, output_index, output_count, arg_count);
     abort();
     return NAN;
 }
 #define RUMOCA_SOLVE_EXTERNAL_CALL __rumoca_solve_external_call_default
 #endif
+#ifndef RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE
+#define RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE(instance, function, external_object_index, output_index, output_count, arg_count, args) RUMOCA_SOLVE_EXTERNAL_CALL(function, external_object_index, output_index, output_count, arg_count, args)
+#endif
+
+{% if runtime_external_objects | length > 0 %}
+extern void* allocate_Modelica_EnergyPlus_9_6_0(const int objectType, double startTime, const char* modelicaNameBuilding, const char* modelicaNameThermalZone, const char* spawnExe, const char* idfVersion, const char* idfName, const char* epwName, double relativeSurfaceTolerance, const char* epName, int usePrecompiledFMU, const char* fmuName, const char* buildingsRootFileLocation, const int logLevel, const int printUnit, const char* jsonName, const char* jsonKeysValues, const char** parOutNames, const size_t nParOut, const char** parOutUnits, const size_t nParOutUni, const char** inpNames, const size_t nInp, const char** inpUnits, const size_t nInpUni, const char** outNames, const size_t nOut, const char** outUnits, const size_t nOutUni, const int* derivatives_structure, size_t k, size_t n, const double* derivatives_delta, const size_t nDer);
+extern void initialize_Modelica_EnergyPlus_9_6_0(void* object, double isSynchronized, int* nObj);
+extern void getParameters_Modelica_EnergyPlus_9_6_0(void* object, double isSynchronized, double* parOut);
+extern void exchange_Modelica_EnergyPlus_9_6_0(void* object, int initialCall, const double* u, double dummy, double* y);
+extern void free_Modelica_EnergyPlus_9_6_0(void* object);
+{% endif %}
 
 /* Named argument passthrough macros */
 #define __rumoca_named_arg___tableName(x) (x)
@@ -242,6 +516,16 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 /* Enumeration type constructors — identity macros for enum type casts */
 {% for type_name in dae.enum_type_names | default([]) %}
 #define {{ symbol(symbols, type_name) }}(x) (x)
+{% endfor %}
+
+/* Source-reference aliases — render_expr may emit the sanitized full source
+ * reference while local unpack aliases use the allocated target symbol. */
+{% for name in dae.symbol_refs %}
+{% set source_alias = name | sanitize %}
+{% set target_symbol = symbol(symbols, name) %}
+{% if source_alias != target_symbol %}
+#define {{ source_alias }} {{ target_symbol }}
+{% endif %}
 {% endfor %}
 
 {#- Macro: compute total scalar size of a variable map -#}
@@ -267,6 +551,7 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 {%- set sz = var.dims | product -%}
 {%- set arr_base_offset = ns_idx.offset %}
     {% if mutable %}double{% else %}const double{% endif %}* {{ symbol(symbols, name) }} = &{{ array }}[{{ arr_base_offset }}];
+    const int {{ symbol(symbols, name) }}__len = {{ sz }};
 {%- for i in range(sz) %}
     {% if mutable %}double{% else %}const double{% endif %} {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ array }}[{{ ns_idx.offset }}];
 {%- if pre_array %}
@@ -312,6 +597,7 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 #define N_DISCRETE_REAL  {{ var_size(dae.z) | trim }}
 #define N_DISCRETE_VAL   {{ var_size(dae.m) | trim }}
 #define N_EVENT_INDICATORS {{ solve_root_rows | length }}
+#define N_RUNTIME_EXTERNAL_OBJECTS {{ runtime_external_objects | length }}
 #define N_PERIODIC_CLOCKS {{ dae.clock_schedules | default([]) | length }}
 #define N_TRIGGERED_CLOCKS {{ dae.triggered_clock_conditions | default([]) | length }}
 #define N_CLOCKS         (N_PERIODIC_CLOCKS + N_TRIGGERED_CLOCKS)
@@ -415,6 +701,7 @@ typedef struct {
     fmi3Float64  m[N_DISCRETE_VAL > 0 ? N_DISCRETE_VAL : 1];
     fmi3Float64  pre_m[N_DISCRETE_VAL > 0 ? N_DISCRETE_VAL : 1];
     fmi3Float64  constants[N_CONSTANTS > 0 ? N_CONSTANTS : 1];
+    void*        runtime_external_objects[N_RUNTIME_EXTERNAL_OBJECTS > 0 ? N_RUNTIME_EXTERNAL_OBJECTS : 1];
     fmi3Float64  event_indicators[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
     fmi3Float64  event_indicators_prev[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
     ModelState   state;
@@ -434,7 +721,86 @@ typedef struct {
 #endif
 } ModelInstance;
 
-static double __rumoca_solve_y(const ModelInstance* m, int index) {
+static void initialize_runtime_external_objects(ModelInstance* m) {
+{% if runtime_external_objects | length > 0 %}
+{% for object in runtime_external_objects %}
+    m->runtime_external_objects[{{ loop.index0 }}] = {{ render_energyplus_allocate_call_c(object) }};
+    if (m->runtime_external_objects[{{ loop.index0 }}] == NULL) {
+        fprintf(stderr, "Rumoca EnergyPlus external-object allocation failed for slot {{ loop.index0 }}: {{ object.target }}\n");
+        abort();
+    }
+{% endfor %}
+{% else %}
+    (void)m;
+{% endif %}
+}
+
+static void free_runtime_external_objects(ModelInstance* m) {
+{% if runtime_external_objects | length > 0 %}
+    for (int i = 0; i < N_RUNTIME_EXTERNAL_OBJECTS; ++i) {
+        if (m->runtime_external_objects[i] != NULL) {
+            free_Modelica_EnergyPlus_9_6_0(m->runtime_external_objects[i]);
+            m->runtime_external_objects[i] = NULL;
+        }
+    }
+{% else %}
+    (void)m;
+{% endif %}
+}
+
+{% if runtime_external_objects | length > 0 %}
+static double __rumoca_solve_external_call_instance(ModelInstance* m, const char* function, int external_object_index, int output_index, int output_count, int arg_count, const double* args) {
+    if (external_object_index < 0 || external_object_index >= N_RUNTIME_EXTERNAL_OBJECTS || m->runtime_external_objects[external_object_index] == NULL) {
+        fprintf(stderr, "Rumoca EnergyPlus ExternalCall has invalid external_object_index=%d for %s\n", external_object_index, function);
+        abort();
+    }
+    if (output_index < 0 || output_index >= output_count || output_count <= 0) {
+        fprintf(stderr, "Rumoca EnergyPlus ExternalCall has invalid output_index=%d output_count=%d for %s\n", output_index, output_count, function);
+        abort();
+    }
+    void* object = m->runtime_external_objects[external_object_index];
+    if (strcmp(function, "BuildingsEnergyPlusInitialize") == 0) {
+        int nObj = 0;
+        (void)arg_count; (void)args;
+        initialize_Modelica_EnergyPlus_9_6_0(object, 0.0, &nObj);
+        return (double)nObj;
+    }
+    double* outputs = (double*)calloc((size_t)output_count, sizeof(double));
+    if (outputs == NULL) {
+        fprintf(stderr, "Rumoca EnergyPlus ExternalCall failed to allocate %d outputs for %s\n", output_count, function);
+        abort();
+    }
+    if (strcmp(function, "BuildingsEnergyPlusGetParameters") == 0) {
+        (void)arg_count; (void)args;
+        getParameters_Modelica_EnergyPlus_9_6_0(object, 0.0, outputs);
+    } else if (strcmp(function, "BuildingsEnergyPlusExchange") == 0) {
+        if (arg_count < 2 || args == NULL) {
+            fprintf(stderr, "Rumoca EnergyPlus exchange requires initialCall, u[:], and dummy arguments\n");
+            abort();
+        }
+        exchange_Modelica_EnergyPlus_9_6_0(object, (int)args[0], &args[1], args[arg_count - 1], outputs);
+    } else {
+        fprintf(stderr, "Rumoca EnergyPlus ExternalCall unsupported function: %s\n", function);
+        abort();
+    }
+    double value = outputs[output_index];
+    free(outputs);
+    return value;
+}
+#undef RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE
+#define RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE(instance, function, external_object_index, output_index, output_count, arg_count, args) __rumoca_solve_external_call_instance(instance, function, external_object_index, output_index, output_count, arg_count, args)
+{% endif %}
+
+#if defined(__GNUC__) || defined(__clang__)
+#define RUMOCA_NOINLINE __attribute__((noinline))
+#else
+#define RUMOCA_NOINLINE
+#endif
+
+static RUMOCA_NOINLINE double __rumoca_solve_y(const ModelInstance* m, int index) {
+    switch (index) {
+{{ solve_y_get_cases(dae, solve) }}        default: break;
+    }
     if (index < N_STATES) {
         return m->x[index];
     }
@@ -449,7 +815,7 @@ static double __rumoca_solve_y(const ModelInstance* m, int index) {
     return 0.0;
 }
 
-static double __rumoca_solve_p(const ModelInstance* m, int index) {
+static RUMOCA_NOINLINE double __rumoca_solve_p(const ModelInstance* m, int index) {
     if (index < N_PARAMETERS) {
         return m->p[index];
     }
@@ -468,7 +834,10 @@ static double __rumoca_solve_p(const ModelInstance* m, int index) {
     return 0.0;
 }
 
-static void __rumoca_solve_set_y(ModelInstance* m, int index, double value) {
+static RUMOCA_NOINLINE void __rumoca_solve_set_y(ModelInstance* m, int index, double value) {
+    switch (index) {
+{{ solve_y_set_cases(dae, solve) }}        default: break;
+    }
     if (index < N_STATES) {
         m->x[index] = value;
         return;
@@ -485,7 +854,7 @@ static void __rumoca_solve_set_y(ModelInstance* m, int index, double value) {
     }
 }
 
-static void __rumoca_solve_set_p(ModelInstance* m, int index, double value) {
+static RUMOCA_NOINLINE void __rumoca_solve_set_p(ModelInstance* m, int index, double value) {
     if (index < N_PARAMETERS) {
         m->p[index] = value;
         return;
@@ -523,10 +892,12 @@ typedef fmi3Status (*fmi3IntermediateUpdateCallback)(
  * Forward declarations
  * ========================================================================= */
 static void initialize_defaults(ModelInstance* m);
+static void compute_parameter_bindings(ModelInstance* m);
+static void compute_initial_updates(ModelInstance* m);
 static void compute_algebraics(ModelInstance* m);
 static void compute_derivatives(ModelInstance* m);
 static void compute_outputs(ModelInstance* m);
-static void compute_discrete_updates(ModelInstance* m);
+static void compute_discrete_updates(ModelInstance* m, int apply_state_event_updates);
 static void compute_event_indicators(ModelInstance* m);
 
 static double event_right_limit_time(double event_time) {
@@ -570,7 +941,7 @@ static void compute_event_discrete_updates(ModelInstance* m) {
     if (m->root_event_pending || scheduled_time_event_active(m->time)) {
         m->time = event_right_limit_time(m->time);
     }
-    compute_discrete_updates(m);
+    compute_discrete_updates(m, 1);
     m->time = saved_time;
 }
 
@@ -593,7 +964,7 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% macro function_param_list(func) -%}
 {%- for p in func.inputs -%}
 {%- set p_symbol = symbol(symbols, p.name) -%}
-{%- if p.dims -%}const double* {{ p_symbol }}, int {{ p_symbol }}_size{%- else -%}double {{ p_symbol }}{%- endif -%}{{ ", " if not loop.last else "" }}
+{%- if p.dims -%}const {{ c_type(p) }}* {{ p_symbol }}, int {{ p_symbol }}_size{%- else -%}{{ c_type(p) }} {{ p_symbol }}{%- endif -%}{{ ", " if not loop.last else "" }}
 {%- endfor -%}
 {%- endmacro %}
 
@@ -605,7 +976,7 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {%- set sz = p.dims | product %}
     (void){{ p_symbol }}_size;
 {%- for i in range(sz) %}
-    const double {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = {{ p_symbol }}[{{ i }}];
+    const {{ c_type(p) }} {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = {{ p_symbol }}[{{ i }}];
 {%- endfor -%}
 {%- endif -%}
 {%- endfor -%}
@@ -615,30 +986,30 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% macro function_locals_and_outputs(func) -%}
 {%- for p in func.locals %}
 {%- if p.dims %}
-{%- set local_sz = p.dims | product %}
+{%- set local_sz = c_array_len(p, cfg) %}
 {%- set p_symbol = symbol(symbols, p.name) %}
-    double {{ p_symbol }}[{{ local_sz }}] = {0};
+    {{ c_type(p) }} {{ p_symbol }}[{{ local_sz }}] = {0};
     int {{ p_symbol }}_size = {{ local_sz }};
     (void){{ p_symbol }}_size;
 {%- for i in range(local_sz) %}
-    double {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = 0.0;
+    {{ c_type(p) }} {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = 0;
 {%- endfor -%}
 {%- else %}
-    double {{ symbol(symbols, p.name) }}{% if p.default %} = {{ render_expr(p.default, cfg) }}{% endif %};
+    {{ c_type(p) }} {{ symbol(symbols, p.name) }}{% if p.default %} = {{ render_expr(p.default, cfg) }}{% endif %};
 {%- endif -%}
 {%- endfor %}
 {%- for p in func.outputs %}
 {%- if p.dims %}
-{%- set output_sz = p.dims | product %}
+{%- set output_sz = c_array_len(p, cfg) %}
 {%- set p_symbol = symbol(symbols, p.name) %}
-    double {{ p_symbol }}[{{ output_sz }}] = {0};
+    {{ c_type(p) }} {{ p_symbol }}[{{ output_sz }}] = {0};
     int {{ p_symbol }}_size = {{ output_sz }};
     (void){{ p_symbol }}_size;
 {%- for i in range(output_sz) %}
-    double {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = 0.0;
+    {{ c_type(p) }} {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = 0;
 {%- endfor -%}
 {%- else %}
-    double {{ symbol(symbols, p.name) }} = 0.0;
+    {{ c_type(p) }} {{ symbol(symbols, p.name) }} = 0;
 {%- endif -%}
 {%- endfor -%}
 {%- endmacro %}
@@ -679,12 +1050,9 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% for func_name, func in dae.functions | items %}
 {% if func.outputs | length == 1 %}
 {% if func.outputs[0].dims %}
-{% set output_sz = func.outputs[0].dims | product %}
-{% for i in range(output_sz) %}
-static double {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name ~ "[" ~ (i + 1) ~ "]") }}({{ function_param_list(func) }});
-{% endfor %}
+static {{ c_type(func.outputs[0]) }} {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name) }}({{ function_param_list(func) }}{% if func.inputs | length > 0 %}, {% endif %}int __rumoca_output_index);
 {% else %}
-static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }});
+static {{ c_type(func.outputs[0]) }} {{ symbol(symbols, func_name) }}({{ function_param_list(func) }});
 {% endif %}
 {% endif %}
 {% endfor %}
@@ -695,14 +1063,11 @@ static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }});
 {% for func_name, func in dae.functions | items %}
 {% if func.outputs | length == 1 %}
 {% if func.outputs[0].dims %}
-{% set output_sz = func.outputs[0].dims | product %}
-{% for i in range(output_sz) %}
-static double {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name ~ "[" ~ (i + 1) ~ "]") }}({{ function_param_list(func) }}) {
-{{ function_body(func_name, func, symbol(symbols, source_ref(func.outputs[0].name, func.outputs[0].dims, i + 1))) }}
+static {{ c_type(func.outputs[0]) }} {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name) }}({{ function_param_list(func) }}{% if func.inputs | length > 0 %}, {% endif %}int __rumoca_output_index) {
+{{ function_body(func_name, func, symbol(symbols, func.outputs[0].name) ~ "[__rumoca_output_index]") }}
 }
-{% endfor %}
 {% else %}
-static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }}) {
+static {{ c_type(func.outputs[0]) }} {{ symbol(symbols, func_name) }}({{ function_param_list(func) }}) {
 {{ function_body(func_name, func, symbol(symbols, func.outputs[0].name)) }}
 }
 {% endif %}
@@ -898,18 +1263,23 @@ static void compute_algebraics(ModelInstance* m) {
     /* Mutable local aliases for output variables */
 {{ unpack_vars(dae.w, "m->w", mutable=true, pre_array="m->w") }}
 
+    /* Relax explicit algebraic dependencies that are not emitted in topological order. */
+    for (int __rumoca_alg_iter = 0; __rumoca_alg_iter < 64; ++__rumoca_alg_iter) {
+    double __rumoca_alg_max_delta = 0.0;
     /* Evaluate output variables first (algebraics may depend on them) */
 {% set ns_out = namespace(offset=0) %}
 {% for name, var in dae.w | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ output_rhs_for_var_with_solve(source_ref(name, var.dims, i + 1), dae, solve, cfg, solve_row_c_cfg) }};
+    __rumoca_alg_max_delta = fmax(__rumoca_alg_max_delta, fabs({{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} - m->w[{{ ns_out.offset }}]));
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
+    {{ symbol(symbols, name) }} = {{ output_rhs_for_var_with_solve(name, dae, solve, cfg, solve_row_c_cfg) }};
+    __rumoca_alg_max_delta = fmax(__rumoca_alg_max_delta, fabs({{ symbol(symbols, name) }} - m->w[{{ ns_out.offset }}]));
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
@@ -921,16 +1291,20 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ output_rhs_for_var_with_solve(source_ref(name, var.dims, i + 1), dae, solve, cfg, solve_row_c_cfg) }};
+    __rumoca_alg_max_delta = fmax(__rumoca_alg_max_delta, fabs({{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} - m->y[{{ ns_alg.offset }}]));
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
+    {{ symbol(symbols, name) }} = {{ output_rhs_for_var_with_solve(name, dae, solve, cfg, solve_row_c_cfg) }};
+    __rumoca_alg_max_delta = fmax(__rumoca_alg_max_delta, fabs({{ symbol(symbols, name) }} - m->y[{{ ns_alg.offset }}]));
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
 {% endfor %}
+    if (__rumoca_alg_max_delta < 1.0e-9) break;
+    }
 {% else %}
     (void)m;
 {% endif %}
@@ -977,12 +1351,29 @@ static void compute_derivatives(ModelInstance* m) {
     m->xdot[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
 {% endfor %}
 {% endif %}
+{% set ns_x_override = namespace(offset=0) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set state_ref = source_ref(name, var.dims, i + 1) %}
+{% set override_rhs = ode_rhs_override_for_state(state_ref, cfg) %}
+{% if override_rhs %}
+    m->xdot[{{ ns_x_override.offset }}] = {{ override_rhs }};  /* physical state override: {{ state_ref }} */
+{% endif %}
+{% set ns_x_override.offset = ns_x_override.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set override_rhs = ode_rhs_override_for_state(name, cfg) %}
+{% if override_rhs %}
+    m->xdot[{{ ns_x_override.offset }}] = {{ override_rhs }};  /* physical state override: {{ name }} */
+{% endif %}
+{% set ns_x_override.offset = ns_x_override.offset + 1 %}
+{% endif %}
+{% endfor %}
 
     /* Re-compute algebraics after derivatives (resolves derivative aliases) */
     compute_algebraics(m);
-
-    /* Outputs may depend on algebraics, including array-valued function projections. */
-    compute_outputs(m);
 
     m->dirty_values = 0;
 }
@@ -1011,11 +1402,11 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
+    m->w[{{ ns_out.offset }}] = {{ output_rhs_for_var_with_solve(source_ref(name, var.dims, i + 1), dae, solve, cfg, solve_row_c_cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};  /* {{ name }} */
+    m->w[{{ ns_out.offset }}] = {{ output_rhs_for_var_with_solve(name, dae, solve, cfg, solve_row_c_cfg) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -1027,7 +1418,7 @@ static void compute_outputs(ModelInstance* m) {
 /* =========================================================================
  * Compute discrete variable updates from Solve IR — called in event mode
  * ========================================================================= */
-static void compute_discrete_updates(ModelInstance* m) {
+static void compute_discrete_updates(ModelInstance* m, int apply_state_event_updates) {
 {% if solve_discrete_rows | length > 0 %}
     double __rumoca_discrete_values[{{ solve_discrete_rows | length }}];
 {% for row in solve_discrete_rows %}
@@ -1036,7 +1427,150 @@ static void compute_discrete_updates(ModelInstance* m) {
 {% for target in solve_discrete_targets %}
     {{ render_solve_slot_assign_c(target, "__rumoca_discrete_values[" ~ loop.index0 ~ "]", solve_slot_assign_c_cfg) }}
 {% endfor %}
+{% endif %}
+{% if dae.x | length > 0 or dae.z | length > 0 or dae.m | length > 0 %}
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
+{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
+
+{% set ns_event_x = namespace(offset=0) %}
+    if (apply_state_event_updates) {
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+        m->x[{{ ns_event_x.offset }}] = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};  /* event state update: {{ scalar_name }} */
+{% set ns_event_x.offset = ns_event_x.offset + 1 %}
+{% endfor %}
 {% else %}
+        m->x[{{ ns_event_x.offset }}] = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};  /* event state update: {{ name }} */
+{% set ns_event_x.offset = ns_event_x.offset + 1 %}
+{% endif %}
+{% endfor %}
+    }
+
+{% set ns_z = namespace(offset=0) %}
+{% for name, var in dae.z | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+    m->z[{{ ns_z.offset }}] = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};  /* discrete update: {{ scalar_name }} */
+{% set ns_z.offset = ns_z.offset + 1 %}
+{% endfor %}
+{% else %}
+    m->z[{{ ns_z.offset }}] = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};  /* discrete update: {{ name }} */
+{% set ns_z.offset = ns_z.offset + 1 %}
+{% endif %}
+{% endfor %}
+
+{% set ns_m = namespace(offset=0) %}
+{% for name, var in dae.m | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+    m->m[{{ ns_m.offset }}] = {{ discrete_valued_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};  /* discrete valued update: {{ scalar_name }} */
+{% set ns_m.offset = ns_m.offset + 1 %}
+{% endfor %}
+{% else %}
+    m->m[{{ ns_m.offset }}] = {{ discrete_valued_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};  /* discrete valued update: {{ name }} */
+{% set ns_m.offset = ns_m.offset + 1 %}
+{% endif %}
+{% endfor %}
+{% elif solve_discrete_rows | length == 0 %}
+    (void)m;
+{% endif %}
+}
+
+/* =========================================================================
+ * Propagate supported parameter bindings after user-set initialization inputs
+ * ========================================================================= */
+static void compute_parameter_bindings(ModelInstance* m) {
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+
+{% set ns_param = namespace(offset=0, emitted=false) %}
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+{% set rhs = parameter_binding_rhs(scalar_name, var.start, i + 1, cfg) %}
+{% if rhs %}
+    m->p[{{ ns_param.offset }}] = {{ rhs }};  /* parameter binding: {{ scalar_name }} */
+{% set ns_param.emitted = true %}
+{% endif %}
+{% set ns_param.offset = ns_param.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = parameter_binding_rhs(name, var.start, 0, cfg) %}
+{% if rhs %}
+    m->p[{{ ns_param.offset }}] = {{ rhs }};  /* parameter binding: {{ name }} */
+{% set ns_param.emitted = true %}
+{% endif %}
+{% set ns_param.offset = ns_param.offset + 1 %}
+{% endif %}
+{% endfor %}
+{% if not ns_param.emitted %}
+    (void)m;
+{% endif %}
+}
+
+/* =========================================================================
+ * Compute explicit initialization equations for continuous states
+ * ========================================================================= */
+static void compute_initial_updates(ModelInstance* m) {
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
+{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
+
+{% set ns_init = namespace(offset=0, emitted=false) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+{% set rhs = initial_rhs_for_var(dae, scalar_name, cfg) %}
+{% if rhs %}
+    m->x[{{ ns_init.offset }}] = {{ rhs }};  /* initial equation: {{ scalar_name }} */
+{% set ns_init.emitted = true %}
+{% endif %}
+{% set ns_init.offset = ns_init.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = initial_rhs_for_var(dae, name, cfg) %}
+{% if rhs %}
+    m->x[{{ ns_init.offset }}] = {{ rhs }};  /* initial equation: {{ name }} */
+{% set ns_init.emitted = true %}
+{% endif %}
+{% set ns_init.offset = ns_init.offset + 1 %}
+{% endif %}
+{% endfor %}
+{% if not ns_init.emitted %}
     (void)m;
 {% endif %}
 }
@@ -1369,6 +1903,7 @@ FMI3_EXPORT fmi3Instance fmi3InstantiateCoSimulation(
 
 FMI3_EXPORT void fmi3FreeInstance(fmi3Instance instance) {
     if (instance) {
+        free_runtime_external_objects((ModelInstance*)instance);
         free(instance);
     }
 }
@@ -1388,6 +1923,8 @@ FMI3_EXPORT fmi3Status fmi3EnterInitializationMode(
 
     ModelInstance* m = (ModelInstance*)instance;
     m->time = startTime;
+    free_runtime_external_objects(m);
+    initialize_runtime_external_objects(m);
     m->state = modelInitializationMode;
     return fmi3OK;
 }
@@ -1395,11 +1932,14 @@ FMI3_EXPORT fmi3Status fmi3EnterInitializationMode(
 FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
 
+    compute_parameter_bindings(m);
+    compute_initial_updates(m);
+
     /* Seed pre-values from initialized discrete state before evaluating any initial discrete updates. */
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
     snapshot_pre_parameters(m);
-    compute_discrete_updates(m);
+    compute_discrete_updates(m, 1);
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
     snapshot_pre_parameters(m);
@@ -1440,6 +1980,8 @@ FMI3_EXPORT fmi3Status fmi3GetFloat64(
 
     if (m->dirty_values) {
         compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
     }
 
     size_t val_idx = 0;
@@ -1467,6 +2009,7 @@ FMI3_EXPORT fmi3Status fmi3SetFloat64(
         if (s != fmi3OK) return s;
         val_idx += count;
     }
+    m->dirty_values = 1;
     return fmi3OK;
 }
 
@@ -1474,7 +2017,11 @@ FMI3_EXPORT fmi3Status fmi3GetFloat32(fmi3Instance instance, const fmi3ValueRefe
     /* Delegate to Float64 with lossy downcast */
     ModelInstance* m = (ModelInstance*)instance;
     (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
+    if (m->dirty_values) {
+        compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
+    }
     size_t val_idx = 0;
     for (size_t i = 0; i < nvr; i++) {
         fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
@@ -1506,7 +2053,11 @@ FMI3_EXPORT fmi3Status fmi3GetInt32(fmi3Instance instance, const fmi3ValueRefere
     /* Delegate to Float64 with truncation cast */
     ModelInstance* m = (ModelInstance*)instance;
     (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
+    if (m->dirty_values) {
+        compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
+    }
     size_t val_idx = 0;
     for (size_t i = 0; i < nvr; i++) {
         fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
@@ -1538,7 +2089,11 @@ FMI3_EXPORT fmi3Status fmi3GetBoolean(fmi3Instance instance, const fmi3ValueRefe
     /* Delegate to Float64 with boolean cast */
     ModelInstance* m = (ModelInstance*)instance;
     (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
+    if (m->dirty_values) {
+        compute_derivatives(m);
+        compute_outputs(m);
+        m->dirty_values = 0;
+    }
     size_t val_idx = 0;
     for (size_t i = 0; i < nvr; i++) {
         fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
@@ -1882,7 +2437,7 @@ FMI3_EXPORT fmi3Status fmi3GetNominalsOfContinuousStates(
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    nominals[{{ ns_idx.offset }}] = {% if var.nominal is not none %}{{ render_expr(var.nominal, cfg) }}{% else %}1.0{% endif %};
+    nominals[{{ ns_idx.offset }}] = {% if var.nominal is not none %}{{ render_expr_at_index(var.nominal, i + 1, cfg) }}{% else %}1.0{% endif %};
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -1918,6 +2473,7 @@ FMI3_EXPORT fmi3Status fmi3GetNumberOfContinuousStates(
 
 FMI3_EXPORT fmi3Status fmi3Terminate(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    free_runtime_external_objects(m);
     m->state = modelTerminated;
     return fmi3OK;
 }
@@ -2097,6 +2653,7 @@ static void rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Flo
     memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
     m->time = t;
     m->dirty_values = 1;
+    compute_discrete_updates(m, 0);
     compute_derivatives(m);
     memcpy(dxdt, m->xdot, N_STATES * sizeof(fmi3Float64));
 #else

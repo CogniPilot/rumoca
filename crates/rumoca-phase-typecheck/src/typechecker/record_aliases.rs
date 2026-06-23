@@ -185,32 +185,53 @@ impl TypeChecker {
             return false;
         }
 
-        let mut aliases_by_target_head: rustc_hash::FxHashMap<&str, Vec<usize>> =
-            rustc_hash::FxHashMap::default();
-        let target_prefixes: Vec<String> = record_aliases
+        if record_aliases.len() <= 8 {
+            return Self::propagate_alias_map_linear(record_aliases, values);
+        }
+
+        let mut sorted_keys = values.keys().cloned().collect::<Vec<_>>();
+        sorted_keys.sort_unstable();
+        let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
+        for (alias_source, alias_target) in record_aliases {
+            Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
+            let target_prefix = format!("{alias_target}.");
+            for field_name in Self::alias_field_key_range(&sorted_keys, &target_prefix) {
+                Self::queue_alias_field_update(
+                    alias_source,
+                    &target_prefix,
+                    field_name,
+                    values,
+                    &mut updates,
+                );
+            }
+        }
+
+        let mut progress = false;
+        for (name, value) in updates {
+            if values.get(&name) != Some(&value) {
+                values.insert(name, value);
+                progress = true;
+            }
+        }
+        progress
+    }
+
+    fn propagate_alias_map_linear<T: Clone + PartialEq>(
+        record_aliases: &[(String, String)],
+        values: &mut rustc_hash::FxHashMap<String, T>,
+    ) -> bool {
+        let target_prefixes = record_aliases
             .iter()
-            .enumerate()
-            .map(|(index, (_, alias_target))| {
-                aliases_by_target_head
-                    .entry(Self::alias_head(alias_target))
-                    .or_default()
-                    .push(index);
-                format!("{alias_target}.")
-            })
-            .collect();
+            .map(|(_, alias_target)| format!("{alias_target}."))
+            .collect::<Vec<_>>();
         let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
         for field_name in values.keys() {
-            let Some(alias_indices) = aliases_by_target_head.get(Self::alias_head(field_name))
-            else {
-                continue;
-            };
-            for index in alias_indices {
-                let (alias_source, alias_target) = &record_aliases[*index];
+            for (index, (alias_source, alias_target)) in record_aliases.iter().enumerate() {
                 if field_name == alias_target {
                     Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
                     continue;
                 }
-                let target_prefix = &target_prefixes[*index];
+                let target_prefix = &target_prefixes[index];
                 if field_name.starts_with(target_prefix) {
                     Self::queue_alias_field_update(
                         alias_source,
@@ -231,11 +252,5 @@ impl TypeChecker {
             }
         }
         progress
-    }
-
-    fn alias_head(path: &str) -> &str {
-        split_first_top_level(path)
-            .map(|(head, _)| head)
-            .unwrap_or(path)
     }
 }

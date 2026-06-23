@@ -1713,6 +1713,67 @@ fn lower_scalar_linear_algebra_exprs(
     }
 }
 
+fn is_energyplus_spawn_external_object_binding(eq: &Equation) -> bool {
+    let Some(target) = eq.lhs.as_ref().map(|lhs| lhs.as_str()).or_else(|| {
+        eq.origin
+            .strip_prefix("binding equation for ")
+            .map(str::trim)
+    }) else {
+        return false;
+    };
+    target.ends_with(".adapter")
+        && energyplus_spawn_external_object_constructor_expr(target, &eq.rhs).is_some()
+}
+
+fn energyplus_spawn_external_object_constructor_expr<'a>(
+    target: &str,
+    expr: &'a Expression,
+) -> Option<&'a Expression> {
+    if matches!(
+        expr,
+        Expression::FunctionCall {
+            name,
+            ..
+        } if name.as_str()
+            == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+    ) {
+        return Some(expr);
+    }
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if expression_is_unsubscripted_var(lhs, target)
+        && matches!(
+            rhs.as_ref(),
+            Expression::FunctionCall {
+                name,
+                ..
+            } if name.as_str()
+                == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+        )
+    {
+        return Some(rhs);
+    }
+    None
+}
+
+fn expression_is_unsubscripted_var(expr: &Expression, name: &str) -> bool {
+    matches!(
+        expr,
+        Expression::VarRef {
+            name: var_name,
+            subscripts,
+            ..
+        } if subscripts.is_empty() && var_name.as_str() == name
+    )
+}
+
 /// Expand array equations (scalar_count > 1) into individual scalar equations.
 ///
 /// After this pass every element of `dae.continuous.equations` has `scalar_count == 1`,
@@ -1733,6 +1794,10 @@ pub fn scalarize_equations(dae: &mut Dae) {
     let scalar_names = build_output_names(dae);
     let mut expanded = Vec::new();
     for eq in &dae.continuous.equations {
+        if is_energyplus_spawn_external_object_binding(eq) {
+            expanded.push(eq.clone());
+            continue;
+        }
         let scalarization_target = eq
             .lhs
             .as_ref()

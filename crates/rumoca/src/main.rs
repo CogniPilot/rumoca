@@ -297,6 +297,12 @@ struct CompileArgs {
     #[arg(long, value_name = "TARGET")]
     target: Option<String>,
 
+    /// Downgrade Evaluate annotations on non-parameter/non-constant components
+    /// from ER070 errors to warnings for third-party libraries that use
+    /// non-structural Evaluate annotations.
+    #[arg(long)]
+    allow_non_param_evaluate_annotation: bool,
+
     /// Pick which IR a raw template `--target` receives (default dae). Only
     /// meaningful when --target is a `.jinja` file, e.g. `--target my.jinja
     /// --phase flat`.
@@ -955,6 +961,7 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             &args.input,
             emit.phase(),
             args.diagnostics.verbose,
+            args.allow_non_param_evaluate_annotation,
         )?;
         return run_early_ir_dump(&artifact, &model, emit.is_json(), args.output);
     }
@@ -963,12 +970,17 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         let (result, _model) = compile_dae_allow_unbalanced_with_inferred_model(
             &args.input,
             args.diagnostics.verbose,
+            args.allow_non_param_evaluate_annotation,
         )?;
         let rendered = serde_json::to_string_pretty(&result.dae)?;
         return write_ir_dump(&rendered, CompilePhase::Dae, true, args.output);
     }
 
-    let (result, model) = compile_with_inferred_model(&args.input, args.diagnostics.verbose)?;
+    let (result, model) = compile_with_inferred_model(
+        &args.input,
+        args.diagnostics.verbose,
+        args.allow_non_param_evaluate_annotation,
+    )?;
 
     // Structural / point inspection of the lowered model (shares the `sim
     // --inspect` machinery). Structure is a compile-time artifact, so it belongs
@@ -1429,6 +1441,7 @@ fn looks_like_scenario_config(path: &Path) -> bool {
 fn compile_with_inferred_model(
     args: &ModelInputArgs,
     verbose: bool,
+    allow_non_param_evaluate_annotation: bool,
 ) -> Result<(CompilationResult, String)> {
     ensure_model_file_readable(&args.model_file)?;
     let model = match &args.options.model {
@@ -1441,6 +1454,7 @@ fn compile_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     let result = compiler.compile_file(&args.model_file)?;
     Ok((result, model))
@@ -1449,6 +1463,7 @@ fn compile_with_inferred_model(
 fn compile_dae_allow_unbalanced_with_inferred_model(
     args: &ModelInputArgs,
     verbose: bool,
+    allow_non_param_evaluate_annotation: bool,
 ) -> Result<(DaeCompilationResult, String)> {
     ensure_model_file_readable(&args.model_file)?;
     let model = match &args.options.model {
@@ -1461,6 +1476,7 @@ fn compile_dae_allow_unbalanced_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     let result = compiler.compile_file_dae_allow_unbalanced_for_diagnostics(&args.model_file)?;
     Ok((result, model))
@@ -1470,6 +1486,7 @@ fn compile_early_ir_with_inferred_model(
     args: &ModelInputArgs,
     phase: CompilePhase,
     verbose: bool,
+    allow_non_param_evaluate_annotation: bool,
 ) -> Result<(EarlyIrArtifact, String)> {
     ensure_model_file_readable(&args.model_file)?;
     let model = match &args.options.model {
@@ -1482,6 +1499,7 @@ fn compile_early_ir_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     let artifact = match phase {
         CompilePhase::Ast => {

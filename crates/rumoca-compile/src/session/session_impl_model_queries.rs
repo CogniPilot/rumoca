@@ -437,7 +437,7 @@ impl Session {
             } else {
                 None
             };
-            let (dae, todae_built) = dae_model_outcome_from_flat(tree, flat);
+            let (dae, todae_built) = dae_model_outcome_from_flat(tree, model_name, flat);
             if record_compile_timings && todae_built {
                 maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_started);
             }
@@ -460,7 +460,7 @@ impl Session {
         } else {
             None
         };
-        let (dae, todae_built) = dae_model_outcome_from_flat(tree, flat);
+        let (dae, todae_built) = dae_model_outcome_from_flat(tree, model_name, flat);
         if record_compile_timings && todae_built {
             maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_started);
         }

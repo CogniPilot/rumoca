@@ -115,12 +115,60 @@ fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
     }
 }
 
+fn binary_expr(
+    op: rumoca_core::OpBinary,
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
         span: rumoca_core::Span::DUMMY,
     }
+}
+
+#[test]
+fn visible_expressions_use_direct_output_definition_rhs() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+    dae_model
+        .variables
+        .inputs
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: binary_expr(rumoca_core::OpBinary::Mul, var("u"), real_expr(2.0)),
+        scalar_count: 1,
+        span: rumoca_core::Span::DUMMY,
+        origin: "direct output equation".to_string(),
+    });
+
+    let visible = visible_expressions_for_dae(&dae_model);
+    let y_visible = visible
+        .iter()
+        .find(|entry| entry.name == "y")
+        .expect("output y should be visible");
+
+    assert!(
+        !matches!(
+            &y_visible.expr,
+            rumoca_core::Expression::VarRef { name, subscripts, .. }
+                if subscripts.is_empty() && name.as_str() == "y"
+        ),
+        "causal output observations must use the direct output definition RHS, not an identity binding"
+    );
 }
 
 #[test]
@@ -282,6 +330,90 @@ fn lower_uses_default_numeric_slot_for_nested_string_parameter_start() {
     };
 
     assert_eq!(prepared.parameters[index], 0.0);
+}
+
+#[test]
+fn lower_binds_nested_parameter_start_alias_before_parent_parameter_order() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut log_level = scalar_var("floor.zon[1].logLevel");
+    log_level.start = Some(field_access_expr(var("floor.zon[1].fmuZon"), "AFlo"));
+    dae_model
+        .variables
+        .parameters
+        .insert(log_level.name.clone(), log_level);
+
+    let mut area = scalar_var("floor.zon[1].AFlo");
+    area.start = Some(real_expr(48.0));
+    dae_model
+        .variables
+        .parameters
+        .insert(area.name.clone(), area);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("nested parameter start aliases should be available during solve lowering");
+
+    let Some(solve::ScalarSlot::P { index, .. }) =
+        prepared.problem.layout.binding("floor.zon[1].logLevel")
+    else {
+        panic!("expected logLevel parameter slot");
+    };
+    assert_eq!(prepared.parameters[index], 48.0);
+}
+
+#[test]
+fn lower_uses_default_for_parameter_start_depending_on_fixed_false_parameter() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut external_area = scalar_var("zone.fmuZon.AFlo");
+    external_area.fixed = Some(false);
+    dae_model
+        .variables
+        .parameters
+        .insert(external_area.name.clone(), external_area);
+
+    let mut area = scalar_var("zone.AFlo");
+    area.start = Some(field_access_expr(var("zone.fmuZon"), "AFlo"));
+    dae_model
+        .variables
+        .parameters
+        .insert(area.name.clone(), area);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("fixed=false parameter dependencies should be initialized at runtime");
+
+    let Some(solve::ScalarSlot::P { index, .. }) = prepared.problem.layout.binding("zone.AFlo")
+    else {
+        panic!("expected AFlo parameter slot");
+    };
+    assert_eq!(prepared.parameters[index], 0.0);
+}
+
+#[test]
+fn lower_accepts_singleton_range_scalar_start_guess() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut scalar = scalar_var("medium.state_default.X");
+    scalar.start = Some(rumoca_core::Expression::Range {
+        start: Box::new(real_expr(0.42)),
+        step: None,
+        end: Box::new(real_expr(0.42)),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .variables
+        .parameters
+        .insert(scalar.name.clone(), scalar);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("singleton array-like range starts may initialize scalar slots");
+
+    let Some(solve::ScalarSlot::P { index, .. }) =
+        prepared.problem.layout.binding("medium.state_default.X")
+    else {
+        panic!("expected scalar parameter slot");
+    };
+    assert_eq!(prepared.parameters[index], 0.42);
 }
 
 #[test]
@@ -462,6 +594,265 @@ fn lower_rejects_missing_binding_in_explicit_start_guess() {
 }
 
 #[test]
+fn lower_projects_record_array_field_start_from_forward_source() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut target = scalar_var("plant.wrapper.unit[1].per.capacity");
+    target.start = Some(field_access_expr(var("plant.wrapper.dat"), "capacity"));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("plant.wrapper.unit[1].per.capacity"),
+        target,
+    );
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(var("plant.wrapper.unit[1].per.capacity"), real_expr(42.0)),
+        Default::default(),
+        "record array field projection target",
+    ));
+
+    let mut wrapper_per = scalar_var("plant.wrapper.per[1].capacity");
+    wrapper_per.start = Some(var("plant.dat[1].capacity"));
+    dae_model.variables.constants.insert(
+        rumoca_core::VarName::new("plant.wrapper.per[1].capacity"),
+        wrapper_per,
+    );
+
+    let mut source = scalar_var("plant.dat[1].capacity");
+    source.start = Some(var("root.dat[1].capacity"));
+    dae_model
+        .variables
+        .constants
+        .insert(rumoca_core::VarName::new("plant.dat[1].capacity"), source);
+
+    let mut root = scalar_var("root.dat[1].capacity");
+    root.start = Some(real_expr(42.0));
+    dae_model
+        .variables
+        .constants
+        .insert(rumoca_core::VarName::new("root.dat[1].capacity"), root);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("record array field start should resolve through forward source starts");
+
+    assert_eq!(prepared.initial_y, vec![42.0]);
+}
+
+#[test]
+fn lower_projects_component_array_member_start_from_matrix_row() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut source = scalar_var("plant.flow_curve");
+    source.dims = vec![3, 3];
+    source.start = Some(array_expr(
+        vec![
+            array_expr(vec![real_expr(0.1), real_expr(0.2), real_expr(0.3)], false),
+            array_expr(vec![real_expr(0.4), real_expr(0.5), real_expr(0.6)], false),
+            array_expr(vec![real_expr(0.7), real_expr(0.8), real_expr(0.9)], false),
+        ],
+        false,
+    ));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("plant.flow_curve"), source);
+
+    let mut target = scalar_var("plant.ct[2].v_flow_rate");
+    target.dims = vec![3];
+    target.start = Some(var("plant.flow_curve"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("plant.ct[2].v_flow_rate"), target);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("component array member start should project matrix row");
+
+    assert_eq!(prepared.initial_y, vec![0.4, 0.5, 0.6]);
+}
+
+#[test]
+fn lower_projects_indexed_matrix_start_row_to_vector() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut source = scalar_var("plant.flow_curve");
+    source.dims = vec![2, 3];
+    source.start = Some(array_expr(
+        vec![
+            array_expr(vec![real_expr(0.1), real_expr(0.2), real_expr(0.3)], false),
+            array_expr(vec![real_expr(0.4), real_expr(0.5), real_expr(0.6)], false),
+        ],
+        false,
+    ));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("plant.flow_curve"), source);
+
+    let mut target = scalar_var("plant.pump[1].VolFloCur");
+    target.dims = vec![3];
+    target.start = Some(indexed_var("plant.flow_curve", 2));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("plant.pump[1].VolFloCur"), target);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("indexed matrix start should project the selected row");
+
+    assert_eq!(prepared.initial_y, vec![0.4, 0.5, 0.6]);
+}
+
+#[test]
+fn lower_projects_repeated_aggregate_literal_member_start() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut source = scalar_var("plant.Motor_eta");
+    source.dims = vec![3, 1];
+    source.start = Some(array_expr(
+        vec![
+            array_expr(vec![real_expr(0.7)], false),
+            array_expr(vec![real_expr(0.8)], false),
+            array_expr(vec![real_expr(0.9)], false),
+        ],
+        false,
+    ));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("plant.Motor_eta"), source);
+
+    let mut target = scalar_var("plant.pump[2].per.motorEfficiency.eta");
+    target.dims = vec![1];
+    target.start = Some(array_expr(
+        vec![
+            var("plant.Motor_eta"),
+            var("plant.Motor_eta"),
+            var("plant.Motor_eta"),
+        ],
+        false,
+    ));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("plant.pump[2].per.motorEfficiency.eta"),
+        target,
+    );
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("repeated aggregate literal should project the target component member");
+
+    assert_eq!(prepared.initial_y, vec![0.8]);
+}
+
+#[test]
+fn lower_broadcasts_indexed_scalar_matrix_row_start_to_vector() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut source = scalar_var("plant.eta");
+    source.dims = vec![2, 1];
+    source.start = Some(array_expr(
+        vec![
+            array_expr(vec![real_expr(0.82)], false),
+            array_expr(vec![real_expr(0.91)], false),
+        ],
+        false,
+    ));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("plant.eta"), source);
+
+    let mut target = scalar_var("plant.boiler[1].eta");
+    target.dims = vec![2];
+    target.start = Some(indexed_var("plant.eta", 1));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("plant.boiler[1].eta"), target);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("scalar matrix row start should broadcast to target vector");
+
+    assert_eq!(prepared.initial_y, vec![0.82, 0.82]);
+}
+
+#[test]
+fn lower_accepts_dynamic_vector_start_when_sibling_n_matches_length() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut n = scalar_var("pump.curve.n");
+    n.start = Some(real_expr(3.0));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("pump.curve.n"), n);
+
+    let mut target = scalar_var("pump.curve.V_flow");
+    target.dims = vec![2];
+    target.start = Some(array_expr(
+        vec![real_expr(0.1), real_expr(0.2), real_expr(0.3)],
+        false,
+    ));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("pump.curve.V_flow"), target);
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("dynamic vector start should be accepted when sibling n matches");
+
+    assert_eq!(prepared.initial_y, vec![0.1, 0.2]);
+}
+
+#[test]
+fn lower_preserves_zero_dim_array_start_alias_as_empty_initial_values() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut source = scalar_var("junSup1.C_start");
+    source.dims = vec![0];
+    source.start = Some(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![real_expr(0.0), int_expr(0)],
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("junSup1.C_start"), source);
+
+    let mut target = scalar_var("junSup1.vol.dynBal.C_start");
+    target.dims = vec![0];
+    target.start = Some(var("junSup1.C_start"));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("junSup1.vol.dynBal.C_start"),
+        target,
+    );
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("zero-dimension array start aliases should lower as empty values");
+
+    assert!(prepared.initial_y.is_empty());
+}
+
+#[test]
+fn lower_uses_runtime_zero_extent_dims_for_start_values() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut table = scalar_var("building.weaDat.datRea.table");
+    table.dims = vec![1, 2];
+    table.start = Some(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![real_expr(0.0), int_expr(0), int_expr(2)],
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("building.weaDat.datRea.table"),
+        table,
+    );
+
+    lower_dae_to_solve_model(&dae_model).expect(
+        "runtime zero-extent table dimensions should not require static placeholder starts",
+    );
+}
+
+#[test]
 fn lower_evaluates_size_start_from_dae_dims_without_array_binding() {
     let mut dae_model = dae::Dae::default();
     let mut lines = scalar_var("world.x_label.lines");
@@ -586,6 +977,33 @@ fn lower_seeds_evaluable_continuous_assignment_to_initial_guess() {
     let prepared = lower_dae_to_solve_model(&dae_model).expect("continuous assignment should seed");
 
     assert_eq!(prepared.initial_y, vec![3.0, 3.0]);
+}
+
+#[test]
+fn lower_applies_singleton_array_initial_assignment_to_scalar_target() {
+    let mut dae_model = dae::Dae::default();
+
+    let mut target = scalar_var("target");
+    target.dims = vec![1];
+    target.start = Some(array_expr(vec![real_expr(5.0)], false));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("target"), target);
+
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            sub(var("target"), array_expr(vec![real_expr(0.0)], false)),
+            Default::default(),
+            "singleton array initial assignment",
+        ));
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("singleton array initial assignment should seed scalar target");
+
+    assert_eq!(prepared.initial_y, vec![0.0]);
 }
 
 #[test]

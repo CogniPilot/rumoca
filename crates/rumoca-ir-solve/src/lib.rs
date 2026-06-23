@@ -26,6 +26,30 @@ pub use visitor::{
 
 pub const SOLVE_SCHEMA_VERSION: u16 = 7;
 
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub enum RuntimeExternalValue {
+    Real(f64),
+    Integer(i64),
+    Boolean(bool),
+    String(String),
+    SimulationTime,
+    Array(Vec<RuntimeExternalValue>),
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct RuntimeExternalArg {
+    pub name: Option<String>,
+    pub value: RuntimeExternalValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct RuntimeExternalObject {
+    pub target: String,
+    pub constructor: ExternalFunctionKind,
+    pub symbol: String,
+    pub args: Vec<RuntimeExternalArg>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ExternalTables {
     tables: Vec<ExternalTableData>,
@@ -453,6 +477,7 @@ mod tests {
                 &[("p", vec![1]), ("__pre__.hold.y", vec![1])],
             ),
             solve_layout: representative_solve_layout(),
+            external_objects: Vec::new(),
             continuous: representative_continuous_system(),
             initialization: representative_initialization_system(),
             discrete: representative_discrete_system(),
@@ -934,6 +959,8 @@ pub struct SolveProblem {
     pub schema_version: u16,
     pub layout: VarLayout,
     pub solve_layout: SolveLayout,
+    #[serde(default)]
+    pub external_objects: Vec<RuntimeExternalObject>,
     pub continuous: ContinuousSolveSystem,
     pub initialization: InitializationSolveSystem,
     pub discrete: DiscreteSolveSystem,
@@ -947,6 +974,8 @@ struct SolveProblemWire {
     schema_version: u16,
     layout: VarLayout,
     solve_layout: SolveLayout,
+    #[serde(default)]
+    external_objects: Vec<RuntimeExternalObject>,
     continuous: ContinuousSolveSystem,
     initialization: InitializationSolveSystem,
     discrete: DiscreteSolveSystem,
@@ -960,6 +989,7 @@ impl Default for SolveProblem {
             schema_version: SOLVE_SCHEMA_VERSION,
             layout: VarLayout::default(),
             solve_layout: SolveLayout::default(),
+            external_objects: Vec::new(),
             continuous: ContinuousSolveSystem::default(),
             initialization: InitializationSolveSystem::default(),
             discrete: DiscreteSolveSystem::default(),
@@ -986,6 +1016,7 @@ impl<'de> Deserialize<'de> for SolveProblem {
             schema_version: wire.schema_version,
             layout: wire.layout,
             solve_layout: wire.solve_layout,
+            external_objects: wire.external_objects,
             continuous: wire.continuous,
             initialization: wire.initialization,
             discrete: wire.discrete,

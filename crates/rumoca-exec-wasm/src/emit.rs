@@ -315,6 +315,12 @@ fn max_register_for_op(op: &LinearOp) -> usize {
             imax,
             ..
         } => dst.max(id).max(imin).max(imax) as usize,
+        LinearOp::ExternalCall {
+            dst,
+            args,
+            arg_count,
+            ..
+        } => args.iter().take(arg_count).copied().fold(dst, u32::max) as usize,
         LinearOp::Move { dst, src } => dst.max(src) as usize,
         LinearOp::LinearSolveComponent {
             dst,
@@ -427,6 +433,11 @@ impl<'a> BodyEmitter<'a> {
                 return Err(
                     "WASM backend does not yet support discrete random solve-IR ops".to_string(),
                 );
+            }
+            LinearOp::ExternalCall { function, .. } => {
+                return Err(format!(
+                    "WASM backend does not support native external solve-IR call {function:?}"
+                ));
             }
             LinearOp::Unary { dst, op, arg } => self.emit_unary(dst, op, arg)?,
             LinearOp::Binary { dst, op, lhs, rhs } => self.emit_binary(dst, op, lhs, rhs)?,

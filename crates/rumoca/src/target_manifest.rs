@@ -192,20 +192,28 @@ fn solve_template_json(result: &CompilationResult) -> Result<Value> {
     let template_dae = result.scalarized_template_dae();
     let mut value =
         dae_to_template_json(&template_dae).map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let solve = rumoca_sim::lower_solve_problem(&template_dae)
-        .context("Lower Solve IR for target template rendering")?;
-    let artifacts = rumoca_sim::lower_solve_artifacts(&solve)
-        .context("Lower Solve artifacts for target template rendering")?;
-    let mut solve_value =
-        serde_json::to_value(solve).context("Serialize Solve IR for target template rendering")?;
-    solve_value
+    let solve_model = rumoca_sim::lower_dae_to_solve_model_owned(template_dae)
+        .context("Lower Solve model for target template rendering")?;
+    let mut solve_value = serde_json::to_value(&solve_model.problem)
+        .context("Serialize Solve IR for target template rendering")?;
+    let solve_object = solve_value
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("Solve template JSON root must be an object"))?
-        .insert(
-            "artifacts".to_string(),
-            serde_json::to_value(artifacts)
-                .context("Serialize Solve artifacts for target template rendering")?,
-        );
+        .ok_or_else(|| anyhow::anyhow!("Solve template JSON root must be an object"))?;
+    solve_object.insert(
+        "artifacts".to_string(),
+        serde_json::to_value(&solve_model.artifacts)
+            .context("Serialize Solve artifacts for target template rendering")?,
+    );
+    solve_object.insert(
+        "visible_names".to_string(),
+        serde_json::to_value(&solve_model.visible_names)
+            .context("Serialize Solve visible names for target template rendering")?,
+    );
+    solve_object.insert(
+        "visible_value_rows".to_string(),
+        serde_json::to_value(&solve_model.visible_value_rows)
+            .context("Serialize Solve visible rows for target template rendering")?,
+    );
     let object = value
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("DAE template JSON root must be an object"))?;

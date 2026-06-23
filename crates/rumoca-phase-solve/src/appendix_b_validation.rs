@@ -308,9 +308,15 @@ impl FallibleExpressionVisitor for FunctionCallResolveValidator<'_> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
-        _is_constructor: bool,
+        is_constructor: bool,
     ) -> Result<(), Self::Error> {
         if !is_named_function_arg_marker(name)
+            && !is_energyplus_external_object_metadata_binding(
+                self.context,
+                name.as_str(),
+                is_constructor,
+            )
+            && !is_energyplus_runtime_external_call(name.as_str())
             && let Err(err) =
                 validate_sim_function_call_name(self.dae_model, name, self.function_param_aliases)
         {
@@ -328,6 +334,27 @@ impl FallibleExpressionVisitor for FunctionCallResolveValidator<'_> {
         }
         Ok(())
     }
+}
+
+fn is_energyplus_runtime_external_call(function_name: &str) -> bool {
+    matches!(
+        function_name,
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange"
+    )
+}
+
+fn is_energyplus_external_object_metadata_binding(
+    context: &str,
+    function_name: &str,
+    is_constructor: bool,
+) -> bool {
+    is_constructor
+        && function_name
+            == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+        && context.contains("origin='binding equation for ")
+        && context.contains(".adapter'")
 }
 
 fn validate_scalar_program_block(

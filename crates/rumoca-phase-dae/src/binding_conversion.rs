@@ -67,7 +67,12 @@ pub(super) fn convert_bindings_to_equations(
     let defined_by_unknown_rhs = collect_vars_with_unknown_rhs(flat, &unknowns);
 
     for (name, var) in &flat.variables {
-        if !var.is_primitive && prefix_children.contains_key(name.as_str()) {
+        let is_energyplus_external_object_binding =
+            binding_is_energyplus_spawn_external_object(var);
+        if !is_energyplus_external_object_binding
+            && !var.is_primitive
+            && prefix_children.contains_key(name.as_str())
+        {
             continue;
         }
 
@@ -96,6 +101,7 @@ pub(super) fn convert_bindings_to_equations(
 
         if should_skip_variable_binding(&kind, name, connected_inputs)
             && !keep_connected_input_binding
+            && !is_energyplus_external_object_binding
             && !binding_defines_underdefined_unknown(var, name, &unknowns, &all_defined, flat)
         {
             continue;
@@ -107,6 +113,7 @@ pub(super) fn convert_bindings_to_equations(
         // a constant binding (e.g., `suspend = false`) provides the VALUE and must be kept.
         if all_defined.contains(name)
             && !defined_by_unknown_rhs.contains(name)
+            && !is_energyplus_external_object_binding
             && should_skip_binding_for_explicit_var(name, var, &unknowns, &unknown_prefix_children)
         {
             continue;
@@ -116,21 +123,21 @@ pub(super) fn convert_bindings_to_equations(
         // once. If flattening has already materialized an identical explicit
         // equation for the same variable, use that source equation as the
         // canonical origin.
-        if explicitly_shadowed_bindings.contains(name) {
+        if !is_energyplus_external_object_binding && explicitly_shadowed_bindings.contains(name) {
             continue;
         }
 
         // Skip variables that are defined by algorithm sections (MLS §11.1)
         // Algorithm outputs already contribute equations; adding binding equations
         // would cause double-counting and incorrect balance.
-        if algorithm_defined_vars.contains(name) {
+        if !is_energyplus_external_object_binding && algorithm_defined_vars.contains(name) {
             continue;
         }
 
         // Skip variables that are record fields already defined by a record equation.
         // E.g., if `cc = func(...)` defines all fields of cc, don't also generate
         // a binding equation for `cc.m_capgd` (would double-count that field).
-        if record_eq_defined_vars.contains(name) {
+        if !is_energyplus_external_object_binding && record_eq_defined_vars.contains(name) {
             continue;
         }
 
@@ -146,6 +153,17 @@ pub(super) fn convert_bindings_to_equations(
             );
         }
     }
+}
+
+fn binding_is_energyplus_spawn_external_object(var: &flat::Variable) -> bool {
+    matches!(
+        &var.binding,
+        Some(Expression::FunctionCall {
+            name,
+            ..
+        }) if name.as_str()
+            == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+    )
 }
 
 /// Keep declaration bindings for connected input-only alias sets.

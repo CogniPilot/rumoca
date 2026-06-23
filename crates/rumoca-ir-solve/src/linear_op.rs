@@ -210,14 +210,19 @@ pub enum LinearOp {
         call_site: u64,
     },
     /// Native external function call. `args[..arg_count]` are initialized
-    /// scalar argument registers; non-scalar native handles are represented by
-    /// the function kind and must be resolved by the external runtime bridge.
+    /// scalar argument registers. `external_object_index` points into
+    /// `SolveProblem.external_objects` when the call requires a native
+    /// ExternalObject handle.
     ExternalCall {
         dst: Reg,
         function: ExternalFunctionKind,
+        #[serde(default)]
+        external_object_index: Option<usize>,
         args: [Reg; 8],
         arg_count: usize,
         output_index: usize,
+        #[serde(default = "default_external_call_output_count")]
+        output_count: usize,
     },
     Unary {
         dst: Reg,
@@ -246,6 +251,10 @@ pub enum LinearOp {
     StoreOutput {
         src: Reg,
     },
+}
+
+fn default_external_call_output_count() -> usize {
+    1
 }
 
 impl LinearOp {

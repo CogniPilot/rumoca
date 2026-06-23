@@ -443,6 +443,7 @@ pub fn is_runtime_special_function_short_name(short_name: &str) -> bool {
             | "specificEnthalpy"
             | "specificInternalEnergy"
             | "specificEntropy"
+            | "specificHeatCapacityCp"
             | "to_degC"
             | "from_degC"
             | "to_deg"

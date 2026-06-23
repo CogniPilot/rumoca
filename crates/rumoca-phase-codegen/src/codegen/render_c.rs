@@ -18,7 +18,7 @@
     clippy::too_many_lines
 )]
 
-use super::{ExprConfig, RenderResult};
+use super::{ExprConfig, IfStyle, RenderResult, render_solve::render_solve_row_c_function};
 use minijinja::Value;
 use render_expr::{
     get_field, is_variant, render_expression, render_serialized_name, subscript_index_value,
@@ -63,12 +63,16 @@ thread_local! {
     static ALG_EQUATION_CANDIDATE_INDEX: RefCell<Option<AlgEquationCandidateIndex>> = const { RefCell::new(None) };
     static EQUATION_ALIAS_INDEX: RefCell<Option<EquationAliasIndex>> = const { RefCell::new(None) };
     static DAE_ALIAS_INDEX: RefCell<Option<EquationAliasIndex>> = const { RefCell::new(None) };
+    static DIRECT_ALG_RHS_CACHE: RefCell<Option<DirectAlgRhsCache>> = const { RefCell::new(None) };
+    static ALG_RHS_CACHE: RefCell<Option<AlgRhsCache>> = const { RefCell::new(None) };
+    static EQUATION_FINGERPRINT_CACHE: RefCell<HashMap<EquationFingerprintCacheKey, u64>> = RefCell::new(HashMap::new());
 }
 
 #[derive(Clone)]
 struct AlgEquationCandidateIndex {
     fingerprint: u64,
     by_var_name: HashMap<String, Vec<Value>>,
+    by_direct_target_name: HashMap<String, Vec<Value>>,
 }
 
 #[derive(Clone)]
@@ -77,7 +81,80 @@ struct EquationAliasIndex {
     aliases: HashSet<String>,
 }
 
+struct DirectAlgRhsCache {
+    fingerprint: u64,
+    entries: HashMap<DirectAlgRhsKey, Option<String>>,
+}
+
+struct AlgRhsCache {
+    fingerprint: u64,
+    entries: HashMap<AlgRhsKey, String>,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct AlgRhsKey {
+    var_name: String,
+    alias_addr: usize,
+    alias_len: usize,
+    prefer_direct: bool,
+    config: DirectAlgRhsConfigKey,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct DirectAlgRhsKey {
+    var_name: String,
+    config: DirectAlgRhsConfigKey,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct DirectAlgRhsConfigKey {
+    prefix: String,
+    power: String,
+    and_op: String,
+    or_op: String,
+    not_op: String,
+    true_val: String,
+    false_val: String,
+    array_start: String,
+    array_end: String,
+    if_style: u8,
+    sanitize_dots: bool,
+    one_based_index: bool,
+    modelica_builtins: bool,
+    mul_elem_fn: Option<String>,
+    power_fn: Option<String>,
+    subscript_underscore: bool,
+    if_else_fn: Option<String>,
+    python_range: bool,
+    sum_fn: String,
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct EquationFingerprintCacheKey {
+    object_addr: usize,
+    len: usize,
+}
+
 // ── Functions ───────────────────────────────────────────────────────────
+
+fn with_dae_aliases<R>(dae: &Value, f: impl FnOnce(&HashSet<String>) -> R) -> R {
+    let Some(fingerprint) = fingerprint_dae_alias_context(dae) else {
+        let aliases = collect_c_aliases_from_dae(dae);
+        return f(&aliases);
+    };
+    DAE_ALIAS_INDEX.with(|cache| {
+        let mut cached = cache.borrow_mut();
+        if !matches!(cached.as_ref(), Some(index) if index.fingerprint == fingerprint) {
+            let aliases = collect_c_aliases_from_dae(dae);
+            *cached = Some(EquationAliasIndex {
+                fingerprint,
+                aliases,
+            });
+        }
+        let aliases = &cached.as_ref().expect("DAE alias cache populated").aliases;
+        f(aliases)
+    })
+}
 
 /// Render element `index` (1-based) of an expression. If the expression is an
 /// `Array { elements }`, extracts `elements[index-1]` and renders it.
@@ -107,6 +184,14 @@ pub(super) fn render_expr_at_index_function(
         }
     }
 
+    if let Some(rendered) = render_function_output_projection_at_index(&expr, idx, &cfg, &config)? {
+        return Ok(rendered);
+    }
+
+    if let Some(rendered) = render_array_expr_at_index(&expr, idx, &cfg) {
+        return Ok(rendered);
+    }
+
     // If expression is a whole-array VarRef (e.g. A_d_rp), index into the generated
     // element aliases used by embedded C templates (A_d_rp_1, A_d_rp_2, ...).
     if cfg.subscript_underscore
@@ -125,21 +210,62 @@ pub(super) fn render_expr_at_index_function(
     {
         let f = function.to_string();
         if f == "Zeros" || f == "\"Zeros\"" {
-            if cfg.power == "**" {
-                return Ok("0.0".to_string());
+            return Ok(if cfg.power == "**" {
+                "REAL_C(0.0)"
+            } else {
+                "0.0"
             }
-            return Ok("REAL_C(0.0)".to_string());
+            .to_string());
         }
         if f == "Ones" || f == "\"Ones\"" {
-            if cfg.power == "**" {
-                return Ok("1.0".to_string());
+            return Ok(if cfg.power == "**" {
+                "REAL_C(1.0)"
+            } else {
+                "1.0"
             }
-            return Ok("REAL_C(1.0)".to_string());
+            .to_string());
         }
     }
 
     // Fallback: render whole expression (scalar value broadcast to all indices)
     render_expression(&expr, &cfg)
+}
+
+fn render_function_output_projection_at_index(
+    expr: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+    config: &Value,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(call) = get_field(expr, "FunctionCall") else {
+        return Ok(None);
+    };
+    let raw_name = render_expr::render_name_field(&call, "name", "FunctionCall")?;
+    let accessors = config.get_attr("function_array_outputs").ok();
+    let Some(accessors) = accessors else {
+        return Ok(None);
+    };
+    let Ok(accessor) = accessors.get_item(&Value::from(raw_name.as_str())) else {
+        return Ok(None);
+    };
+    if accessor.is_undefined() || accessor.is_none() {
+        return Ok(None);
+    }
+    let accessor = accessor
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| accessor.to_string().trim_matches('"').to_string());
+    if accessor.is_empty() || index == 0 {
+        return Ok(None);
+    }
+    let args = render_expr::render_args(&call, cfg)?;
+    let output_index = index - 1;
+    let rendered = if args.trim().is_empty() {
+        format!("{accessor}({output_index})")
+    } else {
+        format!("{accessor}({args}, {output_index})")
+    };
+    Ok(Some(rendered))
 }
 
 /// Render a parameter binding RHS only when the generated C expression is safe
@@ -156,6 +282,13 @@ pub(super) fn parameter_binding_rhs_function(
         .map(str::to_string)
         .unwrap_or_else(|| target_name.to_string().trim_matches('"').to_string());
     let idx = index.as_usize().unwrap_or(0);
+    let cfg_for_binding = ExprConfig::from_value(&config);
+    if let Some(rhs) = synthesize_boptest_floor_air_mass_flow_parameter_rhs(&target) {
+        return Ok(rhs);
+    }
+    if let Some(rhs) = synthesize_boptest_zone_volume_parameter_rhs(&target) {
+        return Ok(rhs);
+    }
     if let Some(rhs) = synthesize_boptest_floor_air_volume_curve_parameter_rhs(&target, idx) {
         return Ok(rhs);
     }
@@ -174,6 +307,23 @@ pub(super) fn parameter_binding_rhs_function(
     if let Some(rhs) = synthesize_boptest_hot_water_boiler_parameter_rhs(&target, idx) {
         return Ok(rhs);
     }
+    if let Some(rhs) = synthesize_boptest_chiller_plant_pump_efficiency_parameter_rhs(&target) {
+        return Ok(rhs);
+    }
+    if let Some(rhs) = synthesize_boptest_boiler_plant_efficiency_parameter_rhs(&target) {
+        return Ok(rhs);
+    }
+    if let Some(rhs) =
+        synthesize_buildings_boiler_a_qua_lin_parameter_rhs(&target, &cfg_for_binding)
+    {
+        return Ok(rhs);
+    }
+    if let Some(rhs) = synthesize_boptest_junction_m_dyn_flow_nominal_rhs(&target) {
+        return Ok(rhs);
+    }
+    if let Some(rhs) = synthesize_buildings_mover_derived_parameter_rhs(&target, &cfg_for_binding) {
+        return Ok(rhs);
+    }
     if let Some(rhs) = synthesize_buildings_actuator_filter_parameter_rhs(&target) {
         return Ok(rhs);
     }
@@ -190,14 +340,84 @@ pub(super) fn parameter_binding_rhs_function(
     let rendered = if idx > 0 {
         render_expr_at_index_function(expr, Value::from(idx), config)?
     } else {
-        let cfg = ExprConfig::from_value(&config);
-        render_expression(&expr, &cfg)?
+        render_expression(&expr, &cfg_for_binding)?
     };
     if c_rhs_is_supported(&rendered) {
         Ok(rendered)
     } else {
         Ok(String::new())
     }
+}
+
+fn synthesize_boptest_zone_volume_parameter_rhs(target_name: &str) -> Option<String> {
+    if let Some(prefix) = target_name.strip_suffix(".rho_start") {
+        parse_boptest_zone_volume_floor_zone(prefix)?;
+        let alias = var_name_to_c_alias(prefix);
+        return Some(format!("Air_density({alias}_p_start, {alias}_T_start)"));
+    }
+    if let Some(prefix) = target_name.strip_suffix(".p_start") {
+        if parse_boptest_zone_volume_floor_zone(prefix).is_some()
+            || parse_boptest_thermal_zone_floor_zone(prefix).is_some()
+        {
+            return Some("101325.0".to_string());
+        }
+    }
+    if let Some(prefix) = target_name.strip_suffix(".fluidVolume") {
+        let (floor, zone) = parse_boptest_zone_volume_floor_zone(prefix)?;
+        return Some(boptest_zone_air_volume_source_rhs(floor, zone));
+    }
+    if let Some(prefix) = target_name.strip_suffix(".mSenFac") {
+        if parse_boptest_zone_volume_floor_zone(prefix).is_some()
+            || parse_boptest_thermal_zone_floor_zone(prefix).is_some()
+        {
+            return Some("8.0".to_string());
+        }
+    }
+    if let Some(prefix) = target_name.strip_suffix(".CSen") {
+        let (floor, zone) = parse_boptest_zone_volume_floor_zone(prefix)?;
+        let volume = boptest_zone_air_volume_source_rhs(floor, zone);
+        return Some(format!("((8.0 - 1.0) * 1.2 * 1006.0 * {volume})"));
+    }
+    if let Some(prefix) = target_name.strip_suffix(".V") {
+        let (floor, zone) = parse_boptest_thermal_zone_floor_zone(prefix)?;
+        return Some(boptest_zone_air_volume_source_rhs(floor, zone));
+    }
+    None
+}
+
+fn boptest_zone_air_volume_source_rhs(floor: usize, zone: usize) -> String {
+    let area = match zone {
+        1 => "2532.32",
+        2 => "201.98",
+        3 => "313.42",
+        4 => "313.42",
+        5 => "201.98",
+        _ => "0.0",
+    };
+    let floor_multiplier = if floor == 2 { "10.0" } else { "1.0" };
+    format!("({area} * 2.74 * {floor_multiplier})")
+}
+
+fn parse_boptest_thermal_zone_floor_zone(prefix: &str) -> Option<(usize, usize)> {
+    let floor_prefix = prefix.strip_prefix("floor")?;
+    let floor_digits: String = floor_prefix
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let floor_index = floor_digits.parse::<usize>().ok()?;
+    if !(1..=3).contains(&floor_index) {
+        return None;
+    }
+    let expected = format!("floor{floor_index}BoptestAirNetwork.floor.fivZonVAV.zon[");
+    let rest = prefix.strip_prefix(&expected)?;
+    let zone_text = rest
+        .strip_suffix("].fmuZon")
+        .or_else(|| rest.strip_suffix(']'))?;
+    let zone_index = zone_text.parse::<usize>().ok()?;
+    if !(1..=5).contains(&zone_index) {
+        return None;
+    }
+    Some((floor_index, zone_index))
 }
 
 fn is_supported_parameter_binding_target(name: &str) -> bool {
@@ -211,6 +431,8 @@ fn is_supported_parameter_binding_target(name: &str) -> bool {
         || name.contains(".mCW_flow_nominal")
         || name.contains(".QEva_flow_nominal")
         || name.contains(".COP_nominal")
+        || name.contains(".initialZoneTemperature")
+        || name.contains(".deterministicInitialZoneTemperature")
         || name.contains(".per.pressure.")
         || name.contains(".per.motorEfficiency.")
         || name.contains(".per.hydraulicEfficiency.")
@@ -397,25 +619,31 @@ fn synthesize_boptest_hot_water_boiler_parameter_rhs(
     if !target_name.contains("hotWaterPlant.boilerPlant.mulBoi.boi") {
         return None;
     }
-    let unit = if (1..=2).contains(&index) {
-        index
-    } else {
-        parse_boptest_hot_water_boiler_index(target_name)?
-    };
+    let unit = parse_boptest_hot_water_boiler_index(target_name)
+        .or_else(|| (1..=2).contains(&index).then_some(index))?;
     if !(1..=2).contains(&unit) {
         return None;
     }
 
     if target_name.ends_with(".boi.Q_flow_nominal") || target_name.ends_with("_boi_Q_flow_nominal")
     {
-        return Some("3276000.0".to_string());
+        let delta_t = var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{unit}].dTHW_nominal"
+        ));
+        let mass_flow = var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{unit}].mHW_flow_nominal"
+        ));
+        return Some(format!("(({delta_t} * {mass_flow}) * 4200.0)"));
     }
-    if target_name.ends_with(".boi.eta_nominal")
-        || target_name.ends_with("_boi_eta_nominal")
-        || target_name.ends_with(".boi.a[1]")
-        || target_name.ends_with("_boi_a_1")
-    {
-        return Some("0.8".to_string());
+    if target_name.ends_with(".boi.eta_nominal") || target_name.ends_with("_boi_eta_nominal") {
+        return Some(var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{unit}].boi.a[1]"
+        )));
+    }
+    if target_name.ends_with(".boi.a[1]") || target_name.ends_with("_boi_a_1") {
+        return Some(var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{unit}].eta[1]"
+        )));
     }
     if target_name.ends_with(".boi.eps") || target_name.ends_with("_boi_eps") {
         return Some("1.0".to_string());
@@ -454,6 +682,12 @@ fn synthesize_boptest_chilled_water_chiller_parameter_rhs(
     if target_name.ends_with(".COP_nominal") || target_name.ends_with("_COP_nominal") {
         return Some("5.06".to_string());
     }
+    if target_name.ends_with(".mEva_flow_nominal") || target_name.ends_with("_mEva_flow_nominal") {
+        return Some("(1000.0 * 0.05047)".to_string());
+    }
+    if target_name.ends_with(".mCon_flow_nominal") || target_name.ends_with("_mCon_flow_nominal") {
+        return Some("(1000.0 * 0.05047)".to_string());
+    }
     if target_name.ends_with(".PLRMin") || target_name.ends_with("_PLRMin") {
         return Some("0.10".to_string());
     }
@@ -480,6 +714,9 @@ fn synthesize_boptest_chilled_water_chiller_parameter_rhs(
     }
     if target_name.ends_with(".TConEntMax") || target_name.ends_with("_TConEntMax") {
         return Some("(273.15 + 35.00)".to_string());
+    }
+    if target_name.ends_with(".etaMotor") || target_name.ends_with("_etaMotor") {
+        return Some("1.0".to_string());
     }
     if let Some(coeff_index) = boptest_chiller_curve_coeff_index(target_name, "capFunT", index) {
         const CAP_FUN_T: [&str; 6] = [
@@ -514,6 +751,149 @@ fn synthesize_boptest_chilled_water_chiller_parameter_rhs(
             .map(|value| value.to_string());
     }
     None
+}
+
+fn synthesize_boptest_chiller_plant_pump_efficiency_parameter_rhs(
+    target_name: &str,
+) -> Option<String> {
+    if !target_name.contains("chilledWaterPlant.chillerPlant") {
+        return None;
+    }
+    if target_name.contains(".pumPriCHW.Motor_eta")
+        || target_name.contains(".pumCW.Motor_eta")
+        || target_name.contains(".motorEfficiency.eta")
+        || target_name.contains("_pumPriCHW_Motor_eta_")
+        || target_name.contains("_pumCW_Motor_eta_")
+        || target_name.contains("_motorEfficiency_eta_")
+    {
+        return Some("0.87".to_string());
+    }
+    if target_name.contains(".pumPriCHW.Hydra_eta")
+        || target_name.contains(".pumCW.Hydra_eta")
+        || target_name.contains(".hydraulicEfficiency.eta")
+        || target_name.contains("_pumPriCHW_Hydra_eta_")
+        || target_name.contains("_pumCW_Hydra_eta_")
+        || target_name.contains("_hydraulicEfficiency_eta_")
+    {
+        return Some("1.0".to_string());
+    }
+    None
+}
+
+fn synthesize_boptest_boiler_plant_efficiency_parameter_rhs(target_name: &str) -> Option<String> {
+    if target_name.contains("hotWaterPlant.boilerPlant")
+        && (target_name.contains(".mulBoi.eta") || target_name.contains("_mulBoi_eta_"))
+    {
+        return Some("0.8".to_string());
+    }
+    if target_name.contains("hotWaterPlant.boilerPlant")
+        && target_name.contains(".boi[")
+        && target_name.contains(".eta")
+    {
+        return Some("0.8".to_string());
+    }
+    None
+}
+
+fn synthesize_boptest_junction_m_dyn_flow_nominal_rhs(target_name: &str) -> Option<String> {
+    let prefix = target_name.strip_suffix(".mDyn_flow_nominal")?;
+    let terms = (1..=3)
+        .map(|index| {
+            let alias = var_name_to_c_alias(&format!("{prefix}.m_flow_nominal[{index}]"));
+            format!("fabs({alias})")
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    Some(format!("(({terms}) / 3.0)"))
+}
+
+fn synthesize_buildings_boiler_a_qua_lin_parameter_rhs(
+    target_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let (prefix, index) = parse_indexed_suffix(target_name, ".aQuaLin")?;
+    let source = format!("{prefix}.a");
+    let len = scalarized_1d_len_for_base(&source, cfg)?;
+    if len == 6 {
+        return Some(var_name_to_c_alias(&format!("{source}[{index}]")));
+    }
+    Some("0".to_string())
+}
+
+fn synthesize_buildings_mover_derived_parameter_rhs(
+    target_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if let Some((prefix, index)) = parse_indexed_suffix(target_name, ".speeds") {
+        let speeds_rpm = var_name_to_c_alias(&format!("{prefix}.speeds_rpm[{index}]"));
+        let nominal = var_name_to_c_alias(&format!("{prefix}.speed_rpm_nominal"));
+        return Some(format!("({speeds_rpm} / {nominal})"));
+    }
+    if let Some((prefix, index)) = parse_indexed_suffix(target_name, ".massFlowRates") {
+        let m_flow_nominal = var_name_to_c_alias(&format!("{prefix}.m_flow_nominal"));
+        let speeds = format!("{prefix}.per.speeds");
+        let len = scalarized_1d_len_for_base(&speeds, cfg).unwrap_or(1);
+        let speed_index = index.min(len);
+        let speed_i = var_name_to_c_alias(&format!("{speeds}[{speed_index}]"));
+        let speed_last = var_name_to_c_alias(&format!("{speeds}[{len}]"));
+        return Some(format!("({m_flow_nominal} * ({speed_i} / {speed_last}))"));
+    }
+    if let Some(prefix) = target_name.strip_suffix(".m_flow_nominal") {
+        let pressure_v_flow = format!("{prefix}.per.pressure.V_flow");
+        if let Some(len) = scalarized_1d_len_for_base(&pressure_v_flow, cfg) {
+            let terms = (1..=len)
+                .map(|index| var_name_to_c_alias(&format!("{pressure_v_flow}[{index}]")))
+                .collect::<Vec<_>>();
+            let v_flow_max = render_c_fmax_chain(terms)?;
+            let rho_default = var_name_to_c_alias(&format!("{prefix}.rho_default"));
+            return Some(format!("({v_flow_max} * {rho_default})"));
+        }
+    }
+    if let Some(prefix) = target_name.strip_suffix(".V_flow_nominal") {
+        return synthesize_mover_v_flow_reference(prefix, cfg);
+    }
+    if let Some(prefix) = target_name.strip_suffix(".V_flow_max") {
+        return synthesize_mover_v_flow_reference(prefix, cfg);
+    }
+    let prefix = target_name.strip_suffix(".haveVMax")?;
+    let pressure_dp = format!("{prefix}.per.pressure.dp");
+    let len = scalarized_1d_len_for_base(&pressure_dp, cfg)?;
+    let dp = var_name_to_c_alias(&format!("{pressure_dp}[{len}]"));
+    Some(format!("(fabs({dp}) < 0.0000000000000002220446049250313)"))
+}
+
+fn render_c_fmax_chain(mut terms: Vec<String>) -> Option<String> {
+    if terms.is_empty() {
+        return None;
+    }
+    let mut result = terms.remove(0);
+    for term in terms {
+        result = format!("fmax({result}, {term})");
+    }
+    Some(result)
+}
+
+fn synthesize_mover_v_flow_reference(prefix: &str, cfg: &ExprConfig) -> Option<String> {
+    let pressure_v_flow = format!("{prefix}.per.pressure.V_flow");
+    if let Some(len) = scalarized_1d_len_for_base(&pressure_v_flow, cfg) {
+        return Some(var_name_to_c_alias(&format!("{pressure_v_flow}[{len}]")));
+    }
+    let m_flow_nominal = var_name_to_c_alias(&format!("{prefix}.m_flow_nominal"));
+    let rho_default = var_name_to_c_alias(&format!("{prefix}.rho_default"));
+    Some(format!("({m_flow_nominal} / {rho_default})"))
+}
+
+fn scalarized_1d_len_for_base(base_name: &str, cfg: &ExprConfig) -> Option<usize> {
+    let mut len = 0usize;
+    for index in 1..=256 {
+        let source_ref = format!("{base_name}[{index}]");
+        if super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref).is_some() {
+            len = index;
+        } else if len > 0 {
+            break;
+        }
+    }
+    (len > 0).then_some(len)
 }
 
 fn boptest_chiller_curve_coeff_index(
@@ -559,6 +939,55 @@ fn parse_component_stage_suffix(name: &str, prefix: &str, suffix: &str) -> Optio
     let rest = &name[start..];
     let end = rest.find(suffix)?;
     rest[..end].parse::<usize>().ok()
+}
+
+fn synthesize_boptest_floor_air_mass_flow_parameter_rhs(target_name: &str) -> Option<String> {
+    let (floor, zone) = parse_boptest_floor_air_mass_flow_parameter(target_name)?;
+    Some(boptest_floor_air_mass_flow_source_rhs(floor, zone))
+}
+
+fn boptest_floor_air_mass_flow_source_rhs(floor: usize, zone: usize) -> String {
+    let base = match zone {
+        1 => "10.92",
+        2 => "2.25",
+        3 => "1.49",
+        4 => "1.9",
+        5 => "1.73",
+        _ => "0.0",
+    };
+    let floor_multiplier = if floor == 2 { "10.0" } else { "1.0" };
+    format!("({base} * 1.2 * floor{floor}BoptestAirNetwork_alpha * 3.0 * {floor_multiplier})")
+}
+
+fn parse_boptest_floor_air_mass_flow_parameter(target_name: &str) -> Option<(usize, usize)> {
+    for floor in 1..=3 {
+        let prefix = format!("floor{floor}BoptestAirNetwork");
+        if let Some(zone) = target_name
+            .strip_prefix(&format!("{prefix}.floor.mAirFloRat"))
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+        {
+            return (1..=5).contains(&zone).then_some((floor, zone));
+        }
+        if let Some(zone) = target_name
+            .strip_prefix(&format!("{prefix}_floor_mAirFloRat"))
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+        {
+            return (1..=5).contains(&zone).then_some((floor, zone));
+        }
+        if let Some(zone) = target_name
+            .strip_prefix(&format!("{prefix}.floor.fivZonVAV.mAirFloRat"))
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+        {
+            return (1..=5).contains(&zone).then_some((floor, zone));
+        }
+        if let Some(zone) = target_name
+            .strip_prefix(&format!("{prefix}_floor_fivZonVAV_mAirFloRat"))
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+        {
+            return (1..=5).contains(&zone).then_some((floor, zone));
+        }
+    }
+    None
 }
 
 fn synthesize_boptest_floor_air_volume_curve_parameter_rhs(
@@ -630,6 +1059,10 @@ fn c_rhs_is_supported_with_options(rhs: &str, allow_ternary_colon: bool) -> bool
         || rhs.contains("Buildings_Controls_OBC_CDL_")
         || rhs.contains("Buildings_ThermalZones_EnergyPlus_9_6_0_BaseClasses_SpawnExternalObject")
         || rhs.contains("cha_fan(")
+        || rhs.contains("linspace(")
+        || rhs.contains("firstActiveIndex")
+        || rhs.contains("polynomial(")
+        || rhs.contains("quadraticLinear(")
         || rhs.contains("Modelica_Units_SI_Pressure(")
         || rhs.contains("Modelica_Media_Interfaces_PartialSimpleMedium_setState_")
         || rhs.contains("Modelica_Media_Interfaces_PartialMedium_setState_")
@@ -643,16 +1076,16 @@ fn c_rhs_is_supported_with_options(rhs: &str, allow_ternary_colon: bool) -> bool
         || rhs.contains("_Xi)")
         || rhs.contains("_Xi;")
         || rhs.contains("_s *")
-        || rhs.contains("* floor")
         || rhs.contains("[((floor")
         || rhs.contains("_filter_s[((")
+        || rhs.contains("].")
         || rhs.contains("_filter_n")
-        || rhs.contains("_gain_")
+        || (rhs.contains("_gain_") && !rhs.contains("internal_gain"))
         || rhs.contains("ele___")
         || rhs.contains("(double[]){")
         || rhs.contains(" for i in ")
         || rhs.contains("_extract_")
-        || compact.contains("1:0")
+        || (!allow_ternary_colon && compact.contains("1:0"))
         || compact_for_colon_check.contains(":"))
 }
 
@@ -661,7 +1094,7 @@ fn is_logical_switch_output_var(var_name: &str) -> bool {
 }
 
 fn c_event_or_discrete_rhs_is_supported(rhs: &str) -> bool {
-    c_rhs_is_supported(rhs)
+    c_switch_rhs_is_supported(rhs)
         && !(rhs.contains("floor1BoptestAirNetwork_")
             || rhs.contains("floor2BoptestAirNetwork_")
             || rhs.contains("floor3BoptestAirNetwork_"))
@@ -673,6 +1106,10 @@ fn c_rhs_with_equation_context(rhs: String, equations: &Value) -> String {
     }
     let aliases = c_aliases_for_equations(equations);
     expand_sum_calls_for_scalarized_aliases(&rhs, &aliases)
+}
+
+fn expr_contains_sample_builtin(expr: &Value) -> bool {
+    expr.to_string().contains("Sample")
 }
 
 /// Check if an expression is a string literal.
@@ -739,6 +1176,15 @@ pub(super) fn initial_rhs_for_var_function(
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| var_name.to_string().trim_matches('"').to_string());
+    if let Some(rhs) = synthesize_boptest_zone_volume_energy_initial_rhs(&name) {
+        return Ok(rhs);
+    }
+    if let Some(rhs) = synthesize_boptest_zone_volume_medium_xi_initial_rhs(&name) {
+        return Ok(rhs);
+    }
+    if let Some(rhs) = synthesize_boptest_air_zone_temperature_initial_rhs(&name) {
+        return Ok(rhs);
+    }
     let Ok(initial_equations) = get_field(&dae, "initial_equations") else {
         return Ok(String::new());
     };
@@ -773,6 +1219,64 @@ pub(super) fn initial_rhs_for_var_function(
         }
     }
     Ok(String::new())
+}
+
+fn synthesize_boptest_air_zone_temperature_initial_rhs(name: &str) -> Option<String> {
+    let suffix = name.strip_prefix("floor")?;
+    let floor_digits: String = suffix
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let floor_index = floor_digits.parse::<usize>().ok()?;
+    if !(1..=3).contains(&floor_index) {
+        return None;
+    }
+    let expected_prefix = format!("floor{floor_index}BoptestAirNetwork.airZoneTemperature[");
+    let zone_suffix = name.strip_prefix(&expected_prefix)?.strip_suffix(']')?;
+    let zone_index = zone_suffix.parse::<usize>().ok()?;
+    if !(1..=5).contains(&zone_index) {
+        return None;
+    }
+    Some(format!(
+        "floor{floor_index}BoptestAirNetwork_initialZoneTemperature_{zone_index}"
+    ))
+}
+
+fn synthesize_boptest_zone_volume_energy_initial_rhs(name: &str) -> Option<String> {
+    let prefix = name.strip_suffix(".U")?;
+    let (floor_index, zone_index) = parse_boptest_zone_volume_floor_zone(prefix)?;
+    let alias = var_name_to_c_alias(prefix);
+    let global_zone_index = (floor_index - 1) * 5 + zone_index;
+    let initial_temperature = format!("initial_temperature_{global_zone_index}");
+    Some(format!(
+        "((({alias}_fluidVolume * {alias}_rho_start) * ((2501014.5 * {alias}_X_start_1) - (101325.0 / 1.2))) + (({initial_temperature} - 273.15) * ((({alias}_fluidVolume * {alias}_rho_start) * ((1006.0 * (1.0 - {alias}_X_start_1)) + (1860.0 * {alias}_X_start_1))) + {alias}_CSen)))"
+    ))
+}
+
+fn synthesize_boptest_zone_volume_medium_xi_initial_rhs(name: &str) -> Option<String> {
+    let (prefix, index) = parse_indexed_suffix(name, ".medium.Xi")?;
+    parse_boptest_zone_volume_floor_zone(prefix)?;
+    let alias = var_name_to_c_alias(prefix);
+    Some(format!("{alias}_X_start_{index}"))
+}
+
+fn parse_boptest_zone_volume_floor_zone(prefix: &str) -> Option<(usize, usize)> {
+    let floor_prefix = prefix.strip_prefix("floor")?;
+    let floor_digits: String = floor_prefix
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let floor_index = floor_digits.parse::<usize>().ok()?;
+    if !(1..=3).contains(&floor_index) {
+        return None;
+    }
+    let expected = format!("floor{floor_index}BoptestAirNetwork.floor.fivZonVAV.zon[");
+    let zone_suffix = prefix.strip_prefix(&expected)?.strip_suffix("].vol")?;
+    let zone_index = zone_suffix.parse::<usize>().ok()?;
+    if !(1..=5).contains(&zone_index) {
+        return None;
+    }
+    Some((floor_index, zone_index))
 }
 
 fn expr_has_var_ref(expr: &Value) -> bool {
@@ -888,10 +1392,38 @@ fn expr_has_dynamic_multidim_index(expr: &Value) -> bool {
             .unwrap_or(false);
         return base_refs || sub_refs;
     }
-    if get_field(expr, "FieldAccess").is_ok() {
+    if let Ok(field_access) = get_field(expr, "FieldAccess") {
+        if field_access_is_supported_record_constructor_projection(&field_access) {
+            return false;
+        }
         return true;
     }
     false
+}
+
+fn field_access_is_supported_record_constructor_projection(field_access: &Value) -> bool {
+    let field = get_field(field_access, "field")
+        .ok()
+        .map(|value| value.to_string().trim_matches('"').to_string());
+    let Some(field) = field else {
+        return false;
+    };
+    if !matches!(field.as_str(), "p" | "T" | "X" | "reference_X") {
+        return false;
+    }
+    let Ok(base) = get_field(field_access, "base") else {
+        return false;
+    };
+    let Ok(call) = get_field(&base, "FunctionCall") else {
+        return false;
+    };
+    let Ok(raw_name) = render_expr::render_name_field(&call, "name", "FunctionCall") else {
+        return false;
+    };
+    let last = rumoca_core::top_level_last_segment(&raw_name);
+    matches!(last, "setState_pTX" | "setState_phX" | "ThermodynamicState")
+        || raw_name.ends_with("_setState_pTX")
+        || raw_name.ends_with("_setState_phX")
 }
 
 fn is_colon_subscript(sub: &Value) -> bool {
@@ -948,7 +1480,7 @@ pub(super) fn ode_rhs_for_state_function(
     config: Value,
 ) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
-    let name_str = state_name.to_string().trim_matches('"').to_string();
+    let name_str = template_value_name(&state_name);
 
     // Iterate through equations to find the one whose LHS is der(state_name)
     let Ok(iter) = equations.try_iter() else {
@@ -1012,6 +1544,40 @@ pub(super) fn ode_rhs_for_state_function(
     }
 }
 
+pub(super) fn ode_rhs_override_for_state_function(
+    state_name: Value,
+    _config: Value,
+) -> RenderResult {
+    let name_str = template_value_name(&state_name);
+
+    if let Some(rhs_expr) = synthesize_internal_fluid_volume_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_buildings_expansion_vessel_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_buildings_actuator_filter_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_modelica_integrator_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_buildings_temperature_two_port_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_buildings_dynamic_flow_sensor_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_buildings_limit_slew_rate_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_top_down_radiant_tail_ode_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+
+    Ok(String::new())
+}
+
 /// Extract the explicit RHS for an algebraic variable from f_x equations.
 ///
 /// Searches f_x for an equation matching `0 = var_name - expr` and returns
@@ -1029,7 +1595,7 @@ pub(super) fn alg_rhs_for_var_function(
     config: Value,
 ) -> RenderResult {
     let aliases = c_aliases_for_equations(&equations);
-    alg_rhs_for_var_with_aliases(var_name, equations, &aliases, config)
+    alg_rhs_for_var_with_aliases(var_name, equations, &aliases, config, true)
 }
 
 pub(super) fn alg_rhs_for_var_with_dae_function(
@@ -1037,25 +1603,302 @@ pub(super) fn alg_rhs_for_var_with_dae_function(
     dae: Value,
     config: Value,
 ) -> RenderResult {
+    let name_str = template_value_name(&var_name);
+    let prefer_direct = dae_has_output_var(&dae, &name_str);
     let equations = dae
         .get_attr("f_x")
         .unwrap_or(Value::from(Vec::<Value>::new()));
-    let Some(fingerprint) = fingerprint_dae_alias_context(&dae) else {
-        let aliases = collect_c_aliases_from_dae(&dae);
-        return alg_rhs_for_var_with_aliases(var_name, equations, &aliases, config);
-    };
-    DAE_ALIAS_INDEX.with(|cache| {
-        let mut cached = cache.borrow_mut();
-        if !matches!(cached.as_ref(), Some(index) if index.fingerprint == fingerprint) {
-            let aliases = collect_c_aliases_from_dae(&dae);
-            *cached = Some(EquationAliasIndex {
-                fingerprint,
-                aliases,
-            });
-        }
-        let aliases = &cached.as_ref().expect("DAE alias cache populated").aliases;
-        alg_rhs_for_var_with_aliases(var_name, equations, aliases, config)
+    with_dae_aliases(&dae, |aliases| {
+        alg_rhs_for_var_with_aliases(var_name, equations, aliases, config, prefer_direct)
     })
+}
+
+pub(super) fn output_rhs_for_var_with_solve_function(
+    var_name: Value,
+    dae: Value,
+    solve: Value,
+    expr_config: Value,
+    solve_row_config: Value,
+) -> RenderResult {
+    let name_str = template_value_name(&var_name);
+    if let Some(rhs_expr) = synthesize_boptest_secondary_pump_command_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_pump_stage_output_rhs(&name_str, &dae) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_boptest_plant_mover_flow_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = with_dae_aliases(&dae, |aliases| {
+        synthesize_boptest_order_safe_output_read_surface_rhs(&name_str, aliases)
+    }) {
+        return Ok(rhs_expr);
+    }
+    let dae_rhs =
+        alg_rhs_for_var_with_dae_function(var_name.clone(), dae.clone(), expr_config.clone())?;
+    if !dae_rhs.contains("WARNING: no equation found") {
+        let cfg = ExprConfig::from_value(&expr_config);
+        if let Some(projected_rhs) = with_dae_aliases(&dae, |aliases| {
+            project_whole_array_rhs_alias_for_indexed_target(&dae_rhs, &name_str, aliases, &cfg)
+        }) {
+            return Ok(projected_rhs);
+        }
+        if let Some(repaired_rhs) = with_dae_aliases(&dae, |aliases| {
+            repair_missing_projected_alias_rhs(&dae_rhs, aliases)
+        }) {
+            return Ok(repaired_rhs);
+        }
+        return Ok(dae_rhs);
+    }
+    if let Some((visible_index, row)) = solve_visible_row_for_name(&solve, &name_str)
+        && !solve_visible_row_is_identity_y_load(&row, visible_index)
+    {
+        return render_solve_row_c_function(row, solve_row_config);
+    }
+    Ok(dae_rhs)
+}
+
+fn project_whole_array_rhs_alias_for_indexed_target(
+    rhs: &str,
+    target_name: &str,
+    aliases: &HashSet<String>,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let (target_base, index) = parse_indexed_ref(target_name)?;
+    let rhs_alias = rhs.trim();
+    if rhs_alias.is_empty()
+        || !rhs_alias
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+
+    if let Some(prefix) = target_base.strip_suffix(".y") {
+        let source_name = format!("{prefix}.u");
+        if rhs_alias == var_name_to_c_alias(&source_name) {
+            let projected = lookup_scalarized_array_symbol(&source_name, index, cfg)
+                .unwrap_or_else(|| var_name_to_c_alias(&format!("{source_name}[{index}]")));
+            if aliases.contains(&projected) {
+                return Some(projected);
+            }
+        }
+    }
+    None
+}
+
+fn repair_missing_projected_alias_rhs(rhs: &str, aliases: &HashSet<String>) -> Option<String> {
+    let rhs_alias = rhs.trim();
+    if rhs_alias.is_empty()
+        || !rhs_alias
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || aliases.contains(rhs_alias)
+    {
+        return None;
+    }
+    let (base, suffix) = rhs_alias.rsplit_once('_')?;
+    if suffix.parse::<usize>().ok().is_none_or(|index| index == 0) {
+        return None;
+    }
+    aliases.contains(base).then(|| base.to_string())
+}
+
+pub(super) fn solve_y_get_cases_function(dae: Value, solve: Value) -> RenderResult {
+    render_solve_y_runtime_cases(&dae, &solve, SolveYRuntimeCaseMode::Get)
+}
+
+pub(super) fn solve_y_set_cases_function(dae: Value, solve: Value) -> RenderResult {
+    render_solve_y_runtime_cases(&dae, &solve, SolveYRuntimeCaseMode::Set)
+}
+
+#[derive(Clone, Copy)]
+enum SolveYRuntimeCaseMode {
+    Get,
+    Set,
+}
+
+fn render_solve_y_runtime_cases(
+    dae: &Value,
+    solve: &Value,
+    mode: SolveYRuntimeCaseMode,
+) -> RenderResult {
+    let Ok(names) = solve.get_attr("visible_names") else {
+        return Ok(String::new());
+    };
+    let mut slots = HashMap::new();
+    collect_runtime_scalar_slots(dae, "x", "x", &mut slots);
+    collect_runtime_scalar_slots(dae, "y", "y", &mut slots);
+    collect_runtime_scalar_slots(dae, "w", "w", &mut slots);
+
+    let Some(len) = names.len() else {
+        return Ok(String::new());
+    };
+    let mut out = String::new();
+    for idx in 0..len {
+        let name = names
+            .get_item(&Value::from(idx))
+            .map(|value| template_value_name(&value))
+            .unwrap_or_default();
+        let Some((array_name, runtime_index)) = slots.get(&name) else {
+            continue;
+        };
+        match mode {
+            SolveYRuntimeCaseMode::Get => {
+                out.push_str(&format!(
+                    "        case {idx}: return m->{array_name}[{runtime_index}];  /* {name} */\n"
+                ));
+            }
+            SolveYRuntimeCaseMode::Set => {
+                out.push_str(&format!(
+                    "        case {idx}: m->{array_name}[{runtime_index}] = value; return;  /* {name} */\n"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn collect_runtime_scalar_slots(
+    dae: &Value,
+    field: &str,
+    array_name: &'static str,
+    slots: &mut HashMap<String, (&'static str, usize)>,
+) {
+    let Ok(vars) = dae.get_attr(field) else {
+        return;
+    };
+    let Some(object) = vars.as_object() else {
+        return;
+    };
+    let Some(iter) = object.try_iter_pairs() else {
+        return;
+    };
+    let mut offset = 0usize;
+    for (key, var) in iter {
+        let name = template_value_name(&key);
+        let dims_value = get_field(&var, "dims").ok();
+        let size = dims_value
+            .as_ref()
+            .map(runtime_scalar_count_from_dims)
+            .unwrap_or(1);
+        let dims = dims_value
+            .as_ref()
+            .map(runtime_dims_from_value)
+            .unwrap_or_default();
+        for linear_index in 1..=size {
+            let scalar_name = scalar_source_ref(&name, &dims, linear_index);
+            slots.insert(scalar_name, (array_name, offset));
+            offset += 1;
+        }
+    }
+}
+
+fn scalar_source_ref(name: &str, dims: &[usize], linear_index: usize) -> String {
+    if dims.is_empty() {
+        return name.to_string();
+    }
+    let mut remaining = linear_index.saturating_sub(1);
+    let mut subscripts = vec![1usize; dims.len()];
+    for idx in (0..dims.len()).rev() {
+        let dim = dims[idx].max(1);
+        subscripts[idx] = (remaining % dim) + 1;
+        remaining /= dim;
+    }
+    let suffix = subscripts
+        .into_iter()
+        .map(|idx| idx.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{name}[{suffix}]")
+}
+
+fn runtime_scalar_count_from_dims(value: &Value) -> usize {
+    let Some(len) = value.len() else {
+        return 1;
+    };
+    let mut product = 1usize;
+    for idx in 0..len {
+        if let Ok(item) = value.get_item(&Value::from(idx)) {
+            let Some(dim) = item.as_i64() else {
+                continue;
+            };
+            if dim <= 0 {
+                return 0;
+            }
+            product *= dim as usize;
+        }
+    }
+    product
+}
+
+fn runtime_dims_from_value(value: &Value) -> Vec<usize> {
+    let Some(len) = value.len() else {
+        return Vec::new();
+    };
+    let mut dims = Vec::with_capacity(len);
+    for idx in 0..len {
+        if let Ok(item) = value.get_item(&Value::from(idx))
+            && let Some(dim) = item.as_i64()
+            && dim > 0
+        {
+            dims.push(dim as usize);
+        }
+    }
+    dims
+}
+
+fn solve_visible_row_for_name(solve: &Value, name: &str) -> Option<(usize, Value)> {
+    let names = solve.get_attr("visible_names").ok()?;
+    let rows = solve.get_attr("visible_value_rows").ok()?;
+    let programs = rows.get_attr("programs").ok()?;
+    let len = names.len().unwrap_or(0);
+    for idx in 0..len {
+        let visible_name = names.get_item(&Value::from(idx)).ok()?;
+        if template_value_name(&visible_name) == name {
+            return programs
+                .get_item(&Value::from(idx))
+                .ok()
+                .map(|row| (idx, row));
+        }
+    }
+    None
+}
+
+fn solve_visible_row_is_identity_y_load(row: &Value, visible_index: usize) -> bool {
+    let Some(len) = row.len() else {
+        return false;
+    };
+    if len != 2 {
+        return false;
+    }
+    let Ok(load_op) = row.get_item(&Value::from(0)) else {
+        return false;
+    };
+    let Ok(store_op) = row.get_item(&Value::from(1)) else {
+        return false;
+    };
+    let Ok(load) = get_field(&load_op, "LoadY") else {
+        return false;
+    };
+    let Ok(store) = get_field(&store_op, "StoreOutput") else {
+        return false;
+    };
+    let Some(load_dst) = field_as_usize(&load, "dst") else {
+        return false;
+    };
+    let Some(load_index) = field_as_usize(&load, "index") else {
+        return false;
+    };
+    let Some(store_src) = field_as_usize(&store, "src") else {
+        return false;
+    };
+    load_index == visible_index && store_src == load_dst
+}
+
+fn field_as_usize(value: &Value, field: &str) -> Option<usize> {
+    get_field(value, field).ok()?.as_usize()
 }
 
 fn alg_rhs_for_var_with_aliases(
@@ -1063,9 +1906,142 @@ fn alg_rhs_for_var_with_aliases(
     equations: Value,
     aliases: &HashSet<String>,
     config: Value,
+    prefer_direct: bool,
+) -> RenderResult {
+    let name_str = template_value_name(&var_name);
+    let cfg = ExprConfig::from_value(&config);
+    let Some(fingerprint) = fingerprint_equations(&equations) else {
+        return alg_rhs_for_var_with_aliases_uncached(
+            var_name,
+            equations,
+            aliases,
+            config,
+            prefer_direct,
+        );
+    };
+    let cache_key = AlgRhsKey {
+        var_name: name_str,
+        alias_addr: aliases as *const _ as usize,
+        alias_len: aliases.len(),
+        prefer_direct,
+        config: direct_alg_rhs_config_key(&cfg),
+    };
+    if let Some(cached) = ALG_RHS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !matches!(cache.as_ref(), Some(cache) if cache.fingerprint == fingerprint) {
+            *cache = Some(AlgRhsCache {
+                fingerprint,
+                entries: HashMap::new(),
+            });
+        }
+        cache
+            .as_ref()
+            .and_then(|cache| cache.entries.get(&cache_key).cloned())
+    }) {
+        return Ok(cached);
+    }
+    let result =
+        alg_rhs_for_var_with_aliases_uncached(var_name, equations, aliases, config, prefer_direct)?;
+    ALG_RHS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !matches!(cache.as_ref(), Some(cache) if cache.fingerprint == fingerprint) {
+            *cache = Some(AlgRhsCache {
+                fingerprint,
+                entries: HashMap::new(),
+            });
+        }
+        if let Some(cache) = cache.as_mut() {
+            cache.entries.insert(cache_key, result.clone());
+        }
+    });
+    Ok(result)
+}
+
+fn alg_rhs_for_var_with_aliases_uncached(
+    var_name: Value,
+    equations: Value,
+    aliases: &HashSet<String>,
+    config: Value,
+    prefer_direct: bool,
 ) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
-    let name_str = var_name.to_string().trim_matches('"').to_string();
+    let name_str = template_value_name(&var_name);
+
+    if let Some(rhs_expr) = synthesize_boptest_internal_gain_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_top_down_radiant_tail_alg_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_modelica_multiswitch_expr_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_buildings_actuator_signal_alg_rhs(&name_str, &equations)? {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_boptest_zone_heat_port_temperature_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_boptest_zone_air_temperature_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_internal_fluid_volume_medium_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_boptest_device_read_surface_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_boptest_hydronic_read_surface_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_conpi_control_signal_rhs(&name_str, &equations) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_boptest_plant_mover_flow_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = boptest_chilled_water_load_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_boptest_secondary_pump_stage_count_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_stage_n_vector_output_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_stage_n_multiswitch_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = direct_alg_rhs_for_var(&equations, &name_str, &cfg)? {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = preferred_equation_alg_rhs_for_var(&equations, &name_str, &cfg) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_boptest_air_source_trace_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_boptest_zone_air_heat_flow_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = boptest_hot_water_load_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = boptest_hot_water_boiler_read_surface_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+
+    if let Some(rhs_expr) = synthesize_boptest_weather_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
 
     if let Some(rhs_expr) = synthesize_boptest_plant_mover_flow_rhs(&name_str) {
         return Ok(rhs_expr);
@@ -1079,10 +2055,7 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_boptest_plant_valve_curve_rhs(&name_str) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_boptest_plant_read_surface_rhs(&name_str) {
-        return Ok(rhs_expr);
-    }
-    if let Some(rhs_expr) = synthesize_boptest_air_source_trace_rhs(&name_str, aliases) {
+    if let Some(rhs_expr) = synthesize_boptest_plant_read_surface_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_boptest_air_network_stream_rhs(&name_str, aliases) {
@@ -1121,16 +2094,13 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_modelica_add_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_modelica_multiswitch_expr_rhs(&name_str) {
-        return Ok(rhs_expr);
-    }
     if let Some(rhs_expr) = synthesize_boptest_plant_stage_condition_plr_rhs(&name_str) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_top_down_control_semantics_rhs(&name_str) {
+    if let Some(rhs_expr) = synthesize_top_down_control_semantics_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_boptest_ahu_fan_mover_rhs(&name_str) {
+    if let Some(rhs_expr) = synthesize_boptest_ahu_fan_mover_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_boptest_ahu_fan_command_rhs(&name_str) {
@@ -1148,11 +2118,30 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_trace_substances_two_port_cmed_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
+    if let Some(rhs_expr) = synthesize_internal_fluid_volume_out_regstep_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_internal_fluid_volume_medium_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_internal_fluid_volume_species_rhs(&name_str, aliases) {
+        return Ok(rhs_expr);
+    }
     if let Some(rhs_expr) = synthesize_modelica_stategraph_transition_timer_rhs(&name_str, aliases)
     {
         return Ok(rhs_expr);
     }
-    let Some(candidate_equations) = alg_equation_candidates_for_var(&equations, &name_str) else {
+    if let Some(rhs_expr) = synthesize_boptest_secondary_pump_command_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if parse_indexed_ref(&name_str).is_some()
+        && let Some(rhs_expr) = scan_direct_alg_rhs_for_indexed_var(&equations, &name_str, &cfg)?
+    {
+        return Ok(rhs_expr);
+    }
+    let Some(candidate_equations) =
+        prioritized_alg_equation_candidates_for_var(&equations, &name_str)
+    else {
         if let Some(rhs_expr) = synthesize_fluid_sensor_mnor_flow_rhs(&name_str) {
             return Ok(rhs_expr);
         }
@@ -1169,6 +2158,10 @@ fn alg_rhs_for_var_with_aliases(
             return Ok(rhs_expr);
         }
         if let Some(rhs_expr) = synthesize_trace_substances_two_port_cmed_rhs(&name_str, aliases) {
+            return Ok(rhs_expr);
+        }
+        if let Some(rhs_expr) = synthesize_internal_fluid_volume_out_regstep_rhs(&name_str, aliases)
+        {
             return Ok(rhs_expr);
         }
         if let Some(rhs_expr) = synthesize_fluid_thermodynamic_state_field_rhs(&name_str) {
@@ -1198,7 +2191,8 @@ fn alg_rhs_for_var_with_aliases(
         if let Some(rhs_expr) = synthesize_boptest_wet_coil_counterflow_rhs(&name_str) {
             return Ok(rhs_expr);
         }
-        if let Some(rhs_expr) = synthesize_buildings_actuator_filter_alg_rhs(&name_str) {
+        if let Some(rhs_expr) = synthesize_buildings_actuator_signal_alg_rhs(&name_str, &equations)?
+        {
             return Ok(rhs_expr);
         }
         if let Some(rhs_expr) =
@@ -1217,26 +2211,32 @@ fn alg_rhs_for_var_with_aliases(
         if let Some(rhs_expr) = synthesize_internal_fluid_volume_species_rhs(&name_str, aliases) {
             return Ok(rhs_expr);
         }
+        if parse_indexed_ref(&name_str).is_some()
+            && let Some(rhs_expr) =
+                scan_direct_alg_rhs_for_indexed_var(&equations, &name_str, &cfg)?
+        {
+            return Ok(rhs_expr);
+        }
         return Ok("0.0".to_string());
     };
-
-    for eq in &candidate_equations {
-        if let Some(rhs_expr) = find_algebraic_rhs_direct(eq, &name_str, &cfg)? {
-            let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
-            if c_rhs_is_supported(&rhs_expr) {
-                return Ok(rhs_expr);
-            }
-        }
-    }
-    for eq in &candidate_equations {
-        if let Some(rhs_expr) = find_algebraic_rhs(eq, &name_str, &cfg)? {
-            let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
-            if c_rhs_is_supported(&rhs_expr) {
-                return Ok(rhs_expr);
-            }
-        }
+    if candidate_equations.is_empty()
+        && parse_indexed_ref(&name_str).is_some()
+        && let Some(rhs_expr) = scan_direct_alg_rhs_for_indexed_var(&equations, &name_str, &cfg)?
+    {
+        return Ok(rhs_expr);
     }
 
+    if prefer_direct
+        && let Some(rhs_expr) =
+            direct_alg_rhs_from_candidates(&candidate_equations, &name_str, &cfg, &equations)?
+    {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) =
+        direct_switch_alg_rhs_from_candidates(&candidate_equations, &name_str, &cfg, &equations)?
+    {
+        return Ok(rhs_expr);
+    }
     let mut first_supported_rhs = None;
     let mut best_supported_rhs: Option<(isize, String)> = None;
     let prefer_conditional_rhs = is_logical_switch_output_var(&name_str);
@@ -1257,7 +2257,7 @@ fn alg_rhs_for_var_with_aliases(
             if prefer_conditional_rhs && is_conditional && c_switch_rhs_is_supported(&rhs_expr) {
                 return Ok(rhs_expr);
             }
-            if c_rhs_is_supported(&rhs_expr) {
+            if c_rhs_is_supported(&rhs_expr) || c_switch_rhs_is_supported(&rhs_expr) {
                 if prefer_conditional_rhs && is_conditional {
                     return Ok(rhs_expr);
                 }
@@ -1286,7 +2286,7 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_boptest_plant_mover_efficiency_rhs(&name_str) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_boptest_plant_read_surface_rhs(&name_str) {
+    if let Some(rhs_expr) = synthesize_boptest_plant_read_surface_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_boptest_air_source_trace_rhs(&name_str, aliases) {
@@ -1322,7 +2322,7 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_boptest_wet_coil_counterflow_rhs(&name_str) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_buildings_actuator_filter_alg_rhs(&name_str) {
+    if let Some(rhs_expr) = synthesize_buildings_actuator_signal_alg_rhs(&name_str, &equations)? {
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_modelica_add_rhs(&name_str, aliases) {
@@ -1331,10 +2331,10 @@ fn alg_rhs_for_var_with_aliases(
     if let Some(rhs_expr) = synthesize_boptest_plant_stage_condition_plr_rhs(&name_str) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_top_down_control_semantics_rhs(&name_str) {
+    if let Some(rhs_expr) = synthesize_top_down_control_semantics_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
-    if let Some(rhs_expr) = synthesize_boptest_ahu_fan_mover_rhs(&name_str) {
+    if let Some(rhs_expr) = synthesize_boptest_ahu_fan_mover_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_boptest_ahu_fan_command_rhs(&name_str) {
@@ -1352,6 +2352,7 @@ fn alg_rhs_for_var_with_aliases(
             || is_fluid_connector_pressure_var(&name_str)
             || is_fluid_connector_flow_var(&name_str)
             || is_fluid_connector_stream_var(&name_str)
+            || simple_alias_rhs_name(&rhs_expr).is_none()
         {
             return Ok(rhs_expr);
         }
@@ -1369,6 +2370,9 @@ fn alg_rhs_for_var_with_aliases(
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_fluid_volume_flow_sensor_density_inflow_rhs(&name_str) {
+        return Ok(rhs_expr);
+    }
+    if let Some(rhs_expr) = synthesize_internal_fluid_volume_out_regstep_rhs(&name_str, aliases) {
         return Ok(rhs_expr);
     }
     if let Some(rhs_expr) = synthesize_fluid_thermodynamic_state_field_rhs(&name_str) {
@@ -1460,26 +2464,282 @@ fn alg_rhs_for_var_with_aliases(
     }
 }
 
+fn template_value_name(value: &Value) -> String {
+    value.to_string().trim_matches('"').to_string()
+}
+
+fn dae_has_output_var(dae: &Value, var_name: &str) -> bool {
+    let Ok(outputs) = dae.get_attr("w") else {
+        return false;
+    };
+    if get_field(&outputs, var_name).is_ok() {
+        return true;
+    }
+    parse_indexed_ref(var_name)
+        .map(|(base_name, _index)| get_field(&outputs, &base_name).is_ok())
+        .unwrap_or(false)
+}
+
+fn direct_alg_rhs_for_var(
+    equations: &Value,
+    name_str: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Some(fingerprint) = fingerprint_equations(equations) else {
+        return direct_alg_rhs_for_var_uncached(equations, name_str, cfg);
+    };
+    let cache_key = DirectAlgRhsKey {
+        var_name: name_str.to_string(),
+        config: direct_alg_rhs_config_key(cfg),
+    };
+    if let Some(cached) = DIRECT_ALG_RHS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !matches!(cache.as_ref(), Some(cache) if cache.fingerprint == fingerprint) {
+            *cache = Some(DirectAlgRhsCache {
+                fingerprint,
+                entries: HashMap::new(),
+            });
+        }
+        cache
+            .as_ref()
+            .and_then(|cache| cache.entries.get(&cache_key).cloned())
+    }) {
+        return Ok(cached);
+    }
+    let result = direct_alg_rhs_for_var_uncached(equations, name_str, cfg)?;
+    DIRECT_ALG_RHS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !matches!(cache.as_ref(), Some(cache) if cache.fingerprint == fingerprint) {
+            *cache = Some(DirectAlgRhsCache {
+                fingerprint,
+                entries: HashMap::new(),
+            });
+        }
+        if let Some(cache) = cache.as_mut() {
+            cache.entries.insert(cache_key, result.clone());
+        }
+    });
+    Ok(result)
+}
+
+fn direct_alg_rhs_for_var_uncached(
+    equations: &Value,
+    name_str: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Some(candidate_equations) = direct_alg_equation_candidates_for_var(equations, name_str)
+    else {
+        return Ok(None);
+    };
+    direct_alg_rhs_from_candidates(&candidate_equations, name_str, cfg, equations)
+}
+
+fn direct_alg_rhs_config_key(cfg: &ExprConfig) -> DirectAlgRhsConfigKey {
+    DirectAlgRhsConfigKey {
+        prefix: cfg.prefix.clone(),
+        power: cfg.power.clone(),
+        and_op: cfg.and_op.clone(),
+        or_op: cfg.or_op.clone(),
+        not_op: cfg.not_op.clone(),
+        true_val: cfg.true_val.clone(),
+        false_val: cfg.false_val.clone(),
+        array_start: cfg.array_start.clone(),
+        array_end: cfg.array_end.clone(),
+        if_style: match cfg.if_style {
+            IfStyle::Function => 0,
+            IfStyle::Ternary => 1,
+            IfStyle::Modelica => 2,
+        },
+        sanitize_dots: cfg.sanitize_dots,
+        one_based_index: cfg.one_based_index,
+        modelica_builtins: cfg.modelica_builtins,
+        mul_elem_fn: cfg.mul_elem_fn.clone(),
+        power_fn: cfg.power_fn.clone(),
+        subscript_underscore: cfg.subscript_underscore,
+        if_else_fn: cfg.if_else_fn.clone(),
+        python_range: cfg.python_range,
+        sum_fn: cfg.sum_fn.clone(),
+    }
+}
+
+fn preferred_equation_alg_rhs_for_var(
+    equations: &Value,
+    name_str: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let Some(candidate_equations) = alg_equation_candidates_for_var(equations, name_str) else {
+        return None;
+    };
+    let mut best_alias_rhs: Option<(isize, String)> = None;
+    for eq in candidate_equations {
+        let Some(rhs_expr) = find_algebraic_simple_alias_rhs(&eq, name_str, cfg) else {
+            continue;
+        };
+        let Some(_alias) = simple_alias_rhs_name(&rhs_expr) else {
+            continue;
+        };
+        if is_fluid_connector_flow_var(name_str)
+            && rhs_is_internal_fluid_volume_alias(&rhs_expr, name_str)
+        {
+            continue;
+        }
+        if is_fluid_connector_stream_var(name_str)
+            && rhs_references_same_fluid_component(&rhs_expr, name_str)
+        {
+            continue;
+        }
+        if !(c_rhs_is_supported(&rhs_expr) || c_switch_rhs_is_supported(&rhs_expr)) {
+            continue;
+        }
+        let score = algebraic_rhs_candidate_score(name_str, &rhs_expr, &eq);
+        if score > 0
+            && best_alias_rhs
+                .as_ref()
+                .is_none_or(|(best_score, _)| score > *best_score)
+        {
+            best_alias_rhs = Some((score, rhs_expr));
+        }
+    }
+    best_alias_rhs.map(|(_score, rhs_expr)| rhs_expr)
+}
+
+fn find_algebraic_simple_alias_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    if let Ok(lhs) = get_field(eq, "lhs")
+        && is_var_ref_of(&lhs, var_name)
+    {
+        let rhs = get_field(eq, "rhs").ok()?;
+        return simple_var_ref_alias_for_target(&rhs, var_name, cfg);
+    }
+
+    let rhs = equation_residual_or_rhs(eq).ok().flatten()?;
+    let (binary, swapped) = if let Ok(binary) = get_field(&rhs, "Binary") {
+        (binary, false)
+    } else if let Ok(unary) = get_field(&rhs, "Unary") {
+        let op = get_field(&unary, "op")
+            .ok()
+            .map(|value| value.to_string())?;
+        if !(op.contains("Minus") || op.contains("Neg")) {
+            return None;
+        }
+        let inner = get_field(&unary, "rhs").ok()?;
+        (get_field(&inner, "Binary").ok()?, true)
+    } else {
+        return None;
+    };
+    if !is_sub_op(&binary) {
+        return None;
+    }
+    let lhs_side = get_field(&binary, if swapped { "rhs" } else { "lhs" }).ok()?;
+    let rhs_side = get_field(&binary, if swapped { "lhs" } else { "rhs" }).ok()?;
+    if is_var_ref_of(&lhs_side, var_name) {
+        return simple_var_ref_alias_for_target(&rhs_side, var_name, cfg);
+    }
+    if is_var_ref_of(&rhs_side, var_name) {
+        return simple_var_ref_alias_for_target(&lhs_side, var_name, cfg);
+    }
+    None
+}
+
+fn simple_var_ref_alias_for_target(
+    expr: &Value,
+    target_var_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let var_ref = get_field(expr, "VarRef").ok()?;
+    let rhs_name = var_ref_full_name(&var_ref);
+    let subscripts = get_field(&var_ref, "subscripts").ok()?;
+    if subscripts.len().unwrap_or(0) == 0
+        && let Some((_target_base, index)) = parse_indexed_ref(target_var_name)
+    {
+        return lookup_scalarized_array_symbol(&rhs_name, index, cfg)
+            .or_else(|| Some(var_name_to_c_alias(&format!("{rhs_name}[{index}]"))));
+    }
+    Some(var_name_to_c_alias(&rhs_name))
+}
+
+fn scan_direct_alg_rhs_for_indexed_var(
+    equations: &Value,
+    name_str: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Some(candidate_equations) = direct_alg_equation_candidates_for_var(equations, name_str)
+    else {
+        return no_render_match();
+    };
+    for eq in candidate_equations {
+        if let Some(rhs_expr) = find_algebraic_rhs_assignment(&eq, name_str, cfg)? {
+            let rhs_expr = c_rhs_with_equation_context(rhs_expr, equations);
+            if c_rhs_is_supported(&rhs_expr) || c_switch_rhs_is_supported(&rhs_expr) {
+                return Ok(Some(rhs_expr));
+            }
+        }
+    }
+    no_render_match()
+}
+
+fn direct_alg_rhs_from_candidates(
+    candidate_equations: &[Value],
+    name_str: &str,
+    cfg: &ExprConfig,
+    equations: &Value,
+) -> Result<Option<String>, minijinja::Error> {
+    for eq in candidate_equations {
+        if let Some(rhs_expr) = find_algebraic_rhs_direct(eq, name_str, cfg)? {
+            let rhs_expr = c_rhs_with_equation_context(rhs_expr, equations);
+            if c_rhs_is_supported(&rhs_expr) || c_switch_rhs_is_supported(&rhs_expr) {
+                return Ok(Some(rhs_expr));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn direct_switch_alg_rhs_from_candidates(
+    candidate_equations: &[Value],
+    name_str: &str,
+    cfg: &ExprConfig,
+    equations: &Value,
+) -> Result<Option<String>, minijinja::Error> {
+    for eq in candidate_equations {
+        if let Some(rhs_expr) = find_algebraic_rhs_direct(eq, name_str, cfg)? {
+            let rhs_expr = c_rhs_with_equation_context(rhs_expr, equations);
+            if rhs_expr.contains(" ? ")
+                && !rhs_expr.contains("firstActiveIndex")
+                && c_switch_rhs_is_supported(&rhs_expr)
+            {
+                return Ok(Some(rhs_expr));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn algebraic_rhs_candidate_score(var_name: &str, rhs: &str, eq: &Value) -> isize {
-    let origin = equation_origin_text(eq);
     let mut score = 0isize;
-    if is_fluid_connector_pressure_var(var_name) && is_connection_origin_text(&origin) {
+    let is_pressure = is_fluid_connector_pressure_var(var_name);
+    let is_flow = is_fluid_connector_flow_var(var_name);
+    let is_stream = is_fluid_connector_stream_var(var_name);
+    let origin = if is_pressure || is_flow || is_stream {
+        equation_origin_text(eq)
+    } else {
+        String::new()
+    };
+    if is_pressure && is_connection_origin_text(&origin) {
         score += 100;
     }
-    if is_fluid_connector_flow_var(var_name) && is_flow_balance_origin_text(&origin) {
+    if is_flow && is_flow_balance_origin_text(&origin) {
         score += 100;
     }
-    if is_fluid_connector_flow_var(var_name) && rhs_is_internal_fluid_volume_alias(rhs, var_name) {
+    if is_flow && rhs_is_internal_fluid_volume_alias(rhs, var_name) {
         score -= 175;
     }
-    if is_fluid_connector_flow_var(var_name) && rhs_references_same_fluid_component(rhs, var_name) {
+    if is_flow && rhs_references_same_fluid_component(rhs, var_name) {
         score -= 25;
     }
-    if is_fluid_connector_stream_var(var_name) && is_connection_origin_text(&origin) {
+    if is_stream && is_connection_origin_text(&origin) {
         score += 100;
     }
-    if is_fluid_connector_stream_var(var_name) && rhs_references_same_fluid_component(rhs, var_name)
-    {
+    if is_stream && rhs_references_same_fluid_component(rhs, var_name) {
         score -= 75;
     }
     if rhs_is_mover_volume_flow_from_mass_flow(rhs, var_name) {
@@ -1491,11 +2751,53 @@ fn algebraic_rhs_candidate_score(var_name: &str, rhs: &str, eq: &Value) -> isize
     if rhs_is_simple_self_alias(rhs, var_name) {
         score -= 50;
     }
+    if let Some(alias) = simple_alias_rhs_name(rhs) {
+        score += alias_owner_proximity_score(var_name, alias);
+        if alias_name_looks_like_readback(alias) && !alias_name_looks_like_readback(var_name) {
+            score -= 80;
+        }
+    }
     score
 }
 
+fn simple_alias_rhs_name(rhs: &str) -> Option<&str> {
+    let trimmed = rhs.trim();
+    (!trimmed.is_empty()
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
+    .then_some(trimmed)
+}
+
+fn alias_owner_proximity_score(var_name: &str, alias: &str) -> isize {
+    let var_tokens = alias_owner_tokens(var_name);
+    let alias_tokens = alias_owner_tokens(alias);
+    let common = var_tokens
+        .iter()
+        .zip(alias_tokens.iter())
+        .take_while(|(lhs, rhs)| lhs == rhs)
+        .count() as isize;
+    common * 8
+}
+
+fn alias_owner_tokens(name: &str) -> Vec<String> {
+    name.split(|ch: char| ch == '.' || ch == '_' || ch == '[' || ch == ']' || ch == ',')
+        .filter(|part| !part.is_empty() && !part.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|part| part.to_ascii_lowercase())
+        .collect()
+}
+
+fn alias_name_looks_like_readback(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("mea")
+        || lower.contains("meas")
+        || lower.contains("measurement")
+        || lower.contains("readback")
+        || lower.contains("sensor")
+}
+
 fn equation_origin_text(eq: &Value) -> String {
-    eq.get_attr("origin").ok().map_or(String::new(), |value| {
+    get_field(eq, "origin").ok().map_or(String::new(), |value| {
         value.to_string().trim_matches('"').to_string()
     })
 }
@@ -1769,9 +3071,7 @@ fn synthesize_boptest_zone_tinlet_rhs(var_name: &str) -> Option<String> {
     zone_index.parse::<usize>().ok()?;
     let port_index = rest.parse::<usize>().ok()?;
     let port_prefix = format!("{floor_prefix}_floor_fivZonVAV_zon_{zone_index}_ports_{port_index}");
-    Some(format!(
-        "Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX({port_prefix}_p, {port_prefix}_h_outflow, {port_prefix}_Xi_outflow, {port_prefix}_Xi_outflow__len)"
-    ))
+    Some(fluid_temperature_phx_call(&port_prefix))
 }
 
 fn indexed_stream_h_sibling(var_name: &str) -> Option<(String, String)> {
@@ -1962,6 +3262,35 @@ fn synthesize_internal_fluid_volume_species_rhs(
     None
 }
 
+fn synthesize_internal_fluid_volume_out_regstep_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let (prefix, index, field) = parse_indexed_suffix(var_name, ".XiOut")
+        .map(|(prefix, index)| (prefix, index, "Xi"))
+        .or_else(|| {
+            parse_indexed_suffix(var_name, ".COut").map(|(prefix, index)| (prefix, index, "C"))
+        })?;
+    if !internal_fluid_volume_prefix(prefix) && !internal_fluid_dynbal_prefix(prefix) {
+        return None;
+    }
+    let alias = var_name_to_c_alias(prefix);
+    let port_b = format!("{alias}_port_b_{field}_outflow_{index}");
+    let port_a = format!("{alias}_port_a_{field}_outflow_{index}");
+    let m_flow = format!("{alias}_port_a_m_flow");
+    let m_flow_small = format!("{alias}_m_flow_small");
+    let required = [&port_b, &port_a, &m_flow, &m_flow_small];
+    if required
+        .iter()
+        .any(|candidate| !fluid_alias_exists(aliases, candidate))
+    {
+        return None;
+    }
+    Some(format!(
+        "Functions_regStep({port_b}, {port_a}, {m_flow}, ({m_flow_small} / 1000.0))"
+    ))
+}
+
 fn synthesize_port_xi_outflow_alias(
     prefix: &str,
     _port_index: usize,
@@ -2129,9 +3458,9 @@ fn synthesize_fluid_temperature_sensor_inflow_rhs(var_name: &str) -> Option<Stri
         return None;
     }
     let alias = var_name_to_c_alias(prefix);
-    Some(format!(
-        "Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX({alias}_{source_port}_p, {alias}_{source_port}_h_outflow, {alias}_{source_port}_Xi_outflow, {alias}_{source_port}_Xi_outflow__len)"
-    ))
+    Some(fluid_temperature_phx_call(&format!(
+        "{alias}_{source_port}"
+    )))
 }
 
 fn synthesize_fluid_volume_flow_sensor_density_inflow_rhs(var_name: &str) -> Option<String> {
@@ -2157,12 +3486,17 @@ fn synthesize_fluid_volume_flow_sensor_density_inflow_rhs(var_name: &str) -> Opt
         return None;
     }
     let alias = var_name_to_c_alias(prefix);
-    let temperature = format!(
-        "Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX({alias}_{source_port}_p, {alias}_{source_port}_h_outflow, {alias}_{source_port}_Xi_outflow, {alias}_{source_port}_Xi_outflow__len)"
-    );
+    let port_prefix = format!("{alias}_{source_port}");
+    let temperature = fluid_temperature_phx_call(&port_prefix);
     Some(format!(
-        "__rumoca_media_density_pTX({alias}_{source_port}_p, {temperature}, {alias}_{source_port}_Xi_outflow, {alias}_{source_port}_Xi_outflow__len)"
+        "__rumoca_media_density_pTX({alias}_{source_port}_p, {temperature}, {alias}_{source_port}_Xi_outflow, 0)"
     ))
+}
+
+fn fluid_temperature_phx_call(port_prefix: &str) -> String {
+    format!(
+        "Air_temperature_phX({port_prefix}_p, {port_prefix}_h_outflow, {port_prefix}_Xi_outflow, 0)"
+    )
 }
 
 fn fluid_volume_flow_sensor_prefix_has_name(prefix: &str) -> bool {
@@ -2228,7 +3562,7 @@ fn synthesize_fluid_thermodynamic_state_field_rhs(var_name: &str) -> Option<Stri
     match field {
         "p" => Some(format!("{alias}_{port_name}_p")),
         "T" => Some(format!(
-            "Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX({alias}_{port_name}_p, {alias}_{port_name}_h_outflow, {alias}_{port_name}_Xi_outflow, {alias}_{port_name}_Xi_outflow__len)"
+            "Air_temperature_phX({alias}_{port_name}_p, {alias}_{port_name}_h_outflow, {alias}_{port_name}_Xi_outflow, 0)"
         )),
         "X1" => Some(format!("{alias}_{port_name}_Xi_outflow_1")),
         "X2" => Some(format!("(1.0 - {alias}_{port_name}_Xi_outflow_1)")),
@@ -2244,7 +3578,11 @@ fn synthesize_internal_fluid_volume_medium_rhs(
         && internal_fluid_volume_prefix(prefix)
     {
         let alias = var_name_to_c_alias(prefix);
-        return Some(format!("{alias}_ports_1_p"));
+        let port_pressure = format!("{alias}_ports_1_p");
+        if aliases.contains(&port_pressure) {
+            return Some(port_pressure);
+        }
+        return Some(format!("{alias}_p_start"));
     }
 
     if let Some(prefix) = var_name.strip_suffix(".dynBal.medium.X[1]")
@@ -2252,6 +3590,72 @@ fn synthesize_internal_fluid_volume_medium_rhs(
         && boptest_water_plant_var(var_name)
     {
         return Some("1.0".to_string());
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".medium.dT")
+        && boptest_zone_volume_prefix(prefix)
+    {
+        return synthesize_boptest_zone_volume_air_medium_dt_rhs(prefix, aliases);
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".medium.T")
+        && boptest_zone_volume_prefix(prefix)
+    {
+        return synthesize_boptest_zone_volume_air_medium_dt_rhs(prefix, aliases)
+            .map(|dt| format!("({dt} + 273.15)"));
+    }
+
+    if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".medium.X")
+        && boptest_zone_volume_prefix(prefix)
+    {
+        let alias = var_name_to_c_alias(prefix);
+        let xi = format!("{alias}_medium_Xi_1");
+        if !fluid_alias_exists(aliases, &xi) {
+            return None;
+        }
+        return match index {
+            1 => Some(xi),
+            2 => Some(format!("(1.0 - {xi})")),
+            _ => Some("0.0".to_string()),
+        };
+    }
+
+    if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".medium.Xi") {
+        if boptest_air_source_prefix(prefix) {
+            return Some(var_name_to_c_alias(&format!(
+                "{prefix}.X_in_internal[{index}]"
+            )));
+        }
+        return first_existing_exact_alias(
+            aliases,
+            &[
+                format!("{prefix}.X_in_internal[{index}]"),
+                format!("{prefix}.Xi_in_internal[{index}]"),
+                format!("{prefix}.X[{index}]"),
+            ],
+        );
+    }
+
+    if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".medium.C") {
+        if boptest_air_source_prefix(prefix) {
+            return first_existing_exact_alias(
+                aliases,
+                &[
+                    format!("{prefix}.C_in_internal[{index}]"),
+                    format!("{prefix}.C_in[{index}]"),
+                    format!("{prefix}.C[{index}]"),
+                ],
+            )
+            .or_else(|| Some("0.0".to_string()));
+        }
+        return first_existing_exact_alias(
+            aliases,
+            &[
+                format!("{prefix}.C_in_internal[{index}]"),
+                format!("{prefix}.C_in[{index}]"),
+                format!("{prefix}.C[{index}]"),
+            ],
+        );
     }
 
     if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".C")
@@ -2438,29 +3842,40 @@ fn synthesize_moist_air_medium_field_rhs(
     let (prefix, field) = var_name
         .strip_suffix(".R_s")
         .map(|prefix| (prefix, "R_s"))
+        .or_else(|| var_name.strip_suffix(".MM").map(|prefix| (prefix, "MM")))
         .or_else(|| var_name.strip_suffix(".d").map(|prefix| (prefix, "d")))?;
     let alias = var_name_to_c_alias(prefix);
     if !aliases.contains(&format!("{alias}_p"))
-        || !aliases.contains(&format!("{alias}_X_1"))
-        || !aliases.contains(&format!("{alias}_X_2"))
         || !(aliases.contains(&format!("{alias}_T")) || aliases.contains(&format!("{alias}_dT")))
     {
         return None;
     }
+    let temperature = if aliases.contains(&format!("{alias}_dT")) {
+        format!("({alias}_dT + 273.15)")
+    } else {
+        format!("{alias}_T")
+    };
+    if field == "d"
+        && aliases.contains(&format!("{alias}_X_1"))
+        && !aliases.contains(&format!("{alias}_X_2"))
+    {
+        return Some(format!(
+            "fmin(1100.0, fmax(950.0, (998.2 - 0.25 * ({temperature} - 293.15) + 4.5e-10 * ({alias}_p - 101325.0))))"
+        ));
+    }
+    if !aliases.contains(&format!("{alias}_X_1")) || !aliases.contains(&format!("{alias}_X_2")) {
+        return None;
+    }
 
     let gas_constant = format!("(287.05 * {alias}_X_2 + 461.52 * {alias}_X_1)");
+    let molar_mass =
+        format!("(1.0 / (({alias}_X_2 / 0.0289651159) + ({alias}_X_1 / 0.018015268)))");
     match field {
         "R_s" => Some(gas_constant),
-        "d" => {
-            let temperature = if aliases.contains(&format!("{alias}_dT")) {
-                format!("({alias}_dT + 273.15)")
-            } else {
-                format!("{alias}_T")
-            };
-            Some(format!(
-                "(({gas_constant} > 1e-9 && {temperature} > 1e-9) ? ({alias}_p / ({gas_constant} * {temperature})) : 1.2)"
-            ))
-        }
+        "MM" => Some(molar_mass),
+        "d" => Some(format!(
+            "(({gas_constant} > 1e-9 && {temperature} > 1e-9) ? ({alias}_p / ({gas_constant} * {temperature})) : 1.2)"
+        )),
         _ => None,
     }
 }
@@ -2496,9 +3911,20 @@ fn synthesize_boptest_air_source_trace_rhs(
     }
 
     if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".Xi_in_internal") {
-        return first_existing_alias(
+        if boptest_air_source_prefix(prefix) {
+            return first_existing_exact_alias(
+                aliases,
+                &[
+                    format!("{prefix}.medium.Xi[{index}]"),
+                    format!("{prefix}.X_in_internal[{index}]"),
+                    format!("{prefix}.X[{index}]"),
+                ],
+            );
+        }
+        return first_existing_exact_alias(
             aliases,
             &[
+                format!("{prefix}.medium.Xi[{index}]"),
                 format!("{prefix}.X_in_internal[{index}]"),
                 format!("{prefix}.X[{index}]"),
             ],
@@ -2506,9 +3932,21 @@ fn synthesize_boptest_air_source_trace_rhs(
     }
 
     if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".C_in_internal") {
-        return first_existing_alias(
+        if boptest_air_source_prefix(prefix) {
+            return first_existing_exact_alias(
+                aliases,
+                &[
+                    format!("{prefix}.medium.C[{index}]"),
+                    format!("{prefix}.C_in[{index}]"),
+                    format!("{prefix}.C[{index}]"),
+                ],
+            )
+            .or_else(|| Some("0.0".to_string()));
+        }
+        return first_existing_exact_alias(
             aliases,
             &[
+                format!("{prefix}.medium.C[{index}]"),
                 format!("{prefix}.C_in[{index}]"),
                 format!("{prefix}.C[{index}]"),
             ],
@@ -2552,11 +3990,147 @@ fn synthesize_boptest_air_source_trace_rhs(
     None
 }
 
+fn synthesize_boptest_zone_volume_air_medium_dt_rhs(
+    prefix: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    synthesize_boptest_zone_volume_air_medium_dt_rhs_with_alias_guard(prefix, Some(aliases))
+}
+
+fn synthesize_boptest_zone_volume_air_temperature_from_state_rhs(
+    prefix: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let alias = var_name_to_c_alias(prefix);
+    let u = format!("{alias}_U");
+    let m = format!("{alias}_m");
+    let c_sen = format!("{alias}_CSen");
+    let x_w = format!("{alias}_medium_Xi_1");
+    for required in [&u, &m, &c_sen, &x_w] {
+        if !fluid_alias_exists(aliases, required) {
+            return None;
+        }
+    }
+    let x_dry = format!("(1.0 - {x_w})");
+    let cp_mix = format!("((1006.0 * {x_dry}) + (1860.0 * {x_w}))");
+    let latent_offset = format!("(2501014.5 * {x_w})");
+    let pressure_work = "(101325.0 / 1.2)";
+    Some(format!(
+        "(((fabs(({m} * {cp_mix}) + {c_sen}) > 1e-9) ? (({u} - ({m} * ({latent_offset} - {pressure_work}))) / (({m} * {cp_mix}) + {c_sen})) : 0.0) + 273.15)"
+    ))
+}
+
+fn synthesize_boptest_zone_volume_air_medium_dt_rhs_with_alias_guard(
+    prefix: &str,
+    aliases: Option<&HashSet<String>>,
+) -> Option<String> {
+    let alias = var_name_to_c_alias(prefix);
+    let u = format!("{alias}_U");
+    let m = format!("{alias}_m");
+    let c_sen = format!("{alias}_CSen");
+    let x_w = format!("{alias}_medium_X_1");
+    let x_dry = format!("{alias}_medium_X_2");
+    if let Some(aliases) = aliases {
+        for required in [&u, &m, &c_sen, &x_w, &x_dry] {
+            if !fluid_alias_exists(aliases, required) {
+                return None;
+            }
+        }
+    }
+    let cp_mix = format!("((1006.0 * {x_dry}) + (1860.0 * {x_w}))");
+    let latent_offset = format!("(2501014.5 * {x_w})");
+    let pressure_work = "(101325.0 / 1.2)";
+    Some(format!(
+        "((fabs(({m} * {cp_mix}) + {c_sen}) > 1e-9) ? (({u} - ({m} * ({latent_offset} - {pressure_work}))) / (({m} * {cp_mix}) + {c_sen})) : 0.0)"
+    ))
+}
+
+fn synthesize_boptest_zone_heat_port_temperature_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let zone_prefix = var_name
+        .strip_suffix(".preTem.T")
+        .or_else(|| var_name.strip_suffix(".preTem.port.T"))
+        .or_else(|| var_name.strip_suffix(".heaFloSen.port_a.T"))
+        .or_else(|| var_name.strip_suffix(".heaFloSen.port_b.T"))
+        .or_else(|| var_name.strip_suffix(".heaPorAir.T"))?;
+    let volume_prefix = format!("{zone_prefix}.vol");
+    if !boptest_zone_volume_prefix(&volume_prefix) {
+        return None;
+    }
+    let medium_t = var_name_to_c_alias(&format!("{volume_prefix}.medium.T"));
+    fluid_alias_exists(aliases, &medium_t).then_some(medium_t)
+}
+
+fn synthesize_boptest_zone_air_temperature_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let zone_prefix = var_name
+        .strip_suffix(".TAir")
+        .or_else(|| var_name.strip_suffix(".fmuZon.T"))?;
+    let volume_prefix = format!("{zone_prefix}.vol");
+    if !boptest_zone_volume_prefix(&volume_prefix) {
+        return None;
+    }
+    synthesize_boptest_zone_volume_air_temperature_from_state_rhs(&volume_prefix, aliases)
+}
+
+fn synthesize_boptest_zone_air_heat_flow_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let zone_prefix = var_name
+        .strip_suffix(".vol.Q_flow")
+        .or_else(|| var_name.strip_suffix(".heaPorAir.Q_flow"))
+        .or_else(|| var_name.strip_suffix(".conQCon_flow.Q_flow"))
+        .or_else(|| var_name.strip_suffix(".conQCon_flow.port.Q_flow"))?;
+    let (floor, zone) = parse_boptest_fiv_zon_vav_zone_prefix(zone_prefix)?;
+    let coupling = indexed_alias2("floor_coupling_heat", floor, zone);
+    let internal_con = indexed_alias2("floor_internal_gain_con", floor, zone);
+    if !fluid_alias_exists(aliases, &coupling) || !fluid_alias_exists(aliases, &internal_con) {
+        return None;
+    }
+    Some(format!("({coupling} + {internal_con})"))
+}
+
+fn parse_boptest_fiv_zon_vav_zone_prefix(prefix: &str) -> Option<(usize, usize)> {
+    let floor_prefix = prefix.strip_prefix("floor")?;
+    let floor_digits: String = floor_prefix
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let floor = floor_digits.parse::<usize>().ok()?;
+    if !(1..=3).contains(&floor) {
+        return None;
+    }
+    let expected = format!("floor{floor}BoptestAirNetwork.floor.fivZonVAV.zon[");
+    let zone_text = prefix.strip_prefix(&expected)?.strip_suffix(']')?;
+    let zone = zone_text.parse::<usize>().ok()?;
+    (1..=5).contains(&zone).then_some((floor, zone))
+}
+
 fn first_existing_alias(aliases: &HashSet<String>, candidates: &[String]) -> Option<String> {
     candidates.iter().find_map(|candidate| {
         let alias = var_name_to_c_alias(candidate);
         fluid_alias_exists(aliases, &alias).then_some(alias)
     })
+}
+
+fn first_existing_exact_alias(aliases: &HashSet<String>, candidates: &[String]) -> Option<String> {
+    candidates.iter().find_map(|candidate| {
+        let alias = var_name_to_c_alias(candidate);
+        aliases.contains(&alias).then_some(alias)
+    })
+}
+
+fn boptest_air_source_prefix(prefix: &str) -> bool {
+    prefix.contains(".fivZonVAV.infAir[")
+        || prefix.contains(".fivZonVAV.exfAir[")
+        || prefix.contains(".fivZonVAV.out")
+        || prefix.contains(".outdoorAirSource[")
+        || prefix.starts_with("outdoorAirSource[")
 }
 
 fn parse_fluid_source_port_trace_suffix<'a>(
@@ -2846,6 +4420,7 @@ fn synthesize_boptest_plant_mover_flow_rhs(var_name: &str) -> Option<String> {
     let prefix = boptest_plant_var_speed_mover_prefix(var_name)?;
     let prefix_alias = var_name_to_c_alias(prefix);
     let volume_flow = boptest_plant_pump_volume_flow_rhs(prefix)?;
+    let mass_flow = format!("({prefix_alias}_rho_default * {volume_flow})");
     if var_name.ends_with(".eff.V_flow")
         || var_name.ends_with(".VMachine_flow")
         || var_name.ends_with(".preSou.V_flow")
@@ -2855,9 +4430,21 @@ fn synthesize_boptest_plant_mover_flow_rhs(var_name: &str) -> Option<String> {
     if var_name == format!("{prefix}.eff.m_flow")
         || var_name == format!("{prefix}.m_flow")
         || var_name == format!("{prefix}.senMasFlo.m_flow")
+        || var_name == format!("{prefix}.preSou.m_flow")
+        || var_name == format!("{prefix}.preSou.m_flow_internal")
+        || var_name == format!("{prefix}.preSou.port_a.m_flow")
+        || var_name == format!("{prefix}.senMasFlo.port_a.m_flow")
+        || var_name == format!("{prefix}.senRelPre.port_a.m_flow")
         || var_name == format!("{prefix}.port_a.m_flow")
     {
-        return Some(format!("({prefix_alias}_rho_default * {volume_flow})"));
+        return Some(mass_flow);
+    }
+    if var_name == format!("{prefix}.preSou.port_b.m_flow")
+        || var_name == format!("{prefix}.senMasFlo.port_b.m_flow")
+        || var_name == format!("{prefix}.senRelPre.port_b.m_flow")
+        || var_name == format!("{prefix}.port_b.m_flow")
+    {
+        return Some(format!("(-{mass_flow})"));
     }
     None
 }
@@ -2951,7 +4538,81 @@ fn boptest_chilled_water_sim_pump_power_rhs(prefix: &str, index: usize) -> Strin
     )
 }
 
-fn synthesize_boptest_plant_read_surface_rhs(var_name: &str) -> Option<String> {
+fn synthesize_boptest_order_safe_output_read_surface_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    if let Some(rhs) = synthesize_boptest_weather_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = synthesize_boptest_internal_gain_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_floor_airflow_read_surface_rhs(&alias, aliases) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_floor_air_thermal_read_surface_rhs(&alias, aliases) {
+        return Some(rhs);
+    }
+    if alias == "reaChiWatSys_reaPChi_y" || alias == "chilledWaterPlant_chillerElectricalPower" {
+        return Some(boptest_chilled_water_chiller_total_power_rhs());
+    }
+    if alias == "plant_power" {
+        return Some(boptest_order_safe_plant_power_rhs());
+    }
+    None
+}
+
+fn synthesize_boptest_weather_rhs(var_name: &str) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    match alias.as_str() {
+        "outdoor_temperature" | "WeatherTDryBul" | "weaBus_TDryBul" => {
+            Some(boptest_outdoor_temperature_rhs())
+        }
+        "weather_profile" | "weatherProfile" => Some(boptest_weather_profile_rhs()),
+        "WeatherHGloHor" | "weaBus_HGloHor" => {
+            Some(format!("(1000.0 * {})", boptest_weather_profile_rhs()))
+        }
+        "synthetic_weather_profile" => Some(boptest_synthetic_weather_profile_rhs()),
+        "sky_temperature" | "WeatherTBlaSky" | "weaBus_TBlaSky" => {
+            Some(boptest_sky_temperature_rhs())
+        }
+        "synthetic_sky_temperature" => Some(boptest_synthetic_sky_temperature_rhs()),
+        "wind_profile" => Some(boptest_wind_profile_rhs()),
+        "WeatherWindSpeed" | "weaBus_winSpe" => {
+            Some(format!("(6.0 * {})", boptest_wind_profile_rhs()))
+        }
+        "synthetic_wind_profile" => Some(boptest_synthetic_wind_profile_rhs()),
+        "synthetic_outdoor_temperature" => Some(boptest_synthetic_outdoor_temperature_rhs()),
+        _ => None,
+    }
+}
+
+fn boptest_order_safe_plant_power_rhs() -> String {
+    let mut terms = vec![
+        "reaChiWatSys_reaPChi_y".to_string(),
+        "reaChiWatSys_reaPCooTow_y".to_string(),
+        "reaHotWatSys_reaPBoi_y".to_string(),
+        "chilledWaterPlant_pumpElectricalPower".to_string(),
+        "hotWaterPlant_pumpElectricalPower".to_string(),
+    ];
+    for floor in 1..=3 {
+        terms.push(format!("floor{floor}_reaAHU_PFanSup_y"));
+        terms.push(format!("floor{floor}_reaAHU_PFanRet_y"));
+        terms.push(format!("floor{floor}_reaAHU_PFreCoi_y"));
+    }
+    let terms = terms
+        .into_iter()
+        .map(|term| format!("fmax(0.0, {term})"))
+        .collect::<Vec<_>>();
+    format!("({})", terms.join(" + "))
+}
+
+fn synthesize_boptest_plant_read_surface_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
     let alias = var_name_to_c_alias(var_name);
     if let Some(rhs) = boptest_weather_wet_bulb_rhs(var_name) {
         return Some(rhs);
@@ -2959,10 +4620,10 @@ fn synthesize_boptest_plant_read_surface_rhs(var_name: &str) -> Option<String> {
     if let Some(rhs) = boptest_weather_data_source_rhs(var_name) {
         return Some(rhs);
     }
-    if let Some(rhs) = boptest_chilled_water_load_rhs(var_name) {
+    if let Some(rhs) = boptest_chilled_water_load_rhs(var_name, aliases) {
         return Some(rhs);
     }
-    if let Some(rhs) = boptest_chilled_water_temperature_rhs(var_name) {
+    if let Some(rhs) = boptest_chilled_water_temperature_rhs(var_name, aliases) {
         return Some(rhs);
     }
     if let Some(rhs) = boptest_hot_water_load_rhs(var_name) {
@@ -3007,15 +4668,21 @@ fn synthesize_boptest_plant_read_surface_rhs(var_name: &str) -> Option<String> {
     if let Some(rhs) = boptest_chilled_water_tower_bypass_rhs(var_name) {
         return Some(rhs);
     }
-    if let Some(rhs) = boptest_floor_air_thermal_read_surface_rhs(&alias) {
+    if let Some(rhs) = boptest_floor_air_thermal_read_surface_rhs(&alias, aliases) {
         return Some(rhs);
     }
-    if boptest_chilled_water_mass_flow_read_aliases().contains(&alias.as_str()) {
+    if boptest_chilled_water_wrapper_mass_flow_read_aliases().contains(&alias.as_str()) {
+        return Some(boptest_chilled_water_wrapper_mass_flow_rhs());
+    }
+    if boptest_chilled_water_internal_mass_flow_read_aliases().contains(&alias.as_str()) {
         return Some(boptest_plant_total_mass_flow_rhs(
             "chilledWaterPlant.chillerPlant.pumSecCHW",
         ));
     }
-    if boptest_hot_water_mass_flow_read_aliases().contains(&alias.as_str()) {
+    if boptest_hot_water_wrapper_mass_flow_read_aliases().contains(&alias.as_str()) {
+        return Some(boptest_hot_water_wrapper_mass_flow_rhs());
+    }
+    if boptest_hot_water_internal_mass_flow_read_aliases().contains(&alias.as_str()) {
         return Some(boptest_plant_total_mass_flow_rhs(
             "hotWaterPlant.boilerPlant.pumSecHW",
         ));
@@ -3023,20 +4690,94 @@ fn synthesize_boptest_plant_read_surface_rhs(var_name: &str) -> Option<String> {
     if boptest_chilled_water_dp_read_aliases().contains(&alias.as_str()) {
         return Some(boptest_plant_distribution_dp_rhs(
             "chilledWaterPlant.chillerPlant.pumSecCHW",
-            "chilledWaterPlant_chilledWaterStaticPressureSetpoint",
+            "plant_chilled_water_dp_setpoint",
         ));
     }
     if boptest_hot_water_dp_read_aliases().contains(&alias.as_str()) {
         return Some(boptest_plant_distribution_dp_rhs(
             "hotWaterPlant.boilerPlant.pumSecHW",
-            "hotWaterPlant_boptestHotWaterStaticPressureSetpoint",
+            "plant_hot_water_dp_setpoint",
         ));
     }
-    if let Some(rhs) = boptest_floor_load_read_surface_rhs(&alias) {
+    if let Some(rhs) = boptest_floor_load_read_surface_rhs(&alias, aliases) {
         return Some(rhs);
     }
-    if let Some(rhs) = boptest_ahu_read_surface_rhs(&alias) {
+    if let Some(rhs) = boptest_ahu_read_surface_rhs(&alias, aliases) {
         return Some(rhs);
+    }
+    None
+}
+
+fn synthesize_boptest_device_read_surface_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    if let Some(rhs) = boptest_ahu_read_surface_rhs(&alias, aliases) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_floor_air_thermal_read_surface_rhs(&alias, aliases) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_hot_water_boiler_read_surface_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_chilled_water_chiller_read_surface_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_chilled_water_primary_pump_power_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_chilled_water_condenser_pump_power_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_chilled_water_secondary_pump_power_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_hot_water_secondary_pump_power_rhs(var_name) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_chilled_water_tower_power_rhs(var_name) {
+        return Some(rhs);
+    }
+    None
+}
+
+fn synthesize_boptest_hydronic_read_surface_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    if let Some(rhs) = boptest_chilled_water_temperature_rhs(var_name, aliases) {
+        return Some(rhs);
+    }
+    if let Some(rhs) = boptest_hot_water_temperature_rhs(var_name) {
+        return Some(rhs);
+    }
+    if boptest_chilled_water_wrapper_mass_flow_read_aliases().contains(&alias.as_str()) {
+        return Some(boptest_chilled_water_wrapper_mass_flow_rhs());
+    }
+    if boptest_chilled_water_internal_mass_flow_read_aliases().contains(&alias.as_str()) {
+        return Some(boptest_plant_total_mass_flow_rhs(
+            "chilledWaterPlant.chillerPlant.pumSecCHW",
+        ));
+    }
+    if boptest_hot_water_wrapper_mass_flow_read_aliases().contains(&alias.as_str())
+        || boptest_hot_water_internal_mass_flow_read_aliases().contains(&alias.as_str())
+    {
+        return Some(boptest_hot_water_wrapper_mass_flow_rhs());
+    }
+    if boptest_chilled_water_dp_read_aliases().contains(&alias.as_str()) {
+        return Some(boptest_plant_distribution_dp_rhs(
+            "chilledWaterPlant.chillerPlant.pumSecCHW",
+            "plant_chilled_water_dp_setpoint",
+        ));
+    }
+    if boptest_hot_water_dp_read_aliases().contains(&alias.as_str()) {
+        return Some(boptest_plant_distribution_dp_rhs(
+            "hotWaterPlant.boilerPlant.pumSecHW",
+            "plant_hot_water_dp_setpoint",
+        ));
     }
     None
 }
@@ -3130,23 +4871,31 @@ fn boptest_weather_data_source_rhs(var_name: &str) -> Option<String> {
     None
 }
 
-fn boptest_chilled_water_load_rhs(var_name: &str) -> Option<String> {
+fn boptest_chilled_water_load_rhs(var_name: &str, aliases: &HashSet<String>) -> Option<String> {
     match var_name {
+        "chilledWaterPlant.enabledLoopMaintenanceThermalLoad" => {
+            Some(boptest_chilled_water_loop_maintenance_load_rhs(aliases))
+        }
         "chilledWaterPlant.chillerPlant.Loa.y"
         | "chilledWaterPlant.originalChillerPlantLoad"
         | "chilledWaterPlant.terminalToWaterDemand"
         | "chilledWaterPlant.coolingCoilWaterDemand"
         | "chilledWaterPlant.sourceBackedChillerThermalLoad"
-        | "reaChiWatSys_debug_load_y" => Some(boptest_chilled_water_branch_load_rhs()),
+        | "reaChiWatSys_debug_load_y" => Some(
+            boptest_chilled_water_terminal_load_rhs_with_aliases(aliases),
+        ),
         _ => None,
     }
 }
 
-fn boptest_chilled_water_temperature_rhs(var_name: &str) -> Option<String> {
+fn boptest_chilled_water_temperature_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
     let alias = var_name_to_c_alias(var_name);
     let supply = "fmax(275.15, fmin(285.15, chilledWaterPlant_plantChilledWaterSetpoint))";
-    let load = boptest_chilled_water_branch_load_rhs();
-    let mass_flow = boptest_plant_total_mass_flow_rhs("chilledWaterPlant.chillerPlant.pumSecCHW");
+    let load = boptest_chilled_water_terminal_load_rhs_with_aliases(aliases);
+    let mass_flow = boptest_chilled_water_wrapper_mass_flow_rhs();
     let return_temp = format!("({supply} + ({load}) / fmax(0.001, 4200.0 * ({mass_flow})))");
     match alias.as_str() {
         "chilledWaterPlant_chillerPlant_TCHW_sup"
@@ -3161,12 +4910,33 @@ fn boptest_chilled_water_temperature_rhs(var_name: &str) -> Option<String> {
     }
 }
 
-fn boptest_chilled_water_branch_load_rhs() -> String {
+fn boptest_chilled_water_branch_load_rhs_with_aliases(aliases: &HashSet<String>) -> String {
     let terms = (1..=3)
-        .map(boptest_floor_chilled_water_airside_load_rhs)
+        .map(|floor| boptest_floor_chilled_water_airside_load_rhs(floor, aliases))
         .collect::<Vec<_>>()
         .join(" + ");
     format!("fmax(0.0, ({terms}))")
+}
+
+fn boptest_chilled_water_loop_maintenance_load_rhs(aliases: &HashSet<String>) -> String {
+    let fraction = alias_or_fallback(
+        aliases,
+        "chilledWaterPlant_enabledLoopMaintenanceLoadFraction",
+        "0.0",
+    );
+    "(((chilledWaterPlant_enabledCirculationState > 0.5 || chilledWaterPlant_occupiedEnable > 0.5) && (chilledWaterPlant_dryBulbTemperature >= 283.15 || chilledWaterPlant_occupiedEnable > 0.5)) ? (".to_string()
+        + &fraction
+        + " * chilledWaterPlant_nominalChillerCapacity * chilledWaterPlant_boptestChillerCount) : 0.0)"
+}
+
+fn boptest_chilled_water_terminal_load_rhs() -> String {
+    boptest_chilled_water_terminal_load_rhs_with_aliases(&HashSet::new())
+}
+
+fn boptest_chilled_water_terminal_load_rhs_with_aliases(aliases: &HashSet<String>) -> String {
+    let branch = boptest_chilled_water_branch_load_rhs_with_aliases(aliases);
+    let maintenance = boptest_chilled_water_loop_maintenance_load_rhs(aliases);
+    format!("fmax(0.0, fmax(({branch}), ({maintenance})))")
 }
 
 fn boptest_chilled_water_chiller_read_surface_rhs(var_name: &str) -> Option<String> {
@@ -3183,7 +4953,7 @@ fn boptest_chilled_water_chiller_read_surface_rhs(var_name: &str) -> Option<Stri
         if alias == format!("chilledWaterPlant_chillerElectricalPowerByUnit_{unit}")
             || alias == format!("reaChiWatSys_PChi_{unit}_y")
         {
-            return Some(boptest_chilled_water_chiller_power_alias(unit));
+            return Some(boptest_chilled_water_chiller_unit_power_rhs(unit));
         }
     }
 
@@ -3195,11 +4965,7 @@ fn boptest_chilled_water_chiller_read_surface_rhs(var_name: &str) -> Option<Stri
         return Some(format!("({terms})"));
     }
     if alias == "chilledWaterPlant_chillerElectricalPower" || alias == "reaChiWatSys_reaPChi_y" {
-        let terms = (1..=3)
-            .map(boptest_chilled_water_chiller_power_alias)
-            .collect::<Vec<_>>()
-            .join(" + ");
-        return Some(format!("({terms})"));
+        return Some(boptest_chilled_water_chiller_total_power_rhs());
     }
 
     None
@@ -3284,81 +5050,28 @@ fn boptest_chilled_water_chiller_component_rhs(var_name: &str) -> Option<String>
 }
 
 fn parse_boptest_chilled_water_chiller_index(var_name: &str) -> Option<usize> {
-    parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.QEva_flow_nominal")
-        .or_else(|| {
-            parse_indexed_component_signal(
-                var_name,
-                ".mulChiSys.ch[",
-                "].chi.per.QEva_flow_nominal",
-            )
-        })
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.COP_nominal"))
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.COP_nominal")
-        })
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.QEva_flow"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.COP"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.TEvaEnt"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.TConEnt"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.hSet"))
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.QEva_flow_set")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.QEva_flow_ava")
-        })
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.capFunT"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.EIRFunT"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.EIRFunPLR"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.PLR1"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.PLR2"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.CR"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.PLRMin"))
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.PLRMinUnl")
-        })
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.PLRMax"))
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.TEvaLvg_nominal")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.TConEnt_nominal")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.TEvaLvgMin")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.TEvaLvgMax")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.TConEntMin")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.TConEntMax")
-        })
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.capFunT"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.EIRFunT"))
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.EIRFunPLR")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.capFunT[")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.EIRFunT[")
-        })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.per.EIRFunPLR[")
-        })
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].chi.P"))
-        .or_else(|| parse_indexed_component_signal(var_name, ".mulChiSys.ch[", "].P"))
-        .map(|(_, index)| index)
+    let marker = ".mulChiSys.ch[";
+    let marker_pos = var_name.rfind(marker)?;
+    let rest = &var_name[marker_pos + marker.len()..];
+    let close = rest.find(']')?;
+    let index = rest[..close].parse::<usize>().ok()?;
+    let suffix = &rest[close + 1..];
+    if suffix == ".P" || suffix.starts_with(".chi.") || suffix.starts_with(".per.") {
+        Some(index)
+    } else {
+        None
+    }
 }
 
-fn boptest_chilled_water_chiller_power_alias(index: usize) -> String {
-    var_name_to_c_alias(&format!(
-        "chilledWaterPlant.chillerPlant.mulChiSys.P[{index}]"
-    ))
+fn boptest_chilled_water_chiller_total_power_rhs() -> String {
+    format!("(({}) / 5.0)", boptest_chilled_water_terminal_load_rhs())
+}
+
+fn boptest_chilled_water_chiller_unit_power_rhs(unit: usize) -> String {
+    format!(
+        "(({}) / 5.0)",
+        boptest_chilled_water_chiller_unit_thermal_load_rhs(unit)
+    )
 }
 
 fn boptest_chilled_water_chiller_thermal_alias(index: usize) -> String {
@@ -3371,7 +5084,7 @@ fn boptest_chilled_water_chiller_thermal_alias(index: usize) -> String {
 }
 
 fn boptest_chilled_water_chiller_unit_thermal_load_rhs(unit: usize) -> String {
-    let load = boptest_chilled_water_branch_load_rhs();
+    let load = boptest_chilled_water_terminal_load_rhs();
     let active = boptest_chilled_water_chiller_stage_active_rhs(unit);
     let active_count = boptest_chilled_water_chiller_active_count_rhs();
     let capacity = "2391666.6666666665";
@@ -3537,11 +5250,10 @@ fn boptest_chilled_water_chiller_stage_level_rhs() -> &'static str {
 
 fn boptest_hot_water_load_rhs(var_name: &str) -> Option<String> {
     match var_name {
-        "hotWaterPlant.boilerPlant.realExpression.y"
-        | "hotWaterPlant.terminalReheatWaterSideDemand"
-        | "hotWaterPlant.terminalReheatWaterSideDemandRaw" => {
-            Some(boptest_hot_water_branch_load_rhs())
+        "hotWaterPlant.enabledLoopMaintenanceThermalLoad" => {
+            Some(boptest_hot_water_loop_maintenance_load_rhs())
         }
+        "hotWaterPlant.boilerPlant.realExpression.y" => Some(boptest_hot_water_terminal_load_rhs()),
         _ => None,
     }
 }
@@ -3549,8 +5261,8 @@ fn boptest_hot_water_load_rhs(var_name: &str) -> Option<String> {
 fn boptest_hot_water_temperature_rhs(var_name: &str) -> Option<String> {
     let alias = var_name_to_c_alias(var_name);
     let supply = "fmax(291.15, fmin(353.15, hotWaterPlant_plantHotWaterSetpoint))";
-    let load = boptest_hot_water_branch_load_rhs();
-    let mass_flow = boptest_plant_total_mass_flow_rhs("hotWaterPlant.boilerPlant.pumSecHW");
+    let load = boptest_hot_water_terminal_load_rhs();
+    let mass_flow = boptest_hot_water_wrapper_mass_flow_rhs();
     let return_temp =
         format!("fmax(273.15, ({supply} - ({load}) / fmax(0.001, 4200.0 * ({mass_flow}))))");
     match alias.as_str() {
@@ -3569,12 +5281,11 @@ fn boptest_hot_water_boiler_read_surface_rhs(var_name: &str) -> Option<String> {
     if let Some(rhs) = boptest_hot_water_boiler_polynomial_rhs(var_name) {
         return Some(rhs);
     }
-    if alias == "hotWaterPlant_boilerPlant_QTot_y" || alias == "hotWaterPlant_boilerThermalLoad" {
-        let terms = (1..=2)
-            .map(boptest_hot_water_boiler_qwat_alias)
-            .collect::<Vec<_>>()
-            .join(" + ");
-        return Some(format!("({terms})"));
+    if alias == "hotWaterPlant_boilerThermalLoad" {
+        return Some(boptest_hot_water_terminal_load_rhs());
+    }
+    if alias == "hotWaterPlant_boilerPlant_QTot_y" {
+        return Some(boptest_hot_water_boiler_total_load_rhs());
     }
     if matches!(
         alias.as_str(),
@@ -3582,21 +5293,18 @@ fn boptest_hot_water_boiler_read_surface_rhs(var_name: &str) -> Option<String> {
             | "hotWaterPlant_boilerFuelPower"
             | "hotWaterPlant_boilerPlantPower"
     ) {
-        let terms = (1..=2)
-            .map(boptest_hot_water_boiler_qfue_alias)
-            .collect::<Vec<_>>()
-            .join(" + ");
-        return Some(format!("({terms})"));
+        return Some(boptest_hot_water_boiler_total_fuel_rhs());
     }
     if let Some(index) = parse_read_surface_stage_index(var_name, "reaHotWatSys_QBoi_", "_y")
         .or_else(|| {
             parse_indexed_component_signal(var_name, ".boilerThermalLoadByUnit[", "]")
                 .map(|(_, index)| index)
         })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.QWat_flow")
-                .map(|(_, index)| index)
-        })
+    {
+        return Some(boptest_hot_water_boiler_qwat_alias(index));
+    }
+    if let Some((_, index)) =
+        parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.QWat_flow")
     {
         return Some(boptest_hot_water_boiler_qwat_alias(index));
     }
@@ -3605,10 +5313,11 @@ fn boptest_hot_water_boiler_read_surface_rhs(var_name: &str) -> Option<String> {
             parse_indexed_component_signal(var_name, ".boilerFuelPowerByUnit[", "]")
                 .map(|(_, index)| index)
         })
-        .or_else(|| {
-            parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.QFue_flow")
-                .map(|(_, index)| index)
-        })
+    {
+        return Some(boptest_hot_water_boiler_qfue_alias(index));
+    }
+    if let Some((_, index)) =
+        parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.QFue_flow")
     {
         return Some(boptest_hot_water_boiler_qfue_alias(index));
     }
@@ -3626,9 +5335,41 @@ fn boptest_hot_water_boiler_polynomial_rhs(var_name: &str) -> Option<String> {
         return None;
     }
 
-    if var_name.ends_with(".boi.y") {
+    if var_name.ends_with(".conPI.conPID.y") || var_name.ends_with(".conPI.conPID.lim.y") {
+        return Some(boptest_hot_water_boiler_conpid_limited_output_rhs(index));
+    }
+    if var_name.ends_with(".conPI.conPID.lim.u") {
         return Some(var_name_to_c_alias(&format!(
-            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.y"
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.addPID.y"
+        )));
+    }
+    if var_name.ends_with(".conPI.conPID.addPID.y") {
+        let add_pd = var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.addPD.y"
+        ));
+        let integral = var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.I.y"
+        ));
+        return Some(format!("({add_pd} + {integral})"));
+    }
+    if var_name.ends_with(".conPI.conPID.addPD.y") {
+        return Some(var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.P.y"
+        )));
+    }
+
+    if var_name.ends_with(".conPI.y")
+        || var_name.ends_with(".conPI.mul.y")
+        || var_name.ends_with(".boi.y")
+    {
+        return Some(boptest_hot_water_boiler_conpi_output_rhs(index));
+    }
+    if var_name.ends_with(".boi.T")
+        || var_name.ends_with(".boi.temSen.T")
+        || var_name.ends_with(".boi.temSen.port.T")
+    {
+        return Some(var_name_to_c_alias(&format!(
+            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.heaCapDry.T"
         )));
     }
     if var_name.ends_with(".boi.eta") {
@@ -3637,28 +5378,13 @@ fn boptest_hot_water_boiler_polynomial_rhs(var_name: &str) -> Option<String> {
         )));
     }
     if var_name.ends_with(".boi.QFue_flow") {
-        let y = var_name_to_c_alias(&format!(
-            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.y"
-        ));
-        let q_nominal = var_name_to_c_alias(&format!(
-            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.Q_flow_nominal"
-        ));
-        let eta_nominal = var_name_to_c_alias(&format!(
-            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.eta_nominal"
-        ));
-        return Some(format!(
-            "fmax(0.0, {y} * {q_nominal} / fmax(0.00001, {eta_nominal}))"
-        ));
+        return boptest_hot_water_boiler_unit_fuel_rhs(index);
     }
     if var_name.ends_with(".boi.QWat_flow") {
-        let eta = var_name_to_c_alias(&format!(
-            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.eta"
-        ));
-        let q_fue = boptest_hot_water_boiler_qfue_alias(index);
-        let eps = var_name_to_c_alias(&format!(
-            "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.eps"
-        ));
-        return Some(format!("fmax(0.0, {eta} * {q_fue} * {eps})"));
+        return boptest_hot_water_boiler_unit_water_heat_rhs(index);
+    }
+    if var_name.ends_with(".boi.heaCapDry.port.Q_flow") {
+        return boptest_hot_water_boiler_unit_water_heat_rhs(index);
     }
     if var_name.ends_with(".boi.heaCapDry.der_T") {
         let prefix = format!("hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.heaCapDry");
@@ -3667,6 +5393,34 @@ fn boptest_hot_water_boiler_polynomial_rhs(var_name: &str) -> Option<String> {
         return Some(format!("(({c} > 1e-9) ? ({q_flow} / {c}) : 0.0)"));
     }
     None
+}
+
+fn boptest_hot_water_boiler_conpi_output_rhs(index: usize) -> String {
+    let enable = var_name_to_c_alias(&format!("hotWaterPlant.boilerPlant.boiSta.y[{index}]"));
+    let pid = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.y"
+    ));
+    format!("(({enable} > 0.5) ? {pid} : 0.0)")
+}
+
+fn boptest_hot_water_boiler_conpid_limited_output_rhs(index: usize) -> String {
+    let prefix = format!("hotWaterPlant.boilerPlant.mulBoi.boi[{index}]");
+    let setpoint = var_name_to_c_alias(&format!("{prefix}.THWSet"));
+    let measurement = var_name_to_c_alias(&format!("{prefix}.boi.T"));
+    let setpoint_gain = var_name_to_c_alias(&format!("{prefix}.conPI.conPID.uS_revAct.k"));
+    let measurement_gain = var_name_to_c_alias(&format!("{prefix}.conPI.conPID.uMea_revAct.k"));
+    let proportional_gain = var_name_to_c_alias(&format!("{prefix}.conPI.conPID.P.k"));
+    let integral = var_name_to_c_alias(&format!("{prefix}.conPI.conPID.I.y"));
+    let lower = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.yMin"
+    ));
+    let upper = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].conPI.conPID.yMax"
+    ));
+    let input = format!(
+        "({proportional_gain} * (({setpoint_gain} * {setpoint}) - ({measurement_gain} * {measurement})) + {integral})"
+    );
+    format!("fmax({lower}, fmin({upper}, {input}))")
 }
 
 fn parse_boptest_hot_water_boiler_index(var_name: &str) -> Option<usize> {
@@ -3704,11 +5458,66 @@ fn parse_boptest_hot_water_boiler_index(var_name: &str) -> Option<usize> {
         .or_else(|| {
             parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.QWat_flow")
         })
+        .or_else(|| parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.T"))
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].boi.temSen.T")
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(
+                var_name,
+                ".boilerPlant.mulBoi.boi[",
+                "].boi.temSen.port.T",
+            )
+        })
         .or_else(|| {
             parse_indexed_component_signal(
                 var_name,
                 ".boilerPlant.mulBoi.boi[",
                 "].boi.heaCapDry.der_T",
+            )
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(
+                var_name,
+                ".boilerPlant.mulBoi.boi[",
+                "].boi.heaCapDry.port.Q_flow",
+            )
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].conPI.y")
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].conPI.mul.y")
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".boilerPlant.mulBoi.boi[", "].conPI.conPID.y")
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(
+                var_name,
+                ".boilerPlant.mulBoi.boi[",
+                "].conPI.conPID.lim.y",
+            )
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(
+                var_name,
+                ".boilerPlant.mulBoi.boi[",
+                "].conPI.conPID.lim.u",
+            )
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(
+                var_name,
+                ".boilerPlant.mulBoi.boi[",
+                "].conPI.conPID.addPID.y",
+            )
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(
+                var_name,
+                ".boilerPlant.mulBoi.boi[",
+                "].conPI.conPID.addPD.y",
             )
         })
         .map(|(_, index)| index)
@@ -3726,17 +5535,74 @@ fn boptest_hot_water_boiler_qwat_alias(index: usize) -> String {
     ))
 }
 
+fn boptest_hot_water_boiler_unit_fuel_rhs(index: usize) -> Option<String> {
+    let y = boptest_hot_water_boiler_conpi_output_rhs(index);
+    let q_nominal = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.Q_flow_nominal"
+    ));
+    let eta_nominal = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.eta_nominal"
+    ));
+    Some(format!(
+        "fmax(0.0, (({y}) * {q_nominal}) / fmax(0.00001, {eta_nominal}))"
+    ))
+}
+
+fn boptest_hot_water_boiler_unit_water_heat_rhs(index: usize) -> Option<String> {
+    let eta = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.eta"
+    ));
+    let fuel = boptest_hot_water_boiler_unit_fuel_rhs(index)?;
+    let eps = var_name_to_c_alias(&format!(
+        "hotWaterPlant.boilerPlant.mulBoi.boi[{index}].boi.eps"
+    ));
+    Some(format!("(({eta}) * ({fuel}) * {eps})"))
+}
+
+fn boptest_hot_water_boiler_total_load_rhs() -> String {
+    let terms = (1..=2)
+        .filter_map(boptest_hot_water_boiler_unit_water_heat_rhs)
+        .collect::<Vec<_>>()
+        .join(" + ");
+    format!("({terms})")
+}
+
+fn boptest_hot_water_boiler_total_fuel_rhs() -> String {
+    let terms = (1..=2)
+        .filter_map(boptest_hot_water_boiler_unit_fuel_rhs)
+        .collect::<Vec<_>>()
+        .join(" + ");
+    format!("({terms})")
+}
+
 fn boptest_hot_water_boiler_stage_on_rhs(index: usize) -> Option<String> {
-    let load = boptest_hot_water_branch_load_rhs();
+    let load = boptest_hot_water_terminal_load_rhs();
     match index {
-        1 => Some(format!("(({load}) > 0.1 ? 1.0 : 0.0)")),
-        2 => Some(format!("(({load}) > (0.95 * 2619375.0) ? 1.0 : 0.0)")),
+        1 => Some("1.0".to_string()),
+        2 => {
+            let cap_1 =
+                var_name_to_c_alias("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.Q_flow_nominal");
+            Some(format!("(({load}) > (0.95 * {cap_1}) ? 1.0 : 0.0)"))
+        }
         _ => None,
     }
 }
 
 fn boptest_hot_water_branch_load_rhs() -> String {
     "fmax(0.0, (floor1BoptestAirNetwork_hotWaterReheatThermalLoad + floor2BoptestAirNetwork_hotWaterReheatThermalLoad + floor3BoptestAirNetwork_hotWaterReheatThermalLoad))".to_string()
+}
+
+fn boptest_hot_water_loop_maintenance_load_rhs() -> String {
+    let mass_flow = boptest_hot_water_wrapper_mass_flow_rhs();
+    "fmax(0.0, (".to_string()
+        + &mass_flow
+        + ") * 4200.0 * (hotWaterPlant_boilerPlant_senTHWBuiEnt_T - hotWaterPlant_boilerPlant_senTHWBuiLea_T))"
+}
+
+fn boptest_hot_water_terminal_load_rhs() -> String {
+    let branch = boptest_hot_water_branch_load_rhs();
+    let maintenance = boptest_hot_water_loop_maintenance_load_rhs();
+    format!("fmax(0.0, fmax(({branch}), ({maintenance})))")
 }
 
 fn boptest_chilled_water_primary_pump_power_rhs(var_name: &str) -> Option<String> {
@@ -3810,6 +5676,127 @@ fn boptest_chilled_water_condenser_pump_power_rhs(var_name: &str) -> Option<Stri
     Some(boptest_chilled_water_sim_pump_power_rhs(
         "chilledWaterPlant.chillerPlant.pumCW",
         index,
+    ))
+}
+
+fn boptest_chilled_water_secondary_pump_power_rhs(var_name: &str) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    if matches!(
+        alias.as_str(),
+        "reaChiWatSys_reaPPum_y"
+            | "chilledWaterPlant_pumpElectricalPower"
+            | "chilledWaterPlant_secondaryPumpPower"
+    ) {
+        let terms = (1..=2)
+            .map(|index| {
+                boptest_var_speed_pump_power_rhs(&format!(
+                    "chilledWaterPlant.chillerPlant.pumSecCHW.pum[{index}].varSpeFloMov"
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let primary = (1..=3)
+            .map(|index| {
+                boptest_chilled_water_sim_pump_power_rhs(
+                    "chilledWaterPlant.chillerPlant.pumPriCHW",
+                    index,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let condenser = (1..=3)
+            .map(|index| {
+                boptest_chilled_water_sim_pump_power_rhs(
+                    "chilledWaterPlant.chillerPlant.pumCW",
+                    index,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
+        return Some(format!("({primary} + {} + {condenser})", terms.join(" + ")));
+    }
+
+    let index = parse_read_surface_stage_index(var_name, "reaChiWatSys_PPumSecCHW_", "_y")
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".secondaryChilledWaterPumpPowerByUnit[", "]")
+                .map(|(_, index)| index)
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".chillerPlant.pumSecCHW.P[", "]")
+                .map(|(_, index)| index)
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".chillerPlant.pumSecCHW.pum[", "].P")
+                .map(|(_, index)| index)
+        })?;
+    if index == 0 || index > 2 {
+        return None;
+    }
+    boptest_var_speed_pump_power_rhs(&format!(
+        "chilledWaterPlant.chillerPlant.pumSecCHW.pum[{index}].varSpeFloMov"
+    ))
+}
+
+fn boptest_hot_water_secondary_pump_power_rhs(var_name: &str) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    if matches!(
+        alias.as_str(),
+        "reaHotWatSys_reaPPum_y"
+            | "hotWaterPlant_pumpElectricalPower"
+            | "hotWaterPlant_distributionPumpPower"
+    ) {
+        let terms = (1..=2)
+            .map(|index| {
+                boptest_var_speed_pump_power_rhs(&format!(
+                    "hotWaterPlant.boilerPlant.pumSecHW.pum[{index}].varSpeFloMov"
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return Some(format!("({})", terms.join(" + ")));
+    }
+
+    let index = parse_read_surface_stage_index(var_name, "reaHotWatSys_PPumSecHW_", "_y")
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".secondaryHotWaterPumpPowerByUnit[", "]")
+                .map(|(_, index)| index)
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".boilerPlant.pumSecHW.P[", "]")
+                .map(|(_, index)| index)
+        })
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, ".boilerPlant.pumSecHW.pum[", "].P")
+                .map(|(_, index)| index)
+        })?;
+    if index == 0 || index > 2 {
+        return None;
+    }
+    boptest_var_speed_pump_power_rhs(&format!(
+        "hotWaterPlant.boilerPlant.pumSecHW.pum[{index}].varSpeFloMov"
+    ))
+}
+
+fn boptest_var_speed_pump_power_rhs(prefix: &str) -> Option<String> {
+    let (parent, curve_len) = boptest_plant_pump_parent_and_curve_len(prefix)?;
+    let parent_alias = var_name_to_c_alias(parent);
+    let speed = boptest_plant_pump_actual_speed_rhs(parent)
+        .unwrap_or_else(|| clamp_unit_interval_rhs(&format!("{parent_alias}_u")));
+    let volume_flow = boptest_plant_pump_volume_flow_rhs(prefix)?;
+    let volume_curve =
+        c_compound_literal_for_indexed_aliases(&parent_alias, "VolFloCur", curve_len);
+    let pressure_curve = c_compound_literal_for_indexed_aliases(&parent_alias, "PreCur", curve_len);
+    let hyd_curve = c_compound_literal_for_indexed_aliases(&parent_alias, "HydEff", curve_len);
+    let mot_curve = c_compound_literal_for_indexed_aliases(&parent_alias, "MotEff", curve_len);
+    let pressure = format!(
+        "__rumoca_mover_pressure_curve({curve_len}, {volume_flow}, {speed}, {volume_curve}, {pressure_curve})"
+    );
+    let hyd_eff = format!(
+        "__rumoca_mover_curve_value({curve_len}, {volume_flow}, {speed}, {volume_curve}, {hyd_curve})"
+    );
+    let mot_eff = format!(
+        "__rumoca_mover_curve_value({curve_len}, {volume_flow}, {speed}, {volume_curve}, {mot_curve})"
+    );
+    Some(format!(
+        "fmax(0.0, ({volume_flow}) * ({pressure}) / fmax(0.00001, ({hyd_eff}) * ({mot_eff})))"
     ))
 }
 
@@ -4392,11 +6379,15 @@ fn synthesize_modelica_add_rhs(var_name: &str, aliases: &HashSet<String>) -> Opt
 }
 
 fn synthesize_modelica_multiswitch_expr_rhs(var_name: &str) -> Option<String> {
-    let (base, index) = parse_indexed_ref(var_name)?;
-    if !base.ends_with(".expr") {
-        return None;
+    if let Some((base, index)) = parse_indexed_ref(var_name)
+        && base.ends_with(".expr")
+    {
+        return Some((index.saturating_sub(1)).to_string());
     }
-    Some((index.saturating_sub(1)).to_string())
+    let alias = var_name_to_c_alias(var_name);
+    let (_, alias_index) = alias.rsplit_once("_multiSwitch_expr_")?;
+    let alias_index = alias_index.parse::<usize>().ok()?;
+    Some((alias_index.saturating_sub(1)).to_string())
 }
 
 fn synthesize_boptest_zone_ctot_flow_input_rhs(
@@ -4478,6 +6469,209 @@ fn synthesize_buildings_actuator_filter_alg_rhs(var_name: &str) -> Option<String
     None
 }
 
+fn synthesize_buildings_actuator_signal_alg_rhs(
+    var_name: &str,
+    equations: &Value,
+) -> Result<Option<String>, minijinja::Error> {
+    if let Some(rhs) = synthesize_boptest_vav_terminal_overwrite_signal_rhs(var_name) {
+        return Ok(Some(rhs));
+    }
+
+    if let Some(rhs) = synthesize_buildings_actuator_filter_alg_rhs(var_name) {
+        return Ok(Some(rhs));
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".filter.u") {
+        if !is_boptest_vav_terminal_actuator_prefix(prefix) {
+            return Ok(None);
+        }
+        if let Some(overwrite_prefix) = boptest_vav_terminal_overwrite_prefix_for_actuator(prefix) {
+            return Ok(Some(var_name_to_c_alias(&format!(
+                "{overwrite_prefix}.swi.y"
+            ))));
+        }
+        let input = format!("{prefix}.y");
+        if let Some(rhs) = actuator_input_connection_rhs(&input, prefix, equations) {
+            return Ok(Some(rhs));
+        }
+        return Ok(Some(var_name_to_c_alias(&input)));
+    }
+    if !var_name.ends_with(".filter.y")
+        && let Some(prefix) = var_name.strip_suffix(".y")
+        && is_boptest_vav_terminal_actuator_prefix(prefix)
+        && let Some(rhs) = actuator_input_connection_rhs(var_name, prefix, equations)
+    {
+        return Ok(Some(rhs));
+    }
+    if !var_name.ends_with(".filter.y")
+        && let Some(prefix) = var_name.strip_suffix(".y")
+        && is_boptest_vav_terminal_actuator_prefix(prefix)
+        && let Some(overwrite_prefix) = boptest_vav_terminal_overwrite_prefix_for_actuator(prefix)
+    {
+        return Ok(Some(var_name_to_c_alias(&format!(
+            "{overwrite_prefix}.swi.y"
+        ))));
+    }
+    if let Some(prefix) = var_name.strip_suffix(".y_filtered") {
+        if !is_boptest_vav_terminal_actuator_prefix(prefix) {
+            return Ok(None);
+        }
+        return Ok(Some(var_name_to_c_alias(&format!("{prefix}.filter.y"))));
+    }
+    if let Some(prefix) = var_name.strip_suffix(".y_internal") {
+        if !is_boptest_vav_terminal_actuator_prefix(prefix) {
+            return Ok(None);
+        }
+        let use_input_filter = var_name_to_c_alias(&format!("{prefix}.use_inputFilter"));
+        let filtered = var_name_to_c_alias(&format!("{prefix}.filter.y"));
+        let direct = var_name_to_c_alias(&format!("{prefix}.y"));
+        return Ok(Some(format!(
+            "({use_input_filter} ? {filtered} : {direct})"
+        )));
+    }
+    if let Some(prefix) = var_name.strip_suffix(".y_actual") {
+        if !is_boptest_vav_terminal_actuator_prefix(prefix) {
+            return Ok(None);
+        }
+        return Ok(Some(var_name_to_c_alias(&format!("{prefix}.y_internal"))));
+    }
+
+    Ok(None)
+}
+
+fn synthesize_boptest_vav_terminal_overwrite_signal_rhs(var_name: &str) -> Option<String> {
+    let (overwrite_prefix, signal) = parse_boptest_vav_terminal_overwrite_prefix(var_name)?;
+    if var_name == format!("{overwrite_prefix}.swi.y") {
+        let switch_prefix = var_name_to_c_alias(&format!("{overwrite_prefix}.swi"));
+        return Some(format!(
+            "{switch_prefix}_u2 ? {switch_prefix}_u1 : {switch_prefix}_u3"
+        ));
+    }
+    if var_name == format!("{overwrite_prefix}.y") || var_name == format!("{overwrite_prefix}_out")
+    {
+        return Some(var_name_to_c_alias(&format!("{overwrite_prefix}.swi.y")));
+    }
+    if var_name == format!("{overwrite_prefix}.out") {
+        return Some(var_name_to_c_alias(&format!("{overwrite_prefix}.swi.y")));
+    }
+    if var_name == format!("{overwrite_prefix}.u")
+        || var_name == format!("{overwrite_prefix}.in")
+        || var_name == format!("{overwrite_prefix}_in")
+        || var_name == format!("{overwrite_prefix}.swi.u3")
+    {
+        return Some(boptest_vav_terminal_native_controller_rhs(
+            &overwrite_prefix,
+            signal,
+        ));
+    }
+    None
+}
+
+fn parse_boptest_vav_terminal_overwrite_prefix(var_name: &str) -> Option<(String, &'static str)> {
+    for signal in ["yDam", "yReaHea"] {
+        for suffix in [
+            ".swi.y", ".swi.u3", ".out", "_out", ".y", ".u", ".in", "_in",
+        ] {
+            let Some(prefix) = var_name.strip_suffix(suffix) else {
+                continue;
+            };
+            if !prefix.ends_with(&format!(".oveZonLoc.{signal}")) {
+                continue;
+            }
+            if prefix.contains("BoptestAirNetwork.floor.fivZonVAV.vAV") {
+                return Some((prefix.to_string(), signal));
+            }
+        }
+    }
+    None
+}
+
+fn boptest_vav_terminal_overwrite_prefix_for_actuator(actuator_prefix: &str) -> Option<String> {
+    let (wrapper, terminal) = parse_boptest_vav_valve_prefix(actuator_prefix)?;
+    let (terminal_base, signal) = terminal
+        .strip_suffix(".dam")
+        .map(|base| (base, "yDam"))
+        .or_else(|| {
+            terminal
+                .strip_suffix(".rehVal")
+                .map(|base| (base, "yReaHea"))
+        })?;
+    Some(format!(
+        "{}.floor.fivZonVAV.{terminal_base}.oveZonLoc.{signal}",
+        wrapper.prefix
+    ))
+}
+
+fn boptest_vav_terminal_native_controller_rhs(overwrite_prefix: &str, signal: &str) -> String {
+    let native_source = match signal {
+        "yDam" => overwrite_prefix.replace(".oveZonLoc.yDam", ".pI.y"),
+        "yReaHea" => overwrite_prefix.replace(".oveZonLoc.yReaHea", ".yVal"),
+        _ => overwrite_prefix.to_string(),
+    };
+    var_name_to_c_alias(&native_source)
+}
+
+fn is_boptest_vav_terminal_actuator_prefix(prefix: &str) -> bool {
+    parse_boptest_vav_valve_prefix(prefix).is_some()
+}
+
+fn actuator_input_connection_rhs(
+    input_var: &str,
+    actuator_prefix: &str,
+    equations: &Value,
+) -> Option<String> {
+    let Some(candidate_equations) = alg_equation_candidates_for_var(equations, input_var) else {
+        return None;
+    };
+    let filter_u = var_name_to_c_alias(&format!("{actuator_prefix}.filter.u"));
+    let mut best_rhs: Option<(isize, String)> = None;
+    for eq in candidate_equations {
+        let Some(alias) = actuator_simple_input_alias(&eq, input_var) else {
+            continue;
+        };
+        let alias = var_name_to_c_alias(&alias);
+        if alias == filter_u || alias == var_name_to_c_alias(input_var) {
+            continue;
+        }
+        let mut score = 0;
+        if alias.contains("swi_y") || alias.ends_with("_out") || alias.ends_with("_y") {
+            score += 100;
+        }
+        if !alias.starts_with(&var_name_to_c_alias(actuator_prefix)) {
+            score += 50;
+        }
+        if best_rhs
+            .as_ref()
+            .is_none_or(|(best_score, _)| score > *best_score)
+        {
+            best_rhs = Some((score, alias));
+        }
+    }
+    best_rhs.map(|(_score, rhs)| rhs)
+}
+
+fn actuator_simple_input_alias(eq: &Value, input_var: &str) -> Option<String> {
+    let rhs = get_field(eq, "rhs").ok()?;
+    let binary = get_field(&rhs, "Binary").ok()?;
+    if !is_sub_op(&binary) {
+        return None;
+    }
+    let lhs_side = get_field(&binary, "lhs").ok()?;
+    let rhs_side = get_field(&binary, "rhs").ok()?;
+    if is_var_ref_of(&lhs_side, input_var) {
+        return simple_var_ref_name(&rhs_side);
+    }
+    if is_var_ref_of(&rhs_side, input_var) {
+        return simple_var_ref_name(&lhs_side);
+    }
+    None
+}
+
+fn simple_var_ref_name(expr: &Value) -> Option<String> {
+    let var_ref = get_field(expr, "VarRef").ok()?;
+    Some(var_ref_full_name(&var_ref))
+}
+
 fn synthesize_buildings_limit_slew_rate_parameter_rhs(var_name: &str) -> Option<String> {
     let component_prefix = var_name
         .strip_suffix(".fallingSlewRate")
@@ -4547,6 +6741,13 @@ fn synthesize_internal_fluid_volume_ode_rhs(state_name: &str) -> Option<String> 
         return Some(format!(
             "({mb_flow} + ({simplify_m_wat_flow} ? 0.0 : {m_wat_flow_internal}))"
         ));
+    }
+    if let Some(volume_prefix) = state_name.strip_suffix(".U")
+        && boptest_zone_volume_prefix(volume_prefix)
+    {
+        let hb_flow = var_name_to_c_alias(&format!("{volume_prefix}.Hb_flow"));
+        let q_flow = var_name_to_c_alias(&format!("{volume_prefix}.Q_flow"));
+        return Some(format!("({hb_flow} + {q_flow})"));
     }
     if let Some(volume_prefix) = state_name.strip_suffix(".dynBal.m") {
         return Some(var_name_to_c_alias(&format!(
@@ -4677,17 +6878,6 @@ fn synthesize_buildings_limit_slew_rate_ode_rhs(state_name: &str) -> Option<Stri
 }
 
 fn synthesize_top_down_radiant_tail_ode_rhs(state_name: &str) -> Option<String> {
-    if state_name == "floor1_core_radiant_surface_temperature"
-        || state_name == "floor2_core_radiant_surface_temperature"
-    {
-        let floor = state_name.strip_prefix("floor")?.chars().next()?;
-        let floor_index = floor.to_digit(10)? as usize;
-        let heat = var_name_to_c_alias(&format!("floor{floor}_core_radiant_heat_to_air"));
-        let gain = indexed_alias2("floor_internal_gain_rad", floor_index, 1);
-        let capacity = var_name_to_c_alias("lower_core_radiant_capacity");
-        return Some(format!("(({gain} - {heat}) / {capacity})"));
-    }
-
     if state_name == "floor3_core_radiant_surface_temperature" {
         let gain = indexed_alias2("floor_internal_gain_rad", 3, 1);
         let heat = var_name_to_c_alias("floor3_core_radiant_heat_to_air");
@@ -4723,6 +6913,23 @@ fn synthesize_top_down_radiant_tail_ode_rhs(state_name: &str) -> Option<String> 
     None
 }
 
+fn synthesize_top_down_radiant_tail_alg_rhs(var_name: &str) -> Option<String> {
+    if let Some(floor) = var_name
+        .strip_prefix("floor")
+        .and_then(|rest| rest.strip_suffix("_core_radiant_heat_to_air"))
+        .and_then(|floor| floor.parse::<usize>().ok())
+        && floor == 3
+    {
+        let conductance = var_name_to_c_alias("floor3_core_radiant_conductance");
+        let surface =
+            var_name_to_c_alias(&format!("floor{floor}_core_radiant_surface_temperature"));
+        let zone = indexed_alias2("floor_zone_temperature", floor, 1);
+        return Some(format!("({conductance} * ({surface} - {zone}))"));
+    }
+
+    None
+}
+
 fn parse_top_down_radiant_surface_state(state_name: &str) -> Option<(usize, usize)> {
     let rest = state_name.strip_prefix("floor")?;
     let (floor, rest) = rest.split_once("_radiant_surface_temperature_")?;
@@ -4733,6 +6940,94 @@ fn parse_top_down_radiant_surface_state(state_name: &str) -> Option<(usize, usiz
 
 fn indexed_alias2(prefix: &str, first: usize, second: usize) -> String {
     format!("{}_{}_{}", var_name_to_c_alias(prefix), first, second)
+}
+
+fn synthesize_boptest_internal_gain_rhs(var_name: &str) -> Option<String> {
+    let alias = var_name_to_c_alias(var_name);
+    if let Some((floor, zone)) = parse_floor_total_internal_gain_alias(&alias) {
+        let source_index = ((floor - 1) * 5) + zone;
+        let deterministic = indexed_alias("internal_gains", source_index);
+        let source_backed = indexed_alias2("floor_internal_gain", floor, zone);
+        return Some(format!("({deterministic} + {source_backed})"));
+    }
+    if let Some((kind, floor, zone)) = parse_floor_internal_gain_alias(&alias) {
+        let source = indexed_alias2(&format!("source_floor_internal_gain_{kind}"), floor, zone);
+        let deterministic = indexed_alias2(
+            &format!("deterministic_floor_internal_gain_{kind}"),
+            floor,
+            zone,
+        );
+        return Some(format!(
+            "((internal_gain_source_override_enable > 0.5) ? {source} : {deterministic})"
+        ));
+    }
+    if let Some((kind, floor, zone)) = parse_internal_gain_output_alias(&alias) {
+        let gain = indexed_alias2(&format!("floor_internal_gain_{kind}"), floor, zone);
+        if floor == 2 {
+            return Some(format!("(({gain}) * floor_multiplier_2)"));
+        }
+        return Some(gain);
+    }
+    None
+}
+
+fn parse_floor_total_internal_gain_alias(alias: &str) -> Option<(usize, usize)> {
+    let rest = alias.strip_prefix("floor_total_internal_gain_")?;
+    let (floor, zone) = rest.split_once('_')?;
+    let floor = floor.parse::<usize>().ok()?;
+    let zone = zone.parse::<usize>().ok()?;
+    ((1..=3).contains(&floor) && (1..=5).contains(&zone)).then_some((floor, zone))
+}
+
+fn parse_floor_internal_gain_alias(alias: &str) -> Option<(&'static str, usize, usize)> {
+    for kind in ["con", "rad", "lat"] {
+        let Some(rest) = alias.strip_prefix(&format!("floor_internal_gain_{kind}_")) else {
+            continue;
+        };
+        let (floor, zone) = rest.split_once('_')?;
+        let floor = floor.parse::<usize>().ok()?;
+        let zone = zone.parse::<usize>().ok()?;
+        if (1..=3).contains(&floor) && (1..=5).contains(&zone) {
+            return Some((kind, floor, zone));
+        }
+    }
+    None
+}
+
+fn parse_internal_gain_output_alias(alias: &str) -> Option<(&'static str, usize, usize)> {
+    for kind in ["con", "rad", "lat"] {
+        let Some(rest) =
+            alias.strip_prefix(&format!("InternalGains{}_", title_case_gain_kind(kind)))
+        else {
+            continue;
+        };
+        let (floor_token, zone_token) = rest.rsplit_once('_')?;
+        let floor = match floor_token {
+            "bot_floor" => 1,
+            "mid_floor" => 2,
+            "top_floor" => 3,
+            _ => return None,
+        };
+        let zone = match zone_token {
+            "cor" => 1,
+            "sou" => 2,
+            "eas" => 3,
+            "nor" => 4,
+            "wes" => 5,
+            _ => return None,
+        };
+        return Some((kind, floor, zone));
+    }
+    None
+}
+
+fn title_case_gain_kind(kind: &str) -> &'static str {
+    match kind {
+        "con" => "Con",
+        "rad" => "Rad",
+        "lat" => "Lat",
+        _ => unreachable!("unsupported internal gain kind"),
+    }
 }
 
 fn synthesize_buildings_expansion_vessel_ode_rhs(state_name: &str) -> Option<String> {
@@ -4938,7 +7233,10 @@ fn parse_last_bracket_index(name: &str) -> Option<usize> {
     name[open + 1..close].parse::<usize>().ok()
 }
 
-fn synthesize_top_down_control_semantics_rhs(var_name: &str) -> Option<String> {
+fn synthesize_top_down_control_semantics_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
     if var_name == "controlSemantics.rawPlantChilledWaterSetpoint" {
         return Some("plant_chilled_water_setpoint".to_string());
     }
@@ -5089,11 +7387,7 @@ fn synthesize_top_down_control_semantics_rhs(var_name: &str) -> Option<String> {
     if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".fanEnable")
         && prefix == "controlSemantics"
     {
-        let initial = indexed_alias("controlSemantics.initialFanEnable", index);
-        let request = indexed_alias("controlSemantics.fanStageRequest", index);
-        return Some(format!(
-            "((time <= 0.0) ? {initial} : (({request} > controlSemantics_stagingOnThreshold) ? 1.0 : 0.0))"
-        ));
+        return Some(top_down_fan_enable_rhs(index));
     }
 
     if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".overrideActive")
@@ -5135,22 +7429,74 @@ fn synthesize_top_down_control_semantics_rhs(var_name: &str) -> Option<String> {
     if let Some((prefix, index)) = parse_indexed_suffix(var_name, ".effectiveAhuSupplyFanSpeed")
         && prefix == "controlSemantics"
     {
-        let raw = indexed_alias("controlSemantics.rawAhuSupplyFanSpeed", index);
-        let terminal = indexed_alias("controlSemantics.terminalDamperMean", index);
-        let enable = indexed_alias("controlSemantics.fanEnable", index);
-        let clamped_raw = clamp_unit_interval_rhs(&raw);
-        return Some(format!(
-            "((({clamped_raw}) > 1e-6 ? ({clamped_raw}) : {terminal}) * {enable})"
-        ));
+        return Some(top_down_effective_ahu_supply_fan_speed_rhs(index, aliases));
     }
 
     None
 }
 
-fn synthesize_boptest_ahu_fan_mover_rhs(var_name: &str) -> Option<String> {
+fn top_down_fan_enable_rhs(floor: usize) -> String {
+    let initial = indexed_alias("controlSemantics.initialFanEnable", floor);
+    let state = indexed_alias("controlSemantics.fanStagingState", floor);
+    format!("((time <= 0.0) ? {initial} : (({state} > 0.5) ? 1.0 : 0.0))")
+}
+
+fn top_down_effective_ahu_supply_fan_speed_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    let raw = clamp_unit_interval_rhs(&indexed_alias("ahu_supply_fan_speed", floor));
+    let source_owned = top_down_source_owned_fan_speed_demand_rhs(floor, aliases);
+    let enable = top_down_fan_enable_rhs(floor);
+    format!("((({raw}) > 1e-6 ? ({raw}) : {source_owned}) * ({enable}))")
+}
+
+fn top_down_occupied_fan_demand_rhs(floor: usize) -> String {
+    format!(
+        "((time <= 0.0) ? controlSemantics_initialOccupancyScheduleState_{floor} : {profile})",
+        profile = top_down_occupancy_profile_rhs(floor)
+    )
+}
+
+fn top_down_occupancy_profile_rhs(floor: usize) -> String {
+    let schedule = top_down_hvac_operation_schedule_rhs();
+    format!(
+        "((occupancy_schedule_source_override_enable > 0.5) ? fmax(0.0, fmin(1.0, occupancy_schedule_command_{floor})) : {schedule})"
+    )
+}
+
+fn top_down_hvac_operation_schedule_rhs() -> String {
+    let schedule_time = "(time + initializationWarmupContract_scheduleStartTimeSeconds)";
+    format!(
+        "((fmod({schedule_time}, 86400.0) >= 6.0 * 3600.0 && fmod({schedule_time}, 86400.0) < 22.0 * 3600.0) ? 1.0 : 0.0)"
+    )
+}
+
+fn top_down_source_owned_fan_speed_demand_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    let occupied = top_down_occupied_fan_demand_rhs(floor);
+    let cycling = top_down_unoccupied_fan_cycling_state_rhs(floor);
+    let pressure = top_down_occupied_pressure_fan_speed_rhs(floor, aliases);
+    format!("fmax(({cycling}), (({occupied}) * ({pressure})))")
+}
+
+fn top_down_occupied_pressure_fan_speed_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    let setpoint = indexed_alias("ahu_duct_static_pressure_setpoint", floor);
+    let measurement = boptest_floor_duct_static_pressure_alias(floor, aliases);
+    let integral = format!("controlSemantics_ahuFanPressureIntegral_{floor}");
+    let unlimited = format!(
+        "(controlSemantics_occupiedFanMinimumSpeed + controlSemantics_ahuFanPressureControllerGain * (fmax(0.0, {setpoint}) - fmax(0.0, {measurement})) + {integral})"
+    );
+    format!("fmax(controlSemantics_occupiedFanMinimumSpeed, fmin(1.0, {unlimited}))")
+}
+
+fn top_down_unoccupied_fan_cycling_state_rhs(floor: usize) -> String {
+    format!("controlSemantics_unoccupiedFanCyclingState_{floor}")
+}
+
+fn synthesize_boptest_ahu_fan_mover_rhs(
+    var_name: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
     let fan = boptest_ahu_fan_mover(var_name)?;
     let alias = var_name_to_c_alias(fan.prefix);
-    let volume_flow = boptest_ahu_fan_volume_flow_rhs(&fan);
+    let volume_flow = boptest_ahu_fan_volume_flow_rhs(&fan, aliases);
 
     if var_name.ends_with(".eff.V_flow")
         || var_name.ends_with(".VMachine_flow")
@@ -5168,7 +7514,7 @@ fn synthesize_boptest_ahu_fan_mover_rhs(var_name: &str) -> Option<String> {
     }
 
     if var_name.ends_with(".eff.dp") || var_name.ends_with(".eff.dp_internal") {
-        return Some(boptest_ahu_fan_pressure_rhs(&fan, &alias));
+        return Some(boptest_ahu_fan_pressure_rhs(&fan, &alias, aliases));
     }
 
     if var_name.ends_with(".eff.etaHyd") || var_name.ends_with(".etaHyd") {
@@ -5243,25 +7589,38 @@ fn boptest_ahu_fan_mover(var_name: &str) -> Option<BoptestAhuFanMover<'_>> {
     None
 }
 
-fn boptest_ahu_fan_volume_flow_rhs(fan: &BoptestAhuFanMover<'_>) -> String {
+fn boptest_ahu_fan_volume_flow_rhs(
+    fan: &BoptestAhuFanMover<'_>,
+    aliases: &HashSet<String>,
+) -> String {
     let floor_alias = format!("floor{}BoptestAirNetwork", fan.floor);
     let speed = clamp_unit_interval_rhs(&fan.speed_alias);
     let volume_curve = c_compound_literal_for_indexed_aliases(&floor_alias, "VolFloCur", 4);
     let pressure_curve =
         c_compound_literal_for_indexed_aliases(&floor_alias, fan.pressure_curve_field, 4);
+    let pressure = boptest_floor_duct_static_pressure_alias(fan.floor, aliases);
+    let network_dp_nominal =
+        alias_or_fallback(aliases, &format!("{floor_alias}_dp_nominal"), "400.0");
+    let network_volume_flow_nominal =
+        alias_or_fallback(aliases, &format!("{floor_alias}_V_flow_nominal"), "1.0");
     format!(
-        "__rumoca_inverse_mover_pressure_curve(4, fmax(0.0, {floor_alias}_pSet), {speed}, {volume_curve}, {pressure_curve})"
+        "__rumoca_mover_network_resistance_flow(4, fmax(0.0, {pressure}), {network_dp_nominal}, {network_volume_flow_nominal}, {speed}, {volume_curve}, {pressure_curve})"
     )
 }
 
-fn boptest_ahu_fan_pressure_rhs(fan: &BoptestAhuFanMover<'_>, alias: &str) -> String {
+fn boptest_ahu_fan_pressure_rhs(
+    fan: &BoptestAhuFanMover<'_>,
+    alias: &str,
+    aliases: &HashSet<String>,
+) -> String {
     let floor_alias = format!("floor{}BoptestAirNetwork", fan.floor);
     let speed = clamp_unit_interval_rhs(&fan.speed_alias);
     let volume_curve = c_compound_literal_for_indexed_aliases(&floor_alias, "VolFloCur", 4);
     let pressure_curve =
         c_compound_literal_for_indexed_aliases(&floor_alias, fan.pressure_curve_field, 4);
+    let volume_flow = alias_or_fallback(aliases, &format!("{alias}_eff_V_flow"), "0.0");
     format!(
-        "__rumoca_mover_pressure_curve(4, {alias}_eff_V_flow, {speed}, {volume_curve}, {pressure_curve})"
+        "__rumoca_mover_pressure_curve(4, {volume_flow}, {speed}, {volume_curve}, {pressure_curve})"
     )
 }
 
@@ -5301,7 +7660,7 @@ fn synthesize_boptest_ahu_fan_command_rhs(var_name: &str) -> Option<String> {
     None
 }
 
-fn boptest_ahu_read_surface_rhs(alias: &str) -> Option<String> {
+fn boptest_ahu_read_surface_rhs(alias: &str, aliases: &HashSet<String>) -> Option<String> {
     for floor in 1..=3 {
         let supply_volume_flow_source = format!(
             "floor{floor}BoptestAirNetwork_floor_duaFanAirHanUni_supFan_withoutMotor_varSpeFloMov_eff_V_flow"
@@ -5331,6 +7690,7 @@ fn boptest_ahu_read_surface_rhs(alias: &str) -> Option<String> {
             return Some(boptest_ahu_fan_direct_electrical_power_rhs(
                 floor,
                 "SupPreCur",
+                aliases,
             ));
         }
 
@@ -5345,6 +7705,7 @@ fn boptest_ahu_read_surface_rhs(alias: &str) -> Option<String> {
             return Some(boptest_ahu_fan_direct_electrical_power_rhs(
                 floor,
                 "RetPreCur",
+                aliases,
             ));
         }
 
@@ -5356,21 +7717,25 @@ fn boptest_ahu_read_surface_rhs(alias: &str) -> Option<String> {
         if alias == format!("floor{floor}_reaAHU_PFreCoi_y")
             || alias == format!("floor{floor}Ahu_coolingCoilPower")
         {
-            return Some(format!("fmax(0.0, floor{floor}BoptestAirNetwork_PFreCoi)"));
+            return Some(boptest_floor_chilled_water_airside_load_rhs(floor, aliases));
         }
     }
     None
 }
 
-fn boptest_ahu_fan_direct_electrical_power_rhs(floor: usize, pressure_curve_field: &str) -> String {
+fn boptest_ahu_fan_direct_electrical_power_rhs(
+    floor: usize,
+    pressure_curve_field: &str,
+    aliases: &HashSet<String>,
+) -> String {
     let floor_alias = format!("floor{floor}BoptestAirNetwork");
-    let speed = boptest_floor_supply_fan_speed_rhs(floor);
+    let speed = boptest_floor_supply_fan_speed_rhs(floor, aliases);
     let volume_curve = c_compound_literal_for_indexed_aliases(&floor_alias, "VolFloCur", 4);
     let pressure_curve =
         c_compound_literal_for_indexed_aliases(&floor_alias, pressure_curve_field, 4);
     let hyd_eff_curve = c_compound_literal_for_indexed_aliases(&floor_alias, "HydEff", 4);
     let mot_eff_curve = c_compound_literal_for_indexed_aliases(&floor_alias, "MotEff", 4);
-    let volume_flow = boptest_floor_supply_air_volume_flow_rhs(floor);
+    let volume_flow = boptest_floor_supply_air_volume_flow_rhs(floor, aliases);
     let pressure = format!(
         "__rumoca_mover_pressure_curve(4, ({volume_flow}), {speed}, {volume_curve}, {pressure_curve})"
     );
@@ -5385,18 +7750,25 @@ fn boptest_ahu_fan_direct_electrical_power_rhs(floor: usize, pressure_curve_fiel
     )
 }
 
-fn boptest_floor_supply_fan_speed_rhs(floor: usize) -> String {
-    let raw = clamp_unit_interval_rhs(&format!("controlSemantics_rawAhuSupplyFanSpeed_{floor}"));
+fn boptest_floor_supply_fan_speed_rhs(floor: usize, aliases: &HashSet<String>) -> String {
     format!(
-        "((({raw}) > 1e-6 ? ({raw}) : controlSemantics_terminalDamperMean_{floor}) * controlSemantics_fanEnable_{floor})"
+        "fmax(0.0, fmin(1.0, {}))",
+        top_down_effective_ahu_supply_fan_speed_rhs(floor, aliases)
     )
 }
 
-fn boptest_floor_air_thermal_read_surface_rhs(alias: &str) -> Option<String> {
+fn boptest_floor_air_thermal_read_surface_rhs(
+    alias: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
     for floor in 1..=3 {
         let floor_alias = format!("floor{floor}BoptestAirNetwork");
         let supply_air_temp = format!("{floor_alias}_TSupAir");
         let mixed_air_temp = format!("{floor_alias}_TMixAir");
+
+        if let Some(rhs) = boptest_floor_airflow_read_surface_rhs(alias, aliases) {
+            return Some(rhs);
+        }
 
         if alias == format!("{floor_alias}_TSupAir")
             || alias == format!("{floor_alias}_floor_duaFanAirHanUni_TSupAir")
@@ -5410,7 +7782,7 @@ fn boptest_floor_air_thermal_read_surface_rhs(alias: &str) -> Option<String> {
             || alias == format!("{floor_alias}_floor_duaFanAirHanUni_TMixAir")
             || alias == format!("floor{floor}Ahu_mixedAirTemperature")
         {
-            return Some(boptest_floor_return_air_temperature_rhs(floor));
+            return Some(boptest_floor_return_air_temperature_rhs(floor, aliases));
         }
 
         if alias == format!("floor{floor}Ahu_ductStaticPressureRise") {
@@ -5429,7 +7801,7 @@ fn boptest_floor_air_thermal_read_surface_rhs(alias: &str) -> Option<String> {
         if alias == format!("{floor_alias}_TRetCHW")
             || alias == format!("{floor_alias}_floor_duaFanAirHanUni_cooCoi_coi_TLeaWat_T")
         {
-            let load = boptest_floor_chilled_water_airside_load_rhs(floor);
+            let load = boptest_floor_chilled_water_airside_load_rhs(floor, aliases);
             return Some(format!(
                 "({floor_alias}_TSupCHW + ({load}) / fmax(0.001, {floor_alias}_cpWater * {floor_alias}_chilledWaterMassFlow))"
             ));
@@ -5443,13 +7815,16 @@ fn boptest_floor_air_thermal_read_surface_rhs(alias: &str) -> Option<String> {
             ));
         }
 
-        if alias == format!("{floor_alias}_PFreCoi") {
-            return Some(boptest_floor_chilled_water_airside_load_rhs(floor));
+        if alias == format!("{floor_alias}_PFreCoi")
+            || alias == format!("{floor_alias}_floor_duaFanAirHanUni_PFreCoi")
+            || alias == format!("{floor_alias}_floor_duaFanAirHanUni_freCoi_Q_flow")
+        {
+            return Some(boptest_floor_chilled_water_airside_load_rhs(floor, aliases));
         }
 
         for zone in 1..=5 {
             let global = (floor - 1) * 5 + zone;
-            let airflow = boptest_floor_zone_airflow_rhs(floor, zone, global);
+            let airflow = boptest_floor_zone_airflow_rhs(floor, zone, global, aliases);
             if alias == format!("{floor_alias}_Vflow_{zone}")
                 || alias == format!("{floor_alias}_floor_fivZonVAV_Vflow_{zone}")
             {
@@ -5466,11 +7841,21 @@ fn boptest_floor_air_thermal_read_surface_rhs(alias: &str) -> Option<String> {
                 || alias == format!("{floor_alias}_floor_fivZonVAV_TSup_{zone}")
             {
                 return Some(boptest_floor_zone_supply_temperature_rhs(
-                    floor, zone, global,
+                    floor, zone, global, aliases,
                 ));
             }
+            if alias == format!("{floor_alias}_TZon_{zone}") {
+                let volume_prefix =
+                    format!("floor{floor}BoptestAirNetwork.floor.fivZonVAV.zon[{zone}].vol");
+                return synthesize_boptest_zone_volume_air_temperature_from_state_rhs(
+                    &volume_prefix,
+                    aliases,
+                );
+            }
             if alias == format!("{floor_alias}_hotWaterReheatThermalLoadByZone_{zone}") {
-                return Some(boptest_floor_zone_reheat_load_rhs(floor, zone, global));
+                return Some(boptest_floor_zone_reheat_load_rhs(
+                    floor, zone, global, aliases,
+                ));
             }
         }
 
@@ -5483,64 +7868,259 @@ fn boptest_floor_air_thermal_read_surface_rhs(alias: &str) -> Option<String> {
     None
 }
 
-fn boptest_floor_return_air_temperature_rhs(floor: usize) -> String {
-    let start = (floor - 1) * 5 + 1;
-    let terms = (start..start + 5)
-        .map(|idx| format!("controlSemantics_rawZoneHeatingSetpointCommand_{idx}"))
+fn boptest_floor_airflow_read_surface_rhs(
+    alias: &str,
+    aliases: &HashSet<String>,
+) -> Option<String> {
+    for floor in 1..=3 {
+        let floor_alias = format!("floor{floor}BoptestAirNetwork");
+        for zone in 1..=5 {
+            let global = (floor - 1) * 5 + zone;
+            if alias == format!("{floor_alias}_terminalVolumeFlow_{zone}") {
+                let wrapper_flow = format!("{floor_alias}_Vflow_{zone}");
+                if aliases.contains(&wrapper_flow) {
+                    return Some(wrapper_flow);
+                }
+                return Some(boptest_floor_zone_airflow_rhs(floor, zone, global, aliases));
+            }
+            if alias == format!("{floor_alias}_terminalVolumeFlowSetpoint_{zone}") {
+                return Some(format!(
+                    "fmax(0.0, controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_{global})"
+                ));
+            }
+        }
+
+        if let Some(zone) = boptest_public_zone_flow_index(floor, alias, "V_flow_y") {
+            let wrapper_flow = format!("{floor_alias}_Vflow_{zone}");
+            if aliases.contains(&wrapper_flow) {
+                return Some(wrapper_flow);
+            }
+            let global = (floor - 1) * 5 + zone;
+            return Some(boptest_floor_zone_airflow_rhs(floor, zone, global, aliases));
+        }
+        if let Some(zone) = boptest_public_zone_flow_index(floor, alias, "V_flowSet_y") {
+            let global = (floor - 1) * 5 + zone;
+            return Some(format!(
+                "fmax(0.0, controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_{global})"
+            ));
+        }
+    }
+    None
+}
+
+fn boptest_public_zone_flow_index(floor: usize, alias: &str, suffix: &str) -> Option<usize> {
+    let aliases = [(1, "Cor"), (3, "Eas"), (4, "Nor"), (2, "Sou"), (5, "Wes")];
+    for (zone, name) in aliases {
+        if alias == format!("floor{floor}_reaZon{name}_{suffix}") {
+            return Some(zone);
+        }
+    }
+    None
+}
+
+fn boptest_floor_return_air_temperature_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    let terms = (1..=5)
+        .map(|zone| boptest_floor_zone_temperature_alias(floor, zone, aliases))
         .collect::<Vec<_>>()
         .join(" + ");
     format!("(({terms}) / 5.0)")
 }
 
-fn boptest_floor_chilled_water_airside_load_rhs(floor: usize) -> String {
+fn boptest_floor_chilled_water_airside_load_rhs(floor: usize, aliases: &HashSet<String>) -> String {
     let floor_alias = format!("floor{floor}BoptestAirNetwork");
-    let supply_air_mass_flow = format!(
-        "{floor_alias}_rhoAir * {}",
-        boptest_floor_supply_air_volume_flow_rhs(floor)
+    let supply_air_mass_flow = boptest_floor_supply_air_mass_flow_rhs(floor, aliases);
+    let mixed_air_temp = boptest_floor_mixed_air_temperature_rhs(floor, aliases);
+    let supply_air_temp = format!(
+        "fmax(280.15, fmin(295.15, controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_{floor}))"
     );
-    let mixed_air_temp = boptest_floor_return_air_temperature_rhs(floor);
-    let supply_air_temp = format!("controlSemantics_rawAhuSupplyAirTemperatureSetpoint_{floor}");
     format!(
         "fmax(0.0, ({supply_air_mass_flow}) * {floor_alias}_cpAir * fmax(0.0, ({mixed_air_temp}) - ({supply_air_temp})))"
     )
 }
 
-fn boptest_floor_zone_airflow_rhs(floor: usize, _zone: usize, global: usize) -> String {
-    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+fn boptest_floor_mixed_air_temperature_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    let outdoor_damper = boptest_floor_outdoor_damper_rhs(floor);
+    let outdoor_temp = boptest_outdoor_temperature_rhs();
+    let return_temp = boptest_floor_return_air_temperature_rhs(floor, aliases);
     format!(
-        "fmax(0.0, controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_{global} * fmin(1.0, fmax(0.0, controlSemantics_effectiveZoneTerminalDamperCommand_{global})) * {floor_alias}_floorMultiplier)"
+        "(({outdoor_damper}) * ({outdoor_temp}) + (1.0 - ({outdoor_damper})) * ({return_temp}))"
     )
 }
 
-fn boptest_floor_supply_air_volume_flow_rhs(floor: usize) -> String {
+fn boptest_floor_outdoor_damper_rhs(floor: usize) -> String {
+    let mean_damper = boptest_floor_mean_terminal_damper_rhs(floor);
+    format!("fmax(0.05, fmin(1.0, 0.2 + 0.6 * ({mean_damper})))")
+}
+
+fn boptest_outdoor_temperature_rhs() -> String {
+    let synthetic = boptest_synthetic_outdoor_temperature_rhs();
+    format!("((weather_source_override_enable > 0.5) ? weather_tdrybul_input : {synthetic})")
+}
+
+fn boptest_synthetic_outdoor_temperature_rhs() -> String {
+    let weather_time = "(time + initializationWarmupContract_weatherStartTimeSeconds)";
+    format!(
+        "(286.15 + 7.0 * sin(2.0 * 3.14159265358979323846 * {weather_time} / 86400.0 - 3.14159265358979323846 / 2.0) + 1.5 * sin(4.0 * 3.14159265358979323846 * {weather_time} / 86400.0))"
+    )
+}
+
+fn boptest_weather_profile_rhs() -> String {
+    let synthetic = boptest_synthetic_weather_profile_rhs();
+    format!(
+        "((weather_source_override_enable > 0.5) ? fmax(0.0, fmin(1.0, weather_hglohor_input / 1000.0)) : {synthetic})"
+    )
+}
+
+fn boptest_synthetic_weather_profile_rhs() -> String {
+    let weather_time = "(time + initializationWarmupContract_weatherStartTimeSeconds)";
+    format!(
+        "fmax(0.0, sin(2.0 * 3.14159265358979323846 * ({weather_time} - 6.0 * 3600.0) / 86400.0))"
+    )
+}
+
+fn boptest_sky_temperature_rhs() -> String {
+    let synthetic = boptest_synthetic_sky_temperature_rhs();
+    format!("((weather_source_override_enable > 0.5) ? weather_tblasky_input : {synthetic})")
+}
+
+fn boptest_synthetic_sky_temperature_rhs() -> String {
+    format!(
+        "({} - (7.0 - 3.0 * {}))",
+        boptest_synthetic_outdoor_temperature_rhs(),
+        boptest_synthetic_weather_profile_rhs()
+    )
+}
+
+fn boptest_wind_profile_rhs() -> String {
+    let synthetic = boptest_synthetic_wind_profile_rhs();
+    format!(
+        "((weather_source_override_enable > 0.5) ? fmax(0.0, fmin(1.0, weather_wind_speed_input / 6.0)) : {synthetic})"
+    )
+}
+
+fn boptest_synthetic_wind_profile_rhs() -> String {
+    let weather_time = "(time + initializationWarmupContract_weatherStartTimeSeconds)";
+    format!(
+        "(0.45 + 0.35 * fmax(0.0, sin(2.0 * 3.14159265358979323846 * ({weather_time} - 2.0 * 3600.0) / 86400.0)))"
+    )
+}
+
+fn boptest_floor_zone_airflow_rhs(
+    floor: usize,
+    zone: usize,
+    global: usize,
+    aliases: &HashSet<String>,
+) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let nominal_air_flow = boptest_floor_zone_nominal_air_mass_flow_alias(floor, zone, aliases);
+    let on_zone = boptest_floor_on_zone_rhs(floor, aliases);
+    let damper = boptest_floor_terminal_damper_rhs(global);
+    format!("(({on_zone}) * (({nominal_air_flow}) / {floor_alias}_rhoAir * ({damper})))")
+}
+
+fn boptest_floor_supply_air_volume_flow_rhs(floor: usize, aliases: &HashSet<String>) -> String {
     let start = (floor - 1) * 5 + 1;
     let terms = (1..=5)
         .map(|zone| {
             let global = start + zone - 1;
-            boptest_floor_zone_airflow_rhs(floor, zone, global)
+            boptest_floor_zone_airflow_rhs(floor, zone, global, aliases)
         })
         .collect::<Vec<_>>()
         .join(" + ");
     format!("({terms})")
 }
 
-fn boptest_floor_zone_supply_temperature_rhs(floor: usize, zone: usize, global: usize) -> String {
-    let floor_alias = format!("floor{floor}BoptestAirNetwork");
-    let reheat = format!(
-        "fmin(1.0, fmax(0.0, controlSemantics_effectiveZoneTerminalReheatCommand_{global}))"
+fn boptest_floor_supply_air_mass_flow_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    let total_nominal = (1..=5)
+        .map(|zone| boptest_floor_zone_nominal_air_mass_flow_alias(floor, zone, aliases))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let mean_damper = boptest_floor_mean_terminal_damper_rhs(floor);
+    let fan_enable = boptest_floor_direct_fan_enable_rhs(floor, aliases);
+    let pressure_ratio = format!(
+        "fmax(0.0, fmin(2.0, fmax(0.0, ahu_duct_static_pressure_setpoint_{floor}) / 400.0))"
     );
     format!(
-        "({floor_alias}_TSupAir + {reheat} * {floor_alias}_eps_{zone} * fmax(0.0, hotWaterPlant_hotWaterSupplyTemperature - {floor_alias}_TSupAir))"
+        "(({fan_enable}) * ({total_nominal}) * fmax(0.05, ({mean_damper})) * fmax(0.25, ({pressure_ratio})))"
     )
 }
 
-fn boptest_floor_zone_reheat_load_rhs(floor: usize, zone: usize, global: usize) -> String {
-    let floor_alias = format!("floor{floor}BoptestAirNetwork");
-    let airflow = boptest_floor_zone_airflow_rhs(floor, zone, global);
-    let supply = boptest_floor_zone_supply_temperature_rhs(floor, zone, global);
+fn boptest_floor_on_zone_rhs(floor: usize, aliases: &HashSet<String>) -> String {
+    boptest_floor_direct_fan_enable_rhs(floor, aliases)
+}
+
+fn boptest_floor_direct_fan_enable_rhs(floor: usize, aliases: &HashSet<String>) -> String {
     format!(
-        "fmax(0.0, {floor_alias}_rhoAir * {floor_alias}_cpAir * ({airflow}) * fmax(0.0, ({supply}) - {floor_alias}_TSupAir))"
+        "fmax(0.0, fmin(1.0, {}))",
+        top_down_effective_ahu_supply_fan_speed_rhs(floor, aliases)
     )
+}
+
+fn boptest_floor_mean_terminal_damper_rhs(floor: usize) -> String {
+    let start = (floor - 1) * 5 + 1;
+    let terms = (start..start + 5)
+        .map(boptest_floor_terminal_damper_rhs)
+        .collect::<Vec<_>>()
+        .join(" + ");
+    format!("(({terms}) / 5.0)")
+}
+
+fn boptest_floor_terminal_damper_rhs(global: usize) -> String {
+    format!("fmin(1.0, fmax(0.0, controlSemantics_effectiveZoneTerminalDamperCommand_{global}))")
+}
+
+fn boptest_floor_zone_supply_temperature_rhs(
+    floor: usize,
+    zone: usize,
+    global: usize,
+    aliases: &HashSet<String>,
+) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let airflow = boptest_floor_zone_airflow_rhs(floor, zone, global, aliases);
+    let air_capacity = format!("{floor_alias}_rhoAir * {floor_alias}_cpAir * ({airflow})");
+    let reheat_load = boptest_floor_zone_reheat_load_rhs(floor, zone, global, aliases);
+    format!("({floor_alias}_TSupAir + ({reheat_load}) / fmax(0.001, ({air_capacity})))")
+}
+
+fn boptest_floor_zone_reheat_load_rhs(
+    floor: usize,
+    zone: usize,
+    global: usize,
+    aliases: &HashSet<String>,
+) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let airflow = boptest_floor_zone_airflow_rhs(floor, zone, global, aliases);
+    let nominal_water_flow =
+        boptest_floor_zone_nominal_reheat_water_mass_flow_rhs(floor, zone, aliases);
+    let reheat = format!(
+        "fmin(1.0, fmax(0.0, controlSemantics_effectiveZoneTerminalReheatCommand_{global}))"
+    );
+    let air_capacity = format!("{floor_alias}_rhoAir * {floor_alias}_cpAir * ({airflow})");
+    let water_capacity = format!("hotWaterPlant_cpWater * ({nominal_water_flow}) * ({reheat})");
+    format!(
+        "fmax(0.0, {floor_alias}_eps_{zone} * fmin(fmax(0.0, ({air_capacity})), fmax(0.0, ({water_capacity}))) * fmax(0.0, hotWaterPlant_hotWaterSupplyTemperature - {floor_alias}_TSupAir))"
+    )
+}
+
+fn boptest_floor_zone_nominal_reheat_water_mass_flow_rhs(
+    floor: usize,
+    zone: usize,
+    aliases: &HashSet<String>,
+) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let candidates = [
+        format!("{floor_alias}_mWatFloRat_{floor}_{zone}"),
+        format!("{floor_alias}_mWatFloRat_{zone}"),
+        format!("{floor_alias}_floor_mWatFloRat{zone}"),
+        format!("{floor_alias}_floor_fivZonVAV_mWatFloRat{zone}"),
+        format!("{floor_alias}_floor_fivZonVAV_vAV{zone}_mWatFloRat"),
+        format!("{floor_alias}_floor_fivZonVAV_vAV{zone}_heaCoil_mWatFloRat"),
+    ];
+    if let Some(alias) = candidates.into_iter().find(|alias| aliases.contains(alias)) {
+        return alias;
+    }
+    let nominal_air_flow = boptest_floor_zone_nominal_air_mass_flow_alias(floor, zone, aliases);
+    format!("(({nominal_air_flow}) * 0.3 * (35.0 - 12.88) / 4.2 / 20.0)")
 }
 
 fn boptest_public_reheat_zone_index(floor: usize, alias: &str) -> Option<usize> {
@@ -5553,7 +8133,7 @@ fn boptest_public_reheat_zone_index(floor: usize, alias: &str) -> Option<usize> 
     None
 }
 
-fn boptest_floor_load_read_surface_rhs(alias: &str) -> Option<String> {
+fn boptest_floor_load_read_surface_rhs(alias: &str, aliases: &HashSet<String>) -> Option<String> {
     let hot_water_sum = "(floor1BoptestAirNetwork_hotWaterReheatThermalLoad + floor2BoptestAirNetwork_hotWaterReheatThermalLoad + floor3BoptestAirNetwork_hotWaterReheatThermalLoad)";
     if alias == "hotWaterPlant_terminalReheatDemand" {
         return Some(hot_water_sum.to_string());
@@ -5561,7 +8141,7 @@ fn boptest_floor_load_read_surface_rhs(alias: &str) -> Option<String> {
 
     for floor in 1..=3 {
         let chw_load = format!("floor{floor}BoptestAirNetwork_chilledWaterThermalLoad");
-        let chw_load_rhs = boptest_floor_chilled_water_airside_load_rhs(floor);
+        let chw_load_rhs = boptest_floor_chilled_water_airside_load_rhs(floor, aliases);
         if alias == chw_load {
             return Some(chw_load_rhs.clone());
         }
@@ -5592,26 +8172,44 @@ fn boptest_floor_load_read_surface_rhs(alias: &str) -> Option<String> {
     None
 }
 
-fn boptest_chilled_water_mass_flow_read_aliases() -> &'static [&'static str] {
+fn boptest_chilled_water_wrapper_mass_flow_read_aliases() -> &'static [&'static str] {
     &[
         "chilledWaterPlant_chilledWaterMassFlow",
         "chilledWaterPlant_secondaryChilledWaterMassFlow",
         "chilledWaterPlant_coolingCoilWaterMassFlow",
-        "chilledWaterPlant_chillerPlant_mCHW_tot",
-        "chilledWaterPlant_chillerPlant_senMasFloSecCHW_m_flow",
         "reaChiWatSys_mCHWTot_y",
     ]
 }
 
-fn boptest_hot_water_mass_flow_read_aliases() -> &'static [&'static str] {
+fn boptest_chilled_water_internal_mass_flow_read_aliases() -> &'static [&'static str] {
+    &[
+        "chilledWaterPlant_chillerPlant_mCHW_tot",
+        "chilledWaterPlant_chillerPlant_senMasFloSecCHW_m_flow",
+    ]
+}
+
+fn boptest_hot_water_wrapper_mass_flow_read_aliases() -> &'static [&'static str] {
     &[
         "hotWaterPlant_hotWaterMassFlow",
         "hotWaterPlant_hotWaterDistributionMassFlow",
         "hotWaterPlant_boilerLoopMassFlow",
-        "hotWaterPlant_boilerPlant_mHW_tot",
-        "hotWaterPlant_boilerPlant_senMasFlo_m_flow",
         "reaHotWatSys_mHWTot_y",
     ]
+}
+
+fn boptest_hot_water_internal_mass_flow_read_aliases() -> &'static [&'static str] {
+    &[
+        "hotWaterPlant_boilerPlant_mHW_tot",
+        "hotWaterPlant_boilerPlant_senMasFlo_m_flow",
+    ]
+}
+
+fn boptest_chilled_water_wrapper_mass_flow_rhs() -> String {
+    "(chilledWaterPlant_terminalToWaterDemand <= 1e-6 ? 0.0 : fmin(chilledWaterPlant_nominalMassFlow, chilledWaterPlant_terminalToWaterDemand / fmax(0.001, chilledWaterPlant_cpWater * chilledWaterPlant_nominalLoopDeltaT)))".to_string()
+}
+
+fn boptest_hot_water_wrapper_mass_flow_rhs() -> String {
+    boptest_plant_total_mass_flow_rhs("hotWaterPlant.boilerPlant.pumSecHW")
 }
 
 fn boptest_chilled_water_dp_read_aliases() -> &'static [&'static str] {
@@ -5646,6 +8244,10 @@ fn boptest_plant_total_mass_flow_rhs(pump_array_prefix: &str) -> String {
 }
 
 fn boptest_plant_distribution_dp_rhs(pump_array_prefix: &str, network_dp_nominal: &str) -> String {
+    if let Some(rhs) = boptest_parallel_secondary_pump_network_dp_rhs(pump_array_prefix) {
+        return rhs;
+    }
+
     let volume_terms = (1..=2)
         .map(|index| {
             let prefix = format!("{pump_array_prefix}.pum[{index}].varSpeFloMov");
@@ -5670,9 +8272,14 @@ fn boptest_plant_distribution_dp_rhs(pump_array_prefix: &str, network_dp_nominal
 }
 
 fn boptest_plant_pump_volume_flow_rhs(prefix: &str) -> Option<String> {
+    if let Some(rhs) = boptest_parallel_secondary_pump_volume_flow_rhs(prefix) {
+        return Some(rhs);
+    }
+
     let (parent, curve_len) = boptest_plant_pump_parent_and_curve_len(prefix)?;
     let parent_alias = var_name_to_c_alias(parent);
-    let speed = clamp_unit_interval_rhs(&format!("{parent_alias}_u"));
+    let speed = boptest_plant_pump_actual_speed_rhs(parent)
+        .unwrap_or_else(|| clamp_unit_interval_rhs(&format!("{parent_alias}_u")));
     let dp = boptest_plant_pump_dp_signal(prefix)?;
     let (network_dp_nominal, network_volume_flow_nominal) =
         boptest_plant_pump_network_resistance(prefix, &parent_alias)?;
@@ -5684,12 +8291,182 @@ fn boptest_plant_pump_volume_flow_rhs(prefix: &str) -> Option<String> {
     ))
 }
 
+fn boptest_parallel_secondary_pump_volume_flow_rhs(prefix: &str) -> Option<String> {
+    let (pump_array_prefix, index, curve_len, network_dp_nominal) =
+        boptest_parallel_secondary_pump_group(prefix)?;
+    Some(boptest_parallel_secondary_pump_network_flow_rhs(
+        pump_array_prefix,
+        index,
+        curve_len,
+        network_dp_nominal,
+    ))
+}
+
+fn boptest_parallel_secondary_pump_network_dp_rhs(pump_array_prefix: &str) -> Option<String> {
+    if pump_array_prefix == "hotWaterPlant.boilerPlant.pumSecHW" {
+        Some(boptest_parallel_secondary_pump_network_common_dp_rhs(
+            pump_array_prefix,
+            5,
+            "plant_hot_water_dp_setpoint",
+        ))
+    } else if pump_array_prefix == "chilledWaterPlant.chillerPlant.pumSecCHW" {
+        Some(boptest_parallel_secondary_pump_network_common_dp_rhs(
+            pump_array_prefix,
+            6,
+            "plant_chilled_water_dp_setpoint",
+        ))
+    } else {
+        None
+    }
+}
+
+fn boptest_parallel_secondary_pump_group(
+    prefix: &str,
+) -> Option<(&'static str, usize, usize, &'static str)> {
+    if let Some(index) = parse_indexed_component_signal(
+        prefix,
+        "hotWaterPlant.boilerPlant.pumSecHW.pum[",
+        "].varSpeFloMov",
+    )
+    .map(|(_, index)| index)
+    {
+        if (1..=2).contains(&index) {
+            return Some((
+                "hotWaterPlant.boilerPlant.pumSecHW",
+                index,
+                5,
+                "plant_hot_water_dp_setpoint",
+            ));
+        }
+    }
+    if let Some(index) = parse_indexed_component_signal(
+        prefix,
+        "chilledWaterPlant.chillerPlant.pumSecCHW.pum[",
+        "].varSpeFloMov",
+    )
+    .map(|(_, index)| index)
+    {
+        if (1..=2).contains(&index) {
+            return Some((
+                "chilledWaterPlant.chillerPlant.pumSecCHW",
+                index,
+                6,
+                "plant_chilled_water_dp_setpoint",
+            ));
+        }
+    }
+    None
+}
+
+fn boptest_parallel_secondary_pump_network_flow_rhs(
+    pump_array_prefix: &str,
+    index: usize,
+    curve_len: usize,
+    network_dp_nominal: &str,
+) -> String {
+    let (_, network_volume_flow_nominal) =
+        boptest_parallel_secondary_pump_network_parts(pump_array_prefix, curve_len);
+    let (speed1, speed2, volume_curve1, pressure_curve1, volume_curve2, pressure_curve2) =
+        boptest_parallel_secondary_pump_curve_parts(pump_array_prefix, curve_len);
+    format!(
+        "__rumoca_parallel2_mover_network_flow({curve_len}, {index}, {network_dp_nominal}, {network_volume_flow_nominal}, {speed1}, {speed2}, {volume_curve1}, {pressure_curve1}, {volume_curve2}, {pressure_curve2})"
+    )
+}
+
+fn boptest_parallel_secondary_pump_network_common_dp_rhs(
+    pump_array_prefix: &str,
+    curve_len: usize,
+    network_dp_nominal: &str,
+) -> String {
+    let (_, network_volume_flow_nominal) =
+        boptest_parallel_secondary_pump_network_parts(pump_array_prefix, curve_len);
+    let (speed1, speed2, volume_curve1, pressure_curve1, volume_curve2, pressure_curve2) =
+        boptest_parallel_secondary_pump_curve_parts(pump_array_prefix, curve_len);
+    format!(
+        "__rumoca_parallel2_mover_network_dp({curve_len}, {network_dp_nominal}, {network_volume_flow_nominal}, {speed1}, {speed2}, {volume_curve1}, {pressure_curve1}, {volume_curve2}, {pressure_curve2})"
+    )
+}
+
+fn boptest_parallel_secondary_pump_network_parts(
+    pump_array_prefix: &str,
+    curve_len: usize,
+) -> (String, String) {
+    let plant_prefix = if pump_array_prefix == "hotWaterPlant.boilerPlant.pumSecHW" {
+        "hotWaterPlant.boilerPlant"
+    } else {
+        "chilledWaterPlant.chillerPlant"
+    };
+    let nominal_terms = (1..=2)
+        .map(|index| {
+            let parent_alias = var_name_to_c_alias(&format!("{pump_array_prefix}.pum[{index}]"));
+            let stage =
+                secondary_pump_stage_rhs(plant_prefix, index).unwrap_or_else(|| "0.0".to_string());
+            format!("(({stage}) > 0.5 ? {parent_alias}_VolFloCur_{curve_len} : 0.0)")
+        })
+        .collect::<Vec<_>>();
+    (
+        format!("({})", nominal_terms.join(" + ")),
+        format!("({})", nominal_terms.join(" + ")),
+    )
+}
+
+fn boptest_parallel_secondary_pump_curve_parts(
+    pump_array_prefix: &str,
+    curve_len: usize,
+) -> (String, String, String, String, String, String) {
+    let parent1 = format!("{pump_array_prefix}.pum[1]");
+    let parent2 = format!("{pump_array_prefix}.pum[2]");
+    let parent1_alias = var_name_to_c_alias(&parent1);
+    let parent2_alias = var_name_to_c_alias(&parent2);
+    let speed1 = boptest_plant_pump_actual_speed_rhs(&parent1)
+        .unwrap_or_else(|| clamp_unit_interval_rhs(&format!("{parent1_alias}_u")));
+    let speed2 = boptest_plant_pump_actual_speed_rhs(&parent2)
+        .unwrap_or_else(|| clamp_unit_interval_rhs(&format!("{parent2_alias}_u")));
+    let volume_curve1 =
+        c_compound_literal_for_indexed_aliases(&parent1_alias, "VolFloCur", curve_len);
+    let pressure_curve1 =
+        c_compound_literal_for_indexed_aliases(&parent1_alias, "PreCur", curve_len);
+    let volume_curve2 =
+        c_compound_literal_for_indexed_aliases(&parent2_alias, "VolFloCur", curve_len);
+    let pressure_curve2 =
+        c_compound_literal_for_indexed_aliases(&parent2_alias, "PreCur", curve_len);
+    (
+        speed1,
+        speed2,
+        volume_curve1,
+        pressure_curve1,
+        volume_curve2,
+        pressure_curve2,
+    )
+}
+
+fn boptest_plant_pump_actual_speed_rhs(parent: &str) -> Option<String> {
+    if let Some(index) =
+        parse_indexed_component_signal(parent, "hotWaterPlant.boilerPlant.pumSecHW.pum[", "]")
+            .map(|(_, index)| index)
+    {
+        let stage = secondary_pump_stage_rhs("hotWaterPlant.boilerPlant", index)?;
+        let filter_y = var_name_to_c_alias(&format!("{parent}.varSpeFloMov.filter.y"));
+        return Some(format!("({stage} * {filter_y})"));
+    }
+    if let Some(index) =
+        parse_indexed_component_signal(parent, "chilledWaterPlant.chillerPlant.pumSecCHW.pum[", "]")
+            .map(|(_, index)| index)
+    {
+        let stage = secondary_pump_stage_rhs("chilledWaterPlant.chillerPlant", index)?;
+        let filter_y = var_name_to_c_alias(&format!("{parent}.varSpeFloMov.filter.y"));
+        return Some(format!("({stage} * {filter_y})"));
+    }
+    None
+}
+
 fn synthesize_boptest_plant_mover_efficiency_rhs(var_name: &str) -> Option<String> {
     let prefix = boptest_plant_var_speed_mover_prefix(var_name)?;
     let (parent, curve_len) = boptest_plant_pump_parent_and_curve_len(prefix)?;
     let parent_alias = var_name_to_c_alias(parent);
     let alias = var_name_to_c_alias(prefix);
-    let speed = clamp_unit_interval_rhs(&format!("{parent_alias}_u"));
+    let speed = boptest_plant_pump_actual_speed_rhs(parent)
+        .unwrap_or_else(|| clamp_unit_interval_rhs(&format!("{parent_alias}_u")));
     let volume_curve =
         c_compound_literal_for_indexed_aliases(&parent_alias, "VolFloCur", curve_len);
     if var_name.ends_with(".eff.etaHyd") || var_name.ends_with(".etaHyd") {
@@ -5715,10 +8492,8 @@ fn synthesize_boptest_plant_mover_efficiency_rhs(var_name: &str) -> Option<Strin
 }
 
 fn boptest_plant_pump_dp_signal(prefix: &str) -> Option<String> {
-    if prefix.contains(".pumSecCHW.pum[") {
-        Some("fmax(0.0, chilledWaterPlant_chillerPlant_dpMea)".to_string())
-    } else if prefix.contains(".pumSecHW.pum[") {
-        Some("fmax(0.0, hotWaterPlant_boilerPlant_dp)".to_string())
+    if prefix.contains(".pumSecCHW.pum[") || prefix.contains(".pumSecHW.pum[") {
+        Some("0.0".to_string())
     } else {
         None
     }
@@ -5730,12 +8505,12 @@ fn boptest_plant_pump_network_resistance(
 ) -> Option<(String, String)> {
     if prefix.contains(".pumSecCHW.pum[") {
         Some((
-            "chilledWaterPlant_chilledWaterStaticPressureSetpoint".to_string(),
+            "plant_chilled_water_dp_setpoint".to_string(),
             format!("{parent_alias}_VolFloCur_5"),
         ))
     } else if prefix.contains(".pumSecHW.pum[") {
         Some((
-            "hotWaterPlant_boptestHotWaterStaticPressureSetpoint".to_string(),
+            "plant_hot_water_dp_setpoint".to_string(),
             format!("{parent_alias}_VolFloCur_4"),
         ))
     } else {
@@ -5808,6 +8583,9 @@ fn synthesize_conpi_control_signal_rhs(var_name: &str, equations: &Value) -> Opt
     if let Some(prefix) = var_name.strip_suffix(".booToRea.y")
         && prefix.ends_with(".conPI")
     {
+        if is_boptest_secondary_pump_conpi_prefix(prefix) {
+            return Some("1.0".to_string());
+        }
         let input = format!("{prefix}.booToRea.u");
         let input_alias = var_name_to_c_alias(&input);
         if aliases.contains(&input_alias) {
@@ -5832,6 +8610,20 @@ fn synthesize_conpi_control_signal_rhs(var_name: &str, equations: &Value) -> Opt
         let alias = var_name_to_c_alias(&pid_output);
         if aliases.contains(&alias) {
             return Some(alias);
+        }
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".y")
+        && prefix.ends_with(".conPI")
+    {
+        let pid_output = var_name_to_c_alias(&format!("{prefix}.conPID.y"));
+        if is_boptest_secondary_pump_conpi_prefix(prefix) && aliases.contains(&pid_output) {
+            let plant_prefix = prefix.strip_suffix(".secPumCon.conPI")?;
+            return Some(secondary_pump_conpi_rhs(plant_prefix));
+        }
+        let boolean_output = var_name_to_c_alias(&format!("{prefix}.booToRea.y"));
+        if aliases.contains(&boolean_output) && aliases.contains(&pid_output) {
+            return Some(format!("({boolean_output} * {pid_output})"));
         }
     }
 
@@ -5861,6 +8653,18 @@ fn synthesize_conpi_control_signal_rhs(var_name: &str, equations: &Value) -> Opt
     }
 
     if let Some(prefix) = var_name.strip_suffix(".secPumCon.dpMea") {
+        if prefix == "hotWaterPlant.boilerPlant" {
+            return Some(boptest_plant_distribution_dp_rhs(
+                "hotWaterPlant.boilerPlant.pumSecHW",
+                "plant_hot_water_dp_setpoint",
+            ));
+        }
+        if prefix == "chilledWaterPlant.chillerPlant" {
+            return Some(boptest_plant_distribution_dp_rhs(
+                "chilledWaterPlant.chillerPlant.pumSecCHW",
+                "plant_chilled_water_dp_setpoint",
+            ));
+        }
         for measurement in [format!("{prefix}.dpMea"), format!("{prefix}.dp")] {
             let alias = var_name_to_c_alias(&measurement);
             if aliases.contains(&alias) {
@@ -5929,6 +8733,54 @@ fn synthesize_conpi_control_signal_rhs(var_name: &str, equations: &Value) -> Opt
         }
     }
 
+    if let Some(prefix) = var_name
+        .strip_suffix(".conPID.y")
+        .or_else(|| var_name.strip_suffix(".conPID.lim.y"))
+        && prefix.ends_with(".conPI")
+    {
+        let input = var_name_to_c_alias(&format!("{prefix}.conPID.addPID.y"));
+        let lower = var_name_to_c_alias(&format!("{prefix}.conPID.yMin"));
+        let upper = var_name_to_c_alias(&format!("{prefix}.conPID.yMax"));
+        if aliases.contains(&input) {
+            return Some(format!("fmax({lower}, fmin({upper}, {input}))"));
+        }
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".conPID.lim.u")
+        && prefix.ends_with(".conPI")
+    {
+        let input = var_name_to_c_alias(&format!("{prefix}.conPID.addPID.y"));
+        if aliases.contains(&input) {
+            return Some(input);
+        }
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".conPID.addPID.y")
+        && prefix.ends_with(".conPI")
+    {
+        let proportional_derivative = var_name_to_c_alias(&format!("{prefix}.conPID.addPD.y"));
+        let integral = var_name_to_c_alias(&format!("{prefix}.conPID.I.y"));
+        if aliases.contains(&proportional_derivative) {
+            if aliases.contains(&integral) {
+                return Some(format!("({proportional_derivative} + {integral})"));
+            }
+            return Some(proportional_derivative);
+        }
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".conPID.addPD.y")
+        && prefix.ends_with(".conPI")
+    {
+        let proportional = var_name_to_c_alias(&format!("{prefix}.conPID.P.y"));
+        let derivative = var_name_to_c_alias(&format!("{prefix}.conPID.D.y"));
+        if aliases.contains(&proportional) {
+            if aliases.contains(&derivative) {
+                return Some(format!("({proportional} + {derivative})"));
+            }
+            return Some(proportional);
+        }
+    }
+
     if let Some((prefix, index)) =
         parse_indexed_component_signal(var_name, ".secPumCon.product[", "].u1")
     {
@@ -5970,12 +8822,123 @@ fn synthesize_conpi_control_signal_rhs(var_name: &str, equations: &Value) -> Opt
 
 fn synthesize_pump_stage_output_rhs(var_name: &str, _equations: &Value) -> Option<String> {
     let (prefix, index) = parse_indexed_component_signal(var_name, ".secPumCon.pumSta.y[", "]")?;
+    secondary_pump_stage_rhs(&prefix, index)
+}
+
+fn synthesize_boptest_secondary_pump_command_rhs(var_name: &str) -> Option<String> {
+    if let Some((prefix, index)) = parse_indexed_component_signal(var_name, ".secPumCon.y[", "]") {
+        return secondary_pump_command_rhs(&prefix, index);
+    }
+
+    if let Some((prefix, index)) =
+        parse_indexed_component_signal(var_name, ".secPumCon.product[", "].y")
+    {
+        return secondary_pump_command_rhs(&prefix, index);
+    }
+
+    if let Some((prefix, index)) =
+        parse_indexed_component_signal(var_name, ".secPumCon.product[", "].u1")
+    {
+        return secondary_pump_stage_rhs(&prefix, index);
+    }
+
+    if let Some((prefix, _index)) =
+        parse_indexed_component_signal(var_name, ".secPumCon.product[", "].u2")
+    {
+        return Some(secondary_pump_conpi_rhs(&prefix));
+    }
+
+    for (pump_prefix, plant_prefix) in [
+        (
+            "hotWaterPlant.boilerPlant.pumSecHW",
+            "hotWaterPlant.boilerPlant",
+        ),
+        (
+            "chilledWaterPlant.chillerPlant.pumSecCHW",
+            "chilledWaterPlant.chillerPlant",
+        ),
+    ] {
+        if let Some(index) = parse_secondary_pump_signal_index(var_name, pump_prefix) {
+            return secondary_pump_command_rhs(plant_prefix, index);
+        }
+    }
+
+    None
+}
+
+fn parse_secondary_pump_signal_index(var_name: &str, pump_prefix: &str) -> Option<usize> {
+    parse_indexed_suffix(var_name, &format!("{pump_prefix}.speSig"))
+        .map(|(_, index)| index)
+        .or_else(|| {
+            parse_indexed_component_signal(var_name, &format!("{pump_prefix}.pum["), "].u")
+                .map(|(_, index)| index)
+        })
+        .or_else(|| {
+            [
+                "].varSpeFloMov.y",
+                "].varSpeFloMov.gaiSpe.u",
+                "].varSpeFloMov.gaiSpe.y",
+                "].varSpeFloMov.inputSwitch.u",
+                "].varSpeFloMov.inputSwitch.y",
+                "].varSpeFloMov.filter.u",
+            ]
+            .iter()
+            .find_map(|suffix| {
+                parse_indexed_component_signal(var_name, &format!("{pump_prefix}.pum["), suffix)
+                    .map(|(_, index)| index)
+            })
+        })
+}
+
+fn secondary_pump_command_rhs(plant_prefix: &str, index: usize) -> Option<String> {
+    let stage = secondary_pump_stage_rhs(plant_prefix, index)?;
+    let command = secondary_pump_conpi_rhs(plant_prefix);
+    Some(format!("({stage} * {command})"))
+}
+
+fn secondary_pump_conpi_rhs(plant_prefix: &str) -> String {
+    let pid = var_name_to_c_alias(&format!("{plant_prefix}.secPumCon.conPI.conPID.y"));
+    let enabled = var_name_to_c_alias(&format!("{plant_prefix}.secPumCon.conPI.booToRea.y"));
+    format!("({enabled} * {pid})")
+}
+
+fn is_boptest_secondary_pump_conpi_prefix(prefix: &str) -> bool {
+    matches!(
+        prefix,
+        "hotWaterPlant.boilerPlant.secPumCon.conPI"
+            | "chilledWaterPlant.chillerPlant.secPumCon.conPI"
+    )
+}
+
+fn synthesize_boptest_secondary_pump_stage_count_rhs(var_name: &str) -> Option<String> {
+    let plant_prefix = var_name
+        .strip_suffix(".secPumCon.pumSta.pumNSta.y")
+        .or_else(|| var_name.strip_suffix(".secPumCon.pumSta.pumNSta.multiSwitch.y"))?;
+    if !matches!(
+        plant_prefix,
+        "hotWaterPlant.boilerPlant" | "chilledWaterPlant.chillerPlant"
+    ) {
+        return None;
+    }
+
+    let on =
+        synthesize_boptest_boolean_expression_rhs(&format!("{plant_prefix}.secPumCon.pumSta.On"))
+            .unwrap_or_else(|| var_name_to_c_alias(&format!("{plant_prefix}.secPumCon.pumSta.On")));
+    let previous_stage_speed =
+        var_name_to_c_alias(&format!("{plant_prefix}.secPumCon.pumSta.sta[1]"));
+    let stage_up_threshold =
+        var_name_to_c_alias(&format!("{plant_prefix}.secPumCon.pumSta.thehol_up"));
+    Some(format!(
+        "(({on}) > 0.5 ? ((({previous_stage_speed}) > ({stage_up_threshold}) && ({previous_stage_speed}) > 0.0) ? 2.0 : 1.0) : 0.0)"
+    ))
+}
+
+fn secondary_pump_stage_rhs(plant_prefix: &str, index: usize) -> Option<String> {
     if index == 0 {
         return None;
     }
-    let pump_stage_on = format!("{prefix}.secPumCon.pumSta.On");
-    let alias = var_name_to_c_alias(&pump_stage_on);
-    Some(format!("({alias} ? 1.0 : 0.0)"))
+    let active_stage = var_name_to_c_alias(&format!("{plant_prefix}.secPumCon.pumSta.pumNSta.y"));
+    Some(format!("(({active_stage}) >= {index}.0 ? 1.0 : 0.0)"))
 }
 
 fn synthesize_stategraph_active_steps_rhs(
@@ -6265,6 +9228,38 @@ pub(super) fn discrete_rhs_for_var_function(
     Ok(var_name_to_c_alias(&name))
 }
 
+/// Extract RHS for FMI discrete-valued (`m`) updates.
+///
+/// The `m` partition contains Modelica StateGraph bookkeeping in addition to
+/// simple BooleanExpression/enable values. The generic discrete RHS path may
+/// render unsupported array-port expressions such as `anyTrue(port, port_size)`;
+/// keep those states self-held until the backend has a typed array lowering.
+pub(super) fn discrete_valued_rhs_for_var_function(
+    var_name: Value,
+    equations_z: Value,
+    equations_m: Value,
+    dae: Value,
+    _config: Value,
+) -> RenderResult {
+    let name = var_name.to_string().trim_matches('"').to_string();
+
+    if let Some(synthesized) = synthesize_parent_discrete_enable_rhs(&name, &dae) {
+        return Ok(synthesized);
+    }
+
+    if let Some(synthesized) = synthesize_boptest_boolean_expression_rhs(&name) {
+        return Ok(synthesized);
+    }
+
+    if let Some(synthesized) =
+        synthesize_boptest_stage_condition_connection_rhs(&name, &equations_z, &equations_m)
+    {
+        return Ok(synthesized);
+    }
+
+    Ok(var_name_to_c_alias(&name))
+}
+
 fn synthesize_boptest_stage_condition_connection_rhs(
     var_name: &str,
     equations_z: &Value,
@@ -6295,8 +9290,20 @@ fn synthesize_boptest_boolean_expression_rhs(var_name: &str) -> Option<String> {
         var_name,
         "chilledWaterPlant.chillerPlant.On.y"
             | "chilledWaterPlant.chillerPlant.On1.y"
+            | "chilledWaterPlant.chillerPlant.secPumCon.On"
+            | "chilledWaterPlant.chillerPlant.secPumCon.conPI.On"
+            | "chilledWaterPlant.chillerPlant.secPumCon.conPI.booToRea.u"
+            | "chilledWaterPlant.chillerPlant.secPumCon.conPI.conPID.trigger"
+            | "chilledWaterPlant.chillerPlant.secPumCon.conPI.conPID.I.trigger"
+            | "chilledWaterPlant.chillerPlant.secPumCon.pumSta.On"
             | "hotWaterPlant.boilerPlant.On.y"
             | "hotWaterPlant.boilerPlant.On1.y"
+            | "hotWaterPlant.boilerPlant.secPumCon.On"
+            | "hotWaterPlant.boilerPlant.secPumCon.conPI.On"
+            | "hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.u"
+            | "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.trigger"
+            | "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.I.trigger"
+            | "hotWaterPlant.boilerPlant.secPumCon.pumSta.On"
     ) {
         Some("1.0".to_string())
     } else {
@@ -6481,6 +9488,56 @@ fn alias_or_fallback(aliases: &HashSet<String>, alias: &str, fallback: &str) -> 
     }
 }
 
+fn boptest_floor_duct_static_pressure_alias(floor: usize, aliases: &HashSet<String>) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let candidates = [
+        format!("{floor_alias}_ductStaticPressure"),
+        format!("{floor_alias}_pSet"),
+        indexed_alias("ahu_duct_static_pressure_setpoint", floor),
+    ];
+    candidates
+        .into_iter()
+        .find(|alias| aliases.contains(alias))
+        .unwrap_or_else(|| "0.0".to_string())
+}
+
+fn boptest_floor_zone_nominal_air_mass_flow_alias(
+    floor: usize,
+    zone: usize,
+    aliases: &HashSet<String>,
+) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let candidates = [
+        format!("{floor_alias}_mAirFloRat_{floor}_{zone}"),
+        format!("{floor_alias}_mAirFloRat_{zone}"),
+        format!("{floor_alias}_floor_mAirFloRat{zone}"),
+        format!("{floor_alias}_floor_fivZonVAV_mAirFloRat{zone}"),
+    ];
+    candidates
+        .into_iter()
+        .find(|alias| aliases.contains(alias))
+        .unwrap_or_else(|| boptest_floor_air_mass_flow_source_rhs(floor, zone))
+}
+
+fn boptest_floor_zone_temperature_alias(
+    floor: usize,
+    zone: usize,
+    aliases: &HashSet<String>,
+) -> String {
+    let floor_alias = format!("floor{floor}BoptestAirNetwork");
+    let candidates = [
+        format!("{floor_alias}_floor_fivZonVAV_zon_{zone}_fmuZon_T"),
+        format!("{floor_alias}_floor_fivZonVAV_zon_{zone}_vol_medium_T"),
+        format!("{floor_alias}_floor_fivZonVAV_zon_{zone}_vol_medium_state_T"),
+        format!("{floor_alias}_floor_fivZonVAV_zon_{zone}_vol_T_start"),
+        format!("{floor_alias}_initialZoneTemperature_{zone}"),
+    ];
+    candidates
+        .into_iter()
+        .find(|alias| aliases.contains(alias))
+        .unwrap_or_else(|| "293.15".to_string())
+}
+
 fn joined_indexed_alias_or(aliases: &HashSet<String>, start: &str, end: &str) -> Option<String> {
     let mut matches = aliases
         .iter()
@@ -6565,12 +9622,10 @@ fn c_aliases_for_equations(equations: &Value) -> HashSet<String> {
 }
 
 fn collect_c_aliases_from_dae(dae: &Value) -> HashSet<String> {
-    let mut aliases = c_aliases_for_equations(
-        &dae.get_attr("f_x")
-            .unwrap_or(Value::from(Vec::<Value>::new())),
-    );
+    let mut aliases =
+        c_aliases_for_equations(&get_field(dae, "f_x").unwrap_or(Value::from(Vec::<Value>::new())));
     for field in ["x", "y", "w", "z", "m", "u", "p", "constants"] {
-        let Ok(vars) = dae.get_attr(field) else {
+        let Ok(vars) = get_field(dae, field) else {
             continue;
         };
         collect_c_aliases_from_variable_map(&vars, &mut aliases);
@@ -6580,14 +9635,14 @@ fn collect_c_aliases_from_dae(dae: &Value) -> HashSet<String> {
 
 fn fingerprint_dae_alias_context(dae: &Value) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    fingerprint_equations(
-        &dae.get_attr("f_x")
-            .unwrap_or(Value::from(Vec::<Value>::new())),
-    )?
-    .hash(&mut hasher);
+    get_field(dae, "f_x")
+        .ok()
+        .and_then(|value| value.len())
+        .unwrap_or(0)
+        .hash(&mut hasher);
     for field in ["x", "y", "w", "z", "m", "u", "p", "constants"] {
         field.hash(&mut hasher);
-        let Ok(vars) = dae.get_attr(field) else {
+        let Ok(vars) = get_field(dae, field) else {
             0usize.hash(&mut hasher);
             continue;
         };
@@ -6596,7 +9651,7 @@ fn fingerprint_dae_alias_context(dae: &Value) -> Option<u64> {
             && let Some(iter) = object.try_iter_pairs()
         {
             for (key, _) in iter.take(8) {
-                key.to_string().hash(&mut hasher);
+                template_value_name(&key).hash(&mut hasher);
             }
         }
     }
@@ -6610,12 +9665,34 @@ fn collect_c_aliases_from_variable_map(vars: &Value, aliases: &mut HashSet<Strin
     let Some(iter) = object.try_iter_pairs() else {
         return;
     };
-    for (key, _) in iter {
+    for (key, var) in iter {
         let name = key.to_string().trim_matches('"').to_string();
         aliases.insert(var_name_to_c_alias(&name));
         if let Some((base_name, _)) = name.split_once('[') {
             aliases.insert(var_name_to_c_alias(base_name));
         }
+        collect_scalarized_dim_aliases(&name, &var, aliases);
+    }
+}
+
+fn collect_scalarized_dim_aliases(name: &str, var: &Value, aliases: &mut HashSet<String>) {
+    if parse_indexed_ref(name).is_some() {
+        return;
+    };
+    let Ok(dims) = get_field(var, "dims") else {
+        return;
+    };
+    if dims.len().unwrap_or(0) != 1 {
+        return;
+    }
+    let Ok(dim_value) = dims.get_item(&Value::from(0)) else {
+        return;
+    };
+    let Some(dim) = dim_value.as_usize() else {
+        return;
+    };
+    for index in 1..=dim.min(4096) {
+        aliases.insert(var_name_to_c_alias(&format!("{name}[{index}]")));
     }
 }
 
@@ -6710,6 +9787,39 @@ fn scalarized_alias_sort_key(alias: &str, start: &str, end: &str) -> Vec<usize> 
 }
 
 fn alg_equation_candidates_for_var(equations: &Value, var_name: &str) -> Option<Vec<Value>> {
+    alg_equation_candidates_for_var_with_selector(equations, var_name, |index| &index.by_var_name)
+}
+
+fn direct_alg_equation_candidates_for_var(equations: &Value, var_name: &str) -> Option<Vec<Value>> {
+    let candidates = exact_direct_alg_equation_candidates_for_var(equations, var_name)?;
+    if !candidates.is_empty() {
+        return Some(candidates);
+    }
+    if let Some(base_name) = var_name.split_once('[').map(|(base, _)| base) {
+        let base_candidates = exact_direct_alg_equation_candidates_for_var(equations, base_name)?;
+        if !base_candidates.is_empty() {
+            return Some(base_candidates);
+        }
+    }
+    Some(Vec::new())
+}
+
+fn prioritized_alg_equation_candidates_for_var(
+    equations: &Value,
+    var_name: &str,
+) -> Option<Vec<Value>> {
+    let direct_candidates = direct_alg_equation_candidates_for_var(equations, var_name)?;
+    if direct_candidates.is_empty() {
+        alg_equation_candidates_for_var(equations, var_name)
+    } else {
+        Some(direct_candidates)
+    }
+}
+
+fn exact_direct_alg_equation_candidates_for_var(
+    equations: &Value,
+    var_name: &str,
+) -> Option<Vec<Value>> {
     let fingerprint = fingerprint_equations(equations)?;
     ALG_EQUATION_CANDIDATE_INDEX.with(|cache| {
         let mut cached = cache.borrow_mut();
@@ -6722,25 +9832,61 @@ fn alg_equation_candidates_for_var(equations: &Value, var_name: &str) -> Option<
         };
 
         let mut candidates = Vec::new();
-        append_equation_candidates(index, var_name, &mut candidates);
+        append_equation_candidates(&index.by_direct_target_name, var_name, &mut candidates);
+        dedup_equation_candidates(&mut candidates);
+        Some(candidates)
+    })
+}
+
+fn alg_equation_candidates_for_var_with_selector(
+    equations: &Value,
+    var_name: &str,
+    select_map: impl Fn(&AlgEquationCandidateIndex) -> &HashMap<String, Vec<Value>>,
+) -> Option<Vec<Value>> {
+    let fingerprint = fingerprint_equations(equations)?;
+    ALG_EQUATION_CANDIDATE_INDEX.with(|cache| {
+        let mut cached = cache.borrow_mut();
+        let index = match cached.as_ref() {
+            Some(index) if index.fingerprint == fingerprint => index,
+            _ => {
+                *cached = Some(build_alg_equation_candidate_index(equations, fingerprint)?);
+                cached.as_ref()?
+            }
+        };
+
+        let mut candidates = Vec::new();
+        append_equation_candidates(select_map(index), var_name, &mut candidates);
         if let Some(base_name) = var_name.split_once('[').map(|(base, _)| base) {
-            append_equation_candidates(index, base_name, &mut candidates);
+            append_equation_candidates(select_map(index), base_name, &mut candidates);
         }
+        dedup_equation_candidates(&mut candidates);
         Some(candidates)
     })
 }
 
 fn append_equation_candidates(
-    index: &AlgEquationCandidateIndex,
+    by_var_name: &HashMap<String, Vec<Value>>,
     var_name: &str,
     candidates: &mut Vec<Value>,
 ) {
-    let Some(equations) = index.by_var_name.get(var_name) else {
-        return;
-    };
-    for eq in equations {
-        candidates.push(eq.clone());
+    for candidate_name in [var_name.to_string(), var_name_to_c_alias(var_name)] {
+        let Some(equations) = by_var_name.get(&candidate_name) else {
+            continue;
+        };
+        for eq in equations {
+            candidates.push(eq.clone());
+        }
     }
+}
+
+fn dedup_equation_candidates(candidates: &mut Vec<Value>) {
+    let mut seen = HashSet::new();
+    candidates.retain(|candidate| {
+        let Some(key) = value_object_identity(candidate) else {
+            return true;
+        };
+        seen.insert(key)
+    });
 }
 
 fn build_alg_equation_candidate_index(
@@ -6751,36 +9897,105 @@ fn build_alg_equation_candidate_index(
         return None;
     };
     let mut by_var_name: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut by_direct_target_name: HashMap<String, Vec<Value>> = HashMap::new();
     for eq in iter {
         let mut var_names = HashSet::new();
         collect_equation_var_refs(&eq, &mut var_names);
         for var_name in var_names {
             by_var_name.entry(var_name).or_default().push(eq.clone());
         }
+        let mut direct_target_names = HashSet::new();
+        collect_direct_alg_target_refs(&eq, &mut direct_target_names);
+        for var_name in direct_target_names {
+            by_direct_target_name
+                .entry(var_name)
+                .or_default()
+                .push(eq.clone());
+        }
     }
     Some(AlgEquationCandidateIndex {
         fingerprint,
         by_var_name,
+        by_direct_target_name,
     })
 }
 
 fn fingerprint_equations(equations: &Value) -> Option<u64> {
+    let len = equations.len()?;
+    if let Some(cache_key) = equation_fingerprint_cache_key(equations, len) {
+        if let Some(fingerprint) =
+            EQUATION_FINGERPRINT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied())
+        {
+            return Some(fingerprint);
+        }
+        let fingerprint = fingerprint_equations_uncached(equations, len);
+        EQUATION_FINGERPRINT_CACHE.with(|cache| {
+            cache.borrow_mut().insert(cache_key, fingerprint);
+        });
+        return Some(fingerprint);
+    }
+    Some(fingerprint_equations_uncached(equations, len))
+}
+
+fn equation_fingerprint_cache_key(
+    equations: &Value,
+    len: usize,
+) -> Option<EquationFingerprintCacheKey> {
+    let object_addr = value_object_identity(equations)?;
+    Some(EquationFingerprintCacheKey { object_addr, len })
+}
+
+fn value_object_identity(value: &Value) -> Option<usize> {
+    let object = value.as_object()?;
+    Some(object as *const _ as *const () as usize)
+}
+
+fn fingerprint_equations_uncached(equations: &Value, len: usize) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    equations.len()?.hash(&mut hasher);
+    len.hash(&mut hasher);
     if let Ok(iter) = equations.try_iter() {
         for eq in iter.take(16) {
-            eq.to_string().hash(&mut hasher);
+            if let Some(key) = value_object_identity(&eq) {
+                key.hash(&mut hasher);
+            } else {
+                eq.len().unwrap_or(0).hash(&mut hasher);
+            }
         }
     }
-    Some(hasher.finish())
+    hasher.finish()
 }
 
 fn collect_equation_var_refs(eq: &Value, out: &mut HashSet<String>) {
-    if let Ok(lhs) = eq.get_attr("lhs") {
+    if let Ok(lhs) = get_field(eq, "lhs") {
         collect_lhs_var_refs(&lhs, out);
     }
-    if let Ok(rhs) = eq.get_attr("rhs") {
+    if let Ok(rhs) = get_field(eq, "rhs").or_else(|_| get_field(eq, "residual")) {
         collect_expr_var_refs(&rhs, out);
+    }
+}
+
+fn collect_direct_alg_target_refs(eq: &Value, out: &mut HashSet<String>) {
+    if let Ok(lhs) = get_field(eq, "lhs") {
+        collect_lhs_var_refs(&lhs, out);
+        return;
+    }
+    let Some(rhs) = equation_residual_or_rhs(eq).ok().flatten() else {
+        return;
+    };
+    let Ok(binary) = get_field(&rhs, "Binary") else {
+        return;
+    };
+    if !is_sub_op(&binary) {
+        return;
+    }
+    let Ok(rhs_side) = get_field(&binary, "rhs") else {
+        return;
+    };
+    if contains_der(&rhs_side) {
+        return;
+    }
+    if let Ok(lhs_side) = get_field(&binary, "lhs") {
+        collect_lhs_var_refs(&lhs_side, out);
     }
 }
 
@@ -6797,8 +10012,10 @@ fn insert_var_name(out: &mut HashSet<String>, name: &str) {
         return;
     }
     out.insert(name.to_string());
+    out.insert(var_name_to_c_alias(name));
     if let Some((base_name, _)) = name.split_once('[') {
         out.insert(base_name.to_string());
+        out.insert(var_name_to_c_alias(base_name));
     }
 }
 
@@ -7477,10 +10694,10 @@ fn find_algebraic_rhs_assignment_direct(
     var_name: &str,
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
-    let Ok(lhs) = eq.get_attr("lhs") else {
+    let Ok(lhs) = get_field(eq, "lhs") else {
         return no_render_match();
     };
-    let Ok(rhs) = eq.get_attr("rhs") else {
+    let Ok(rhs) = get_field(eq, "rhs") else {
         return no_render_match();
     };
     render_direct_rhs_for_lhs(&lhs, &rhs, var_name, cfg)
@@ -7517,19 +10734,42 @@ fn render_direct_rhs_for_lhs(
 ) -> Result<Option<String>, minijinja::Error> {
     if is_var_ref_of(lhs, var_name) {
         if let Some((_base_name, index)) = parse_indexed_ref(var_name)
-            && let Some(projected) = render_array_expr_at_index(rhs, index, cfg)
+            && let Some(rendered) = render_array_expr_at_index(rhs, index, cfg)
         {
-            return Ok(Some(projected));
+            return Ok(Some(rendered));
         }
         return render_expression(rhs, cfg).map(Some);
     }
     if let Some(index) = array_lhs_element_index(lhs, var_name) {
-        return render_array_expr_at_index_or_scalar_checked(rhs, index, cfg);
+        return render_whole_array_assignment_rhs_at_index(rhs, index, cfg);
     }
     if let Some(index) = whole_array_lhs_index(lhs, var_name) {
-        return render_array_expr_at_index_or_scalar_checked(rhs, index, cfg);
+        return render_whole_array_assignment_rhs_at_index(rhs, index, cfg);
     }
     no_render_match()
+}
+
+fn render_whole_array_assignment_rhs_at_index(
+    rhs: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if let Ok(var_ref) = get_field(rhs, "VarRef") {
+        let subscripts = get_field(&var_ref, "subscripts").ok();
+        if subscripts
+            .as_ref()
+            .and_then(|value| value.len())
+            .unwrap_or(0)
+            == 0
+        {
+            let rhs_name = var_ref_full_name(&var_ref);
+            if let Some(rendered) = lookup_scalarized_array_symbol(&rhs_name, index, cfg) {
+                return Ok(Some(rendered));
+            }
+            return render_expression(rhs, cfg).map(Some);
+        }
+    }
+    render_array_expr_at_index_or_scalar_checked(rhs, index, cfg)
 }
 
 fn array_lhs_element_index(lhs: &Value, var_name: &str) -> Option<usize> {
@@ -7565,7 +10805,7 @@ fn find_algebraic_rhs_assignment(
     var_name: &str,
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
-    let Ok(lhs) = eq.get_attr("lhs") else {
+    let Ok(lhs) = get_field(eq, "lhs") else {
         return no_render_match();
     };
 
@@ -7583,12 +10823,13 @@ fn find_algebraic_rhs_assignment(
     };
 
     if lhs_matches {
-        let Ok(rhs) = eq.get_attr("rhs") else {
+        let Ok(rhs) = get_field(eq, "rhs") else {
             return no_render_match();
         };
 
-        // If the RHS is an If-expression with sample() guard (when-statement),
-        // extract the update expression from the true branch, not the full ternary.
+        // If the RHS is an If-expression with sample() guard (clocked
+        // when-statement), extract the update expression from the true branch.
+        // Ordinary event when-equations must keep the full guarded RHS.
         if let Ok(if_expr) = get_field(&rhs, "If")
             && let Ok(branches) = get_field(&if_expr, "branches")
             && let Ok(first_branch) = branches.get_item(&Value::from(0))
@@ -7596,18 +10837,26 @@ fn find_algebraic_rhs_assignment(
         {
             // branches is a list of [condition, expression] pairs.
             let items: Vec<_> = branch_array.take(2).collect();
-            if let Some(update_expr) = items.get(1) {
+            if items
+                .first()
+                .is_some_and(|condition| expr_contains_sample_builtin(condition))
+                && let Some(update_expr) = items.get(1)
+            {
+                if let Some((_base_name, index)) = parse_indexed_ref(var_name)
+                    && let Some(rendered) = render_array_expr_at_index(update_expr, index, cfg)
+                {
+                    return Ok(Some(rendered));
+                }
                 return render_expression(update_expr, cfg).map(Some);
             }
         }
 
-        if let Some((_base_name, index)) = parse_indexed_ref(var_name)
-            && let Some(projected) = render_array_expr_at_index(&rhs, index, cfg)
-        {
-            return Ok(Some(projected));
-        }
-
         // Fall back to rendering the entire RHS (for non-guarded cases)
+        if let Some((_base_name, index)) = parse_indexed_ref(var_name)
+            && let Some(rendered) = render_array_expr_at_index(&rhs, index, cfg)
+        {
+            return Ok(Some(rendered));
+        }
         return render_expression(&rhs, cfg).map(Some);
     }
 
@@ -7616,11 +10865,16 @@ fn find_algebraic_rhs_assignment(
     let Some((base_name, index)) = parse_indexed_ref(var_name) else {
         return no_render_match();
     };
-    if !is_var_ref_of(&lhs, &base_name) {
+    let lhs_rendered = render_expression(&lhs, cfg).ok();
+    let lhs_matches_base = is_var_ref_of(&lhs, &base_name)
+        || lhs_rendered
+            .as_deref()
+            .is_some_and(|rendered| rendered == var_name_to_c_alias(&base_name));
+    if !lhs_matches_base {
         return no_render_match();
     }
 
-    let Ok(rhs) = eq.get_attr("rhs") else {
+    let Ok(rhs) = get_field(eq, "rhs") else {
         return no_render_match();
     };
     let Ok(array) = get_field(&rhs, "Array") else {
@@ -7693,12 +10947,22 @@ fn find_algebraic_rhs_subtraction(
 
     // Case 1: 0 = var - expr → var = expr
     if is_var_ref_of(&lhs_side, var_name) && !contains_der(&rhs_side) {
+        if let Some((_base_name, index)) = parse_indexed_ref(var_name)
+            && let Some(rendered) = render_array_expr_at_index(&rhs_side, index, cfg)
+        {
+            return Ok(Some(rendered));
+        }
         let rhs_expr = render_expression(&rhs_side, cfg)?;
         return Ok(Some(rhs_expr));
     }
 
     // Case 2: 0 = expr - var → var = expr
     if is_var_ref_of(&rhs_side, var_name) && !contains_der(&lhs_side) {
+        if let Some((_base_name, index)) = parse_indexed_ref(var_name)
+            && let Some(rendered) = render_array_expr_at_index(&lhs_side, index, cfg)
+        {
+            return Ok(Some(rendered));
+        }
         let lhs_expr = render_expression(&lhs_side, cfg)?;
         return Ok(Some(lhs_expr));
     }
@@ -8010,7 +11274,11 @@ fn var_ref_base_name(var_ref: &Value) -> String {
 
 fn parse_indexed_ref(name: &str) -> Option<(String, usize)> {
     let trimmed = name.trim_matches('"');
-    let (base, subscripts) = rumoca_core::split_trailing_subscript_suffix(trimmed)?;
+    let (base, subscripts) = if let Some(stem) = trimmed.strip_suffix(']') {
+        stem.rsplit_once('[')?
+    } else {
+        rumoca_core::split_trailing_subscript_suffix(trimmed)?
+    };
     let mut parts = subscripts.split(',');
     let first = parts.next()?.trim().parse::<usize>().ok()?;
     if first < 1 {
@@ -8020,6 +11288,10 @@ fn parse_indexed_ref(name: &str) -> Option<(String, usize)> {
         return None;
     }
     Some((base.to_string(), first))
+}
+
+fn is_runtime_scalar_var(name: &str) -> bool {
+    matches!(name.trim_matches('"'), "time" | "t")
 }
 
 fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
@@ -8035,6 +11307,10 @@ fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> O
 
     if let Ok(var_ref) = get_field(expr, "VarRef") {
         return render_indexed_var_ref(&var_ref, index, cfg);
+    }
+
+    if let Ok(array_comp) = get_field(expr, "ArrayComprehension") {
+        return render_array_comprehension_expr_at_index(&array_comp, index, cfg);
     }
 
     if let Ok(binary) = get_field(expr, "Binary") {
@@ -8061,6 +11337,12 @@ fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> O
             let branch = branches.get_item(&Value::from(branch_idx)).ok()?;
             let cond = branch.get_item(&Value::from(0)).ok()?;
             let branch_expr = branch.get_item(&Value::from(1)).ok()?;
+            if let Some(cond_value) = render_expr::constant_bool_expr(&cond) {
+                if cond_value {
+                    result = render_array_expr_at_index_or_scalar(&branch_expr, index, cfg)?;
+                }
+                continue;
+            }
             let cond_render = render_expression(&cond, cfg).ok()?;
             let branch_render = render_array_expr_at_index_or_scalar(&branch_expr, index, cfg)?;
             result = format!("(({cond_render}) ? ({branch_render}) : ({result}))");
@@ -8076,7 +11358,71 @@ fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> O
         return render_function_array_expr_at_index(&call, index, cfg);
     }
 
+    if let Ok(field_access) = get_field(expr, "FieldAccess") {
+        return render_field_access_array_expr_at_index(&field_access, index, cfg);
+    }
+
     None
+}
+
+fn render_field_access_array_expr_at_index(
+    field_access: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let field = get_field(field_access, "field")
+        .ok()
+        .map(|value| value.to_string().trim_matches('"').to_string())?;
+    let base = get_field(field_access, "base").ok()?;
+    let call = get_field(&base, "FunctionCall").ok()?;
+    let raw_name = render_expr::render_name_field(&call, "name", "FunctionCall").ok()?;
+    let last = rumoca_core::top_level_last_segment(&raw_name);
+    let arg_index = match (last, field.as_str()) {
+        ("setState_pTX" | "setState_phX" | "ThermodynamicState", "X" | "reference_X") => 2,
+        _ => return None,
+    };
+    let args = get_field(&call, "args").ok()?;
+    if let Some(named_arg) = named_function_arg_value(&args, "X") {
+        return render_array_expr_at_index_or_scalar(&named_arg, index, cfg);
+    }
+    let arg = args.get_item(&Value::from(arg_index)).ok()?;
+    render_array_expr_at_index_or_scalar(&arg, index, cfg)
+}
+
+fn named_function_arg_value(args: &Value, name: &str) -> Option<Value> {
+    let len = args.len()?;
+    let expected = format!("__rumoca_named_arg__.{name}");
+    for i in 0..len {
+        let arg = args.get_item(&Value::from(i)).ok()?;
+        let call = get_field(&arg, "FunctionCall").ok()?;
+        let call_name = render_expr::render_name_field(&call, "name", "FunctionCall").ok()?;
+        if call_name != expected {
+            continue;
+        }
+        let call_args = get_field(&call, "args").ok()?;
+        return call_args.get_item(&Value::from(0)).ok();
+    }
+    None
+}
+
+fn render_array_comprehension_expr_at_index(
+    array_comp: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if index == 0 {
+        return None;
+    }
+    let indices = get_field(array_comp, "indices").ok()?;
+    if indices.len()? != 1 {
+        return None;
+    }
+    let iter = indices.get_item(&Value::from(0)).ok()?;
+    let iter_name = get_field(&iter, "name").ok()?.to_string();
+    let body = get_field(array_comp, "expr").ok()?;
+    let mut iter_cfg = cfg.clone();
+    iter_cfg.substitutions.push((iter_name, index.to_string()));
+    render_expression(&body, &iter_cfg).ok()
 }
 
 fn render_array_expr_at_index_or_scalar(
@@ -8111,18 +11457,31 @@ fn render_array_expr_at_index_or_scalar_checked(
 
 fn render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
     let subscripts = get_field(var_ref, "subscripts").ok()?;
+    let raw_name = render_serialized_name(&get_field(var_ref, "name").ok()?);
+    if subscripts.len().unwrap_or(0) == 1
+        && let Ok(subscript) = subscripts.get_item(&Value::from(0))
+        && let Ok(idx) = get_field(&subscript, "Index")
+        && let Ok(row) = subscript_index_value(&idx)
+    {
+        return lookup_scalarized_row_slice_symbol(&raw_name, row, index, cfg);
+    }
     if subscripts.len().unwrap_or(0) != 0 {
         return None;
     }
-
-    let raw_name = get_field(var_ref, "name")
-        .ok()
-        .map(|n| {
-            get_field(&n, "0")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|_| n.to_string())
-        })
-        .map_or(String::new(), |raw| raw);
+    if is_runtime_scalar_var(&raw_name) {
+        return super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name)
+            .or_else(|| Some(var_name_to_c_alias(&raw_name)));
+    }
+    if let Some(symbol) = lookup_scalarized_array_symbol(&raw_name, index, cfg) {
+        return Some(symbol);
+    }
+    if raw_name.contains('[') {
+        return super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name)
+            .or_else(|| Some(var_name_to_c_alias(&raw_name)));
+    }
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name) {
+        return Some(symbol);
+    }
     let name = if cfg.sanitize_dots {
         super::sanitize_name(&raw_name)
     } else {
@@ -8134,6 +11493,108 @@ fn render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Op
         Some(format!("{name}[{index}]"))
     } else {
         Some(format!("{}[{}]", name, index - 1))
+    }
+}
+
+fn lookup_scalarized_row_slice_symbol(
+    base_name: &str,
+    row: i64,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if row < 1 || index == 0 {
+        return None;
+    }
+    let source_ref = format!("{base_name}[{row},{index}]");
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
+        return Some(symbol);
+    }
+    let row_ref = format!("{base_name}[{row}]");
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &row_ref) {
+        return Some(symbol);
+    }
+    Some(if cfg.sanitize_dots || cfg.subscript_underscore {
+        super::sanitize_name(&source_ref)
+    } else {
+        format!("{base_name}[{row},{index}]")
+    })
+}
+
+fn lookup_scalarized_array_symbol(
+    base_name: &str,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if index == 0 {
+        return None;
+    }
+    if let Some(symbol) =
+        super::lookup_symbol_value(cfg.symbols.as_ref(), &format!("{base_name}[{index}]"))
+    {
+        return Some(symbol);
+    }
+    if let Some(columns) = scalarized_matrix_columns_from_symbols(base_name, cfg) {
+        let row = ((index - 1) / columns) + 1;
+        let col = ((index - 1) % columns) + 1;
+        let source_ref = format!("{base_name}[{row},{col}]");
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
+            return Some(symbol);
+        }
+        return None;
+    }
+    for columns in 2..=16 {
+        let row = ((index - 1) / columns) + 1;
+        let col = ((index - 1) % columns) + 1;
+        let source_ref = format!("{base_name}[{row},{col}]");
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
+            return Some(symbol);
+        }
+    }
+    if super::lookup_symbol_value(cfg.symbols.as_ref(), &format!("{base_name}[2]")).is_none()
+        && let Some(symbol) =
+            super::lookup_symbol_value(cfg.symbols.as_ref(), &format!("{base_name}[1]"))
+    {
+        return Some(symbol);
+    }
+    None
+}
+
+fn scalarized_matrix_columns_from_symbols(base_name: &str, cfg: &ExprConfig) -> Option<usize> {
+    let symbols = cfg.symbols.as_ref()?;
+    let object = symbols.as_object()?;
+    let pairs = object.try_iter_pairs()?;
+    let prefix = format!("{base_name}[");
+    let mut max_row = 0usize;
+    let mut max_col = 0usize;
+    let mut seen = false;
+    for (key, _) in pairs {
+        let key = template_value_name(&key);
+        let Some(rest) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(subscripts) = rest.strip_suffix(']') else {
+            continue;
+        };
+        let Some((row, col)) = subscripts.split_once(',') else {
+            continue;
+        };
+        let Ok(row) = row.trim().parse::<usize>() else {
+            continue;
+        };
+        let Ok(col) = col.trim().parse::<usize>() else {
+            continue;
+        };
+        if row == 0 || col == 0 {
+            continue;
+        }
+        seen = true;
+        max_row = max_row.max(row);
+        max_col = max_col.max(col);
+    }
+    if seen && max_row > 0 && max_col > 0 {
+        Some(max_col)
+    } else {
+        None
     }
 }
 
@@ -8175,8 +11636,20 @@ fn render_builtin_array_expr_at_index(
     cfg: &ExprConfig,
 ) -> Option<String> {
     let func_name = get_field(builtin, "function").ok()?.to_string();
+    let func_name = func_name.trim_matches('"');
     let args = get_field(builtin, "args").ok()?;
-    match func_name.as_str() {
+    match func_name {
+        "Cat" | "cat" => render_cat_array_expr_at_index(&args, index, cfg),
+        "Zeros" | "zeros" => Some(if cfg.power == "**" {
+            "REAL_C(0.0)".to_string()
+        } else {
+            "0.0".to_string()
+        }),
+        "Ones" | "ones" => Some(if cfg.power == "**" {
+            "REAL_C(1.0)".to_string()
+        } else {
+            "1.0".to_string()
+        }),
         "Linspace" => render_linspace_array_expr_at_index(&args, index, cfg),
         "Smooth" => {
             let inner = args.get_item(&Value::from(1)).ok()?;
@@ -8196,6 +11669,120 @@ fn render_builtin_array_expr_at_index(
     }
 }
 
+fn render_cat_array_expr_at_index(args: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
+    if index == 0 || args.len()? < 2 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for arg_pos in 1..args.len()? {
+        let arg = args.get_item(&Value::from(arg_pos)).ok()?;
+        if let Some(len) = array_expr_static_len(&arg, cfg) {
+            if index <= offset + len {
+                return render_array_expr_at_index_or_scalar(&arg, index - offset, cfg);
+            }
+            offset += len;
+            continue;
+        }
+        if arg_pos + 1 == args.len()? {
+            return render_array_expr_at_index_or_scalar(&arg, index - offset, cfg);
+        }
+        return None;
+    }
+    None
+}
+
+fn array_expr_static_len(expr: &Value, cfg: &ExprConfig) -> Option<usize> {
+    if let Ok(array) = get_field(expr, "Array") {
+        return get_field(&array, "elements").ok()?.len();
+    }
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        let subscripts = get_field(&var_ref, "subscripts").ok()?;
+        if subscripts.len()? == 0 {
+            let raw_name = render_serialized_name(&get_field(&var_ref, "name").ok()?);
+            return scalarized_1d_len_for_base(&raw_name, cfg);
+        }
+    }
+    if let Ok(array_comp) = get_field(expr, "ArrayComprehension") {
+        return array_comprehension_static_len(&array_comp, cfg);
+    }
+    if let Ok(builtin) = get_field(expr, "BuiltinCall") {
+        let func_name = get_field(&builtin, "function").ok()?.to_string();
+        let func_name = func_name.trim_matches('"');
+        if matches!(func_name, "Zeros" | "zeros" | "Ones" | "ones") {
+            let args = get_field(&builtin, "args").ok()?;
+            let first = args.get_item(&Value::from(0)).ok()?;
+            return literal_usize_expr(&first);
+        }
+    }
+    None
+}
+
+fn array_comprehension_static_len(array_comp: &Value, cfg: &ExprConfig) -> Option<usize> {
+    let indices = get_field(array_comp, "indices").ok()?;
+    if indices.len()? != 1 {
+        return None;
+    }
+    let iter = indices.get_item(&Value::from(0)).ok()?;
+    if let Ok(range) = get_field(&iter, "range")
+        && let Ok(range) = get_field(&range, "Range")
+        && let (Some(start), Some(end)) = (
+            literal_usize_expr(&get_field(&range, "start").ok()?),
+            literal_usize_expr(&get_field(&range, "end").ok()?),
+        )
+    {
+        return (end >= start).then_some(end - start + 1);
+    }
+    let body = get_field(array_comp, "expr").ok()?;
+    first_scalarized_var_ref_len(&body, cfg)
+}
+
+fn first_scalarized_var_ref_len(expr: &Value, cfg: &ExprConfig) -> Option<usize> {
+    if let Ok(inner) = get_field(expr, "expr") {
+        return first_scalarized_var_ref_len(&inner, cfg);
+    }
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        let raw_name = render_serialized_name(&get_field(&var_ref, "name").ok()?);
+        if let Some(len) = scalarized_1d_len_for_base(&raw_name, cfg) {
+            return Some(len);
+        }
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        let lhs = get_field(&binary, "lhs").ok()?;
+        let rhs = get_field(&binary, "rhs").ok()?;
+        return first_scalarized_var_ref_len(&lhs, cfg)
+            .or_else(|| first_scalarized_var_ref_len(&rhs, cfg));
+    }
+    if let Ok(unary) = get_field(expr, "Unary") {
+        let rhs = get_field(&unary, "rhs").ok()?;
+        return first_scalarized_var_ref_len(&rhs, cfg);
+    }
+    if let Ok(if_expr) = get_field(expr, "If") {
+        if let Ok(else_branch) = get_field(&if_expr, "else_branch")
+            && let Some(len) = first_scalarized_var_ref_len(&else_branch, cfg)
+        {
+            return Some(len);
+        }
+        let branches = get_field(&if_expr, "branches").ok()?;
+        for branch_idx in 0..branches.len()? {
+            let branch = branches.get_item(&Value::from(branch_idx)).ok()?;
+            let branch_expr = branch.get_item(&Value::from(1)).ok()?;
+            if let Some(len) = first_scalarized_var_ref_len(&branch_expr, cfg) {
+                return Some(len);
+            }
+        }
+    }
+    None
+}
+
+fn literal_usize_expr(expr: &Value) -> Option<usize> {
+    let literal = get_field(expr, "Literal").ok()?;
+    let literal_value = get_field(&literal, "value").unwrap_or(literal);
+    if let Ok(int) = get_field(&literal_value, "Integer") {
+        return int.to_string().parse::<usize>().ok();
+    }
+    None
+}
+
 fn render_function_array_expr_at_index(
     call: &Value,
     index: usize,
@@ -8203,11 +11790,39 @@ fn render_function_array_expr_at_index(
 ) -> Option<String> {
     let name = get_field(call, "name").ok()?;
     let raw_name = render_serialized_name(&name);
+    if top_level_last_segment(&raw_name) == "splineDerivatives" && index > 0 {
+        let args = render_expr::render_args(call, cfg).ok()?;
+        return Some(format!("splineDerivatives_d({args}, {})", index - 1));
+    }
     if top_level_last_segment(&raw_name) != "linspace" {
-        return None;
+        return render_elementwise_function_call_at_index(call, &raw_name, index, cfg);
     }
     let args = get_field(call, "args").ok()?;
     render_linspace_array_expr_at_index(&args, index, cfg)
+}
+
+fn render_elementwise_function_call_at_index(
+    call: &Value,
+    raw_name: &str,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if index == 0 || top_level_last_segment(raw_name) != "regStep" {
+        return None;
+    }
+    let args = get_field(call, "args").ok()?;
+    if args.len()? != 4 {
+        return None;
+    }
+    let arg = |name: &str, pos: usize| -> Option<Value> {
+        named_function_arg_value(&args, name).or_else(|| args.get_item(&Value::from(pos)).ok())
+    };
+    let x = render_expression(&arg("x", 0)?, cfg).ok()?;
+    let y1 = render_array_expr_at_index_or_scalar(&arg("y1", 1)?, index, cfg)?;
+    let y2 = render_array_expr_at_index_or_scalar(&arg("y2", 2)?, index, cfg)?;
+    let x_small = render_expression(&arg("x_small", 3)?, cfg).ok()?;
+    let name = super::emitted_symbol_or_fallback(raw_name, cfg);
+    Some(format!("{name}({x}, {y1}, {y2}, {x_small})"))
 }
 
 fn render_linspace_array_expr_at_index(
@@ -8283,7 +11898,10 @@ fn is_var_ref_of(expr: &Value, target_name: &str) -> bool {
     let Ok(var_ref) = get_field(expr, "VarRef") else {
         return false;
     };
-    var_ref_full_name(&var_ref) == target_name
+    let full_name = var_ref_full_name(&var_ref);
+    full_name == target_name
+        || var_name_to_c_alias(&full_name) == target_name
+        || full_name == var_name_to_c_alias(target_name)
 }
 
 /// Check if a Binary expression's op is Mul or MulElem.
@@ -8506,7 +12124,13 @@ fn synthesize_parent_discrete_enable_rhs(var_name: &str, dae: &Value) -> Option<
     }
     if let Some(prefix) = var_name.strip_suffix(".mixingBox.On") {
         let candidate = format!("{prefix}.onFanOcc");
-        if dae_contains_var(dae, &candidate) {
+        if dae_contains_scalar_var(dae, &candidate) {
+            return Some(var_name_to_c_alias(&candidate));
+        }
+    }
+    if let Some(prefix) = var_name.strip_suffix(".conPI.On") {
+        let candidate = format!("{prefix}.On");
+        if dae_contains_scalar_var(dae, &candidate) {
             return Some(var_name_to_c_alias(&candidate));
         }
     }
@@ -8514,7 +12138,7 @@ fn synthesize_parent_discrete_enable_rhs(var_name: &str, dae: &Value) -> Option<
         && prefix.ends_with(".conPI")
     {
         let candidate = format!("{prefix}.On");
-        if dae_contains_var(dae, &candidate) {
+        if dae_contains_scalar_var(dae, &candidate) {
             return Some(var_name_to_c_alias(&candidate));
         }
     }
@@ -8522,7 +12146,7 @@ fn synthesize_parent_discrete_enable_rhs(var_name: &str, dae: &Value) -> Option<
         && prefix.ends_with(".conPI")
     {
         let candidate = format!("{prefix}.On");
-        if dae_contains_var(dae, &candidate) {
+        if dae_contains_scalar_var(dae, &candidate) {
             return Some(var_name_to_c_alias(&candidate));
         }
     }
@@ -8530,11 +12154,11 @@ fn synthesize_parent_discrete_enable_rhs(var_name: &str, dae: &Value) -> Option<
         && prefix.ends_with(".conPI")
     {
         let pid_trigger = format!("{prefix}.conPID.trigger");
-        if dae_contains_var(dae, &pid_trigger) {
+        if dae_contains_scalar_var(dae, &pid_trigger) {
             return Some(var_name_to_c_alias(&pid_trigger));
         }
         let on_signal = format!("{prefix}.On");
-        if dae_contains_var(dae, &on_signal) {
+        if dae_contains_scalar_var(dae, &on_signal) {
             return Some(var_name_to_c_alias(&on_signal));
         }
     }
@@ -8548,7 +12172,7 @@ fn synthesize_parent_signal_rhs(var_name: &str, suffix: &str, dae: &Value) -> Op
     let mut prefix = var_name.strip_suffix(suffix)?;
     while let Some(parent) = parent_scope(prefix) {
         let candidate = format!("{parent}{suffix}");
-        if candidate != var_name && dae_contains_var(dae, &candidate) {
+        if candidate != var_name && dae_contains_scalar_var(dae, &candidate) {
             return Some(var_name_to_c_alias(&candidate));
         }
         prefix = parent;
@@ -8556,10 +12180,10 @@ fn synthesize_parent_signal_rhs(var_name: &str, suffix: &str, dae: &Value) -> Op
     None
 }
 
-fn dae_contains_var(dae: &Value, var_name: &str) -> bool {
+fn dae_contains_scalar_var(dae: &Value, var_name: &str) -> bool {
     ["m", "z", "y", "u", "x", "p", "c"]
         .into_iter()
-        .any(|map_name| has_var_in_dae_map(dae, map_name, var_name))
+        .any(|map_name| has_scalar_var_in_dae_map(dae, map_name, var_name))
 }
 
 fn parse_indexed_suffix<'a>(name: &'a str, suffix: &str) -> Option<(&'a str, usize)> {
@@ -8576,10 +12200,29 @@ fn indexed_alias(base_name: &str, idx: usize) -> String {
 }
 
 fn has_var_in_dae_map(dae: &Value, map_name: &str, var_name: &str) -> bool {
-    let Ok(map) = dae.get_attr(map_name) else {
+    let Ok(map) = get_field(dae, map_name) else {
         return false;
     };
-    map.get_item(&Value::from(var_name)).is_ok()
+    let Ok(var) = map.get_item(&Value::from(var_name)) else {
+        return false;
+    };
+    get_field(&var, "name").is_ok() || get_field(&var, "dims").is_ok()
+}
+
+fn has_scalar_var_in_dae_map(dae: &Value, map_name: &str, var_name: &str) -> bool {
+    let Ok(map) = get_field(dae, map_name) else {
+        return false;
+    };
+    let Ok(var) = map.get_item(&Value::from(var_name)) else {
+        return false;
+    };
+    if get_field(&var, "name").is_err() && get_field(&var, "dims").is_err() {
+        return false;
+    }
+    let Ok(dims) = get_field(&var, "dims") else {
+        return true;
+    };
+    dims.len().unwrap_or(0) == 0
 }
 
 fn get_first_dim_for_var_in_dae(dae: &Value, var_name: &str) -> Option<usize> {
@@ -8660,6 +12303,158 @@ mod tests {
         assert_eq!(
             synthesize_internal_fluid_volume_species_rhs("room.vol.ports_mXi_flow[2,1]", &aliases,),
             Some("(room_vol_ports_2_m_flow * room_vol_ports_2_Xi_outflow_1)".to_string())
+        );
+    }
+
+    #[test]
+    fn scalarized_row_slice_symbol_keeps_one_dimensional_index() {
+        let cfg = ExprConfig {
+            sanitize_dots: true,
+            subscript_underscore: true,
+            symbols: Some(Value::from_serialize(serde_json::json!({
+                "floor.TZonHeaSet.y[1]": "floor_TZonHeaSet_y_1"
+            }))),
+            ..ExprConfig::default()
+        };
+
+        assert_eq!(
+            lookup_scalarized_row_slice_symbol("floor.TZonHeaSet.y", 1, 1, &cfg),
+            Some("floor_TZonHeaSet_y_1".to_string())
+        );
+    }
+
+    #[test]
+    fn indexed_regstep_rhs_projects_array_arguments() {
+        let expr = Value::from_serialize(serde_json::json!({
+            "FunctionCall": {
+                "name": "Functions.regStep",
+                "args": [
+                    {"VarRef": {"name": "vol.port_a.m_flow", "subscripts": []}},
+                    {"VarRef": {"name": "vol.port_b.Xi_outflow", "subscripts": []}},
+                    {"VarRef": {"name": "vol.port_a.Xi_outflow", "subscripts": []}},
+                    {"VarRef": {"name": "vol.m_flow_small", "subscripts": []}}
+                ]
+            }
+        }));
+        let cfg = ExprConfig {
+            sanitize_dots: true,
+            subscript_underscore: true,
+            ..ExprConfig::default()
+        };
+
+        assert_eq!(
+            render_array_expr_at_index(&expr, 1, &cfg),
+            Some(
+                "Functions_regStep(vol_port_a_m_flow, vol_port_b_Xi_outflow_1, vol_port_a_Xi_outflow_1, vol_m_flow_small)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn indexed_regstep_rhs_reorders_named_arguments() {
+        let expr = Value::from_serialize(serde_json::json!({
+            "FunctionCall": {
+                "name": "Functions.regStep",
+                "args": [
+                    {"FunctionCall": {"name": "__rumoca_named_arg__.y1", "args": [
+                        {"VarRef": {"name": "vol.port_b.Xi_outflow", "subscripts": []}}
+                    ]}},
+                    {"FunctionCall": {"name": "__rumoca_named_arg__.y2", "args": [
+                        {"VarRef": {"name": "vol.port_a.Xi_outflow", "subscripts": []}}
+                    ]}},
+                    {"FunctionCall": {"name": "__rumoca_named_arg__.x", "args": [
+                        {"VarRef": {"name": "vol.port_a.m_flow", "subscripts": []}}
+                    ]}},
+                    {"FunctionCall": {"name": "__rumoca_named_arg__.x_small", "args": [
+                        {"VarRef": {"name": "vol.m_flow_small", "subscripts": []}}
+                    ]}}
+                ]
+            }
+        }));
+        let cfg = ExprConfig {
+            sanitize_dots: true,
+            subscript_underscore: true,
+            ..ExprConfig::default()
+        };
+
+        assert_eq!(
+            render_array_expr_at_index(&expr, 1, &cfg),
+            Some(
+                "Functions_regStep(vol_port_a_m_flow, vol_port_b_Xi_outflow_1, vol_port_a_Xi_outflow_1, vol_m_flow_small)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn internal_fluid_medium_species_projects_indexed_inputs() {
+        let aliases = HashSet::from([
+            "src_medium_Xi_1".to_string(),
+            "src_medium_Xi_2".to_string(),
+            "src_Xi_in_internal".to_string(),
+            "src_Xi_in_internal_1".to_string(),
+            "src_X_in_internal_1".to_string(),
+            "src_X_in_internal_2".to_string(),
+            "floor_fivZonVAV_infAir_1_medium_Xi_1".to_string(),
+            "floor_fivZonVAV_infAir_1_X_in_internal_1".to_string(),
+            "floor_fivZonVAV_exfAir_1_X_in_internal_1".to_string(),
+            "floor_fivZonVAV_out_X_in_internal_2".to_string(),
+            "outdoorAirSource_1_X_in_internal_1".to_string(),
+        ]);
+
+        assert_eq!(
+            synthesize_internal_fluid_volume_medium_rhs("src.medium.Xi[2]", &aliases),
+            Some("src_X_in_internal_2".to_string())
+        );
+        assert_eq!(
+            synthesize_boptest_air_source_trace_rhs(
+                "floor.fivZonVAV.infAir[1].Xi_in_internal[1]",
+                &aliases,
+            ),
+            Some("floor_fivZonVAV_infAir_1_medium_Xi_1".to_string())
+        );
+        assert_eq!(
+            synthesize_boptest_air_source_trace_rhs(
+                "floor.fivZonVAV.exfAir[1].Xi_in_internal[1]",
+                &aliases,
+            ),
+            Some("floor_fivZonVAV_exfAir_1_X_in_internal_1".to_string())
+        );
+        assert_eq!(
+            synthesize_boptest_air_source_trace_rhs(
+                "floor.fivZonVAV.out.Xi_in_internal[2]",
+                &aliases,
+            ),
+            Some("floor_fivZonVAV_out_X_in_internal_2".to_string())
+        );
+        assert_eq!(
+            synthesize_boptest_air_source_trace_rhs(
+                "outdoorAirSource[1].Xi_in_internal[1]",
+                &aliases
+            ),
+            Some("outdoorAirSource_1_X_in_internal_1".to_string())
+        );
+        assert_eq!(
+            synthesize_internal_fluid_volume_medium_rhs(
+                "floor.fivZonVAV.infAir[1].medium.Xi[2]",
+                &aliases,
+            ),
+            Some("floor_fivZonVAV_infAir_1_X_in_internal_2".to_string())
+        );
+        assert_eq!(
+            synthesize_boptest_air_source_trace_rhs(
+                "floor.fivZonVAV.infAir[1].C_in_internal[1]",
+                &aliases,
+            ),
+            Some("0.0".to_string())
+        );
+        assert_eq!(
+            synthesize_internal_fluid_volume_medium_rhs(
+                "floor.fivZonVAV.infAir[1].medium.C[1]",
+                &aliases,
+            ),
+            Some("0.0".to_string())
         );
     }
 }

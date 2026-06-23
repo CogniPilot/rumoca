@@ -122,6 +122,49 @@ fn test_simulation_template_rejects_external_function_with_stable_diagnostic() {
 }
 
 #[test]
+fn test_simulation_template_rejects_energyplus_external_function_even_with_opt_in() {
+    let mut dae = dae::Dae::new();
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange",
+        Default::default(),
+    );
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("exchange_Modelica_EnergyPlus_9_6_0".to_string()),
+        ..Default::default()
+    });
+    dae.symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let err = render_template_with_name(&dae, builtin_template("fmi2", "model.c.jinja"), "M")
+        .expect_err("EnergyPlus external functions must fail closed in simulation templates");
+    use miette::Diagnostic;
+    assert_eq!(
+        err.code().map(|code| code.to_string()),
+        Some("rumoca::codegen::EC004".to_string())
+    );
+
+    assert!(super::simulation_template_external_function_rejected(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange",
+        true
+    ));
+    assert!(super::simulation_template_external_function_rejected(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+        true
+    ));
+    assert!(!super::simulation_template_external_function_rejected(
+        "External.Experimental",
+        true
+    ));
+    assert!(super::simulation_template_external_function_rejected(
+        "External.Experimental",
+        false
+    ));
+}
+
+#[test]
 fn test_fmi_external_dependencies_manifest_renders_library_metadata() {
     let mut dae = dae::Dae::new();
     let mut function = rumoca_core::Function::new(
@@ -884,9 +927,11 @@ fn test_render_solve_row_c_template_function_renders_external_call_bridge() {
         rumoca_ir_solve::LinearOp::ExternalCall {
             dst: 2,
             function: rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusExchange,
+            external_object_index: Some(4),
             args: [0, 1, 0, 0, 0, 0, 0, 0],
             arg_count: 2,
             output_index: 3,
+            output_count: 5,
         },
         rumoca_ir_solve::LinearOp::StoreOutput { src: 2 },
     ];
@@ -902,7 +947,119 @@ fn test_render_solve_row_c_template_function_renders_external_call_bridge() {
 
     assert_eq!(
         rendered,
-        "RUMOCA_SOLVE_EXTERNAL_CALL(\"BuildingsEnergyPlusExchange\", 3, 2, (double[]){Y(0), P(1)})"
+        "RUMOCA_SOLVE_EXTERNAL_CALL(\"BuildingsEnergyPlusExchange\", 4, 3, 5, 2, ((double[]){Y(0), P(1)}))"
+    );
+}
+
+#[test]
+fn test_fmi2_template_preserves_runtime_external_object_handle_storage() {
+    let dae = dae::Dae::new();
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "functions".to_string(),
+        serde_json::json!({
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange": {
+                "inputs": [],
+                "outputs": [],
+                "body": [],
+                "external": {
+                    "language": "C",
+                    "function_name": "exchange_Modelica_EnergyPlus_9_6_0",
+                    "arg_names": [],
+                    "output_name": null
+                }
+            }
+        }),
+    );
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "external_objects": [{
+                "target": "zone.fmuZon.adapter",
+                "constructor": "BuildingsEnergyPlusSpawnExternalObject",
+                "symbol": "allocate_Modelica_EnergyPlus_9_6_0",
+                "args": [{
+                    "name": "idfName",
+                    "value": {"String": "Resources/model.idf"}
+                }]
+            }]
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(rendered.contains("#define N_RUNTIME_EXTERNAL_OBJECTS 1"));
+    assert!(
+        rendered.contains(
+            "void*       runtime_external_objects[N_RUNTIME_EXTERNAL_OBJECTS > 0 ? N_RUNTIME_EXTERNAL_OBJECTS : 1];"
+        ),
+        "runtime external objects need native handle storage, got:\n{rendered}"
+    );
+    assert!(rendered.contains("initialize_runtime_external_objects(m);"));
+    assert!(rendered.contains("free_runtime_external_objects((ModelInstance*)c);"));
+    assert!(
+        rendered.contains("allocate_Modelica_EnergyPlus_9_6_0(0, 0.0"),
+        "template must allocate the native EnergyPlus external object:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("NULL, 2, 0, NULL, 0)"),
+        "empty Spawn derivative metadata is a 0x2 matrix, not a k=0 matrix:\n{rendered}"
+    );
+    assert!(rendered.contains("free_Modelica_EnergyPlus_9_6_0(m->runtime_external_objects[i]);"));
+    assert!(
+        rendered.contains("RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE(instance, function"),
+        "template must route solve ExternalCall through the ModelInstance native bridge:\n{rendered}"
+    );
+
+    let rendered_fmi3 = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+    assert!(rendered_fmi3.contains("#define N_RUNTIME_EXTERNAL_OBJECTS 1"));
+    assert!(
+        rendered_fmi3.contains(
+            "void*        runtime_external_objects[N_RUNTIME_EXTERNAL_OBJECTS > 0 ? N_RUNTIME_EXTERNAL_OBJECTS : 1];"
+        ),
+        "FMI3 runtime external objects need native handle storage, got:\n{rendered_fmi3}"
+    );
+    assert!(rendered_fmi3.contains("initialize_runtime_external_objects(m);"));
+    assert!(rendered_fmi3.contains("free_runtime_external_objects((ModelInstance*)instance);"));
+    assert!(rendered_fmi3.contains("allocate_Modelica_EnergyPlus_9_6_0(0, 0.0"));
+    assert!(rendered_fmi3.contains("NULL, 2, 0, NULL, 0)"));
+    assert!(
+        rendered_fmi3.contains("free_Modelica_EnergyPlus_9_6_0(m->runtime_external_objects[i]);")
+    );
+    assert!(rendered_fmi3.contains("RUMOCA_SOLVE_EXTERNAL_CALL_INSTANCE(instance, function"));
+}
+
+#[test]
+fn test_runtime_external_value_c_renderer_handles_literals_and_arrays() {
+    let rendered = render_template_with_dae_json(
+        &serde_json::json!({
+            "string": {"String": "Resources/model.idf"},
+            "reals": {"Array": [{"Real": 1.5}, {"Real": 2.0}]},
+            "strings": {"Array": [{"String": "TRad"}, {"String": "QCon_flow"}]},
+            "bool": {"Boolean": true},
+            "time": "SimulationTime"
+        }),
+        r#"{{ render_runtime_external_value_c(dae.string) }}
+{{ render_runtime_external_value_c(dae.reals) }}
+{{ render_runtime_external_value_c(dae.strings) }}
+{{ render_runtime_external_value_c(dae.bool) }}
+{{ render_runtime_external_value_c(dae.time) }}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        rendered,
+        "\"Resources/model.idf\"\n(double[]){1.5, 2.0}\n(const char*[]){\"TRad\", \"QCon_flow\"}\n1\nm->time"
     );
 }
 
@@ -938,6 +1095,507 @@ fn test_fmi3_event_indicators_render_from_solver_ir() {
     assert!(
         !rendered.contains("render_event_indicator"),
         "FMI3 event indicators should be generated from solve IR rows"
+    );
+}
+
+#[test]
+fn test_fmi2_outputs_prefer_solve_visible_rows_before_dae_fallback() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        "local_surface".into(),
+        dae::Variable {
+            name: "local_surface".into(),
+            ..Default::default()
+        },
+    );
+    dae.variables.outputs.insert(
+        "surface".into(),
+        dae::Variable {
+            name: "surface".into(),
+            ..Default::default()
+        },
+    );
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "visible_names": ["surface", "local_surface"],
+            "visible_value_rows": {
+                "programs": [[
+                    {"LoadY": {"dst": 0, "index": 2}},
+                    {"LoadP": {"dst": 1, "index": 1}},
+                    {"Binary": {"dst": 2, "op": "Add", "lhs": 0, "rhs": 1}},
+                    {"StoreOutput": {"src": 2}}
+                ], [
+                    {"LoadP": {"dst": 0, "index": 3}},
+                    {"StoreOutput": {"src": 0}}
+                ]]
+            }
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(
+        rendered.contains("m->w[0] = ((__rumoca_solve_y(m, 2)) + (__rumoca_solve_p(m, 1)));"),
+        "FMI2 outputs should use solve visible rows when present, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("m->w[0] = 0.0 /* WARNING: no equation found for surface */;"),
+        "FMI2 outputs must not fall back to a warning zero when solve visible rows are present"
+    );
+    assert!(
+        rendered.contains("m->y[0] = local_surface;  /* local_surface */")
+            && rendered.contains("local_surface = __rumoca_solve_p(m, 3);"),
+        "FMI2 algebraics should use solve visible rows when present, got:\n{rendered}"
+    );
+    assert!(
+        !rendered
+            .contains("local_surface = 0.0 /* WARNING: no equation found for local_surface */;"),
+        "FMI2 algebraics must not fall back to a warning zero when solve visible rows are present"
+    );
+}
+
+#[test]
+fn test_fmi2_solve_y_runtime_cases_do_not_count_zero_length_arrays() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        "empty".into(),
+        dae::Variable {
+            name: "empty".into(),
+            dims: vec![0],
+            ..Default::default()
+        },
+    );
+    dae.variables.algebraics.insert(
+        "after_empty".into(),
+        dae::Variable {
+            name: "after_empty".into(),
+            ..Default::default()
+        },
+    );
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "visible_names": ["empty[1]", "after_empty"]
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(
+        rendered.contains("#define N_ALGEBRAICS     1"),
+        "zero-length algebraic arrays must not contribute to N_ALGEBRAICS:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("case 1: return m->y[0];  /* after_empty */"),
+        "solve_y runtime mapping must use the same zero-length array layout as N_ALGEBRAICS:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("m->y[1]"),
+        "zero-length algebraic arrays must not shift later runtime slots out of bounds:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi2_algebraic_identity_solve_row_falls_back_to_dae_rhs() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        "driven".into(),
+        dae::Variable {
+            name: "driven".into(),
+            ..Default::default()
+        },
+    );
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    dae_json.as_object_mut().unwrap().insert(
+        "f_x".to_string(),
+        serde_json::json!([{
+            "lhs": {
+                "VarRef": {
+                    "name": "driven",
+                    "subscripts": []
+                }
+            },
+            "rhs": {
+                "Literal": {
+                    "value": {
+                        "Real": 7.0
+                    }
+                }
+            }
+        }]),
+    );
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "visible_names": ["driven"],
+            "visible_value_rows": {
+                "programs": [[
+                    {"LoadY": {"dst": 0, "index": 0}},
+                    {"StoreOutput": {"src": 0}}
+                ]]
+            }
+        }),
+    );
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(
+        rendered.contains("driven = 7.0;"),
+        "identity solve rows must not short-circuit explicit DAE algebraic RHS:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("driven = __rumoca_solve_y(m, 0);"),
+        "identity solve row would preserve the stale algebraic storage value:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_output_rhs_prefers_boptest_read_surface_before_solve_visible_row() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {},
+        "y": {
+            "reaChiWatSys_reaPChi_y": {},
+            "chilledWaterPlant.chillerPlant.mulChiSys.P[1]": {},
+            "chilledWaterPlant.chillerPlant.mulChiSys.P[2]": {},
+            "chilledWaterPlant.chillerPlant.mulChiSys.P[3]": {}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {},
+        "solve": {
+            "visible_names": ["reaChiWatSys_reaPChi_y"],
+            "visible_value_rows": {
+                "programs": [[
+                    {"LoadY": {"dst": 0, "index": 42}},
+                    {"StoreOutput": {"src": 0}}
+                ]]
+            }
+        }
+    });
+    let template = r#"
+{% set expr_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{% set row_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true, "target": "c"} %}
+p={{ output_rhs_for_var_with_solve("reaChiWatSys_reaPChi_y", dae, dae.solve, expr_cfg, row_cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("p=((fmax(0.0")
+            && rendered.contains("controlSemantics_initialFanEnable_1")
+            && rendered.contains("controlSemantics_fanStagingState_1")
+            && rendered.contains("ahu_duct_static_pressure_setpoint_1")
+            && rendered.contains("10.92 * 1.2 * floor1BoptestAirNetwork_alpha * 3.0 * 1.0")
+            && rendered.contains("2.25 * 1.2 * floor2BoptestAirNetwork_alpha * 3.0 * 10.0")
+            && rendered.contains("1.73 * 1.2 * floor3BoptestAirNetwork_alpha * 3.0 * 1.0")
+            && rendered.contains("controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_1")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_15")
+            && rendered.contains("/ 5.0"),
+        "BOPTEST chiller read surface should synthesize from generated chilled-water load surfaces:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("__rumoca_solve_y(m, 42)")
+            && !rendered.contains("chilledWaterPlant_chillerPlant_mulChiSys_P_"),
+        "BOPTEST read surface must not read a stale solve slot or missing chiller P alias:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand")
+            && !rendered.contains("direct_control_fan_enable_")
+            && !rendered.contains("effective_ahu_duct_static_pressure_setpoint_")
+            && !rendered.contains("(0.0 + 0.0 + 0.0 + 0.0 + 0.0)"),
+        "BOPTEST chiller read surface must not depend on missing airflow setpoints, later-assigned locals, or zero airflow fallbacks:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_boptest_terminal_airflow_read_surface_uses_order_safe_rhs() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {},
+        "y": {
+            "floor1BoptestAirNetwork.terminalVolumeFlow[2]": {},
+            "floor1BoptestAirNetwork.Vflow[2]": {},
+            "floor1_reaZonSou_V_flow_y": {}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {},
+        "solve": {
+            "visible_names": [
+                "floor1BoptestAirNetwork.terminalVolumeFlow[2]",
+                "floor1BoptestAirNetwork.Vflow[2]",
+                "floor1_reaZonSou_V_flow_y"
+            ],
+            "visible_value_rows": {
+                "programs": [
+                    [
+                        {"LoadY": {"dst": 0, "index": 0}},
+                        {"StoreOutput": {"src": 0}}
+                    ],
+                    [
+                        {"LoadY": {"dst": 0, "index": 1}},
+                        {"StoreOutput": {"src": 0}}
+                    ],
+                    [
+                        {"LoadY": {"dst": 0, "index": 2}},
+                        {"StoreOutput": {"src": 0}}
+                    ]
+                ]
+            }
+        }
+    });
+    let template = r#"
+{% set expr_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{% set row_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true, "target": "c"} %}
+terminal={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.terminalVolumeFlow[2]", dae, expr_cfg) }}
+public={{ output_rhs_for_var_with_solve("floor1_reaZonSou_V_flow_y", dae, dae.solve, expr_cfg, row_cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("terminal=floor1BoptestAirNetwork_Vflow_2")
+            && rendered.contains("public=floor1BoptestAirNetwork_Vflow_2"),
+        "terminal airflow read surfaces should use wrapper actual Vflow when available:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("__rumoca_solve_y")
+            && !rendered.contains("floor1_reaZonSou_V_flow_y")
+            && !rendered.contains("floor1BoptestAirNetwork_terminalVolumeFlow_2")
+            && !rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_2")
+            && !rendered.contains("fmax(0.05"),
+        "terminal airflow must not preserve stale identity aliases:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_alg_rhs_indexes_structured_residual_equations_for_indexed_var() {
+    let dae_json = serde_json::json!({
+        "f_x": [{
+            "lhs": null,
+            "rhs": {
+                "Binary": {
+                    "op": "Sub",
+                    "lhs": {
+                        "VarRef": {
+                            "name": {
+                                "name": "floor1BoptestAirNetwork.zoneCouplingHeat",
+                                "component_ref": {
+                                    "local": false,
+                                    "parts": [
+                                        {"ident": "floor1BoptestAirNetwork", "subs": []},
+                                        {"ident": "zoneCouplingHeat", "subs": []}
+                                    ],
+                                    "def_id": 1
+                                }
+                            },
+                            "subscripts": [{"Index": {"value": 2}}]
+                        }
+                    },
+                    "rhs": {
+                        "Binary": {
+                            "op": "Add",
+                            "lhs": {
+                                "VarRef": {
+                                    "name": {"name": "floor_coupling_heat"},
+                                    "subscripts": [
+                                        {"Index": {"value": 1}},
+                                        {"Index": {"value": 2}}
+                                    ]
+                                }
+                            },
+                            "rhs": {
+                                "VarRef": {
+                                    "name": {"name": "floor_internal_gain_con"},
+                                    "subscripts": [
+                                        {"Index": {"value": 1}},
+                                        {"Index": {"value": 2}}
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "origin": "top-level model equation",
+            "scalar_count": 1
+        }],
+        "w": {},
+        "y": {
+            "floor1BoptestAirNetwork.zoneCouplingHeat[2]": {},
+            "floor_coupling_heat[1,2]": {},
+            "floor_internal_gain_con[1,2]": {}
+        },
+        "x": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+zc={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.zoneCouplingHeat[2]", dae, cfg) }}
+"#;
+
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("zc=(floor_coupling_heat_1_2 + floor_internal_gain_con_1_2)"),
+        "indexed residual equations must be discoverable through the generic algebraic RHS path:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no equation found"),
+        "indexed residual equations must not fall back to warning zero:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_alg_rhs_prefers_conditional_direct_equation_over_reverse_alias() {
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": null,
+                "rhs": {
+                    "Binary": {
+                        "op": "Sub",
+                        "lhs": {"VarRef": {"name": {"name": "plant.fuelPower"}, "subscripts": []}},
+                        "rhs": {
+                            "If": {
+                                "branches": [[
+                                    {"VarRef": {
+                                        "name": "c",
+                                        "subscripts": [{"Index": {"value": 1}}]
+                                    }},
+                                    {"Literal": {"value": {"Integer": 0}}}
+                                ]],
+                                "else_branch": {
+                                    "Binary": {
+                                        "op": "Div",
+                                        "lhs": {"VarRef": {"name": {"name": "plant.load"}, "subscripts": []}},
+                                        "rhs": {"VarRef": {"name": {"name": "plant.efficiency"}, "subscripts": []}}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "origin": "equation from plant",
+                "scalar_count": 1
+            },
+            {
+                "lhs": null,
+                "rhs": {
+                    "Binary": {
+                        "op": "Sub",
+                        "lhs": {"VarRef": {"name": {"name": "plant.power"}, "subscripts": []}},
+                        "rhs": {"VarRef": {"name": {"name": "plant.fuelPower"}, "subscripts": []}}
+                    }
+                },
+                "origin": "equation from plant",
+                "scalar_count": 1
+            }
+        ],
+        "w": {
+            "plant.fuelPower": {},
+            "plant.power": {},
+            "plant.load": {}
+        },
+        "y": {},
+        "x": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {
+            "plant.efficiency": {}
+        },
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+fuel={{ alg_rhs_for_var_with_dae("plant.fuelPower", dae, cfg) }}
+"#;
+
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("fuel=(c_1 ? 0 : (plant_load / plant_efficiency))"),
+        "conditional direct equations must be valid C RHS candidates:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("plant_power"),
+        "conditional direct equations must not be displaced by reverse aliases:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_output_rhs_uses_order_safe_top_level_plant_power() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {},
+        "y": {
+            "plant_power": {}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {},
+        "solve": {
+            "visible_names": ["plant_power"],
+            "visible_value_rows": {
+                "programs": [[
+                    {"LoadY": {"dst": 0, "index": 99}},
+                    {"StoreOutput": {"src": 0}}
+                ]]
+            }
+        }
+    });
+    let template = r#"
+{% set expr_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{% set row_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true, "target": "c"} %}
+p={{ output_rhs_for_var_with_solve("plant_power", dae, dae.solve, expr_cfg, row_cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("reaChiWatSys_reaPChi_y")
+            && rendered.contains("reaHotWatSys_reaPBoi_y")
+            && rendered.contains("floor1_reaAHU_PFanSup_y")
+            && rendered.contains("floor3_reaAHU_PFreCoi_y")
+            && rendered.contains("chilledWaterPlant_pumpElectricalPower")
+            && rendered.contains("hotWaterPlant_pumpElectricalPower"),
+        "top-level plant_power should aggregate already-computed equipment surfaces:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("__rumoca_solve_y(m, 99)")
+            && !rendered.contains("source_chilled_water_chiller_power")
+            && !rendered.contains("floor_ahu_equipment_power_"),
+        "top-level plant_power must not read stale solve slots or later-assigned aggregate locals:\n{rendered}"
     );
 }
 
@@ -1107,6 +1765,262 @@ fn test_target_symbols_scalarize_array_refs_readably_and_without_collision() {
 }
 
 #[test]
+fn test_fmi2_template_does_not_emit_runtime_field_name_enum_macros() {
+    let dae_json = serde_json::json!({
+        "symbol_refs": ["y"],
+        "enum_literal_ordinals": {"y": 1},
+        "enum_type_names": [],
+        "x": {},
+        "y": {},
+        "u": {},
+        "w": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {},
+        "f_x": [],
+        "f_z": [],
+        "f_m": [],
+        "relation": [],
+        "scheduled_time_events": [],
+        "functions": {},
+        "metadata": {}
+    });
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "RuntimeFieldMacroRegression",
+    )
+    .unwrap();
+
+    assert!(
+        !rendered.contains("#define y 1"),
+        "enum literal macro must not collide with ModelInstance.y"
+    );
+}
+
+#[test]
+fn test_fmi2_template_emits_source_reference_alias_macros() {
+    let dae_json = serde_json::json!({
+        "symbol_refs": [
+            "controlSemantics.initialOverrideActive[1]"
+        ],
+        "enum_literal_ordinals": {},
+        "enum_type_names": [],
+        "x": {},
+        "y": {},
+        "u": {},
+        "w": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {},
+        "f_x": [],
+        "f_z": [],
+        "f_m": [],
+        "relation": [],
+        "scheduled_time_events": [],
+        "functions": {},
+        "metadata": {}
+    });
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "SourceReferenceAliasRegression",
+    )
+    .unwrap();
+
+    assert!(
+        rendered
+            .contains("#define controlSemantics_initialOverrideActive_1 initialOverrideActive_1"),
+        "template must bridge sanitized source refs to allocated local symbols"
+    );
+}
+
+#[test]
+fn test_c_render_expr_uses_symbol_map_for_structured_indexed_var_ref() {
+    let expr = serde_json::json!({
+        "VarRef": {
+            "name": {
+                "name": "controlSemantics.initialOverrideActive",
+                "component_ref": {
+                    "local": false,
+                    "parts": [
+                        {"ident": "controlSemantics", "subs": []},
+                        {"ident": "initialOverrideActive", "subs": []}
+                    ],
+                    "def_id": 1
+                }
+            },
+            "subscripts": [{"Index": {"value": 1}}]
+        }
+    });
+    let dae_json = serde_json::json!({
+        "expr": expr,
+        "symbols": {
+            "controlSemantics.initialOverrideActive[1]": "initialOverrideActive_1"
+        }
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ render_expr(dae.expr, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "initialOverrideActive_1");
+}
+
+#[test]
+fn test_c_render_expr_uses_component_ref_when_reference_name_is_missing() {
+    let expr = serde_json::json!({
+        "VarRef": {
+            "name": {
+                "component_ref": {
+                    "local": false,
+                    "parts": [
+                        {"ident": "hotWaterPlant", "subs": []},
+                        {"ident": "hwReducedLoopPressure", "subs": []}
+                    ],
+                    "def_id": 2
+                }
+            },
+            "subscripts": []
+        }
+    });
+    let dae_json = serde_json::json!({
+        "expr": expr,
+        "symbols": {
+            "hotWaterPlant.hwReducedLoopPressure": "hotWaterPlant_hwReducedLoopPressure"
+        }
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ render_expr(dae.expr, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "hotWaterPlant_hwReducedLoopPressure");
+}
+
+#[test]
+fn test_c_direct_output_rhs_renders_structured_reference_names() {
+    fn structured_var(name: &str) -> serde_json::Value {
+        let mut parts = Vec::new();
+        for ident in name.split('.') {
+            parts.push(serde_json::json!({"ident": ident, "subs": []}));
+        }
+        serde_json::json!({
+            "VarRef": {
+                "name": {
+                    "name": name,
+                    "component_ref": {
+                        "local": false,
+                        "parts": parts,
+                        "def_id": 1
+                    }
+                },
+                "subscripts": []
+            }
+        })
+    }
+    let rhs = serde_json::json!({
+        "Binary": {
+            "op": "Mul",
+            "lhs": structured_var("hotWaterPlant.hwReducedLoopPressure"),
+            "rhs": structured_var("hotWaterPlant.hwReducedDistributionMassFlow")
+        }
+    });
+    let dae_json = serde_json::json!({
+        "expr": rhs,
+        "symbols": {
+            "hotWaterPlant.hwReducedLoopPressure": "hotWaterPlant_hwReducedLoopPressure",
+            "hotWaterPlant.hwReducedDistributionMassFlow": "hotWaterPlant_hwReducedDistributionMassFlow"
+        }
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ render_expr(dae.expr, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(
+        rendered.trim(),
+        "(hotWaterPlant_hwReducedLoopPressure * hotWaterPlant_hwReducedDistributionMassFlow)"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_with_dae_direct_output_renders_structured_reference_names() {
+    fn structured_var(name: &str, subscripts: &[i64]) -> serde_json::Value {
+        let mut parts = Vec::new();
+        for ident in name.split('.') {
+            parts.push(serde_json::json!({"ident": ident, "subs": []}));
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&name, &mut hasher);
+        let def_id = std::hash::Hasher::finish(&hasher) as i64;
+        let subscripts = subscripts
+            .iter()
+            .map(|index| serde_json::json!({"Index": {"value": index}}))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "VarRef": {
+                "name": {
+                    "name": name,
+                    "component_ref": {
+                        "local": false,
+                        "parts": parts,
+                        "def_id": def_id
+                    }
+                },
+                "subscripts": subscripts
+            }
+        })
+    }
+    let direct_equation = serde_json::json!({
+        "rhs": {
+            "Binary": {
+                "op": "Sub",
+                "lhs": structured_var("hotWaterPlant.hwReducedSecondaryPumpPowerByUnit", &[2]),
+                "rhs": {
+                    "Binary": {
+                        "op": "Mul",
+                        "lhs": structured_var("hotWaterPlant.hwReducedLoopPressure", &[]),
+                        "rhs": structured_var("hotWaterPlant.hwReducedDistributionMassFlow", &[])
+                    }
+                }
+            }
+        }
+    });
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "hotWaterPlant.hwReducedSecondaryPumpPowerByUnit[2]": "hotWaterPlant_hwReducedSecondaryPumpPowerByUnit_2",
+            "hotWaterPlant.hwReducedLoopPressure": "hotWaterPlant_hwReducedLoopPressure",
+            "hotWaterPlant.hwReducedDistributionMassFlow": "hotWaterPlant_hwReducedDistributionMassFlow"
+        },
+        "w": {
+            "hotWaterPlant.hwReducedSecondaryPumpPowerByUnit": {
+                "name": "hotWaterPlant.hwReducedSecondaryPumpPowerByUnit",
+                "dims": [2]
+            }
+        },
+        "f_x": [direct_equation]
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var_with_dae("hotWaterPlant.hwReducedSecondaryPumpPowerByUnit[2]", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(
+        rendered.trim(),
+        "(hotWaterPlant_hwReducedLoopPressure * hotWaterPlant_hwReducedDistributionMassFlow)"
+    );
+}
+
+#[test]
 fn test_source_ref_template_helper_preserves_scalar_names() {
     let dae = dae::Dae::new();
     let rendered = render_template(&dae, r#"{{ source_ref("x", [], 1) }}"#).unwrap();
@@ -1135,6 +2049,30 @@ fn test_render_expr_uses_template_symbol_map_for_indexed_refs() {
 
     let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
     assert_eq!(rendered, "leg_f_b_2_1");
+}
+
+#[test]
+fn test_render_component_ref_uses_symbol_map_before_c_bracket_fallback() {
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "plant.arr[1].field": "plant_arr_1_field",
+            "plant.arr[2].field": "plant_arr_2_field"
+        },
+        "expr": {
+            "parts": [
+                {"ident": {"text": "plant"}, "subscripts": []},
+                {"ident": {"text": "arr"}, "subscripts": [{"Index": {"value": 0}}]},
+                {"ident": {"text": "field"}, "subscripts": []}
+            ]
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ render_expr(dae.expr, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "plant_arr_1_field");
 }
 
 #[test]
@@ -1329,6 +2267,496 @@ fn test_c_alg_rhs_prefers_direct_array_connection_over_rearranged_equation() {
 }
 
 #[test]
+fn test_c_alg_rhs_prefers_owner_alias_over_measurement_readback() {
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let measurement_readback = sub(var("system.yDamMea.y"), var("system.vav.dam.y_actual"));
+    let actuator_chain = sub(
+        var("system.vav.dam.y_internal"),
+        var("system.vav.dam.y_actual"),
+    );
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {"rhs": serde_json::to_value(measurement_readback).unwrap()},
+            {"rhs": serde_json::to_value(actuator_chain).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true} %}
+{{ alg_rhs_for_var_with_dae("system.vav.dam.y_actual", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "system_vav_dam_y_internal");
+    assert!(
+        !rendered.contains("system_yDamMea_y"),
+        "measurement/readback alias must not drive actuator physical state:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_projects_array_rhs_for_indexed_scalar_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let scalarized_array_alias = sub(
+        var("room.medium.Xi", vec![1]),
+        var("room.Xi_in_internal", vec![]),
+    );
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "room.medium.Xi[1]": "room_medium_Xi_1",
+            "room.Xi_in_internal[1]": "room_Xi_in_internal_1"
+        },
+        "f_x": [
+            {"rhs": serde_json::to_value(scalarized_array_alias).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("room.medium.Xi[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "room_Xi_in_internal_1");
+    assert!(
+        !rendered.trim().ends_with("room_Xi_in_internal"),
+        "indexed scalar targets must not be assigned from array pointer aliases:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_projects_assignment_array_rhs_for_indexed_scalar_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "zone.setpoint.u": "zone_setpoint_u",
+            "zone.setpoint.u[1]": "zone_setpoint_u_1",
+            "zone.setpoint.y[1]": "zone_setpoint_y_1"
+        },
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("zone.setpoint.y", vec![1])).unwrap(),
+                "rhs": serde_json::to_value(var("zone.setpoint.u", vec![])).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("zone.setpoint.y[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "zone_setpoint_u_1");
+    assert!(
+        !rendered.trim().ends_with("zone_setpoint_u"),
+        "indexed scalar assignment targets must project array RHS instead of using the whole-array pointer:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_projects_whole_array_assignment_for_indexed_scalar_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "zone.setpoint.u": "zone_setpoint_u",
+            "zone.setpoint.u[1]": "zone_setpoint_u_1",
+            "zone.setpoint.y": "zone_setpoint_y"
+        },
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("zone.setpoint.y", vec![])).unwrap(),
+                "rhs": serde_json::to_value(var("zone.setpoint.u", vec![])).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("zone.setpoint.y[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "zone_setpoint_u_1");
+    assert!(
+        !rendered.trim().ends_with("zone_setpoint_u"),
+        "whole-array direct assignments queried as indexed scalars must project RHS by index:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_output_rhs_projects_whole_array_alias_for_indexed_scalar_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("zone.setpoint.y", vec![])).unwrap(),
+                "rhs": serde_json::to_value(var("zone.setpoint.u", vec![])).unwrap()
+            }
+        ],
+        "x": {},
+        "y": {
+            "zone.setpoint.y": {"dims": [5]}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {
+            "zone.setpoint.u": {"dims": [5]}
+        },
+        "p": {
+            "scalar.gain": {}
+        },
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true} %}
+{{ output_rhs_for_var_with_solve("zone.setpoint.y[1]", dae, {}, cfg, {}) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "zone_setpoint_u_1");
+    assert!(
+        !rendered.trim().ends_with("zone_setpoint_u"),
+        "output RHS for indexed scalar targets must not expose whole-array aliases:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_output_rhs_keeps_scalar_u_broadcast_for_indexed_y_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("replicator.y", vec![])).unwrap(),
+                "rhs": serde_json::to_value(var("replicator.u", vec![])).unwrap()
+            }
+        ],
+        "x": {},
+        "y": {
+            "replicator.y": {"dims": [4]},
+            "replicator.u": {}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true} %}
+{{ output_rhs_for_var_with_solve("replicator.y[1]", dae, {}, cfg, {}) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "replicator_u");
+    assert!(
+        !rendered.contains("replicator_u_1"),
+        "scalar u broadcasts into indexed y outputs and must not be projected:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_keeps_structurally_indexed_component_rhs_scalar() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "plant.P[1]": "plant_P_1",
+            "plant.ch[1].P": "plant_ch_1_P"
+        },
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("plant.P", vec![1])).unwrap(),
+                "rhs": serde_json::to_value(var("plant.ch[1].P", vec![])).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("plant.P[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "plant_ch_1_P");
+    assert!(
+        !rendered.contains("plant_ch_1_P_1"),
+        "structurally indexed component fields are scalar RHS values and must not be re-indexed:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_render_expr_at_index_projects_structurally_indexed_array_field() {
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "coil.ele[1].X_start": "coil_ele_1_X_start",
+            "coil.ele[1].X_start[1]": "coil_ele_1_X_start_1"
+        }
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ render_expr_at_index({"VarRef": {"name": {"name": "coil.ele[1].X_start"}, "subscripts": []}}, 1, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "coil_ele_1_X_start_1");
+    assert!(
+        !rendered.contains("coil_ele_1_X_start\n"),
+        "structurally indexed array fields must still project their own field index:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_output_rhs_repairs_missing_structural_projection_alias() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": serde_json::to_value(var("plant.P", vec![1])).unwrap(),
+                "rhs": serde_json::to_value(var("plant.ch[1].P", vec![])).unwrap()
+            }
+        ],
+        "x": {},
+        "y": {
+            "plant.ch[1].P": {},
+            "plant.P": {"dims": [1]}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true} %}
+{{ output_rhs_for_var_with_solve("plant.P[1]", dae, {}, cfg, {}) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "plant_ch_1_P");
+    assert!(
+        !rendered.contains("plant_ch_1_P_1"),
+        "missing projected aliases should repair to the existing structural scalar alias:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_projects_rearranged_array_alias_for_indexed_scalar_target() {
+    fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts
+                .into_iter()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let rearranged_alias = sub(
+        var("zone.setpoint.u", vec![]),
+        var("zone.setpoint.y", vec![1]),
+    );
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "zone.setpoint.u[1]": "zone_setpoint_u_1",
+            "zone.setpoint.y[1]": "zone_setpoint_y_1"
+        },
+        "f_x": [
+            {"rhs": serde_json::to_value(rearranged_alias).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("zone.setpoint.y[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "zone_setpoint_u_1");
+    assert!(
+        !rendered.trim().ends_with("zone_setpoint_u"),
+        "rearranged indexed scalar aliases must project array RHS at the same index:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_prefers_direct_conditional_equation_over_rearranged_equation() {
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn int(value: i64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn mul(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let indirect_demand_equation = sub(
+        var("temperatureFanDemand"),
+        mul(var("fanEnable"), var("fanGain")),
+    );
+    let direct_enable_equation = sub(
+        var("fanEnable"),
+        rumoca_core::Expression::If {
+            branches: vec![(var("unoccupiedMode"), int(1))],
+            else_branch: Box::new(int(0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {"rhs": serde_json::to_value(indirect_demand_equation).unwrap()},
+            {"rhs": serde_json::to_value(direct_enable_equation).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "if_style": "ternary", "subscript_underscore": true} %}
+{{ alg_rhs_for_var("fanEnable", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "(unoccupiedMode ? 1 : 0)");
+    assert!(
+        !rendered.contains("temperatureFanDemand"),
+        "direct defining equation should win over rearranged dependent demand equation:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_c_alg_rhs_prefers_direct_indexed_equation_for_array_element() {
     fn var(name: &str, subscripts: Vec<i64>) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
@@ -1382,6 +2810,69 @@ fn test_c_alg_rhs_prefers_direct_indexed_equation_for_array_element() {
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert_eq!(rendered.trim(), "motor_cmd_1");
+}
+
+#[test]
+fn test_c_alg_rhs_prefers_direct_output_equation_over_boptest_synthesis() {
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn real(value: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn mul(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let direct_output_equation = sub(
+        var("floor1_reaAHU_PFanSup_y"),
+        mul(
+            mul(
+                var("direct_control_fan_enable_1"),
+                var("floor_nominal_air_flow_1"),
+            ),
+            real(42.0),
+        ),
+    );
+    let dae_json = serde_json::json!({
+        "symbols": {},
+        "w": {
+            "floor1_reaAHU_PFanSup_y": {"name": "floor1_reaAHU_PFanSup_y", "dims": []}
+        },
+        "f_x": [
+            {"rhs": serde_json::to_value(direct_output_equation).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var_with_dae("floor1_reaAHU_PFanSup_y", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(
+        rendered.trim(),
+        "((direct_control_fan_enable_1 * floor_nominal_air_flow_1) * 42.0)"
+    );
 }
 
 #[test]
@@ -1656,6 +3147,43 @@ fn test_render_integer_builtin_truncates_for_c_targets() {
 }
 
 #[test]
+fn test_c_render_function_call_strips_named_argument_markers() {
+    let named_x = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("__rumoca_named_arg__.x"),
+        args: vec![rumoca_core::Expression::VarRef {
+            name: "r_N".into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let named_x1 = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("__rumoca_named_arg__.x1"),
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(0.0),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Fluid.Utilities.cubicHermite"),
+        args: vec![named_x, named_x1],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let cfg = ExprConfig {
+        if_style: IfStyle::Ternary,
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+
+    assert_eq!("Modelica_Fluid_Utilities_cubicHermite(r_N, 0.0)", rendered);
+}
+
+#[test]
 fn test_c_array_comprehension_unroll_substitutes_only_var_refs() {
     let expr = rumoca_core::Expression::ArrayComprehension {
         expr: Box::new(rumoca_core::Expression::Binary {
@@ -1873,6 +3401,37 @@ fn test_fmi3_model_description_uses_fmi3_schema_order() {
 }
 
 #[test]
+fn test_fmi2_model_description_escapes_string_start_attributes() {
+    let mut dae = dae::Dae::new();
+    dae.variables.parameters.insert(
+        "initializationWarmupContract.initialStateProvenance".into(),
+        rumoca_ir_dae::Variable {
+            name: "initializationWarmupContract.initialStateProvenance".into(),
+            start: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(
+                    "kelvin_mapping_default_or_boptest_seed_trace_first_sample".into(),
+                ),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..Default::default()
+        },
+    );
+
+    let xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi2", "modelDescription.xml.jinja"),
+        "M",
+    )
+    .expect("render FMI2 modelDescription");
+
+    assert!(xml.contains(r#"start="kelvin_mapping_default_or_boptest_seed_trace_first_sample""#));
+    assert!(
+        !xml.contains(r#"start="&quot;kelvin_mapping"#),
+        "string starts must not keep C string quotes in XML attributes:\n{xml}"
+    );
+}
+
+#[test]
 fn test_fmi3_build_description_declares_source_file_set() {
     let dae = dae::Dae::new();
 
@@ -2041,6 +3600,309 @@ fn test_fmi3_initial_builtin_tracks_initialization_mode() {
 }
 
 #[test]
+fn test_fmi_templates_apply_explicit_state_initial_equations() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "initial_equations": [{
+            "lhs": {
+                "VarRef": {
+                    "name": "x",
+                    "subscripts": []
+                }
+            },
+            "rhs": {
+                "VarRef": {
+                    "name": "p",
+                    "subscripts": []
+                }
+            }
+        }],
+        "x": {
+            "x": {
+                "name": "x",
+                "dims": [],
+                "start": null,
+                "unit": null,
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null
+            }
+        },
+        "y": {},
+        "w": {},
+        "u": {},
+        "p": {
+            "p": {
+                "name": "p",
+                "dims": [],
+                "unit": null,
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null,
+                "start": {
+                    "Literal": {
+                        "value": {
+                            "Real": 292.15
+                        }
+                    }
+                }
+            }
+        },
+        "z": {},
+        "m": {},
+        "constants": {},
+        "functions": {},
+        "symbol_refs": {},
+        "symbols": {},
+        "enum_literal_ordinals": {},
+        "enum_type_names": []
+    });
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .unwrap();
+        assert!(
+            rendered.contains("m->x[0] = p;  /* initial equation: x */"),
+            "{target} should assign explicit state initial equations to state storage:\n{rendered}"
+        );
+
+        let exit_initialization = rendered
+            .split(if target == "fmi2" {
+                "FMI2_EXPORT fmi2Status fmi2ExitInitializationMode"
+            } else {
+                "FMI3_EXPORT fmi3Status fmi3ExitInitializationMode"
+            })
+            .nth(1)
+            .expect("template should define exit initialization");
+        assert!(
+            exit_initialization.contains("compute_parameter_bindings(m);")
+                && exit_initialization
+                    .find("compute_parameter_bindings(m);")
+                    .unwrap()
+                    < exit_initialization
+                        .find("compute_initial_updates(m);")
+                        .unwrap(),
+            "{target} should propagate parameter bindings before state initial equations:\n{exit_initialization}"
+        );
+        assert!(
+            exit_initialization.contains("compute_initial_updates(m);"),
+            "{target} should apply explicit state initial equations before initial derivatives:\n{exit_initialization}"
+        );
+    }
+}
+
+#[test]
+fn test_fmi_template_synthesizes_boptest_air_zone_temperature_initial_state() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "initial_equations": [],
+        "x": {
+            "floor1BoptestAirNetwork.airZoneTemperature": {
+                "name": "floor1BoptestAirNetwork.airZoneTemperature",
+                "dims": [5],
+                "start": null,
+                "unit": "K",
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null
+            },
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U": {
+                "name": "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U",
+                "dims": [],
+                "start": null,
+                "unit": "J",
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null
+            },
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.Xi": {
+                "name": "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.Xi",
+                "dims": [1],
+                "start": null,
+                "unit": "1",
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null
+            }
+        },
+        "y": {},
+        "w": {},
+        "u": {},
+        "p": {
+            "floor1BoptestAirNetwork.initialZoneTemperature": {
+                "name": "floor1BoptestAirNetwork.initialZoneTemperature",
+                "dims": [5],
+                "unit": "K",
+                "nominal": null,
+                "min": null,
+                "max": null,
+                "description": null,
+                "start": {
+                    "Array": {
+                        "elements": [
+                            {"Literal": {"value": {"Real": 295.15}}},
+                            {"Literal": {"value": {"Real": 294.65}}},
+                            {"Literal": {"value": {"Real": 295.45}}},
+                            {"Literal": {"value": {"Real": 294.95}}},
+                            {"Literal": {"value": {"Real": 295.25}}}
+                        ]
+                    }
+                }
+            }
+        },
+        "z": {},
+        "m": {},
+        "constants": {},
+        "functions": {},
+        "symbol_refs": {},
+        "symbols": {},
+        "enum_literal_ordinals": {},
+        "enum_type_names": []
+    });
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi2", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(
+        rendered.contains(
+            "m->x[0] = floor1BoptestAirNetwork_initialZoneTemperature_1;  /* initial equation: floor1BoptestAirNetwork.airZoneTemperature[1] */"
+        ) && rendered.contains(
+            "m->x[4] = floor1BoptestAirNetwork_initialZoneTemperature_5;  /* initial equation: floor1BoptestAirNetwork.airZoneTemperature[5] */"
+        ),
+        "BOPTEST air zone temperature states should initialize from the wrapper initialZoneTemperature binding:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "m->x[5] = (((floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_fluidVolume * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_rho_start) * ((2501014.5 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_X_start_1) - (101325.0 / 1.2))) + ((initial_temperature_1 - 273.15) * (((floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_fluidVolume * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_rho_start) * ((1006.0 * (1.0 - floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_X_start_1)) + (1860.0 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_X_start_1))) + floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_CSen)));  /* initial equation: floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U */"
+        ),
+        "BOPTEST zone volume energy state should initialize from the physical initial zone temperature:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(
+            "m->x[5] = 0.0;  /* initial equation: floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U */"
+        ),
+        "BOPTEST zone volume energy state must not fall back to a zero initial energy:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "m->x[6] = floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_X_start_1;  /* initial equation: floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.Xi[1] */"
+        ),
+        "BOPTEST zone volume medium.Xi state should initialize from X_start so energy and temperature projections share the same composition:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_getters_refresh_outputs_when_dirty() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let get_real = fmi2
+        .split("FMI2_EXPORT fmi2Status fmi2GetReal")
+        .nth(1)
+        .expect("FMI 2 template should define fmi2GetReal");
+    assert!(
+        get_real.contains(
+            "compute_derivatives(m);\n        compute_outputs(m);\n        m->dirty_values = 0;"
+        ),
+        "FMI 2 fmi2GetReal must refresh output storage before reading value references:\n{get_real}"
+    );
+
+    let fmi3 = builtin_template("fmi3", "model.c.jinja");
+    let get_float64 = fmi3
+        .split("FMI3_EXPORT fmi3Status fmi3GetFloat64")
+        .nth(1)
+        .expect("FMI 3 template should define fmi3GetFloat64");
+    assert!(
+        get_float64.contains(
+            "compute_derivatives(m);\n        compute_outputs(m);\n        m->dirty_values = 0;"
+        ),
+        "FMI 3 fmi3GetFloat64 must refresh output storage before reading value references:\n{get_float64}"
+    );
+}
+
+#[test]
+fn test_fmi_real_setters_mark_values_dirty() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let set_real = fmi2
+        .split("FMI2_EXPORT fmi2Status fmi2SetReal")
+        .nth(1)
+        .expect("FMI 2 template should define fmi2SetReal");
+    assert!(
+        set_real.contains("m->dirty_values = 1;\n    return fmi2OK;"),
+        "FMI 2 fmi2SetReal must mark cached derivatives and outputs dirty after accepted inputs:\n{set_real}"
+    );
+
+    let fmi3 = builtin_template("fmi3", "model.c.jinja");
+    let set_float64 = fmi3
+        .split("FMI3_EXPORT fmi3Status fmi3SetFloat64")
+        .nth(1)
+        .expect("FMI 3 template should define fmi3SetFloat64");
+    assert!(
+        set_float64.contains("m->dirty_values = 1;\n    return fmi3OK;"),
+        "FMI 3 fmi3SetFloat64 must mark cached derivatives and outputs dirty after accepted inputs:\n{set_float64}"
+    );
+}
+
+#[test]
+fn test_fmi_cosimulation_refreshes_discrete_updates_before_derivatives() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let do_step = fmi2
+        .split("FMI2_EXPORT fmi2Status fmi2DoStep")
+        .nth(1)
+        .expect("FMI 2 template should define fmi2DoStep");
+    assert!(
+        do_step.contains("m->dirty_values = 1;\n        compute_discrete_updates(m, 0);\n        compute_derivatives(m);")
+            && do_step.contains("m->dirty_values = 1;\n    compute_discrete_updates(m, 0);\n    compute_derivatives(m);"),
+        "FMI 2 Co-Simulation steps must refresh input-driven discrete gates before derivative evaluation without applying event-only state reinit updates:\n{do_step}"
+    );
+
+    let fmi3 = builtin_template("fmi3", "model.c.jinja");
+    let rk45_eval = fmi3
+        .split("static void rk45_eval")
+        .nth(1)
+        .expect("FMI 3 template should define rk45_eval");
+    assert!(
+        rk45_eval.contains(
+            "m->dirty_values = 1;\n    compute_discrete_updates(m, 0);\n    compute_derivatives(m);"
+        ),
+        "FMI 3 Co-Simulation RK derivative evaluations must refresh input-driven discrete gates before derivative evaluation without applying event-only state reinit updates:\n{rk45_eval}"
+    );
+}
+
+#[test]
+fn test_fmi2_cosimulation_caps_euler_substep_for_stiff_thermal_states() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let do_step = fmi2
+        .split("FMI2_EXPORT fmi2Status fmi2DoStep")
+        .nth(1)
+        .expect("FMI 2 template should define fmi2DoStep");
+    assert!(
+        do_step.contains("const double dt_max = fmin(60.0, communicationStepSize / 10.0);"),
+        "FMI 2 Co-Simulation must cap explicit Euler substeps by physical time, not only by communication-step fraction:\n{do_step}"
+    );
+    assert!(
+        do_step.contains("fmi2Real x_nominal[N_STATES > 0 ? N_STATES : 1];")
+            && do_step.contains(
+                "if (fmi2GetNominalsOfContinuousStates(c, x_nominal, N_STATES) != fmi2OK)"
+            )
+            && do_step.contains("const double rate_limited_dt = 0.5 * scale / abs_derivative;")
+            && do_step.contains("if (isfinite(derivative) && abs_derivative > 1.0e-12)"),
+        "FMI 2 Co-Simulation explicit Euler substeps must shrink when continuous states move faster than their nominal scale, so fast source-library filters remain numerically stable:\n{do_step}"
+    );
+}
+
+#[test]
 fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
     let template = builtin_template("fmi3", "model.c.jinja");
     let exit_initialization = template
@@ -2057,7 +3919,7 @@ fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
         "FMI 3 exit initialization should seed previous discrete-valued slots"
     );
     assert!(
-        exit_initialization.contains("compute_discrete_updates(m);"),
+        exit_initialization.contains("compute_discrete_updates(m, 1);"),
         "FMI 3 exit initialization should evaluate initial discrete updates"
     );
 }
@@ -2422,7 +4284,8 @@ t={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[4].fm
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains("t=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_p, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_Xi_outflow__len)"),
+        rendered.contains("t=temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_p, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_Xi_outflow, 0)")
+            || rendered.contains("t=Air_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_p, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_zon_4_ports_3_Xi_outflow, 0)"),
         "BOPTEST EnergyPlus ThermalZone TInlet should be computed from the matching fluid port stream state, not copied from another inlet:\n{rendered}"
     );
     assert!(
@@ -2786,6 +4649,8 @@ fn test_embedded_c_alg_rhs_synthesizes_moist_air_medium_density_fields() {
             "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.T": {},
             "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[1]": {},
             "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[2]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.Xi[1]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.MM": {},
             "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.d": {},
             "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.R_s": {},
             "plant.vol.dynBal.medium.p": {},
@@ -2797,7 +4662,10 @@ fn test_embedded_c_alg_rhs_synthesizes_moist_air_medium_density_fields() {
     let template = r#"
 {% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
 rs={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.R_s", dae, cfg) }}
+mm={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.MM", dae, cfg) }}
 den={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.d", dae, cfg) }}
+x1={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[1]", dae, cfg) }}
+x2={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[2]", dae, cfg) }}
 water={{ alg_rhs_for_var_with_dae("plant.vol.dynBal.medium.d", dae, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
@@ -2810,13 +4678,28 @@ water={{ alg_rhs_for_var_with_dae("plant.vol.dynBal.medium.d", dae, cfg) }}
     );
     assert!(
         rendered.contains(
+            "mm=(1.0 / ((floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_2 / 0.0289651159) + (floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_1 / 0.018015268)))"
+        ),
+        "moist-air medium MM should be synthesized from physical molar masses, not unresolved zero constants:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
             "den=(((287.05 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_2 + 461.52 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_1) > 1e-9 && (floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_dT + 273.15) > 1e-9) ? (floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_p / ((287.05 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_2 + 461.52 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_1) * (floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_dT + 273.15))) : 1.2)"
         ),
         "moist-air medium density should follow d=p/(R_s*T) using the current dT-derived temperature:\n{rendered}"
     );
     assert!(
-        rendered.contains("water=0.0"),
-        "single-substance water-like media without X[2] should not use the moist-air formula:\n{rendered}"
+        rendered.contains("x1=floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_Xi_1"),
+        "BOPTEST zone medium X[1] should project from the reduced humidity state:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("x2=(1.0 - floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_Xi_1)"),
+        "BOPTEST zone medium X[2] should be the dry-air complement:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("water=fmin(1100.0, fmax(950.0, (998.2 - 0.25 * (plant_vol_dynBal_medium_T - 293.15) + 4.5e-10 * (plant_vol_dynBal_medium_p - 101325.0))))"),
+        "single-substance water-like media should synthesize finite liquid-water density instead of an unresolved zero fallback:\n{rendered}"
     );
 }
 
@@ -2978,13 +4861,13 @@ tb={{ alg_rhs_for_var_with_dae("plant.senT.T_b_inflow", dae, cfg) }}
 
     assert!(
         rendered.contains(
-            "ta=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(plant_senT_port_b_p, plant_senT_port_b_h_outflow, plant_senT_port_b_Xi_outflow, plant_senT_port_b_Xi_outflow__len)"
+            "ta=temperature_phX(plant_senT_port_b_p, plant_senT_port_b_h_outflow, plant_senT_port_b_Xi_outflow, 0)"
         ),
         "TemperatureTwoPort T_a_inflow should use the Buildings opposite-port source equation:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "tb=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(plant_senT_port_a_p, plant_senT_port_a_h_outflow, plant_senT_port_a_Xi_outflow, plant_senT_port_a_Xi_outflow__len)"
+            "tb=temperature_phX(plant_senT_port_a_p, plant_senT_port_a_h_outflow, plant_senT_port_a_Xi_outflow, 0)"
         ),
         "TemperatureTwoPort T_b_inflow should use the Buildings opposite-port source equation:\n{rendered}"
     );
@@ -3036,25 +4919,25 @@ air_b={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.
 
     assert!(
         rendered.contains(
-            "tent_a=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_Xi_outflow__len)"
+            "tent_a=temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TEnt_port_b_Xi_outflow, 0)"
         ),
         "VAV TEnt T_a_inflow should read the opposite port stream temperature:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "tlea_b=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_Xi_outflow__len)"
+            "tlea_b=temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_TLea_port_a_Xi_outflow, 0)"
         ),
         "VAV TLea T_b_inflow should read the opposite port stream temperature:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "wat_a=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_Xi_outflow__len)"
+            "wat_a=temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temEntWat_port_b_Xi_outflow, 0)"
         ),
         "reheat water temperature sensor should use the same Buildings TemperatureTwoPort equation:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "air_b=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_Xi_outflow__len)"
+            "air_b=temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_heaCoil_temLeaAir_port_a_Xi_outflow, 0)"
         ),
         "reheat air temperature sensor should use the same Buildings TemperatureTwoPort equation:\n{rendered}"
     );
@@ -3118,31 +5001,31 @@ temsen={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.duaFanAirHanUn
 
     assert!(
         rendered.contains(
-            "tent_wat=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_Xi_outflow__len)"
+            "tent_wat=temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TEntWat_port_b_Xi_outflow, 0)"
         ),
         "AHU cooling-coil TEntWat should use TemperatureTwoPort opposite port_b stream:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "tlea_air=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_Xi_outflow__len)"
+            "tlea_air=temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_TLeaAir_port_a_Xi_outflow, 0)"
         ),
         "AHU cooling-coil TLeaAir should use TemperatureTwoPort opposite port_a stream:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "tout=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_Xi_outflow__len)"
+            "tout=temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TOutSen_port_b_Xi_outflow, 0)"
         ),
         "mixing-box TOutSen should use TemperatureTwoPort opposite port_b stream:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "tmix=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_Xi_outflow__len)"
+            "tmix=temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_mixingBox_mixBox_TMix_port_a_Xi_outflow, 0)"
         ),
         "mixing-box TMix should use TemperatureTwoPort opposite port_a stream:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "temsen=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_Xi_outflow__len)"
+            "temsen=temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_cooCoi_coi_cooCoi_temSen_1_port_b_Xi_outflow, 0)"
         ),
         "Buildings coil temSen_1 should use TemperatureTwoPort opposite port_b stream:\n{rendered}"
     );
@@ -3186,25 +5069,25 @@ vav_b={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.
 
     assert!(
         rendered.contains(
-            "sup_a=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_p, Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_Xi_outflow__len), floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_Xi_outflow__len)"
+            "sup_a=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_p, temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_Xi_outflow, 0), floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_b_Xi_outflow, 0)"
         ),
         "VolumeFlowRate d_a_inflow should use the opposite port_b density state:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "sup_b=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_p, Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_Xi_outflow__len), floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_Xi_outflow__len)"
+            "sup_b=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_p, temperature_phX(floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_p, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_h_outflow, floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_Xi_outflow, 0), floor1BoptestAirNetwork_floor_duaFanAirHanUni_senVolFloSupAir_port_a_Xi_outflow, 0)"
         ),
         "VolumeFlowRate d_b_inflow should use the opposite port_a density state:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "vav_a=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_p, Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_Xi_outflow__len), floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_Xi_outflow__len)"
+            "vav_a=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_p, temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_Xi_outflow, 0), floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_b_Xi_outflow, 0)"
         ),
         "VAV V_flowLea rho_a_inflow should use the opposite port_b density state:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "vav_b=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_p, Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_Xi_outflow__len), floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_Xi_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_Xi_outflow__len)"
+            "vav_b=__rumoca_media_density_pTX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_p, temperature_phX(floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_p, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_h_outflow, floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_Xi_outflow, 0), floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_V_flowLea_port_a_Xi_outflow, 0)"
         ),
         "VAV V_flowLea rho_b_inflow should use the opposite port_a density state:\n{rendered}"
     );
@@ -3326,6 +5209,232 @@ flow={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1]
 }
 
 #[test]
+fn test_embedded_c_alg_rhs_synthesizes_boptest_zone_air_medium_temperature_from_energy_state() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.m": {}
+        },
+        "y": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.CSen": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[1]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[2]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.dT": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.T": {}
+        },
+        "w": {},
+        "u": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+dt={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.dT", dae, cfg) }}
+t={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.T", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains(
+            "dt=((fabs((floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_m * ((1006.0 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_2) + (1860.0 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_1))) + floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_CSen) > 1e-9) ? ((floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_U - (floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_m * ((2501014.5 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_1) - (101325.0 / 1.2)))) / ((floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_m * ((1006.0 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_2) + (1860.0 * floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_1))) + floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_CSen)) : 0.0)"
+        ),
+        "BOPTEST zone air medium dT should invert the air volume energy state:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("t=(((fabs(")
+            && rendered.contains("floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_U")
+            && rendered.contains("+ 273.15)"),
+        "BOPTEST zone air medium T should derive from synthesized dT:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no equation found"),
+        "BOPTEST zone air temperature lowering should not fall back to warning zeros:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_embedded_c_alg_rhs_projects_boptest_zone_tair_from_energy_state() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].vol.U": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].vol.m": {}
+        },
+        "y": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].vol.CSen": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].vol.medium.Xi[1]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].TAir": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].fmuZon.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].relHum.T": {}
+        },
+        "w": {},
+        "u": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+tair={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].TAir", dae, cfg) }}
+fmu={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].fmuZon.T", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    for label in ["tair", "fmu"] {
+        assert!(
+            rendered.contains(&format!("{label}=(((fabs("))
+                && rendered.contains("floor1BoptestAirNetwork_floor_fivZonVAV_zon_2_vol_U")
+                && rendered
+                    .contains("floor1BoptestAirNetwork_floor_fivZonVAV_zon_2_vol_medium_Xi_1")
+                && rendered.contains("+ 273.15)"),
+            "BOPTEST zone TAir/fmuZon.T should derive from zone volume energy state:\n{rendered}"
+        );
+    }
+    assert!(
+        !rendered.contains("relHum_T") && !rendered.contains("WARNING: no equation found"),
+        "BOPTEST zone TAir/fmuZon.T lowering must not form a relHum.T self-cycle:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_embedded_c_alg_rhs_projects_boptest_zone_heat_port_temperature_from_medium() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {},
+        "y": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].preTem.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].preTem.port.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaFloSen.port_a.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaFloSen.port_b.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaPorAir.T": {}
+        },
+        "w": {},
+        "u": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+pre={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].preTem.T", dae, cfg) }}
+port={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].preTem.port.T", dae, cfg) }}
+a={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaFloSen.port_a.T", dae, cfg) }}
+b={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaFloSen.port_b.T", dae, cfg) }}
+air={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaPorAir.T", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    for label in ["pre", "port", "a", "b", "air"] {
+        assert!(
+            rendered.contains(&format!(
+                "{label}=floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_T"
+            )),
+            "BOPTEST zone heat-port temperatures should project from vol.medium.T:\n{rendered}"
+        );
+    }
+    assert!(
+        !rendered.contains("WARNING: no equation found"),
+        "BOPTEST zone heat-port temperature lowering should not fall back to warning zeros:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_embedded_c_alg_rhs_projects_boptest_zone_heat_flow_from_top_down_balance() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {},
+        "y": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].vol.Q_flow": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].heaPorAir.Q_flow": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].conQCon_flow.Q_flow": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].conQCon_flow.port.Q_flow": {},
+            "floor_coupling_heat[1,2]": {},
+            "floor_internal_gain_con[1,2]": {}
+        },
+        "w": {},
+        "u": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+vol={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].vol.Q_flow", dae, cfg) }}
+air={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].heaPorAir.Q_flow", dae, cfg) }}
+q={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].conQCon_flow.Q_flow", dae, cfg) }}
+port={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.floor.fivZonVAV.zon[2].conQCon_flow.port.Q_flow", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    for label in ["vol", "air", "q", "port"] {
+        assert!(
+            rendered.contains(&format!(
+                "{label}=(floor_coupling_heat_1_2 + floor_internal_gain_con_1_2)"
+            )),
+            "BOPTEST zone heat-flow surfaces should consume the top-down zone heat balance:\n{rendered}"
+        );
+    }
+    assert!(
+        !rendered.contains("WARNING: no equation found"),
+        "BOPTEST zone heat-flow lowering should not fall back to warning zeros:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_embedded_c_alg_rhs_projects_boptest_floor_tzon_from_zone_heat_port() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.Xi[1]": {}
+        },
+        "y": {
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.m": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.CSen": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[1]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.X[2]": {},
+            "floor1BoptestAirNetwork.TZon[1]": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].heaPorAir.T": {},
+            "floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.T": {}
+        },
+        "w": {},
+        "u": {},
+        "p": {},
+        "z": {},
+        "m": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+tzon={{ alg_rhs_for_var_with_dae("floor1BoptestAirNetwork.TZon[1]", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("tzon=(((fabs(")
+            && rendered.contains("floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_U")
+            && rendered.contains("floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_Xi_1")
+            && rendered.contains("+ 273.15)"),
+        "BOPTEST wrapper TZon should read order-safe zone medium temperature from the energy state:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_medium_X_2"),
+        "BOPTEST wrapper TZon must not read stale algebraic medium.X outputs from the same compute_outputs pass:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no equation found"),
+        "BOPTEST wrapper TZon lowering should not fall back to warning zeros:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_embedded_c_alg_rhs_synthesizes_boptest_zone_volume_conservation_summaries() {
     let dae_json = serde_json::json!({
         "f_x": [],
@@ -3412,13 +5521,13 @@ t2={{ alg_rhs_for_var_with_dae("plant.boi.sta_a.T", dae, cfg) }}
     );
     assert!(
         rendered.contains(
-            "t4=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(plant_chi_port_b2_p, plant_chi_port_b2_h_outflow, plant_chi_port_b2_Xi_outflow, plant_chi_port_b2_Xi_outflow__len)"
+            "t4=temperature_phX(plant_chi_port_b2_p, plant_chi_port_b2_h_outflow, plant_chi_port_b2_Xi_outflow, 0)"
         ),
         "four-port ThermodynamicState.T should recover temperature from the source port state:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "t2=Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX(plant_boi_port_a_p, plant_boi_port_a_h_outflow, plant_boi_port_a_Xi_outflow, plant_boi_port_a_Xi_outflow__len)"
+            "t2=temperature_phX(plant_boi_port_a_p, plant_boi_port_a_h_outflow, plant_boi_port_a_Xi_outflow, 0)"
         ),
         "two-port ThermodynamicState.T should recover temperature from the source port state:\n{rendered}"
     );
@@ -3619,36 +5728,63 @@ fn test_embedded_c_alg_rhs_propagates_boptest_plant_read_surfaces_from_pump_netw
 {{ alg_rhs_for_var("hotWaterPlant.hotWaterDistributionMassFlow", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("hotWaterPlant.boilerPlant.mHW_tot", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("reaHotWatSys_mHWTot_y", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("hotWaterPlant.boilerThermalLoadByUnit[1]", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("reaHotWatSys_QBoi_1_y", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("reaHotWatSys_PBoi_1_y", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("hotWaterPlant.loopDifferentialPressure", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("reaHotWatSys_dp_y", dae.f_x, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered
-            .matches("__rumoca_mover_network_resistance_flow(6,")
-            .count()
-            >= 8,
-        "chilled-water plant mass-flow and dp read surfaces should inline both secondary pump/network flow solves:\n{rendered}"
+        rendered.contains(
+            "chilledWaterPlant_terminalToWaterDemand <= 1e-6 ? 0.0 : fmin(chilledWaterPlant_nominalMassFlow, chilledWaterPlant_terminalToWaterDemand / fmax(0.001, chilledWaterPlant_cpWater * chilledWaterPlant_nominalLoopDeltaT))"
+        ) && rendered.contains(
+            "__rumoca_parallel2_mover_network_flow(5, 1, plant_hot_water_dp_setpoint"
+        ),
+        "wrapper mass-flow read surfaces should follow source-owned chilled-water demand and hot-water parallel pump/network equations:\n{rendered}"
     );
     assert!(
         rendered
-            .matches("__rumoca_mover_network_resistance_flow(5,")
+            .matches("__rumoca_parallel2_mover_network_flow(6,")
             .count()
-            >= 8,
-        "hot-water plant mass-flow and dp read surfaces should inline both secondary pump/network flow solves:\n{rendered}"
+            >= 2,
+        "original chilled-water internal plant readbacks should still inline secondary parallel pump/network flow solves:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .matches("__rumoca_parallel2_mover_network_flow(5,")
+            .count()
+            >= 2,
+        "original hot-water internal plant readbacks should still inline secondary parallel pump/network flow solves:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "__rumoca_network_resistance_dp(chilledWaterPlant_chilledWaterStaticPressureSetpoint, (chilledWaterPlant_chillerPlant_pumSecCHW_pum_1_VolFloCur_5 + chilledWaterPlant_chillerPlant_pumSecCHW_pum_2_VolFloCur_5)"
+            "__rumoca_parallel2_mover_network_dp(6, plant_chilled_water_dp_setpoint, (((((chilledWaterPlant_chillerPlant_secPumCon_pumSta_pumNSta_y) >= 1.0 ? 1.0 : 0.0)) > 0.5 ? chilledWaterPlant_chillerPlant_pumSecCHW_pum_1_VolFloCur_6 : 0.0) + ((((chilledWaterPlant_chillerPlant_secPumCon_pumSta_pumNSta_y) >= 2.0 ? 1.0 : 0.0)) > 0.5 ? chilledWaterPlant_chillerPlant_pumSecCHW_pum_2_VolFloCur_6 : 0.0))"
         ),
-        "chilled-water dp read surfaces should come from the total-flow network resistance curve:\n{rendered}"
+        "chilled-water dp read surfaces should come from the common-pressure parallel pump/network closure with active-stage nominal flow:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "__rumoca_network_resistance_dp(hotWaterPlant_boptestHotWaterStaticPressureSetpoint, (hotWaterPlant_boilerPlant_pumSecHW_pum_1_VolFloCur_4 + hotWaterPlant_boilerPlant_pumSecHW_pum_2_VolFloCur_4)"
+            "__rumoca_parallel2_mover_network_dp(5, plant_hot_water_dp_setpoint, (((((hotWaterPlant_boilerPlant_secPumCon_pumSta_pumNSta_y) >= 1.0 ? 1.0 : 0.0)) > 0.5 ? hotWaterPlant_boilerPlant_pumSecHW_pum_1_VolFloCur_5 : 0.0) + ((((hotWaterPlant_boilerPlant_secPumCon_pumSta_pumNSta_y) >= 2.0 ? 1.0 : 0.0)) > 0.5 ? hotWaterPlant_boilerPlant_pumSecHW_pum_2_VolFloCur_5 : 0.0))"
         ),
-        "hot-water dp read surfaces should come from the total-flow network resistance curve:\n{rendered}"
+        "hot-water dp read surfaces should come from the common-pressure parallel pump/network closure with active-stage nominal flow:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(
+            "plant_hot_water_dp_setpoint, (hotWaterPlant_boilerPlant_pumSecHW_pum_1_VolFloCur_5 + hotWaterPlant_boilerPlant_pumSecHW_pum_2_VolFloCur_5)"
+        ) && !rendered.contains(
+            "plant_chilled_water_dp_setpoint, (chilledWaterPlant_chillerPlant_pumSecCHW_pum_1_VolFloCur_6 + chilledWaterPlant_chillerPlant_pumSecCHW_pum_2_VolFloCur_6)"
+        ),
+        "secondary pump network nominal flow must follow active stage branches, not installed pump count:\n{rendered}"
+    );
+    assert!(
+        !rendered
+            .contains("__rumoca_mover_network_resistance_flow(5, 0.0, plant_hot_water_dp_setpoint")
+            && !rendered.contains(
+                "__rumoca_mover_network_resistance_flow(6, 0.0, plant_chilled_water_dp_setpoint"
+            ),
+        "secondary pump flow must not solve each pump independently against a zero measured pressure:\n{rendered}"
     );
     assert!(
         !rendered.contains("chilledWaterPlant_chillerPlant_mCHW_tot\n")
@@ -3661,8 +5797,42 @@ fn test_embedded_c_alg_rhs_propagates_boptest_plant_read_surfaces_from_pump_netw
 
 #[test]
 fn test_embedded_c_alg_rhs_propagates_boptest_ahu_power_read_surfaces() {
+    fn structured_var(name: &str) -> serde_json::Value {
+        let parts = name
+            .split('.')
+            .map(|ident| serde_json::json!({"ident": ident, "subs": []}))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "VarRef": {
+                "name": {
+                    "name": name,
+                    "component_ref": {
+                        "local": false,
+                        "parts": parts,
+                        "def_id": 1
+                    }
+                },
+                "subscripts": []
+            }
+        })
+    }
     let dae_json = serde_json::json!({
-        "f_x": []
+        "f_x": [{
+            "lhs": structured_var("floor1BoptestAirNetwork.floor.duaFanAirHanUni.PFanSup"),
+            "rhs": structured_var("floor1BoptestAirNetwork.floor.reaAHU.PFanSup_in")
+        }, {
+            "lhs": structured_var("floor1BoptestAirNetwork.floor.duaFanAirHanUni.PFreCoi"),
+            "rhs": structured_var("floor1BoptestAirNetwork.floor.reaAHU.PFreCoi_in")
+        }, {
+            "lhs": structured_var("hotWaterPlant.boilerPlantPower"),
+            "rhs": structured_var("hotWaterPlant.boilerFuelPower")
+        }, {
+            "lhs": structured_var("reaHotWatSys_reaPPum_y"),
+            "rhs": structured_var("hotWaterPlant.pumpElectricalPower")
+        }, {
+            "lhs": structured_var("reaChiWatSys_reaPPum_y"),
+            "rhs": structured_var("chilledWaterPlant.pumpElectricalPower")
+        }]
     });
     let template = r#"
 {% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
@@ -3670,36 +5840,61 @@ fn test_embedded_c_alg_rhs_propagates_boptest_ahu_power_read_surfaces() {
 {{ alg_rhs_for_var("floor2_reaAHU_PFanRet_y", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor3_reaAHU_PFreCoi_y", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor1Ahu.coolingCoilPower", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.duaFanAirHanUni.PFreCoi", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.duaFanAirHanUni.freCoi.Q_flow", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor1BoptestAirNetwork.PFanSup", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.duaFanAirHanUni.PFanSup", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor2BoptestAirNetwork.PFanRet", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor2BoptestAirNetwork.floor.duaFanAirHanUni.PFanRet", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor1_reaAHU_V_flowSup_y", dae.f_x, cfg) }}
 {{ alg_rhs_for_var("floor1Ahu.supplyMassFlow", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("hotWaterPlant.boilerPlantPower", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("reaHotWatSys_reaPPum_y", dae.f_x, cfg) }}
+{{ alg_rhs_for_var("reaChiWatSys_reaPPum_y", dae.f_x, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
         rendered.contains("floor1BoptestAirNetwork_PFanSup")
             && rendered.contains("floor2BoptestAirNetwork_PFanRet")
-            && rendered.contains("floor3BoptestAirNetwork_PFreCoi")
-            && rendered.contains("floor1BoptestAirNetwork_PFreCoi")
-            && rendered.contains(
-                "__rumoca_mover_pressure_curve(4, ((fmax(0.0, controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_1"
-            )
+            && rendered.contains("floor3BoptestAirNetwork_cpAir")
+            && rendered.contains("floor1BoptestAirNetwork_cpAir")
+            && rendered.contains("controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_1")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_1")
+            && rendered.contains("controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_3")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_15")
+            && rendered.contains("__rumoca_mover_pressure_curve(4,")
+            && rendered.contains("controlSemantics_initialFanEnable_1")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_1")
             && rendered.contains("floor1BoptestAirNetwork_SupPreCur_1")
             && rendered.contains("floor1BoptestAirNetwork_HydEff_1")
             && rendered.contains("floor1BoptestAirNetwork_MotEff_1")
-            && rendered.contains(
-                "__rumoca_mover_pressure_curve(4, ((fmax(0.0, controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_6"
-            )
+            && rendered.contains("controlSemantics_initialFanEnable_2")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_6")
             && rendered.contains("floor2BoptestAirNetwork_RetPreCur_1")
-            && rendered.contains("controlSemantics_rawAhuSupplyFanSpeed_1")
-            && rendered.contains("controlSemantics_terminalDamperMean_1")
-            && rendered.contains("floor1BoptestAirNetwork_V_flowSupAir")
-            && rendered
-                .contains("floor1BoptestAirNetwork_rhoAir * floor1BoptestAirNetwork_V_flowSupAir"),
+            && rendered.contains("ahu_supply_fan_speed_1")
+            && rendered.contains("ahu_duct_static_pressure_setpoint_1")
+            && rendered.contains("floor1BoptestAirNetwork_VolFloCur_1")
+            && rendered.contains("floor1BoptestAirNetwork_rhoAir")
+            && rendered.contains("hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QFue_flow")
+            && rendered.contains("hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_QFue_flow")
+            && rendered.contains("hotWaterPlant_boilerPlant_pumSecHW_pum_1")
+            && rendered.contains("chilledWaterPlant_chillerPlant_pumSecCHW_pum_1"),
         "AHU public power/flow read surfaces should synthesize from BOPTEST floor read surfaces:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand"),
+        "AHU flow/power read surfaces must not depend on the stale terminal airflow setpoint alias:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("__rumoca_mover_pressure_curve(5,")
+            && rendered.contains(
+                "((hotWaterPlant_boilerPlant_secPumCon_pumSta_pumNSta_y) >= 1.0 ? 1.0 : 0.0) * (hotWaterPlant_boilerPlant_secPumCon_conPI_booToRea_y * hotWaterPlant_boilerPlant_secPumCon_conPI_conPID_y)"
+            )
+            && !rendered.contains(
+                "fmin(1.0, fmax(0.0, hotWaterPlant_boilerPlant_pumSecHW_pum_1_u))"
+            ),
+        "Hot-water secondary pump power must use the same source SecPumCon command as flow, not stale pump.u storage:\n{rendered}"
     );
     assert!(
         !rendered.contains("floor_cooling_demand_3 *")
@@ -3708,8 +5903,13 @@ fn test_embedded_c_alg_rhs_propagates_boptest_ahu_power_read_surfaces() {
             && !rendered.contains("floor_physical_ahu_supply_mass_flow")
             && !rendered.contains("floor_physical_ahu_duct_static_pressure")
             && !rendered.contains("floor1PhysicalAhu_terminalToWaterDemand")
-            && !rendered.contains("floor3PhysicalAhu_terminalToWaterDemand"),
-        "AHU public power/read surfaces must not bypass BOPTEST floor wrapper through reduced AHU equations:\n{rendered}"
+            && !rendered.contains("floor3PhysicalAhu_terminalToWaterDemand")
+            && !rendered.contains("floor1BoptestAirNetwork_floor_reaAHU_PFanSup_in")
+            && !rendered.contains("floor1BoptestAirNetwork_floor_reaAHU_PFreCoi_in")
+            && !rendered.contains("hotWaterPlant_boilerPlantPower=hotWaterPlant_boilerFuelPower")
+            && !rendered.contains("reaHotWatSys_reaPPum_y=hotWaterPlant_pumpElectricalPower")
+            && !rendered.contains("reaChiWatSys_reaPPum_y=chilledWaterPlant_pumpElectricalPower"),
+        "AHU and plant device read surfaces must not preserve read-block or aggregate alias self-cycles:\n{rendered}"
     );
     assert!(
         !rendered.contains("no equation found"),
@@ -3743,30 +5943,37 @@ hw_total={{ alg_rhs_for_var("hotWaterPlant.terminalReheatDemand", dae.f_x, cfg) 
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains("floor1BoptestAirNetwork_rhoAir")
+        rendered.contains("10.92 * 1.2 * floor1BoptestAirNetwork_alpha * 3.0 * 1.0")
             && rendered.contains("floor1BoptestAirNetwork_cpAir")
-            && rendered.contains("controlSemantics_rawAhuSupplyAirTemperatureSetpoint_1")
-            && rendered.contains("controlSemantics_rawZoneHeatingSetpointCommand_1")
-            && rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_1")
+            && rendered.contains("controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_1")
+            && rendered.contains("controlSemantics_fanStagingState_1")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_1")
             && rendered.contains(
                 "chw_tsup=fmax(275.15, fmin(285.15, chilledWaterPlant_plantChilledWaterSetpoint))"
             )
-            && rendered.contains("chw_floor=fmax(0.0, (floor1BoptestAirNetwork_rhoAir")
-            && rendered.contains("chw_branch=fmax(0.0, (floor2BoptestAirNetwork_rhoAir"),
+            && rendered.contains(
+                "chw_floor=fmax(0.0, (((fmax(0.0, fmin(1.0, (((fmin(1.0, fmax(0.0, ahu_supply_fan_speed_1)))"
+            )
+            && rendered.contains(
+                "chw_branch=fmax(0.0, (((fmax(0.0, fmin(1.0, (((fmin(1.0, fmax(0.0, ahu_supply_fan_speed_2)))"
+            ),
         "CHW plant demand surfaces should be driven by BOPTEST floor air-side cooling load:\n{rendered}"
     );
     assert!(
         rendered.contains(
             "hw_load=__rumoca_sum_d(floor3BoptestAirNetwork_hotWaterReheatThermalLoadByZone"
         )
-            && rendered.contains("hw_zone=fmax(0.0, floor3BoptestAirNetwork_rhoAir * floor3BoptestAirNetwork_cpAir")
-            && rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_15")
+            && rendered.contains("hw_zone=fmax(0.0, floor3BoptestAirNetwork_eps_5 * fmin(fmax(0.0, (floor3BoptestAirNetwork_rhoAir * floor3BoptestAirNetwork_cpAir")
+            && rendered.contains("hotWaterPlant_cpWater * ((((1.73 * 1.2 * floor3BoptestAirNetwork_alpha * 3.0 * 1.0)) * 0.3 * (35.0 - 12.88) / 4.2 / 20.0)")
+            && rendered.contains("controlSemantics_fanStagingState_3")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_15")
             && rendered.contains("controlSemantics_effectiveZoneTerminalReheatCommand_15")
             && rendered.contains("hw_public=floor3BoptestAirNetwork_hotWaterReheatThermalLoadByZone_5")
-            && rendered.contains("vav_flow=fmax(0.0, controlSemantics_effectiveZoneTerminalAirflowSetpointCommand_6")
+            && rendered.contains("vav_flow=((fmax(0.0, fmin(1.0, (((fmin(1.0, fmax(0.0, ahu_supply_fan_speed_2)))")
             && rendered.contains("vav_tsup=(floor2BoptestAirNetwork_TSupAir +")
+            && rendered.contains("/ fmax(0.001, (floor2BoptestAirNetwork_rhoAir * floor2BoptestAirNetwork_cpAir")
             && rendered.contains("ahu_tsup=floor1BoptestAirNetwork_disTSet")
-            && rendered.contains("ahu_mix=((controlSemantics_rawZoneHeatingSetpointCommand_1")
+            && rendered.contains("ahu_mix=((293.15 + 293.15 + 293.15 + 293.15 + 293.15) / 5.0)")
             && rendered.contains(
                 "hw_floor=floor3BoptestAirNetwork_hotWaterReheatThermalLoad"
             )
@@ -3781,6 +5988,7 @@ hw_total={{ alg_rhs_for_var("hotWaterPlant.terminalReheatDemand", dae.f_x, cfg) 
             && !rendered.contains("heating_capacity")
             && !rendered.contains("zone_terminal_cooling_command")
             && !rendered.contains("zone_terminal_reheat_command")
+            && !rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand")
             && !rendered.contains("no equation found"),
         "BOPTEST floor load read surfaces must not fall back to reduced capacity-command demand:\n{rendered}"
     );
@@ -3819,13 +6027,19 @@ eff_heat={{ alg_rhs_for_var("controlSemantics.effectiveZoneHeatingSetpointComman
         rendered.contains("raw=ahu_supply_fan_speed_1")
             && rendered.contains("time <= 0.0")
             && rendered.contains("controlSemantics_initialFanEnable_1")
-            && rendered.contains("controlSemantics_fanStageRequest_1")
-            && rendered.contains("controlSemantics_stagingOnThreshold")
-            && rendered.contains(
-                "effective=(((fmin(1.0, fmax(0.0, controlSemantics_rawAhuSupplyFanSpeed_1))) > 1e-6"
-            )
-            && rendered.contains("controlSemantics_terminalDamperMean_1")
-            && rendered.contains("controlSemantics_fanEnable_1")
+            && rendered.contains("controlSemantics_fanStagingState_1")
+            && rendered.contains("ahu_supply_fan_speed_1")
+            && rendered.contains("occupancy_schedule_source_override_enable")
+            && rendered.contains("occupancy_schedule_command_1")
+            && rendered.contains("initializationWarmupContract_scheduleStartTimeSeconds")
+            && rendered.contains("controlSemantics_unoccupiedFanCyclingState_1")
+            && rendered
+                .contains("effective=(((fmin(1.0, fmax(0.0, ahu_supply_fan_speed_1))) > 1e-6")
+            && rendered.contains("controlSemantics_occupiedFanMinimumSpeed")
+            && rendered.contains("controlSemantics_ahuFanPressureControllerGain")
+            && rendered.contains("controlSemantics_ahuFanPressureIntegral_1")
+            && rendered.contains("floor1BoptestAirNetwork_airDuctStaticPressure")
+            && rendered.contains("ahu_duct_static_pressure_setpoint_1")
             && rendered.contains("raw_hw=plant_hot_water_setpoint")
             && rendered.contains("eff_hw=controlSemantics_rawPlantHotWaterSetpoint")
             && rendered.contains("raw_sat=ahu_supply_air_temperature_setpoint_2")
@@ -3851,6 +6065,93 @@ eff_heat={{ alg_rhs_for_var("controlSemantics.effectiveZoneHeatingSetpointComman
     assert!(
         !rendered.contains("no equation found") && !rendered.trim().starts_with("0.0"),
         "top-down fan speed semantics must not fall through to zero placeholders:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("effective=(((fmin(1.0, fmax(0.0, controlSemantics_rawAhuSupplyFanSpeed_1))) > 1e-6 ? (fmin(1.0, fmax(0.0, controlSemantics_rawAhuSupplyFanSpeed_1))) : controlSemantics_terminalDamperMean_1)"),
+        "top-down fan speed synthesis must not bypass source-owned fan-speed demand:\n{rendered}"
+    );
+    let fan_fragments = rendered.split("raw_hw=").next().unwrap_or("");
+    assert!(
+        !fan_fragments.contains("controlSemantics_fanCyclingTemperatureDeadband")
+            && !fan_fragments.contains("controlSemantics_fanCyclingSwitchWidth"),
+        "fan enable/effective output synthesis must not recompute TemperatureCheck in the output refresh path:\n{rendered}"
+    );
+    assert!(
+        fan_fragments.contains("controlSemantics_unoccupiedFanCyclingState_1"),
+        "fan enable/effective output synthesis must consume the source-owned unoccupied fan-cycling state:\n{rendered}"
+    );
+    assert!(
+        fan_fragments.contains("controlSemantics_unoccupiedFanCyclingState_1")
+            && !fan_fragments.contains(
+                "fmax(((((time <= 0.0) ? controlSemantics_initialOccupancyScheduleState_1"
+            ),
+        "unoccupied fan-cycling state must stay source-owned and must not be folded into the replay-source gate with occupied fan inference:\n{rendered}"
+    );
+    assert!(
+        fan_fragments.contains("ahu_supply_fan_speed_1")
+            && fan_fragments.contains("occupancy_schedule_command_1")
+            && !fan_fragments.contains(
+                "ahu_supply_fan_speed_1))) + (((time <= 0.0) ? controlSemantics_initialOccupancyScheduleState_1"
+            ),
+        "source-owned occupancy/schedule fan inference must come from the BOPTEST schedule state, while explicit fan speed remains independent:\n{rendered}"
+    );
+    assert!(
+        fan_fragments.contains("controlSemantics_occupiedFanMinimumSpeed")
+            && fan_fragments.contains("controlSemantics_ahuFanPressureControllerGain")
+            && fan_fragments.contains("controlSemantics_ahuFanPressureIntegral_1")
+            && fan_fragments.contains("floor1BoptestAirNetwork_airDuctStaticPressure")
+            && fan_fragments.contains("ahu_duct_static_pressure_setpoint_1")
+            && fan_fragments.contains("controlSemantics_unoccupiedFanCyclingState_1")
+            && !fan_fragments.contains("controlSemantics_terminalReheatFanEnableThreshold")
+            && !fan_fragments.contains("controlSemantics_terminalReheatFanEnableWidth")
+            && !fan_fragments.contains("zone_terminal_reheat_command_1")
+            && !fan_fragments.contains("zone_terminal_damper_command_1"),
+        "top-down fan synthesis must follow FmuControlSemantics source-owned occupied pressure-PI and cycling semantics, not terminal reheat or damper demand:\n{rendered}"
+    );
+    assert!(
+        !fan_fragments.contains("((({{occupied}}) * controlSemantics_occupiedFanMinimumSpeed)")
+            && !fan_fragments.contains(" * controlSemantics_occupiedFanMinimumSpeed))"),
+        "top-down fan synthesis must not collapse occupied demand to the fixed minimum speed:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("effective=")
+            || !fan_fragments.contains("controlSemantics_sourceOwnedFanSpeedDemand_1"),
+        "effective fan speed synthesis must not read a later-assigned sourceOwnedFanSpeedDemand storage slot:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("effective=") || !fan_fragments.contains("controlSemantics_fanEnable_1"),
+        "effective fan speed synthesis must not read a later-assigned fanEnable storage slot:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("enable=")
+            || !rendered
+                .split("effective=")
+                .next()
+                .unwrap_or("")
+                .contains("controlSemantics_fanStageRequest_1"),
+        "fanEnable synthesis must not read a later-assigned fanStageRequest storage slot:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("enable=")
+            || rendered
+                .split("effective=")
+                .next()
+                .unwrap_or("")
+                .contains("controlSemantics_fanStagingState_1"),
+        "fanEnable synthesis must consume the source-owned fan staging state:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("enable=")
+            || !rendered
+                .split("effective=")
+                .next()
+                .unwrap_or("")
+                .contains("occupancyProfile_1"),
+        "fanEnable synthesis must not read a later-assigned occupancyProfile storage slot:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("effective=") || !fan_fragments.contains("occupancyProfile_1"),
+        "effective fan speed synthesis must not read a later-assigned occupancyProfile storage slot:\n{rendered}"
     );
 }
 
@@ -3936,6 +6237,56 @@ motU={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.duaFanAirHanUni.supFan.wi
 }
 
 #[test]
+fn test_embedded_c_alg_rhs_synthesizes_boptest_vav_terminal_overwrite_chain() {
+    let dae_json = serde_json::json!({
+        "f_x": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+damSwi={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.oveZonLoc.yDam.swi.y", dae.f_x, cfg) }}
+damOut={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.oveZonLoc.yDam_out", dae.f_x, cfg) }}
+damIn={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.oveZonLoc.yDam_in", dae.f_x, cfg) }}
+damY={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.dam.y", dae.f_x, cfg) }}
+damFilterU={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV1.dam.filter.u", dae.f_x, cfg) }}
+rehSwi={{ alg_rhs_for_var("floor2BoptestAirNetwork.floor.fivZonVAV.vAV3.oveZonLoc.yReaHea.swi.y", dae.f_x, cfg) }}
+rehOut={{ alg_rhs_for_var("floor2BoptestAirNetwork.floor.fivZonVAV.vAV3.oveZonLoc.yReaHea_out", dae.f_x, cfg) }}
+rehY={{ alg_rhs_for_var("floor2BoptestAirNetwork.floor.fivZonVAV.vAV3.rehVal.y", dae.f_x, cfg) }}
+rehFilterU={{ alg_rhs_for_var("floor2BoptestAirNetwork.floor.fivZonVAV.vAV3.rehVal.filter.u", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains(
+            "damSwi=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_swi_u2 ? floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_swi_u1 : floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_swi_u3"
+        ) && rendered.contains(
+            "damOut=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_swi_y"
+        ) && rendered.contains(
+            "damIn=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_pI_y"
+        ) && rendered.contains(
+            "damY=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_swi_y"
+        ) && rendered.contains(
+            "damFilterU=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_swi_y"
+        ) && rendered.contains(
+            "rehSwi=floor2BoptestAirNetwork_floor_fivZonVAV_vAV3_oveZonLoc_yReaHea_swi_u2 ? floor2BoptestAirNetwork_floor_fivZonVAV_vAV3_oveZonLoc_yReaHea_swi_u1 : floor2BoptestAirNetwork_floor_fivZonVAV_vAV3_oveZonLoc_yReaHea_swi_u3"
+        ) && rendered.contains(
+            "rehOut=floor2BoptestAirNetwork_floor_fivZonVAV_vAV3_oveZonLoc_yReaHea_swi_y"
+        ) && rendered.contains(
+            "rehY=floor2BoptestAirNetwork_floor_fivZonVAV_vAV3_oveZonLoc_yReaHea_swi_y"
+        ) && rendered.contains(
+            "rehFilterU=floor2BoptestAirNetwork_floor_fivZonVAV_vAV3_oveZonLoc_yReaHea_swi_y"
+        ),
+        "BOPTEST VAV terminal overwrite must drive wrapper outputs and actuator inputs without alias cycles:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("damY=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_dam_filter_u")
+            && !rendered.contains("damFilterU=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_dam_y")
+            && !rendered
+                .contains("damOut=floor1BoptestAirNetwork_floor_fivZonVAV_vAV1_oveZonLoc_yDam_y"),
+        "terminal overwrite chain must not preserve self-referential aliases:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_embedded_c_alg_rhs_synthesizes_boptest_ahu_fan_mover_flow_and_power() {
     let dae_json = serde_json::json!({
         "f_x": []
@@ -4013,6 +6364,23 @@ floor2v4={{ parameter_binding_rhs("floor2BoptestAirNetwork.VolFloCur", {"Literal
                 "floor2v4=((10.92 + 2.25 + 1.49 + 1.9 + 1.73) * floor2BoptestAirNetwork_alpha * 3.0 * 10.0 * 1.2)"
             ),
         "BOPTEST AHU VolFloCur should be synthesized from the source floor mAirFloRat sizing formula:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_embedded_c_parameter_binding_synthesizes_initial_zone_temperature() {
+    let dae_json = serde_json::json!({
+        "f_x": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+zone3={{ parameter_binding_rhs("floor1BoptestAirNetwork.initialZoneTemperature", {"VarRef": {"name": {"name": "initial_temperature"}, "subscripts": [{"Index": {"value": 3}}]}}, 3, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("zone3=initial_temperature_3"),
+        "initialZoneTemperature parameter binding should follow user-set initial_temperature before state initialization:\n{rendered}"
     );
 }
 
@@ -4486,14 +6854,181 @@ synthetic={{ alg_rhs_for_var_with_dae("synthetic_wet_bulb_temperature", dae, cfg
 }
 
 #[test]
+fn test_fmi_alg_rhs_synthesizes_boptest_weather_surfaces_from_weather_inputs() {
+    let dae_json = serde_json::json!({
+        "f_x": [],
+        "x": {},
+        "y": {
+            "weather_profile": {},
+            "synthetic_weather_profile": {},
+            "sky_temperature": {},
+            "synthetic_sky_temperature": {},
+            "wind_profile": {},
+            "synthetic_wind_profile": {}
+        },
+        "w": {
+            "WeatherHGloHor": {},
+            "WeatherTBlaSky": {},
+            "WeatherWindSpeed": {}
+        },
+        "z": {},
+        "m": {},
+        "u": {
+            "weather_source_override_enable": {},
+            "weather_hglohor_input": {},
+            "weather_tblasky_input": {},
+            "weather_wind_speed_input": {}
+        },
+        "p": {
+            "initializationWarmupContract.weatherStartTimeSeconds": {}
+        },
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+profile={{ alg_rhs_for_var_with_dae("weather_profile", dae, cfg) }}
+hglo={{ alg_rhs_for_var_with_dae("WeatherHGloHor", dae, cfg) }}
+sky={{ alg_rhs_for_var_with_dae("sky_temperature", dae, cfg) }}
+sky_out={{ alg_rhs_for_var_with_dae("WeatherTBlaSky", dae, cfg) }}
+wind={{ alg_rhs_for_var_with_dae("wind_profile", dae, cfg) }}
+wind_out={{ alg_rhs_for_var_with_dae("WeatherWindSpeed", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("weather_hglohor_input / 1000.0")
+            && rendered.contains("hglo=(1000.0 *")
+            && rendered.contains("weather_tblasky_input")
+            && rendered.contains("weather_wind_speed_input / 6.0")
+            && rendered.contains("wind_out=(6.0 *"),
+        "BOPTEST weather dry/solar/sky/wind surfaces should consume source-backed weather inputs with correct units:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("sky=WeatherTBlaSky")
+            && !rendered.contains("wind=floor1BoptestAirNetwork_weatherWindSpeed"),
+        "weather surfaces must not preserve reverse alias cycles:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_alg_rhs_synthesizes_internal_gain_source_override_surfaces() {
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "Residual": {
+                    "terms": [
+                        {"Var": "floor_internal_gain_con[1,1]"},
+                        {"Neg": {"Var": "stale_con_rhs"}}
+                    ]
+                }
+            }
+        ],
+        "x": {},
+        "y": {
+            "floor_internal_gain_con[1,1]": {},
+            "floor_internal_gain_rad[2,5]": {},
+            "floor_internal_gain_lat[3,4]": {},
+            "floor_internal_gain[2,4]": {},
+            "floor_total_internal_gain[2,4]": {},
+            "source_floor_internal_gain_con[1,1]": {},
+            "source_floor_internal_gain_rad[2,5]": {},
+            "source_floor_internal_gain_lat[3,4]": {},
+            "deterministic_floor_internal_gain_con[1,1]": {},
+            "deterministic_floor_internal_gain_rad[2,5]": {},
+            "deterministic_floor_internal_gain_lat[3,4]": {}
+        },
+        "w": {
+            "InternalGainsCon_bot_floor_cor": {},
+            "InternalGainsRad_mid_floor_wes": {},
+            "InternalGainsLat_top_floor_nor": {}
+        },
+        "z": {},
+        "m": {},
+        "u": {
+            "internal_gain_source_override_enable": {}
+        },
+        "p": {
+            "internal_gains[9]": {},
+            "floor_multiplier[2]": {}
+        },
+        "constants": {},
+        "solve": {
+            "visible_names": [
+                "InternalGainsCon_bot_floor_cor",
+                "InternalGainsRad_mid_floor_wes",
+                "InternalGainsLat_top_floor_nor"
+            ],
+            "visible_value_rows": {
+                "programs": [
+                    [{"LoadY": {"dst": 0, "index": 299}}, {"StoreOutput": {"src": 0}}],
+                    [{"LoadY": {"dst": 0, "index": 300}}, {"StoreOutput": {"src": 0}}],
+                    [{"LoadY": {"dst": 0, "index": 301}}, {"StoreOutput": {"src": 0}}]
+                ]
+            }
+        }
+    });
+    let template = r#"
+{% set expr_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{% set row_cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true, "target": "c"} %}
+con={{ alg_rhs_for_var_with_dae("floor_internal_gain_con[1,1]", dae, expr_cfg) }}
+rad={{ alg_rhs_for_var_with_dae("floor_internal_gain_rad[2,5]", dae, expr_cfg) }}
+lat={{ alg_rhs_for_var_with_dae("floor_internal_gain_lat[3,4]", dae, expr_cfg) }}
+total={{ alg_rhs_for_var_with_dae("floor_total_internal_gain[2,4]", dae, expr_cfg) }}
+con_out={{ output_rhs_for_var_with_solve("InternalGainsCon_bot_floor_cor", dae, dae.solve, expr_cfg, row_cfg) }}
+rad_out={{ output_rhs_for_var_with_solve("InternalGainsRad_mid_floor_wes", dae, dae.solve, expr_cfg, row_cfg) }}
+lat_out={{ output_rhs_for_var_with_solve("InternalGainsLat_top_floor_nor", dae, dae.solve, expr_cfg, row_cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("con=((internal_gain_source_override_enable > 0.5) ? source_floor_internal_gain_con_1_1 : deterministic_floor_internal_gain_con_1_1)")
+            && rendered.contains("rad=((internal_gain_source_override_enable > 0.5) ? source_floor_internal_gain_rad_2_5 : deterministic_floor_internal_gain_rad_2_5)")
+            && rendered.contains("lat=((internal_gain_source_override_enable > 0.5) ? source_floor_internal_gain_lat_3_4 : deterministic_floor_internal_gain_lat_3_4)"),
+        "floor internal gain surfaces must prefer source-backed drivers when replay override is active:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("total=(internal_gains_9 + floor_internal_gain_2_4)"),
+        "floor total internal gain must preserve the Modelica internal_gains + source-backed floor gain equation:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("con_out=floor_internal_gain_con_1_1")
+            && rendered.contains("rad_out=((floor_internal_gain_rad_2_5) * floor_multiplier_2)")
+            && rendered.contains("lat_out=floor_internal_gain_lat_3_4"),
+        "public InternalGains outputs must read the order-safe floor gain surfaces, with mid-floor scaling:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("stale_con_rhs")
+            && !rendered.contains("__rumoca_solve_y(m, 299)")
+            && !rendered.contains("__rumoca_solve_y(m, 300)")
+            && !rendered.contains("__rumoca_solve_y(m, 301)"),
+        "internal gain surfaces must not preserve stale direct equations or solve-slot aliases:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_embedded_c_discrete_rhs_synthesizes_con_pi_enable_chain() {
     let dae_json = serde_json::json!({
         "m": {
-            "plant.secPumCon.On": {},
-            "plant.secPumCon.conPI.On": {},
-            "plant.secPumCon.conPI.booToRea.u": {},
-            "plant.secPumCon.conPI.conPID.trigger": {},
-            "plant.secPumCon.conPI.conPID.I.trigger": {}
+            "hotWaterPlant.boilerPlant.secPumCon.On": {
+                "name": "hotWaterPlant.boilerPlant.secPumCon.On",
+                "dims": []
+            },
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.On": {
+                "name": "hotWaterPlant.boilerPlant.secPumCon.conPI.On",
+                "dims": []
+            },
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.u": {
+                "name": "hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.u",
+                "dims": []
+            },
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.trigger": {
+                "name": "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.trigger",
+                "dims": []
+            },
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.I.trigger": {
+                "name": "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.I.trigger",
+                "dims": []
+            }
         },
         "z": {},
         "y": {},
@@ -4528,6 +7063,446 @@ itrigger={{ discrete_rhs_for_var("plant.secPumCon.conPI.conPID.I.trigger", dae.f
     assert!(
         rendered.contains("itrigger=plant_secPumCon_conPI_conPID_trigger"),
         "PID integrator trigger should synthesize from the PID trigger:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_discrete_valued_rhs_synthesizes_con_pi_enable_chain() {
+    let dae_json = serde_json::json!({
+        "m": {
+            "plant.secPumCon.On": {},
+            "plant.secPumCon.conPI.On": {},
+            "plant.secPumCon.conPI.booToRea.u": {},
+            "plant.secPumCon.conPI.conPID.trigger": {},
+            "plant.secPumCon.conPI.conPID.I.trigger": {}
+        },
+        "z": {},
+        "y": {},
+        "u": {},
+        "x": {},
+        "p": {},
+        "c": {},
+        "f_z": [],
+        "f_m": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+on={{ discrete_valued_rhs_for_var("hotWaterPlant.boilerPlant.secPumCon.conPI.On", dae.f_z, dae.f_m, dae, cfg) }}
+boo={{ discrete_valued_rhs_for_var("hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.u", dae.f_z, dae.f_m, dae, cfg) }}
+trigger={{ discrete_valued_rhs_for_var("hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.trigger", dae.f_z, dae.f_m, dae, cfg) }}
+itrigger={{ discrete_valued_rhs_for_var("hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.I.trigger", dae.f_z, dae.f_m, dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("on=1.0"),
+        "FMI m update should synthesize BOPTEST conPI.On from the plant On BooleanExpression:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("boo=1.0"),
+        "FMI m update should synthesize BOPTEST BooleanToReal.u from the plant On BooleanExpression:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("trigger=1.0"),
+        "FMI m update should synthesize BOPTEST PID trigger from the plant On BooleanExpression:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("itrigger=1.0"),
+        "FMI m update should synthesize BOPTEST PID integrator trigger from the plant On BooleanExpression:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_render_expr_at_index_projects_binary_array_parameter_expressions() {
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "curve[1,1]": "curve_1_1",
+            "curve[1,2]": "curve_1_2",
+            "matrix_curve[1,1]": "matrix_curve_1_1",
+            "matrix_curve[1,2]": "matrix_curve_1_2",
+            "matrix_curve[1,3]": "matrix_curve_1_3",
+            "matrix_curve[1,4]": "matrix_curve_1_4",
+            "matrix_curve[1,5]": "matrix_curve_1_5",
+            "matrix_curve[2,1]": "matrix_curve_2_1",
+            "matrix_curve[2,2]": "matrix_curve_2_2",
+            "matrix_curve[2,3]": "matrix_curve_2_3",
+            "matrix_curve[2,4]": "matrix_curve_2_4",
+            "matrix_curve[2,5]": "matrix_curve_2_5",
+            "singleton[1]": "singleton_1",
+            "flows[1]": "flows_1",
+            "flows[2]": "flows_2",
+            "flows[3]": "flows_3",
+            "gain": "gain",
+            "samples[1]": "samples_1",
+            "samples[2]": "samples_2",
+            "x[1]": "x_1",
+            "x[2]": "x_2"
+        },
+        "comp": {
+            "ArrayComprehension": {
+                "expr": {
+                    "VarRef": {
+                        "name": {"name": "samples"},
+                        "subscripts": [
+                            {"Expr": {"expr": {"VarRef": {"name": {"name": "i"}, "subscripts": []}}}}
+                        ]
+                    }
+                },
+                "indices": [
+                    {
+                        "name": "i",
+                        "range": {
+                            "Range": {
+                                "start": {"Literal": {"Integer": 1}},
+                                "step": null,
+                                "end": {"Literal": {"Integer": 2}}
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "cat_expr": {
+            "BuiltinCall": {
+                "function": "Cat",
+                "args": [
+                    {"Literal": {"Integer": 1}},
+                    {"Array": {"elements": [{"Literal": {"Real": 0.0}}]}},
+                    {
+                        "ArrayComprehension": {
+                            "expr": {
+                                "VarRef": {
+                                    "name": {"name": "samples"},
+                                    "subscripts": [
+                                        {"Expr": {"expr": {"VarRef": {"name": {"name": "i"}, "subscripts": []}}}}
+                                    ]
+                                }
+                            },
+                            "indices": [
+                                {
+                                    "name": "i",
+                                    "range": {
+                                        "Range": {
+                                            "start": {"Literal": {"Integer": 1}},
+                                            "step": null,
+                                            "end": {"Literal": {"Integer": 2}}
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "comp_scalar": {
+            "ArrayComprehension": {
+                "expr": {
+                    "Binary": {
+                        "op": "Mul",
+                        "lhs": {
+                            "VarRef": {
+                                "name": {"name": "samples"},
+                                "subscripts": [
+                                    {"Expr": {"expr": {"VarRef": {"name": {"name": "i"}, "subscripts": []}}}}
+                                ]
+                            }
+                        },
+                        "rhs": {"VarRef": {"name": {"name": "gain"}, "subscripts": []}}
+                    }
+                },
+                "indices": [
+                    {
+                        "name": "i",
+                        "range": {
+                            "Range": {
+                                "start": {"Literal": {"Integer": 1}},
+                                "step": null,
+                                "end": {"Literal": {"Integer": 2}}
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "const_if": {
+            "If": {
+                "branches": [
+                    [
+                        {"Binary": {"op": "Eq", "lhs": {"Literal": {"Integer": 2}}, "rhs": {"Literal": {"Integer": 6}}}},
+                        {"VarRef": {"name": {"name": "missing"}, "subscripts": []}}
+                    ]
+                ],
+                "else_branch": {"Literal": {"Integer": 0}}
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "true_val": "1", "false_val": "0", "subscript_underscore": true, "symbols": dae.symbols, "sum_fn": "__rumoca_sum_d"} %}
+z={{ render_expr_at_index({"BuiltinCall": {"function": "Zeros", "args": [{"Literal": {"Integer": 2}}]}}, 1, cfg) }}
+v={{ render_expr_at_index({"Binary": {"op": "Mul", "lhs": {"VarRef": {"name": {"name": "curve"}, "subscripts": []}}, "rhs": {"Literal": {"Real": 2.5}}}}, 4, cfg) }}
+w={{ render_expr_at_index({"Binary": {"op": "Mul", "lhs": {"VarRef": {"name": {"name": "curve"}, "subscripts": []}}, "rhs": {"Literal": {"Real": 2.5}}}}, 2, cfg) }}
+m3={{ render_expr_at_index({"VarRef": {"name": {"name": "matrix_curve"}, "subscripts": []}}, 3, cfg) }}
+m5={{ render_expr_at_index({"VarRef": {"name": {"name": "matrix_curve"}, "subscripts": []}}, 5, cfg) }}
+b={{ render_expr_at_index({"VarRef": {"name": {"name": "singleton"}, "subscripts": []}}, 3, cfg) }}
+time={{ render_expr_at_index({"VarRef": {"name": {"name": "time"}, "subscripts": []}}, 3, cfg) }}
+div={{ render_expr_at_index({"Binary": {"op": "Div", "lhs": {"VarRef": {"name": {"name": "flows"}, "subscripts": []}}, "rhs": {"VarRef": {"name": {"name": "gain"}, "subscripts": []}}}}, 2, cfg) }}
+s={{ render_expr({"BuiltinCall": {"function": "Sum", "args": [{"VarRef": {"name": {"name": "flows"}, "subscripts": []}}]}}, cfg) }}
+sz={{ render_expr({"BuiltinCall": {"function": "Size", "args": [{"VarRef": {"name": {"name": "x"}, "subscripts": []}}, {"Literal": {"Integer": 1}}]}}, cfg) }}
+sd={{ render_expr_at_index({"FunctionCall": {"name": {"name": "splineDerivatives"}, "args": [{"VarRef": {"name": {"name": "x"}, "subscripts": []}}, {"Literal": {"Integer": 2}}, {"VarRef": {"name": {"name": "flows"}, "subscripts": []}}, {"Literal": {"Integer": 3}}, {"Literal": {"Boolean": true}}]}}, 2, cfg) }}
+row={{ render_expr_at_index({"VarRef": {"name": {"name": "matrix"}, "subscripts": [{"Index": {"value": 2}}]}}, 3, cfg) }}
+comp={{ render_expr_at_index(dae.comp, 2, cfg) }}
+cat={{ render_expr_at_index(dae.cat_expr, 3, cfg) }}
+comps={{ render_expr_at_index(dae.comp_scalar, 2, cfg) }}
+iff={{ render_expr(dae.const_if, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("z=0.0")
+            && rendered.contains("v=(curve_4 * 2.5)")
+            && rendered.contains("w=(curve_1_2 * 2.5)")
+            && rendered.contains("m3=matrix_curve_1_3")
+            && rendered.contains("m5=matrix_curve_1_5")
+            && rendered.contains("b=singleton_1")
+            && rendered.contains("time=time")
+            && rendered.contains("div=(flows_2 / gain)")
+            && rendered.contains("s=__rumoca_sum_d(flows, 3)")
+            && rendered.contains("sz=2")
+            && rendered.contains("sd=splineDerivatives_d(x, 2, flows, 3, 1, 1)")
+            && rendered.contains("row=matrix_2_3")
+            && rendered.contains("comp=samples_2")
+            && rendered.contains("cat=samples_2")
+            && rendered.contains("comps=(samples_2 * gain)")
+            && rendered.contains("iff=0"),
+        "C render_expr_at_index should emit C literals and project whole-array operands element-wise:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_render_component_ref_canonicalizes_zero_based_source_without_symbol_map() {
+    let dae_json = serde_json::json!({
+        "ref": {
+            "parts": [
+                {"ident": "plant", "subs": []},
+                {"ident": "ct", "subs": [{"Expression": {"Literal": {"Integer": 0}}}]},
+                {"ident": "yorkCalc", "subs": []},
+                {"ident": "fanRelPow", "subs": []},
+                {"ident": "r_V", "subs": []}
+            ]
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{{ render_expr(dae.ref, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("plant_ct_1_yorkCalc_fanRelPow_r_V") && !rendered.contains("plant_ct[0]"),
+        "ComponentReference fallback should canonicalize zero-based source indices before C aliasing:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_buildings_efficiency_call_uses_eta_field_from_record_signature() {
+    let dae_json = serde_json::json!({
+        "call": {
+            "FunctionCall": {
+                "name": {"name": "Buildings.Fluid.Movers.BaseClasses.Characteristics.efficiency"},
+                "args": [
+                    {"VarRef": {"name": {"name": "pump.eff.per.hydraulicEfficiency.V_flow"}, "subscripts": []}},
+                    {"Literal": {"Integer": 6}},
+                    {"VarRef": {"name": {"name": "pump.eff.per.hydraulicEfficiency.dp"}, "subscripts": []}},
+                    {"Literal": {"Integer": 0}},
+                    {"VarRef": {"name": {"name": "pump.eff.V_flow"}, "subscripts": []}},
+                    {"VarRef": {"name": {"name": "pump.eff.hydDer"}, "subscripts": []}},
+                    {"Literal": {"Integer": 6}},
+                    {"VarRef": {"name": {"name": "pump.eff.r_N"}, "subscripts": []}},
+                    {"VarRef": {"name": {"name": "pump.eff.delta"}, "subscripts": []}}
+                ]
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{{ render_expr(dae.call, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("efficiency(pump_eff_per_hydraulicEfficiency_V_flow, 6, pump_eff_per_hydraulicEfficiency_eta, 6, pump_eff_V_flow, pump_eff_hydDer, 6, pump_eff_r_N, pump_eff_delta)")
+            && !rendered.contains("hydraulicEfficiency_dp"),
+        "Buildings efficiency call should follow efficiencyParameters(V_flow, eta), not stale pressure-like dp fields:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_buildings_normalized_power_call_uses_r_p_field_from_record_signature() {
+    let dae_json = serde_json::json!({
+        "call": {
+            "FunctionCall": {
+                "name": {"name": "Buildings_Fluid_HeatExchangers_CoolingTowers_BaseClasses_Characteristics_normalizedPower"},
+                "args": [
+                    {"VarRef": {"name": {"name": "ct[0].yorkCalc.fanRelPow.r_V"}, "subscripts": []}},
+                    {"Literal": {"Integer": 0}},
+                    {"VarRef": {"name": {"name": "ct[0].yorkCalc.fanRelPow.r_P"}, "subscripts": []}},
+                    {"Literal": {"Integer": 0}},
+                    {"VarRef": {"name": {"name": "ct.yorkCalc.y"}, "subscripts": []}},
+                    {"VarRef": {"name": {"name": "ct.yorkCalc.fanRelPowDer"}, "subscripts": []}},
+                    {"Literal": {"Integer": 3}}
+                ]
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{{ render_expr(dae.call, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("normalizedPower(ct_1_yorkCalc_fanRelPow_r_V, 3, ct_1_yorkCalc_fanRelPow_r_P, 3, ct_yorkCalc_y, ct_yorkCalc_fanRelPowDer, 3)")
+            && !rendered.contains("fanRelPow.r_P"),
+        "Buildings normalizedPower call should flatten fan(r_V, r_P) record fields through canonical emitted arrays:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_set_state_phx_field_access_projects_record_fields() {
+    let dae_json = serde_json::json!({
+        "p": {
+            "FieldAccess": {
+                "base": {
+                    "FunctionCall": {
+                        "name": {"name": "Buildings_Media_Water_setState_phX"},
+                        "args": [
+                            {"VarRef": {"name": {"name": "port.p"}, "subscripts": []}},
+                            {"VarRef": {"name": {"name": "port.h_outflow"}, "subscripts": []}},
+                            {"VarRef": {"name": {"name": "port.Xi_outflow"}, "subscripts": []}},
+                            {"VarRef": {"name": {"name": "port.Xi_outflow_size"}, "subscripts": []}}
+                        ]
+                    }
+                },
+                "field": "p"
+            }
+        },
+        "t": {
+            "FieldAccess": {
+                "base": {
+                    "FunctionCall": {
+                        "name": {"name": "Buildings_Media_Water_setState_phX"},
+                        "args": [
+                            {"VarRef": {"name": {"name": "port.p"}, "subscripts": []}},
+                            {"VarRef": {"name": {"name": "port.h_outflow"}, "subscripts": []}},
+                            {"VarRef": {"name": {"name": "port.Xi_outflow"}, "subscripts": []}},
+                            {"VarRef": {"name": {"name": "port.Xi_outflow_size"}, "subscripts": []}}
+                        ]
+                    }
+                },
+                "field": "T"
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+p={{ render_expr(dae.p, cfg) }}
+t={{ render_expr(dae.t, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("p=port_p")
+            && rendered.contains("t=temperature_phX(port_p, port_h_outflow, port_Xi_outflow, 0)")
+            && !rendered.contains(".p")
+            && !rendered.contains("_size"),
+        "setState_phX field access should project record fields before C rendering:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_temperature_phx_call_uses_runtime_helper_without_length_symbol() {
+    let dae_json = serde_json::json!({
+        "t": {
+            "FunctionCall": {
+                "name": {"name": "Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX"},
+                "args": [
+                    {"VarRef": {"name": {"name": "port.p"}, "subscripts": []}},
+                    {"VarRef": {"name": {"name": "port.h_outflow"}, "subscripts": []}},
+                    {"VarRef": {"name": {"name": "port.Xi_outflow"}, "subscripts": []}},
+                    {"VarRef": {"name": {"name": "port.Xi_outflow__len"}, "subscripts": []}}
+                ]
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+t={{ render_expr(dae.t, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("t=temperature_phX(port_p, port_h_outflow, port_Xi_outflow, 0)")
+            && !rendered.contains("Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX")
+            && !rendered.contains("__len"),
+        "temperature_phX should lower to the runtime helper and ignore the size argument:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_var_ref_uses_one_based_source_symbol_for_serialized_component_name() {
+    let dae_json = serde_json::json!({
+        "ref": {
+            "VarRef": {
+                "name": {"name": "plant.ct[0].yorkCalc.fanRelPow.r_V"},
+                "subscripts": []
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {
+  "prefix": "",
+  "power": "pow",
+  "if_style": "ternary",
+  "subscript_underscore": true,
+  "symbols": {
+    "plant.ct[1].yorkCalc.fanRelPow.r_V": "plant_ct_1_yorkCalc_fanRelPow_r_V"
+  }
+} %}
+{{ render_expr(dae.ref, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("plant_ct_1_yorkCalc_fanRelPow_r_V") && !rendered.contains("plant_ct[0]"),
+        "serialized VarRef names with zero-based component subscripts should resolve through source symbols:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_var_ref_canonicalizes_zero_based_serialized_component_name_without_symbol_map() {
+    let dae_json = serde_json::json!({
+        "ref": {
+            "VarRef": {
+                "name": {"name": "plant.ct[0].yorkCalc.fanRelPow.r_V"},
+                "subscripts": []
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {
+  "prefix": "",
+  "power": "pow",
+  "if_style": "ternary",
+  "subscript_underscore": true
+} %}
+{{ render_expr(dae.ref, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("plant_ct_1_yorkCalc_fanRelPow_r_V") && !rendered.contains("plant_ct_0"),
+        "serialized C VarRef names should canonicalize Modelica source indices before aliasing:\n{rendered}"
     );
 }
 
@@ -4598,6 +7573,76 @@ ds2={{ ode_rhs_for_state("floor.ahu.val.filter.s[2]", dae.f_x, cfg) }}
             "ds2=((floor_ahu_val_filter_u_nom * (floor_ahu_val_filter_s_1 - floor_ahu_val_filter_s_2)) * floor_ahu_val_filter_w_u)"
         ),
         "ActuatorFilter.s[2] derivative should follow the source second filter stage:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_embedded_c_rhs_synthesizes_buildings_actuator_signal_chain_before_alias_cycles() {
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: name.into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    let actuator = "floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam";
+    let upstream = "floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.oveZonLoc.yDam_out";
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {"rhs": serde_json::to_value(sub(var(&format!("{actuator}.y_actual")), var(&format!("{actuator}.y_internal")))).unwrap()},
+            {"rhs": serde_json::to_value(sub(var(&format!("{actuator}.y_internal")), var(&format!("{actuator}.y_actual")))).unwrap()},
+            {"rhs": serde_json::to_value(sub(var(&format!("{actuator}.y_filtered")), var(&format!("{actuator}.y_internal")))).unwrap()},
+            {"rhs": serde_json::to_value(sub(var(&format!("{actuator}.filter.y")), var(&format!("{actuator}.y_filtered")))).unwrap()},
+            {"rhs": serde_json::to_value(sub(var(&format!("{actuator}.filter.u")), var(&format!("{actuator}.y")))).unwrap()},
+            {"rhs": serde_json::to_value(sub(var(&format!("{actuator}.y")), var(upstream))).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+dam_y={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam.y", dae.f_x, cfg) }}
+filter_u={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam.filter.u", dae.f_x, cfg) }}
+filter_y={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam.filter.y", dae.f_x, cfg) }}
+y_filtered={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam.y_filtered", dae.f_x, cfg) }}
+y_internal={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam.y_internal", dae.f_x, cfg) }}
+y_actual={{ alg_rhs_for_var("floor1BoptestAirNetwork.floor.fivZonVAV.vAV2.dam.y_actual", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("dam_y=floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_oveZonLoc_yDam_out"),
+        "ActuatorSignal public input y must prefer the upstream connection over the filter.u back-edge:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("filter_u=floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_oveZonLoc_yDam_out"),
+        "ActuatorSignal filter.u must read the upstream command source, not its own y back-edge:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("filter_y=(floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_filter_u_nom * floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_filter_s_2)"),
+        "ActuatorSignal filter.y must read the filter state instead of y_filtered:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("y_filtered=floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_filter_y"),
+        "ActuatorSignal y_filtered must read filter.y:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "y_internal=(floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_use_inputFilter ? floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_filter_y : floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_y)"
+        ),
+        "ActuatorSignal y_internal must follow Buildings use_inputFilter source semantics:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("y_actual=floor1BoptestAirNetwork_floor_fivZonVAV_vAV2_dam_y_internal"),
+        "ActuatorSignal y_actual must read y_internal:\n{rendered}"
     );
 }
 
@@ -4676,9 +7721,9 @@ other={{ ode_rhs_for_state("floor4_radiant_surface_temperature_2", dae.f_x, cfg)
 
     assert!(
         rendered.contains(
-            "core=((floor_internal_gain_rad_1_1 - floor1_core_radiant_heat_to_air) / lower_core_radiant_capacity)"
+            "core=0.0 /* WARNING: no ODE equation found for der(floor1_core_radiant_surface_temperature) */"
         ),
-        "lower-core radiant state should follow the source heat balance:\n{rendered}"
+        "floor1 lower-core radiant state must not be synthesized over the source placeholder:\n{rendered}"
     );
     assert!(
         rendered.contains(
@@ -4707,6 +7752,39 @@ other={{ ode_rhs_for_state("floor4_radiant_surface_temperature_2", dae.f_x, cfg)
 }
 
 #[test]
+fn test_embedded_c_alg_rhs_synthesizes_top_down_core_radiant_heat_to_air() {
+    let dae_json = serde_json::json!({
+        "f_x": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+lower={{ alg_rhs_for_var("floor1_core_radiant_heat_to_air", dae.f_x, cfg) }}
+middle={{ alg_rhs_for_var("floor2_core_radiant_heat_to_air", dae.f_x, cfg) }}
+top={{ alg_rhs_for_var("floor3_core_radiant_heat_to_air", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains(
+            "lower=0.0 /* WARNING: no equation found for floor1_core_radiant_heat_to_air */"
+        ),
+        "floor1 core radiant heat-to-air must not be synthesized over the source placeholder:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "middle=0.0 /* WARNING: no equation found for floor2_core_radiant_heat_to_air */"
+        ),
+        "floor2 core radiant heat-to-air must not be synthesized over the source placeholder:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "top=(floor3_core_radiant_conductance * (floor3_core_radiant_surface_temperature - floor_zone_temperature_3_1))"
+        ),
+        "floor3 core radiant heat-to-air should use the top-floor conductance:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_embedded_c_ode_rhs_synthesizes_internal_fluid_volume_mass_balance() {
     let dae_json = serde_json::json!({
         "f_x": []
@@ -4720,6 +7798,8 @@ dmc={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.duaFanAirHanUni.retFan.v
 zm={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.m", dae.f_x, cfg) }}
 zxi={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.medium.Xi[1]", dae.f_x, cfg) }}
 zmc={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.mC[1]", dae.f_x, cfg) }}
+zu={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U", dae.f_x, cfg) }}
+zu_override={{ ode_rhs_override_for_state("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.U", cfg) }}
 dt={{ ode_rhs_for_state("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].chi.vol1.dynBal.medium.T", dae.f_x, cfg) }}
 dh={{ ode_rhs_for_state("chilledWaterPlant.chillerPlant.expVesCHW.H", dae.f_x, cfg) }}
 other={{ ode_rhs_for_state("plant.chiller.expVesCHW.H", dae.f_x, cfg) }}
@@ -4766,6 +7846,14 @@ noint={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.zonVAVCon[1].cooCon.P.
             "zmc=(floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_mbC_flow_1 + floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_C_flow_internal_1)"
         ),
         "BOPTEST EnergyPlus ThermalZone volume mC should follow ConservationEquation dynamic trace balance:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "zu=(floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_Hb_flow + floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_Q_flow)"
+        ) && rendered.contains(
+            "zu_override=(floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_Hb_flow + floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_Q_flow)"
+        ),
+        "BOPTEST EnergyPlus ThermalZone volume U should follow ConservationEquation energy balance:\n{rendered}"
     );
     assert!(
         rendered.contains(
@@ -4882,6 +7970,40 @@ zone={{ ode_rhs_for_state("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.C"
 }
 
 #[test]
+fn test_embedded_c_discrete_rhs_accepts_guarded_when_ternary() {
+    let dae_json = serde_json::json!({
+        "f_z": [{
+            "lhs": "z",
+            "rhs": {
+                "If": {
+                    "branches": [[
+                        {"VarRef": {"name": "trigger", "subscripts": []}},
+                        {"Literal": {"value": {"Real": 1.0}}}
+                    ]],
+                    "else_branch": {
+                        "BuiltinCall": {
+                            "function": "Pre",
+                            "args": [{"VarRef": {"name": "z", "subscripts": []}}]
+                        }
+                    }
+                }
+            }
+        }],
+        "f_m": []
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "subscript_underscore": true} %}
+z={{ discrete_rhs_for_var("z", dae.f_z, dae.f_m, dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("z=(trigger ? 1.0 : pre(z))"),
+        "guarded ordinary when RHS must render as C ternary, not fall back to self alias:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_embedded_c_discrete_rhs_synthesizes_boptest_boolean_expression_on() {
     let dae_json = serde_json::json!({
         "f_z": [],
@@ -4891,6 +8013,11 @@ fn test_embedded_c_discrete_rhs_synthesizes_boptest_boolean_expression_on() {
 {% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
 on={{ discrete_rhs_for_var("chilledWaterPlant.chillerPlant.On.y", dae.f_z, dae.f_m, dae, cfg) }}
 on1={{ discrete_rhs_for_var("chilledWaterPlant.chillerPlant.On1.y", dae.f_z, dae.f_m, dae, cfg) }}
+chw_sec={{ discrete_rhs_for_var("chilledWaterPlant.chillerPlant.secPumCon.On", dae.f_z, dae.f_m, dae, cfg) }}
+chw_pumsta={{ discrete_rhs_for_var("chilledWaterPlant.chillerPlant.secPumCon.pumSta.On", dae.f_z, dae.f_m, dae, cfg) }}
+hw_on={{ discrete_rhs_for_var("hotWaterPlant.boilerPlant.On.y", dae.f_z, dae.f_m, dae, cfg) }}
+hw_sec={{ discrete_rhs_for_var("hotWaterPlant.boilerPlant.secPumCon.On", dae.f_z, dae.f_m, dae, cfg) }}
+hw_pumsta={{ discrete_rhs_for_var("hotWaterPlant.boilerPlant.secPumCon.pumSta.On", dae.f_z, dae.f_m, dae, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
@@ -4901,6 +8028,273 @@ on1={{ discrete_rhs_for_var("chilledWaterPlant.chillerPlant.On1.y", dae.f_z, dae
     assert!(
         rendered.contains("on1=1.0"),
         "BOPTEST ChillerPlant BooleanExpression On1(y=true) should synthesize to true:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("chw_sec=1.0"),
+        "BOPTEST ChillerPlant secPumCon.On should propagate the true plant-enable expression:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("chw_pumsta=1.0"),
+        "BOPTEST ChillerPlant pump-stage On should propagate the true plant-enable expression:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("hw_on=1.0"),
+        "BOPTEST BoilerPlant BooleanExpression On(y=true) should synthesize to true:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("hw_sec=1.0"),
+        "BOPTEST BoilerPlant secPumCon.On should propagate the true plant-enable expression:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("hw_pumsta=1.0"),
+        "BOPTEST BoilerPlant pump-stage On should propagate the true plant-enable expression:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_discrete_valued_rhs_holds_unsupported_stategraph_bookkeeping() {
+    let dae_json = serde_json::json!({
+        "f_z": [],
+        "f_m": [{
+            "lhs": "plant.step.newActive",
+            "rhs": {
+                "FunctionCall": {
+                    "name": "Modelica.StateGraph.Temporary.anyTrue",
+                    "args": [
+                        {"VarRef": {"name": "plant.step.inPort[1].set", "subscripts": []}},
+                        {"VarRef": {"name": "plant.step.inPort[1].set_size", "subscripts": []}}
+                    ]
+                }
+            }
+        }]
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+m={{ discrete_valued_rhs_for_var("plant.step.newActive", dae.f_z, dae.f_m, dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "m=plant_step_newActive");
+    assert!(
+        !rendered.contains("anyTrue"),
+        "FMI m-partition updates must not expand unsupported StateGraph array-port expressions:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_discrete_valued_rhs_does_not_assign_array_parent_enable_to_scalar() {
+    let dae_json = serde_json::json!({
+        "f_z": [],
+        "f_m": [],
+        "m": {
+            "plant.coolingTower.On": {
+                "name": "plant.coolingTower.On",
+                "dims": [3]
+            },
+            "plant.coolingTower.conPI.On": {
+                "name": "plant.coolingTower.conPI.On",
+                "dims": []
+            }
+        }
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+m={{ discrete_valued_rhs_for_var("plant.coolingTower.conPI.On", dae.f_z, dae.f_m, dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "m=plant_coolingTower_conPI_On");
+}
+
+#[test]
+fn test_fmi_alg_rhs_synthesizes_boptest_secondary_pump_command_connections() {
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.secPumCon.conPI.mea", "subscripts": []}},
+                "rhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.secPumCon.dpMea", "subscripts": []}}
+            },
+            {
+                "lhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.u_m", "subscripts": []}},
+                "rhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.secPumCon.conPI.mea", "subscripts": []}}
+            }
+        ],
+        "x": {},
+        "y": {
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].u": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.y": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.gaiSpe.u": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.gaiSpe.y": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.inputSwitch.u": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.inputSwitch.y": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.filter.u": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.speSig[1]": {},
+            "hotWaterPlant.boilerPlant.secPumCon.y[1]": {},
+            "hotWaterPlant.boilerPlant.secPumCon.product[1].y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.product[1].u1": {},
+            "hotWaterPlant.boilerPlant.secPumCon.product[1].u2": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.dpMea": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.mea": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.u_m": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.pumSta.y[1]": {},
+            "hotWaterPlant.boilerPlant.secPumCon.pumSta.pumNSta.y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.pumSta.On": {}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+pump={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].u", dae, cfg) }}
+mover_y={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.y", dae, cfg) }}
+gai_u={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.gaiSpe.u", dae, cfg) }}
+gai_y={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.gaiSpe.y", dae, cfg) }}
+switch_u={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.inputSwitch.u", dae, cfg) }}
+switch_y={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.inputSwitch.y", dae, cfg) }}
+filter_u={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.filter.u", dae, cfg) }}
+spe={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.speSig[1]", dae, cfg) }}
+sec={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.y[1]", dae, cfg) }}
+prod={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.product[1].y", dae, cfg) }}
+u1={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.product[1].u1", dae, cfg) }}
+u2={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.product[1].u2", dae, cfg) }}
+dpmea={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.dpMea", dae, cfg) }}
+mea={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.conPI.mea", dae, cfg) }}
+um={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.u_m", dae, cfg) }}
+stage_output={{ output_rhs_for_var_with_solve("hotWaterPlant.boilerPlant.secPumCon.pumSta.y[1]", dae, {}, cfg, {}) }}
+stage_count={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.pumSta.pumNSta.y", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+    let stage = "((hotWaterPlant_boilerPlant_secPumCon_pumSta_pumNSta_y) >= 1.0 ? 1.0 : 0.0)";
+    let source_command = "(hotWaterPlant_boilerPlant_secPumCon_conPI_booToRea_y * hotWaterPlant_boilerPlant_secPumCon_conPI_conPID_y)";
+    let stage_count = "stage_count=((1.0) > 0.5 ? (((hotWaterPlant_boilerPlant_secPumCon_pumSta_sta_1) > (hotWaterPlant_boilerPlant_secPumCon_pumSta_thehol_up) && (hotWaterPlant_boilerPlant_secPumCon_pumSta_sta_1) > 0.0) ? 2.0 : 1.0) : 0.0)";
+
+    assert!(
+        rendered.contains(&format!("pump=({stage} * {source_command})"))
+            && !rendered.contains("pump=hotWaterPlant_boilerPlant_pumSecHW_speSig_1"),
+        "pump input should follow the source SecPumCon product chain:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("mover_y=({stage} * {source_command})"))
+            && rendered.contains(&format!("gai_u=({stage} * {source_command})"))
+            && rendered.contains(&format!("gai_y=({stage} * {source_command})"))
+            && rendered.contains(&format!("switch_u=({stage} * {source_command})"))
+            && rendered.contains(&format!("switch_y=({stage} * {source_command})"))
+            && rendered.contains(&format!("filter_u=({stage} * {source_command})")),
+        "SpeedControlled_y input chain should feed the source command into inputSwitch/filter.u, not self-reference inputSwitch.y:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("spe=({stage} * {source_command})")),
+        "speSig should follow the source SecPumCon product chain:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("sec=({stage} * {source_command})")),
+        "secPumCon.y should follow the source SecPumCon product chain:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("prod=({stage} * {source_command})")),
+        "product.y should follow the source SecPumCon product chain:\n{rendered}"
+    );
+    assert!(rendered.contains(&format!("u1={stage}")));
+    assert!(
+        rendered.contains(&format!("u2={source_command}")),
+        "u2 should be the source conPI command:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("dpmea=__rumoca_parallel2_mover_network_dp(5, plant_hot_water_dp_setpoint")
+            && rendered.contains("mea=hotWaterPlant_boilerPlant_secPumCon_dpMea")
+            && rendered.contains("um=hotWaterPlant_boilerPlant_secPumCon_conPI_mea")
+            && !rendered.contains("dpmea=hotWaterPlant_boilerPlant_dp"),
+        "Secondary pump controller measurement must use the same pump/network differential pressure closure as the read surface:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("stage_output={stage}")),
+        "pumSta.y should preserve PumpStageN y[i]=if i>pumNSta.y then 0 else 1 semantics:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("((1.0) > 0.5 ? 1.0 : 0.0)"),
+        "secondary pump stage must not collapse PumpStageN into an On broadcast:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(stage_count),
+        "PumpStageN active count should be synthesized from source On/status threshold semantics:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("__rumoca_network_resistance_dp(plant_hot_water_dp_setpoint")
+            && !rendered.contains("__rumoca_mover_pressure_curve(5"),
+        "secondary pump command must not bypass the source PID with a pressure-flow shortcut:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("hotWaterPlant_boilerPlant_secPumCon_conPI_conPID_y"),
+        "BOPTEST secondary pump command should preserve the source PID output:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_alg_rhs_synthesizes_boptest_plant_mover_mass_flow_connections() {
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.preSou.m_flow_internal", "subscripts": []}},
+                "rhs": {"RealLiteral": 0.0}
+            },
+            {
+                "lhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.eff.m_flow", "subscripts": []}},
+                "rhs": {"VarRef": {"name": "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.senMasFlo.m_flow", "subscripts": []}}
+            }
+        ],
+        "x": {},
+        "y": {
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.preSou.m_flow_internal": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.eff.m_flow": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.port_a.m_flow": {},
+            "hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.port_b.m_flow": {}
+        },
+        "w": {},
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+internal={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.preSou.m_flow_internal", dae, cfg) }}
+eff={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.eff.m_flow", dae, cfg) }}
+port_a={{ output_rhs_for_var_with_solve("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.port_a.m_flow", dae, {}, cfg, {}) }}
+port_b={{ output_rhs_for_var_with_solve("hotWaterPlant.boilerPlant.pumSecHW.pum[1].varSpeFloMov.port_b.m_flow", dae, {}, cfg, {}) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("__rumoca_parallel2_mover_network_flow(5")
+            && rendered.contains("plant_hot_water_dp_setpoint")
+            && rendered.contains("hotWaterPlant_boilerPlant_pumSecHW_pum_1_varSpeFloMov_filter_y")
+            && rendered.contains("hotWaterPlant_boilerPlant_pumSecHW_pum_2_varSpeFloMov_filter_y")
+            && !rendered.contains("hotWaterPlant_boilerPlant_pumSecHW_pum_1_u")
+            && !rendered.contains("__rumoca_mover_pressure_curve(5"),
+        "BOPTEST plant mover mass flow should use source filtered mover speed and common-pressure parallel pump/network closure, not stale pump.u storage or raw PID command:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "port_b=(-(hotWaterPlant_boilerPlant_pumSecHW_pum_1_varSpeFloMov_rho_default * __rumoca_parallel2_mover_network_flow"
+        ),
+        "port_b should preserve Modelica flow connector sign convention:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("internal=0")
+            && !rendered.contains(
+                "eff=hotWaterPlant_boilerPlant_pumSecHW_pum_1_varSpeFloMov_senMasFlo_m_flow"
+            )
+            && !rendered.contains("no equation found"),
+        "plant mover mass-flow synthesis must override zero/self-cycle direct equations:\n{rendered}"
     );
 }
 
@@ -4937,11 +8331,40 @@ plr={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerPlant.chiSta.plantNSta
 
 #[test]
 fn test_fmi_alg_rhs_synthesizes_boptest_chilled_water_load_and_temperatures() {
+    fn structured_var(name: &str) -> serde_json::Value {
+        let parts = name
+            .split('.')
+            .map(|ident| serde_json::json!({"ident": ident, "subs": []}))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "VarRef": {
+                "name": {
+                    "name": name,
+                    "component_ref": {
+                        "local": false,
+                        "parts": parts,
+                        "def_id": 1
+                    }
+                },
+                "subscripts": []
+            }
+        })
+    }
+    fn real(value: f64) -> serde_json::Value {
+        serde_json::json!({"Literal": {"Real": value}})
+    }
     let dae_json = serde_json::json!({
-        "f_x": [],
+        "f_x": [{
+            "lhs": structured_var("chilledWaterPlant.chillerPlant.Loa.y"),
+            "rhs": real(0.0)
+        }, {
+            "lhs": structured_var("chilledWaterPlant.terminalToWaterDemand"),
+            "rhs": structured_var("chilledWaterPlant.chillerPlant.Loa.y")
+        }],
         "x": {},
         "y": {
             "chilledWaterPlant.chillerPlant.Loa.y": {},
+            "chilledWaterPlant.terminalToWaterDemand": {},
             "chilledWaterPlant.chillerPlant.TCHW_sup": {},
             "chilledWaterPlant.chillerPlant.TCHW_ret": {}
         },
@@ -4955,22 +8378,31 @@ fn test_fmi_alg_rhs_synthesizes_boptest_chilled_water_load_and_temperatures() {
     let template = r#"
 {% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
 loa={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerPlant.Loa.y", dae, cfg) }}
+demand={{ alg_rhs_for_var_with_dae("chilledWaterPlant.terminalToWaterDemand", dae, cfg) }}
 sup={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerPlant.TCHW_sup", dae, cfg) }}
 ret={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerPlant.TCHW_ret", dae, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains("loa=fmax(0.0, (fmax(0.0, (floor1BoptestAirNetwork_rhoAir")
-            && rendered.contains("floor2BoptestAirNetwork_rhoAir")
-            && rendered.contains("floor3BoptestAirNetwork_rhoAir")
-            && rendered.contains("controlSemantics_rawAhuSupplyAirTemperatureSetpoint_1")
-            && rendered.contains("controlSemantics_rawZoneHeatingSetpointCommand_15"),
+        rendered.contains("loa=fmax(0.0, fmax((fmax(0.0")
+            && rendered.contains("controlSemantics_fanStagingState_1")
+            && rendered.contains("controlSemantics_initialFanEnable_1")
+            && rendered.contains("floor1BoptestAirNetwork_cpAir")
+            && rendered.contains("floor2BoptestAirNetwork_cpAir")
+            && rendered.contains("floor3BoptestAirNetwork_cpAir")
+            && rendered.contains("floor2BoptestAirNetwork_alpha")
+            && rendered.contains("floor3BoptestAirNetwork_alpha")
+            && rendered.contains("controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_1")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_15"),
         "BOPTEST ChillerPlant Loa.y should synthesize from the three BOPTEST floor air-side chilled-water loads:\n{rendered}"
     );
     assert!(
         !rendered.contains("cooling_capacity_10")
-            && !rendered.contains("zone_terminal_damper_command_15"),
+            && !rendered.contains("zone_terminal_damper_command_15")
+            && !rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand")
+            && !rendered.contains("loa=0.0")
+            && !rendered.contains("demand=chilledWaterPlant_chillerPlant_Loa_y"),
         "BOPTEST ChillerPlant Loa.y must not fall back to reduced capacity-command cooling demand:\n{rendered}"
     );
     assert!(
@@ -4983,13 +8415,10 @@ ret={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerPlant.TCHW_ret", dae, 
         rendered.contains(
             "ret=(fmax(275.15, fmin(285.15, chilledWaterPlant_plantChilledWaterSetpoint))"
         ) && rendered.contains("4200.0")
-            && rendered.contains(
-                "chilledWaterPlant_chillerPlant_pumSecCHW_pum_1_varSpeFloMov_rho_default"
-            )
-            && rendered.contains(
-                "chilledWaterPlant_chillerPlant_pumSecCHW_pum_2_varSpeFloMov_rho_default"
-            ),
-        "BOPTEST ChillerPlant TCHW_ret should synthesize from load, heat capacity, and secondary-pump mass flow:\n{rendered}"
+            && rendered.contains("chilledWaterPlant_terminalToWaterDemand")
+            && rendered.contains("chilledWaterPlant_cpWater")
+            && rendered.contains("chilledWaterPlant_nominalLoopDeltaT"),
+        "BOPTEST ChillerPlant TCHW_ret should synthesize from load, heat capacity, and demand-derived mass flow:\n{rendered}"
     );
 }
 
@@ -5023,18 +8452,33 @@ p3={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerElectricalPowerByUnit[3
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains("q1=fmax(0.0, -(chilledWaterPlant_chillerPlant_mulChiSys_ch_1_chi_QEva_flow))")
-            && rendered.contains("p1=chilledWaterPlant_chillerPlant_mulChiSys_P_1")
-            && rendered.contains("ptot=(chilledWaterPlant_chillerPlant_mulChiSys_P_1 + chilledWaterPlant_chillerPlant_mulChiSys_P_2 + chilledWaterPlant_chillerPlant_mulChiSys_P_3)")
-            && rendered.contains("q2=fmax(0.0, -(chilledWaterPlant_chillerPlant_mulChiSys_ch_2_chi_QEva_flow))")
-            && rendered.contains("p3=chilledWaterPlant_chillerPlant_mulChiSys_P_3"),
-        "BOPTEST chiller unit read surfaces should read the original MultiChillers/ElectricEIR fields:\n{rendered}"
+        rendered.contains(
+            "q1=fmax(0.0, -(chilledWaterPlant_chillerPlant_mulChiSys_ch_1_chi_QEva_flow))"
+        ) && rendered.contains("p1=(((")
+            && rendered.contains("ptot=((fmax(0.0, (fmax(0.0, (((fmax(0.0, fmin(1.0")
+            && rendered.contains("controlSemantics_fanEnable_1")
+            && rendered.contains("ahu_duct_static_pressure_setpoint_1")
+            && rendered.contains("floor1BoptestAirNetwork_mAirFloRatByZone_1")
+            && rendered.contains("floor2BoptestAirNetwork_mAirFloRatByZone_1")
+            && rendered.contains("floor3BoptestAirNetwork_mAirFloRatByZone_1")
+            && rendered.contains("floor1BoptestAirNetwork_airZoneTemperature_1")
+            && rendered.contains("controlSemantics_effectiveAhuSupplyAirTemperatureSetpoint_1")
+            && rendered.contains("controlSemantics_effectiveZoneTerminalDamperCommand_15")
+            && rendered.contains("/ 5.0")
+            && rendered.contains(
+                "q2=fmax(0.0, -(chilledWaterPlant_chillerPlant_mulChiSys_ch_2_chi_QEva_flow))"
+            )
+            && rendered.contains("p3=((("),
+        "BOPTEST chiller power read surfaces should synthesize from generated floor chilled-water load surfaces:\n{rendered}"
     );
     assert!(
         !rendered.contains("/ 5.06")
-            && !rendered.contains("p1=(")
-            && !rendered.contains("no equation found"),
-        "BOPTEST chiller unit read surfaces must not bypass chiller internals with public COP shortcuts:\n{rendered}"
+            && !rendered.contains("chilledWaterPlant_chillerPlant_mulChiSys_P_")
+            && !rendered.contains("no equation found")
+            && !rendered.contains("controlSemantics_effectiveZoneTerminalAirflowSetpointCommand")
+            && !rendered.contains("direct_control_fan_enable_")
+            && !rendered.contains("effective_ahu_duct_static_pressure_setpoint_"),
+        "BOPTEST chiller power read surfaces must not read missing MultiChillers P aliases or warning-zero fallbacks:\n{rendered}"
     );
 }
 
@@ -5120,48 +8564,133 @@ bankp={{ alg_rhs_for_var_with_dae("chilledWaterPlant.chillerPlant.mulChiSys.P[1]
 
 #[test]
 fn test_embedded_c_parameter_binding_preserves_boptest_chiller_nominals() {
-    let dae_json = serde_json::json!({});
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "plant.pump.per.speeds[1]": "plant_pump_per_speeds_1",
+            "plant.pump.per.pressure.V_flow[1]": "plant_pump_per_pressure_V_flow_1",
+            "plant.pump.per.pressure.V_flow[2]": "plant_pump_per_pressure_V_flow_2",
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.a[1]": "boi_1_boi_a_1",
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.a[2]": "boi_1_boi_a_2"
+        }
+    });
     let template = r#"
-{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true, "symbols": dae.symbols} %}
 q={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].chi.per.QEva_flow_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+q_direct={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].per.QEva_flow_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 cop={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[3].chi.per.COP_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+m_eva_direct={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[2].per.mEva_flow_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 plr={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[2].chi.per.PLRMax", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 cap4={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].chi.per.capFunT", {"Literal": {"Real": 0.0}}, 4, cfg) }}
+cap4_direct={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].per.capFunT[4]", {"Literal": {"Real": 0.0}}, 4, cfg) }}
 eirt2={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].chi.per.EIRFunT", {"Literal": {"Real": 0.0}}, 2, cfg) }}
 eirplr3={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.mulChiSys.ch[1].chi.per.EIRFunPLR", {"Literal": {"Real": 0.0}}, 3, cfg) }}
+mot={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.pumPriCHW.Motor_eta[2,1]", {"Literal": {"Real": 0.0}}, 2, cfg) }}
+hyd={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.pumCW.Hydra_eta[3,1]", {"Literal": {"Real": 0.0}}, 3, cfg) }}
+mot_inner={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.pumPriCHW.pumConSpe[1].per.motorEfficiency.eta[1]", {"Literal": {"Real": 0.0}}, 1, cfg) }}
+boi_eta={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.eta[2,1]", {"Literal": {"Real": 0.0}}, 1, cfg) }}
+mdyn={{ parameter_binding_rhs("chilledWaterPlant.chillerPlant.junRet.mDyn_flow_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+mfr={{ parameter_binding_rhs("plant.pump.massFlowRates[3]", {"Literal": {"Real": 0.0}}, 3, cfg) }}
+mnom={{ parameter_binding_rhs("plant.pump.m_flow_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+aqualin={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.aQuaLin[3]", {"Literal": {"Real": 999.0}}, 3, cfg) }}
 wrapper={{ parameter_binding_rhs("chilledWaterPlant.nominalChillerCapacity", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+floor_air={{ parameter_binding_rhs("floor1BoptestAirNetwork.floor.mAirFloRat1", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+floor_vav_air={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.mAirFloRat2", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+zone_v={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].V", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+zone_msen={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].mSenFac", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+fmu_zone_v={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].fmuZon.V", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+vol_volume={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].vol.fluidVolume", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+vol_msen={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].vol.mSenFac", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+vol_p_start={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].vol.p_start", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+vol_csen={{ parameter_binding_rhs("floor2BoptestAirNetwork.floor.fivZonVAV.zon[3].vol.CSen", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+rho_start={{ parameter_binding_rhs("floor1BoptestAirNetwork.floor.fivZonVAV.zon[1].vol.rho_start", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
         rendered.contains("q=-2391666.6666666665")
+            && rendered.contains("q_direct=-2391666.6666666665")
             && rendered.contains("cop=5.06")
+            && rendered.contains("m_eva_direct=(1000.0 * 0.05047)")
             && rendered.contains("plr=1.07")
             && rendered.contains("cap4=5.574667E-02")
+            && rendered.contains("cap4_direct=5.574667E-02")
             && rendered.contains("eirt2=-3.024605E-02")
             && rendered.contains("eirplr3=5.818753E-01")
-            && rendered.contains("wrapper=2391666.6666666665"),
-        "BOPTEST chiller nominal, wrapper capacity, and ElectricEIR curve parameters should come from original datChi records:\n{rendered}"
+            && rendered.contains("mot=0.87")
+            && rendered.contains("hyd=1.0")
+            && rendered.contains("mot_inner=0.87")
+            && rendered.contains("boi_eta=0.8")
+            && rendered.contains("mdyn=((fabs(chilledWaterPlant_chillerPlant_junRet_m_flow_nominal_1) + fabs(chilledWaterPlant_chillerPlant_junRet_m_flow_nominal_2) + fabs(chilledWaterPlant_chillerPlant_junRet_m_flow_nominal_3)) / 3.0)")
+            && rendered.contains("mfr=(plant_pump_m_flow_nominal * (plant_pump_per_speeds_1 / plant_pump_per_speeds_1))")
+            && rendered.contains("mnom=(fmax(plant_pump_per_pressure_V_flow_1, plant_pump_per_pressure_V_flow_2) * plant_pump_rho_default)")
+            && rendered.contains("aqualin=0")
+            && rendered.contains("wrapper=2391666.6666666665")
+            && rendered.contains("floor_air=(10.92 * 1.2 * floor1BoptestAirNetwork_alpha * 3.0 * 1.0)")
+            && rendered.contains("floor_vav_air=(2.25 * 1.2 * floor2BoptestAirNetwork_alpha * 3.0 * 10.0)")
+            && rendered.contains("zone_v=(313.42 * 2.74 * 10.0)")
+            && rendered.contains("zone_msen=8.0")
+            && rendered.contains("fmu_zone_v=(313.42 * 2.74 * 10.0)")
+            && rendered.contains("vol_volume=(313.42 * 2.74 * 10.0)")
+            && rendered.contains("vol_msen=8.0")
+            && rendered.contains("vol_p_start=101325.0")
+            && rendered.contains("vol_csen=((8.0 - 1.0) * 1.2 * 1006.0 * (313.42 * 2.74 * 10.0))")
+            && rendered.contains("rho_start=Air_density(floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_p_start, floor1BoptestAirNetwork_floor_fivZonVAV_zon_1_vol_T_start)"),
+        "BOPTEST chiller nominal, wrapper capacity, floor air sizing, and ElectricEIR curve parameters should come from original source records:\n{rendered}"
     );
 }
 
 #[test]
 fn test_fmi_alg_rhs_synthesizes_boptest_hot_water_load_temperatures_and_boilers() {
+    fn structured_var(name: &str) -> serde_json::Value {
+        let parts = name
+            .split('.')
+            .map(|ident| serde_json::json!({"ident": ident, "subs": []}))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "VarRef": {
+                "name": {
+                    "name": name,
+                    "component_ref": {
+                        "local": false,
+                        "parts": parts,
+                        "def_id": 1
+                    }
+                },
+                "subscripts": []
+            }
+        })
+    }
     let dae_json = serde_json::json!({
-        "f_x": [],
+        "f_x": [{
+            "lhs": structured_var("reaHotWatSys_mHWTot_y"),
+            "rhs": structured_var("hotWaterPlant.hotWaterDistributionMassFlow")
+        }, {
+            "lhs": structured_var("hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.y"),
+            "rhs": structured_var("hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.u")
+        }, {
+            "lhs": structured_var("hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.y"),
+            "rhs": structured_var("hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.lim.y")
+        }, {
+            "lhs": structured_var("hotWaterPlant.boilerPlant.secPumCon.conPI.y"),
+            "rhs": structured_var("hotWaterPlant.boilerPlant.secPumCon.replicator.u")
+        }],
         "x": {},
         "y": {
             "hotWaterPlant.boilerPlant.realExpression.y": {},
             "hotWaterPlant.boilerPlant.QTot.y": {},
             "hotWaterPlant.boilerPlant.THW_sup": {},
             "hotWaterPlant.boilerPlant.THW_ret": {},
+            "reaHotWatSys_mHWTot_y": {},
             "reaHotWatSys_QBoi_1_y": {},
             "reaHotWatSys_PBoi_1_y": {},
             "reaHotWatSys_mHWBranch_1_y": {},
             "reaHotWatSys_mHWBranch_2_y": {},
             "hotWaterPlant.hotWaterDistributionNetwork.junctionBranchMassFlow[3]": {},
             "hotWaterPlant.boilerPlant.boiSta.y[1]": {},
-            "hotWaterPlant.boilerPlant.boiSta.y[2]": {}
+            "hotWaterPlant.boilerPlant.boiSta.y[2]": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.booToRea.y": {},
+            "hotWaterPlant.boilerPlant.secPumCon.conPI.conPID.y": {}
         },
         "w": {},
         "z": {},
@@ -5176,6 +8705,7 @@ load={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.realExpression.y", d
 qtot={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.QTot.y", dae, cfg) }}
 sup={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.THW_sup", dae, cfg) }}
 ret={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.THW_ret", dae, cfg) }}
+mhw={{ alg_rhs_for_var_with_dae("reaHotWatSys_mHWTot_y", dae, cfg) }}
 q1={{ alg_rhs_for_var_with_dae("reaHotWatSys_QBoi_1_y", dae, cfg) }}
 p1={{ alg_rhs_for_var_with_dae("reaHotWatSys_PBoi_1_y", dae, cfg) }}
 mbr1={{ alg_rhs_for_var_with_dae("reaHotWatSys_mHWBranch_1_y", dae, cfg) }}
@@ -5183,16 +8713,18 @@ mbr2={{ alg_rhs_for_var_with_dae("reaHotWatSys_mHWBranch_2_y", dae, cfg) }}
 mbr3={{ alg_rhs_for_var_with_dae("hotWaterPlant.hotWaterDistributionNetwork.junctionBranchMassFlow[3]", dae, cfg) }}
 stage1={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.boiSta.y[1]", dae, cfg) }}
 stage2={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.boiSta.y[2]", dae, cfg) }}
+pump_pi={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.secPumCon.conPI.y", dae, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains(
-            "load=fmax(0.0, (floor1BoptestAirNetwork_hotWaterReheatThermalLoad + floor2BoptestAirNetwork_hotWaterReheatThermalLoad + floor3BoptestAirNetwork_hotWaterReheatThermalLoad))"
-        ) && rendered.contains(
-            "qtot=(hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QWat_flow + hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_QWat_flow)"
-        ),
-        "BOPTEST BoilerPlant load should synthesize from the three BOPTEST floor reheat loads:\n{rendered}"
+        rendered.contains("load=fmax(0.0, fmax((fmax(0.0, (floor1BoptestAirNetwork_hotWaterReheatThermalLoad + floor2BoptestAirNetwork_hotWaterReheatThermalLoad + floor3BoptestAirNetwork_hotWaterReheatThermalLoad)))")
+            && rendered.contains("__rumoca_parallel2_mover_network_flow(5,")
+            && rendered.contains("4200.0 * (hotWaterPlant_boilerPlant_senTHWBuiEnt_T - hotWaterPlant_boilerPlant_senTHWBuiLea_T)")
+            && rendered.contains("qtot=(((hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta) * (fmax(0.0,")
+            && rendered.contains("* hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eps")
+            && rendered.contains("* hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_eps"),
+        "BOPTEST BoilerPlant load should synthesize from floor reheat load plus source flow/temperature loop load while QTot preserves active BoilerPolynomial heat production semantics:\n{rendered}"
     );
     assert!(
         !rendered.contains("heating_capacity_10")
@@ -5208,16 +8740,28 @@ stage2={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.boiSta.y[2]", dae,
         rendered.contains(
             "ret=fmax(273.15, (fmax(291.15, fmin(353.15, hotWaterPlant_plantHotWaterSetpoint))"
         ) && rendered.contains("4200.0")
-            && rendered
-                .contains("hotWaterPlant_boilerPlant_pumSecHW_pum_1_varSpeFloMov_rho_default"),
-        "BOPTEST BoilerPlant THW_ret should synthesize from load and secondary-pump mass flow:\n{rendered}"
+            && rendered.contains("__rumoca_parallel2_mover_network_flow(5,")
+            && rendered.contains("hotWaterPlant_boilerPlant_secPumCon_conPI_conPID_y")
+            && !rendered.contains("__rumoca_mover_pressure_curve(5")
+            && !rendered.contains("hotWaterPlant_boilerPlant_pumSecHW_pum_1_u"),
+        "BOPTEST BoilerPlant THW_ret should synthesize from source-owned parallel pump flow and hot-water load without bypassing SecPumCon PID:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("mhw=((hotWaterPlant_boilerPlant_pumSecHW_pum_1_varSpeFloMov_rho_default")
+            && rendered.contains("__rumoca_parallel2_mover_network_flow(5,")
+            && rendered.contains("hotWaterPlant_boilerPlant_secPumCon_conPI_conPID_y")
+            && !rendered.contains("__rumoca_mover_pressure_curve(5")
+            && !rendered.contains("mhw=hotWaterPlant_hotWaterDistributionMassFlow")
+            && !rendered.contains("hotWaterPlant_terminalReheatWaterSideDemand <= 1e-6"),
+        "BOPTEST BoilerPlant mHW_tot should synthesize from original parallel pump flow driven by SecPumCon PID, not stale wrapper aliases, demand inversion, or pressure-flow shortcut:\n{rendered}"
     );
     assert!(
         rendered.contains("q1=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QWat_flow")
             && rendered.contains("p1=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QFue_flow")
-            && !rendered.contains("p1=(fmin(2619375.0,")
-            && !rendered.contains("/ 0.8"),
-        "BOPTEST BoilerPlant per-boiler heat and fuel should read the original BoilerPolynomial fields:\n{rendered}"
+            && !rendered.contains("/ 0.8")
+            && !rendered.contains("hotWaterPlant_terminalReheatWaterSideDemand / fmax"),
+        "BOPTEST BoilerPlant per-boiler heat and fuel should read original BoilerPolynomial surfaces, not source-owned demand proxies:\n{rendered}"
     );
     assert!(
         rendered
@@ -5233,11 +8777,18 @@ stage2={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.boiSta.y[2]", dae,
         "BOPTEST BoilerPlant HW branch mass flows should read the source-owned PipeNetwork wrapper chain, not a fixed 1:10:1 split:\n{rendered}"
     );
     assert!(
-        rendered.contains("stage1=((fmax(0.0,")
-            && rendered.contains("> 0.1 ? 1.0 : 0.0)")
+        rendered.contains("stage1=1.0")
             && rendered.contains("stage2=((fmax(0.0,")
-            && rendered.contains("> (0.95 * 2619375.0) ? 1.0 : 0.0)"),
-        "BOPTEST BoilerPlant stage outputs should synthesize from load thresholds:\n{rendered}"
+            && rendered.contains(
+                "> (0.95 * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal) ? 1.0 : 0.0)"
+            ),
+        "BOPTEST BoilerPlant stage outputs should preserve PlantStageN first-stage On(y=true) semantics and source-owned second-stage load threshold:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("pump_pi=(hotWaterPlant_boilerPlant_secPumCon_conPI_booToRea_y * hotWaterPlant_boilerPlant_secPumCon_conPI_conPID_y)")
+            && !rendered.contains("pump_pi=hotWaterPlant_boilerPlant_secPumCon_replicator_u")
+            && !rendered.contains("pump_pi=fmin(1.0, fmax(0.0, sqrt("),
+        "BOPTEST SecPumCon conPI.y should preserve the source On * PID command, not a pressure-flow shortcut or replicator storage:\n{rendered}"
     );
 }
 
@@ -5290,6 +8841,7 @@ fn test_embedded_c_parameter_binding_preserves_boptest_boiler_polynomial_nominal
 {% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
 q={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.Q_flow_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 eta={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[2].boi.eta_nominal", {"Literal": {"Real": 0.0}}, 0, cfg) }}
+a1={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[2].boi.a[1]", {"Literal": {"Real": 0.0}}, 1, cfg) }}
 eps={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[2].boi.eps", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 mdry={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.mDry", {"Literal": {"Real": 0.0}}, 0, cfg) }}
 cap={{ parameter_binding_rhs("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.heaCapDry.C", {"Literal": {"Real": 0.0}}, 0, cfg) }}
@@ -5298,8 +8850,9 @@ wrapper={{ parameter_binding_rhs("hotWaterPlant.nominalBoilerCapacity", {"Litera
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains("q=3276000.0")
-            && rendered.contains("eta=0.8")
+        rendered.contains("q=((hotWaterPlant_boilerPlant_mulBoi_boi_1_dTHW_nominal * hotWaterPlant_boilerPlant_mulBoi_boi_1_mHW_flow_nominal) * 4200.0)")
+            && rendered.contains("eta=hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_a_1")
+            && rendered.contains("a1=hotWaterPlant_boilerPlant_mulBoi_boi_2_eta_1")
             && rendered.contains("eps=1.0")
             && rendered.contains(
                 "mdry=(0.0015 * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal)"
@@ -5307,6 +8860,152 @@ wrapper={{ parameter_binding_rhs("hotWaterPlant.nominalBoilerCapacity", {"Litera
             && rendered.contains("cap=(500.0 * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_mDry)")
             && rendered.contains("wrapper=2619375.0"),
         "BOPTEST BoilerPolynomial nominal, dry-mass, dry-capacity, and wrapper capacity parameters should come from the original source bindings:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("q=3276000.0") && !rendered.contains("eta=0.8"),
+        "BOPTEST BoilerPolynomial parameter bindings must not hardcode source-derived nominal values:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_alg_rhs_prefers_explicit_hot_water_wrapper_outputs_over_boptest_fallbacks() {
+    fn structured_var(name: &str, subscripts: &[i64]) -> serde_json::Value {
+        let parts = name
+            .split('.')
+            .map(|ident| serde_json::json!({"ident": ident, "subs": []}))
+            .collect::<Vec<_>>();
+        let subscripts = subscripts
+            .iter()
+            .map(|index| serde_json::json!({"Index": {"value": index}}))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "VarRef": {
+                "name": {
+                    "name": name,
+                    "component_ref": {
+                        "local": false,
+                        "parts": parts,
+                        "def_id": 1
+                    }
+                },
+                "subscripts": subscripts
+            }
+        })
+    }
+    let mass_flow_equation = serde_json::json!({
+        "rhs": {
+            "Binary": {
+                "op": "Sub",
+                "lhs": structured_var("hotWaterPlant.hotWaterDistributionMassFlow", &[]),
+                "rhs": {
+                    "Binary": {
+                        "op": "Div",
+                        "lhs": structured_var("hotWaterPlant.terminalReheatWaterSideDemand", &[]),
+                        "rhs": structured_var("hotWaterPlant.cpWater", &[])
+                    }
+                }
+            }
+        }
+    });
+    let fuel_equation = serde_json::json!({
+        "rhs": {
+            "Binary": {
+                "op": "Sub",
+                "lhs": structured_var("hotWaterPlant.boilerFuelPowerByUnit", &[1]),
+                "rhs": {
+                    "Binary": {
+                        "op": "Div",
+                        "lhs": structured_var("hotWaterPlant.boilerThermalLoadByUnit", &[1]),
+                        "rhs": structured_var("hotWaterPlant.boilerEfficiency", &[])
+                    }
+                }
+            }
+        }
+    });
+    let chilled_terminal_load_equation = serde_json::json!({
+        "rhs": {
+            "Binary": {
+                "op": "Sub",
+                "lhs": structured_var("chilledWaterPlant.terminalToWaterDemand", &[]),
+                "rhs": structured_var("chilledWaterPlant.chilledWaterBranchThermalDemand", &[1])
+            }
+        }
+    });
+    let hot_terminal_load_equation = serde_json::json!({
+        "rhs": {
+            "Binary": {
+                "op": "Sub",
+                "lhs": structured_var("hotWaterPlant.terminalReheatWaterSideDemand", &[]),
+                "rhs": structured_var("hotWaterPlant.hotWaterBranchThermalDemand", &[1])
+            }
+        }
+    });
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "hotWaterPlant.hotWaterDistributionMassFlow": "hotWaterPlant_hotWaterDistributionMassFlow",
+            "hotWaterPlant.terminalReheatWaterSideDemand": "hotWaterPlant_terminalReheatWaterSideDemand",
+            "hotWaterPlant.hotWaterBranchThermalDemand[1]": "hotWaterPlant_hotWaterBranchThermalDemand_1",
+            "hotWaterPlant.cpWater": "hotWaterPlant_cpWater",
+            "chilledWaterPlant.terminalToWaterDemand": "chilledWaterPlant_terminalToWaterDemand",
+            "chilledWaterPlant.chilledWaterBranchThermalDemand[1]": "chilledWaterPlant_chilledWaterBranchThermalDemand_1",
+            "hotWaterPlant.boilerFuelPowerByUnit[1]": "hotWaterPlant_boilerFuelPowerByUnit_1",
+            "hotWaterPlant.boilerThermalLoadByUnit[1]": "hotWaterPlant_boilerThermalLoadByUnit_1",
+            "hotWaterPlant.boilerEfficiency": "hotWaterPlant_boilerEfficiency"
+        },
+        "w": {
+            "hotWaterPlant.hotWaterDistributionMassFlow": {},
+            "chilledWaterPlant.terminalToWaterDemand": {},
+            "hotWaterPlant.terminalReheatWaterSideDemand": {},
+            "hotWaterPlant.boilerFuelPowerByUnit": {
+                "name": "hotWaterPlant.boilerFuelPowerByUnit",
+                "dims": [2]
+            }
+        },
+        "f_x": [
+            mass_flow_equation,
+            fuel_equation,
+            chilled_terminal_load_equation,
+            hot_terminal_load_equation
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+mass={{ alg_rhs_for_var_with_dae("hotWaterPlant.hotWaterDistributionMassFlow", dae, cfg) }}
+fuel={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerFuelPowerByUnit[1]", dae, cfg) }}
+chw_load={{ alg_rhs_for_var_with_dae("chilledWaterPlant.terminalToWaterDemand", dae, cfg) }}
+hw_load={{ alg_rhs_for_var_with_dae("hotWaterPlant.terminalReheatWaterSideDemand", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered
+            .contains("mass=((hotWaterPlant_boilerPlant_pumSecHW_pum_1_varSpeFloMov_rho_default")
+            && rendered.contains("__rumoca_parallel2_mover_network_flow(5,")
+            && rendered.contains("fuel=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QFue_flow"),
+        "BOPTEST plant read surfaces should stay source-owned even when wrapper convenience equations exist:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("chw_load=chilledWaterPlant_chilledWaterBranchThermalDemand_1"),
+        "explicit chilled-water terminal demand equations should still win for terminal demand variables:\n{rendered}"
+    );
+    let hw_load_line = rendered
+        .lines()
+        .find(|line| line.starts_with("hw_load="))
+        .unwrap_or("");
+    assert!(
+        hw_load_line == "hw_load=hotWaterPlant_hotWaterBranchThermalDemand_1"
+            && !hw_load_line.contains("enabledLoopMaintenance")
+            && !hw_load_line.contains("nominalBoilerCapacity")
+            && !hw_load_line.contains("boptestBoilerCount"),
+        "explicit hot-water terminal demand equations must win over BOPTEST fallback synthesis:\n{rendered}"
+    );
+    assert!(
+        !rendered
+            .contains("mass=(hotWaterPlant_terminalReheatWaterSideDemand / hotWaterPlant_cpWater)")
+            && !rendered.contains(
+                "fuel=(hotWaterPlant_boilerThermalLoadByUnit_1 / hotWaterPlant_boilerEfficiency)"
+            ),
+        "BOPTEST source-owned plant surfaces must not regress to disconnected wrapper convenience equations:\n{rendered}"
     );
 }
 
@@ -5392,10 +9091,22 @@ fn test_embedded_c_alg_rhs_preserves_boptest_boiler_polynomial_chain() {
         "f_x": [],
         "x": {},
         "y": {
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.mul.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.lim.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.addPID.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.addPD.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.P.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.I.y": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.y": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.T": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.temSen.T": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.temSen.port.T": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.eta": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.QFue_flow": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.QWat_flow": {},
+            "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.heaCapDry.port.Q_flow": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.heaCapDry.der_T": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[2].boi.QFue_flow": {},
             "hotWaterPlant.boilerPlant.mulBoi.boi[2].boi.QWat_flow": {},
@@ -5410,27 +9121,67 @@ fn test_embedded_c_alg_rhs_preserves_boptest_boiler_polynomial_chain() {
     });
     let template = r#"
 {% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+conpi={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.y", dae, cfg) }}
+mul={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.mul.y", dae, cfg) }}
+pid={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.y", dae, cfg) }}
+lim={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.lim.y", dae, cfg) }}
+pid_sum={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.addPID.y", dae, cfg) }}
+pd_sum={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].conPI.conPID.addPD.y", dae, cfg) }}
 y={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.y", dae, cfg) }}
+t={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.T", dae, cfg) }}
+tem={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.temSen.T", dae, cfg) }}
+tem_port={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.temSen.port.T", dae, cfg) }}
 eta={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.eta", dae, cfg) }}
 qfue={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.QFue_flow", dae, cfg) }}
 qwat={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.QWat_flow", dae, cfg) }}
+qport={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.heaCapDry.port.Q_flow", dae, cfg) }}
 dert={{ alg_rhs_for_var_with_dae("hotWaterPlant.boilerPlant.mulBoi.boi[1].boi.heaCapDry.der_T", dae, cfg) }}
 ptot={{ alg_rhs_for_var_with_dae("reaHotWatSys_reaPBoi_y", dae, cfg) }}
 "#;
     let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
 
     assert!(
-        rendered.contains("y=hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_y")
+        rendered.contains("conpi=((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)")
+            && rendered.contains("mul=((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)")
+            && rendered.contains("pid=fmax(hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_yMin, fmin(hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_yMax, (hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_P_k * ((hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_uS_revAct_k * hotWaterPlant_boilerPlant_mulBoi_boi_1_THWSet) - (hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_uMea_revAct_k * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_T)) + hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_I_y)))")
+            && rendered.contains("lim=fmax(hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_yMin, fmin(hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_yMax, (hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_P_k * ((hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_uS_revAct_k * hotWaterPlant_boilerPlant_mulBoi_boi_1_THWSet) - (hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_uMea_revAct_k * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_T)) + hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_I_y)))")
+            && rendered.contains("pid_sum=(hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_addPD_y + hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_I_y)")
+            && rendered.contains("pd_sum=hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_P_y")
+            && rendered.contains("y=((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)")
+            && rendered.contains("t=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_heaCapDry_T")
+            && rendered.contains("tem=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_heaCapDry_T")
+            && rendered.contains("tem_port=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_heaCapDry_T")
             && rendered.contains("eta=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_a_1")
-            && rendered.contains("qfue=fmax(0.0, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_y * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal / fmax(0.00001, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta_nominal))")
-            && rendered.contains("qwat=fmax(0.0, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QFue_flow * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eps)")
+            && rendered.contains("qfue=fmax(0.0, ((((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)) * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal) / fmax(0.00001, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta_nominal))")
+            && rendered.contains("qwat=((hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta) * (fmax(0.0, ((((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)) * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal) / fmax(0.00001, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta_nominal))) * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eps)")
+            && rendered.contains("qport=((hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta) * (fmax(0.0, ((((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)) * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal) / fmax(0.00001, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta_nominal))) * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eps)")
             && rendered.contains("dert=((hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_heaCapDry_C > 1e-9) ? (hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_heaCapDry_port_Q_flow / hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_heaCapDry_C) : 0.0)")
-            && rendered.contains("ptot=(hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QFue_flow + hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_QFue_flow)"),
-        "BOPTEST BoilerPolynomial and dry heat-capacitor chain should use original component fields, not branch-load shortcuts:\n{rendered}"
+            && rendered.contains("ptot=(fmax(0.0, ((((hotWaterPlant_boilerPlant_boiSta_y_1 > 0.5) ? hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_y : 0.0)) * hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal) / fmax(0.00001, hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_eta_nominal))")
+            && rendered.contains("/ fmax(0.00001, hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_eta_nominal)")
+            && !rendered.contains("ptot=(hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_QFue_flow + hotWaterPlant_boilerPlant_mulBoi_boi_2_boi_QFue_flow)"),
+        "BOPTEST BoilerPolynomial should preserve active fuel, water heat, and heat-capacitor port production instead of replacing it with load-allocation proxies:\n{rendered}"
     );
     assert!(
-        !rendered.contains("2619375.0") && !rendered.contains("/ 0.8"),
-        "BOPTEST BoilerPolynomial chain must not use staging-capacity or direct efficiency shortcuts:\n{rendered}"
+        !rendered.contains("y=hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_y"),
+        "BOPTEST BoilerPolynomial y must not read a stale conPI.y alias:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("pid=hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_conPID_antWinErr_u2")
+            && !rendered.contains("pid=hotWaterPlant_boilerPlant_mulBoi_boi_1_conPI_mul_u2"),
+        "BOPTEST PID output must not read anti-windup or multiplier reverse aliases:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("t=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_T")
+            && !rendered.contains("tem=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_temSen_T")
+            && !rendered
+                .contains("tem_port=hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_temSen_port_T"),
+        "BOPTEST BoilerPolynomial temperature read surfaces must not self-reference stale output aliases:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(
+            "qfue=fmax(0.0, (fmin(hotWaterPlant_boilerPlant_mulBoi_boi_1_boi_Q_flow_nominal"
+        ),
+        "BOPTEST BoilerPolynomial fuel and water heat must not be replaced by terminal-load allocation proxies:\n{rendered}"
     );
 }
 
@@ -5579,5 +9330,55 @@ read={{ alg_rhs_for_var_with_dae("reaChiWatSys_ChiSta_2_y", dae, cfg) }}
         rendered.contains("stage_vec=(((plant_chiSta_nSta_iOn_1_active ? 1.0 : 0.0) + (plant_chiSta_nSta_iOn_2_active ? 2.0 : 0.0) + (plant_chiSta_nSta_nOn_active ? 3.0 : 0.0)) >= 2.0 ? 1.0 : 0.0)")
             && rendered.contains("read=(((chilledWaterPlant_chillerPlant_chiSta_nSta_iOn_1_active ? 1.0 : 0.0) + (chilledWaterPlant_chillerPlant_chiSta_nSta_iOn_2_active ? 2.0 : 0.0) + (chilledWaterPlant_chillerPlant_chiSta_nSta_nOn_active ? 3.0 : 0.0)) >= 2.0 ? 1.0 : 0.0)"),
         "StageN vector/read outputs should synthesize from DAE variable maps when f_x is empty:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_fmi_alg_rhs_projects_multiswitch_expr_before_direct_linspace_rhs() {
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": {
+                    "VarRef": {
+                        "name": {"name": "plant.nSta.multiSwitch.expr"},
+                        "subscripts": [{"Index": {"value": 1}}]
+                    }
+                },
+                "rhs": {
+                    "FunctionCall": {
+                        "name": {"name": "linspace"},
+                        "args": [
+                            {"Literal": {"value": {"Integer": 0}}},
+                            {"VarRef": {"name": {"name": "plant.nSta.n"}, "subscripts": []}},
+                            {"Binary": {
+                                "op": "Add",
+                                "lhs": {"VarRef": {"name": {"name": "plant.nSta.n"}, "subscripts": []}},
+                                "rhs": {"Literal": {"value": {"Integer": 1}}}
+                            }}
+                        ]
+                    }
+                }
+            }
+        ],
+        "x": {},
+        "y": {},
+        "w": {
+            "plant.nSta.multiSwitch.expr[1]": {}
+        },
+        "z": {},
+        "m": {},
+        "u": {},
+        "p": {},
+        "constants": {}
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "if_style": "ternary", "subscript_underscore": true} %}
+expr={{ alg_rhs_for_var_with_dae("plant.nSta.multiSwitch.expr[1]", dae, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("expr=0") && !rendered.contains("linspace("),
+        "multiSwitch.expr scalar output should project the source array index before direct RHS:\n{rendered}"
     );
 }

@@ -8,7 +8,7 @@
 //! The DAE tree-walk interpreter (`eval`, `dual`, `sim_float`, `statement`) lives
 //! in `rumoca-eval-dae`.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use indexmap::IndexMap;
 
@@ -45,11 +45,11 @@ pub(crate) use discrete_pre_modes::expression_contains_event_entry_pre_operator;
 use layout::INITIAL_EVENT_PARAMETER_NAME;
 pub use layout::{build_var_layout, build_var_layout_with_solver_len};
 use lower::{
-    LowerError, lower_discrete_rhs, lower_initial_residual, lower_initial_update_rhs,
+    LowerError, lower_discrete_rhs_with_external_object_indices, lower_initial_update_rhs,
     lower_residual_rows_and_targets_from_equations, lower_root_conditions,
 };
 use lower::{
-    lower_dynamic_time_event_rhs, lower_runtime_assignment_rhs,
+    lower_dynamic_time_event_rhs, lower_runtime_assignment_rhs_with_external_object_indices,
     normalized_discrete_update_equations,
 };
 use observation_refresh::lower_discrete_observation_refresh;
@@ -171,6 +171,9 @@ pub fn lower_solve_problem_with_solver_len(
             })?;
     }
     appendix_b_validation::validate_solve_input_appendix_b_invariants(dae_model)?;
+    let external_objects = lower_runtime_external_objects(dae_model)
+        .map_err(|err| lower_problem_context(err, "lower runtime external objects"))?;
+    let external_object_indices = runtime_external_object_index_map(&external_objects);
     // Eliminate dummy derivatives (`di = der(x)`) by substituting `der(x) -> di`
     // in all non-defining equations, so `di` is determined as an algebraic
     // unknown and `der(x) = di` is the trivial state-derivative link (matching
@@ -196,13 +199,21 @@ pub fn lower_solve_problem_with_solver_len(
     // `solver_residual_equations` has already removed state-derivative rows.
     // The remaining original DAE indices are not a state-row prefix, so residual
     // lowering must not infer derivative-row behavior from `row_idx < n_x`.
+    let mut row_target_cache = ScalarizedRecordTargetCache::new(&layout);
     let (residual, residual_targets) = lower_residual_rows_and_targets_from_equations(
         dae_model,
         &layout,
         residual_equations.iter().copied(),
         0,
+        Some(&external_object_indices),
         |eq, row_count| {
-            lower_continuous_row_targets_for_equation(dae_model, eq, &layout, row_count)
+            lower_continuous_row_targets_for_equation(
+                dae_model,
+                eq,
+                &layout,
+                row_count,
+                &mut row_target_cache,
+            )
         },
     )
     .map_err(|err| lower_problem_context(err, "lower continuous residual rows and targets"))?;
@@ -228,7 +239,12 @@ pub fn lower_solve_problem_with_solver_len(
         lower_runtime_assignment_targets(dae_model, &runtime_assignment_equations, &layout)?;
     let discrete_observation_refresh =
         lower_discrete_observation_refresh(dae_model, &layout, &runtime_assignment_targets)?;
-    let initialization = lower_initialization_system(dae_model, &layout, &solve_layout)?;
+    let initialization = lower_initialization_system(
+        dae_model,
+        &layout,
+        &solve_layout,
+        Some(&external_object_indices),
+    )?;
     let dynamic_time_event_exprs = dynamic_events::collect_dynamic_time_event_exprs(dae_model);
     let implicit_rhs = build_implicit_rhs_compute_block(
         &derivative_rhs,
@@ -237,6 +253,7 @@ pub fn lower_solve_problem_with_solver_len(
     );
     let problem = solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
+        external_objects,
         continuous: solve::ContinuousSolveSystem {
             implicit_row_targets,
             implicit_rhs,
@@ -250,13 +267,22 @@ pub fn lower_solve_problem_with_solver_len(
         initialization,
         discrete: solve::DiscreteSolveSystem {
             runtime_assignment_rhs: solve::ScalarProgramBlock::new(
-                lower_runtime_assignment_rhs(dae_model, &layout, &runtime_assignment_equations)
-                    .map_err(|err| lower_problem_context(err, "lower runtime assignment rows"))?,
+                lower_runtime_assignment_rhs_with_external_object_indices(
+                    dae_model,
+                    &layout,
+                    &runtime_assignment_equations,
+                    Some(&external_object_indices),
+                )
+                .map_err(|err| lower_problem_context(err, "lower runtime assignment rows"))?,
             ),
             runtime_assignment_targets,
             rhs: solve::ScalarProgramBlock::new(
-                lower_discrete_rhs(dae_model, &layout)
-                    .map_err(|err| lower_problem_context(err, "lower discrete update rows"))?,
+                lower_discrete_rhs_with_external_object_indices(
+                    dae_model,
+                    &layout,
+                    Some(&external_object_indices),
+                )
+                .map_err(|err| lower_problem_context(err, "lower discrete update rows"))?,
             ),
             update_targets: lower_discrete_update_targets(dae_model, &layout)
                 .map_err(|err| lower_problem_context(err, "lower discrete update targets"))?,
@@ -365,17 +391,27 @@ fn lower_initialization_system(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
     solve_layout: &solve::SolveLayout,
+    external_object_indices: Option<&IndexMap<String, usize>>,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
     let residual_equations = lower::initial_residual_equations(dae_model, layout);
-    let row_targets =
-        lower_continuous_row_targets(dae_model, residual_equations.iter().copied(), layout)
-            .map_err(|err| lower_problem_context(err, "lower initial row targets"))?;
+    let mut row_target_cache = ScalarizedRecordTargetCache::new(layout);
+    let row_targets = lower_continuous_row_targets(
+        dae_model,
+        residual_equations.iter().copied(),
+        layout,
+        &mut row_target_cache,
+    )
+    .map_err(|err| lower_problem_context(err, "lower initial row targets"))?;
     let update_equations = lower::initial_condition_update_equations(dae_model);
     let update_targets = lower_update_targets_from_equations(dae_model, layout, &update_equations)
         .map_err(|err| lower_problem_context(err, "lower initial update targets"))?;
 
-    let residual_rows = lower_initial_residual(dae_model, layout)
-        .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
+    let residual_rows = lower::lower_initial_residual_with_external_object_indices(
+        dae_model,
+        layout,
+        external_object_indices,
+    )
+    .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
     let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout);
     let projection_plan = lower_projection_plan(
         &residual_rows,
@@ -552,7 +588,47 @@ fn solver_residual_equation(
 }
 
 pub(crate) fn energyplus_spawn_external_object_binding(eq: &dae::Equation) -> bool {
-    let Some(target) = eq
+    external_object_binding_target(eq).is_some()
+}
+
+pub(crate) fn lower_runtime_external_objects(
+    dae_model: &dae::Dae,
+) -> Result<Vec<solve::RuntimeExternalObject>, LowerError> {
+    let mut objects = IndexMap::<String, solve::RuntimeExternalObject>::new();
+    for eq in dae_model
+        .continuous
+        .equations
+        .iter()
+        .chain(dae_model.initialization.equations.iter())
+    {
+        let Some(target) = external_object_binding_target(eq) else {
+            continue;
+        };
+        let Some(object) = runtime_external_object_from_binding(dae_model, &target, eq)? else {
+            continue;
+        };
+        if objects.insert(target.clone(), object).is_some() {
+            return Err(LowerError::ContractViolation {
+                reason: format!("duplicate external object binding for `{target}`"),
+                span: eq.span,
+            });
+        }
+    }
+    Ok(objects.into_values().collect())
+}
+
+fn runtime_external_object_index_map(
+    objects: &[solve::RuntimeExternalObject],
+) -> IndexMap<String, usize> {
+    objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.target.clone(), index))
+        .collect()
+}
+
+fn external_object_binding_target(eq: &dae::Equation) -> Option<String> {
+    let target = eq
         .lhs
         .as_ref()
         .map(|lhs| lhs.as_str().to_string())
@@ -561,11 +637,592 @@ pub(crate) fn energyplus_spawn_external_object_binding(eq: &dae::Equation) -> bo
                 .strip_prefix("binding equation for ")
                 .map(str::trim)
                 .map(ToOwned::to_owned)
+        })?;
+    target.ends_with(".adapter").then_some(target)
+}
+
+fn runtime_external_object_from_binding(
+    dae_model: &dae::Dae,
+    target: &str,
+    eq: &dae::Equation,
+) -> Result<Option<solve::RuntimeExternalObject>, LowerError> {
+    let Some(constructor_expr) = runtime_external_constructor_expression(target, eq) else {
+        return Ok(None);
+    };
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor,
+        span,
+    } = constructor_expr
+    else {
+        return Ok(None);
+    };
+    let _ = is_constructor;
+    if name.as_str() != "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject" {
+        return Ok(None);
+    }
+    let function = dae_model
+        .symbols
+        .functions
+        .get(&rumoca_core::VarName::new(name.as_str()))
+        .ok_or_else(|| LowerError::MissingFunction {
+            name: name.as_str().to_string(),
+        })?;
+    let symbol = function
+        .external
+        .as_ref()
+        .and_then(|external| external.function_name.clone())
+        .unwrap_or_else(|| name.as_str().to_string());
+    let args = runtime_external_args(dae_model, name.as_str(), target, args)?;
+    Ok(Some(solve::RuntimeExternalObject {
+        target: target.to_string(),
+        constructor: solve::ExternalFunctionKind::BuildingsEnergyPlusSpawnExternalObject,
+        symbol,
+        args,
+    }))
+    .map_err(|err: LowerError| err.with_fallback_span(*span))
+}
+
+fn runtime_external_constructor_expression<'a>(
+    target: &str,
+    eq: &'a dae::Equation,
+) -> Option<&'a rumoca_core::Expression> {
+    if matches!(
+        &eq.rhs,
+        rumoca_core::Expression::FunctionCall {
+            name,
+            ..
+        } if name.as_str()
+            == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+    ) {
+        return Some(&eq.rhs);
+    }
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.rhs
+    else {
+        return None;
+    };
+    if expression_is_unsubscripted_var(lhs, target)
+        && matches!(
+            rhs.as_ref(),
+            rumoca_core::Expression::FunctionCall {
+                name,
+                ..
+            } if name.as_str()
+                == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+        )
+    {
+        return Some(rhs);
+    }
+    None
+}
+
+fn expression_is_unsubscripted_var(expr: &rumoca_core::Expression, name: &str) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::VarRef {
+            name: var_name,
+            subscripts,
+            ..
+        } if subscripts.is_empty() && var_name.as_str() == name
+    )
+}
+
+fn runtime_external_args(
+    dae_model: &dae::Dae,
+    function_name: &str,
+    constructor_target: &str,
+    args: &[rumoca_core::Expression],
+) -> Result<Vec<solve::RuntimeExternalArg>, LowerError> {
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+        let (name, value_expr) = decode_runtime_external_arg(arg);
+        let context = match name.as_deref() {
+            Some(name) => format!("external object constructor argument `{name}`"),
+            None => "external object constructor positional argument".to_string(),
+        };
+        let value = if name.as_deref() == Some("modelicaNameBuilding")
+            && function_name
+                == "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+            && let Some(value) =
+                runtime_external_energyplus_building_name(dae_model, constructor_target, value_expr)
+                    .transpose()?
+        {
+            value
+        } else {
+            runtime_external_value(dae_model, value_expr, None)
+                .map_err(|err| err.with_context(context))?
+        };
+        out.push(solve::RuntimeExternalArg { name, value });
+    }
+    if out.is_empty() {
+        return Err(LowerError::InvalidFunction {
+            name: function_name.to_string(),
+            reason: "external object constructor has no runtime metadata arguments".to_string(),
+        });
+    }
+    Ok(out)
+}
+
+fn runtime_external_energyplus_building_name(
+    dae_model: &dae::Dae,
+    constructor_target: &str,
+    value_expr: &rumoca_core::Expression,
+) -> Option<Result<solve::RuntimeExternalValue, LowerError>> {
+    let value_name = runtime_external_flat_var_name(value_expr)?;
+    if !value_name.ends_with(".modelicaNameBuilding") {
+        return None;
+    }
+    let candidates = [
+        value_name
+            .rfind(".building.")
+            .map(|start| value_name[start + 1..].to_string()),
+        constructor_target
+            .rfind(".building.")
+            .map(|start| constructor_target[start + 1..].to_string()),
+        Some("building.modelicaNameBuilding".to_string()),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if runtime_external_start_expr(dae_model, &candidate).is_some() {
+            return Some(runtime_external_var_value(
+                dae_model,
+                &candidate,
+                value_expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            ));
+        }
+    }
+    None
+}
+
+fn decode_runtime_external_arg(
+    arg: &rumoca_core::Expression,
+) -> (Option<String>, &rumoca_core::Expression) {
+    if let rumoca_core::Expression::FunctionCall { name, args, .. } = arg
+        && let Some(named) = name
+            .as_str()
+            .strip_prefix(crate::lower::NAMED_FUNCTION_ARG_PREFIX)
+        && let Some(value) = args.first()
+    {
+        return (Some(named.to_string()), value);
+    }
+    (None, arg)
+}
+
+fn runtime_external_value(
+    dae_model: &dae::Dae,
+    expr: &rumoca_core::Expression,
+    instance_context: Option<&str>,
+) -> Result<solve::RuntimeExternalValue, LowerError> {
+    match expr {
+        rumoca_core::Expression::Literal { value, .. } => Ok(runtime_value_from_literal(value)),
+        rumoca_core::Expression::Array { elements, .. } => elements
+            .iter()
+            .map(|element| runtime_external_value(dae_model, element, instance_context))
+            .collect::<Result<Vec<_>, _>>()
+            .map(solve::RuntimeExternalValue::Array),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            span,
+        } => {
+            let lhs = runtime_external_value(dae_model, lhs, instance_context)?;
+            let rhs = runtime_external_value(dae_model, rhs, instance_context)?;
+            runtime_external_add(lhs, rhs, *span)
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if name.as_str() == "getInstanceName" && args.is_empty() =>
+        {
+            let Some(context) = instance_context else {
+                return Err(LowerError::UnsupportedAt {
+                    reason: "getInstanceName() requires a variable context".to_string(),
+                    contexts: Vec::new(),
+                    span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                });
+            };
+            Ok(solve::RuntimeExternalValue::String(
+                instance_name_for_variable_context(dae_model, context),
+            ))
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if rumoca_core::top_level_last_segment(name.as_str()) == "loadResource"
+                && args.len() == 1 =>
+        {
+            let value = runtime_external_value(dae_model, &args[0], instance_context)?;
+            let solve::RuntimeExternalValue::String(raw) = value else {
+                return Err(LowerError::UnsupportedAt {
+                    reason: "loadResource argument must evaluate to a string".to_string(),
+                    contexts: Vec::new(),
+                    span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                });
+            };
+            let resolved = rumoca_eval_dae::eval::resolve_modelica_resource_path(&raw)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or(raw);
+            Ok(solve::RuntimeExternalValue::String(resolved))
+        }
+        rumoca_core::Expression::FunctionCall { name, args, span, .. }
+            if rumoca_core::top_level_last_segment(name.as_str()) == "fill" && args.len() >= 2 =>
+        {
+            runtime_external_fill(dae_model, args, instance_context, *span)
+        }
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            span,
+        } if args.len() >= 2 => runtime_external_fill(dae_model, args, instance_context, *span),
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => {
+            let value = runtime_external_var_value(dae_model, name.as_str(), *span)?;
+            apply_runtime_external_subscripts(
+                dae_model,
+                value,
+                subscripts,
+                instance_context,
+                *span,
+            )
+        }
+        rumoca_core::Expression::Index { .. } | rumoca_core::Expression::FieldAccess { .. } => {
+            if let Some(name) = runtime_external_flat_var_name(expr) {
+                runtime_external_var_value(
+                    dae_model,
+                    &name,
+                    expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                )
+            } else {
+                Err(LowerError::UnsupportedAt {
+                    reason: "external object constructor argument uses a non-static component reference".to_string(),
+                    contexts: Vec::new(),
+                    span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                })
+            }
+        }
+        _ => Err(LowerError::UnsupportedAt {
+            reason: "external object constructor argument must be a literal, literal array, or variable with literal start metadata".to_string(),
+            contexts: Vec::new(),
+            span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        }),
+    }
+}
+
+fn runtime_external_fill(
+    dae_model: &dae::Dae,
+    args: &[rumoca_core::Expression],
+    instance_context: Option<&str>,
+    span: rumoca_core::Span,
+) -> Result<solve::RuntimeExternalValue, LowerError> {
+    let value = runtime_external_value(dae_model, &args[0], instance_context)?;
+    let mut dims = Vec::with_capacity(args.len().saturating_sub(1));
+    for dim_expr in &args[1..] {
+        let dim = runtime_external_index_value(dae_model, dim_expr, instance_context, span)?;
+        if dim < 0 {
+            return Err(LowerError::UnsupportedAt {
+                reason: format!("fill dimension must be non-negative, got `{dim}`"),
+                contexts: Vec::new(),
+                span,
+            });
+        }
+        dims.push(dim as usize);
+    }
+    Ok(runtime_external_fill_dims(value, &dims))
+}
+
+fn runtime_external_fill_dims(
+    value: solve::RuntimeExternalValue,
+    dims: &[usize],
+) -> solve::RuntimeExternalValue {
+    let Some((first, rest)) = dims.split_first() else {
+        return value;
+    };
+    solve::RuntimeExternalValue::Array(
+        (0..*first)
+            .map(|_| runtime_external_fill_dims(value.clone(), rest))
+            .collect(),
+    )
+}
+
+fn runtime_external_add(
+    lhs: solve::RuntimeExternalValue,
+    rhs: solve::RuntimeExternalValue,
+    span: rumoca_core::Span,
+) -> Result<solve::RuntimeExternalValue, LowerError> {
+    match (lhs, rhs) {
+        (solve::RuntimeExternalValue::String(lhs), solve::RuntimeExternalValue::String(rhs)) => {
+            Ok(solve::RuntimeExternalValue::String(format!("{lhs}{rhs}")))
+        }
+        (solve::RuntimeExternalValue::Integer(lhs), solve::RuntimeExternalValue::Integer(rhs)) => {
+            Ok(solve::RuntimeExternalValue::Integer(lhs + rhs))
+        }
+        (solve::RuntimeExternalValue::Real(lhs), solve::RuntimeExternalValue::Real(rhs)) => {
+            Ok(solve::RuntimeExternalValue::Real(lhs + rhs))
+        }
+        (solve::RuntimeExternalValue::Integer(lhs), solve::RuntimeExternalValue::Real(rhs)) => {
+            Ok(solve::RuntimeExternalValue::Real(lhs as f64 + rhs))
+        }
+        (solve::RuntimeExternalValue::Real(lhs), solve::RuntimeExternalValue::Integer(rhs)) => {
+            Ok(solve::RuntimeExternalValue::Real(lhs + rhs as f64))
+        }
+        (lhs, rhs) => Err(LowerError::UnsupportedAt {
+            reason: format!("unsupported external metadata addition `{lhs:?}` + `{rhs:?}`"),
+            contexts: Vec::new(),
+            span,
+        }),
+    }
+}
+
+fn apply_runtime_external_subscripts(
+    dae_model: &dae::Dae,
+    mut value: solve::RuntimeExternalValue,
+    subscripts: &[rumoca_core::Subscript],
+    instance_context: Option<&str>,
+    span: rumoca_core::Span,
+) -> Result<solve::RuntimeExternalValue, LowerError> {
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Colon { .. } => {}
+            rumoca_core::Subscript::Index { value: index, .. } => {
+                value = select_runtime_external_array_value(value, *index, span)?;
+            }
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                let index = runtime_external_index_value(dae_model, expr, instance_context, span)?;
+                value = select_runtime_external_array_value(value, index, span)?;
+            }
+        }
+    }
+    Ok(value)
+}
+
+fn runtime_external_index_value(
+    dae_model: &dae::Dae,
+    expr: &rumoca_core::Expression,
+    instance_context: Option<&str>,
+    span: rumoca_core::Span,
+) -> Result<i64, LowerError> {
+    match runtime_external_value(dae_model, expr, instance_context)? {
+        solve::RuntimeExternalValue::Integer(value) => Ok(value),
+        solve::RuntimeExternalValue::Real(value)
+            if value.is_finite() && (value.round() - value).abs() < 1.0e-9 =>
+        {
+            Ok(value.round() as i64)
+        }
+        other => Err(LowerError::UnsupportedAt {
+            reason: format!("array subscript must evaluate to an integer, got `{other:?}`"),
+            contexts: Vec::new(),
+            span,
+        }),
+    }
+}
+
+fn select_runtime_external_array_value(
+    value: solve::RuntimeExternalValue,
+    index: i64,
+    span: rumoca_core::Span,
+) -> Result<solve::RuntimeExternalValue, LowerError> {
+    let solve::RuntimeExternalValue::Array(values) = value else {
+        return Err(LowerError::UnsupportedAt {
+            reason: "array subscript applied to non-array external metadata value".to_string(),
+            contexts: Vec::new(),
+            span,
+        });
+    };
+    if index <= 0 {
+        return Err(LowerError::UnsupportedAt {
+            reason: format!("Modelica array subscript must be 1-based, got `{index}`"),
+            contexts: Vec::new(),
+            span,
+        });
+    }
+    values
+        .get((index - 1) as usize)
+        .cloned()
+        .ok_or_else(|| LowerError::UnsupportedAt {
+            reason: format!(
+                "array subscript `{index}` is out of bounds for external metadata array of length {}",
+                values.len()
+            ),
+            contexts: Vec::new(),
+            span,
         })
+}
+
+fn runtime_external_var_value(
+    dae_model: &dae::Dae,
+    name: &str,
+    span: rumoca_core::Span,
+) -> Result<solve::RuntimeExternalValue, LowerError> {
+    if let Some(value) = dae_model.symbols.enum_literal_ordinals.get(name) {
+        return Ok(solve::RuntimeExternalValue::Integer(*value));
+    }
+    if initial_equation_binds_var_to_time(dae_model, name) {
+        return Ok(solve::RuntimeExternalValue::SimulationTime);
+    }
+    let start =
+        runtime_external_start_expr(dae_model, name).ok_or_else(|| LowerError::UnsupportedAt {
+            reason: format!(
+                "external object constructor argument `{name}` has no evaluable start metadata"
+            ),
+            contexts: Vec::new(),
+            span,
+        })?;
+    runtime_external_value(dae_model, start, Some(name))
+}
+
+fn runtime_external_flat_var_name(expr: &rumoca_core::Expression) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let mut out = name.as_str().to_string();
+            append_static_subscripts(&mut out, subscripts)?;
+            Some(out)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let mut out = runtime_external_flat_var_name(base)?;
+            append_static_subscripts(&mut out, subscripts)?;
+            Some(out)
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let base = runtime_external_flat_var_name(base)?;
+            Some(format!("{base}.{field}"))
+        }
+        _ => None,
+    }
+}
+
+fn append_static_subscripts(out: &mut String, subscripts: &[rumoca_core::Subscript]) -> Option<()> {
+    if subscripts.is_empty() {
+        return Some(());
+    }
+    let values = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Some(value.to_string()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    out.push('[');
+    out.push_str(&values.join(","));
+    out.push(']');
+    Some(())
+}
+
+fn runtime_external_start_expr<'a>(
+    dae_model: &'a dae::Dae,
+    name: &str,
+) -> Option<&'a rumoca_core::Expression> {
+    dae_model
+        .metadata
+        .variable_starts
+        .get(name)
+        .or_else(|| {
+            runtime_external_variable_by_name(dae_model, name).and_then(|var| var.start.as_ref())
+        })
+        .or_else(|| runtime_external_outer_alias_start_expr(dae_model, name))
+}
+
+fn runtime_external_outer_alias_start_expr<'a>(
+    dae_model: &'a dae::Dae,
+    name: &str,
+) -> Option<&'a rumoca_core::Expression> {
+    let parts = name.split('.').collect::<Vec<_>>();
+    for index in 1..parts.len() {
+        let suffix = parts[index..].join(".");
+        if let Some(start) = dae_model.metadata.variable_starts.get(&suffix) {
+            return Some(start);
+        }
+        if let Some(var) = runtime_external_variable_by_name(dae_model, &suffix)
+            && let Some(start) = var.start.as_ref()
+        {
+            return Some(start);
+        }
+    }
+    None
+}
+
+fn runtime_external_variable_by_name<'a>(
+    dae_model: &'a dae::Dae,
+    name: &str,
+) -> Option<&'a dae::Variable> {
+    let key = rumoca_core::VarName::new(name);
+    dae_model
+        .variables
+        .parameters
+        .get(&key)
+        .or_else(|| dae_model.variables.constants.get(&key))
+        .or_else(|| dae_model.variables.states.get(&key))
+        .or_else(|| dae_model.variables.algebraics.get(&key))
+        .or_else(|| dae_model.variables.discrete_reals.get(&key))
+        .or_else(|| dae_model.variables.discrete_valued.get(&key))
+        .or_else(|| dae_model.variables.inputs.get(&key))
+        .or_else(|| dae_model.variables.outputs.get(&key))
+}
+
+fn instance_name_for_variable_context(dae_model: &dae::Dae, variable_name: &str) -> String {
+    let owner = variable_name
+        .rsplit_once('.')
+        .map(|(owner, _)| owner.to_string())
+        .unwrap_or_else(|| variable_name.to_string());
+    dae_model
+        .metadata
+        .root_model_name
+        .as_ref()
+        .filter(|root| !root.is_empty())
+        .map(|root| format!("{root}.{owner}"))
+        .unwrap_or(owner)
+}
+
+fn initial_equation_binds_var_to_time(dae_model: &dae::Dae, target: &str) -> bool {
+    dae_model
+        .initialization
+        .equations
+        .iter()
+        .any(|eq| equation_binds_var_to_time(eq, target))
+}
+
+fn equation_binds_var_to_time(eq: &dae::Equation, target: &str) -> bool {
+    if let Some(lhs) = eq.lhs.as_ref() {
+        return lhs.as_str() == target && expression_is_time_var(&eq.rhs);
+    }
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.rhs
     else {
         return false;
     };
-    target.ends_with(".adapter")
+    expression_is_unsubscripted_var(lhs, target) && expression_is_time_var(rhs)
+}
+
+fn expression_is_time_var(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if subscripts.is_empty() && name.as_str() == "time"
+    )
+}
+
+fn runtime_value_from_literal(value: &rumoca_core::Literal) -> solve::RuntimeExternalValue {
+    match value {
+        rumoca_core::Literal::Real(value) => solve::RuntimeExternalValue::Real(*value),
+        rumoca_core::Literal::Integer(value) => solve::RuntimeExternalValue::Integer(*value),
+        rumoca_core::Literal::Boolean(value) => solve::RuntimeExternalValue::Boolean(*value),
+        rumoca_core::Literal::String(value) => solve::RuntimeExternalValue::String(value.clone()),
+    }
 }
 
 fn build_implicit_rhs_rows(
@@ -1088,6 +1745,7 @@ fn lower_continuous_row_targets<'a>(
     dae_model: &dae::Dae,
     equations: impl IntoIterator<Item = (usize, &'a dae::Equation)>,
     layout: &solve::VarLayout,
+    row_target_cache: &mut ScalarizedRecordTargetCache<'_>,
 ) -> Result<Vec<Option<solve::ScalarSlot>>, LowerError> {
     let equations: Vec<(usize, &dae::Equation)> = equations.into_iter().collect();
     let mut targets = Vec::with_capacity(equations.len());
@@ -1097,6 +1755,7 @@ fn lower_continuous_row_targets<'a>(
             eq,
             layout,
             eq.scalar_count,
+            row_target_cache,
         )?);
     }
     Ok(targets)
@@ -1107,15 +1766,16 @@ fn lower_continuous_row_targets_for_equation(
     eq: &dae::Equation,
     layout: &solve::VarLayout,
     row_count: usize,
+    row_target_cache: &mut ScalarizedRecordTargetCache<'_>,
 ) -> Result<Vec<Option<solve::ScalarSlot>>, LowerError> {
     let mut targets = Vec::with_capacity(row_count);
     if let Some(lhs) = eq.lhs.as_ref()
-        && let Some(names) = scalarized_record_target_names(lhs.as_str(), layout)
+        && let Some(names) = row_target_cache.target_names(lhs.as_str())
     {
         push_bound_target_slots(layout, names, &mut targets)?;
         return Ok(targets);
     }
-    if let Some(names) = scalarized_record_residual_target_names(&eq.rhs, layout) {
+    if let Some(names) = scalarized_record_residual_target_names(&eq.rhs, row_target_cache) {
         push_bound_target_slots(layout, names, &mut targets)?;
         return Ok(targets);
     }
@@ -1125,10 +1785,11 @@ fn lower_continuous_row_targets_for_equation(
             targets.push(None);
             continue;
         };
-        let Some(slot) = layout.binding(name.as_str()) else {
-            return Err(LowerError::MissingBinding { name });
-        };
-        targets.push(Some(slot));
+        // Row targets are projection hints, not expression bindings. Some
+        // initialization residuals are anchored on parameter/constant elements
+        // that are not solver unknowns; keep the row target empty and let row
+        // lowering below enforce real expression binding coverage.
+        targets.push(layout_target_binding(layout, name.as_str()));
     }
     Ok(targets)
 }
@@ -1139,7 +1800,7 @@ fn push_bound_target_slots(
     targets: &mut Vec<Option<solve::ScalarSlot>>,
 ) -> Result<(), LowerError> {
     for name in names {
-        let Some(slot) = layout.binding(name.as_str()) else {
+        let Some(slot) = layout_target_binding(layout, name.as_str()) else {
             return Err(LowerError::MissingBinding { name });
         };
         targets.push(Some(slot));
@@ -1147,13 +1808,140 @@ fn push_bound_target_slots(
     Ok(())
 }
 
+fn layout_target_binding(layout: &solve::VarLayout, name: &str) -> Option<solve::ScalarSlot> {
+    layout
+        .binding(name)
+        .or_else(|| indexed_layout_target_binding(layout, name))
+}
+
+fn indexed_layout_target_binding(
+    layout: &solve::VarLayout,
+    name: &str,
+) -> Option<solve::ScalarSlot> {
+    let (base, indices) = parse_indexed_target_name(name)?;
+    layout
+        .indexed_bindings()
+        .get(&rumoca_core::ComponentPath::from_flat_path(base))?
+        .iter()
+        .find(|entry| entry.indices == indices)
+        .map(|entry| entry.slot)
+}
+
+fn parse_indexed_target_name(name: &str) -> Option<(&str, Vec<usize>)> {
+    let (open, close) = rumoca_core::last_top_level_subscript_span(name)?;
+    if close != name.len() || open == 0 {
+        return None;
+    }
+    let indices = name[open + 1..close - 1]
+        .split(',')
+        .map(|part| part.trim().parse::<usize>().ok().filter(|idx| *idx > 0))
+        .collect::<Option<Vec<_>>>()?;
+    Some((&name[..open], indices))
+}
+
+struct ScalarizedRecordTargetCache<'a> {
+    layout: &'a solve::VarLayout,
+    indexed_targets: HashMap<String, Vec<String>>,
+    cache: HashMap<String, Option<Vec<String>>>,
+}
+
+impl<'a> ScalarizedRecordTargetCache<'a> {
+    fn new(layout: &'a solve::VarLayout) -> Self {
+        Self {
+            layout,
+            indexed_targets: build_scalarized_record_target_index(layout),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn target_names(&mut self, base: &str) -> Option<Vec<String>> {
+        if let Some(names) = self.cache.get(base) {
+            return names.clone();
+        }
+        let names = if self.layout.binding(base).is_some() && self.layout.shape(base).is_none() {
+            None
+        } else {
+            self.indexed_targets.get(base).cloned()
+        };
+        self.cache.insert(base.to_string(), names.clone());
+        names
+    }
+}
+
+fn build_scalarized_record_target_index(layout: &solve::VarLayout) -> HashMap<String, Vec<String>> {
+    let mut targets_by_base: HashMap<String, Vec<String>> = HashMap::new();
+    for name in layout.bindings().keys() {
+        let Some((base, suffix)) = rumoca_core::split_last_top_level(name.as_str()) else {
+            continue;
+        };
+        if layout.binding(base).is_some() && layout.shape(base).is_none() {
+            continue;
+        }
+        let targets = targets_by_base.entry(base.to_string()).or_default();
+        if targets.iter().any(|existing| {
+            existing
+                .rsplit_once('.')
+                .is_some_and(|(_, value)| value == suffix)
+        }) {
+            continue;
+        }
+        targets.push(name.clone());
+    }
+    retain_highest_rank_scalarized_record_targets(&mut targets_by_base);
+    targets_by_base.retain(|_, targets| !targets.is_empty());
+    targets_by_base
+}
+
+fn retain_highest_rank_scalarized_record_targets(
+    targets_by_base: &mut HashMap<String, Vec<String>>,
+) {
+    for targets in targets_by_base.values_mut() {
+        let mut ranks = IndexMap::<String, usize>::new();
+        let fields = targets
+            .iter()
+            .filter_map(|target| {
+                let (_, suffix) = rumoca_core::split_last_top_level(target.as_str())?;
+                let (component, rank) = scalarized_record_target_component_rank(suffix);
+                let entry = ranks.entry(component.clone()).or_default();
+                *entry = (*entry).max(rank);
+                Some((target.clone(), component, rank))
+            })
+            .collect::<Vec<_>>();
+        *targets = fields
+            .into_iter()
+            .filter_map(|(target, component, rank)| {
+                ranks
+                    .get(&component)
+                    .is_none_or(|max_rank| rank == *max_rank)
+                    .then_some(target)
+            })
+            .collect();
+    }
+}
+
+fn scalarized_record_target_component_rank(suffix: &str) -> (String, usize) {
+    let Some((start, end)) = rumoca_core::last_top_level_subscript_span(suffix) else {
+        return (suffix.to_string(), 0);
+    };
+    if end != suffix.len() {
+        return (suffix.to_string(), 0);
+    }
+    let component = suffix[..start].to_string();
+    let rank = suffix[start + 1..end - 1]
+        .split(',')
+        .filter(|part| part.trim().parse::<usize>().ok().is_some_and(|idx| idx > 0))
+        .count();
+    (component, rank)
+}
+
+#[cfg(test)]
 fn scalarized_record_target_names(base: &str, layout: &solve::VarLayout) -> Option<Vec<String>> {
-    lower::scalarized_record_field_binding_names(base, layout)
+    ScalarizedRecordTargetCache::new(layout).target_names(base)
 }
 
 fn scalarized_record_residual_target_names(
     expr: &rumoca_core::Expression,
-    layout: &solve::VarLayout,
+    row_target_cache: &mut ScalarizedRecordTargetCache<'_>,
 ) -> Option<Vec<String>> {
     let rumoca_core::Expression::Binary {
         op,
@@ -1176,7 +1964,7 @@ fn scalarized_record_residual_target_names(
     if !subscripts.is_empty() {
         return None;
     }
-    scalarized_record_target_names(name.as_str(), layout)
+    row_target_cache.target_names(name.as_str())
 }
 
 fn continuous_row_target_name(

@@ -234,6 +234,233 @@ fn test_eval_if_false() {
 }
 
 #[test]
+fn test_checked_eval_field_access_projects_selected_if_branch() {
+    let mut record_ctor = rumoca_core::Function::new("Pkg.Record", Default::default());
+    record_ctor.add_input(rumoca_core::FunctionParam::new("x", "Real"));
+    let mut env = VarEnv::<f64>::new();
+    env.functions = Arc::new(IndexMap::from([("Pkg.Record".to_string(), record_ctor)]));
+
+    let then_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Record"),
+        args: vec![named_ctor_arg("x", lit(1.25))],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let else_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Record"),
+        args: vec![named_ctor_arg("x", lit(2.5))],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::If {
+            branches: vec![(bool_lit(false), then_record)],
+            else_branch: Box::new(else_record),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "x".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(2.5));
+}
+
+#[test]
+fn test_eval_array_field_access_projects_constructor_reference_alias() {
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Medium.setState_pTX"),
+            args: vec![
+                named_ctor_arg("p", lit(101325.0)),
+                named_ctor_arg("T", lit(293.15)),
+                named_ctor_arg("X", arr(vec![lit(0.01), lit(0.99)], false)),
+            ],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "reference_X".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&expr, &VarEnv::new(), 2),
+        Ok(vec![0.01, 0.99])
+    );
+}
+
+#[test]
+fn test_checked_eval_var_ref_singleton_range_slice_as_scalar() {
+    let mut env = VarEnv::<f64>::new();
+    env.vars.insert("x[1]".to_string(), 0.42);
+    env.vars.insert("x[2]".to_string(), 0.99);
+    env.dims = Arc::new(IndexMap::from([("x".to_string(), vec![2])]));
+
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("x"),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
+            rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(1)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ))],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(0.42));
+}
+
+#[test]
+fn test_checked_eval_field_access_projects_nested_constructor_field() {
+    let mut inner_ctor = rumoca_core::Function::new("Pkg.Inner", Default::default());
+    inner_ctor.add_input(rumoca_core::FunctionParam::new("x", "Real"));
+    let mut outer_ctor = rumoca_core::Function::new("Pkg.Outer", Default::default());
+    outer_ctor.add_input(rumoca_core::FunctionParam::new("inner", "Pkg.Inner"));
+    let mut env = VarEnv::<f64>::new();
+    env.functions = Arc::new(IndexMap::from([
+        ("Pkg.Inner".to_string(), inner_ctor),
+        ("Pkg.Outer".to_string(), outer_ctor),
+    ]));
+
+    let inner_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Inner"),
+        args: vec![named_ctor_arg("x", lit(2.5))],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let outer_record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.Outer"),
+        args: vec![named_ctor_arg("inner", inner_record)],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(outer_record),
+            field: "inner".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "x".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(2.5));
+}
+
+#[test]
+fn test_checked_eval_field_access_resolves_indexed_component_path() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("zone[1].building.relativeSurfaceTolerance", 1.0e-6);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::Index {
+                base: Box::new(var("zone")),
+                subscripts: vec![rumoca_core::Subscript::generated_index(
+                    1,
+                    rumoca_core::Span::DUMMY,
+                )],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "building".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "relativeSurfaceTolerance".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(1.0e-6));
+}
+
+#[test]
+fn test_checked_eval_field_access_resolves_outer_component_field_alias() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("building.relativeSurfaceTolerance", 1.0e-6);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::Index {
+                base: Box::new(var("zone")),
+                subscripts: vec![rumoca_core::Subscript::generated_index(
+                    1,
+                    rumoca_core::Span::DUMMY,
+                )],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "building".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "relativeSurfaceTolerance".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(1.0e-6));
+}
+
+#[test]
+fn test_checked_eval_field_access_resolves_enclosing_scope_field_alias() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("unit.coi.dp1_nominal", 42.0);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var("unit")),
+                field: "coi".to_string(),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "cooCoi".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "dp1_nominal".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(42.0));
+}
+
+#[test]
+fn test_checked_eval_field_access_resolves_pressure_drop_modifier_alias() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("unit.coi.PreDroWat", 0.0);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var("unit")),
+                field: "coi".to_string(),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "cooCoi".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "dp1_nominal".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(0.0));
+}
+
+#[test]
+fn test_checked_eval_var_ref_resolves_pressure_drop_modifier_alias() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("unit.coi.PreDroWat", 0.0);
+
+    assert_eq!(
+        eval_expr::<f64>(&var("unit.coi.cooCoi.dp1_nominal"), &env),
+        Ok(0.0)
+    );
+}
+
+#[test]
+fn test_checked_eval_var_ref_resolves_enclosing_scope_alias() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("zone[1].AFlo", 12.0);
+
+    assert_eq!(
+        eval_expr::<f64>(&var("zone[1].fmuZon.AFlo"), &env),
+        Ok(12.0)
+    );
+}
+
+#[test]
 fn test_eval_comparison() {
     let lt = binop(rumoca_core::OpBinary::Lt, lit(1.0), lit(2.0));
     assert_eq!(eval_expr_or_default::<f64>(&lt, &VarEnv::new()), 1.0);
@@ -1566,6 +1793,123 @@ fn test_eval_function_record_field_array_uses_first_element_in_scalar_context() 
     };
 
     assert!((eval_expr_or_default::<f64>(&expr, &env) - 0.25).abs() < 1e-9);
+}
+
+#[test]
+fn test_eval_function_record_field_array_uses_named_arg_for_dynamic_shape() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+
+    let mut state = rumoca_core::Function::new("Pkg.State", Default::default());
+    state.is_constructor = true;
+    state.add_input(rumoca_core::FunctionParam::new("p", "Real"));
+    state.add_input(rumoca_core::FunctionParam::new("X", "Real").with_dims(vec![-1]));
+    funcs.insert("Pkg.State".to_string(), state);
+
+    let mut set_state = rumoca_core::Function::new("Pkg.setState_pTX", Default::default());
+    set_state.add_input(rumoca_core::FunctionParam::new("p", "Real"));
+    set_state.add_input(rumoca_core::FunctionParam::new("X", "Real").with_dims(vec![-1]));
+    set_state.add_output(
+        rumoca_core::FunctionParam::new("state", "State")
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    funcs.insert("Pkg.setState".to_string(), set_state);
+    env.functions = std::sync::Arc::new(funcs);
+    env.dims = Arc::new(IndexMap::from([("X_start".to_string(), vec![2])]));
+    set_array_entries(&mut env, "X_start", &[2], &[0.2, 0.8]);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(fn_call(
+            "Pkg.setState_pTX",
+            vec![
+                named_ctor_arg("p", lit(101325.0)),
+                named_ctor_arg(
+                    "X",
+                    rumoca_core::Expression::VarRef {
+                        name: Reference::new("X_start"),
+                        subscripts: vec![Subscript::generated_expr(Box::new(
+                            rumoca_core::Expression::Range {
+                                start: Box::new(int_lit(1)),
+                                step: None,
+                                end: Box::new(int_lit(1)),
+                                span: rumoca_core::Span::DUMMY,
+                            },
+                        ))],
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                ),
+            ],
+        )),
+        field: "X".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_array_values::<f64>(&expr, &env), vec![0.2, 0.8]);
+}
+
+#[test]
+fn test_eval_set_state_record_field_array_uses_indexed_array_range_named_arg() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+
+    let mut state = rumoca_core::Function::new("Pkg.State", Default::default());
+    state.is_constructor = true;
+    state.add_input(rumoca_core::FunctionParam::new("X", "Real").with_dims(vec![2]));
+    funcs.insert("Pkg.State".to_string(), state);
+
+    let mut set_state = rumoca_core::Function::new("Pkg.setState_pTX", Default::default());
+    set_state.add_input(rumoca_core::FunctionParam::new("X", "Real").with_dims(vec![-1]));
+    set_state.add_output(
+        rumoca_core::FunctionParam::new("state", "State")
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    funcs.insert("Pkg.setState_pTX".to_string(), set_state);
+    env.functions = std::sync::Arc::new(funcs);
+
+    let substance_names = arr(
+        vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("water".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("air".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+        false,
+    );
+    let end = binop(
+        rumoca_core::OpBinary::Sub,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![substance_names, int_lit(1)],
+            span: rumoca_core::Span::DUMMY,
+        },
+        int_lit(1),
+    );
+    let x_slice = rumoca_core::Expression::Index {
+        base: Box::new(arr(vec![lit(0.01), lit(0.99)], false)),
+        subscripts: vec![Subscript::generated_expr(Box::new(
+            rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(end),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ))],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(fn_call(
+            "Pkg.setState_pTX",
+            vec![named_ctor_arg("X", x_slice)],
+        )),
+        field: "X".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_array_values::<f64>(&expr, &env), vec![0.01, 0.99]);
 }
 
 #[test]

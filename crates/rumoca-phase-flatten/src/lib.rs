@@ -482,10 +482,12 @@ fn extract_record_aliases(
             ctx.record_aliases.insert(alias_source, alias_target);
         }
     }
+    ctx.alias_resolution_cache.borrow_mut().clear();
 
     // Compute transitive closure of aliases (MLS §7.2.3)
     // If A -> B and B -> C, we should have A -> C for efficient resolution.
     compute_transitive_alias_closure(&mut ctx.record_aliases);
+    ctx.alias_resolution_cache.borrow_mut().clear();
     Ok(())
 }
 

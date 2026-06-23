@@ -9,6 +9,14 @@ pub fn lower_initial_residual(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    lower_initial_residual_with_external_object_indices(dae_model, layout, None)
+}
+
+pub(crate) fn lower_initial_residual_with_external_object_indices(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    external_object_indices: Option<&indexmap::IndexMap<String, usize>>,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let initial_equations = initial_residual_equations(dae_model, layout);
     expression_rows::lower_residual_rows_from_equations_with_mode(
         dae_model,
@@ -16,6 +24,7 @@ pub fn lower_initial_residual(
         initial_equations,
         0,
         true,
+        external_object_indices,
     )
 }
 

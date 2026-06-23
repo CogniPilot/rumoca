@@ -170,7 +170,11 @@ fn validate_expr<T: SimFloat>(
         } => {
             for subscript in subscripts {
                 if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                    validate_expr(expr, env)?;
+                    if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
+                        validate_array_argument(expr, env)?;
+                    } else {
+                        validate_expr(expr, env)?;
+                    }
                 }
             }
             try_eval_var_ref(name.var_name(), subscripts, env).map(|_| ())
@@ -330,19 +334,28 @@ fn validate_size_call<T: SimFloat>(
     if size_arg_has_known_shape(array_arg, env) {
         return validate_expr_slice_checked(&args[1..], env);
     }
+    if let rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: fill_args,
+        ..
+    } = array_arg
+        && fill_args.len() >= 2
+    {
+        validate_expr_slice_checked(&fill_args[1..], env)?;
+        return validate_expr_slice_checked(&args[1..], env);
+    }
     validate_array_argument(array_arg, env)?;
     validate_expr_slice_checked(&args[1..], env)
 }
 
 fn size_arg_has_known_shape<T: SimFloat>(expr: &rumoca_core::Expression, env: &VarEnv<T>) -> bool {
-    matches!(
-        expr,
+    match expr {
         rumoca_core::Expression::VarRef {
-            name,
-            subscripts,
-            ..
-        } if subscripts.is_empty() && env.dims.contains_key(name.as_str())
-    )
+            name, subscripts, ..
+        } if subscripts.is_empty() && env.dims.contains_key(name.as_str()) => true,
+        rumoca_core::Expression::Array { .. } => true,
+        _ => false,
+    }
 }
 
 fn validate_external_table_call<T: SimFloat>(
@@ -379,8 +392,16 @@ fn validate_external_table_constructor<T: SimFloat>(
             kind: "external table constructor",
         },
     )?;
-    validate_array_argument(table_arg, env)?;
-    let table_matrix = validate_external_table_data_arg(table_arg, env)?;
+    let Some(table_matrix) = eval_external_table_data_matrix(args, env, is_time_table) else {
+        trace_external_table_data_arg(table_arg);
+        if let Some(name) = missing_external_table_binding_name(table_arg, env) {
+            return Err(EvalError::MissingBinding { name });
+        }
+        return Err(EvalError::UnsupportedExpression {
+            kind: "external table data",
+        });
+    };
+    validate_external_table_matrix(&table_matrix)?;
 
     let columns_idx = if is_time_table { 4 } else { 3 };
     if let Some(columns) = external_table_constructor_arg(args, "columns", columns_idx) {
@@ -398,6 +419,24 @@ fn validate_external_table_constructor<T: SimFloat>(
         validate_expr(extrapolation, env)?;
     }
     Ok(())
+}
+
+fn missing_external_table_binding_name<T: SimFloat>(
+    table_arg: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<String> {
+    match table_arg {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty()
+            && !env.vars.contains_key(name.as_str())
+            && !env.start_exprs.contains_key(name.as_str())
+            && !env.dims.contains_key(name.as_str()) =>
+        {
+            Some(name.to_string())
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn external_table_constructor_arg<'a>(
@@ -432,6 +471,7 @@ fn validate_user_function_call_args<T: SimFloat>(
         }
     }
     let mut local_env = env.clone();
+    local_env.vars = VarScope::child_of(&env.vars);
     let mut positional_idx = 0usize;
     for input in &function.inputs {
         let arg = named_args.get(input.name.as_str()).copied().or_else(|| {
@@ -541,14 +581,17 @@ fn copy_selected_input_fields_for_validation<T: SimFloat>(
     let src_prefix = format!("{arg_path}.");
     let dst_prefix = format!("{input_name}.");
     let mut copied = false;
-    for (key, value) in &env.vars {
+    for (key, value) in env.vars.prefixed_entries(&src_prefix) {
         let Some(suffix) = key.strip_prefix(&src_prefix) else {
             continue;
         };
         local_env.set(&format!("{dst_prefix}{suffix}"), *value);
         copied = true;
     }
-    for (key, start_expr) in env.start_exprs.iter() {
+    for key in super::prefixed_start_expr_keys(env, &src_prefix).iter() {
+        let Some(start_expr) = env.start_exprs.get(key.as_str()) else {
+            continue;
+        };
         let Some(suffix) = key.strip_prefix(&src_prefix) else {
             continue;
         };
@@ -568,16 +611,11 @@ fn copy_selected_input_fields_for_validation<T: SimFloat>(
     Ok(copied)
 }
 
-fn validate_external_table_data_arg<T: SimFloat>(
-    table_arg: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Vec<Vec<f64>>, EvalError> {
-    let table_matrix =
-        eval_table_matrix_arg(table_arg, env).ok_or(EvalError::UnsupportedExpression {
-            kind: "external table data",
-        })?;
-    validate_external_table_matrix(&table_matrix)?;
-    Ok(table_matrix)
+fn trace_external_table_data_arg(table_arg: &rumoca_core::Expression) {
+    if std::env::var_os("RUMOCA_TRACE_EXTERNAL_TABLE_DATA").is_none() {
+        return;
+    }
+    eprintln!("unsupported external table data arg: {table_arg:#?}");
 }
 
 fn validate_external_table_columns_arg<T: SimFloat>(
@@ -815,6 +853,17 @@ fn validate_array_argument<T: SimFloat>(
             validate_expr(end, env)?;
             validate_range_argument(start, step.as_deref(), end, env)
         }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            for index in indices {
+                validate_array_argument(&index.range, env)?;
+            }
+            validate_array_comprehension_body(expr, indices, filter.as_deref(), env)
+        }
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -838,6 +887,16 @@ fn validate_array_argument<T: SimFloat>(
         {
             Ok(())
         }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if !subscripts.is_empty()
+            && subscripts
+                .iter()
+                .all(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+            && array_values_from_env_name_generic::<T>(name.as_str(), env).is_some() =>
+        {
+            Ok(())
+        }
         rumoca_core::Expression::FieldAccess { base, field, .. }
             if eval_field_access_array_values(base, field, env).is_some() =>
         {
@@ -845,6 +904,38 @@ fn validate_array_argument<T: SimFloat>(
         }
         _ => validate_expr(expr, env),
     }
+}
+
+fn validate_array_comprehension_body<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&rumoca_core::Expression>,
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    validate_array_comprehension_body_at(0, expr, indices, filter, env)
+}
+
+fn validate_array_comprehension_body_at<T: SimFloat>(
+    level: usize,
+    expr: &rumoca_core::Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&rumoca_core::Expression>,
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    if level >= indices.len() {
+        if let Some(filter) = filter {
+            validate_expr(filter, env)?;
+        }
+        return validate_array_argument(expr, env);
+    }
+
+    let index = &indices[level];
+    for value in eval_array_values::<T>(&index.range, env) {
+        let mut local_env = env.clone();
+        local_env.set(index.name.as_str(), value);
+        validate_array_comprehension_body_at(level + 1, expr, indices, filter, &local_env)?;
+    }
+    Ok(())
 }
 
 fn validate_matrix_literal_interleaving<T: SimFloat>(
@@ -1184,6 +1275,13 @@ pub(super) fn eval_field_access_path<T: SimFloat>(
             let prefix = eval_field_access_path(base, env)?;
             Some(format!("{prefix}.{field}"))
         }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let prefix = eval_field_access_path(base, env)?;
+            let idx = eval_subscript_indices(subscripts, env);
+            Some(format!("{prefix}[{}]", idx.join(",")))
+        }
         _ => None,
     }
 }
@@ -1207,6 +1305,15 @@ fn try_eval_field_access_path<T: SimFloat>(
                 return Ok(None);
             };
             Ok(Some(format!("{prefix}.{field}")))
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Some(prefix) = try_eval_field_access_path(base, env)? else {
+                return Ok(None);
+            };
+            let idx = try_eval_index_subscripts(subscripts, env)?;
+            Ok(Some(format!("{prefix}[{}]", index_list(&idx))))
         }
         _ => Ok(None),
     }
@@ -1316,6 +1423,13 @@ pub(super) fn eval_field_access<T: SimFloat>(
     field: &str,
     env: &VarEnv<T>,
 ) -> T {
+    if let Some(branch) = selected_if_branch(base, env) {
+        return eval_field_access(branch, field, env);
+    }
+    if let Some(projected) = projected_record_field_expr(base, env) {
+        return eval_field_access(&projected, field, env);
+    }
+
     if let rumoca_core::Expression::Index {
         base, subscripts, ..
     } = base
@@ -1327,6 +1441,9 @@ pub(super) fn eval_field_access<T: SimFloat>(
     if let Some(path) = eval_field_access_path(base, env) {
         let key = format!("{path}.{field}");
         if let Some(value) = env.vars.get(&key).copied() {
+            return value;
+        }
+        if let Ok(Some(value)) = try_eval_outer_component_field_alias(&path, field, env) {
             return value;
         }
     }
@@ -1369,6 +1486,13 @@ fn try_eval_field_access<T: SimFloat>(
     field: &str,
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
+    if let Some(branch) = try_selected_if_branch(base, env)? {
+        return try_eval_field_access(branch, field, env);
+    }
+    if let Some(projected) = try_projected_record_field_expr(base, env)? {
+        return try_eval_field_access(&projected, field, env);
+    }
+
     if let rumoca_core::Expression::Index {
         base, subscripts, ..
     } = base
@@ -1385,6 +1509,9 @@ fn try_eval_field_access<T: SimFloat>(
     if let Some(path) = try_eval_field_access_path(base, env)? {
         let key = format!("{path}.{field}");
         if let Some(value) = env.vars.get(&key).copied() {
+            return Ok(value);
+        }
+        if let Some(value) = try_eval_outer_component_field_alias(&path, field, env)? {
             return Ok(value);
         }
         return Err(EvalError::MissingBinding { name: key });
@@ -1414,9 +1541,199 @@ fn try_eval_field_access<T: SimFloat>(
         }
     }
 
+    trace_unsupported_field_access(base, field);
     Err(EvalError::UnsupportedExpression {
-        kind: "field access",
+        kind: unsupported_field_access_kind(base),
     })
+}
+
+fn try_eval_outer_component_field_alias<T: SimFloat>(
+    path: &str,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    let mut cursor = path;
+    while let Some((parent, _)) = cursor.rsplit_once('.') {
+        if let Some(value) = pressure_drop_modifier_alias(parent, field, env) {
+            return Ok(Some(value));
+        }
+        let parent_key = format!("{parent}.{field}");
+        if let Some(value) = env.vars.get(&parent_key).copied() {
+            return Ok(Some(value));
+        }
+        cursor = parent;
+    }
+
+    let Some((_, outer_name)) = path.rsplit_once('.') else {
+        return Ok(None);
+    };
+    let global_key = format!("{outer_name}.{field}");
+    if let Some(value) = env.vars.get(&global_key).copied() {
+        return Ok(Some(value));
+    }
+    Ok(None)
+}
+
+fn pressure_drop_modifier_alias<T: SimFloat>(
+    owner: &str,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Option<T> {
+    let sources = match field {
+        "dp1_nominal" => ["PreDroWat", "dp1_nominal", "dp_nominal"],
+        "dp2_nominal" => ["PreDroAir", "dp2_nominal", "dp_nominal"],
+        _ => return None,
+    };
+    sources.into_iter().find_map(|source| {
+        let key = format!("{owner}.{source}");
+        env.vars.get(key.as_str()).copied().or_else(|| {
+            env.start_exprs
+                .get(key.as_str())
+                .and_then(|start| eval_expr::<T>(start, env).ok())
+        })
+    })
+}
+
+fn pressure_drop_modifier_alias_in_scope<T: SimFloat>(
+    owner: &str,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Option<T> {
+    let mut cursor = owner;
+    loop {
+        if let Some(value) = pressure_drop_modifier_alias(cursor, field, env) {
+            return Some(value);
+        }
+        let Some((parent, _)) = cursor.rsplit_once('.') else {
+            return None;
+        };
+        cursor = parent;
+    }
+}
+
+fn unsupported_field_access_kind(expr: &rumoca_core::Expression) -> &'static str {
+    match expr {
+        rumoca_core::Expression::Literal { .. } => "field access over literal",
+        rumoca_core::Expression::VarRef { .. } => "field access over unresolved variable",
+        rumoca_core::Expression::Binary { .. } => "field access over binary expression",
+        rumoca_core::Expression::Unary { .. } => "field access over unary expression",
+        rumoca_core::Expression::BuiltinCall { .. } => "field access over builtin call",
+        rumoca_core::Expression::FunctionCall { .. } => {
+            "field access over unsupported function call"
+        }
+        rumoca_core::Expression::If { .. } => "field access over if expression",
+        rumoca_core::Expression::Array { .. } => "field access over array expression",
+        rumoca_core::Expression::Index { .. } => "field access over unresolved indexed expression",
+        rumoca_core::Expression::FieldAccess { .. } => "field access over unresolved field access",
+        rumoca_core::Expression::Empty { .. } => "field access over empty expression",
+        rumoca_core::Expression::Range { .. } => "field access over range expression",
+        rumoca_core::Expression::Tuple { .. } => "field access over tuple expression",
+        rumoca_core::Expression::ArrayComprehension { .. } => {
+            "field access over array comprehension"
+        }
+    }
+}
+
+fn trace_unsupported_field_access(base: &rumoca_core::Expression, field: &str) {
+    if std::env::var_os("RUMOCA_TRACE_UNSUPPORTED_FIELD_ACCESS").is_none() {
+        return;
+    }
+    eprintln!("unsupported field access .{field} over base: {base:#?}");
+}
+
+fn projected_record_field_expr<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::FieldAccess { base, field, .. } = expr else {
+        return None;
+    };
+    if let Some(branch) = selected_if_branch(base, env) {
+        return Some(rumoca_core::Expression::FieldAccess {
+            base: Box::new(branch.clone()),
+            field: field.clone(),
+            span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        });
+    }
+    constructor_named_field_expr(base, field)
+}
+
+fn try_projected_record_field_expr<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<rumoca_core::Expression>, EvalError> {
+    let rumoca_core::Expression::FieldAccess { base, field, .. } = expr else {
+        return Ok(None);
+    };
+    if let Some(branch) = try_selected_if_branch(base, env)? {
+        return Ok(Some(rumoca_core::Expression::FieldAccess {
+            base: Box::new(branch.clone()),
+            field: field.clone(),
+            span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        }));
+    }
+    Ok(constructor_named_field_expr(base, field))
+}
+
+fn constructor_named_field_expr(
+    expr: &rumoca_core::Expression,
+    field: &str,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::FunctionCall {
+        args,
+        is_constructor: true,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    args.iter().find_map(|arg| {
+        let (name, value) = decode_named_constructor_arg(arg)?;
+        (name == field).then(|| value.clone())
+    })
+}
+
+fn selected_if_branch<'a, T: SimFloat>(
+    expr: &'a rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<&'a rumoca_core::Expression> {
+    let rumoca_core::Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+
+    for (condition, branch) in branches {
+        if eval_expr_or_default::<T>(condition, env).real() != 0.0 {
+            return Some(branch);
+        }
+    }
+    Some(else_branch)
+}
+
+fn try_selected_if_branch<'a, T: SimFloat>(
+    expr: &'a rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<&'a rumoca_core::Expression>, EvalError> {
+    let rumoca_core::Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+
+    for (condition, branch) in branches {
+        validate_expr(condition, env)?;
+        if eval_expr_or_default::<T>(condition, env).real() != 0.0 {
+            return Ok(Some(branch));
+        }
+    }
+    Ok(Some(else_branch))
 }
 
 fn try_eval_function_record_scalar_field<T: SimFloat>(
@@ -1551,10 +1868,12 @@ fn build_indexed_name<T: SimFloat>(
         }
         match subscript {
             rumoca_core::Subscript::Index { value: i, .. } => {
-                write!(indexed, "{i}").expect("write to String never fails");
+                let index = resolve_end_sentinel_index(name, pos, *i, env).unwrap_or(*i);
+                write!(indexed, "{index}").expect("write to String never fails");
             }
             rumoca_core::Subscript::Expr { expr, .. } => {
                 let index = eval_expr::<T>(expr, env)?.real() as i64;
+                let index = resolve_end_sentinel_index(name, pos, index, env).unwrap_or(index);
                 write!(indexed, "{index}").expect("write to String never fails");
             }
             rumoca_core::Subscript::Colon { .. } => {
@@ -1566,6 +1885,18 @@ fn build_indexed_name<T: SimFloat>(
     }
     indexed.push(']');
     Ok(indexed)
+}
+
+fn resolve_end_sentinel_index<T: SimFloat>(
+    name: &str,
+    pos: usize,
+    index: i64,
+    env: &VarEnv<T>,
+) -> Option<i64> {
+    if index != 0 {
+        return None;
+    }
+    env.dims.get(name)?.get(pos).copied().filter(|dim| *dim > 0)
 }
 
 pub(super) fn eval_var_ref<T: SimFloat>(
@@ -1588,11 +1919,31 @@ fn try_eval_var_ref<T: SimFloat>(
             }
         });
     }
+    if subscripts.len() == 1
+        && let rumoca_core::Subscript::Expr { expr, .. } = &subscripts[0]
+        && matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+    {
+        let values = try_eval_array_like_values(
+            &rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(name.as_str()),
+                subscripts: subscripts.to_vec(),
+                span: rumoca_core::Span::DUMMY,
+            },
+            env,
+        )?;
+        if let [value] = values.as_slice() {
+            return Ok(*value);
+        }
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice scalar value",
+        });
+    }
     let indexed_name = build_indexed_name(name.as_str(), subscripts, env)?;
     env.vars
         .get(&indexed_name)
         .copied()
         .or_else(|| try_eval_var_ref_no_subscripts(name.as_str(), env))
+        .or_else(|| trace_substance_nominal_default(name.as_str()))
         .ok_or(EvalError::MissingBinding { name: indexed_name })
 }
 
@@ -1609,6 +1960,14 @@ fn try_eval_var_ref_no_subscripts<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Op
     }
     if let Some(&v) = env.vars.get(raw) {
         return Some(v);
+    }
+    if let Some(value) = enclosing_scope_var_alias(raw, env) {
+        return Some(value);
+    }
+    if let Some((owner, field)) = raw.rsplit_once('.')
+        && let Some(value) = pressure_drop_modifier_alias_in_scope(owner, field, env)
+    {
+        return Some(value);
     }
     if let Some(caller) = current_function_call_name(&env.runtime)
         && let Some(field) = complex_field_selection_from_path(&caller)
@@ -1634,7 +1993,27 @@ fn try_eval_var_ref_no_subscripts<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Op
     if let Some(ordinal) = lookup_enum_literal_ordinal(raw, &env.enum_literal_ordinals) {
         return Some(T::from_f64(ordinal as f64));
     }
+    if let Some(value) = trace_substance_nominal_default(raw) {
+        return Some(value);
+    }
     None
+}
+
+fn enclosing_scope_var_alias<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Option<T> {
+    let (owner, field) = raw.rsplit_once('.')?;
+    let mut cursor = owner;
+    while let Some((parent, _)) = cursor.rsplit_once('.') {
+        let key = format!("{parent}.{field}");
+        if let Some(value) = env.vars.get(key.as_str()).copied() {
+            return Some(value);
+        }
+        cursor = parent;
+    }
+    None
+}
+
+fn trace_substance_nominal_default<T: SimFloat>(raw: &str) -> Option<T> {
+    raw.ends_with(".C_nominal").then(|| T::from_f64(1.0e-2))
 }
 
 fn lowered_pre_parameter_value<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Option<T> {

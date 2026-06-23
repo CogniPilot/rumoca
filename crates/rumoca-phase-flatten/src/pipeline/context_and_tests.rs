@@ -39,6 +39,7 @@ impl Context {
             non_structural_params: std::collections::HashSet::new(),
             functions: rustc_hash::FxHashMap::default(),
             record_aliases: rustc_hash::FxHashMap::default(),
+            alias_resolution_cache: std::cell::RefCell::new(rustc_hash::FxHashMap::default()),
             vcg_is_root: rustc_hash::FxHashMap::default(),
             vcg_rooted: rustc_hash::FxHashMap::default(),
             cardinality_counts: rustc_hash::FxHashMap::default(),
@@ -247,6 +248,7 @@ impl Context {
             known_reals: &self.real_parameter_values,
             known_bools: &self.boolean_parameter_values,
             known_enums: &self.enum_parameter_values,
+            enum_canonicalizer: None,
             array_dims: &self.array_dimensions,
             functions: &self.functions,
             user_func_eval_ctx: None,
@@ -349,6 +351,7 @@ impl Context {
 
     /// Supplement record aliases from flat variable bindings (MLS §7.2.3).
     fn supplement_record_aliases(&mut self, params: &[ParamBinding<'_>]) {
+        let alias_count_before = self.record_aliases.len();
         for ParamBinding {
             name,
             binding,
@@ -369,6 +372,9 @@ impl Context {
                 let source_path = rumoca_core::ComponentPath::from_flat_path(name);
                 insert_record_alias(&mut self.record_aliases, source_path, alias_target);
             }
+        }
+        if self.record_aliases.len() != alias_count_before {
+            self.alias_resolution_cache.borrow_mut().clear();
         }
     }
 
@@ -805,6 +811,7 @@ impl Context {
                         known_reals: &self.real_parameter_values,
                         known_bools: &self.boolean_parameter_values,
                         known_enums: &self.enum_parameter_values,
+                        enum_canonicalizer: None,
                         array_dims: &self.array_dimensions,
                         functions: &self.functions,
                         user_func_eval_ctx: Some(&eval_ctx),
@@ -853,6 +860,8 @@ impl Context {
 
     /// Try to evaluate boolean parameters in one pass.
     fn eval_boolean_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let enum_canonicalizer =
+            rumoca_eval_flat::phase_constant::EnumCanonicalizer::new(&self.enum_parameter_values);
         let new_vals: Vec<(String, bool)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
@@ -861,6 +870,7 @@ impl Context {
                     known_reals: &self.real_parameter_values,
                     known_bools: &self.boolean_parameter_values,
                     known_enums: &self.enum_parameter_values,
+                    enum_canonicalizer: Some(&enum_canonicalizer),
                     array_dims: &self.array_dimensions,
                     functions: &self.functions,
                     user_func_eval_ctx: None,
@@ -942,6 +952,7 @@ impl Context {
             known_reals: &self.real_parameter_values,
             known_bools: &self.boolean_parameter_values,
             known_enums: &self.enum_parameter_values,
+            enum_canonicalizer: None,
             array_dims: &self.array_dimensions,
             functions: &self.functions,
             user_func_eval_ctx: Some(eval_ctx),
@@ -1192,6 +1203,9 @@ impl Context {
     ///
     /// Returns the original name if no alias applies.
     fn resolve_alias(&self, name: &str) -> String {
+        if let Some(cached) = self.alias_resolution_cache.borrow().get(name).cloned() {
+            return cached;
+        }
         const MAX_DEPTH: usize = 10; // Prevent infinite loops
         let mut current = rumoca_core::ComponentPath::from_flat_path(name);
         for _iteration in 0..MAX_DEPTH {
@@ -1202,7 +1216,11 @@ impl Context {
             }
             current = resolved;
         }
-        current.to_flat_string()
+        let resolved = current.to_flat_string();
+        self.alias_resolution_cache
+            .borrow_mut()
+            .insert(name.to_string(), resolved.clone());
+        resolved
     }
 
     /// Apply one level of alias resolution.

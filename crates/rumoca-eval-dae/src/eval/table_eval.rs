@@ -1,10 +1,16 @@
 use super::*;
+use std::path::{Path, PathBuf};
 
 pub(super) fn eval_table_matrix_arg<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Option<Vec<Vec<f64>>> {
     match expr {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            ..
+        } => eval_fill_table_matrix(args, env),
         rumoca_core::Expression::Array { elements, .. } => {
             if elements.is_empty() {
                 return Some(Vec::new());
@@ -61,6 +67,30 @@ pub(super) fn eval_table_matrix_arg<T: SimFloat>(
     }
 }
 
+fn eval_fill_table_matrix<T: SimFloat>(
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Option<Vec<Vec<f64>>> {
+    if args.len() < 3 {
+        return None;
+    }
+    let value = eval_expr_or_default::<T>(&args[0], env).real();
+    if !value.is_finite() {
+        return None;
+    }
+    let rows = eval_expr_or_default::<T>(&args[1], env).real().round();
+    let cols = eval_expr_or_default::<T>(&args[2], env).real().round();
+    if rows < 0.0 || cols < 0.0 {
+        return None;
+    }
+    let rows = rows as usize;
+    let cols = cols as usize;
+    if rows == 0 || cols == 0 {
+        return Some(Vec::new());
+    }
+    Some(vec![vec![value; cols]; rows])
+}
+
 fn eval_table_if_matrix_arg<T: SimFloat>(
     branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
     else_branch: &rumoca_core::Expression,
@@ -113,6 +143,246 @@ fn richer_table_start_matrix<T: SimFloat>(
     let start_matrix = eval_table_matrix_arg(start_expr, env)?;
     let start_len = start_matrix.iter().map(Vec::len).sum::<usize>();
     (start_len > flat_len).then_some(start_matrix)
+}
+
+pub(super) fn eval_external_table_data_matrix<T: SimFloat>(
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+    is_time_table: bool,
+) -> Option<Vec<Vec<f64>>> {
+    let table_arg = external_table_constructor_arg(args, "table", 2)?;
+    let table_matrix = eval_table_matrix_arg(table_arg, env);
+    if table_matrix
+        .as_ref()
+        .is_some_and(|table_matrix| !table_matrix.is_empty())
+    {
+        return table_matrix;
+    }
+
+    let table_name = external_table_constructor_arg(args, "tableName", 0)
+        .and_then(|expr| eval_string_expr(expr, env))
+        .filter(|name| name != "NoName")
+        .unwrap_or_else(|| "tab1".to_string());
+    let file_name = external_table_constructor_arg(args, "fileName", 1)
+        .and_then(|expr| eval_string_expr(expr, env))
+        .filter(|name| name != "NoName" && !name.trim().is_empty());
+    let Some(file_name) = file_name else {
+        trace_external_table_resolution(table_arg, table_matrix.as_ref(), &table_name, None, None);
+        return None;
+    };
+    let _ = is_time_table;
+    let loaded = read_modelica_text_table(&file_name, &table_name);
+    trace_external_table_resolution(
+        table_arg,
+        table_matrix.as_ref(),
+        &table_name,
+        Some(&file_name),
+        loaded.as_ref(),
+    );
+    loaded
+}
+
+fn trace_external_table_resolution(
+    table_arg: &rumoca_core::Expression,
+    table_matrix: Option<&Vec<Vec<f64>>>,
+    table_name: &str,
+    file_name: Option<&str>,
+    loaded: Option<&Vec<Vec<f64>>>,
+) {
+    if std::env::var_os("RUMOCA_TRACE_EXTERNAL_TABLE_RESOLVE").is_none() {
+        return;
+    }
+    let table_state = match table_matrix {
+        Some(matrix) if matrix.is_empty() => "empty",
+        Some(_) => "nonempty",
+        None => "unresolved",
+    };
+    let loaded_shape =
+        loaded.and_then(|matrix| matrix.first().map(|row| (matrix.len(), row.len())));
+    eprintln!(
+        "external table resolve: table_state={table_state} table_name={table_name:?} file_name={file_name:?} loaded_shape={loaded_shape:?} table_arg={table_arg:#?}"
+    );
+}
+
+fn eval_string_expr<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value),
+            ..
+        } => Some(value.clone()),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => env
+            .start_exprs
+            .get(name.as_str())
+            .and_then(|start| eval_string_expr(start, env)),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                if eval_bool_expr(condition, env)
+                    .unwrap_or_else(|| eval_expr_or_default::<T>(condition, env).to_bool())
+                {
+                    return eval_string_expr(value, env);
+                }
+            }
+            eval_string_expr(else_branch, env)
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if rumoca_core::top_level_last_segment(name.as_str()) == "loadResource" =>
+        {
+            let raw = args.first().and_then(|arg| eval_string_expr(arg, env))?;
+            resolve_modelica_resource_path(&raw)
+                .map(|path| path.to_string_lossy().into_owned())
+                .or(Some(raw))
+        }
+        _ => None,
+    }
+}
+
+fn eval_bool_expr<T: SimFloat>(expr: &rumoca_core::Expression, env: &VarEnv<T>) -> Option<bool> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(value),
+            ..
+        } => Some(*value),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => env
+            .start_exprs
+            .get(name.as_str())
+            .and_then(|start| eval_bool_expr(start, env))
+            .or_else(|| env.vars.get(name.as_str()).map(|value| value.to_bool())),
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs,
+            ..
+        } => eval_bool_expr(rhs, env).map(|value| !value),
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => match op {
+            rumoca_core::OpBinary::And => {
+                Some(eval_bool_expr(lhs, env)? && eval_bool_expr(rhs, env)?)
+            }
+            rumoca_core::OpBinary::Or => {
+                Some(eval_bool_expr(lhs, env)? || eval_bool_expr(rhs, env)?)
+            }
+            rumoca_core::OpBinary::Eq => {
+                Some(eval_string_expr(lhs, env)? == eval_string_expr(rhs, env)?)
+            }
+            rumoca_core::OpBinary::Neq => {
+                Some(eval_string_expr(lhs, env)? != eval_string_expr(rhs, env)?)
+            }
+            _ => None,
+        },
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if rumoca_core::top_level_last_segment(name.as_str()) == "isEmpty" =>
+        {
+            Some(
+                args.first()
+                    .and_then(|arg| eval_string_expr(arg, env))?
+                    .trim()
+                    .is_empty(),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn read_modelica_text_table(file_name: &str, table_name: &str) -> Option<Vec<Vec<f64>>> {
+    let path = resolve_modelica_resource_path(file_name)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_modelica_text_table(&text, table_name)
+}
+
+fn parse_modelica_text_table(text: &str, table_name: &str) -> Option<Vec<Vec<f64>>> {
+    let needle = format!("double {table_name}(");
+    let mut lines = text.lines();
+    let header = lines.find(|line| line.trim_start().starts_with(&needle))?;
+    let dims = header
+        .split_once('(')?
+        .1
+        .split_once(')')?
+        .0
+        .split(',')
+        .map(|part| part.trim().parse::<usize>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if dims.len() != 2 || dims[0] == 0 || dims[1] < 2 {
+        return None;
+    }
+    let mut rows = Vec::with_capacity(dims[0]);
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let row = trimmed
+            .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse::<f64>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        if row.len() == dims[1] {
+            rows.push(row);
+            if rows.len() == dims[0] {
+                return Some(rows);
+            }
+        }
+    }
+    (rows.len() == dims[0]).then_some(rows)
+}
+
+pub fn resolve_modelica_resource_path(raw: &str) -> Option<PathBuf> {
+    let raw_path = Path::new(raw);
+    if raw_path.is_file() {
+        return Some(raw_path.to_path_buf());
+    }
+    if let Some((package, rest)) = raw.strip_prefix("modelica://").and_then(|uri| {
+        let (package, rest) = uri.split_once('/')?;
+        Some((package, rest))
+    }) {
+        for root in modelica_resource_source_roots() {
+            if let Some(path) = resolve_modelica_uri_against_root(&root, package, rest) {
+                return Some(path);
+            }
+        }
+    }
+    if let Some(rest) = raw.strip_prefix("modelica://Buildings/") {
+        if let Ok(root) = std::env::var("BUILDINGS_ROOT") {
+            let path = Path::new(&root).join(rest);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn modelica_resource_source_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(paths) = std::env::var_os("RUMOCA_MODELICA_SOURCE_ROOTS") {
+        roots.extend(std::env::split_paths(&paths));
+    }
+    roots.extend(
+        ["BUILDINGS_ROOT", "BOPTEST_MULTIZONE_ROOT"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(PathBuf::from)),
+    );
+    roots
+}
+
+fn resolve_modelica_uri_against_root(root: &Path, package: &str, rest: &str) -> Option<PathBuf> {
+    let direct = root.join(rest);
+    if root.file_name().and_then(|name| name.to_str()) == Some(package) && direct.is_file() {
+        return Some(direct);
+    }
+    let nested = root.join(package).join(rest);
+    if nested.is_file() {
+        return Some(nested);
+    }
+    None
 }
 
 fn map_selected_table_column(
@@ -276,18 +546,11 @@ pub(super) fn eval_table_constructor<T: SimFloat>(
     env: &VarEnv<T>,
     is_time_table: bool,
 ) -> Option<T> {
-    let table_arg_idx = 2usize;
     let columns_arg_idx = if is_time_table { 4 } else { 3 };
     let smoothness_idx = if is_time_table { 5 } else { 4 };
     let extrapolation_idx = if is_time_table { 6 } else { 5 };
 
-    let table_matrix = eval_table_matrix_arg(
-        external_table_constructor_arg(args, "table", table_arg_idx)?,
-        env,
-    )?;
-    if table_matrix.is_empty() {
-        return None;
-    }
+    let table_matrix = eval_external_table_data_matrix(args, env, is_time_table)?;
 
     let columns = eval_columns_arg(
         external_table_constructor_arg(args, "columns", columns_arg_idx),

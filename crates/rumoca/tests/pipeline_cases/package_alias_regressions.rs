@@ -223,6 +223,69 @@ end Probe;
     assert_eq!(b_dims, vec![2], "b.x should use MediumB.nX=2");
 }
 
+/// MLS §7.3 + §8.6: start attributes inside a redeclared medium package must
+/// see constants inherited from the active package's extends chain.
+#[test]
+fn test_redeclared_medium_start_uses_inherited_default_constants() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+    constant Real reference_T = 298.15;
+    constant Real T_default = 293.15;
+
+    replaceable model BaseProperties
+      Real T(start = T_default);
+      Real dT(start = T_default - reference_T);
+    equation
+      dT = T - reference_T;
+    end BaseProperties;
+  end PartialMedium;
+end Interfaces;
+
+package ConcreteMedium
+  extends Interfaces.PartialMedium(
+    reference_T = 273.15,
+    T_default = 295.15);
+end ConcreteMedium;
+
+model Base
+  replaceable package Medium = Interfaces.PartialMedium;
+  Medium.BaseProperties medium;
+equation
+  medium.T = 295.15;
+end Base;
+
+model Probe
+  Base b(redeclare package Medium = ConcreteMedium);
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Probe").expect("compile failed");
+
+    let start = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "b.medium.dT")
+        .and_then(|(_, var)| var.start.as_ref())
+        .expect("b.medium.dT should keep a start attribute");
+
+    let start_debug = format!("{start:?}");
+    assert!(
+        !start_debug.contains("T_default") && !start_debug.contains("reference_T"),
+        "start should be resolved from the active ConcreteMedium constants, got {start_debug}"
+    );
+    assert!(
+        start_debug.contains("22"),
+        "expected dT start to resolve to 295.15 - 273.15, got {start_debug}"
+    );
+}
+
 /// MLS §10.1: explicit array dimensions must converge across multi-pass structural
 /// evaluation without a post-hoc correction shim.
 ///

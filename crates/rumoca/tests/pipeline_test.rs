@@ -2,6 +2,8 @@
 //!
 //! Tests the full compilation pipeline using the Session API.
 
+use std::sync::Arc;
+
 use rumoca_compile::compile::PhaseResult;
 use rumoca_compile::phase_structural::{BltBlock, analyze_structure, sort_dae};
 use rumoca_compile::{Session, SessionConfig};
@@ -21,7 +23,7 @@ fn compile_model(source: &str, model_name: &str) -> Result<Dae, String> {
         .compile_model(model_name)
         .map_err(|e| format!("Compile error: {:?}", e))?;
 
-    Ok(result.dae)
+    Ok(Arc::unwrap_or_clone(result.dae))
 }
 
 fn dae_expr_mentions_var(expr: &rumoca_core::Expression, var_name: &str) -> bool {

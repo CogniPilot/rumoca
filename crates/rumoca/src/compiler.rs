@@ -37,6 +37,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
@@ -54,7 +55,7 @@ use rumoca_compile::source_roots::{
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
-use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
+use rumoca_sim::{lower_dae_to_solve_model_owned, lower_solve_problem};
 use serde_json::{Map, Value};
 
 use crate::error::CompilerError;
@@ -94,20 +95,28 @@ fn scalarized_dae(dae: &Dae) -> Dae {
 
 fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
     let mut value = dae_to_template_json(dae_model)?;
-    let solve =
-        lower_solve_problem(dae_model).map_err(|err| CodegenError::template(err.to_string()))?;
-    let artifacts =
-        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    let mut solve_value =
-        serde_json::to_value(solve).map_err(|err| CodegenError::template(err.to_string()))?;
-    solve_value
+    let solve_model = lower_dae_to_solve_model_owned(dae_model.clone())
+        .map_err(|err| CodegenError::template(err.to_string()))?;
+    let mut solve_value = serde_json::to_value(&solve_model.problem)
+        .map_err(|err| CodegenError::template(err.to_string()))?;
+    let solve_object = solve_value
         .as_object_mut()
-        .ok_or_else(|| CodegenError::template("Solve template JSON root must be an object"))?
-        .insert(
-            "artifacts".to_string(),
-            serde_json::to_value(artifacts)
-                .map_err(|err| CodegenError::template(err.to_string()))?,
-        );
+        .ok_or_else(|| CodegenError::template("Solve template JSON root must be an object"))?;
+    solve_object.insert(
+        "artifacts".to_string(),
+        serde_json::to_value(&solve_model.artifacts)
+            .map_err(|err| CodegenError::template(err.to_string()))?,
+    );
+    solve_object.insert(
+        "visible_names".to_string(),
+        serde_json::to_value(&solve_model.visible_names)
+            .map_err(|err| CodegenError::template(err.to_string()))?,
+    );
+    solve_object.insert(
+        "visible_value_rows".to_string(),
+        serde_json::to_value(&solve_model.visible_value_rows)
+            .map_err(|err| CodegenError::template(err.to_string()))?,
+    );
     let object = value
         .as_object_mut()
         .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?;
@@ -429,6 +438,8 @@ pub struct Compiler {
     source_root_paths: Vec<String>,
     /// Enable verbose output.
     verbose: bool,
+    /// Treat Evaluate annotations on non-parameter/non-constant components as warnings.
+    allow_non_param_evaluate_annotation: bool,
 }
 
 impl Compiler {
@@ -455,6 +466,12 @@ impl Compiler {
         self
     }
 
+    /// Allow third-party libraries with non-structural Evaluate annotations to compile.
+    pub fn allow_non_param_evaluate_annotation(mut self, allow: bool) -> Self {
+        self.allow_non_param_evaluate_annotation = allow;
+        self
+    }
+
     /// Add a source-root path to load before compiling.
     ///
     /// Source-root paths can be either:
@@ -469,6 +486,13 @@ impl Compiler {
     pub fn source_roots(mut self, paths: &[String]) -> Self {
         self.source_root_paths.extend(paths.iter().cloned());
         self
+    }
+
+    fn session_config(&self) -> SessionConfig {
+        SessionConfig {
+            evaluate_scope_is_error: !self.allow_non_param_evaluate_annotation,
+            ..SessionConfig::default()
+        }
     }
 
     /// Load a source-root path into the session.
@@ -663,7 +687,7 @@ impl Compiler {
         }
 
         // Create a session and add the document
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
@@ -737,8 +761,8 @@ impl Compiler {
         }
 
         Ok(CompilationResult {
-            dae: result.dae,
-            flat: result.flat,
+            dae: Arc::unwrap_or_clone(result.dae),
+            flat: Arc::unwrap_or_clone(result.flat),
             resolved,
         })
     }
@@ -754,7 +778,7 @@ impl Compiler {
             eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
         session
@@ -779,7 +803,7 @@ impl Compiler {
             eprintln!("[rumoca] Phase 1-5: Parsing, resolving, and flattening...");
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
         session
@@ -803,7 +827,7 @@ impl Compiler {
             eprintln!("[rumoca] Source file: {}", file_name);
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
@@ -875,7 +899,7 @@ impl Compiler {
             eprintln!("[rumoca] Source file: {file_name}");
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
@@ -933,6 +957,35 @@ mod tests {
 
         assert_eq!(result.dae.variables.states.len(), 1);
         assert_eq!(result.balance_detail.state_unknowns, 1);
+    }
+
+    #[test]
+    fn non_param_evaluate_annotation_is_strict_by_default_and_opt_in_allowed() {
+        let source = r#"
+            model NonParamEvaluate
+                Real x annotation(Evaluate=true);
+            equation
+                x = 1;
+            end NonParamEvaluate;
+        "#;
+
+        let strict_err = Compiler::new()
+            .model("NonParamEvaluate")
+            .compile_str_ast(source, "NonParamEvaluate.mo")
+            .expect_err("non-parameter Evaluate annotation should be strict by default");
+        let strict_message = strict_err.to_string();
+        assert!(
+            strict_message.contains(
+                "annotation Evaluate is only allowed on parameter or constant components"
+            ),
+            "strict mode should surface the Evaluate scope violation, got {strict_err:?}"
+        );
+
+        Compiler::new()
+            .model("NonParamEvaluate")
+            .allow_non_param_evaluate_annotation(true)
+            .compile_str_ast(source, "NonParamEvaluate.mo")
+            .expect("explicit compatibility option should downgrade ER070 to a warning");
     }
 
     #[test]

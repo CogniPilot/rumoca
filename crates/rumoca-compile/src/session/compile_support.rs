@@ -191,7 +191,7 @@ fn dae_model_outcome_internal_with_phase_options(
     notify_compile_phase(FailedPhase::ToDae, CompilePhaseEvent::Started);
     let todae_start = maybe_start_timer();
     let (dae_outcome, todae_built) =
-        dae_model_outcome_from_flat_with_options(tree, flat_outcome, todae_options);
+        dae_model_outcome_from_flat_with_options(tree, model_name, flat_outcome, todae_options);
     if todae_built {
         maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
     }
@@ -348,14 +348,21 @@ pub(super) fn flat_model_outcome_from_typed(
 }
 
 pub(super) fn dae_model_outcome_from_flat(
-    _tree: &ast::ClassTree,
+    tree: &ast::ClassTree,
+    model_name: &str,
     flat_outcome: FlatModelOutcome,
 ) -> (DaeModelOutcome, bool) {
-    dae_model_outcome_from_flat_with_options(_tree, flat_outcome, todae_options_for_target_model())
+    dae_model_outcome_from_flat_with_options(
+        tree,
+        model_name,
+        flat_outcome,
+        todae_options_for_target_model(),
+    )
 }
 
 pub(super) fn dae_model_outcome_from_flat_with_options(
     _tree: &ast::ClassTree,
+    model_name: &str,
     flat_outcome: FlatModelOutcome,
     todae_options: ToDaeOptions,
 ) -> (DaeModelOutcome, bool) {
@@ -387,13 +394,16 @@ pub(super) fn dae_model_outcome_from_flat_with_options(
     // MLS §5.6 / SPEC_0004: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
     match to_dae_with_options(&artifact.flat, todae_options) {
-        Ok(dae) => (
-            DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
-                flat: Arc::new(artifact.flat),
-                dae: Arc::new(dae),
-            })),
-            true,
-        ),
+        Ok(mut dae) => {
+            dae.metadata.root_model_name = Some(model_name.to_string());
+            (
+                DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
+                    flat: Arc::new(artifact.flat),
+                    dae: Arc::new(dae),
+                })),
+                true,
+            )
+        }
         Err(error) => (
             DaeModelOutcome::ToDaeError {
                 error: Box::new(error),
@@ -401,10 +411,6 @@ pub(super) fn dae_model_outcome_from_flat_with_options(
             true,
         ),
     }
-}
-
-fn unwrap_or_clone_arc<T: Clone>(value: Arc<T>) -> T {
-    Arc::unwrap_or_clone(value)
 }
 
 fn has_component_boundary_prefix(candidate: &str, prefix: &str) -> bool {
@@ -676,8 +682,8 @@ pub(super) fn compile_phase_result_from_dae(
     };
 
     PhaseResult::Success(Box::new(CompilationResult {
-        flat: unwrap_or_clone_arc(artifact.flat),
-        dae: unwrap_or_clone_arc(artifact.dae),
+        flat: artifact.flat,
+        dae: artifact.dae,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,

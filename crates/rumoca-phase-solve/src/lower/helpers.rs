@@ -45,13 +45,16 @@ pub(super) fn parse_indexed_binding_key(key: &str) -> Option<(String, Vec<usize>
     (!indices.is_empty()).then_some((scalar.base.to_string(), indices))
 }
 
-pub(super) fn is_record_constructor_signature(
+pub(crate) fn is_record_constructor_signature(
     name: &str,
     function: &rumoca_core::Function,
 ) -> bool {
     // MLS §12.6: record constructors are ordinary function calls. Compiled
     // lowering must therefore recognize constructor-shaped functions even when
     // the parser/front-end did not preserve an explicit constructor marker.
+    if function.is_constructor {
+        return true;
+    }
     if !function.locals.is_empty() || !function.body.is_empty() || function.external.is_some() {
         return false;
     }

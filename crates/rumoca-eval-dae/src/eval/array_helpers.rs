@@ -147,6 +147,9 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
 ) -> Option<Vec<T>> {
     if let Some(dims) = env.dims.get(name) {
         let scalar_count = dims.iter().map(|&d| d.max(0) as usize).product::<usize>();
+        if scalar_count == 0 {
+            return Some(Vec::new());
+        }
         if scalar_count > 1 {
             if let Some(values) = collect_dense_indexed_values_generic(name, scalar_count, env) {
                 return Some(values);
@@ -156,16 +159,6 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
             {
                 return Some(values);
             }
-        }
-        if scalar_count == 0
-            && let Some(values) = collect_indexed_array_values_generic(name, env)
-        {
-            return Some(values);
-        }
-        if scalar_count == 0
-            && let Some(values) = collect_record_field_indexed_values_generic(name, env)
-        {
-            return Some(values);
         }
     }
 
@@ -279,8 +272,28 @@ pub(super) fn try_eval_field_access_array_values<T: SimFloat>(
     {
         return Ok(values);
     }
+    if let Some(path) = eval_field_access_path(base, env) {
+        let key = format!("{path}.{field}");
+        if let Some(values) = array_values_from_env_name_generic(key.as_str(), env) {
+            return Ok(values);
+        }
+        if let Some(alias_field) = reference_field_alias(field) {
+            let alias_key = format!("{path}.{alias_field}");
+            if let Some(values) = array_values_from_env_name_generic(alias_key.as_str(), env) {
+                return Ok(values);
+            }
+        }
+        trace_field_access_array_miss(base, field, Some(path.as_str()), key.as_str(), env);
+    } else {
+        trace_field_access_array_miss(base, field, None, "", env);
+    }
 
     match base {
+        Expression::FunctionCall {
+            args,
+            is_constructor: true,
+            ..
+        } => try_eval_constructor_field_array_values(args, field, env),
         Expression::FunctionCall {
             name,
             args,
@@ -343,12 +356,88 @@ pub(super) fn try_eval_field_access_array_values<T: SimFloat>(
     }
 }
 
+fn try_eval_constructor_field_array_values<T: SimFloat>(
+    args: &[Expression],
+    field: &str,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    if let Some(expr) = named_constructor_arg(args, field).or_else(|| {
+        reference_field_alias(field).and_then(|alias| named_constructor_arg(args, alias))
+    }) {
+        return try_eval_array_like_values(expr, env);
+    }
+    Err(EvalError::UnsupportedExpression {
+        kind: "field access array value",
+    })
+}
+
+fn named_constructor_arg<'a>(args: &'a [Expression], field: &str) -> Option<&'a Expression> {
+    for arg in args {
+        if let Expression::FunctionCall {
+            name,
+            args: named_args,
+            is_constructor: true,
+            ..
+        } = arg
+            && name.as_str().strip_prefix("__rumoca_named_arg__.") == Some(field)
+        {
+            return named_args.first();
+        }
+    }
+    None
+}
+
+fn reference_field_alias(field: &str) -> Option<&str> {
+    field
+        .strip_prefix("reference_")
+        .filter(|alias| !alias.is_empty())
+}
+
+fn trace_field_access_array_miss<T: SimFloat>(
+    base: &Expression,
+    field: &str,
+    path: Option<&str>,
+    key: &str,
+    env: &VarEnv<T>,
+) {
+    if std::env::var_os("RUMOCA_TRACE_FIELD_ACCESS_ARRAY").is_none() {
+        return;
+    }
+    let needle = path.unwrap_or(field);
+    let dims = env
+        .dims
+        .keys()
+        .filter(|candidate| candidate.contains(needle) || candidate.ends_with(field))
+        .take(24)
+        .cloned()
+        .collect::<Vec<_>>();
+    let vars = env
+        .vars
+        .keys()
+        .filter(|candidate| candidate.contains(needle) || candidate.ends_with(field))
+        .take(24)
+        .cloned()
+        .collect::<Vec<_>>();
+    eprintln!(
+        "field access array miss field={field} path={path:?} key={key} base={base:#?} dims={dims:?} vars={vars:?}"
+    );
+}
+
 fn try_eval_function_record_field_array_values<T: SimFloat>(
     name: &rumoca_core::Reference,
     args: &[Expression],
     field: &str,
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
+    let (named_args, _) = split_named_and_positional_call_args(args);
+    trace_record_field_array_named_args(name.as_str(), field, named_args.keys().copied());
+    if let Some(arg) = named_args.get(field) {
+        let values = try_eval_array_like_values(arg, env)
+            .map(|values| complete_set_state_mass_fractions(name.as_str(), field, values));
+        trace_record_field_array_named_arg_result(name.as_str(), field, &values);
+        return values;
+    }
+
     let function = env
         .functions
         .get(name.as_str())
@@ -385,6 +474,63 @@ fn try_eval_function_record_field_array_values<T: SimFloat>(
         )?);
     }
     Ok(values)
+}
+
+fn complete_set_state_mass_fractions<T: SimFloat>(
+    function: &str,
+    field: &str,
+    values: Vec<T>,
+) -> Vec<T> {
+    if field != "X" || values.len() != 1 || !is_set_state_function(function) {
+        return values;
+    }
+    let sum = values
+        .iter()
+        .copied()
+        .fold(T::zero(), |acc, value| acc + value);
+    let mut completed = values;
+    completed.push(T::one() - sum);
+    completed
+}
+
+fn is_set_state_function(function: &str) -> bool {
+    let short = rumoca_core::top_level_last_segment(function);
+    matches!(short, "setState_pTX" | "setState_phX" | "setState_psX")
+}
+
+fn trace_record_field_array_named_args<'a>(
+    function: &str,
+    field: &str,
+    keys: impl Iterator<Item = &'a str>,
+) {
+    if std::env::var_os("RUMOCA_TRACE_RECORD_FIELD_ARRAY").is_none() {
+        return;
+    }
+    eprintln!(
+        "record field array lookup function={function} field={field} named_args={:?}",
+        keys.collect::<Vec<_>>()
+    );
+}
+
+fn trace_record_field_array_named_arg_result<T: SimFloat>(
+    function: &str,
+    field: &str,
+    result: &Result<Vec<T>, EvalError>,
+) {
+    if std::env::var_os("RUMOCA_TRACE_RECORD_FIELD_ARRAY").is_none() {
+        return;
+    }
+    match result {
+        Ok(values) => eprintln!(
+            "record field array named arg result function={function} field={field} len={}",
+            values.len()
+        ),
+        Err(err) => {
+            eprintln!(
+                "record field array named arg error function={function} field={field} {err:?}"
+            )
+        }
+    }
 }
 
 pub(super) fn record_constructor_field_param<'a>(

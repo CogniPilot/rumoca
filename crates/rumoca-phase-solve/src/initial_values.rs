@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rumoca_core::OpBinary;
@@ -29,6 +29,7 @@ pub(crate) fn apply_initial_equations_to_start_values(
     let aliases = initial_runtime_alias_equalities(dae_model);
     let mut pinned = fixed_start_pins(dae_model);
     let continuous_seed_pins = explicit_start_pins(dae_model);
+    let mut target_resolver = AssignmentTargetResolver::new(dae_model, layout);
     let init_eq_count = dae_model.initialization.equations.len();
     let max_passes = init_eq_count.max(aliases.len()).clamp(1, 32);
     for _ in 0..max_passes {
@@ -40,7 +41,10 @@ pub(crate) fn apply_initial_equations_to_start_values(
             if solution_is_runtime_alias(layout, assignment.solution) {
                 continue;
             }
-            let targets = assignment_target_scalar_names(layout, assignment.target.as_str());
+            let targets = target_resolver.scalar_names(assignment.target.as_str());
+            if targets.is_empty() {
+                continue;
+            }
             let values = initial_assignment_values(
                 assignment.solution,
                 &env,
@@ -72,6 +76,7 @@ pub(crate) fn apply_initial_equations_to_start_values(
             params,
             initial_y,
             &mut env,
+            &mut target_resolver,
             &mut pinned,
             &continuous_seed_pins,
         )?;
@@ -97,6 +102,7 @@ fn seed_continuous_assignments(
     params: &mut [f64],
     initial_y: &mut [f64],
     env: &mut rumoca_eval_dae::VarEnv<f64>,
+    target_resolver: &mut AssignmentTargetResolver<'_>,
     pinned: &mut HashSet<String>,
     continuous_seed_pins: &HashSet<String>,
 ) -> Result<bool, SolveModelLowerError> {
@@ -108,27 +114,36 @@ fn seed_continuous_assignments(
         if solution_is_runtime_alias(layout, assignment.solution) {
             continue;
         }
-        let targets = assignment_target_scalar_names(layout, assignment.target.as_str());
+        let targets = target_resolver.scalar_names(assignment.target.as_str());
+        if targets.is_empty() {
+            continue;
+        }
         if targets
             .iter()
             .any(|target| pinned.contains(target) || continuous_seed_pins.contains(target))
         {
             continue;
         }
-        let values = initial_assignment_values(
+        let values = match initial_assignment_values(
             assignment.solution,
             env,
             assignment.target.as_str(),
             &targets,
-        )
-        .map_err(|source| SolveModelLowerError::Evaluation {
-            context: format!(
-                "continuous initial seed assignment for `{}`",
-                assignment.target
-            ),
-            source,
-            span: assignment.solution.span().or(Some(eq.span)),
-        })?;
+        ) {
+            Ok(values) => values,
+            Err(err) if err.missing_binding_name().is_some() => continue,
+            Err(EvalError::UnsupportedExpression { .. }) => continue,
+            Err(source) => {
+                return Err(SolveModelLowerError::Evaluation {
+                    context: format!(
+                        "continuous initial seed assignment for `{}`",
+                        assignment.target
+                    ),
+                    source,
+                    span: assignment.solution.span().or(Some(eq.span)),
+                });
+            }
+        };
         if values.iter().any(|value| !value.is_finite()) {
             continue;
         }
@@ -312,7 +327,48 @@ fn start_value_env(
     Ok(env)
 }
 
-fn assignment_target_scalar_names(layout: &solve::VarLayout, target: &str) -> Vec<String> {
+struct AssignmentTargetResolver<'a> {
+    dae_model: &'a dae::Dae,
+    layout: &'a solve::VarLayout,
+    cache: HashMap<String, Vec<String>>,
+}
+
+impl<'a> AssignmentTargetResolver<'a> {
+    fn new(dae_model: &'a dae::Dae, layout: &'a solve::VarLayout) -> Self {
+        Self {
+            dae_model,
+            layout,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn scalar_names(&mut self, target: &str) -> Vec<String> {
+        if let Some(names) = self.cache.get(target) {
+            return names.clone();
+        }
+        let names = resolve_assignment_target_scalar_names(self.dae_model, self.layout, target);
+        self.cache.insert(target.to_string(), names.clone());
+        names
+    }
+}
+
+#[cfg(test)]
+fn assignment_target_scalar_names(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    target: &str,
+) -> Vec<String> {
+    AssignmentTargetResolver::new(dae_model, layout).scalar_names(target)
+}
+
+fn resolve_assignment_target_scalar_names(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    target: &str,
+) -> Vec<String> {
+    if assignment_target_size(dae_model, target) == Some(0) {
+        return Vec::new();
+    }
     if rumoca_core::parse_scalar_name(target).is_some() {
         return vec![target.to_string()];
     }
@@ -323,6 +379,33 @@ fn assignment_target_scalar_names(layout: &solve::VarLayout, target: &str) -> Ve
             .collect();
     }
     layout_scalar_names(layout, target)
+}
+
+fn assignment_target_size(dae_model: &dae::Dae, target: &str) -> Option<usize> {
+    assignment_target_variable(dae_model, target).map(|var| var.size())
+}
+
+fn assignment_target_variable<'a>(
+    dae_model: &'a dae::Dae,
+    target: &str,
+) -> Option<&'a dae::Variable> {
+    let exact_key = rumoca_core::VarName::new(target);
+    let base_key = rumoca_core::VarName::new(
+        dae::component_base_name(target).unwrap_or_else(|| target.into()),
+    );
+    [exact_key, base_key].into_iter().find_map(|key| {
+        dae_model
+            .variables
+            .states
+            .get(&key)
+            .or_else(|| dae_model.variables.algebraics.get(&key))
+            .or_else(|| dae_model.variables.outputs.get(&key))
+            .or_else(|| dae_model.variables.parameters.get(&key))
+            .or_else(|| dae_model.variables.constants.get(&key))
+            .or_else(|| dae_model.variables.inputs.get(&key))
+            .or_else(|| dae_model.variables.discrete_reals.get(&key))
+            .or_else(|| dae_model.variables.discrete_valued.get(&key))
+    })
 }
 
 fn layout_scalar_names(layout: &solve::VarLayout, target: &str) -> Vec<String> {
@@ -353,18 +436,33 @@ fn initial_assignment_values(
     targets: &[String],
 ) -> Result<Vec<f64>, EvalError> {
     let size = targets.len().max(1);
-    let values = if size <= 1 {
-        vec![eval_expr::<f64>(solution, env)?]
-    } else {
-        selected_initial_function_values(solution, env, target, targets)
-            .or_else(|| {
-                let values = eval_array_values::<f64>(solution, env);
-                (!values.is_empty()).then_some(values)
-            })
-            .map(Ok)
-            .unwrap_or_else(|| eval_expr::<f64>(solution, env).map(|value| vec![value]))?
-    };
+    let values = selected_initial_function_values(solution, env, target, targets)
+        .or_else(|| {
+            initial_solution_may_be_array(solution).then(|| eval_array_values::<f64>(solution, env))
+        })
+        .filter(|values| !values.is_empty())
+        .map(Ok)
+        .unwrap_or_else(|| eval_expr::<f64>(solution, env).map(|value| vec![value]))?;
     Ok(expand_values_to_size(values, size.max(1)))
+}
+
+fn initial_solution_may_be_array(solution: &rumoca_core::Expression) -> bool {
+    match solution {
+        rumoca_core::Expression::Array { .. }
+        | rumoca_core::Expression::Tuple { .. }
+        | rumoca_core::Expression::If { .. }
+        | rumoca_core::Expression::ArrayComprehension { .. }
+        | rumoca_core::Expression::Range { .. } => true,
+        rumoca_core::Expression::BuiltinCall { function, .. } => matches!(
+            function,
+            rumoca_core::BuiltinFunction::Cat
+                | rumoca_core::BuiltinFunction::Fill
+                | rumoca_core::BuiltinFunction::Zeros
+                | rumoca_core::BuiltinFunction::Ones
+                | rumoca_core::BuiltinFunction::Vector
+        ),
+        _ => false,
+    }
 }
 
 fn selected_initial_function_values(
@@ -606,19 +704,7 @@ fn seed_lowered_pre_from_current_slot(
 }
 
 fn assignment_target_dims<'a>(dae_model: &'a dae::Dae, target: &str) -> &'a [i64] {
-    let key = rumoca_core::VarName::new(
-        dae::component_base_name(target).unwrap_or_else(|| target.into()),
-    );
-    dae_model
-        .variables
-        .states
-        .get(&key)
-        .or_else(|| dae_model.variables.algebraics.get(&key))
-        .or_else(|| dae_model.variables.outputs.get(&key))
-        .or_else(|| dae_model.variables.parameters.get(&key))
-        .or_else(|| dae_model.variables.inputs.get(&key))
-        .or_else(|| dae_model.variables.discrete_reals.get(&key))
-        .or_else(|| dae_model.variables.discrete_valued.get(&key))
+    assignment_target_variable(dae_model, target)
         .map(|var| var.dims.as_slice())
         .unwrap_or(&[])
 }
@@ -638,5 +724,157 @@ fn write_initial_slot(
             replace_if_changed(&mut params[index], value)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new(name).into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn field_access(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field: field.to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn assignment_target_scalar_names_skips_zero_size_dae_variable() {
+        let mut dae_model = dae::Dae::default();
+        let mut xi = dae::Variable::new(rumoca_core::VarName::new("volume.Xi"));
+        xi.dims = vec![0];
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("volume.Xi"), xi);
+
+        assert!(
+            assignment_target_scalar_names(&dae_model, &solve::VarLayout::default(), "volume.Xi")
+                .is_empty()
+        );
+
+        let mut indexed_xi = dae::Variable::new(rumoca_core::VarName::new("plant.unit[1].Xi"));
+        indexed_xi.dims = vec![0];
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("plant.unit[1].Xi"), indexed_xi);
+
+        assert!(
+            assignment_target_scalar_names(
+                &dae_model,
+                &solve::VarLayout::default(),
+                "plant.unit[1].Xi"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn continuous_seed_assignment_skips_missing_binding() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("target"),
+            dae::Variable::new(rumoca_core::VarName::new("target")),
+        );
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            sub(var("target"), var("missing")),
+            rumoca_core::Span::DUMMY,
+            "missing continuous seed dependency",
+        ));
+
+        let layout = solve::VarLayout::from_parts(
+            indexmap::IndexMap::from([(
+                "target".to_string(),
+                solve::ScalarSlot::Y {
+                    index: 0,
+                    byte_offset: 0,
+                },
+            )]),
+            1,
+            0,
+        );
+        let mut params = Vec::new();
+        let mut initial_y = vec![5.0];
+        let mut env = rumoca_eval_dae::VarEnv::new();
+        let mut target_resolver = AssignmentTargetResolver::new(&dae_model, &layout);
+
+        let changed = seed_continuous_assignments(
+            &dae_model,
+            &layout,
+            &mut params,
+            &mut initial_y,
+            &mut env,
+            &mut target_resolver,
+            &mut HashSet::new(),
+            &HashSet::new(),
+        )
+        .expect("missing binding should skip continuous seed assignment");
+
+        assert!(!changed);
+        assert_eq!(initial_y, vec![5.0]);
+    }
+
+    #[test]
+    fn continuous_seed_assignment_skips_unsupported_expression() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("target"),
+            dae::Variable::new(rumoca_core::VarName::new("target")),
+        );
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            sub(var("target"), field_access(var("recordValue"), "field")),
+            rumoca_core::Span::DUMMY,
+            "unsupported continuous seed dependency",
+        ));
+
+        let layout = solve::VarLayout::from_parts(
+            indexmap::IndexMap::from([(
+                "target".to_string(),
+                solve::ScalarSlot::Y {
+                    index: 0,
+                    byte_offset: 0,
+                },
+            )]),
+            1,
+            0,
+        );
+        let mut params = Vec::new();
+        let mut initial_y = vec![5.0];
+        let mut env = rumoca_eval_dae::VarEnv::new();
+        let mut target_resolver = AssignmentTargetResolver::new(&dae_model, &layout);
+
+        let changed = seed_continuous_assignments(
+            &dae_model,
+            &layout,
+            &mut params,
+            &mut initial_y,
+            &mut env,
+            &mut target_resolver,
+            &mut HashSet::new(),
+            &HashSet::new(),
+        )
+        .expect("unsupported expression should skip continuous seed assignment");
+
+        assert!(!changed);
+        assert_eq!(initial_y, vec![5.0]);
     }
 }

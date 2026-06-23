@@ -2,9 +2,10 @@ mod equation_collection;
 mod linear_parts;
 mod projection;
 use super::{
-    DirectAssignmentValue, IndexedBindingMap, LowerBuilder, LowerBuilderMetadata, LowerError,
-    ScalarizedComponentChildSlotMap, Scope, build_scalarized_component_child_slot_map,
-    compile_time, helpers::build_indexed_binding_map,
+    DirectAssignmentValue, IndexedBindingMap, IndexedRecordFieldKeyIndex, LowerBuilder,
+    LowerBuilderMetadata, LowerError, ScalarizedComponentChildSlotMap, Scope,
+    array_values::build_indexed_record_field_key_index_for,
+    build_scalarized_component_child_slot_map, compile_time, helpers::build_indexed_binding_map,
 };
 pub(super) use equation_collection::*;
 use indexmap::IndexMap;
@@ -97,6 +98,10 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     analysis: &DerivativeRhsAnalysis,
 ) -> Result<ComputeBlock, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let indexed_record_field_key_index = Arc::new(build_indexed_record_field_key_index_for(
+        layout,
+        &analysis.direct_assignments,
+    ));
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
@@ -106,6 +111,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         layout,
         structural_bindings: &analysis.structural_bindings,
         indexed_bindings: &indexed_bindings,
+        indexed_record_field_key_index: &indexed_record_field_key_index,
         scalarized_component_child_slots: &scalarized_component_child_slots,
     };
     let mut block = ComputeBlock::default();
@@ -147,6 +153,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                 layout,
                 &analysis.structural_bindings,
                 &indexed_bindings,
+                &indexed_record_field_key_index,
                 &scalarized_component_child_slots,
             )?;
             block.nodes.push(node);
@@ -181,6 +188,10 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let analysis = analyze_derivative_rhs(dae_model);
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
+    let indexed_record_field_key_index = Arc::new(build_indexed_record_field_key_index_for(
+        layout,
+        &analysis.direct_assignments,
+    ));
     let scalarized_component_child_slots =
         Arc::new(build_scalarized_component_child_slot_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
@@ -190,6 +201,7 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
         layout,
         structural_bindings: &analysis.structural_bindings,
         indexed_bindings: &indexed_bindings,
+        indexed_record_field_key_index: &indexed_record_field_key_index,
         scalarized_component_child_slots: &scalarized_component_child_slots,
     };
 
@@ -228,6 +240,7 @@ struct DerivativeRhsLoweringContext<'a> {
     layout: &'a VarLayout,
     structural_bindings: &'a IndexMap<String, f64>,
     indexed_bindings: &'a IndexedBindingMap,
+    indexed_record_field_key_index: &'a IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &'a ScalarizedComponentChildSlotMap,
 }
 
@@ -252,6 +265,7 @@ fn lower_state_derivative_row(
             ctx.layout,
             ctx.structural_bindings,
             ctx.indexed_bindings,
+            ctx.indexed_record_field_key_index,
             ctx.scalarized_component_child_slots,
         );
     }
@@ -263,6 +277,7 @@ fn lower_state_derivative_row(
         ctx.layout,
         ctx.structural_bindings,
         ctx.indexed_bindings,
+        ctx.indexed_record_field_key_index,
         ctx.scalarized_component_child_slots,
     )
 }
@@ -337,6 +352,7 @@ fn lower_direct_row(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    indexed_record_field_key_index: &IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
@@ -345,6 +361,7 @@ fn lower_direct_row(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
+        indexed_record_field_key_index,
         scalarized_component_child_slots,
     );
     let scope = Scope::new();
@@ -409,6 +426,7 @@ fn lower_coupled_row(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    indexed_record_field_key_index: &IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let base_rows = coupled_rows_for_base(equations, state);
@@ -425,6 +443,7 @@ fn lower_coupled_row(
         layout,
         structural_bindings,
         indexed_bindings,
+        indexed_record_field_key_index,
         scalarized_component_child_slots,
     )
 }
@@ -444,6 +463,7 @@ fn lower_linsolve_group(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    indexed_record_field_key_index: &IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<ComputeNode, LowerError> {
     let setup = build_dense_group_solve_setup(
@@ -454,6 +474,7 @@ fn lower_linsolve_group(
         layout,
         structural_bindings,
         indexed_bindings,
+        indexed_record_field_key_index,
         scalarized_component_child_slots,
     )?;
 
@@ -481,6 +502,7 @@ fn lower_linsolve_group_component(
         ctx.layout,
         ctx.structural_bindings,
         ctx.indexed_bindings,
+        ctx.indexed_record_field_key_index,
         ctx.scalarized_component_child_slots,
     )?;
     let component = states
@@ -522,6 +544,7 @@ fn build_dense_group_solve_setup(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    indexed_record_field_key_index: &IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<DenseGroupSolveSetup, LowerError> {
     let n = states.len();
@@ -552,6 +575,7 @@ fn build_dense_group_solve_setup(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
+        indexed_record_field_key_index,
         scalarized_component_child_slots,
     );
     let scope = Scope::new();
@@ -620,6 +644,7 @@ fn lower_dense_solve_component(
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &IndexedBindingMap,
+    indexed_record_field_key_index: &IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &ScalarizedComponentChildSlotMap,
 ) -> Result<Vec<LinearOp>, LowerError> {
     let mut builder = row_builder(
@@ -628,6 +653,7 @@ fn lower_dense_solve_component(
         direct_assignments,
         structural_bindings,
         indexed_bindings,
+        indexed_record_field_key_index,
         scalarized_component_child_slots,
     );
     let scope = Scope::new();
@@ -688,9 +714,10 @@ fn pack_registers(builder: &mut LowerBuilder<'_>, regs: &[Reg]) -> Reg {
 fn row_builder<'a>(
     dae_model: &'a dae::Dae,
     layout: &'a VarLayout,
-    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+    direct_assignments: &'a IndexMap<String, DirectAssignmentValue>,
     structural_bindings: &IndexMap<String, f64>,
     indexed_bindings: &'a IndexedBindingMap,
+    indexed_record_field_key_index: &'a IndexedRecordFieldKeyIndex,
     scalarized_component_child_slots: &'a ScalarizedComponentChildSlotMap,
 ) -> LowerBuilder<'a> {
     LowerBuilder::new_with_metadata(
@@ -703,12 +730,15 @@ fn row_builder<'a>(
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
             indexed_bindings: Some(indexed_bindings),
+            indexed_record_field_key_index: Some(indexed_record_field_key_index),
             scalarized_component_child_slots: Some(scalarized_component_child_slots),
+            external_object_indices: None,
+            current_equation_origin: None,
             is_initial_mode: false,
         },
     )
     .with_structural_bindings(structural_bindings.clone())
-    .with_direct_assignments(direct_assignments.clone())
+    .with_direct_assignments_ref(direct_assignments)
 }
 
 fn coupled_rows_for_base<'a>(

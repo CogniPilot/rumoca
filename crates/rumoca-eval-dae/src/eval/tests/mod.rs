@@ -44,6 +44,13 @@ fn bool_lit(v: bool) -> rumoca_core::Expression {
     }
 }
 
+fn string_lit(v: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(v.to_string()),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn dae_lit(v: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(v),
@@ -790,6 +797,25 @@ fn test_eval_array_values_diagonal_preserves_matrix_shape() {
 }
 
 #[test]
+fn test_eval_array_values_fill_allows_zero_extent() {
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![lit(0.0), int_lit(0), int_lit(2)],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &VarEnv::new()),
+        Vec::<f64>::new()
+    );
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&expr, &VarEnv::new(), 0)
+            .expect("zero-extent fill should produce an empty shaped array"),
+        Vec::<f64>::new()
+    );
+}
+
+#[test]
 fn test_eval_array_values_does_not_promote_scalar_start_expr_to_array() {
     let mut env = VarEnv::<f64>::new();
     env.set("s", 2.0);
@@ -1041,6 +1067,32 @@ fn test_eval_array_values_expands_range() {
     let down = eval_array_values::<f64>(&descending, &env);
     assert_eq!(up, vec![1.0, 2.0, 3.0, 4.0]);
     assert_eq!(down, vec![4.0, 3.0, 2.0, 1.0]);
+}
+
+#[test]
+fn test_eval_array_values_var_ref_range_slice() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("x".to_string(), vec![3])]));
+    set_array_entries(&mut env, "x", &[3], &[0.1, 0.2, 0.7]);
+
+    let expr = rumoca_core::Expression::VarRef {
+        name: Reference::new("x"),
+        subscripts: vec![Subscript::generated_expr(Box::new(
+            rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(2)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ))],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_array_values::<f64>(&expr, &env), vec![0.1, 0.2]);
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&expr, &env, 2),
+        Ok(vec![0.1, 0.2])
+    );
 }
 
 fn user_function_with_default_output(name: &str, output_value: f64) -> rumoca_core::Function {

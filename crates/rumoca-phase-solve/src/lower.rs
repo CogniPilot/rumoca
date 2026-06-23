@@ -1,6 +1,6 @@
 //! Lower flat expressions and DAE residual rows to linear ops.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{ComponentPath, VarName};
@@ -38,6 +38,7 @@ pub(crate) use discrete_updates::{
 };
 pub use error::LowerError;
 use error::unsupported_at;
+pub(crate) use expression_rows::SharedRowLoweringIndexes;
 pub use expression_rows::{
     lower_expression_rows_from_expressions,
     lower_expression_rows_from_expressions_with_runtime_metadata,
@@ -45,7 +46,9 @@ pub use expression_rows::{
     lower_initial_expression_rows_from_expressions_with_runtime_metadata,
 };
 use function_projection::format_subscript_binding_key;
+pub(crate) use helpers::is_record_constructor_signature;
 use helpers::*;
+pub(crate) use initial_residual::lower_initial_residual_with_external_object_indices;
 pub use initial_residual::{initial_residual_equations, lower_initial_residual};
 use scope::*;
 
@@ -65,6 +68,9 @@ pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentPath, Vec<IndexedBindi
 
 pub(super) type ScalarizedComponentChildSlotMap =
     Arc<IndexMap<ComponentPath, Vec<(ComponentPath, ScalarSlot)>>>;
+
+pub(super) type IndexedRecordFieldKeyIndex =
+    Arc<IndexMap<(String, String), IndexMap<Vec<usize>, String>>>;
 
 pub(super) fn build_scalarized_component_child_slot_map(
     layout: &VarLayout,
@@ -118,6 +124,7 @@ pub(crate) fn lower_residual_rows_and_targets_from_equations<'a>(
     layout: &VarLayout,
     equations: impl IntoIterator<Item = (usize, &'a dae::Equation)>,
     state_scalar_count: usize,
+    external_object_indices: Option<&IndexMap<String, usize>>,
     target_rows_for_equation: impl FnMut(
         &dae::Equation,
         usize,
@@ -129,6 +136,7 @@ pub(crate) fn lower_residual_rows_and_targets_from_equations<'a>(
         equations,
         state_scalar_count,
         false,
+        external_object_indices,
         target_rows_for_equation,
     )
 }
@@ -195,6 +203,14 @@ pub fn lower_discrete_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    lower_discrete_rhs_with_external_object_indices(dae_model, layout, None)
+}
+
+pub(crate) fn lower_discrete_rhs_with_external_object_indices(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    external_object_indices: Option<&IndexMap<String, usize>>,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let equations = normalized_discrete_update_equations(dae_model);
     let structural_bindings = compile_time::structural_bindings(dae_model);
     Ok(rumoca_eval_solve::to_scalar_program_block(
@@ -209,6 +225,7 @@ pub fn lower_discrete_rhs(
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
                 structural_bindings: Some(&structural_bindings),
+                external_object_indices,
                 guard_target_start_before_first_clock_tick: true,
             },
             false,
@@ -217,10 +234,20 @@ pub fn lower_discrete_rhs(
     .programs)
 }
 
+#[cfg(test)]
 pub(crate) fn lower_runtime_assignment_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     equations: &[dae::Equation],
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    lower_runtime_assignment_rhs_with_external_object_indices(dae_model, layout, equations, None)
+}
+
+pub(crate) fn lower_runtime_assignment_rhs_with_external_object_indices(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    equations: &[dae::Equation],
+    external_object_indices: Option<&IndexMap<String, usize>>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let structural_bindings = compile_time::structural_bindings(dae_model);
     Ok(rumoca_eval_solve::to_scalar_program_block(
@@ -235,6 +262,7 @@ pub(crate) fn lower_runtime_assignment_rhs(
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
                 structural_bindings: Some(&structural_bindings),
+                external_object_indices,
                 guard_target_start_before_first_clock_tick: true,
             },
             false,
@@ -266,14 +294,40 @@ pub fn lower_observation_rhs(
     expressions: &[rumoca_core::Expression],
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let structural_bindings = compile_time::structural_bindings(dae_model);
-    expression_rows::lower_observation_rows_from_expressions_with_structural_bindings(
+    let shared = observation_row_lowering_indexes(layout);
+    lower_observation_rhs_with_indexes(
+        dae_model,
+        layout,
+        expressions,
+        &structural_bindings,
+        &shared,
+    )
+}
+
+pub(crate) fn observation_row_lowering_indexes(layout: &VarLayout) -> SharedRowLoweringIndexes {
+    expression_rows::shared_row_lowering_indexes(layout, None)
+}
+
+pub(crate) fn observation_structural_bindings(dae_model: &dae::Dae) -> IndexMap<String, f64> {
+    compile_time::structural_bindings(dae_model)
+}
+
+pub(crate) fn lower_observation_rhs_with_indexes(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    expressions: &[rumoca_core::Expression],
+    structural_bindings: &IndexMap<String, f64>,
+    shared: &SharedRowLoweringIndexes,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    expression_rows::lower_observation_rows_from_expressions_with_shared_indexes(
         expressions,
         layout,
         &dae_model.symbols.functions,
         &dae_model.clocks.intervals,
         &dae_model.clocks.timings,
         &dae_model.metadata.variable_starts,
-        &structural_bindings,
+        structural_bindings,
+        shared,
     )
 }
 
@@ -299,16 +353,20 @@ struct LowerBuilder<'a> {
     triggered_clock_conditions: Option<&'a [rumoca_core::Expression]>,
     discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
-    structural_bindings: IndexMap<String, f64>,
-    direct_assignments: IndexMap<String, DirectAssignmentValue>,
+    structural_bindings: Cow<'a, IndexMap<String, f64>>,
+    structural_binding_undo: Vec<StructuralBindingUndo>,
+    direct_assignments: Cow<'a, IndexMap<String, DirectAssignmentValue>>,
     direct_assignment_stack: Vec<String>,
     direct_assignment_value_cache: IndexMap<String, Vec<Reg>>,
+    current_equation_origin: Option<&'a str>,
+    indexed_record_field_key_index: Option<IndexedRecordFieldKeyIndex>,
     scalarized_component_child_slots: ScalarizedComponentChildSlotMap,
     indexed_bindings: IndexedBindingMap,
     local_indexed_bindings: IndexMap<String, Vec<LocalIndexedBinding>>,
     local_binding_dims: IndexMap<String, Vec<i64>>,
     known_empty_local_arrays: IndexSet<String>,
     local_const_bindings: IndexMap<String, f64>,
+    external_object_indices: Option<&'a IndexMap<String, usize>>,
     function_closures: IndexMap<ComponentPath, FunctionClosure>,
     is_initial_mode: bool,
     value_mode: ValueMode,
@@ -321,6 +379,12 @@ struct LowerBuilder<'a> {
     cse: RowCse,
 }
 
+#[derive(Debug, Clone)]
+struct StructuralBindingUndo {
+    key: String,
+    previous: Option<f64>,
+}
+
 #[derive(Default)]
 pub(super) struct LowerBuilderMetadata<'a> {
     pub(super) clock_intervals: Option<&'a IndexMap<String, f64>>,
@@ -329,7 +393,10 @@ pub(super) struct LowerBuilderMetadata<'a> {
     pub(super) discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     pub(super) variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
     pub(super) indexed_bindings: Option<&'a IndexedBindingMap>,
+    pub(super) indexed_record_field_key_index: Option<&'a IndexedRecordFieldKeyIndex>,
     pub(super) scalarized_component_child_slots: Option<&'a ScalarizedComponentChildSlotMap>,
+    pub(super) external_object_indices: Option<&'a IndexMap<String, usize>>,
+    pub(super) current_equation_origin: Option<&'a str>,
     pub(super) is_initial_mode: bool,
 }
 
@@ -381,10 +448,13 @@ impl<'a> LowerBuilder<'a> {
             triggered_clock_conditions: metadata.triggered_clock_conditions,
             discrete_valued_names: metadata.discrete_valued_names,
             variable_starts: metadata.variable_starts,
-            structural_bindings: IndexMap::new(),
-            direct_assignments: IndexMap::new(),
+            structural_bindings: Cow::Owned(IndexMap::new()),
+            structural_binding_undo: Vec::new(),
+            direct_assignments: Cow::Owned(IndexMap::new()),
             direct_assignment_stack: Vec::new(),
             direct_assignment_value_cache: IndexMap::new(),
+            current_equation_origin: metadata.current_equation_origin,
+            indexed_record_field_key_index: metadata.indexed_record_field_key_index.cloned(),
             scalarized_component_child_slots: metadata
                 .scalarized_component_child_slots
                 .cloned()
@@ -397,6 +467,7 @@ impl<'a> LowerBuilder<'a> {
             local_binding_dims: IndexMap::new(),
             known_empty_local_arrays: IndexSet::new(),
             local_const_bindings: IndexMap::new(),
+            external_object_indices: metadata.external_object_indices,
             function_closures: IndexMap::new(),
             is_initial_mode: metadata.is_initial_mode,
             value_mode: ValueMode::Current,
@@ -410,17 +481,70 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
+    #[cfg(test)]
     fn with_direct_assignments(
         mut self,
         direct_assignments: IndexMap<String, DirectAssignmentValue>,
     ) -> Self {
-        self.direct_assignments = direct_assignments;
+        self.direct_assignments = Cow::Owned(direct_assignments);
+        self
+    }
+
+    fn with_direct_assignments_ref(
+        mut self,
+        direct_assignments: &'a IndexMap<String, DirectAssignmentValue>,
+    ) -> Self {
+        self.direct_assignments = Cow::Borrowed(direct_assignments);
         self
     }
 
     fn with_structural_bindings(mut self, structural_bindings: IndexMap<String, f64>) -> Self {
-        self.structural_bindings = structural_bindings;
+        self.structural_bindings = Cow::Owned(structural_bindings);
+        self.structural_binding_undo.clear();
         self
+    }
+
+    fn with_structural_bindings_ref(
+        mut self,
+        structural_bindings: &'a IndexMap<String, f64>,
+    ) -> Self {
+        self.structural_bindings = Cow::Borrowed(structural_bindings);
+        self.structural_binding_undo.clear();
+        self
+    }
+
+    fn structural_binding_checkpoint(&self) -> usize {
+        self.structural_binding_undo.len()
+    }
+
+    fn rollback_structural_bindings(&mut self, checkpoint: usize) {
+        while self.structural_binding_undo.len() > checkpoint {
+            let undo = self
+                .structural_binding_undo
+                .pop()
+                .expect("structural binding undo checkpoint should be in range");
+            if let Some(previous) = undo.previous {
+                self.structural_bindings.to_mut().insert(undo.key, previous);
+            } else {
+                self.structural_bindings
+                    .to_mut()
+                    .shift_remove(undo.key.as_str());
+            }
+        }
+    }
+
+    fn local_size_binding_value(&self, name: &str, dim: usize) -> Option<f64> {
+        let zero_based = dim.checked_sub(1)?;
+        let dims = self.local_binding_dims.get(name)?;
+        let value = *dims.get(zero_based)?;
+        Some(value.max(0) as f64)
+    }
+
+    fn local_size_binding_value_for_key(&self, key: &str) -> Option<f64> {
+        let raw = key.strip_prefix(SIZE_BINDING_PREFIX)?;
+        let (name, dim) = rumoca_core::split_last_top_level(raw)?;
+        let dim = dim.parse::<usize>().ok()?;
+        self.local_size_binding_value(name, dim)
     }
 
     fn with_call_site_namespace(mut self, namespace: u64) -> Self {
@@ -512,15 +636,19 @@ impl<'a> LowerBuilder<'a> {
             discrete_valued_names: self.discrete_valued_names,
             variable_starts: self.variable_starts,
             structural_bindings: self.structural_bindings.clone(),
-            direct_assignments: IndexMap::new(),
+            structural_binding_undo: Vec::new(),
+            direct_assignments: Cow::Owned(IndexMap::new()),
             direct_assignment_stack: Vec::new(),
             direct_assignment_value_cache: IndexMap::new(),
+            current_equation_origin: self.current_equation_origin,
+            indexed_record_field_key_index: self.indexed_record_field_key_index.clone(),
             scalarized_component_child_slots: Arc::clone(&self.scalarized_component_child_slots),
             indexed_bindings: Arc::clone(&self.indexed_bindings),
             local_indexed_bindings: IndexMap::new(),
             local_binding_dims: IndexMap::new(),
             known_empty_local_arrays: IndexSet::new(),
             local_const_bindings: self.local_const_bindings.clone(),
+            external_object_indices: self.external_object_indices,
             function_closures: self.function_closures.clone(),
             is_initial_mode: self.is_initial_mode,
             value_mode: self.value_mode,
@@ -800,6 +928,9 @@ impl<'a> LowerBuilder<'a> {
                 .layout
                 .shape(base_name.as_str())
                 .is_some_and(|shape| shape.contains(&0))
+                || self
+                    .local_size_binding_value(base_name.as_str(), 1)
+                    .is_some_and(|dim| dim == 0.0)
                 || self
                     .structural_bindings
                     .get(size_binding_key(base_name.as_str(), 1).as_str())

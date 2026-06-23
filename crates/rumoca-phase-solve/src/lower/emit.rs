@@ -135,19 +135,13 @@ impl LowerBuilder<'_> {
         dst
     }
 
-    pub(super) fn emit_external_call(
+    pub(super) fn emit_external_call_output_with_external_object(
         &mut self,
         function: ExternalFunctionKind,
-        args: &[Reg],
-    ) -> Result<Reg, LowerError> {
-        self.emit_external_call_output(function, args, 0)
-    }
-
-    pub(super) fn emit_external_call_output(
-        &mut self,
-        function: ExternalFunctionKind,
+        external_object_index: Option<usize>,
         args: &[Reg],
         output_index: usize,
+        output_count: usize,
     ) -> Result<Reg, LowerError> {
         if args.len() > 8 {
             return Err(LowerError::Unsupported {
@@ -165,9 +159,11 @@ impl LowerBuilder<'_> {
         self.ops.push(LinearOp::ExternalCall {
             dst,
             function,
+            external_object_index,
             args: packed,
             arg_count: args.len(),
             output_index,
+            output_count,
         });
         Ok(dst)
     }

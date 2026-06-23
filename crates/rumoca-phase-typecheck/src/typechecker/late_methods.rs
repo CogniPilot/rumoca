@@ -104,7 +104,6 @@ impl TypeChecker {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn alias_field_key_range<'a>(
         sorted_keys: &'a [String],
         target_prefix: &str,
@@ -231,16 +230,20 @@ impl TypeChecker {
         overlay: &InstanceOverlay,
     ) -> HashMap<ComponentPath, Vec<String>> {
         let mut hints = HashMap::new();
-        let component_scopes: HashMap<ComponentPath, &rumoca_ir_ast::InstanceData> = overlay
+        let component_paths: Vec<(ComponentPath, &rumoca_ir_ast::InstanceData)> = overlay
             .components
             .values()
             .map(|data| (Self::instance_component_path(&data.qualified_name), data))
             .collect();
-        for (_def_id, instance_data) in &overlay.components {
+        let component_scopes: HashMap<ComponentPath, &rumoca_ir_ast::InstanceData> =
+            component_paths
+                .iter()
+                .map(|(path, data)| (path.clone(), *data))
+                .collect();
+        for (component_name, instance_data) in component_paths {
             if instance_data.type_name.is_empty() {
                 continue;
             }
-            let component_name = Self::instance_component_path(&instance_data.qualified_name);
             let mut scopes = Vec::with_capacity(2 + instance_data.class_overrides.len());
             scopes.push(instance_data.type_name.clone());
             if let Some(parent_scope) = Self::parent_type_scope(&instance_data.type_name) {

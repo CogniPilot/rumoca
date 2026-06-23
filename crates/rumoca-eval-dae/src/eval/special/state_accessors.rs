@@ -80,6 +80,7 @@ pub(super) fn eval_state_accessor_special_function<T: SimFloat>(
         "specificEnthalpy" => "h",
         "specificInternalEnergy" => "u",
         "specificEntropy" => "s",
+        "specificHeatCapacityCp" => "cp",
         _ => return None,
     };
     eval_state_accessor_from_expr(args.first()?, field, env)
@@ -189,38 +190,42 @@ pub(in crate::eval) fn eval_state_accessor_from_set_state<T: SimFloat>(
     match short_name {
         // setState_pTX(p, T, X)
         "setState_pTX" | "setState_pT" => match field {
-            "p" => args.first().map(|e| eval_expr_or_default::<T>(e, env)),
-            "T" => args.get(1).map(|e| eval_expr_or_default::<T>(e, env)),
+            "p" => state_constructor_arg(args, "p", 0).map(|e| eval_expr_or_default::<T>(e, env)),
+            "T" => state_constructor_arg(args, "T", 1).map(|e| eval_expr_or_default::<T>(e, env)),
+            "cp" => Some(T::from_f64(4184.0)),
             _ => None,
         },
         // setState_dTX(d, T, X)
         "setState_dTX" => match field {
-            "d" => args.first().map(|e| eval_expr_or_default::<T>(e, env)),
-            "T" => args.get(1).map(|e| eval_expr_or_default::<T>(e, env)),
+            "d" => state_constructor_arg(args, "d", 0).map(|e| eval_expr_or_default::<T>(e, env)),
+            "T" => state_constructor_arg(args, "T", 1).map(|e| eval_expr_or_default::<T>(e, env)),
+            "cp" => Some(T::from_f64(4184.0)),
             _ => None,
         },
         // setState_phX(p, h, X)
         "setState_phX" | "setState_ph" => match field {
-            "p" => args.first().map(|e| eval_expr_or_default::<T>(e, env)),
-            "h" => args.get(1).map(|e| eval_expr_or_default::<T>(e, env)),
+            "p" => state_constructor_arg(args, "p", 0).map(|e| eval_expr_or_default::<T>(e, env)),
+            "h" => state_constructor_arg(args, "h", 1).map(|e| eval_expr_or_default::<T>(e, env)),
             "T" => eval_state_accessor_via_user_helper(
                 name,
                 args,
                 env,
                 &["temperature_phX", "temperature_ph"],
             ),
+            "cp" => Some(T::from_f64(4184.0)),
             _ => None,
         },
         // setState_psX(p, s, X)
         "setState_psX" | "setState_ps" => match field {
-            "p" => args.first().map(|e| eval_expr_or_default::<T>(e, env)),
-            "s" => args.get(1).map(|e| eval_expr_or_default::<T>(e, env)),
+            "p" => state_constructor_arg(args, "p", 0).map(|e| eval_expr_or_default::<T>(e, env)),
+            "s" => state_constructor_arg(args, "s", 1).map(|e| eval_expr_or_default::<T>(e, env)),
             "T" => eval_state_accessor_via_user_helper(
                 name,
                 args,
                 env,
                 &["temperature_psX", "temperature_ps"],
             ),
+            "cp" => Some(T::from_f64(4184.0)),
             _ => None,
         },
         // setSmoothState(x, state_a, state_b, x_small)
@@ -252,6 +257,30 @@ pub(in crate::eval) fn eval_state_accessor_from_set_state<T: SimFloat>(
         }
         _ => None,
     }
+}
+
+fn state_constructor_arg<'a>(
+    args: &'a [Expression],
+    name: &str,
+    positional_idx: usize,
+) -> Option<&'a Expression> {
+    args.iter()
+        .find_map(|arg| named_constructor_arg_value(arg, name))
+        .or_else(|| args.get(positional_idx))
+}
+
+fn named_constructor_arg_value<'a>(expr: &'a Expression, name: &str) -> Option<&'a Expression> {
+    let Expression::FunctionCall {
+        name: arg_name,
+        args,
+        is_constructor: true,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let short_name = rumoca_core::top_level_last_segment(arg_name.as_str());
+    (short_name == name).then(|| args.first()).flatten()
 }
 
 fn eval_state_accessor_via_user_helper<T: SimFloat>(

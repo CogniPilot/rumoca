@@ -62,6 +62,7 @@ pub struct ParamEvalContext<'a> {
     pub known_reals: &'a FxHashMap<String, f64>,
     pub known_bools: &'a FxHashMap<String, bool>,
     pub known_enums: &'a FxHashMap<String, String>,
+    pub enum_canonicalizer: Option<&'a EnumCanonicalizer>,
     pub array_dims: &'a FxHashMap<String, Vec<i64>>,
     /// Functions available for evaluation.
     pub functions: &'a FxHashMap<String, rumoca_core::Function>,
@@ -89,6 +90,7 @@ impl<'a> ParamEvalContext<'a> {
             known_reals,
             known_bools,
             known_enums,
+            enum_canonicalizer: None,
             array_dims,
             functions,
             user_func_eval_ctx: None,
@@ -111,6 +113,7 @@ pub fn try_eval_flat_expr_integer_with_dims(
         known_reals: &FxHashMap::default(),
         known_bools: &FxHashMap::default(),
         known_enums: &FxHashMap::default(),
+        enum_canonicalizer: None,
         array_dims,
         functions: &FxHashMap::default(),
         user_func_eval_ctx: None,
@@ -312,8 +315,8 @@ fn try_eval_flat_expr_boolean_binary_with_context(
                 resolve_enum_value_with_context(lhs, ctx),
                 resolve_enum_value_with_context(rhs, ctx),
             ) {
-                let l_norm = canonicalize_enum_literal(&l, ctx.known_enums);
-                let r_norm = canonicalize_enum_literal(&r, ctx.known_enums);
+                let l_norm = canonicalize_enum_literal_with_context(&l, ctx);
+                let r_norm = canonicalize_enum_literal_with_context(&r, ctx);
                 let equal = rumoca_core::enum_values_equal(&l_norm, &r_norm);
                 return Some(if is_eq { equal } else { !equal });
             }
@@ -425,7 +428,14 @@ fn resolve_enum_value_with_context(
         return Some(enum_val);
     }
 
-    try_extract_enum_value(expr).map(|literal| canonicalize_enum_literal(&literal, ctx.known_enums))
+    try_extract_enum_value(expr)
+        .map(|literal| canonicalize_enum_literal_with_context(&literal, ctx))
+}
+
+fn canonicalize_enum_literal_with_context(literal: &str, ctx: &ParamEvalContext<'_>) -> String {
+    ctx.enum_canonicalizer
+        .map(|canonicalizer| canonicalizer.canonicalize(literal))
+        .unwrap_or_else(|| canonicalize_enum_literal(literal, ctx.known_enums))
 }
 
 /// Resolve an unqualified variable reference in parent scopes (MLS §7.2).
@@ -964,6 +974,7 @@ pub fn infer_array_dimensions_full_with_conds(
         known_reals: &known_reals,
         known_bools,
         known_enums,
+        enum_canonicalizer: None,
         array_dims,
         functions: &functions,
         user_func_eval_ctx: None,
@@ -1106,6 +1117,7 @@ fn infer_user_function_call_dimensions(
         known_reals: &local_reals,
         known_bools: &local_bools,
         known_enums: ctx.known_enums,
+        enum_canonicalizer: ctx.enum_canonicalizer,
         array_dims: ctx.array_dims,
         functions: ctx.functions,
         user_func_eval_ctx: ctx.user_func_eval_ctx,

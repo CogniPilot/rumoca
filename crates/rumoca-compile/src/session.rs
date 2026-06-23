@@ -1570,9 +1570,9 @@ impl Document {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilationResult {
     /// The flattened representation.
-    pub flat: flat::Model,
+    pub flat: Arc<flat::Model>,
     /// The final DAE representation.
-    pub dae: dae::Dae,
+    pub dae: Arc<dae::Dae>,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`
     /// on the compiled root class.
     pub experiment_start_time: Option<f64>,

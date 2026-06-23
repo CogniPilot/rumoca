@@ -1037,6 +1037,19 @@ impl KnownConstantSubstituter<'_> {
         {
             return self.rewrite_expression(&resolved);
         }
+        if let Some(path) = field_access_flat_path(&rewritten_base, field) {
+            let path_ref = rumoca_core::Reference::new(path);
+            if let Some(replaced) = substitute_scalar_var_ref(
+                &path_ref,
+                span,
+                self.ctx,
+                self.live_vars,
+                self.locals,
+                self.scope,
+            ) {
+                return replaced;
+            }
+        }
         if let rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } = &rewritten_base
@@ -1733,13 +1746,13 @@ fn named_constructor_arg<'a>(
     for arg in args {
         if let rumoca_core::Expression::FunctionCall {
             name,
-            args,
+            args: named_args,
             is_constructor: true,
             ..
         } = arg
             && name.as_str().strip_prefix("__rumoca_named_arg__.") == Some(field)
         {
-            return args.first();
+            return named_args.first();
         }
     }
     None

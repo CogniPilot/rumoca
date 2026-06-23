@@ -307,6 +307,108 @@ fn lower_expression_binds_named_record_constructor_input_fields() {
 }
 
 #[test]
+fn lower_expression_forwards_local_record_constructor_array_fields() {
+    let mut inner = rumoca_core::Function::new("Pkg.inner", Default::default());
+    inner.inputs.push(rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Record),
+        type_name: "Pkg.FanData".to_string(),
+        ..rumoca_core::FunctionParam::new("per", "Pkg.FanData")
+    });
+    inner
+        .outputs
+        .push(rumoca_core::FunctionParam::new("y", "Real"));
+    inner.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: var("per.r_P[2]"),
+        span: rumoca_core::Span::DUMMY,
+    });
+
+    let mut outer = rumoca_core::Function::new("Pkg.outer", Default::default());
+    outer.inputs.push(rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Record),
+        type_name: "Pkg.FanData".to_string(),
+        ..rumoca_core::FunctionParam::new("fanRelPow", "Pkg.FanData")
+    });
+    outer
+        .outputs
+        .push(rumoca_core::FunctionParam::new("y", "Real"));
+    outer.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("Pkg.inner").into(),
+            args: vec![var("fanRelPow")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+
+    let mut functions = IndexMap::new();
+    functions.insert(inner.name.clone(), inner);
+    functions.insert(outer.name.clone(), outer);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("Pkg.outer").into(),
+        args: vec![record_ctor(
+            "Pkg.FanData",
+            vec![named_arg("r_P", array_lit(&[0.0, 0.125, 1.0]))],
+        )],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("local record constructor array fields should forward to nested record inputs");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 0.125).abs() < 1e-12);
+}
+
+#[test]
+fn lower_expression_binds_flattened_record_field_array_positionals_directly() {
+    let mut function = rumoca_core::Function::new("Pkg.normalizedLike", Default::default());
+    function
+        .inputs
+        .push(rumoca_core::FunctionParam::new("per_r_V", "Real").with_dims(vec![0]));
+    function
+        .inputs
+        .push(rumoca_core::FunctionParam::new("per_r_P", "Real").with_dims(vec![0]));
+    function
+        .inputs
+        .push(rumoca_core::FunctionParam::new("r_V", "Real"));
+    function
+        .inputs
+        .push(rumoca_core::FunctionParam::new("d", "Real").with_dims(vec![0]));
+    function
+        .outputs
+        .push(rumoca_core::FunctionParam::new("y", "Real"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: add(var("per_r_P[2]"), var("r_V")),
+        span: rumoca_core::Span::DUMMY,
+    });
+
+    let mut functions = IndexMap::new();
+    functions.insert(function.name.clone(), function);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("Pkg.normalizedLike").into(),
+        args: vec![
+            array_lit(&[0.0, 0.5, 1.0]),
+            array_lit(&[0.0, 0.125, 1.0]),
+            named_arg("r_V", real_lit(0.25)),
+            named_arg("d", array_lit(&[1.0, 2.0, 3.0])),
+        ],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("flattened record field arrays should bind as direct positional actuals");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 0.375).abs() < 1e-12);
+}
+
+#[test]
 fn lower_expression_projects_record_output_assigned_from_if_constructor() {
     let mut function = rumoca_core::Function::new("Pkg.recordIf", Default::default());
     function

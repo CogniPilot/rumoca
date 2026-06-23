@@ -138,11 +138,47 @@ fn project_row_values_to_count(
     }
 }
 
-fn indexed_record_field_key_indices(key: &str, base_key: &str, field: &str) -> Option<Vec<usize>> {
-    let suffix = format!(".{field}");
-    let indexed_base_key = key.strip_suffix(suffix.as_str())?;
-    let (candidate_base, indices) = parse_indexed_binding_key(indexed_base_key)?;
-    (candidate_base == base_key).then_some(indices)
+fn indexed_record_field_key_index_entry(key: &str) -> Option<((String, String), Vec<usize>)> {
+    let mut candidate = key;
+    let mut fields = Vec::new();
+    while let Some((prefix, field)) = rumoca_core::split_last_top_level(candidate) {
+        fields.push(field);
+        if let Some((base_key, indices)) = parse_indexed_binding_key(prefix) {
+            fields.reverse();
+            return Some(((base_key, fields.join(".")), indices));
+        }
+        candidate = prefix;
+    }
+    None
+}
+
+pub(super) fn build_indexed_record_field_key_index_for(
+    layout: &VarLayout,
+    direct_assignments: &IndexMap<String, DirectAssignmentValue>,
+) -> IndexMap<(String, String), IndexMap<Vec<usize>, String>> {
+    let mut index = IndexMap::<(String, String), IndexMap<Vec<usize>, String>>::new();
+    for (binding_key, _slot) in layout.bindings() {
+        if let Some((cache_key, indices)) = indexed_record_field_key_index_entry(binding_key) {
+            index
+                .entry(cache_key)
+                .or_default()
+                .entry(indices)
+                .or_insert_with(|| binding_key.clone());
+        }
+    }
+    for assignment_key in direct_assignments.keys() {
+        if let Some((cache_key, indices)) = indexed_record_field_key_index_entry(assignment_key) {
+            index
+                .entry(cache_key)
+                .or_default()
+                .entry(indices)
+                .or_insert_with(|| assignment_key.clone());
+        }
+    }
+    for keys in index.values_mut() {
+        keys.sort_keys();
+    }
+    index
 }
 
 /// Cartesian product of per-dimension index selections into one-based
@@ -1238,6 +1274,12 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Vec::new());
         }
         if self
+            .local_size_binding_value(key, 1)
+            .is_some_and(|dim| dim == 0.0)
+        {
+            return Ok(Vec::new());
+        }
+        if self
             .structural_bindings
             .get(super::size_binding_key(key, 1).as_str())
             .is_some_and(|dim| *dim == 0.0)
@@ -1283,25 +1325,20 @@ impl<'a> LowerBuilder<'a> {
     }
 
     fn indexed_record_field_keys(
-        &self,
+        &mut self,
         base_key: &str,
         field: &str,
     ) -> IndexMap<Vec<usize>, String> {
-        let mut keys = IndexMap::new();
-        for (binding_key, _slot) in self.layout.bindings() {
-            if let Some(indices) = indexed_record_field_key_indices(binding_key, base_key, field) {
-                keys.entry(indices).or_insert_with(|| binding_key.clone());
-            }
+        if self.indexed_record_field_key_index.is_none() {
+            self.indexed_record_field_key_index = Some(Arc::new(
+                build_indexed_record_field_key_index_for(self.layout, &self.direct_assignments),
+            ));
         }
-        for assignment_key in self.direct_assignments.keys() {
-            if let Some(indices) = indexed_record_field_key_indices(assignment_key, base_key, field)
-            {
-                keys.entry(indices)
-                    .or_insert_with(|| assignment_key.clone());
-            }
-        }
-        keys.sort_keys();
-        keys
+        self.indexed_record_field_key_index
+            .as_ref()
+            .and_then(|index| index.get(&(base_key.to_string(), field.to_string())))
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn lower_scalarized_component_values(

@@ -321,11 +321,18 @@ impl TypeChecker {
             .map(|data| (data.qualified_name.to_flat_string(), data))
             .collect();
 
+        let alias_scopes = Self::collect_instance_class_override_alias_scopes(overlay);
+        Self::clear_alias_scope_values_many(
+            ctx,
+            alias_scopes.iter().map(std::string::String::as_str),
+        );
+
         const MAX_PASSES: usize = 5;
-        let mut cleared_alias_scopes = HashSet::new();
+        let mut cleared_alias_scopes = alias_scopes.into_iter().collect::<HashSet<_>>();
         for _ in 0..MAX_PASSES {
             let prev =
                 ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
+            let mut extracted_override_constants = HashSet::new();
 
             for data in overlay.components.values() {
                 Self::apply_instance_class_overrides(
@@ -334,6 +341,7 @@ impl TypeChecker {
                     data,
                     ctx,
                     &mut cleared_alias_scopes,
+                    &mut extracted_override_constants,
                 );
             }
 
@@ -343,6 +351,27 @@ impl TypeChecker {
                 break;
             }
         }
+    }
+
+    fn collect_instance_class_override_alias_scopes(overlay: &InstanceOverlay) -> Vec<String> {
+        let mut scopes = Vec::new();
+        let mut seen = HashSet::new();
+        for data in overlay.components.values() {
+            if data.class_overrides.is_empty() {
+                continue;
+            }
+            let comp_scope = data.qualified_name.to_flat_string();
+            if comp_scope.is_empty() {
+                continue;
+            }
+            for class_override in data.class_overrides.values() {
+                let alias_scope = format!("{}.{}", comp_scope, class_override.alias);
+                if seen.insert(alias_scope.clone()) {
+                    scopes.push(alias_scope);
+                }
+            }
+        }
+        scopes
     }
 
     fn flush_eval_warnings(&mut self) {
@@ -357,6 +386,7 @@ impl TypeChecker {
         data: &rumoca_ir_ast::InstanceData,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
         cleared_alias_scopes: &mut HashSet<String>,
+        extracted_override_constants: &mut HashSet<(String, DefId)>,
     ) {
         if data.class_overrides.is_empty() {
             return;
@@ -377,6 +407,7 @@ impl TypeChecker {
                 class_override.target_def_id,
                 ctx,
                 cleared_alias_scopes,
+                extracted_override_constants,
             );
         }
     }
@@ -390,6 +421,7 @@ impl TypeChecker {
         def_id: DefId,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
         cleared_alias_scopes: &mut HashSet<String>,
+        extracted_override_constants: &mut HashSet<(String, DefId)>,
     ) {
         if Self::try_apply_forwarded_parent_alias_constants(
             tree,
@@ -409,12 +441,24 @@ impl TypeChecker {
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
         // package constants in the local alias scope.
         Self::clear_alias_scope_values_once(ctx, &alias_scope, cleared_alias_scopes);
-        Self::extract_override_class_constants(tree, &alias_scope, def_id, ctx);
+        Self::extract_override_class_constants_once(
+            tree,
+            &alias_scope,
+            def_id,
+            ctx,
+            extracted_override_constants,
+        );
 
         // For declarations like `Medium.BaseProperties medium`, expose
         // unqualified constants (`medium.nX`) from the active alias only.
         if is_active_alias {
-            Self::extract_override_class_constants(tree, comp_scope, def_id, ctx);
+            Self::extract_override_class_constants_once(
+                tree,
+                comp_scope,
+                def_id,
+                ctx,
+                extracted_override_constants,
+            );
         }
     }
 
@@ -1059,6 +1103,23 @@ impl TypeChecker {
         Self::retain_without_prefix_if_present(&mut ctx.enum_ordinals, &prefix);
     }
 
+    fn clear_alias_scope_values_many<'a>(
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        aliases: impl IntoIterator<Item = &'a str>,
+    ) {
+        let aliases = aliases.into_iter().collect::<HashSet<_>>();
+        if aliases.is_empty() {
+            return;
+        }
+        Self::retain_without_alias_scope(&mut ctx.integers, &aliases);
+        Self::retain_without_alias_scope(&mut ctx.reals, &aliases);
+        Self::retain_without_alias_scope(&mut ctx.booleans, &aliases);
+        Self::retain_without_alias_scope(&mut ctx.enums, &aliases);
+        Self::retain_without_alias_scope(&mut ctx.dimensions, &aliases);
+        Self::retain_without_alias_scope(&mut ctx.enum_sizes, &aliases);
+        Self::retain_without_alias_scope(&mut ctx.enum_ordinals, &aliases);
+    }
+
     fn clear_alias_scope_values_once(
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
         alias: &str,
@@ -1073,10 +1134,20 @@ impl TypeChecker {
         values: &mut rustc_hash::FxHashMap<String, T>,
         prefix: &str,
     ) {
-        if values.is_empty() || !values.keys().any(|key| key.starts_with(prefix)) {
+        if values.is_empty() {
             return;
         }
         values.retain(|key, _| !key.starts_with(prefix));
+    }
+
+    fn retain_without_alias_scope<T>(
+        values: &mut rustc_hash::FxHashMap<String, T>,
+        aliases: &HashSet<&str>,
+    ) {
+        if values.is_empty() {
+            return;
+        }
+        values.retain(|key, _| !key_has_alias_scope(key, aliases));
     }
 
     /// Collect `(alias, def_id)` pairs from direct model extends redeclare modifiers.
@@ -1159,6 +1230,20 @@ impl TypeChecker {
             c.def_id
                 .or_else(|| resolved_qname.and_then(|q| tree.name_map.get(&q).copied()))
         })
+    }
+
+    /// Extract constants for one resolved redeclare override root under its alias.
+    fn extract_override_class_constants_once(
+        tree: &ClassTree,
+        alias: &str,
+        def_id: DefId,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        extracted: &mut HashSet<(String, DefId)>,
+    ) {
+        if !extracted.insert((alias.to_string(), def_id)) {
+            return;
+        }
+        Self::extract_override_class_constants(tree, alias, def_id, ctx);
     }
 
     /// Extract constants for one resolved redeclare override root under its alias.
@@ -1930,6 +2015,18 @@ fn insert_function_def(
             .entry(name.to_string())
             .or_insert_with(|| class.clone());
     }
+}
+
+fn key_has_alias_scope(key: &str, aliases: &HashSet<&str>) -> bool {
+    let mut end = key.len();
+    while let Some(dot_index) = key[..end].rfind('.') {
+        let candidate = &key[..dot_index];
+        if aliases.contains(candidate) {
+            return true;
+        }
+        end = dot_index;
+    }
+    false
 }
 
 impl Default for TypeChecker {

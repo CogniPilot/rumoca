@@ -131,6 +131,137 @@ fn eval_expr_rejects_string_literal_in_scalar_path() {
 }
 
 #[test]
+fn eval_expr_size_of_string_fill_uses_shape_without_evaluating_string_value() {
+    let expr = builtin(
+        BuiltinFunction::Size,
+        vec![
+            builtin(
+                BuiltinFunction::Fill,
+                vec![
+                    rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::String(String::new()),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                    int_lit(0),
+                ],
+            ),
+            int_lit(1),
+        ],
+    );
+
+    assert_eq!(eval_expr::<f64>(&expr, &VarEnv::new()), Ok(0.0));
+}
+
+#[test]
+fn eval_expr_size_of_string_array_literal_uses_shape_without_evaluating_string_value() {
+    let expr = builtin(
+        BuiltinFunction::Size,
+        vec![
+            rumoca_core::Expression::Array {
+                elements: vec![rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::String("water".to_string()),
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+            int_lit(1),
+        ],
+    );
+
+    assert_eq!(eval_expr::<f64>(&expr, &VarEnv::new()), Ok(1.0));
+}
+
+#[test]
+fn eval_expr_sum_accepts_colon_subscript_array_argument() {
+    let mut env = VarEnv::new();
+    set_vector_var(&mut env, "v", &[3.0, -6.0, 9.0]);
+    let values = rumoca_core::Expression::VarRef {
+        name: Reference::new("v"),
+        subscripts: vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = builtin(
+        BuiltinFunction::Sum,
+        vec![binop(
+            OpBinary::Div,
+            builtin(BuiltinFunction::Abs, vec![values]),
+            lit(3.0),
+        )],
+    );
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(6.0));
+}
+
+#[test]
+fn eval_array_values_accepts_scalar_times_array_comprehension() {
+    let mut env = VarEnv::new();
+    env.set("scale", 10.0);
+    set_vector_var(&mut env, "speeds", &[2.0, 4.0, 6.0]);
+    let comprehension = rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(binop(
+            OpBinary::Div,
+            rumoca_core::Expression::VarRef {
+                name: Reference::new("speeds"),
+                subscripts: vec![Subscript::generated_expr(Box::new(var("i")))],
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::VarRef {
+                name: Reference::new("speeds"),
+                subscripts: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
+                span: rumoca_core::Span::DUMMY,
+            },
+        )),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(3)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = binop(OpBinary::Mul, var("scale"), comprehension);
+
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&expr, &env, 3),
+        Ok(vec![10.0, 20.0, 30.0])
+    );
+}
+
+#[test]
+fn eval_expr_validates_array_comprehension_with_local_index_binding() {
+    let mut env = VarEnv::new();
+    set_vector_var(&mut env, "values", &[1.0, 2.0, 3.0]);
+    let comprehension = rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(rumoca_core::Expression::VarRef {
+            name: Reference::new("values"),
+            subscripts: vec![Subscript::generated_expr(Box::new(var("i")))],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(3)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_expr::<f64>(&builtin(BuiltinFunction::Sum, vec![comprehension]), &env),
+        Ok(6.0)
+    );
+}
+
+#[test]
 fn eval_expr_rejects_placeholder_binary_operators() {
     let expr = binop(OpBinary::Assign, lit(1.0), lit(2.0));
 
@@ -831,4 +962,51 @@ fn external_table_constructor_accepts_named_table_arguments() {
         try_eval_table_lookup_value_in(table_id, 1.0, 2.0, &tables),
         Some(14.0)
     );
+}
+
+#[test]
+fn external_table_constructor_loads_file_backed_modelica_text_table() {
+    let env = VarEnv::<f64>::new();
+    let path = std::env::temp_dir().join(format!(
+        "rumoca-file-backed-table-{}-{}.mos",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    std::fs::write(
+        &path,
+        "#1\n\
+         double tab1(2,3)\n\
+         # comment\n\
+         0 10 20\n\
+         1 11 21\n",
+    )
+    .expect("write test Modelica text table");
+    let constructor = fn_call(
+        "ExternalCombiTable1D",
+        vec![
+            named_ctor_arg("tableName", string_lit("tab1")),
+            named_ctor_arg(
+                "fileName",
+                string_lit(path.to_str().expect("utf-8 temp path")),
+            ),
+            named_ctor_arg("table", var("file_table_placeholder")),
+            named_ctor_arg("columns", arr(vec![int_lit(2), int_lit(3)], false)),
+            named_ctor_arg("smoothness", int_lit(1)),
+            named_ctor_arg("extrapolation", int_lit(1)),
+        ],
+    );
+
+    let table_id = eval_expr::<f64>(&constructor, &env).expect("file-backed table lowers");
+    let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
+
+    assert_eq!(tables.len(), 1);
+    assert_eq!(
+        tables[0].data,
+        vec![vec![0.0, 10.0, 20.0], vec![1.0, 11.0, 21.0]]
+    );
+    assert_eq!(
+        try_eval_table_lookup_value_in(table_id, 1.0, 0.5, &tables),
+        Some(10.5)
+    );
+    let _ = std::fs::remove_file(path);
 }

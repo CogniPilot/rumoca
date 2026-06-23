@@ -562,7 +562,8 @@ fn validate_target_capabilities(
 }
 
 fn render_dae_target_str(dae: &dae::Dae, template: &str, model_name: &str) -> Result<String> {
-    crate::codegen_api::render_dae_template_with_name(dae, template, model_name)
+    let prepared = rumoca_phase_dae::prepare_dae_for_codegen(dae);
+    crate::codegen_api::render_dae_template_with_name(prepared.as_dae(), template, model_name)
         .map_err(anyhow::Error::from)
 }
 

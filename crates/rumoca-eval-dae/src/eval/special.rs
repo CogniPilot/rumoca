@@ -158,8 +158,10 @@ fn build_local_function_env<T: SimFloat>(env: &VarEnv<T>) -> VarEnv<T> {
     local_env.vars = crate::eval::VarScope::child_of(&env.vars);
     local_env.runtime = env.runtime.clone();
     local_env.functions = env.functions.clone();
-    local_env.dims = env.dims.clone();
+    local_env.dims = Arc::new(IndexMap::new());
     local_env.start_exprs = env.start_exprs.clone();
+    local_env.start_expr_refs = env.start_expr_refs.clone();
+    local_env.start_alias_sources = env.start_alias_sources.clone();
     local_env.clock_intervals = env.clock_intervals.clone();
     local_env.enum_literal_ordinals = env.enum_literal_ordinals.clone();
     local_env.is_initial = env.is_initial;
@@ -517,7 +519,7 @@ fn copy_array_input_entries<T: SimFloat>(
 
     let source_index_prefix = format!("{source_name}[");
     let mut copied_entries = 0usize;
-    for (key, value) in &caller_env.vars {
+    for (key, value) in caller_env.vars.prefixed_entries(&source_name) {
         if let Some(index_suffix) = key.strip_prefix(&source_name)
             && index_suffix.starts_with('[')
         {
@@ -1333,10 +1335,11 @@ fn selected_input_fields<T: SimFloat>(
     dst_prefix: &str,
 ) -> Vec<(String, T)> {
     let mut selected = Vec::new();
-    for (key, value) in &env.vars {
-        if let Some(suffix) = key.strip_prefix(src_prefix) {
-            selected.push((format!("{dst_prefix}{suffix}"), *value));
-        }
+    for (key, value) in env.vars.prefixed_entries(src_prefix) {
+        let Some(suffix) = key.strip_prefix(src_prefix) else {
+            continue;
+        };
+        selected.push((format!("{dst_prefix}{suffix}"), *value));
     }
     selected
 }
@@ -1347,7 +1350,10 @@ fn copy_selected_input_start_fields<T: SimFloat>(
     src_prefix: &str,
     dst_prefix: &str,
 ) -> Result<(), EvalError> {
-    for (key, start_expr) in env.start_exprs.iter() {
+    for key in super::prefixed_start_expr_keys(env, src_prefix).iter() {
+        let Some(start_expr) = env.start_exprs.get(key.as_str()) else {
+            continue;
+        };
         let Some(suffix) = key.strip_prefix(src_prefix) else {
             continue;
         };

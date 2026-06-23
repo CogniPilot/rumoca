@@ -655,7 +655,9 @@ impl<'a> LowerBuilder<'a> {
                 compile_time_var_key(name, subscripts, const_scope)
                     .ok()
                     .is_some_and(|key| {
-                        self.structural_bindings.contains_key(key.as_str())
+                        self.local_size_binding_value_for_key(key.as_str())
+                            .is_some()
+                            || self.structural_bindings.contains_key(key.as_str())
                             || matches!(
                                 self.layout.binding(key.as_str()),
                                 Some(ScalarSlot::Constant(_))

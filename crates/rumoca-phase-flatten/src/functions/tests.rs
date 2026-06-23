@@ -954,6 +954,52 @@ fn test_constructor_signature_preserves_local_default_references() {
 }
 
 #[test]
+fn test_constructor_signature_preserves_variable_size_record_field_shape() {
+    let r_v_def = rumoca_core::DefId::new(21);
+    let class_def = ast::ClassDef {
+        name: rumoca_core::Token {
+            text: "Fan".into(),
+            ..Default::default()
+        },
+        class_type: rumoca_core::ClassType::Record,
+        components: ast::AstIndexMap::from_iter([(
+            "r_V".to_string(),
+            ast::Component {
+                name: "r_V".to_string(),
+                def_id: Some(r_v_def),
+                type_name: ast::Name::from_string("Real"),
+                shape_expr: vec![ast::Subscript::Empty],
+                ..Default::default()
+            },
+        )]),
+        ..Default::default()
+    };
+    let mut tree = ast::ClassTree::default();
+    tree.def_map.insert(r_v_def, "Pkg.Fan.r_V".to_string());
+    let source_map = rumoca_core::SourceMap::new();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut member_cache = qualify::MemberDefIdCache::default();
+
+    let constructor = convert_constructor_signature(
+        &tree,
+        &class_index,
+        &class_def,
+        "Pkg.Fan",
+        &source_map,
+        &tree.def_map,
+        &mut member_cache,
+    )
+    .unwrap();
+
+    assert_eq!(constructor.inputs[0].name, "r_V");
+    assert_eq!(constructor.inputs[0].dims, vec![0]);
+    assert!(matches!(
+        constructor.inputs[0].shape_expr.as_slice(),
+        [rumoca_core::Subscript::Colon { .. }]
+    ));
+}
+
+#[test]
 fn test_external_object_constructor_signature_uses_local_external_constructor() {
     let object_def = rumoca_core::DefId::new(11);
     let constructor_def = rumoca_core::DefId::new(12);

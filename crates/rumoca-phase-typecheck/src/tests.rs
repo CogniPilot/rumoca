@@ -27,6 +27,35 @@ fn typecheck_diagnostics(source: &str) -> rumoca_core::Diagnostics {
 }
 
 #[test]
+fn alias_scope_batch_clear_removes_only_child_scope_values() {
+    let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+    ctx.add_integer("coil.Medium.nX", 2);
+    ctx.add_integer("coil.MediumExtra.nX", 3);
+    ctx.add_integer("coil.nX", 4);
+    ctx.add_real("coil.Medium.d", 1.2);
+    ctx.add_dimensions("coil.Medium.X", vec![2]);
+
+    TypeChecker::clear_alias_scope_values_many(&mut ctx, ["coil.Medium"]);
+
+    assert_eq!(ctx.get_integer("coil.Medium.nX"), None);
+    assert_eq!(ctx.reals.get("coil.Medium.d"), None);
+    assert_eq!(ctx.get_dimensions("coil.Medium.X"), None);
+    assert_eq!(ctx.get_integer("coil.MediumExtra.nX"), Some(3));
+    assert_eq!(ctx.get_integer("coil.nX"), Some(4));
+}
+
+#[test]
+fn alias_scope_key_match_checks_ancestor_segments() {
+    let aliases = ["a.b", "x"].into_iter().collect::<HashSet<_>>();
+
+    assert!(key_has_alias_scope("a.b.c", &aliases));
+    assert!(key_has_alias_scope("a.b.c.d", &aliases));
+    assert!(key_has_alias_scope("x.y", &aliases));
+    assert!(!key_has_alias_scope("a.bc.d", &aliases));
+    assert!(!key_has_alias_scope("a.b", &aliases));
+}
+
+#[test]
 fn test_empty_typecheck() {
     let tree = ClassTree::new();
     let parsed = ParsedTree::new(tree);

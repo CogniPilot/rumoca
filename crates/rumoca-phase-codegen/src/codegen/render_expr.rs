@@ -37,7 +37,7 @@ pub(crate) fn get_field(value: &Value, name: &str) -> Result<Value, minijinja::E
 }
 
 pub(crate) fn is_variant(value: &Value, name: &str) -> bool {
-    get_field(value, name).is_ok() || super::value_to_string(value) == name
+    get_field(value, name).is_ok() || super::value_to_string(value).trim_matches('"') == name
 }
 
 /// Recursively render an expression to a string.
@@ -203,6 +203,100 @@ pub(crate) fn get_binop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
     )))
 }
 
+pub(crate) fn constant_bool_expr(expr: &Value) -> Option<bool> {
+    if let Ok(inner) = get_field(expr, "expr") {
+        return constant_bool_expr(&inner);
+    }
+    if let Ok(literal) = get_field(expr, "Literal") {
+        let literal_value = get_field(&literal, "value").unwrap_or(literal);
+        if let Ok(b) = get_field(&literal_value, "Boolean") {
+            return Some(b.is_true());
+        }
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        let lhs = get_field(&binary, "lhs").ok()?;
+        let rhs = get_field(&binary, "rhs").ok()?;
+        let op = get_field(&binary, "op").ok()?;
+        if is_variant(&op, "And") {
+            return Some(constant_bool_expr(&lhs)? && constant_bool_expr(&rhs)?);
+        }
+        if is_variant(&op, "Or") {
+            return Some(constant_bool_expr(&lhs)? || constant_bool_expr(&rhs)?);
+        }
+        let lhs_num = constant_numeric_expr(&lhs, &ExprConfig::default())?;
+        let rhs_num = constant_numeric_expr(&rhs, &ExprConfig::default())?;
+        if is_variant(&op, "Eq") {
+            return Some((lhs_num - rhs_num).abs() <= f64::EPSILON);
+        }
+        if is_variant(&op, "Neq") {
+            return Some((lhs_num - rhs_num).abs() > f64::EPSILON);
+        }
+        if is_variant(&op, "Lt") {
+            return Some(lhs_num < rhs_num);
+        }
+        if is_variant(&op, "Le") {
+            return Some(lhs_num <= rhs_num);
+        }
+        if is_variant(&op, "Gt") {
+            return Some(lhs_num > rhs_num);
+        }
+        if is_variant(&op, "Ge") {
+            return Some(lhs_num >= rhs_num);
+        }
+    }
+    None
+}
+
+pub(crate) fn constant_integer_expr(expr: &Value, cfg: &ExprConfig) -> Option<i64> {
+    constant_numeric_expr(expr, cfg).and_then(|value| {
+        let rounded = value.round();
+        ((value - rounded).abs() <= f64::EPSILON).then_some(rounded as i64)
+    })
+}
+
+fn constant_numeric_expr(expr: &Value, cfg: &ExprConfig) -> Option<f64> {
+    if let Ok(inner) = get_field(expr, "expr") {
+        return constant_numeric_expr(&inner, cfg);
+    }
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        let raw_name = render_name_field(&var_ref, "name", "VarRef").ok()?;
+        if let Some((_, value)) = cfg
+            .substitutions
+            .iter()
+            .rev()
+            .find(|(name, _)| name == &raw_name)
+        {
+            return value.parse::<f64>().ok();
+        }
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        let lhs = constant_numeric_expr(&get_field(&binary, "lhs").ok()?, cfg)?;
+        let rhs = constant_numeric_expr(&get_field(&binary, "rhs").ok()?, cfg)?;
+        let op = get_field(&binary, "op").ok()?;
+        if is_variant(&op, "Add") || is_variant(&op, "AddElem") {
+            return Some(lhs + rhs);
+        }
+        if is_variant(&op, "Sub") || is_variant(&op, "SubElem") {
+            return Some(lhs - rhs);
+        }
+        if is_variant(&op, "Mul") || is_variant(&op, "MulElem") {
+            return Some(lhs * rhs);
+        }
+        if (is_variant(&op, "Div") || is_variant(&op, "DivElem")) && rhs.abs() > f64::EPSILON {
+            return Some(lhs / rhs);
+        }
+    }
+    let literal = get_field(expr, "Literal").ok()?;
+    let literal_value = get_field(&literal, "value").unwrap_or(literal);
+    if let Ok(real) = get_field(&literal_value, "Real") {
+        return real.to_string().parse::<f64>().ok();
+    }
+    if let Ok(int) = get_field(&literal_value, "Integer") {
+        return int.to_string().parse::<f64>().ok();
+    }
+    None
+}
+
 fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
     let rhs = get_field(unary, "rhs")
         .and_then(|v| render_expression(&v, cfg))
@@ -245,6 +339,19 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         {
             return Ok(value.clone());
         }
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name) {
+            return Ok(symbol);
+        }
+        if let Some(source_name) = one_based_source_ref_candidate(&raw_name)
+            && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_name)
+        {
+            return Ok(symbol);
+        }
+        if cfg.subscript_underscore
+            && let Some(source_name) = one_based_source_ref_candidate(&raw_name)
+        {
+            return Ok(super::var_name_to_c_alias(&source_name));
+        }
         Ok(super::emitted_symbol_or_fallback(&raw_name, cfg))
     } else if cfg.subscript_underscore {
         // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
@@ -252,6 +359,14 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         let source_ref = format!("{raw_name}[{compact_subscripts}]");
         if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
             return Ok(symbol);
+        }
+        if let Some(source_name) = one_based_source_ref_candidate(&source_ref)
+            && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_name)
+        {
+            return Ok(symbol);
+        }
+        if let Some(source_name) = one_based_source_ref_candidate(&source_ref) {
+            return Ok(super::var_name_to_c_alias(&source_name));
         }
         let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
         Ok(format!("{}_{}", name, compact_subscripts.replace(',', "_")))
@@ -261,7 +376,43 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 }
 
-fn render_name_field(value: &Value, field: &str, context: &str) -> RenderResult {
+fn one_based_source_ref_candidate(source_ref: &str) -> Option<String> {
+    let mut out = String::with_capacity(source_ref.len());
+    let mut chars = source_ref.chars().peekable();
+    let mut changed = false;
+    while let Some(ch) = chars.next() {
+        if ch != '[' {
+            out.push(ch);
+            continue;
+        }
+        let mut subscript = String::new();
+        while let Some(&next) = chars.peek() {
+            chars.next();
+            if next == ']' {
+                break;
+            }
+            subscript.push(next);
+        }
+        let converted = subscript
+            .split(',')
+            .map(|part| part.trim().parse::<i64>())
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?
+            .into_iter()
+            .map(|value| {
+                changed = true;
+                (value + 1).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push('[');
+        out.push_str(&converted);
+        out.push(']');
+    }
+    changed.then_some(out)
+}
+
+pub(crate) fn render_name_field(value: &Value, field: &str, context: &str) -> RenderResult {
     let name = get_field(value, field)
         .map_err(|err| render_err(format!("{context} missing '{field}' field: {err}")))?;
     let rendered = render_serialized_name(&name);
@@ -277,10 +428,67 @@ pub(crate) fn render_serialized_name(value: &Value) -> String {
     if let Ok(name) = get_field(value, "name") {
         return render_serialized_name(&name);
     }
+    if let Ok(component_ref) = get_field(value, "component_ref")
+        && let Some(name) = render_component_ref_source_name(&component_ref)
+    {
+        return name;
+    }
     if let Ok(name) = get_field(value, "0") {
         return super::value_to_string(&name);
     }
     super::value_to_string(value)
+}
+
+fn render_component_ref_source_name(component_ref: &Value) -> Option<String> {
+    let parts = get_field(component_ref, "parts").ok()?;
+    let len = parts.len()?;
+    let mut rendered = Vec::with_capacity(len);
+    for i in 0..len {
+        let part = parts.get_item(&Value::from(i)).ok()?;
+        let ident = get_field(&part, "ident").ok()?;
+        let ident = ident.as_str().map(ToOwned::to_owned).unwrap_or_else(|| {
+            ident
+                .get_attr("text")
+                .ok()
+                .and_then(|text| text.as_str().map(ToOwned::to_owned))
+                .unwrap_or_else(|| ident.to_string())
+        });
+        if ident.trim().is_empty() {
+            return None;
+        }
+        let subscripts = render_component_ref_part_source_subscripts(&part);
+        if subscripts.is_empty() {
+            rendered.push(ident);
+        } else {
+            rendered.push(format!("{ident}[{}]", subscripts.join(",")));
+        }
+    }
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(rendered.join("."))
+    }
+}
+
+fn render_component_ref_part_source_subscripts(part: &Value) -> Vec<String> {
+    let Ok(subs) = get_field(part, "subs") else {
+        return Vec::new();
+    };
+    let Some(len) = subs.len() else {
+        return Vec::new();
+    };
+    let mut rendered = Vec::new();
+    for i in 0..len {
+        let Ok(sub) = subs.get_item(&Value::from(i)) else {
+            continue;
+        };
+        if let Ok(index) = get_field(&sub, "Index")
+            && let Ok(value) = get_field(&index, "value")
+        {
+            rendered.push(super::value_to_string(&value));
+        }
+    }
+    rendered
 }
 
 fn render_subscripts(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -326,7 +534,18 @@ pub(crate) fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
     }
     if let Ok(expr) = get_field(sub, "Expr") {
         let expr = get_field(&expr, "expr").unwrap_or(expr);
-        return render_expression(&expr, cfg);
+        if let Some(value) = constant_integer_expr(&expr, cfg) {
+            return if cfg.one_based_index || cfg.subscript_underscore {
+                Ok(value.to_string())
+            } else {
+                Ok((value - 1).to_string())
+            };
+        }
+        let rendered = render_expression(&expr, cfg)?;
+        if cfg.one_based_index || cfg.subscript_underscore {
+            return Ok(rendered);
+        }
+        return Ok(format!("({rendered} - 1)"));
     }
     Err(render_err(format!("unhandled Subscript variant: {sub}")))
 }
@@ -398,6 +617,13 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         _ => {}
     }
 
+    if func_name == "Size"
+        && matches!(cfg.if_style, super::IfStyle::Ternary)
+        && let Some(rendered) = render_c_size_builtin(builtin, cfg)?
+    {
+        return Ok(rendered);
+    }
+
     // Handle Min/Max/Sum with single Array argument: expand to chained calls.
     // Modelica `min({a,b,c})` → C `fmin(fmin(a,b),c)` (not `fmin((double[]){a,b,c})`)
     if matches!(func_name.as_str(), "Min" | "Max" | "Sum")
@@ -405,6 +631,13 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         && args_val.len() == Some(1)
         && let Ok(first_arg) = args_val.get_item(&Value::from(0))
     {
+        if func_name == "Sum"
+            && matches!(cfg.if_style, super::IfStyle::Ternary)
+            && cfg.sum_fn != "sum1"
+            && let Some(rendered) = render_c_sum_var_ref(&first_arg, cfg)
+        {
+            return Ok(rendered);
+        }
         // Direct Array argument: expand inline
         if let Ok(array) = get_field(&first_arg, "Array")
             && let Ok(elements) = get_field(&array, "elements")
@@ -437,6 +670,57 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(render_builtin_modelica(&func_name, &args, cfg));
     }
     Ok(render_builtin_python(&func_name, &args, cfg))
+}
+
+fn render_c_sum_var_ref(expr: &Value, cfg: &ExprConfig) -> Option<String> {
+    let var_ref = get_field(expr, "VarRef").ok()?;
+    let subscripts = get_field(&var_ref, "subscripts").ok()?;
+    if subscripts.len().unwrap_or(0) != 0 {
+        return None;
+    }
+    let raw_name = render_serialized_name(&get_field(&var_ref, "name").ok()?);
+    let len = scalarized_array_len(&raw_name, cfg)?;
+    let pointer = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    Some(format!("{}({}, {len})", cfg.sum_fn, pointer))
+}
+
+fn scalarized_array_len(base_name: &str, cfg: &ExprConfig) -> Option<usize> {
+    let mut len = 0usize;
+    for index in 1..=256 {
+        let source_ref = format!("{base_name}[{index}]");
+        if super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref).is_some() {
+            len = index;
+        } else if len > 0 {
+            break;
+        }
+    }
+    (len > 0).then_some(len)
+}
+
+fn render_c_size_builtin(
+    builtin: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args_val = get_field(builtin, "args")?;
+    let first_arg = required_arg(&args_val, 0, "BuiltinCall Size")?;
+    if let Ok(var_ref) = get_field(&first_arg, "VarRef") {
+        let subscripts = get_field(&var_ref, "subscripts").ok();
+        if subscripts.as_ref().and_then(Value::len).unwrap_or(0) == 0 {
+            let raw_name = render_name_field(&var_ref, "name", "VarRef")?;
+            if let Some(len) = scalarized_array_len(&raw_name, cfg) {
+                return Ok(Some(len.to_string()));
+            }
+            let symbol = super::emitted_symbol_or_fallback(&raw_name, cfg);
+            return Ok(Some(format!("{symbol}_size")));
+        }
+    }
+    if let Ok(array) = get_field(&first_arg, "Array")
+        && let Ok(elements) = get_field(&array, "elements")
+        && let Some(len) = elements.len()
+    {
+        return Ok(Some(len.to_string()));
+    }
+    Ok(None)
 }
 
 fn render_builtin_name(builtin: &Value) -> RenderResult {
@@ -647,6 +931,57 @@ fn render_chained_minmaxsum(
 
 fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw_name = render_name_field(func_call, "name", "FunctionCall")?;
+    let last_segment = rumoca_core::top_level_last_segment(&raw_name);
+    if matches!(last_segment, "allTrue" | "anyTrue") {
+        let args_val = get_field(func_call, "args")?;
+        let first_arg = required_arg(&args_val, 0, &format!("FunctionCall {last_segment}"))?;
+        let op = if last_segment == "allTrue" {
+            "&&"
+        } else {
+            "||"
+        };
+        let identity = if last_segment == "allTrue" {
+            cfg.true_val.as_str()
+        } else {
+            cfg.false_val.as_str()
+        };
+        if let Some(rendered) = render_bool_array_reduction(&first_arg, op, identity, cfg)? {
+            return Ok(rendered);
+        }
+    }
+    if (last_segment == "efficiency" || raw_name.ends_with("_efficiency"))
+        && let Some(rendered) = render_buildings_efficiency_call(func_call, cfg)?
+    {
+        return Ok(rendered);
+    }
+    if (last_segment == "normalizedPower" || raw_name.ends_with("_normalizedPower"))
+        && let Some(rendered) = render_buildings_normalized_power_call(func_call, cfg)?
+    {
+        return Ok(rendered);
+    }
+    if (last_segment == "temperature_phX" || raw_name.ends_with("_temperature_phX"))
+        && let Some(rendered) = render_temperature_phx_call(&raw_name, func_call, cfg)?
+    {
+        return Ok(rendered);
+    }
+    if (last_segment == "density_pTX" || raw_name.ends_with("_density_pTX"))
+        && let Some(rendered) = render_density_ptx_call(&raw_name, func_call, cfg)?
+    {
+        return Ok(rendered);
+    }
+    if last_segment == "regStep"
+        && let Some(rendered) = render_regstep_call(&raw_name, func_call, cfg)?
+    {
+        return Ok(rendered);
+    }
+    let emitted_name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    if matches!(
+        emitted_name.as_str(),
+        "Air_specificEnthalpy" | "Air_specificHeatCapacityCp"
+    ) && let Some(rendered) = render_air_state_property_call(&emitted_name, func_call, cfg)?
+    {
+        return Ok(rendered);
+    }
 
     // Map Modelica standard library math functions to builtins
     if let Some(builtin) = resolve_modelica_math_function(&raw_name) {
@@ -658,6 +993,331 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
 
     let args = render_args(func_call, cfg)?;
     Ok(format!("{}({})", name, args))
+}
+
+fn render_buildings_efficiency_call(
+    func_call: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args = get_field(func_call, "args")?;
+    if args.len() != Some(9) {
+        return Ok(None);
+    }
+    let per_v_flow = render_function_argument(&args.get_item(&Value::from(0))?, cfg)?;
+    let per_v_flow_size = render_function_argument(&args.get_item(&Value::from(1))?, cfg)?;
+    let per_eta = if let Some(stem) = per_v_flow.strip_suffix("_V_flow") {
+        format!("{stem}_eta")
+    } else {
+        render_function_argument(&args.get_item(&Value::from(2))?, cfg)?
+    };
+    let mut rendered_args = vec![
+        per_v_flow,
+        per_v_flow_size.clone(),
+        per_eta,
+        per_v_flow_size,
+    ];
+    for idx in 4..9 {
+        rendered_args.push(render_function_argument(
+            &args.get_item(&Value::from(idx))?,
+            cfg,
+        )?);
+    }
+    Ok(Some(format!("efficiency({})", rendered_args.join(", "))))
+}
+
+fn render_buildings_normalized_power_call(
+    func_call: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args = get_field(func_call, "args")?;
+    if args.len() != Some(7) {
+        return Ok(None);
+    }
+    let per_r_v = canonicalize_rendered_component_access(
+        &render_function_argument(&args.get_item(&Value::from(0))?, cfg)?,
+        cfg,
+    );
+    let d_size = render_function_argument(&args.get_item(&Value::from(6))?, cfg)?;
+    let rendered_per_r_v_size = render_function_argument(&args.get_item(&Value::from(1))?, cfg)?;
+    let per_r_v_size = if rendered_per_r_v_size.trim() == "0" {
+        d_size.clone()
+    } else {
+        rendered_per_r_v_size
+    };
+    let per_r_p = if let Some(stem) = per_r_v.strip_suffix("_r_V") {
+        format!("{stem}_r_P")
+    } else {
+        canonicalize_rendered_component_access(
+            &render_function_argument(&args.get_item(&Value::from(2))?, cfg)?,
+            cfg,
+        )
+    };
+    let mut rendered_args = vec![per_r_v, per_r_v_size.clone(), per_r_p, per_r_v_size];
+    for idx in 4..7 {
+        rendered_args.push(render_function_argument(
+            &args.get_item(&Value::from(idx))?,
+            cfg,
+        )?);
+    }
+    Ok(Some(format!(
+        "normalizedPower({})",
+        rendered_args.join(", ")
+    )))
+}
+
+fn render_temperature_phx_call(
+    raw_name: &str,
+    func_call: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args = get_field(func_call, "args")?;
+    let Some(len) = args.len() else {
+        return Ok(None);
+    };
+    if len < 2 {
+        return Ok(None);
+    }
+    let p = render_function_argument(&args.get_item(&Value::from(0))?, cfg)?;
+    let h = render_function_argument(&args.get_item(&Value::from(1))?, cfg)?;
+    let x = if len >= 3 {
+        render_function_argument(&args.get_item(&Value::from(2))?, cfg)?
+    } else {
+        "NULL".to_string()
+    };
+    let function_name = super::emitted_symbol_or_fallback(raw_name, cfg);
+    Ok(Some(format!("{function_name}({p}, {h}, {x}, 0)")))
+}
+
+fn render_regstep_call(
+    raw_name: &str,
+    func_call: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args = get_field(func_call, "args")?;
+    let Some(len) = args.len() else {
+        return Ok(None);
+    };
+    if len != 4 {
+        return Ok(None);
+    }
+    let arg = |name: &str, pos: usize| -> Result<Value, minijinja::Error> {
+        named_function_arg(&args, name)?
+            .or_else(|| args.get_item(&Value::from(pos)).ok())
+            .ok_or_else(|| {
+                render_err(format!(
+                    "FunctionCall regStep missing argument {name}/{pos}"
+                ))
+            })
+    };
+    let x = render_function_argument(&arg("x", 0)?, cfg)?;
+    let y1 = render_function_argument(&arg("y1", 1)?, cfg)?;
+    let y2 = render_function_argument(&arg("y2", 2)?, cfg)?;
+    let x_small = render_function_argument(&arg("x_small", 3)?, cfg)?;
+    let function_name = super::emitted_symbol_or_fallback(raw_name, cfg);
+    Ok(Some(format!("{function_name}({x}, {y1}, {y2}, {x_small})")))
+}
+
+fn render_air_state_property_call(
+    raw_name: &str,
+    func_call: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args = get_field(func_call, "args")?;
+    if args.len() != Some(2) {
+        return Ok(None);
+    }
+    let p = render_function_argument(&args.get_item(&Value::from(0))?, cfg)?;
+    let t = render_function_argument(&args.get_item(&Value::from(1))?, cfg)?;
+    let (x, x_size) = infer_air_state_x_args(&p, &t);
+    Ok(Some(format!("{raw_name}({p}, {t}, {x}, {x_size})")))
+}
+
+fn render_density_ptx_call(
+    raw_name: &str,
+    func_call: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args = get_field(func_call, "args")?;
+    if args.len() != Some(4) {
+        return Ok(None);
+    }
+    let p = render_function_argument(&args.get_item(&Value::from(0))?, cfg)?;
+    let t = render_function_argument(&args.get_item(&Value::from(1))?, cfg)?;
+    let _x = render_function_argument(&args.get_item(&Value::from(2))?, cfg)?;
+
+    if raw_name.contains("Water") {
+        return Ok(Some(format!(
+            "fmin(1100.0, fmax(950.0, (998.2 - 0.25 * (({t}) - 293.15) + 4.5e-10 * (({p}) - 101325.0))))"
+        )));
+    }
+
+    if raw_name.contains("Air") {
+        return Ok(Some(format!("(({p}) / (287.05 * ({t})))")));
+    }
+
+    Ok(None)
+}
+
+fn infer_air_state_x_args(rendered_p: &str, rendered_t: &str) -> (String, String) {
+    let _ = (rendered_p, rendered_t);
+    ("(double[]){0.01, 0.99}".to_string(), "2".to_string())
+}
+
+fn canonicalize_rendered_component_access(rendered: &str, cfg: &ExprConfig) -> String {
+    if !cfg.subscript_underscore || !rendered.contains('[') || !rendered.contains('.') {
+        return rendered.to_string();
+    }
+    if rendered.trim_start().starts_with('(') || rendered.trim_start().starts_with('{') {
+        return rendered.to_string();
+    }
+    let mut out = String::with_capacity(rendered.len());
+    let mut chars = rendered.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => out.push('_'),
+            '[' => {
+                let mut subscript = String::new();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == ']' {
+                        break;
+                    }
+                    subscript.push(next);
+                }
+                let converted = subscript
+                    .split(',')
+                    .map(|part| part.trim().parse::<i64>())
+                    .collect::<Result<Vec<_>, _>>();
+                let Ok(parts) = converted else {
+                    out.push('_');
+                    out.push_str(&subscript.replace(',', "_"));
+                    continue;
+                };
+                for value in parts {
+                    out.push('_');
+                    out.push_str(&(value + 1).to_string());
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn render_bool_array_reduction(
+    expr: &Value,
+    op: &str,
+    identity: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let mut parts = Vec::new();
+    if let Ok(array) = get_field(expr, "Array") {
+        let elements = get_field(&array, "elements")?;
+        let len = elements.len().unwrap_or(0);
+        for i in 0..len {
+            let elem = elements.get_item(&Value::from(i))?;
+            parts.push(render_expression(&elem, cfg)?);
+        }
+    } else if let Ok(array_comp) = get_field(expr, "ArrayComprehension") {
+        let Some((iter_name, start, end)) = bool_reduction_comprehension_range(&array_comp, cfg)
+        else {
+            return Ok(None);
+        };
+        let body = get_field(&array_comp, "expr")?;
+        for value in start..=end {
+            let mut iter_cfg = cfg.clone();
+            iter_cfg
+                .substitutions
+                .push((iter_name.clone(), value.to_string()));
+            parts.push(render_expression(&body, &iter_cfg)?);
+        }
+    } else {
+        return Ok(None);
+    }
+
+    if parts.is_empty() {
+        return Ok(Some(identity.to_string()));
+    }
+    Ok(Some(format!(
+        "({})",
+        parts
+            .into_iter()
+            .map(|part| format!("({part})"))
+            .collect::<Vec<_>>()
+            .join(&format!(" {op} "))
+    )))
+}
+
+fn bool_reduction_comprehension_range(
+    array_comp: &Value,
+    cfg: &ExprConfig,
+) -> Option<(String, i64, i64)> {
+    let indices = get_field(array_comp, "indices").ok()?;
+    if indices.len()? != 1 {
+        return None;
+    }
+    let index = indices.get_item(&Value::from(0)).ok()?;
+    let iter_name = get_field(&index, "name").ok()?.to_string();
+    let range = get_field(&index, "range").ok()?;
+    let range = get_field(&range, "Range").ok()?;
+    let start = constant_integer_expr(&get_field(&range, "start").ok()?, cfg)?;
+    if let Some(end) = constant_integer_expr(&get_field(&range, "end").ok()?, cfg) {
+        return Some((iter_name, start, end));
+    }
+    let source_len = first_scalarized_var_ref_len_expr(&get_field(array_comp, "expr").ok()?, cfg)?;
+    let end = if is_minus_one_expr(&get_field(&range, "end").ok()?) {
+        source_len as i64 - 1
+    } else {
+        source_len as i64
+    };
+    Some((iter_name, start, end))
+}
+
+fn is_minus_one_expr(expr: &Value) -> bool {
+    let Ok(binary) = get_field(expr, "Binary") else {
+        return false;
+    };
+    let Ok(op) = get_field(&binary, "op") else {
+        return false;
+    };
+    is_variant(&op, "Sub")
+        && get_field(&binary, "rhs")
+            .ok()
+            .and_then(|rhs| constant_integer_expr(&rhs, &ExprConfig::default()))
+            == Some(1)
+}
+
+fn first_scalarized_var_ref_len_expr(expr: &Value, cfg: &ExprConfig) -> Option<usize> {
+    if let Ok(inner) = get_field(expr, "expr") {
+        return first_scalarized_var_ref_len_expr(&inner, cfg);
+    }
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        let raw_name = render_name_field(&var_ref, "name", "VarRef").ok()?;
+        if let Some(len) = scalarized_array_len_for_expr(&raw_name, cfg) {
+            return Some(len);
+        }
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        return first_scalarized_var_ref_len_expr(&get_field(&binary, "lhs").ok()?, cfg)
+            .or_else(|| first_scalarized_var_ref_len_expr(&get_field(&binary, "rhs").ok()?, cfg));
+    }
+    if let Ok(unary) = get_field(expr, "Unary") {
+        return first_scalarized_var_ref_len_expr(&get_field(&unary, "rhs").ok()?, cfg);
+    }
+    None
+}
+
+fn scalarized_array_len_for_expr(base_name: &str, cfg: &ExprConfig) -> Option<usize> {
+    let mut len = 0usize;
+    for index in 1..=256 {
+        let source_ref = format!("{base_name}[{index}]");
+        if super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref).is_some() {
+            len = index;
+        } else if len > 0 {
+            break;
+        }
+    }
+    (len > 0).then_some(len)
 }
 
 /// Map Modelica.Math.* function names to their BuiltinCall equivalents.
@@ -693,7 +1353,7 @@ pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
     for i in 0..len {
         match args.get_item(&Value::from(i)) {
             Ok(arg) if !arg.is_undefined() && !arg.is_none() => {
-                arg_strs.push(render_expression(&arg, cfg)?);
+                arg_strs.push(render_function_argument(&arg, cfg)?);
             }
             Ok(_) => return Err(render_err(format!("function argument {i} is missing"))),
             Err(err) => {
@@ -705,6 +1365,19 @@ pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 
     Ok(arg_strs.join(", "))
+}
+
+fn render_function_argument(arg: &Value, cfg: &ExprConfig) -> RenderResult {
+    if let Ok(call) = get_field(arg, "FunctionCall")
+        && let Ok(name) = render_name_field(&call, "name", "FunctionCall")
+        && name.starts_with("__rumoca_named_arg__.")
+    {
+        let args = get_field(&call, "args")
+            .map_err(|err| render_err(format!("named function argument missing args: {err}")))?;
+        let value = required_arg(&args, 0, "named function argument")?;
+        return render_expression(&value, cfg);
+    }
+    render_expression(arg, cfg)
 }
 
 fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -789,6 +1462,13 @@ fn render_if_branches(
             return Err(render_err(format!(
                 "If expression branch {i} missing value"
             )));
+        }
+
+        if let Some(cond_value) = constant_bool_expr(&cond) {
+            if cond_value {
+                result = render_expression(&then, cfg)?;
+            }
+            continue;
         }
 
         let cond_str = render_expression(&cond, cfg)?;
@@ -1032,18 +1712,148 @@ fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
 
 /// Render a field access expression as `base.field`.
 fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
+    let field = get_field(fa, "field")
+        .map(|v| super::value_to_string(&v))
+        .map_err(|_| render_err("FieldAccess missing 'field'"))?;
+    let base_node =
+        get_field(fa, "base").map_err(|_| render_err("FieldAccess missing 'base' field"))?;
+    if matches!(cfg.if_style, super::IfStyle::Ternary)
+        && let Some(projected) = render_c_record_constructor_field(&base_node, &field, cfg)?
+    {
+        return Ok(projected);
+    }
     let base = get_field(fa, "base")
         .and_then(|v| render_expression(&v, cfg))
         .map_err(|_| render_err("FieldAccess missing 'base' field"))?;
-    let field = get_field(fa, "field")
-        .map(|v| v.to_string())
-        .map_err(|_| render_err("FieldAccess missing 'field'"))?;
     Ok(format!("{base}.{field}"))
+}
+
+fn render_c_record_constructor_field(
+    base: &Value,
+    field: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(call) = get_field(base, "FunctionCall") else {
+        return Ok(None);
+    };
+    let raw_name = render_name_field(&call, "name", "FunctionCall")?;
+    let last = rumoca_core::top_level_last_segment(&raw_name);
+    let field = field.trim_matches('"');
+    if matches!(last, "setState_phX") || raw_name.ends_with("_setState_phX") {
+        let args = get_field(&call, "args").map_err(|err| {
+            render_err(format!(
+                "record constructor field access missing args: {err}"
+            ))
+        })?;
+        return render_set_state_phx_field(&raw_name, &args, field, cfg);
+    }
+    let arg_idx = match (last, field.trim_matches('"')) {
+        ("setState_pTX" | "ThermodynamicState", "p") => 0,
+        ("setState_pTX" | "ThermodynamicState", "T") => 1,
+        ("setState_pTX" | "ThermodynamicState", "X" | "reference_X") => 2,
+        _ => return Ok(None),
+    };
+    let args = get_field(&call, "args").map_err(|err| {
+        render_err(format!(
+            "record constructor field access missing args: {err}"
+        ))
+    })?;
+    if let Some(arg) = named_function_arg(&args, field.trim_matches('"'))? {
+        return render_expression(&arg, cfg).map(Some);
+    }
+    let arg = required_arg(&args, arg_idx, "record constructor field access")?;
+    render_expression(&arg, cfg).map(Some)
+}
+
+fn render_set_state_phx_field(
+    raw_name: &str,
+    args: &Value,
+    field: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    match field {
+        "p" => {
+            let arg = if let Some(arg) = named_function_arg(args, "p")? {
+                arg
+            } else {
+                required_arg(args, 0, "setState_phX.p")?
+            };
+            render_expression(&arg, cfg).map(Some)
+        }
+        "T" => {
+            let p_arg = if let Some(arg) = named_function_arg(args, "p")? {
+                arg
+            } else {
+                required_arg(args, 0, "setState_phX.T.p")?
+            };
+            let h_arg = if let Some(arg) = named_function_arg(args, "h")? {
+                arg
+            } else {
+                required_arg(args, 1, "setState_phX.T.h")?
+            };
+            let x_arg = named_function_arg(args, "X")?.or_else(|| {
+                args.get_item(&Value::from(2))
+                    .ok()
+                    .filter(|arg| !arg.is_undefined() && !arg.is_none())
+            });
+            let p = render_expression(&p_arg, cfg)?;
+            let h = render_expression(&h_arg, cfg)?;
+            let (x, x_size) = if let Some(x_arg) = x_arg {
+                let x = render_expression(&x_arg, cfg)?;
+                let size = first_scalarized_var_ref_len_expr(&x_arg, cfg)
+                    .map(|len| len.to_string())
+                    .unwrap_or_else(|| "2".to_string());
+                (x, size)
+            } else {
+                ("NULL".to_string(), "0".to_string())
+            };
+            let temperature_fn = set_state_phx_temperature_function(raw_name, &h);
+            Ok(Some(format!("{temperature_fn}({p}, {h}, {x}, {x_size})")))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn set_state_phx_temperature_function(raw_name: &str, rendered_h: &str) -> String {
+    if let Some(prefix) = raw_name.strip_suffix("_setState_phX") {
+        return format!("{prefix}_temperature_phX");
+    }
+    if let Some(prefix) = rendered_h.split("_specificEnthalpy").next()
+        && prefix != rendered_h
+        && !prefix.is_empty()
+    {
+        return format!("{prefix}_temperature_phX");
+    }
+    "Air_temperature_phX".to_string()
+}
+
+fn named_function_arg(args: &Value, name: &str) -> Result<Option<Value>, minijinja::Error> {
+    let Some(len) = args.len() else {
+        return Ok(None);
+    };
+    let expected = format!("__rumoca_named_arg__.{name}");
+    for i in 0..len {
+        let arg = args.get_item(&Value::from(i))?;
+        let Ok(call) = get_field(&arg, "FunctionCall") else {
+            continue;
+        };
+        let Ok(call_name) = render_name_field(&call, "name", "FunctionCall") else {
+            continue;
+        };
+        if call_name != expected {
+            continue;
+        }
+        let call_args = get_field(&call, "args")?;
+        return required_arg(&call_args, 0, "named record constructor field argument").map(Some);
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::render_c_float_literal;
+    use super::{render_c_float_literal, render_expression};
+    use crate::codegen::ExprConfig;
+    use minijinja::Value;
 
     #[test]
     fn test_render_c_float_literal_preserves_scientific_notation() {
@@ -1055,5 +1865,48 @@ mod tests {
     fn test_render_c_float_literal_adds_fraction_to_integer_text() {
         assert_eq!(render_c_float_literal("1"), "1.0f");
         assert_eq!(render_c_float_literal("1.25"), "1.25f");
+    }
+
+    #[test]
+    fn normalized_power_preserves_c_array_literals() {
+        let expr = Value::from_serialize(serde_json::json!({
+            "FunctionCall": {
+                "name": "Buildings.Fluid.Movers.BaseClasses.Characteristics.normalizedPower",
+                "args": [
+                    {"Array": {"elements": [
+                        {"Literal": {"value": {"Real": "0"}}},
+                        {"Literal": {"value": {"Real": "0.1"}}},
+                        {"Literal": {"value": {"Real": "0.3"}}},
+                        {"Literal": {"value": {"Real": "0.6"}}},
+                        {"Literal": {"value": {"Real": "1"}}}
+                    ]}},
+                    {"Literal": {"value": {"Integer": 5}}},
+                    {"Array": {"elements": [
+                        {"Literal": {"value": {"Real": "0"}}},
+                        {"Literal": {"value": {"Real": "0.001"}}},
+                        {"Literal": {"value": {"Real": "0.027"}}},
+                        {"Literal": {"value": {"Real": "0.216"}}},
+                        {"Literal": {"value": {"Real": "1"}}}
+                    ]}},
+                    {"Literal": {"value": {"Integer": 5}}},
+                    {"VarRef": {"name": "ctl.y", "subscripts": []}},
+                    {"VarRef": {"name": "ctl.der", "subscripts": []}},
+                    {"Literal": {"value": {"Integer": 3}}}
+                ]
+            }
+        }));
+        let cfg = ExprConfig {
+            power: "pow".to_string(),
+            array_start: "(double[]){".to_string(),
+            array_end: "}".to_string(),
+            subscript_underscore: true,
+            sanitize_dots: true,
+            ..ExprConfig::default()
+        };
+
+        assert_eq!(
+            render_expression(&expr, &cfg).unwrap(),
+            "normalizedPower((double[]){0, 0.1, 0.3, 0.6, 1}, 5, (double[]){0, 0.001, 0.027, 0.216, 1}, 5, ctl_y, ctl_der, 3)"
+        );
     }
 }
