@@ -814,6 +814,67 @@ fn test_eval_index_on_flattened_env_array_with_dims() {
 }
 
 #[test]
+fn test_eval_array_values_var_ref_colon_slice_from_env() {
+    let mut env = VarEnv::<f64>::new();
+    set_array_entries(&mut env, "v", &[3], &[10.0, 20.0, 30.0]);
+
+    let expr = rumoca_core::Expression::VarRef {
+        name: Reference::new("v"),
+        subscripts: vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &env),
+        Ok(vec![10.0, 20.0, 30.0])
+    );
+}
+
+#[test]
+fn test_eval_array_values_var_ref_range_slice_from_env() {
+    let mut env = VarEnv::<f64>::new();
+    set_array_entries(&mut env, "v", &[4], &[10.0, 20.0, 30.0, 40.0]);
+
+    let expr = rumoca_core::Expression::VarRef {
+        name: Reference::new("v"),
+        subscripts: vec![Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::Range {
+                start: Box::new(int_lit(2)),
+                step: None,
+                end: Box::new(int_lit(3)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_array_values::<f64>(&expr, &env), Ok(vec![20.0, 30.0]));
+}
+
+#[test]
+fn test_eval_array_values_index_range_slice_from_array_expr() {
+    let expr = rumoca_core::Expression::Index {
+        base: Box::new(arr(vec![lit(1.0), lit(2.0), lit(3.0), lit(4.0)], false)),
+        subscripts: vec![Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::Range {
+                start: Box::new(int_lit(2)),
+                step: None,
+                end: Box::new(int_lit(3)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &VarEnv::new()),
+        Ok(vec![2.0, 3.0])
+    );
+}
+
+#[test]
 fn test_eval_index_on_transposed_env_matrix_with_dims() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([("R".to_string(), vec![3, 3])]));

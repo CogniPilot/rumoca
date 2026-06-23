@@ -82,6 +82,25 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
                 }
                 Ok(vec![eval_expr(expr, env)?])
             }
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts_are_all_colon(subscripts) => {
+                array_values_from_env_name_generic(name.as_str(), env)?.ok_or_else(|| {
+                    EvalError::MissingBinding {
+                        name: name.to_string(),
+                    }
+                })
+            }
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+                eval_var_ref_range_slice_values(name.as_str(), &subscripts[0], env)
+            }
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
+                eval_array_range_slice_values(base, &subscripts[0], env)
+            }
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
                 try_eval_field_access_array_values(base, field, env)
             }
@@ -108,6 +127,86 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
             _ => Ok(vec![eval_expr(expr, env)?]),
         },
     )
+}
+
+fn subscripts_are_all_colon(subscripts: &[rumoca_core::Subscript]) -> bool {
+    !subscripts.is_empty()
+        && subscripts
+            .iter()
+            .all(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+}
+
+fn subscript_is_range_expr(subscript: &rumoca_core::Subscript) -> bool {
+    matches!(
+        subscript,
+        rumoca_core::Subscript::Expr { expr, .. }
+            if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+    )
+}
+
+fn eval_var_ref_range_slice_values<T: SimFloat>(
+    name: &str,
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let values = array_values_from_env_name_generic(name, env)?.ok_or_else(|| {
+        EvalError::MissingBinding {
+            name: name.to_string(),
+        }
+    })?;
+    select_range_slice_values(&values, subscript, env)
+}
+
+fn eval_array_range_slice_values<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let values = eval_array_like_values(base, env)?;
+    select_range_slice_values(&values, subscript, env)
+}
+
+fn select_range_slice_values<T: SimFloat>(
+    values: &[T],
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let indices = eval_range_subscript_indices(subscript, env)?;
+    indices
+        .into_iter()
+        .map(|index| {
+            values
+                .get(index.saturating_sub(1))
+                .copied()
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "range slice index",
+                })
+        })
+        .collect()
+}
+
+fn eval_range_subscript_indices<T: SimFloat>(
+    subscript: &rumoca_core::Subscript,
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice",
+        });
+    };
+    eval_array_values::<T>(expr, env)?
+        .into_iter()
+        .map(|value| finite_positive_slice_index(value.real()))
+        .collect()
+}
+
+fn finite_positive_slice_index(value: f64) -> Result<usize, EvalError> {
+    if !value.is_finite() || value < 1.0 || value.fract().abs() > f64::EPSILON {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "range slice index",
+        });
+    }
+    Ok(value as usize)
 }
 
 fn with_expr_span<T>(
