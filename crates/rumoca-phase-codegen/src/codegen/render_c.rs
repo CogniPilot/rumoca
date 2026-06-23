@@ -313,7 +313,17 @@ pub(super) fn visible_or_alg_rhs_for_var_function(
     solve_config: Value,
 ) -> RenderResult {
     let name = var_name.to_string().trim_matches('"').to_string();
-    if let Some(row) = solve_visible_row_for_name(&name, &solve)? {
+    if let Some((visible_index, row)) = solve_visible_row_for_name(&name, &solve)? {
+        if solve_visible_row_is_identity_for_index(&row, visible_index)? {
+            let fallback = alg_rhs_for_var_with_dae_function(
+                Value::from(name.clone()),
+                dae.clone(),
+                expr_config.clone(),
+            )?;
+            if !is_missing_equation_rhs(&fallback) {
+                return Ok(fallback);
+            }
+        }
         return super::render_solve::render_solve_row_c_function(row, solve_config);
     }
     alg_rhs_for_var_with_dae_function(Value::from(name), dae, expr_config)
@@ -390,7 +400,7 @@ pub(super) fn discrete_rhs_for_var_function(
 fn solve_visible_row_for_name(
     name: &str,
     solve: &Value,
-) -> Result<Option<Value>, minijinja::Error> {
+) -> Result<Option<(usize, Value)>, minijinja::Error> {
     let Ok(visible_names) = get_field(solve, "visible_names") else {
         return no_render_match();
     };
@@ -407,9 +417,45 @@ fn solve_visible_row_for_name(
         if visible_name.to_string().trim_matches('"') != name {
             continue;
         }
-        return Ok(programs.get_item(&Value::from(index)).ok());
+        return Ok(programs
+            .get_item(&Value::from(index))
+            .ok()
+            .map(|row| (index, row)));
     }
     no_render_match()
+}
+
+fn solve_visible_row_is_identity_for_index(
+    row: &Value,
+    visible_index: usize,
+) -> Result<bool, minijinja::Error> {
+    let Ok(iter) = row.try_iter() else {
+        return Ok(false);
+    };
+    let ops = iter.collect::<Vec<_>>();
+    if ops.len() != 2 {
+        return Ok(false);
+    }
+    let Ok(load_y) = get_field(&ops[0], "LoadY") else {
+        return Ok(false);
+    };
+    let Ok(store_output) = get_field(&ops[1], "StoreOutput") else {
+        return Ok(false);
+    };
+    let Some(dst) = get_field(&load_y, "dst")?.as_usize() else {
+        return Ok(false);
+    };
+    let Some(index) = get_field(&load_y, "index")?.as_usize() else {
+        return Ok(false);
+    };
+    let Some(src) = get_field(&store_output, "src")?.as_usize() else {
+        return Ok(false);
+    };
+    Ok(dst == src && index == visible_index)
+}
+
+fn is_missing_equation_rhs(rendered: &str) -> bool {
+    rendered.contains("WARNING: no equation found")
 }
 
 /// Extract the derivative RHS from a single equation if it contains `der(state_name)`.

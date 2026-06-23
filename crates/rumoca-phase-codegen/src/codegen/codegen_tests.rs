@@ -1118,6 +1118,64 @@ fn test_fmi_templates_prefer_solve_visible_value_rows_before_dae_fallback() {
 }
 
 #[test]
+fn test_fmi_algebraic_identity_solve_row_falls_back_to_dae_rhs() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        "driven".into(),
+        dae::Variable::new("driven".into(), fixture_span()),
+    );
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should serialize");
+    dae_json.as_object_mut().unwrap().insert(
+        "f_x".to_string(),
+        serde_json::json!([{
+            "lhs": {
+                "VarRef": {
+                    "name": "driven",
+                    "subscripts": []
+                }
+            },
+            "rhs": {
+                "Literal": {
+                    "value": {
+                        "Real": 7.0
+                    }
+                }
+            }
+        }]),
+    );
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "visible_names": ["driven"],
+            "visible_value_rows": {
+                "programs": [[
+                    {"LoadY": {"dst": 0, "index": 0}},
+                    {"StoreOutput": {"src": 0}}
+                ]]
+            }
+        }),
+    );
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .unwrap();
+
+        assert!(
+            rendered.contains("driven = 7.0;"),
+            "{target} identity solve rows must not short-circuit explicit DAE algebraic RHS:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("driven = __rumoca_solve_y(m, 0);"),
+            "{target} identity solve row would preserve the stale algebraic storage value:\n{rendered}"
+        );
+    }
+}
+
+#[test]
 fn test_fmi_templates_apply_explicit_state_initial_equations() {
     let dae_json = serde_json::json!({
         "f_x": [],
