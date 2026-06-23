@@ -42,6 +42,9 @@ pub(crate) fn apply_initial_equations_to_start_values(
             }
             let targets =
                 assignment_target_scalar_names(layout, assignment.target.as_str(), eq.span)?;
+            if targets.is_empty() {
+                continue;
+            }
             let values = initial_assignment_values(
                 assignment.solution,
                 &env,
@@ -110,6 +113,9 @@ fn seed_continuous_assignments(
             continue;
         }
         let targets = assignment_target_scalar_names(layout, assignment.target.as_str(), eq.span)?;
+        if targets.is_empty() {
+            continue;
+        }
         if targets
             .iter()
             .any(|target| pinned.contains(target) || continuous_seed_pins.contains(target))
@@ -529,6 +535,9 @@ fn checked_initial_target_element_count(
 ) -> Result<usize, SolveModelLowerError> {
     let mut count = 1usize;
     for dim in shape {
+        if *dim == 0 {
+            return Ok(0);
+        }
         count = count.checked_mul(*dim).ok_or_else(|| {
             SolveModelLowerError::Lower(LowerError::ContractViolation {
                 reason: format!("initial assignment target `{target}` element count overflows"),
@@ -1061,6 +1070,27 @@ mod tests {
         assert!(
             format!("{err}").contains("dimension") && format!("{err}").contains("exceeding i64"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn assignment_target_scalar_names_skips_zero_size_layout_target() {
+        let layout = solve::VarLayout::from_parts_with_shapes(
+            IndexMap::new(),
+            IndexMap::from([("x".to_string(), vec![0])]),
+            0,
+            0,
+        )
+        .expect("zero-size layout target may omit scalar slots");
+
+        let names = assignment_target_scalar_names(&layout, "x", test_span())
+            .expect("zero-size target should resolve without synthetic scalar names");
+
+        assert!(names.is_empty());
+        assert_eq!(
+            checked_initial_target_element_count("x", &[0], test_span())
+                .expect("zero dimension is a valid empty target"),
+            0
         );
     }
 
