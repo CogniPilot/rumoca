@@ -1299,6 +1299,10 @@ fn create_environment() -> Environment<'static> {
         render_c::alg_rhs_for_var_with_dae_function,
     );
     env.add_function(
+        "visible_or_alg_rhs_for_var",
+        render_c::visible_or_alg_rhs_for_var_function,
+    );
+    env.add_function(
         "alg_rhs_for_var_or_self",
         render_c::alg_rhs_for_var_or_self_function,
     );

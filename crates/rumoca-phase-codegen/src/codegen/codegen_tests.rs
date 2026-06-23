@@ -946,6 +946,61 @@ fn test_fmi_solve_y_runtime_cases_do_not_count_zero_length_arrays() {
 }
 
 #[test]
+fn test_fmi_templates_prefer_solve_visible_value_rows_before_dae_fallback() {
+    let mut dae = dae::Dae::new();
+    dae.variables.outputs.insert(
+        "surface".into(),
+        dae::Variable::new("surface".into(), fixture_span()),
+    );
+    dae.variables.algebraics.insert(
+        "local_surface".into(),
+        dae::Variable::new("local_surface".into(), fixture_span()),
+    );
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should serialize");
+    dae_json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "visible_names": ["surface", "local_surface"],
+            "visible_value_rows": {
+                "programs": [[
+                    {"LoadY": {"dst": 0, "index": 2}},
+                    {"LoadP": {"dst": 1, "index": 1}},
+                    {"Binary": {"dst": 2, "op": "Add", "lhs": 0, "rhs": 1}},
+                    {"StoreOutput": {"src": 2}}
+                ], [
+                    {"LoadP": {"dst": 0, "index": 3}},
+                    {"StoreOutput": {"src": 0}}
+                ]]
+            }
+        }),
+    );
+
+    for target in ["fmi2", "fmi3"] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "VisibleRowRegression",
+        )
+        .unwrap();
+
+        assert!(
+            rendered.contains("m->w[0] = ((__rumoca_solve_y(m, 2)) + (__rumoca_solve_p(m, 1)));"),
+            "{target} outputs should use solve visible rows when present:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("local_surface = __rumoca_solve_p(m, 3);")
+                && rendered.contains("m->y[0] = local_surface;  /* local_surface */"),
+            "{target} algebraics should use solve visible rows when present:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("WARNING: no equation found for surface")
+                && !rendered.contains("WARNING: no equation found for local_surface"),
+            "{target} must not fall back to warning zero when solve visible rows are present:\n{rendered}"
+        );
+    }
+}
+
+#[test]
 fn test_fmi_templates_apply_explicit_state_initial_equations() {
     let dae_json = serde_json::json!({
         "f_x": [],

@@ -38,6 +38,7 @@
 {% set solve_derivative_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else (solve.continuous.derivative_rhs.output_indices if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.output_indices is defined else []) %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
 {% set solve_full_jacobian_rows = solve_full_jacobian_rows if solve_full_jacobian_rows is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else []) %}
+{% set solve_context = solve if solve is defined else {} %}
 {% set solve_visible_names = solve.visible_names if solve is defined and solve.visible_names is defined else [] %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
@@ -1037,12 +1038,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ visible_or_alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae, solve_context, cfg, solve_row_c_cfg) }};
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
+    {{ symbol(symbols, name) }} = {{ visible_or_alg_rhs_for_var(name, dae, solve_context, cfg, solve_row_c_cfg) }};
     m->w[{{ ns_out.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
@@ -1054,12 +1055,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ visible_or_alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae, solve_context, cfg, solve_row_c_cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
+    {{ symbol(symbols, name) }} = {{ visible_or_alg_rhs_for_var(name, dae, solve_context, cfg, solve_row_c_cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
@@ -1141,11 +1142,11 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(source_ref(name, var.dims, i + 1), dae, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
+    m->w[{{ ns_out.offset }}] = {{ visible_or_alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae, solve_context, cfg, solve_row_c_cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};  /* {{ name }} */
+    m->w[{{ ns_out.offset }}] = {{ visible_or_alg_rhs_for_var(name, dae, solve_context, cfg, solve_row_c_cfg) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}

@@ -303,6 +303,22 @@ pub(super) fn alg_rhs_for_var_with_dae_function(
     alg_rhs_for_var_function(var_name, equations, config)
 }
 
+/// Extract a visible variable RHS from Solve IR when available, otherwise fall
+/// back to explicit DAE equations.
+pub(super) fn visible_or_alg_rhs_for_var_function(
+    var_name: Value,
+    dae: Value,
+    solve: Value,
+    expr_config: Value,
+    solve_config: Value,
+) -> RenderResult {
+    let name = var_name.to_string().trim_matches('"').to_string();
+    if let Some(row) = solve_visible_row_for_name(&name, &solve)? {
+        return super::render_solve::render_solve_row_c_function(row, solve_config);
+    }
+    alg_rhs_for_var_with_dae_function(Value::from(name), dae, expr_config)
+}
+
 /// Extract algebraic RHS like `alg_rhs_for_var`, but if no matching equation is
 /// found, return the current variable alias (hold-last-value semantics).
 ///
@@ -370,6 +386,31 @@ pub(super) fn discrete_rhs_for_var_function(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+fn solve_visible_row_for_name(
+    name: &str,
+    solve: &Value,
+) -> Result<Option<Value>, minijinja::Error> {
+    let Ok(visible_names) = get_field(solve, "visible_names") else {
+        return no_render_match();
+    };
+    let Ok(visible_value_rows) = get_field(solve, "visible_value_rows") else {
+        return no_render_match();
+    };
+    let Ok(programs) = get_field(&visible_value_rows, "programs") else {
+        return no_render_match();
+    };
+    let Ok(iter) = visible_names.try_iter() else {
+        return no_render_match();
+    };
+    for (index, visible_name) in iter.enumerate() {
+        if visible_name.to_string().trim_matches('"') != name {
+            continue;
+        }
+        return Ok(programs.get_item(&Value::from(index)).ok());
+    }
+    no_render_match()
+}
 
 /// Extract the derivative RHS from a single equation if it contains `der(state_name)`.
 /// Helper for `ode_rhs_for_state_function`; decomposes MLS B.1a residual form.
