@@ -775,7 +775,7 @@ fn expand_record_arg(
                 flat_variable_names,
             )
         {
-            for (field, value) in fields.iter().zip(values.into_iter()) {
+            for (field, value) in fields.iter().zip(values) {
                 push_expanded_record_field_arg(out, param_name, field, as_named_fields, value);
             }
             return Ok(());
