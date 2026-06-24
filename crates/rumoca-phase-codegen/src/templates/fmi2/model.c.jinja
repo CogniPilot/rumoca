@@ -1554,10 +1554,17 @@ FMI2_EXPORT fmi2Status fmi2DoStep(
     (void)noSetFMUStatePriorToCurrentPoint;
     ModelInstance* m = (ModelInstance*)c;
 
-    /* Simple forward Euler with sub-stepping */
-    const double dt_max = communicationStepSize / 10.0;
+    /* Forward Euler with state-rate limited sub-stepping. */
+    const double dt_max = fmin(60.0, communicationStepSize / 10.0);
     double t = currentCommunicationPoint;
     const double t_end = currentCommunicationPoint + communicationStepSize;
+
+#if N_STATES > 0
+    fmi2Real x_nominal[N_STATES > 0 ? N_STATES : 1];
+    if (fmi2GetNominalsOfContinuousStates(c, x_nominal, N_STATES) != fmi2OK) {
+        return fmi2Error;
+    }
+#endif
 
     while (t < t_end - 1.0e-15) {
         double dt = t_end - t;
@@ -1569,6 +1576,18 @@ FMI2_EXPORT fmi2Status fmi2DoStep(
         compute_derivatives(m);
 
 #if N_STATES > 0
+        for (int i = 0; i < N_STATES; i++) {
+            const double derivative = m->xdot[i];
+            const double nominal = fmax(fabs(x_nominal[i]), 1.0e-9);
+            const double scale = fmax(fabs(m->x[i]), nominal);
+            const double abs_derivative = fabs(derivative);
+            if (isfinite(derivative) && abs_derivative > 1.0e-12) {
+                const double rate_limited_dt = 0.5 * scale / abs_derivative;
+                if (isfinite(rate_limited_dt) && rate_limited_dt > 0.0 && rate_limited_dt < dt) {
+                    dt = rate_limited_dt;
+                }
+            }
+        }
         for (int i = 0; i < N_STATES; i++) {
             m->x[i] += dt * m->xdot[i];
         }

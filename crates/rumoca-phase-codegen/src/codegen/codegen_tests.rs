@@ -1018,6 +1018,30 @@ fn test_fmi_cosimulation_refreshes_discrete_updates_before_derivatives() {
 }
 
 #[test]
+fn test_fmi2_cosimulation_caps_euler_substep_for_stiff_thermal_states() {
+    let fmi2 = builtin_template("fmi2", "model.c.jinja");
+    let do_step = template_section(fmi2, "FMI2_EXPORT fmi2Status fmi2DoStep");
+    assert!(
+        do_step.contains("const double dt_max = fmin(60.0, communicationStepSize / 10.0);"),
+        "FMI 2 Co-Simulation must cap explicit Euler substeps by physical time, not only by communication-step fraction:\n{do_step}"
+    );
+    assert!(
+        do_step.contains("fmi2Real x_nominal[N_STATES > 0 ? N_STATES : 1];")
+            && do_step.contains(
+                "if (fmi2GetNominalsOfContinuousStates(c, x_nominal, N_STATES) != fmi2OK)"
+            )
+            && do_step.contains("const double rate_limited_dt = 0.5 * scale / abs_derivative;"),
+        "FMI 2 Co-Simulation must derive a state-rate limited substep from nominal state scale and derivative magnitude:\n{do_step}"
+    );
+    assert!(
+        do_step.contains(
+            "if (isfinite(rate_limited_dt) && rate_limited_dt > 0.0 && rate_limited_dt < dt)"
+        ),
+        "FMI 2 Co-Simulation must only shrink dt with finite positive rate limits:\n{do_step}"
+    );
+}
+
+#[test]
 fn test_fmi_solve_y_runtime_cases_do_not_count_zero_length_arrays() {
     let mut dae = dae::Dae::new();
     let mut empty = dae::Variable::new("empty".into(), fixture_span());
