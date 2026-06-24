@@ -901,10 +901,7 @@ fn constructor_positional_args_project_expected_fields(
         return None;
     }
     let prefix = common_record_field_prefix(positional)?;
-    let span = positional
-        .iter()
-        .find_map(|expr| expr.span())
-        .unwrap_or(rumoca_core::Span::DUMMY);
+    let span = positional.iter().find_map(|expr| expr.span())?;
     fields
         .iter()
         .map(|field| {
@@ -1114,17 +1111,18 @@ mod tests {
     }
 
     fn component_ref_expr(parts: &[&str]) -> rumoca_core::Expression {
+        let span = test_span();
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::with_component_reference(
                 parts.join("."),
                 rumoca_core::ComponentReference {
                     local: false,
-                    span: Span::DUMMY,
+                    span,
                     parts: parts
                         .iter()
                         .map(|part| rumoca_core::ComponentRefPart {
                             ident: (*part).to_string(),
-                            span: Span::DUMMY,
+                            span,
                             subs: Vec::new(),
                         })
                         .collect(),
@@ -1132,7 +1130,7 @@ mod tests {
                 },
             ),
             subscripts: vec![],
-            span: Span::DUMMY,
+            span,
         }
     }
 
