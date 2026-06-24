@@ -963,6 +963,48 @@ impl DaeReferenceScope {
             }
         }
     }
+
+    fn indexed_record_field_reference(
+        &self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } = base
+        else {
+            return None;
+        };
+        let rumoca_core::Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            ..
+        } = base.as_ref()
+        else {
+            return None;
+        };
+        if !base_subscripts.is_empty() {
+            return None;
+        }
+        let mut field_ref = name.component_ref()?.clone();
+        field_ref.parts.push(rumoca_core::ComponentRefPart {
+            ident: field.to_string(),
+            span,
+            subs: Vec::new(),
+        });
+        field_ref.def_id = None;
+        let field_name = field_ref.to_var_name();
+        let metadata = self.variables.get(&field_name)?;
+        let reference = self
+            .reference_from_metadata(&field_name, field_name.as_str(), metadata, span)
+            .ok()?;
+        Some(rumoca_core::Expression::VarRef {
+            name: reference,
+            subscripts: subscripts.clone(),
+            span,
+        })
+    }
 }
 
 struct DaeMetadataReferenceRewriter {
@@ -1113,6 +1155,26 @@ impl ExpressionRewriter for DaeMetadataReferenceRewriter {
                     span,
                 }
             }
+        }
+    }
+
+    fn walk_field_access_expression(
+        &mut self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let base = self.rewrite_expression(base);
+        if let Some(rewritten) = self
+            .scope
+            .indexed_record_field_reference(&base, field, span)
+        {
+            return rewritten;
+        }
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field: field.to_owned(),
+            span,
         }
     }
 }
@@ -1649,6 +1711,85 @@ mod tests {
         assert_eq!(component_ref.parts.len(), 1);
         assert_eq!(component_ref.parts[0].ident, "J");
         assert_eq!(component_ref.parts[0].subs.len(), 2);
+    }
+
+    #[test]
+    fn dae_metadata_attachment_projects_indexed_record_field_to_leaf_variable() {
+        let field_name = rumoca_core::VarName::new("plant.aw.re");
+        let span = test_span(90, 97);
+        let field_def = rumoca_core::DefId::new(123);
+        let field_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "plant".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "aw".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "re".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(field_def),
+        };
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            field_name.clone(),
+            dae::Variable {
+                name: field_name,
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                dims: vec![3],
+                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::FieldAccess {
+                base: Box::new(rumoca_core::Expression::Index {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("plant.aw"),
+                        subscripts: Vec::new(),
+                        span,
+                    }),
+                    subscripts: vec![rumoca_core::Subscript::Index { value: 1, span }],
+                    span,
+                }),
+                field: "re".to_string(),
+                span,
+            },
+            span,
+            origin: "record-array field projection".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae)
+            .expect("indexed record field should resolve through its leaf variable");
+
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = &dae.continuous.equations[0].rhs
+        else {
+            panic!("expected projected leaf variable reference");
+        };
+        assert_eq!(name.as_str(), "plant.aw.re");
+        assert_eq!(name.target_def_id(), Some(field_def));
+        assert!(matches!(
+            subscripts.as_slice(),
+            [rumoca_core::Subscript::Index { value: 1, .. }]
+        ));
     }
 
     #[test]

@@ -144,6 +144,17 @@ pub(super) fn convert_constructor_signature<'tree>(
     )? {
         return Ok(function);
     }
+    if let Some(function) = operator_record_constructor_function(
+        tree,
+        class_index,
+        class_def,
+        qualified_name,
+        source_map,
+        def_map,
+        member_cache,
+    )? {
+        return Ok(function);
+    }
 
     let span = required_location_span(source_map, &class_def.location, "constructor signature")?;
     let mut params = Vec::new();
@@ -202,6 +213,86 @@ fn external_object_constructor_function<'tree>(
     function.def_id = class_def.def_id;
     function.is_constructor = true;
     Ok(Some(function))
+}
+
+fn operator_record_constructor_function<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    qualified_name: &str,
+    source_map: &rumoca_core::SourceMap,
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<rumoca_core::Function>, FlattenError> {
+    if !class_def.operator_record {
+        return Ok(None);
+    }
+    let Some(constructor_operator) = class_def
+        .classes
+        .get("'constructor'")
+        .or_else(|| class_def.classes.get("constructor"))
+    else {
+        return Ok(None);
+    };
+    if constructor_operator.class_type != rumoca_core::ClassType::Operator {
+        return Ok(None);
+    }
+
+    for (function_name, function_def) in &constructor_operator.classes {
+        if function_def.class_type != rumoca_core::ClassType::Function {
+            continue;
+        }
+        let nested_name = format!("{qualified_name}.'constructor'.{function_name}");
+        let mut function = super::convert_function(
+            tree,
+            class_index,
+            function_def,
+            &nested_name,
+            source_map,
+            def_map,
+            member_cache,
+        )?;
+        if !constructor_output_matches_record(&function, qualified_name, &class_def.name.text) {
+            continue;
+        }
+        remap_operator_constructor_inputs_to_record_fields(&mut function, class_def);
+        function.name = rumoca_core::VarName::new(qualified_name);
+        function.def_id = class_def.def_id;
+        function.is_constructor = true;
+        normalize_function_local_references(&mut function);
+        return Ok(Some(function));
+    }
+    Ok(None)
+}
+
+fn remap_operator_constructor_inputs_to_record_fields(
+    function: &mut rumoca_core::Function,
+    class_def: &ast::ClassDef,
+) {
+    for input in &mut function.inputs {
+        if let Some(field_def_id) = class_def
+            .components
+            .get(input.name.as_str())
+            .and_then(|field| field.def_id)
+        {
+            input.def_id = Some(field_def_id);
+        }
+    }
+}
+
+fn constructor_output_matches_record(
+    function: &rumoca_core::Function,
+    qualified_name: &str,
+    short_name: &str,
+) -> bool {
+    let [output] = function.outputs.as_slice() else {
+        return false;
+    };
+    output.type_name == qualified_name
+        || output.type_name == short_name
+        || qualified_name
+            .strip_suffix(short_name)
+            .is_some_and(|prefix| prefix.ends_with('.') && output.type_name == short_name)
 }
 
 pub(super) fn normalize_function_local_references(function: &mut rumoca_core::Function) {
