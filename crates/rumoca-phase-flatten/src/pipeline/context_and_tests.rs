@@ -1,6 +1,5 @@
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
-use rumoca_eval_flat::phase_constant::try_eval_flat_expr_enum;
 
 mod import_shadow;
 
@@ -513,6 +512,13 @@ impl Context {
     /// Also handles conditional expressions like `table = if cond then A else B`
     /// by evaluating conditions using known boolean and enum parameters.
     fn eval_array_dimensions(&mut self, var_bindings: &[ParamBinding<'_>]) -> bool {
+        let eval_ctx = build_eval_context(
+            &self.parameter_values,
+            &self.real_parameter_values,
+            &self.boolean_parameter_values,
+            &self.array_dimensions,
+            &self.functions,
+        );
         let mut new_dims = false;
         for ParamBinding {
             name,
@@ -521,7 +527,8 @@ impl Context {
             ..
         } in var_bindings
         {
-            new_dims |= self.try_infer_array_dims(name, binding, *binding_from_modification);
+            new_dims |=
+                self.try_infer_array_dims(name, binding, *binding_from_modification, &eval_ctx);
         }
         new_dims
     }
@@ -532,6 +539,7 @@ impl Context {
         name: &str,
         binding: &Expression,
         binding_from_modification: bool,
+        user_func_eval_ctx: &rumoca_eval_flat::constant::EvalContext,
     ) -> bool {
         // Skip when the variable is inside an expanded array component element.
         // During array expansion, sub-component modifications (e.g., `L=fill(L1sigma,m)`)
@@ -546,15 +554,16 @@ impl Context {
 
         let inferred = infer_array_dimensions_full_with_functions(
             binding,
-            &ParamEvalContext::new(
-                &self.parameter_values,
-                &self.real_parameter_values,
-                &self.boolean_parameter_values,
-                &self.enum_parameter_values,
-                &self.array_dimensions,
-                &self.functions,
-                Some(name),
-            ),
+            &ParamEvalContext {
+                known_ints: &self.parameter_values,
+                known_reals: &self.real_parameter_values,
+                known_bools: &self.boolean_parameter_values,
+                known_enums: &self.enum_parameter_values,
+                array_dims: &self.array_dimensions,
+                functions: &self.functions,
+                user_func_eval_ctx: Some(user_func_eval_ctx),
+                var_context: Some(name),
+            },
         );
         let inferred_dims = match inferred {
             Some(dims) => dims,
@@ -724,7 +733,7 @@ impl Context {
                         known_enums: &self.enum_parameter_values,
                         array_dims: &self.array_dimensions,
                         functions: &self.functions,
-                        user_func_eval_ctx: None,
+                        user_func_eval_ctx: Some(&eval_ctx),
                         var_context: Some(name),
                     };
                     if let Some(val) = try_eval_integer_with_context(binding, &int_ctx) {
@@ -770,6 +779,13 @@ impl Context {
 
     /// Try to evaluate boolean parameters in one pass.
     fn eval_boolean_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let eval_ctx = build_eval_context(
+            &self.parameter_values,
+            &self.real_parameter_values,
+            &self.boolean_parameter_values,
+            &self.array_dimensions,
+            &self.functions,
+        );
         let new_vals: Vec<(String, bool)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
@@ -780,7 +796,7 @@ impl Context {
                     known_enums: &self.enum_parameter_values,
                     array_dims: &self.array_dimensions,
                     functions: &self.functions,
-                    user_func_eval_ctx: None,
+                    user_func_eval_ctx: Some(&eval_ctx),
                     var_context: Some(name),
                 };
                 try_eval_flat_expr_boolean_with_context(binding, &bool_ctx)
@@ -800,6 +816,13 @@ impl Context {
 
     /// Try to evaluate real parameters in one pass.
     fn eval_real_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let eval_ctx = build_eval_context(
+            &self.parameter_values,
+            &self.real_parameter_values,
+            &self.boolean_parameter_values,
+            &self.array_dimensions,
+            &self.functions,
+        );
         let new_vals: Vec<(String, f64)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
@@ -812,7 +835,7 @@ impl Context {
                     return Some(((*name).to_string(), val));
                 }
                 // Try user-defined function evaluation for function call bindings
-                self.try_eval_real_func_call(name, binding)
+                self.try_eval_real_func_call(name, binding, &eval_ctx)
                     .map(|val| ((*name).to_string(), val))
             })
             .collect();
@@ -833,7 +856,12 @@ impl Context {
     }
 
     /// Try evaluating a function call binding as a real value.
-    fn try_eval_real_func_call(&self, name: &str, binding: &Expression) -> Option<f64> {
+    fn try_eval_real_func_call(
+        &self,
+        name: &str,
+        binding: &Expression,
+        user_func_eval_ctx: &rumoca_eval_flat::constant::EvalContext,
+    ) -> Option<f64> {
         let Expression::FunctionCall {
             name: func_name,
             args,
@@ -849,7 +877,7 @@ impl Context {
             known_enums: &self.enum_parameter_values,
             array_dims: &self.array_dimensions,
             functions: &self.functions,
-            user_func_eval_ctx: None,
+            user_func_eval_ctx: Some(user_func_eval_ctx),
             var_context: Some(name),
         };
         eval_user_func_real(func_name, args, &int_ctx)
@@ -881,7 +909,13 @@ impl Context {
         let mut progress = false;
         loop {
             let mut reference_cache = rustc_hash::FxHashMap::default();
-            let new_vals = self.collect_enum_values(params, &param_names, &mut reference_cache);
+            let canonicalizer = EnumCanonicalizer::new(&self.enum_parameter_values);
+            let new_vals = self.collect_enum_values(
+                params,
+                &param_names,
+                &mut reference_cache,
+                &canonicalizer,
+            );
             if new_vals.is_empty() {
                 break;
             }
@@ -903,6 +937,7 @@ impl Context {
         params: &[ParamBinding<'_>],
         param_names: &rustc_hash::FxHashSet<&str>,
         reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
+        canonicalizer: &EnumCanonicalizer,
     ) -> Vec<(String, String)> {
         params
             .iter()
@@ -910,8 +945,13 @@ impl Context {
                 if self.enum_parameter_values.contains_key(*name) {
                     return None;
                 }
-                self.resolve_enum_binding_value(binding, param_names, reference_cache)
-                    .map(|enum_val| ((*name).to_string(), enum_val))
+                self.resolve_enum_binding_value(
+                    binding,
+                    param_names,
+                    reference_cache,
+                    canonicalizer,
+                )
+                .map(|enum_val| ((*name).to_string(), enum_val))
             })
             .collect()
     }
@@ -936,8 +976,9 @@ impl Context {
         binding: &Expression,
         param_names: &rustc_hash::FxHashSet<&str>,
         reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
+        canonicalizer: &EnumCanonicalizer,
     ) -> Option<String> {
-        let enum_val = self.try_eval_enum_binding(binding, reference_cache)?;
+        let enum_val = self.try_eval_enum_binding(binding, reference_cache, canonicalizer)?;
         if !self.enum_reference_matches_parameter(&enum_val, param_names) {
             return Some(enum_val);
         }
@@ -948,12 +989,14 @@ impl Context {
         &self,
         binding: &Expression,
         reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
+        canonicalizer: &EnumCanonicalizer,
     ) -> Option<String> {
-        try_eval_flat_expr_enum(
+        try_eval_flat_expr_enum_with_canonicalizer(
             binding,
             &self.parameter_values,
             &self.boolean_parameter_values,
             &self.enum_parameter_values,
+            canonicalizer,
         )
         .or_else(|| self.resolve_varref_enum_reference(binding, reference_cache))
     }

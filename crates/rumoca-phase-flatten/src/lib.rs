@@ -113,9 +113,10 @@ use record_constant_arrays::{
     try_extract_record_array_constructor_constant,
 };
 use rumoca_eval_flat::phase_constant::{
-    ParamEvalContext, build_eval_context, eval_user_func_real, infer_array_dimensions,
-    infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
-    try_eval_flat_expr_boolean_with_context, try_eval_flat_expr_real,
+    EnumCanonicalizer, ParamEvalContext, build_eval_context, eval_user_func_real,
+    infer_array_dimensions, infer_array_dimensions_full_with_functions,
+    looks_like_enum_literal_path, try_eval_flat_expr_boolean_with_context,
+    try_eval_flat_expr_enum_with_canonicalizer, try_eval_flat_expr_real,
     try_eval_integer_with_context, try_infer_better_dims,
 };
 
@@ -397,6 +398,24 @@ fn simulated_root_name(
     if !model_name.is_empty() {
         return Some(crate::path_utils::leaf_segment(model_name).to_string());
     }
+    if let Some(root_name) = explicit_root_class_name(tree, overlay) {
+        return Some(root_name);
+    }
+    let root_class = overlay
+        .classes
+        .values()
+        .filter_map(|class_data| class_data.class_def_id.map(|def_id| (class_data, def_id)))
+        .min_by_key(|(class_data, _)| class_data.qualified_name.parts.len())
+        .map(|(_, def_id)| def_id)?;
+    tree.def_map
+        .get(&root_class)
+        .map(|qualified| crate::path_utils::leaf_segment(qualified).to_string())
+}
+
+fn explicit_root_class_name(
+    tree: &ast::ClassTree,
+    overlay: &ast::InstanceOverlay,
+) -> Option<String> {
     overlay
         .classes
         .values()
@@ -844,6 +863,40 @@ mod nested_class_constant_scope_tests {
                 instance_id: ast::InstanceId::new(1),
                 class_def_id: Some(root_def),
                 qualified_name: ast::QualifiedName::new(),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            simulated_root_name(&tree, &overlay, ""),
+            Some("Vehicle".to_string())
+        );
+    }
+
+    #[test]
+    fn simulated_root_name_falls_back_to_shortest_overlay_class_instance() {
+        let root_def = rumoca_core::DefId::new(7);
+        let nested_def = rumoca_core::DefId::new(8);
+        let mut tree = ast::ClassTree::new();
+        tree.def_map.insert(root_def, "Pkg.Vehicle".to_string());
+        tree.def_map
+            .insert(nested_def, "Pkg.Vehicle.Controller".to_string());
+        let mut overlay = ast::InstanceOverlay::default();
+        overlay.classes.insert(
+            ast::InstanceId::new(1),
+            ast::ClassInstanceData {
+                instance_id: ast::InstanceId::new(1),
+                class_def_id: Some(root_def),
+                qualified_name: ast::QualifiedName::from_dotted("vehicle"),
+                ..Default::default()
+            },
+        );
+        overlay.classes.insert(
+            ast::InstanceId::new(2),
+            ast::ClassInstanceData {
+                instance_id: ast::InstanceId::new(2),
+                class_def_id: Some(nested_def),
+                qualified_name: ast::QualifiedName::from_dotted("vehicle.controller"),
                 ..Default::default()
             },
         );

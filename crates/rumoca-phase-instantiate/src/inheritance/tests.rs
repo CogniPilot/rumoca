@@ -87,6 +87,44 @@ fn make_int_expr(value: &str) -> ast::Expression {
     }
 }
 
+fn make_string_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::String,
+        token: make_token(&format!("\"{value}\"")),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn make_class_modification_binding(
+    target: &str,
+    nested_mods: Vec<ast::Expression>,
+    each_flags: Vec<bool>,
+    final_flags: Vec<bool>,
+    rhs: ast::Expression,
+) -> ast::Expression {
+    ast::Expression::Binary {
+        op: rumoca_core::OpBinary::Assign,
+        lhs: Arc::new(ast::Expression::ClassModification {
+            target: make_component_ref(target),
+            modifications: nested_mods,
+            each_flags,
+            final_flags,
+            redeclare_flags: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Arc::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn make_value_modification(target: &str, value: ast::Expression) -> ast::Expression {
+    ast::Expression::Modification {
+        target: make_component_ref(target),
+        value: Arc::new(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 #[test]
 fn test_apply_extends_modifications_reports_final_override_at_extends_span() {
     let mut tree = ast::ClassTree::default();
@@ -118,6 +156,98 @@ fn test_apply_extends_modifications_reports_final_override_at_extends_span() {
     let err = apply_extends_modifications(&tree, &mut target, &base_class, &extend)
         .expect_err("extends modification must not override final inherited component");
     assert!(matches!(*err, InstantiateError::RedeclareFinal { .. }));
+}
+
+#[test]
+fn class_modification_binding_is_value_modification_for_base_component() {
+    let mut class = ast::ClassDef {
+        name: make_token("Base"),
+        ..Default::default()
+    };
+    class.components.insert(
+        "stageInputs".to_string(),
+        make_component("stageInputs", false, false),
+    );
+    let rhs = ast::Expression::ComponentReference(make_component_ref("per.speeds"));
+    let extend = ast::Extend {
+        base_name: make_name("Base"),
+        modifications: vec![ast::ExtendModification {
+            expr: make_class_modification_binding("stageInputs", vec![], vec![], vec![], rhs),
+            each: false,
+            final_: true,
+            redeclare: false,
+        }],
+        ..Default::default()
+    };
+
+    let value_mods = collect_value_modifications(&extend, &class);
+    let (value, is_final) = value_mods
+        .get("stageInputs")
+        .expect("class-modification binding should override component binding");
+
+    assert!(*is_final);
+    assert!(matches!(
+        value,
+        ast::Expression::ComponentReference(cref) if cref.to_string() == "per.speeds"
+    ));
+}
+
+#[test]
+fn class_modification_binding_merges_nested_attributes_for_inherited_component() {
+    let mut tree = ast::ClassTree::default();
+    tree.source_map.add(
+        TEST_FILE,
+        "extends Mid(stageInputs(each final unit=\"1\") = per.speeds);",
+    );
+    let mut target = InheritedContent::default();
+    target.components.insert(
+        "stageInputs".to_string(),
+        make_component("stageInputs", false, false),
+    );
+    let base_class = ast::ClassDef {
+        name: make_token("Mid"),
+        ..Default::default()
+    };
+    let unit_mod = make_value_modification("unit", make_string_expr("1"));
+    let rhs = ast::Expression::ComponentReference(make_component_ref("per.speeds"));
+    let extend = ast::Extend {
+        base_name: make_name("Mid"),
+        location: test_location(),
+        modifications: vec![ast::ExtendModification {
+            expr: make_class_modification_binding(
+                "stageInputs",
+                vec![unit_mod],
+                vec![true],
+                vec![true],
+                rhs,
+            ),
+            each: false,
+            final_: true,
+            redeclare: false,
+        }],
+        ..Default::default()
+    };
+
+    let mut inherited = target;
+    apply_extends_modifications(&tree, &mut inherited, &base_class, &extend)
+        .expect("class-modification binding should apply to inherited component");
+    let comp = inherited
+        .components
+        .get("stageInputs")
+        .expect("stageInputs should stay inherited");
+
+    assert!(comp.has_explicit_binding);
+    assert!(comp.is_final);
+    assert!(matches!(
+        comp.binding.as_ref(),
+        Some(ast::Expression::ComponentReference(cref)) if cref.to_string() == "per.speeds"
+    ));
+    assert!(matches!(
+        comp.modifications.get("unit"),
+        Some(ast::Expression::Terminal { token, .. }) if token.text.as_ref() == "\"1\""
+    ));
+    assert!(comp.each_modifications.contains("unit"));
+    assert!(comp.final_attributes.contains("unit"));
 }
 
 #[test]

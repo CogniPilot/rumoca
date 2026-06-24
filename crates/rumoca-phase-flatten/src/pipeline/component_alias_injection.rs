@@ -13,6 +13,12 @@ struct AliasPackageInjectionKey {
     package_context: String,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct AliasPackageStaticKey {
+    package_def_id: rumoca_core::DefId,
+    package_context: String,
+}
+
 enum ComponentStaticConstantCacheEntry {
     Cacheable(ScopedConstantDelta),
     Uncacheable,
@@ -301,6 +307,10 @@ pub(crate) fn inject_component_instance_nested_class_constants(
         ComponentStaticConstantCacheEntry,
     > = rustc_hash::FxHashMap::default();
     let mut alias_package_injections = rustc_hash::FxHashSet::default();
+    let mut alias_package_cache: rustc_hash::FxHashMap<
+        AliasPackageStaticKey,
+        ComponentStaticConstantCacheEntry,
+    > = rustc_hash::FxHashMap::default();
     for _ in 0..MAX_PASSES {
         let mut cache_rejected = 0usize;
         let mut uncached = 0usize;
@@ -381,6 +391,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                         scan_class,
                         scan_context: &scan_context,
                         alias_package_injections: &mut alias_package_injections,
+                        alias_package_cache: &mut alias_package_cache,
                         ctx,
                     },
                 );
@@ -806,6 +817,8 @@ pub(crate) struct SpecializedChildAliasCtx<'a, 'tree> {
     scan_class: &'a ClassDef,
     scan_context: &'a str,
     alias_package_injections: &'a mut rustc_hash::FxHashSet<AliasPackageInjectionKey>,
+    alias_package_cache:
+        &'a mut rustc_hash::FxHashMap<AliasPackageStaticKey, ComponentStaticConstantCacheEntry>,
     ctx: &'a mut Context,
 }
 
@@ -860,6 +873,7 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
                         alias_scope: &alias_scope,
                         package_context: &package_context,
                         alias_package_injections: &mut *request.alias_package_injections,
+                        alias_package_cache: &mut *request.alias_package_cache,
                         ctx: &mut *request.ctx,
                     },
                     package_class,
@@ -905,6 +919,7 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
                 alias_scope: &alias_scope,
                 package_context: &package_context,
                 alias_package_injections: &mut *request.alias_package_injections,
+                alias_package_cache: &mut *request.alias_package_cache,
                 ctx: &mut *request.ctx,
             },
             package_class,
@@ -920,11 +935,13 @@ struct AliasPackageConstantCtx<'a, 'tree> {
     alias_scope: &'a str,
     package_context: &'a str,
     alias_package_injections: &'a mut rustc_hash::FxHashSet<AliasPackageInjectionKey>,
+    alias_package_cache:
+        &'a mut rustc_hash::FxHashMap<AliasPackageStaticKey, ComponentStaticConstantCacheEntry>,
     ctx: &'a mut Context,
 }
 
 fn inject_alias_package_constants(
-    request: AliasPackageConstantCtx<'_, '_>,
+    mut request: AliasPackageConstantCtx<'_, '_>,
     package_class: &ClassDef,
 ) {
     for scope in [request.alias_scope, request.comp_scope, request.child_scope] {
@@ -938,24 +955,69 @@ fn inject_alias_package_constants(
         {
             continue;
         }
-        extract_constants_from_class_with_prefix_and_imports(
+        inject_alias_package_constants_for_scope(&mut request, package_class, scope);
+    }
+}
+
+fn inject_alias_package_constants_for_scope(
+    request: &mut AliasPackageConstantCtx<'_, '_>,
+    package_class: &ClassDef,
+    scope: &str,
+) {
+    let Some(package_def_id) = package_class.def_id else {
+        return inject_uncached_alias_package_constants(request, package_class, scope);
+    };
+    let cache_key = AliasPackageStaticKey {
+        package_def_id,
+        package_context: request.package_context.to_string(),
+    };
+    match request.alias_package_cache.get(&cache_key) {
+        Some(ComponentStaticConstantCacheEntry::Cacheable(delta)) => {
+            delta.replay(scope, &mut *request.ctx);
+            return;
+        }
+        Some(ComponentStaticConstantCacheEntry::Uncacheable) => {
+            return inject_uncached_alias_package_constants(request, package_class, scope);
+        }
+        None => {}
+    }
+
+    let before = ScopedKeySnapshot::capture(request.ctx, scope);
+    inject_uncached_alias_package_constants(request, package_class, scope);
+    if let Some(delta) = ScopedConstantDelta::capture(request.ctx, scope, &before) {
+        request.alias_package_cache.insert(
+            cache_key,
+            ComponentStaticConstantCacheEntry::Cacheable(delta),
+        );
+    } else {
+        request
+            .alias_package_cache
+            .insert(cache_key, ComponentStaticConstantCacheEntry::Uncacheable);
+    }
+}
+
+fn inject_uncached_alias_package_constants(
+    request: &mut AliasPackageConstantCtx<'_, '_>,
+    package_class: &ClassDef,
+    scope: &str,
+) {
+    extract_constants_from_class_with_prefix_and_imports(
+        request.tree,
+        request.class_index,
+        scope,
+        package_class,
+        request.package_context,
+        &mut *request.ctx,
+    );
+    for ext in &package_class.extends {
+        apply_extends_constants_for_scope(
             request.tree,
             request.class_index,
             scope,
-            package_class,
+            ext,
             request.package_context,
             &mut *request.ctx,
         );
-        for ext in &package_class.extends {
-            apply_extends_constants_for_scope(
-                request.tree,
-                request.class_index,
-                scope,
-                ext,
-                request.package_context,
-                &mut *request.ctx,
-            );
-        }
     }
 }
 

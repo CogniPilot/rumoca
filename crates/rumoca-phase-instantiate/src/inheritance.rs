@@ -118,6 +118,11 @@ fn extract_modification_target(expr: &ast::Expression) -> Option<String> {
         | ast::Expression::ClassModification { target, .. } => {
             target.parts.first().map(|p| p.ident.text.to_string())
         }
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            ..
+        } => extract_modification_target(lhs),
         // For named arguments like `x = value`, extract the name
         ast::Expression::NamedArgument { name, .. } => Some(name.text.to_string()),
         _ => None,
@@ -131,6 +136,13 @@ fn extract_extend_modification_target(
     let target = match expr {
         ast::Expression::Modification { target, .. }
         | ast::Expression::ClassModification { target, .. } => target,
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            ..
+        } => {
+            return extract_extend_modification_target(extend, lhs);
+        }
         ast::Expression::NamedArgument { name, .. } => return Some(name.text.to_string()),
         _ => return None,
     };
@@ -190,6 +202,12 @@ fn extract_modification_value(expr: &ast::Expression) -> Option<ast::Expression>
     let value = match expr {
         ast::Expression::Modification { value, .. } => Some(value),
         ast::Expression::NamedArgument { value, .. } => Some(value),
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), ast::Expression::ClassModification { .. }) => Some(rhs),
         _ => None,
     }?;
 
@@ -1856,13 +1874,15 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
 fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &ast::Extend) {
     walk_extend_modifications(extend, |modification| {
         // Extract target name and nested modifications from the expression.
-        // Two formats exist:
+        // Three formats exist:
         //   1. ClassModification { target: comp_name, modifications: [...] }
         //      For: extends Foo(friction(useHeatPort=true))
         //   2. Modification { target: comp_name, value: ClassModification { target: TypeName, modifications: [...] } }
         //      For: extends Foo(redeclare final NewType comp(nested=val))
+        //   3. Binary { Assign, lhs: ClassModification { target: comp_name, ... }, rhs }
+        //      For: extends Foo(comp(each final unit="1")=expr)
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
-        let Some((target_name, modifications)) =
+        let Some((target_name, modifications, each_flags, final_flags)) =
             extend_nested_target_modifications(extend, modification)
         else {
             return;
@@ -1870,8 +1890,13 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         let Some(comp) = target.components.get_mut(&target_name) else {
             return;
         };
-        for nested_mod in modifications {
-            insert_nested_modification(comp, nested_mod);
+        for (idx, nested_mod) in modifications.iter().enumerate() {
+            insert_nested_modification_with_flags(
+                comp,
+                nested_mod,
+                each_flags.get(idx).copied().unwrap_or(false),
+                final_flags.get(idx).copied().unwrap_or(false),
+            );
         }
     });
 }
@@ -1879,23 +1904,57 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
 fn extend_nested_target_modifications<'a>(
     extend: &ast::Extend,
     modification: &'a ast::ExtendModification,
-) -> Option<(String, &'a [ast::Expression])> {
+) -> Option<(String, &'a [ast::Expression], &'a [bool], &'a [bool])> {
     match &modification.expr {
         ast::Expression::ClassModification {
             target,
             modifications,
+            each_flags,
+            final_flags,
             ..
         } => Some((
             extend_relative_component_target(extend, target)?,
             modifications.as_slice(),
+            each_flags.as_slice(),
+            final_flags.as_slice(),
         )),
         ast::Expression::Modification { target, value, .. } => {
-            let ast::Expression::ClassModification { modifications, .. } = value.as_ref() else {
+            let ast::Expression::ClassModification {
+                modifications,
+                each_flags,
+                final_flags,
+                ..
+            } = value.as_ref()
+            else {
                 return None;
             };
             Some((
                 extend_relative_component_target(extend, target)?,
                 modifications.as_slice(),
+                each_flags.as_slice(),
+                final_flags.as_slice(),
+            ))
+        }
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            ..
+        } => {
+            let ast::Expression::ClassModification {
+                target,
+                modifications,
+                each_flags,
+                final_flags,
+                ..
+            } = lhs.as_ref()
+            else {
+                return None;
+            };
+            Some((
+                extend_relative_component_target(extend, target)?,
+                modifications.as_slice(),
+                each_flags.as_slice(),
+                final_flags.as_slice(),
             ))
         }
         _ => None,
@@ -1903,25 +1962,44 @@ fn extend_nested_target_modifications<'a>(
 }
 
 /// Insert a single nested modification into a component's modifications map.
-fn insert_nested_modification(comp: &mut ast::Component, nested_mod: &ast::Expression) {
+fn insert_nested_modification_with_flags(
+    comp: &mut ast::Component,
+    nested_mod: &ast::Expression,
+    each: bool,
+    final_: bool,
+) {
+    let mut inserted_name: Option<String> = None;
     match nested_mod {
         ast::Expression::Modification {
             target: t, value, ..
         } => {
             if let Some(name) = t.parts.first().map(|p| p.ident.text.to_string()) {
-                comp.modifications.insert(name, value.as_ref().clone());
+                comp.modifications
+                    .insert(name.clone(), value.as_ref().clone());
+                inserted_name = Some(name);
             }
         }
         ast::Expression::NamedArgument { name, value, .. } => {
+            let inserted = name.text.to_string();
             comp.modifications
-                .insert(name.text.to_string(), value.as_ref().clone());
+                .insert(inserted.clone(), value.as_ref().clone());
+            inserted_name = Some(inserted);
         }
         ast::Expression::ClassModification { .. } => {
             if let Some(name) = extract_modification_target(nested_mod) {
-                comp.modifications.insert(name, nested_mod.clone());
+                comp.modifications.insert(name.clone(), nested_mod.clone());
+                inserted_name = Some(name);
             }
         }
         _ => {}
+    }
+    if let Some(name) = inserted_name {
+        if each {
+            comp.each_modifications.insert(name.clone());
+        }
+        if final_ {
+            comp.final_attributes.insert(name);
+        }
     }
 }
 

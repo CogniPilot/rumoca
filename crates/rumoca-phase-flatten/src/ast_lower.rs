@@ -806,12 +806,16 @@ fn lower_get_instance_name_call(
             span,
         ));
     }
-    let instance_name = context.instance_name.ok_or_else(|| {
-        FlattenError::unsupported_equation(
-            "getInstanceName() requires a model/block instance scope",
+    let Some(instance_name) = context.instance_name else {
+        return Ok(rumoca_core::Expression::FunctionCall {
+            name: Reference::from_component_reference(
+                rumoca_core::ComponentReference::from_flat_segments("getInstanceName", span, None),
+            ),
+            args: Vec::new(),
+            is_constructor: false,
             span,
-        )
-    })?;
+        });
+    };
     Ok(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::String(instance_name.to_string()),
         span,
@@ -1129,18 +1133,19 @@ mod tests {
     }
 
     #[test]
-    fn get_instance_name_requires_instance_scope() {
-        let err = convert_function_call_with_context(
+    fn get_instance_name_without_instance_scope_stays_deferred() {
+        let expr = convert_function_call_with_context(
             &function_ref("getInstanceName"),
             &[],
             LoweringContext::default(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            err.to_string()
-                .contains("requires a model/block instance scope")
-        );
+        let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
+            panic!("expected deferred function call");
+        };
+        assert_eq!(name.as_str(), "getInstanceName");
+        assert!(args.is_empty());
     }
 
     #[test]
