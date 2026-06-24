@@ -1094,7 +1094,10 @@ fn validate_field_access_functions(
 
         let field_known = constructor.inputs.iter().any(|param| param.name == field)
             || constructor.outputs.iter().any(|param| param.name == field);
-        if !field_known {
+        let field_resolves_from_positional =
+            crate::constructor_field_selection::positional_constructor_arg_for_field(args, field)
+                .is_some();
+        if !field_known && !field_resolves_from_positional {
             if crate::todae_debug_enabled() {
                 let mut available_fields: Vec<String> = constructor
                     .inputs

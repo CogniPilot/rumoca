@@ -1888,3 +1888,37 @@ fn leaves_unknown_member_function_calls_unmarked() {
         None
     );
 }
+
+#[test]
+fn preserves_named_arg_marker_shell_when_rewritten_value_changes_shape() {
+    let original = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("__rumoca_named_arg__.per"),
+        args: vec![core_var("pCur1")],
+        is_constructor: true,
+        span: test_span(),
+    };
+    let rewritten = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Buildings.Fluid.Movers.Data.Generic"),
+        args: vec![core_var("pCur1.V_flow"), core_var("pCur1.dp")],
+        is_constructor: true,
+        span: test_span(),
+    };
+
+    let preserved = preserve_named_arg_marker_shell(&original, rewritten);
+
+    let Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: true,
+        ..
+    } = preserved
+    else {
+        panic!("expected named argument marker");
+    };
+    assert_eq!(name.as_str(), "__rumoca_named_arg__.per");
+    assert!(matches!(
+        args.as_slice(),
+        [Expression::FunctionCall { name, is_constructor: true, .. }]
+            if name.as_str() == "Buildings.Fluid.Movers.Data.Generic"
+    ));
+}

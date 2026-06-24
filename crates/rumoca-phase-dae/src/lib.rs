@@ -28,6 +28,7 @@ mod binding_conversion;
 mod condition_activation;
 mod condition_lowering;
 mod connector_input_analysis;
+mod constructor_field_selection;
 mod convert;
 mod dae_lowering;
 mod equation_conversion;

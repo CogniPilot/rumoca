@@ -34,6 +34,18 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn named_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new(format!(
+            "{}{name}",
+            rumoca_core::NAMED_FUNCTION_ARG_PREFIX
+        )),
+        args: vec![value],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn spanned_var_ref(name: &str) -> rumoca_core::Expression {
     let var_name = rumoca_core::VarName::new(name);
     let component_ref = rumoca_core::component_reference_from_flat_name(&var_name, test_span())
@@ -77,6 +89,58 @@ fn add_primitive_variable(model: &mut flat::Model, name: &str) {
             ..flat::Variable::empty_with_span(test_span())
         },
     );
+}
+
+#[test]
+fn substitute_known_constants_preserves_named_arg_marker_for_record_constructor_value() {
+    let mut model = flat::Model::new();
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Pkg.f"),
+            args: vec![
+                named_arg("x", var_ref("live_x")),
+                named_arg("per", var_ref("pCur1")),
+            ],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        "pCur1".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Buildings.Fluid.Movers.Data.Generic"),
+            args: vec![var_ref("pCur1.V_flow"), var_ref("pCur1.dp")],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &model.equations[0].residual else {
+        panic!("expected function call");
+    };
+    assert_eq!(args.len(), 2);
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args: per_args,
+        is_constructor: true,
+        ..
+    } = &args[1]
+    else {
+        panic!("expected named per argument marker");
+    };
+    assert_eq!(name.as_str(), "__rumoca_named_arg__.per");
+    assert!(matches!(
+        per_args.as_slice(),
+        [rumoca_core::Expression::FunctionCall { name, is_constructor: true, .. }]
+            if name.as_str() == "Buildings.Fluid.Movers.Data.Generic"
+    ));
 }
 
 #[test]

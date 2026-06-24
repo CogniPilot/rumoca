@@ -587,8 +587,21 @@ impl DaeReferenceRewriter<'_> {
         field: &str,
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::Expression, ToDaeError> {
+        let base = self.rewrite_expression(base)?;
+        if let rumoca_core::Expression::FunctionCall {
+            args,
+            is_constructor: true,
+            ..
+        } = &base
+            && let Some(value) =
+                crate::constructor_field_selection::positional_constructor_arg_for_field(
+                    args, field,
+                )
+        {
+            return self.rewrite_expression(&value.clone().with_span(span));
+        }
         Ok(rumoca_core::Expression::FieldAccess {
-            base: Box::new(self.rewrite_expression(base)?),
+            base: Box::new(base),
             field: field.to_owned(),
             span,
         })
