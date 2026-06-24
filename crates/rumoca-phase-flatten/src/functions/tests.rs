@@ -1375,6 +1375,131 @@ fn test_operator_record_constructor_signature_uses_explicit_constructor_defaults
 }
 
 #[test]
+fn test_operator_record_constructor_signature_falls_back_for_conversion_constructor() {
+    let complex_def = rumoca_core::DefId::new(121);
+    let operator_def = rumoca_core::DefId::new(122);
+    let from_real_def = rumoca_core::DefId::new(123);
+    let x_def = rumoca_core::DefId::new(124);
+    let result_def = rumoca_core::DefId::new(125);
+    let record_re_def = rumoca_core::DefId::new(126);
+    let record_im_def = rumoca_core::DefId::new(127);
+    let from_real = ast::ClassDef {
+        def_id: Some(from_real_def),
+        name: token("from_real"),
+        class_type: rumoca_core::ClassType::Function,
+        components: ast::AstIndexMap::from_iter([
+            (
+                "x".to_string(),
+                ast::Component {
+                    name: "x".to_string(),
+                    def_id: Some(x_def),
+                    type_name: ast::Name::from_string("Real"),
+                    causality: rumoca_core::Causality::Input(token("input")),
+                    location: test_location(0, 12),
+                    ..ast::Component::empty_with_span(test_span())
+                },
+            ),
+            (
+                "c".to_string(),
+                ast::Component {
+                    name: "c".to_string(),
+                    def_id: Some(result_def),
+                    type_name: ast::Name::from_string("Pkg.Complex"),
+                    causality: rumoca_core::Causality::Output(token("output")),
+                    location: test_location(0, 12),
+                    ..ast::Component::empty_with_span(test_span())
+                },
+            ),
+        ]),
+        location: test_location(0, 12),
+        ..Default::default()
+    };
+    let constructor_operator = ast::ClassDef {
+        def_id: Some(operator_def),
+        name: token("'constructor'"),
+        class_type: rumoca_core::ClassType::Operator,
+        classes: ast::AstIndexMap::from_iter([("from_real".to_string(), from_real)]),
+        location: test_location(0, 12),
+        ..Default::default()
+    };
+    let class_def = ast::ClassDef {
+        def_id: Some(complex_def),
+        name: token("Complex"),
+        class_type: rumoca_core::ClassType::Record,
+        operator_record: true,
+        components: ast::AstIndexMap::from_iter([
+            (
+                "re".to_string(),
+                ast::Component {
+                    name: "re".to_string(),
+                    def_id: Some(record_re_def),
+                    type_name: ast::Name::from_string("Real"),
+                    location: test_location(0, 12),
+                    ..ast::Component::empty_with_span(test_span())
+                },
+            ),
+            (
+                "im".to_string(),
+                ast::Component {
+                    name: "im".to_string(),
+                    def_id: Some(record_im_def),
+                    type_name: ast::Name::from_string("Real"),
+                    location: test_location(0, 12),
+                    ..ast::Component::empty_with_span(test_span())
+                },
+            ),
+        ]),
+        classes: ast::AstIndexMap::from_iter([("'constructor'".to_string(), constructor_operator)]),
+        location: test_location(0, 12),
+        ..Default::default()
+    };
+    let mut tree = ast::ClassTree::default();
+    tree.def_map.insert(complex_def, "Pkg.Complex".to_string());
+    tree.def_map
+        .insert(operator_def, "Pkg.Complex.'constructor'".to_string());
+    tree.def_map.insert(
+        from_real_def,
+        "Pkg.Complex.'constructor'.from_real".to_string(),
+    );
+    tree.def_map
+        .insert(x_def, "Pkg.Complex.'constructor'.from_real.x".to_string());
+    tree.def_map.insert(
+        result_def,
+        "Pkg.Complex.'constructor'.from_real.c".to_string(),
+    );
+    tree.def_map
+        .insert(record_re_def, "Pkg.Complex.re".to_string());
+    tree.def_map
+        .insert(record_im_def, "Pkg.Complex.im".to_string());
+    let source_map = test_source_map();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut member_cache = qualify::MemberDefIdCache::default();
+
+    let function = convert_constructor_signature(
+        &tree,
+        &class_index,
+        &class_def,
+        "Pkg.Complex",
+        &source_map,
+        &tree.def_map,
+        &mut member_cache,
+    )
+    .unwrap();
+
+    assert_eq!(function.name.as_str(), "Pkg.Complex");
+    assert_eq!(function.def_id, Some(complex_def));
+    assert!(function.is_constructor);
+    assert_eq!(
+        function
+            .inputs
+            .iter()
+            .map(|input| (input.name.as_str(), input.def_id))
+            .collect::<Vec<_>>(),
+        vec![("re", Some(record_re_def)), ("im", Some(record_im_def))]
+    );
+}
+
+#[test]
 fn test_function_local_normalization_rewrites_self_qualified_default() {
     let mut function = rumoca_core::Function::new("Pkg.C", Span::DUMMY);
     function.add_input(rumoca_core::FunctionParam::new(

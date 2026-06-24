@@ -255,6 +255,9 @@ fn operator_record_constructor_function<'tree>(
         if !constructor_output_matches_record(&function, qualified_name, &class_def.name.text) {
             continue;
         }
+        if !operator_constructor_inputs_match_record_fields(&function, class_def) {
+            continue;
+        }
         remap_operator_constructor_inputs_to_record_fields(&mut function, class_def);
         function.name = rumoca_core::VarName::new(qualified_name);
         function.def_id = class_def.def_id;
@@ -263,6 +266,17 @@ fn operator_record_constructor_function<'tree>(
         return Ok(Some(function));
     }
     Ok(None)
+}
+
+fn operator_constructor_inputs_match_record_fields(
+    function: &rumoca_core::Function,
+    class_def: &ast::ClassDef,
+) -> bool {
+    !function.inputs.is_empty()
+        && function
+            .inputs
+            .iter()
+            .all(|input| class_def.components.contains_key(input.name.as_str()))
 }
 
 fn remap_operator_constructor_inputs_to_record_fields(
