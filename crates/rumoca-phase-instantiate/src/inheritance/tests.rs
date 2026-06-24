@@ -290,6 +290,71 @@ fn test_constrainedby_subtype_allowed() {
 }
 
 #[test]
+fn test_constrainedby_explicit_type_overrides_declared_type_def_id() {
+    let mut tree = ast::ClassTree::default();
+
+    let declared_id = DefId::new(1);
+    let constraint_id = DefId::new(2);
+    let replacement_id = DefId::new(3);
+
+    let declared = ast::ClassDef {
+        name: make_token("DeclaredVolume"),
+        def_id: Some(declared_id),
+        ..Default::default()
+    };
+    let constraint = ast::ClassDef {
+        name: make_token("HeatPortVolume"),
+        def_id: Some(constraint_id),
+        ..Default::default()
+    };
+    let replacement = ast::ClassDef {
+        name: make_token("MoistureHeatPortVolume"),
+        def_id: Some(replacement_id),
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("HeatPortVolume", constraint_id),
+            base_def_id: Some(constraint_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    tree.definitions
+        .classes
+        .insert("DeclaredVolume".to_string(), declared);
+    tree.definitions
+        .classes
+        .insert("HeatPortVolume".to_string(), constraint);
+    tree.definitions
+        .classes
+        .insert("MoistureHeatPortVolume".to_string(), replacement);
+    for (name, def_id) in [
+        ("DeclaredVolume", declared_id),
+        ("HeatPortVolume", constraint_id),
+        ("MoistureHeatPortVolume", replacement_id),
+    ] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
+
+    let mut comp = make_constrained_component("vol2", "DeclaredVolume", Some("HeatPortVolume"));
+    comp.type_def_id = Some(declared_id);
+    comp.constrainedby = Some(make_resolved_name("HeatPortVolume", constraint_id));
+
+    let result = validate_redeclaration(
+        &tree,
+        &comp,
+        "vol2",
+        Some("MoistureHeatPortVolume"),
+        Span::DUMMY,
+    );
+
+    assert!(
+        result.is_ok(),
+        "explicit constrainedby must be the constraint even when declared type_def_id is present"
+    );
+}
+
+#[test]
 fn test_class_redeclare_constraint_resolves_relative_to_declaration_scope() {
     let (tree, flow_characteristic_id) = relative_class_redeclare_constraint_tree();
 

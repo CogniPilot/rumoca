@@ -1,6 +1,7 @@
 use super::*;
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, eval_state_select_expr, expr_to_bool, expr_to_string, parse_state_select,
+    InstantiateEvalCtx, eval_state_select_expr_with_scope, expr_to_bool, expr_to_string,
+    parse_state_select,
 };
 
 pub(super) struct ComponentAttrsAndBinding {
@@ -346,7 +347,9 @@ pub(super) fn extract_attributes(
 
     let outer_state_select = mod_env.get_attr(comp_name, "stateSelect");
     let outer_state_select = match outer_state_select {
-        Some(value) => Some(parse_required_state_select(value, eval_ctx, imports)?),
+        Some(value) => Some(parse_required_state_select(
+            value, eval_ctx, imports, comp_name,
+        )?),
         None => None,
     };
     let has_outer_state_select = outer_state_select.is_some();
@@ -384,7 +387,8 @@ pub(super) fn extract_attributes(
                 attrs.display_unit = expr_to_string(value)
             }
             "stateSelect" if !has_outer_state_select => {
-                attrs.state_select = parse_required_state_select(value, eval_ctx, imports)?
+                attrs.state_select =
+                    parse_required_state_select(value, eval_ctx, imports, comp_name)?
             }
             _ => {}
         }
@@ -402,15 +406,17 @@ fn parse_required_state_select(
     value: &ast::Expression,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
+    comp_name: &str,
 ) -> InstantiateResult<rumoca_core::StateSelect> {
+    let scope_prefix = parent_scope(comp_name);
     parse_state_select(value)
-        .or_else(|| eval_state_select_expr(eval_ctx, value))
+        .or_else(|| eval_state_select_expr_with_scope(eval_ctx, value, scope_prefix.as_deref()))
         .or_else(|| {
             // Enclosing-scope constants (MLS §5.3.2) appear unqualified in
             // declaration-side attributes; qualify them through the package
             // constant aliases and retry before failing.
             let qualified = crate::dims::qualify_shape_expr_imports(value, imports);
-            eval_state_select_expr(eval_ctx, &qualified)
+            eval_state_select_expr_with_scope(eval_ctx, &qualified, scope_prefix.as_deref())
         })
         .ok_or_else(|| {
             Box::new(InstantiateError::InvalidTypeAttribute {
@@ -419,4 +425,10 @@ fn parse_required_state_select(
                 span: rumoca_core::span_to_source_span(value.span()),
             })
         })
+}
+
+fn parent_scope(comp_name: &str) -> Option<String> {
+    comp_name
+        .rsplit_once('.')
+        .map(|(parent, _)| parent.to_string())
 }

@@ -60,6 +60,14 @@ fn make_bool_expr(value: bool) -> ast::Expression {
     }
 }
 
+fn make_real_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedReal,
+        token: make_token(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn test_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_instantiate_tests_source_7.mo"),
@@ -304,6 +312,219 @@ fn test_extract_attributes_evaluates_scoped_state_select_condition_parameter() {
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
     let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
         .expect("stateSelect if-expression should evaluate from scoped parameter context");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
+fn test_extract_attributes_evaluates_state_select_enum_equality_condition() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Eq,
+                    make_comp_ref_expr(&["massDynamics"]),
+                    make_comp_ref_expr(&["Modelica", "Fluid", "Types", "Dynamics", "SteadyState"]),
+                ),
+                make_comp_ref_expr(&["StateSelect", "default"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "prefer"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut mass_dynamics = make_component("massDynamics", "Dynamics", None);
+    mass_dynamics.binding = Some(make_comp_ref_expr(&[
+        "Modelica",
+        "Fluid",
+        "Types",
+        "Dynamics",
+        "SteadyState",
+    ]));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("massDynamics".to_string(), mass_dynamics);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect("stateSelect if-expression should evaluate enum equality condition");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Default);
+}
+
+#[test]
+fn test_extract_attributes_evaluates_state_select_chained_enum_parameter_condition() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Eq,
+                    make_comp_ref_expr(&["massDynamics"]),
+                    make_comp_ref_expr(&["Modelica", "Fluid", "Types", "Dynamics", "SteadyState"]),
+                ),
+                make_comp_ref_expr(&["StateSelect", "default"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "prefer"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut mass_dynamics = make_component("massDynamics", "Dynamics", None);
+    mass_dynamics.binding = Some(make_comp_ref_expr(&["energyDynamics"]));
+    let mut energy_dynamics = make_component("energyDynamics", "Dynamics", None);
+    energy_dynamics.binding = Some(make_comp_ref_expr(&[
+        "Modelica",
+        "Fluid",
+        "Types",
+        "Dynamics",
+        "SteadyState",
+    ]));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("massDynamics".to_string(), mass_dynamics);
+    effective_components.insert("energyDynamics".to_string(), energy_dynamics);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect("stateSelect if-expression should follow chained enum parameters");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Default);
+}
+
+#[test]
+fn test_extract_attributes_evaluates_state_select_enum_if_with_real_condition() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Eq,
+                    make_comp_ref_expr(&["massDynamics"]),
+                    make_comp_ref_expr(&["Modelica", "Fluid", "Types", "Dynamics", "SteadyState"]),
+                ),
+                make_comp_ref_expr(&["StateSelect", "default"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "prefer"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut mass_dynamics = make_component("massDynamics", "Dynamics", None);
+    mass_dynamics.binding = Some(ast::Expression::If {
+        branches: vec![(
+            make_binary_expr(
+                rumoca_core::OpBinary::Gt,
+                make_comp_ref_expr(&["tau"]),
+                make_comp_ref_expr(&["Modelica", "Constants", "eps"]),
+            ),
+            make_comp_ref_expr(&["energyDynamics"]),
+        )],
+        else_branch: std::sync::Arc::new(make_comp_ref_expr(&[
+            "Modelica",
+            "Fluid",
+            "Types",
+            "Dynamics",
+            "SteadyState",
+        ])),
+        span: rumoca_core::Span::DUMMY,
+    });
+    let mut energy_dynamics = make_component("energyDynamics", "Dynamics", None);
+    energy_dynamics.binding = Some(make_comp_ref_expr(&[
+        "Modelica",
+        "Fluid",
+        "Types",
+        "Dynamics",
+        "DynamicFreeInitial",
+    ]));
+    let mut tau = make_component("tau", "Real", None);
+    tau.binding = Some(make_real_expr("30.0"));
+    let mut eps = make_component("Modelica.Constants.eps", "Real", None);
+    eps.binding = Some(make_real_expr("1e-15"));
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("massDynamics".to_string(), mass_dynamics);
+    effective_components.insert("energyDynamics".to_string(), energy_dynamics);
+    effective_components.insert("tau".to_string(), tau);
+    effective_components.insert("Modelica.Constants.eps".to_string(), eps);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect("stateSelect should evaluate enum if-expression with Real condition");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
+fn test_extract_attributes_evaluates_state_select_in_component_parent_scope() {
+    let mut comp = make_component("m", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Eq,
+                    make_comp_ref_expr(&["massDynamics"]),
+                    make_comp_ref_expr(&["Modelica", "Fluid", "Types", "Dynamics", "SteadyState"]),
+                ),
+                make_comp_ref_expr(&["StateSelect", "default"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "prefer"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut mass_dynamics = make_component("dynBal.massDynamics", "Dynamics", None);
+    mass_dynamics.binding = Some(ast::Expression::If {
+        branches: vec![(
+            make_binary_expr(
+                rumoca_core::OpBinary::Gt,
+                make_comp_ref_expr(&["tau"]),
+                make_comp_ref_expr(&["Modelica", "Constants", "eps"]),
+            ),
+            make_comp_ref_expr(&["energyDynamics"]),
+        )],
+        else_branch: std::sync::Arc::new(make_comp_ref_expr(&[
+            "Modelica",
+            "Fluid",
+            "Types",
+            "Dynamics",
+            "SteadyState",
+        ])),
+        span: rumoca_core::Span::DUMMY,
+    });
+    let mut energy_dynamics = make_component("dynBal.energyDynamics", "Dynamics", None);
+    energy_dynamics.binding = Some(make_comp_ref_expr(&[
+        "Modelica",
+        "Fluid",
+        "Types",
+        "Dynamics",
+        "DynamicFreeInitial",
+    ]));
+    let mut tau = make_component("dynBal.tau", "Real", None);
+    tau.binding = Some(make_real_expr("30.0"));
+    let mut eps = make_component("Modelica.Constants.eps", "Real", None);
+    eps.binding = Some(make_real_expr("1e-15"));
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("dynBal.massDynamics".to_string(), mass_dynamics);
+    effective_components.insert("dynBal.energyDynamics".to_string(), energy_dynamics);
+    effective_components.insert("dynBal.tau".to_string(), tau);
+    effective_components.insert("Modelica.Constants.eps".to_string(), eps);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "dynBal.m", &eval_ctx, &[])
+        .expect("stateSelect should resolve sibling parameters in the component parent scope");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }

@@ -393,18 +393,29 @@ fn validate_redeclaration(
             .map(|n| n.to_string())
             .unwrap_or_else(|| component.type_name.to_string());
 
-        // Try to resolve constraint type using def_id or tree lookup
-        let constraint_type = if let Some(def_id) = component.type_def_id
-            && let Some(qualified) = tree.def_map.get(&def_id)
-        {
-            qualified.clone()
-        } else if let Some(&def_id) = tree.name_map.get(&constraint_type_raw)
-            && let Some(qualified) = tree.def_map.get(&def_id)
-        {
-            qualified.clone()
-        } else {
-            constraint_type_raw.clone()
-        };
+        // Try to resolve constraint type using the explicit constrainedby first.
+        // The declared component type is only the default constraint when
+        // constrainedby is omitted (MLS §7.3.2).
+        let constraint_type = component
+            .constrainedby
+            .as_ref()
+            .and_then(|name| name.def_id)
+            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+            .or_else(|| {
+                tree.name_map
+                    .get(&constraint_type_raw)
+                    .and_then(|def_id| tree.def_map.get(def_id).cloned())
+            })
+            .or_else(|| {
+                if component.constrainedby.is_none() {
+                    component
+                        .type_def_id
+                        .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| constraint_type_raw.clone());
 
         // Try to resolve new type name using the constraint type's package as context
         // This handles cases like GearType1 in the same package as GearType2

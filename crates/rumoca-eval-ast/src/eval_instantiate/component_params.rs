@@ -68,13 +68,23 @@ pub fn eval_state_select_expr(
     ctx: &InstantiateEvalCtx,
     expr: &ast::Expression,
 ) -> Option<rumoca_core::StateSelect> {
+    eval_state_select_expr_with_scope(ctx, expr, None)
+}
+
+/// Evaluate an MLS predefined `StateSelect` attribute expression in the
+/// lexical scope of the declaring component.
+pub fn eval_state_select_expr_with_scope(
+    ctx: &InstantiateEvalCtx,
+    expr: &ast::Expression,
+    scope_prefix: Option<&str>,
+) -> Option<rumoca_core::StateSelect> {
     let env = ConditionEvalEnv {
         mod_env: ctx.mod_env,
         effective_components: ctx.effective_components,
         tree: ctx.tree,
         resolve_class_components: ctx.resolve_class_components,
     };
-    eval_state_select_expr_with_depth(expr, env, None, 0)
+    eval_state_select_expr_with_depth(expr, env, scope_prefix, 0)
 }
 
 fn eval_state_select_expr_with_depth(

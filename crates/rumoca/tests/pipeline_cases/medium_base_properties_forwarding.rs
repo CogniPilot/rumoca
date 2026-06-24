@@ -344,6 +344,7 @@ equation
 end ConservationEquation;
 
 model PartialMixingVolume
+  parameter Real V = 1;
   ConservationEquation dynBal(final use_mWat_flow = false);
 end PartialMixingVolume;
 
@@ -410,6 +411,83 @@ fn test_hex_element_latent_component_redeclare_uses_redeclared_volume_modifiers(
         json["p"]["ele[1].vol2.dynBal.use_mWat_flow"]["start"]["Literal"]["value"]["Boolean"], true,
         "redeclared volume's inherited dynBal modifier must force use_mWat_flow=true"
     );
+}
+
+const COMPONENT_REDECLARE_OVERRIDE_SCOPE_SOURCE: &str = r#"
+connector RealInput = input Real;
+
+model ConservationEquation
+  parameter Boolean use_mWat_flow = false;
+  RealInput mWat_flow if use_mWat_flow;
+  Real mWat_flow_internal;
+equation
+  if use_mWat_flow then
+    mWat_flow_internal = mWat_flow;
+  else
+    mWat_flow_internal = 0;
+  end if;
+end ConservationEquation;
+
+model PartialMixingVolume
+  ConservationEquation dynBal(final use_mWat_flow = false);
+end PartialMixingVolume;
+
+model MixingVolume
+  extends PartialMixingVolume;
+end MixingVolume;
+
+model MixingVolumeHeatPort
+  extends PartialMixingVolume;
+end MixingVolumeHeatPort;
+
+model MixingVolumeHeatMoisturePort
+  extends PartialMixingVolume(dynBal(final use_mWat_flow = true));
+  RealInput mWat_flow;
+equation
+  connect(mWat_flow, dynBal.mWat_flow);
+end MixingVolumeHeatMoisturePort;
+
+model FourPortLike
+  replaceable MixingVolume vol2 constrainedby MixingVolumeHeatPort;
+end FourPortLike;
+
+model LatentElementLike
+  extends FourPortLike(redeclare final MixingVolumeHeatMoisturePort vol2);
+end LatentElementLike;
+
+model EightPortLike
+  MixingVolume vol2;
+end EightPortLike;
+
+model InternalHexLike
+  extends EightPortLike(vol2(final V = 2));
+end InternalHexLike;
+
+model UsesLatentAndInternalHex
+  LatentElementLike latent;
+  InternalHexLike internalHex;
+  Real z1;
+  Real z2;
+equation
+  latent.vol2.mWat_flow = 1;
+  z1 = latent.vol2.dynBal.mWat_flow_internal;
+  z2 = internalHex.vol2.dynBal.mWat_flow_internal;
+end UsesLatentAndInternalHex;
+"#;
+
+#[test]
+fn test_component_redeclare_override_does_not_leak_to_unrelated_same_named_component() {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document(
+            "component_redeclare_override_scope_test.mo",
+            COMPONENT_REDECLARE_OVERRIDE_SCOPE_SOURCE,
+        )
+        .expect("component redeclare override scope fixture should parse");
+
+    session
+        .compile_model("UsesLatentAndInternalHex")
+        .expect("component redeclare override must not leak to an unrelated same-named component");
 }
 
 #[test]

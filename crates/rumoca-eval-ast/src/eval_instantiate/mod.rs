@@ -358,6 +358,17 @@ fn eval_binary_condition(
             depth + 1,
         )
     };
+    let real_eval = |e| {
+        try_eval_real_expr_with_depth(
+            e,
+            env.mod_env,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+            None,
+            depth + 1,
+        )
+    };
 
     match op {
         rumoca_core::OpBinary::Or => {
@@ -386,6 +397,9 @@ fn eval_binary_condition(
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l == r);
             }
+            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
+                return Some(l == r);
+            }
         }
         rumoca_core::OpBinary::Neq => {
             if let Some(val) = enum_eq() {
@@ -394,9 +408,15 @@ fn eval_binary_condition(
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l != r);
             }
+            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
+                return Some(l != r);
+            }
         }
         rumoca_core::OpBinary::Lt => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
+                return Some(l < r);
+            }
+            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
                 return Some(l < r);
             }
         }
@@ -404,14 +424,23 @@ fn eval_binary_condition(
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l <= r);
             }
+            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
+                return Some(l <= r);
+            }
         }
         rumoca_core::OpBinary::Gt => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l > r);
             }
+            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
+                return Some(l > r);
+            }
         }
         rumoca_core::OpBinary::Ge => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
+                return Some(l >= r);
+            }
+            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
                 return Some(l >= r);
             }
         }
@@ -544,6 +573,109 @@ fn unresolved_component_ref_looks_like_variable(
 ///
 fn enum_values_equal(a: &str, b: &str) -> bool {
     rumoca_core::enum_values_equal(a, b)
+}
+
+fn try_eval_real_expr_with_depth(
+    expr: &ast::Expression,
+    mod_env: &ast::ModificationEnvironment,
+    effective_components: &IndexMap<String, ast::Component>,
+    tree: &ast::ClassTree,
+    resolve_class_components: &ResolveClassComponents<'_>,
+    scope_prefix: Option<&str>,
+    depth: usize,
+) -> Option<f64> {
+    if depth > MAX_EXPR_EVAL_DEPTH {
+        return None;
+    }
+    let recurse = |expr, scope_prefix| {
+        try_eval_real_expr_with_depth(
+            expr,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            scope_prefix,
+            depth + 1,
+        )
+    };
+
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } => token.text.parse::<f64>().ok(),
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token,
+            ..
+        } => token.text.parse::<f64>().ok(),
+        ast::Expression::ComponentReference(comp_ref) => resolve_component_ref_expr(
+            comp_ref,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            scope_prefix,
+        )
+        .and_then(|(resolved_expr, next_scope)| {
+            try_eval_real_expr_with_depth(
+                &resolved_expr,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                next_scope.as_deref(),
+                depth + 1,
+            )
+        }),
+        ast::Expression::Parenthesized { inner, .. } => recurse(inner, scope_prefix),
+        ast::Expression::Unary { op, rhs, .. } => {
+            let value = recurse(rhs, scope_prefix)?;
+            match op {
+                rumoca_core::OpUnary::Minus => Some(-value),
+                rumoca_core::OpUnary::Plus => Some(value),
+                _ => None,
+            }
+        }
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = recurse(lhs, scope_prefix)?;
+            let rhs = recurse(rhs, scope_prefix)?;
+            match op {
+                rumoca_core::OpBinary::Add => Some(lhs + rhs),
+                rumoca_core::OpBinary::Sub => Some(lhs - rhs),
+                rumoca_core::OpBinary::Mul => Some(lhs * rhs),
+                rumoca_core::OpBinary::Div => Some(lhs / rhs),
+                _ => None,
+            }
+        }
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            let env = ConditionEvalEnv {
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+            };
+            for (condition, branch_expr) in branches {
+                match eval_scoped_string_condition_with_depth(
+                    condition,
+                    env,
+                    scope_prefix,
+                    depth + 1,
+                ) {
+                    Some(true) => return recurse(branch_expr, scope_prefix),
+                    Some(false) => continue,
+                    None => return None,
+                }
+            }
+            recurse(else_branch, scope_prefix)
+        }
+        _ => None,
+    }
 }
 
 /// Get an enum value from an expression.
@@ -1952,9 +2084,9 @@ pub(super) use component_params::{
     enclosing_scope_candidates,
 };
 pub use component_params::{
-    eval_state_select_expr, expr_to_string, extract_binding, extract_bool_params_with_mods,
-    extract_int_params_with_mods, parse_state_select, propagate_record_alias_integer_params,
-    try_eval_string_expr,
+    eval_state_select_expr, eval_state_select_expr_with_scope, expr_to_string, extract_binding,
+    extract_bool_params_with_mods, extract_int_params_with_mods, parse_state_select,
+    propagate_record_alias_integer_params, try_eval_string_expr,
 };
 pub use function_eval::{
     evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,
