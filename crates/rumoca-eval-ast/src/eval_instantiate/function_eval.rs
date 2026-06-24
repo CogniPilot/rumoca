@@ -4,30 +4,20 @@ use super::{
     try_eval_bool_expr_with_local_values, try_eval_integer_expr_with_depth_and_locals,
 };
 use rumoca_core::{
-    DefId, IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
+    IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
     eval_integer_div_builtin,
 };
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
 
+mod array_indices;
+mod function_lookup;
 mod local_lookup;
 
+pub use array_indices::generate_array_indices;
+pub(super) use function_lookup::lookup_function_definition;
 pub(super) use local_lookup::{lookup_local_bool, lookup_local_integer};
 
 const MAX_FUNCTION_LOOP_ITERATIONS: usize = 4096;
-const MAX_FUNCTION_LEAF_INDEXES: usize = 16;
-
-thread_local! {
-    static FUNCTION_LEAF_INDEX_CACHE: RefCell<FxHashMap<FunctionLeafIndexKey, FxHashMap<String, Option<DefId>>>> =
-        RefCell::new(FxHashMap::default());
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct FunctionLeafIndexKey {
-    tree_addr: usize,
-    def_count: usize,
-    name_count: usize,
-}
 
 enum LocalValue {
     Integer(i64),
@@ -288,78 +278,6 @@ pub(super) fn eval_user_defined_bool_function(
     }
 
     locals.bools.get(&output_name).copied()
-}
-
-pub(super) fn lookup_function_definition<'a>(
-    func_name: &str,
-    qualified_name: Option<&str>,
-    tree: &'a ast::ClassTree,
-) -> Option<&'a ast::ClassDef> {
-    if let Some(name) = qualified_name
-        && let Some(class) = tree.get_class_by_qualified_name(name)
-        && class.class_type == rumoca_core::ClassType::Function
-    {
-        return Some(class);
-    }
-
-    if let Some(class) = tree.get_class_by_qualified_name(func_name)
-        && class.class_type == rumoca_core::ClassType::Function
-    {
-        return Some(class);
-    }
-
-    lookup_unique_short_function_name(func_name, tree)
-}
-
-fn lookup_unique_short_function_name<'a>(
-    func_name: &str,
-    tree: &'a ast::ClassTree,
-) -> Option<&'a ast::ClassDef> {
-    if func_name.contains('.') {
-        return None;
-    }
-
-    let def_id = cached_function_leaf_def_id(tree, func_name)??;
-    tree.get_class_by_def_id(def_id)
-        .filter(|class| class.class_type == rumoca_core::ClassType::Function)
-}
-
-fn cached_function_leaf_def_id(tree: &ast::ClassTree, func_name: &str) -> Option<Option<DefId>> {
-    let key = FunctionLeafIndexKey {
-        tree_addr: std::ptr::from_ref(tree) as usize,
-        def_count: tree.def_map.len(),
-        name_count: tree.name_map.len(),
-    };
-    FUNCTION_LEAF_INDEX_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if !cache.contains_key(&key) {
-            if cache.len() >= MAX_FUNCTION_LEAF_INDEXES {
-                cache.clear();
-            }
-            cache.insert(key, build_function_leaf_index(tree));
-        }
-        cache
-            .get(&key)
-            .and_then(|index| index.get(func_name).copied())
-    })
-}
-
-fn build_function_leaf_index(tree: &ast::ClassTree) -> FxHashMap<String, Option<DefId>> {
-    let mut index = FxHashMap::default();
-    for (def_id, qualified) in &tree.def_map {
-        let Some(class) = tree.get_class_by_qualified_name(qualified) else {
-            continue;
-        };
-        if class.class_type != rumoca_core::ClassType::Function {
-            continue;
-        }
-        let leaf = qualified.rsplit('.').next().unwrap_or(qualified);
-        index
-            .entry(leaf.to_string())
-            .and_modify(|existing| *existing = None)
-            .or_insert(Some(*def_id));
-    }
-    index
 }
 
 pub(super) fn eval_integer_binary(op: &rumoca_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
@@ -1177,39 +1095,6 @@ fn shape_component_ref_is_static(
     true
 }
 
-/// Generate all array indices for multi-dimensional arrays.
-/// For dims = `[2, 3]`, generates: `[[1,1], [1,2], [1,3], [2,1], [2,2], [2,3]]`.
-/// Uses 1-based indexing per Modelica semantics (MLS §10.1).
-pub fn generate_array_indices(dims: &[i64]) -> Vec<Vec<i64>> {
-    if dims.is_empty() {
-        return vec![]; // Scalar, no indices needed
-    }
-
-    let total: usize = dims.iter().map(|&d| d as usize).product();
-    let mut result = Vec::with_capacity(total);
-
-    // Generate all combinations using iterative approach
-    let mut indices = vec![1i64; dims.len()];
-    loop {
-        result.push(indices.clone());
-
-        // Increment indices from right to left (like counting)
-        let mut i = dims.len();
-        while i > 0 {
-            i -= 1;
-            indices[i] += 1;
-            if indices[i] <= dims[i] {
-                break;
-            }
-            // Carry over
-            if i == 0 {
-                return result; // All combinations generated
-            }
-            indices[i] = 1;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1217,9 +1102,8 @@ mod tests {
     use super::super::{
         InstantiateEvalCtx, enum_values_equal, evaluate_component_condition, try_eval_integer_expr,
     };
-    use super::{
-        eval_integer_binary, evaluate_array_dimensions, lookup_unique_short_function_name,
-    };
+    use super::function_lookup::lookup_unique_short_function_name;
+    use super::{eval_integer_binary, evaluate_array_dimensions};
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
