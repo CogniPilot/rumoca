@@ -77,9 +77,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Install Rust
         run: |
@@ -140,9 +138,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Cache rustup toolchain
         uses: actions/cache@v5
@@ -290,9 +286,7 @@ jobs:
           persist-credentials: true
 
       - name: Install system dependencies
-        run: |
-          apt-get update
-          apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Cache cargo
         uses: actions/cache@v5
@@ -338,9 +332,7 @@ jobs:
           node-version: '20'
 
       - name: Install Xvfb and system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb xauth libudev-dev
+        run: scripts/ci/apt-install.sh xvfb xauth libudev-dev
 
       - name: Select headless browser
         shell: bash
@@ -424,9 +416,7 @@ jobs:
           persist-credentials: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Install Rust
         run: |
@@ -511,9 +501,7 @@ jobs:
           persist-credentials: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Install Rust
         run: |
@@ -566,8 +554,7 @@ jobs:
         run: |
           set -euo pipefail
           omc_channel="stable"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          scripts/ci/apt-install.sh --no-install-recommends \
             build-essential \
             ca-certificates \
             clang \
@@ -583,8 +570,7 @@ jobs:
             | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
           echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
             | sudo tee /etc/apt/sources.list.d/openmodelica.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends omc
+          scripts/ci/apt-install.sh --no-install-recommends omc
           omc --version
 
       - name: Clean stale MSL results
@@ -693,9 +679,7 @@ jobs:
           persist-credentials: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Install Rust
         run: |
@@ -727,9 +711,7 @@ jobs:
           persist-credentials: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Install Rust
         run: |
@@ -770,9 +752,7 @@ jobs:
           persist-credentials: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
+        run: scripts/ci/apt-install.sh libudev-dev
 
       - name: Install Rust nightly with rust-src
         run: |
@@ -957,9 +937,7 @@ jobs:
 
       - name: Install musl tools (Linux musl)
         if: contains(matrix.target, 'musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+        run: scripts/ci/apt-install.sh musl-tools
 
       - name: Configure musl build (Linux musl)
         if: contains(matrix.target, 'musl')
