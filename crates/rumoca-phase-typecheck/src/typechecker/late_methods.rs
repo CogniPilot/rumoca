@@ -3,6 +3,13 @@ use super::traversal_adapter::{
 };
 use super::*;
 use rumoca_core::ComponentPath;
+use rumoca_ir_ast::Visitor;
+use std::ops::ControlFlow;
+
+// SPEC_0021 file-size exception: late typecheck owns cross-cutting checks over
+// resolved class structure; split plan is to move connector membership and
+// modifier validation into sibling typechecker modules as the current FMU
+// correctness path stabilizes.
 
 #[path = "equation_shape.rs"]
 mod equation_shape;
@@ -770,6 +777,7 @@ impl TypeChecker {
             );
         }
         self.current_component_types = scope_types;
+        let prev_expandable_member_surfaces = std::mem::take(&mut self.expandable_member_surfaces);
         let mut scope_shapes = HashMap::new();
         for (name, comp) in &class.components {
             let shape = if !comp.shape.is_empty() {
@@ -796,6 +804,11 @@ impl TypeChecker {
         // Mark structural parameters (MLS §18.3)
         self.mark_structural_parameters(class);
 
+        // Expandable connector membership is a class-level equation surface:
+        // equation order must not decide whether a later connect-reference is
+        // considered already synthesized.
+        self.collect_expandable_member_surfaces(class, type_table);
+
         // Type check equations
         walk_equations(self, &class.equations, type_table);
         walk_equations(self, &class.initial_equations, type_table);
@@ -815,6 +828,7 @@ impl TypeChecker {
 
         // Restore parent class scope.
         self.current_component_types = prev_scope_types;
+        self.expandable_member_surfaces = prev_expandable_member_surfaces;
     }
 
     /// Type check a component declaration.
@@ -1634,6 +1648,73 @@ impl TypeChecker {
         );
     }
 
+    pub(crate) fn collect_expandable_member_surfaces(
+        &mut self,
+        class: &ClassDef,
+        type_table: &TypeTable,
+    ) {
+        let mut collector = ExpandableMemberSurfaceCollector {
+            checker: self,
+            type_table,
+        };
+        let _ = collector.visit_each(&class.equations, rumoca_ir_ast::Visitor::visit_equation);
+        let _ = collector.visit_each(
+            &class.initial_equations,
+            rumoca_ir_ast::Visitor::visit_equation,
+        );
+        for statements in &class.algorithms {
+            let _ = collector.visit_each(statements, rumoca_ir_ast::Visitor::visit_statement);
+        }
+        for statements in &class.initial_algorithms {
+            let _ = collector.visit_each(statements, rumoca_ir_ast::Visitor::visit_statement);
+        }
+    }
+
+    fn record_expandable_member_surface(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        type_table: &TypeTable,
+    ) {
+        let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp) else {
+            return;
+        };
+        for (idx, part) in comp.parts.iter().enumerate().skip(prefix_len) {
+            let member_name = part.ident.text.as_ref();
+            if let Some(next_type) =
+                self.lookup_component_member_type(current_type, member_name, type_table)
+            {
+                current_type = next_type;
+                continue;
+            }
+            if self.is_expandable_connector_type(type_table, current_type) {
+                self.expandable_member_surfaces
+                    .insert(component_reference_member_surface_key(comp, idx));
+            }
+            return;
+        }
+    }
+
+    fn record_expandable_field_access_surface(
+        &mut self,
+        base: &Expression,
+        field: &str,
+        type_table: &TypeTable,
+    ) {
+        let Some(base_type) = self.infer_expression_type(base, type_table) else {
+            return;
+        };
+        if self
+            .lookup_component_member_type(base_type, field, type_table)
+            .is_some()
+        {
+            return;
+        }
+        if self.is_expandable_connector_type(type_table, base_type) {
+            self.expandable_member_surfaces
+                .insert(format!("{base}.{field}"));
+        }
+    }
+
     pub(in crate::typechecker) fn resolve_component_reference_type(
         &self,
         comp: &rumoca_ir_ast::ComponentReference,
@@ -1682,7 +1763,7 @@ impl TypeChecker {
             return;
         }
 
-        for part in comp.parts.iter().skip(prefix_len) {
+        for (idx, part) in comp.parts.iter().enumerate().skip(prefix_len) {
             let member_name = part.ident.text.to_string();
             if let Some(next_type) =
                 self.lookup_component_member_type(current_type, &member_name, type_table)
@@ -1691,6 +1772,12 @@ impl TypeChecker {
                 continue;
             }
             if !self.is_expandable_connector_type(type_table, current_type) {
+                return;
+            }
+            if self
+                .expandable_member_surfaces
+                .contains(&component_reference_member_surface_key(comp, idx))
+            {
                 return;
             }
             match self.component_reference_member_span(&part.ident.location) {
@@ -1992,4 +2079,63 @@ impl TypeChecker {
     pub fn take_diagnostics(self) -> Diagnostics {
         self.diagnostics
     }
+}
+
+struct ExpandableMemberSurfaceCollector<'a> {
+    checker: &'a mut TypeChecker,
+    type_table: &'a TypeTable,
+}
+
+impl ExpandableMemberSurfaceCollector<'_> {
+    fn record_expression_surface(&mut self, expression: &Expression) {
+        let Expression::FieldAccess { base, field, .. } = expression else {
+            return;
+        };
+        self.checker
+            .record_expandable_field_access_surface(base, field, self.type_table);
+    }
+
+    fn record_reference_surface(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        ctx: rumoca_ir_ast::ComponentReferenceContext,
+    ) {
+        if matches!(
+            ctx,
+            rumoca_ir_ast::ComponentReferenceContext::EquationConnectLhs
+                | rumoca_ir_ast::ComponentReferenceContext::EquationConnectRhs
+        ) {
+            return;
+        }
+        self.checker
+            .record_expandable_member_surface(comp, self.type_table);
+    }
+}
+
+impl rumoca_ir_ast::Visitor for ExpandableMemberSurfaceCollector<'_> {
+    fn visit_expression(&mut self, expression: &Expression) -> ControlFlow<()> {
+        self.record_expression_surface(expression);
+        rumoca_ir_ast::walk_expression_default(self, expression)
+    }
+
+    fn visit_component_reference_ctx(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        ctx: rumoca_ir_ast::ComponentReferenceContext,
+    ) -> ControlFlow<()> {
+        self.record_reference_surface(comp, ctx);
+        rumoca_ir_ast::walk_component_reference_default(self, comp)
+    }
+}
+
+fn component_reference_member_surface_key(
+    comp: &rumoca_ir_ast::ComponentReference,
+    member_idx: usize,
+) -> String {
+    comp.parts
+        .iter()
+        .take(member_idx + 1)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
 }

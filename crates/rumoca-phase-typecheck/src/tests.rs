@@ -124,6 +124,214 @@ fn expandable_connector_dynamic_member_reference_typechecks() {
 }
 
 #[test]
+fn expandable_connector_connect_uses_class_visible_dynamic_member_surface() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        connector RealInput = input Real;
+
+        connector SignalBus
+        end SignalBus;
+
+        expandable connector WeatherBus
+          extends SignalBus;
+        end WeatherBus;
+
+        model OutdoorAirSource
+          RealInput T_in;
+        end OutdoorAirSource;
+
+        model Test
+          WeatherBus bus;
+          OutdoorAirSource source;
+        equation
+          bus.TDryBul = 293.15;
+          connect(bus.TDryBul, source.T_in);
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diag| diag.code.as_deref() != Some("ET001")),
+        "connect should accept expandable members already visible in the class surface: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn expandable_connector_connect_unknown_member_still_fails_typecheck() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        connector RealInput = input Real;
+
+        connector SignalBus
+        end SignalBus;
+
+        expandable connector WeatherBus
+          extends SignalBus;
+        end WeatherBus;
+
+        model OutdoorAirSource
+          RealInput T_in;
+        end OutdoorAirSource;
+
+        model Test
+          WeatherBus bus;
+          OutdoorAirSource source;
+        equation
+          connect(bus.TDryBul, source.T_in);
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag.code.as_deref() == Some("ET001")
+                && diag.message.contains("unknown member `TDryBul`")
+        }),
+        "connect should still reject expandable members with no visible synthesis source: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn instanced_expandable_connector_connect_uses_visible_dynamic_member_surface() {
+    let source = r#"
+        connector RealInput = input Real;
+
+        connector SignalBus
+        end SignalBus;
+
+        expandable connector WeatherBus
+          extends SignalBus;
+        end WeatherBus;
+
+        model OutdoorAirSource
+          RealInput T_in;
+        end OutdoorAirSource;
+
+        model Test
+          WeatherBus bus;
+          OutdoorAirSource source;
+        equation
+          bus.TDryBul = 293.15;
+          connect(bus.TDryBul, source.T_in);
+        end Test;
+        "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let test = tree
+        .definitions
+        .classes
+        .get("Test")
+        .expect("Test class should exist");
+    let source_class = tree
+        .definitions
+        .classes
+        .get("OutdoorAirSource")
+        .expect("OutdoorAirSource class should exist");
+
+    let mut overlay = InstanceOverlay::new();
+    add_test_instance(
+        &mut overlay,
+        "Test.bus",
+        test.components.get("bus").expect("bus declaration"),
+        None,
+    );
+    add_test_instance(
+        &mut overlay,
+        "Test.source",
+        test.components.get("source").expect("source declaration"),
+        None,
+    );
+    add_test_instance(
+        &mut overlay,
+        "Test.source.T_in",
+        source_class
+            .components
+            .get("T_in")
+            .expect("T_in declaration"),
+        None,
+    );
+
+    typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect("instanced expandable connect should use visible dynamic member surface");
+}
+
+#[test]
+fn instanced_expandable_connector_connect_unknown_member_still_fails_typecheck() {
+    let source = r#"
+        connector RealInput = input Real;
+
+        connector SignalBus
+        end SignalBus;
+
+        expandable connector WeatherBus
+          extends SignalBus;
+        end WeatherBus;
+
+        model OutdoorAirSource
+          RealInput T_in;
+        end OutdoorAirSource;
+
+        model Test
+          WeatherBus bus;
+          OutdoorAirSource source;
+        equation
+          connect(bus.TDryBul, source.T_in);
+        end Test;
+        "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let test = tree
+        .definitions
+        .classes
+        .get("Test")
+        .expect("Test class should exist");
+    let source_class = tree
+        .definitions
+        .classes
+        .get("OutdoorAirSource")
+        .expect("OutdoorAirSource class should exist");
+
+    let mut overlay = InstanceOverlay::new();
+    add_test_instance(
+        &mut overlay,
+        "Test.bus",
+        test.components.get("bus").expect("bus declaration"),
+        None,
+    );
+    add_test_instance(
+        &mut overlay,
+        "Test.source",
+        test.components.get("source").expect("source declaration"),
+        None,
+    );
+    add_test_instance(
+        &mut overlay,
+        "Test.source.T_in",
+        source_class
+            .components
+            .get("T_in")
+            .expect("T_in declaration"),
+        None,
+    );
+
+    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect_err("instanced expandable connect should reject unsynthesized members");
+    assert!(
+        err.iter().any(|diag| {
+            diag.code.as_deref() == Some("ET001")
+                && diag.message.contains("unknown member `TDryBul`")
+        }),
+        "expected ET001 for unsynthesized expandable connect member, got: {err:?}"
+    );
+}
+
+#[test]
 fn ordinary_connector_unknown_member_still_fails_typecheck() {
     let diagnostics = typecheck_diagnostics(
         r#"

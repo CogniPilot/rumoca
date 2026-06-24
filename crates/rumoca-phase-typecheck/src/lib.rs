@@ -289,6 +289,11 @@ pub struct TypeChecker {
     /// component references, so missing members are not ordinary static
     /// member errors.
     expandable_connector_defs: HashSet<DefId>,
+    /// Expandable connector member references visible in the current class.
+    ///
+    /// This is collected before validating connect equations so equation order
+    /// does not decide whether a dynamic bus member is considered synthesized.
+    expandable_member_surfaces: HashSet<String>,
     /// Type aliases whose targets could not be resolved during type-table
     /// construction (e.g. an MSL alias into a library that is not loaded).
     ///
@@ -323,6 +328,7 @@ impl TypeChecker {
             component_modifier_targets: HashMap::new(),
             component_modifier_member_types: HashMap::new(),
             expandable_connector_defs: HashSet::new(),
+            expandable_member_surfaces: HashSet::new(),
             deferred_alias_errors: HashMap::new(),
         }
     }
