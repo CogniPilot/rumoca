@@ -1529,7 +1529,10 @@ mod tests {
                         "r",
                         rumoca_core::Expression::FunctionCall {
                             name: rumoca_core::Reference::new("Pkg.OtherRecord"),
-                            args: vec![var_ref("rec.a"), var_ref("rec.b")],
+                            args: vec![
+                                component_ref_expr(&["rec", "a"]),
+                                component_ref_expr(&["rec", "b"]),
+                            ],
                             is_constructor: true,
                             span: Span::DUMMY,
                         },
