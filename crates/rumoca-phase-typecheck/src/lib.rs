@@ -292,6 +292,15 @@ pub struct TypeChecker {
     deferred_alias_errors: HashMap<TypeId, (String, Span)>,
 }
 
+struct ClassOverrideAliasContext<'a> {
+    tree: &'a ClassTree,
+    component_index: &'a HashMap<String, &'a rumoca_ir_ast::InstanceData>,
+    comp_scope: &'a str,
+    active_alias: Option<&'a str>,
+    eval_ctx: &'a mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    cleared_alias_scopes: &'a mut HashSet<String>,
+}
+
 impl TypeChecker {
     /// Create a new type checker.
     pub fn new() -> Self {
@@ -441,55 +450,63 @@ impl TypeChecker {
 
         let active_alias = Self::component_active_alias(data);
         for class_override in data.class_overrides.values() {
-            Self::apply_class_override_alias(
+            let mut alias_ctx = ClassOverrideAliasContext {
                 tree,
                 component_index,
-                &comp_scope,
-                active_alias.as_deref(),
+                comp_scope: &comp_scope,
+                active_alias: active_alias.as_deref(),
+                eval_ctx: ctx,
+                cleared_alias_scopes,
+            };
+            Self::apply_class_override_alias(
+                &mut alias_ctx,
                 &class_override.alias,
                 class_override.target_def_id,
-                ctx,
-                cleared_alias_scopes,
             );
         }
     }
 
     fn apply_class_override_alias(
-        tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
-        comp_scope: &str,
-        active_alias: Option<&str>,
+        alias_ctx: &mut ClassOverrideAliasContext<'_>,
         alias: &str,
         def_id: DefId,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-        cleared_alias_scopes: &mut HashSet<String>,
     ) {
         if Self::try_apply_forwarded_parent_alias_constants(
-            tree,
-            component_index,
-            comp_scope,
-            active_alias,
+            alias_ctx.tree,
+            alias_ctx.component_index,
+            alias_ctx.comp_scope,
+            alias_ctx.active_alias,
             alias,
             def_id,
-            ctx,
+            alias_ctx.eval_ctx,
         ) {
             return;
         }
 
-        let is_active_alias = active_alias == Some(alias);
+        let is_active_alias = alias_ctx.active_alias == Some(alias);
 
-        let alias_scope = format!("{comp_scope}.{alias}");
+        let alias_scope = format!("{}.{alias}", alias_ctx.comp_scope);
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
         // package constants in the local alias scope.
-        if cleared_alias_scopes.insert(alias_scope.clone()) {
-            Self::clear_alias_scope_values(ctx, &alias_scope);
+        if alias_ctx.cleared_alias_scopes.insert(alias_scope.clone()) {
+            Self::clear_alias_scope_values(alias_ctx.eval_ctx, &alias_scope);
         }
-        Self::extract_override_class_constants(tree, &alias_scope, def_id, ctx);
+        Self::extract_override_class_constants(
+            alias_ctx.tree,
+            &alias_scope,
+            def_id,
+            alias_ctx.eval_ctx,
+        );
 
         // For declarations like `Medium.BaseProperties medium`, expose
         // unqualified constants (`medium.nX`) from the active alias only.
         if is_active_alias {
-            Self::extract_override_class_constants(tree, comp_scope, def_id, ctx);
+            Self::extract_override_class_constants(
+                alias_ctx.tree,
+                alias_ctx.comp_scope,
+                def_id,
+                alias_ctx.eval_ctx,
+            );
         }
     }
 
