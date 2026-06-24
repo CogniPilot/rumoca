@@ -20,8 +20,12 @@ use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
 /// Flatten a when-equation to a list of WhenClauses.
 ///
-/// Each flat::WhenClause represents one "when" or "elsewhen" branch with its condition
-/// and the discrete equations that should be executed when the condition becomes true.
+/// A source `when` without `elsewhen` lowers to one flat::WhenClause. A
+/// non-structural `when`/`elsewhen` chain lowers to one flat::WhenClause whose
+/// condition is the vector of branch conditions and whose body is a conditional
+/// branch list keyed by each branch activation. This preserves MLS §8.3.5
+/// priority semantics while still letting DAE lowering generate one solved
+/// assignment per target.
 pub(crate) fn flatten_when_equation(
     ctx: &Context,
     inst_eq: &ast::InstanceEquation,
@@ -58,7 +62,76 @@ pub(crate) fn flatten_when_blocks(
     }
 
     validate_when_branch_targets(ctx, blocks, &clauses, prefix, span)?;
+    if should_merge_elsewhen_chain(ctx, blocks, prefix, &clauses) {
+        return Ok(vec![merge_elsewhen_chain(clauses, span)]);
+    }
     Ok(clauses)
+}
+
+fn should_merge_elsewhen_chain(
+    ctx: &Context,
+    blocks: &[ast::EquationBlock],
+    prefix: &ast::QualifiedName,
+    clauses: &[flat::WhenClause],
+) -> bool {
+    if clauses.len() <= 1 {
+        return false;
+    }
+    !blocks
+        .iter()
+        .all(|block| crate::boolean_eval::is_structural_expression(ctx, &block.cond, prefix))
+}
+
+fn merge_elsewhen_chain(
+    clauses: Vec<flat::WhenClause>,
+    span: rumoca_core::Span,
+) -> flat::WhenClause {
+    let condition = rumoca_core::Expression::Array {
+        elements: clauses
+            .iter()
+            .map(|clause| clause.condition.clone())
+            .collect(),
+        is_matrix: false,
+        span,
+    };
+    let branches = clauses
+        .into_iter()
+        .map(|clause| {
+            (
+                elsewhen_branch_activation_condition(&clause.condition, clause.span),
+                clause.equations,
+            )
+        })
+        .collect();
+    let mut merged = flat::WhenClause::new(condition, span);
+    merged.add_equation(flat::WhenEquation::conditional(
+        branches,
+        Vec::new(),
+        span,
+        "when/elsewhen branch chain",
+    ));
+    merged
+}
+
+fn elsewhen_branch_activation_condition(
+    condition: &rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    if matches!(
+        condition,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Initial,
+            args,
+            ..
+        } if args.is_empty()
+    ) {
+        return condition.clone();
+    }
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Edge,
+        args: vec![condition.clone()],
+        span,
+    }
 }
 
 /// Flatten a single when/elsewhen block to a flat::WhenClause.
@@ -635,7 +708,8 @@ fn extract_assignment_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_assignment_target, flatten_when_for_equation, is_known_streams_side_effect_call,
+        elsewhen_branch_activation_condition, extract_assignment_target, flatten_when_for_equation,
+        is_known_streams_side_effect_call, merge_elsewhen_chain,
     };
     use crate::errors::FlattenError;
     use rumoca_ir_ast as ast;
@@ -693,6 +767,30 @@ mod tests {
 
     fn var_expr(name: &str) -> ast::Expression {
         ast::Expression::ComponentReference(comp_ref(name))
+    }
+
+    fn bool_expr(value: bool) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(value),
+            span: test_span(),
+        }
+    }
+
+    fn flat_var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new(name).into(),
+            subscripts: vec![],
+            span: test_span(),
+        }
+    }
+
+    fn flat_assignment(target: &str, value: bool) -> flat::WhenEquation {
+        flat::WhenEquation::assign(
+            rumoca_core::VarName::new(target),
+            bool_expr(value),
+            test_span(),
+            format!("assign {target}"),
+        )
     }
 
     fn for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
@@ -797,5 +895,50 @@ mod tests {
         assert!(targets.contains("y[1,2]"));
         assert!(targets.contains("y[2,1]"));
         assert!(targets.contains("y[2,2]"));
+    }
+
+    #[test]
+    fn elsewhen_branch_activation_wraps_non_initial_conditions_in_edge() {
+        let condition = flat_var_ref("u");
+        let activation = elsewhen_branch_activation_condition(&condition, test_span());
+
+        let rumoca_core::Expression::BuiltinCall { function, args, .. } = activation else {
+            panic!("expected edge(...) activation");
+        };
+        assert_eq!(function, rumoca_core::BuiltinFunction::Edge);
+        assert_eq!(args, vec![condition]);
+    }
+
+    #[test]
+    fn merge_elsewhen_chain_preserves_one_clause_with_vector_guard() {
+        let mut first = flat::WhenClause::new(flat_var_ref("u"), test_span());
+        first.add_equation(flat_assignment("y", true));
+        let mut second = flat::WhenClause::new(flat_var_ref("v"), test_span());
+        second.add_equation(flat_assignment("y", false));
+
+        let merged = merge_elsewhen_chain(vec![first, second], test_span());
+
+        let rumoca_core::Expression::Array { elements, .. } = &merged.condition else {
+            panic!("merged elsewhen chain should use vector when condition");
+        };
+        assert_eq!(elements.len(), 2);
+        assert_eq!(merged.equations.len(), 1);
+        let flat::WhenEquation::Conditional { branches, .. } = &merged.equations[0] else {
+            panic!("merged elsewhen chain should lower into one conditional when equation");
+        };
+        assert_eq!(branches.len(), 2);
+        for (condition, branch_eqs) in branches {
+            assert!(
+                matches!(
+                    condition,
+                    rumoca_core::Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Edge,
+                        ..
+                    }
+                ),
+                "branch conditions should be activation edges: {condition:?}"
+            );
+            assert_eq!(branch_eqs.len(), 1);
+        }
     }
 }
