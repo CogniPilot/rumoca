@@ -574,6 +574,7 @@ fn decompose_record_call_args(
         .iter()
         .map(|param| param.param_name.as_str())
         .collect::<HashSet<_>>();
+    let has_multiple_decomposed_params = decomposed.len() > 1;
     for dp in decomposed {
         while old_idx < dp.original_index && old_idx < old_args.len() {
             if !consumed.contains(&old_idx)
@@ -584,6 +585,8 @@ fn decompose_record_call_args(
             old_idx += 1;
         }
         if let Some((arg_idx, value)) = named_function_arg_value(old_args, &dp.param_name) {
+            let as_named_fields =
+                has_multiple_decomposed_params || output_args_have_named_slots(&args);
             expand_record_arg(
                 function_name,
                 &dp.param_name,
@@ -591,7 +594,7 @@ fn decompose_record_call_args(
                 &dp.type_name,
                 &dp.fields,
                 local_record_params,
-                true,
+                as_named_fields,
                 &mut args,
             )?;
             consumed.insert(arg_idx);
@@ -1124,12 +1127,12 @@ mod tests {
         };
         assert_eq!(args.len(), 2);
         assert!(matches!(
-            named_arg_var_ref(&args[0], "r_a"),
-            Some(name) if name.as_str() == "rec.a"
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.a"
         ));
         assert!(matches!(
-            named_arg_var_ref(&args[1], "r_b"),
-            Some(name) if name.as_str() == "rec.b"
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
         ));
     }
 
