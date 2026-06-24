@@ -97,6 +97,60 @@ fn integer_fold_overflow_emits_warning() {
 }
 
 #[test]
+fn expandable_connector_dynamic_member_reference_typechecks() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        connector SignalBus
+        end SignalBus;
+
+        expandable connector WeatherBus
+          extends SignalBus;
+        end WeatherBus;
+
+        model Test
+          WeatherBus bus;
+        equation
+          bus.TDryBul = 293.15;
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diag| diag.code.as_deref() != Some("ET001")),
+        "expandable connector dynamic members must not be rejected as ordinary unknown members: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn ordinary_connector_unknown_member_still_fails_typecheck() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        connector SignalBus
+        end SignalBus;
+
+        connector FixedBus
+          extends SignalBus;
+        end FixedBus;
+
+        model Test
+          FixedBus bus;
+        equation
+          bus.TDryBul = 293.15;
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("ET001")),
+        "ordinary connector unknown members should remain strict: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn model_qualified_nested_package_constants_evaluate_dimensions() {
     let diagnostics = typecheck_diagnostics(
         r#"

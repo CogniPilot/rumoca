@@ -186,6 +186,7 @@ pub(crate) fn create_flat_variable(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     imports: &VariableImportContext,
+    simulated_root_name: Option<&str>,
 ) -> Result<flat::Variable, FlattenError> {
     let name = rumoca_core::VarName::new(instance.qualified_name.to_flat_string());
     let source_span = instance_source_span(instance, tree, "flat variable")?;
@@ -210,6 +211,7 @@ pub(crate) fn create_flat_variable(
         prefix: &prefix,
         opts,
         def_map,
+        simulated_root_name,
     })?;
 
     // Binding expressions need careful handling:
@@ -226,6 +228,7 @@ pub(crate) fn create_flat_variable(
         prefix: &prefix,
         opts,
         def_map,
+        simulated_root_name,
     })?;
 
     let component_ref = Some(ast::instance::component_reference_for_instance(
@@ -296,6 +299,7 @@ struct VariableQualifyContext<'a, 'tree> {
     prefix: &'a ast::QualifiedName,
     opts: QualifyOptions,
     def_map: &'a crate::ResolveDefMap,
+    simulated_root_name: Option<&'a str>,
 }
 
 struct QualifiedVariableAttributes {
@@ -337,8 +341,15 @@ fn qualify_variable_attribute(
         .get(attr_name)
         .map(String::as_str)
         .or(ctx.imports.declaration_function_scope.as_deref());
+    let instance_name = declaration_instance_name(ctx.simulated_root_name, ctx.prefix);
     Ok(Some(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                def_map: Some(ctx.def_map),
+                instance_name: instance_name.as_deref(),
+            },
+        )?,
         source_scope,
         ctx.tree,
         ctx.class_index,
@@ -369,8 +380,15 @@ fn qualify_modification_binding(
     let mod_prefix = modification_binding_prefix(ctx.instance, ctx.tree)?;
     let qualified =
         qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, ctx.imports.binding_imports());
+    let instance_name = declaration_instance_name(ctx.simulated_root_name, &mod_prefix);
     Ok(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                def_map: Some(ctx.def_map),
+                instance_name: instance_name.as_deref(),
+            },
+        )?,
         ctx.imports.binding_function_scope.as_deref(),
         ctx.tree,
         ctx.class_index,
@@ -388,12 +406,32 @@ fn qualify_declaration_binding(
         .binding_function_scope
         .as_deref()
         .or(ctx.imports.declaration_function_scope.as_deref());
+    let instance_name = declaration_instance_name(ctx.simulated_root_name, ctx.prefix);
     Ok(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                def_map: Some(ctx.def_map),
+                instance_name: instance_name.as_deref(),
+            },
+        )?,
         source_scope,
         ctx.tree,
         ctx.class_index,
     ))
+}
+
+fn declaration_instance_name(
+    simulated_root_name: Option<&str>,
+    prefix: &ast::QualifiedName,
+) -> Option<String> {
+    let root = simulated_root_name?;
+    let suffix = prefix.to_flat_string();
+    if suffix.is_empty() {
+        Some(root.to_string())
+    } else {
+        Some(format!("{root}.{suffix}"))
+    }
 }
 
 #[cfg(test)]
@@ -471,7 +509,7 @@ mod tests {
         let tree = test_tree();
         let imports = VariableImportContext::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat = create_flat_variable(&instance, &tree, &class_index, &imports)?;
+        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)?;
         assert_eq!(
             flat.component_ref
                 .as_ref()
@@ -517,8 +555,8 @@ mod tests {
         let tree = test_tree();
         let imports = VariableImportContext::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat =
-            create_flat_variable(&instance, &tree, &class_index, &imports).expect("flat variable");
+        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)
+            .expect("flat variable");
         let max = flat.max.expect("max");
         match max {
             rumoca_core::Expression::VarRef {
@@ -529,5 +567,45 @@ mod tests {
             }
             _ => panic!("expected max to become a qualified VarRef"),
         }
+    }
+
+    #[test]
+    fn test_create_flat_variable_lowers_get_instance_name_to_parent_instance() {
+        let instance = ast::InstanceData {
+            qualified_name: ast::QualifiedName::from_dotted("building.modelicaNameBuilding"),
+            source_location: test_location(40, 64),
+            binding_source: Some(ast::Expression::FunctionCall {
+                comp: ast::ComponentReference {
+                    local: false,
+                    parts: vec![ast::ComponentRefPart {
+                        ident: rumoca_core::Token {
+                            text: Arc::from("getInstanceName"),
+                            ..rumoca_core::Token::default()
+                        },
+                        subs: None,
+                    }],
+                    def_id: None,
+                    span: test_span(),
+                },
+                args: Vec::new(),
+                span: test_span(),
+            }),
+            is_primitive: true,
+            ..ast::InstanceData::default()
+        };
+        let tree = test_tree();
+        let imports = VariableImportContext::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let flat =
+            create_flat_variable(&instance, &tree, &class_index, &imports, Some("RootModel"))
+                .expect("flat variable");
+
+        assert_eq!(
+            flat.binding,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("RootModel.building".to_string()),
+                span: test_span(),
+            })
+        );
     }
 }

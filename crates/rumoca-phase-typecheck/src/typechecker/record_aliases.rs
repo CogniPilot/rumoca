@@ -177,7 +177,6 @@ impl TypeChecker {
             | Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.dimensions)
     }
 
-    #[allow(clippy::excessive_nesting)]
     pub(crate) fn propagate_alias_map<T: Clone + PartialEq>(
         record_aliases: &[(String, String)],
         values: &mut rustc_hash::FxHashMap<String, T>,
@@ -186,38 +185,16 @@ impl TypeChecker {
             return false;
         }
 
-        let mut aliases_by_target_head: rustc_hash::FxHashMap<String, Vec<usize>> =
-            rustc_hash::FxHashMap::default();
-        let target_prefixes: Vec<String> = record_aliases
-            .iter()
-            .enumerate()
-            .map(|(index, (_, alias_target))| {
-                aliases_by_target_head
-                    .entry(Self::alias_head(alias_target).to_string())
-                    .or_default()
-                    .push(index);
-                format!("{alias_target}.")
-            })
-            .collect();
+        let mut sorted_keys: Vec<String> = values.keys().cloned().collect();
+        sorted_keys.sort_unstable();
         let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
-        for field_name in values.keys() {
-            let Some(alias_indices) = aliases_by_target_head.get(Self::alias_head(field_name))
-            else {
-                continue;
-            };
-            for index in alias_indices {
-                let (alias_source, alias_target) = &record_aliases[*index];
-                if field_name == alias_target {
-                    Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
-                    continue;
-                }
-                let target_prefix = &target_prefixes[*index];
-                if !field_name.starts_with(target_prefix) {
-                    continue;
-                }
+        for (alias_source, alias_target) in record_aliases {
+            Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
+            let target_prefix = format!("{alias_target}.");
+            for field_name in Self::alias_field_key_range(&sorted_keys, &target_prefix) {
                 Self::queue_alias_field_update(
                     alias_source,
-                    target_prefix,
+                    &target_prefix,
                     field_name,
                     values,
                     &mut updates,
@@ -235,6 +212,7 @@ impl TypeChecker {
         progress
     }
 
+    #[allow(dead_code)]
     pub(crate) fn alias_head(path: &str) -> &str {
         let mut bracket_depth = 0usize;
         for (index, byte) in path.bytes().enumerate() {

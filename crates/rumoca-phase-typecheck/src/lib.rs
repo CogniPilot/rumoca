@@ -283,6 +283,12 @@ pub struct TypeChecker {
     /// Keys are class DefIds; values map component member names to their TypeIds
     /// (including inherited members, with extends `break` names removed).
     component_modifier_member_types: HashMap<DefId, HashMap<String, TypeId>>,
+    /// DefIds of connector classes declared with `expandable` (MLS §9.1.3).
+    ///
+    /// Expandable connector members are inferred from connect-equations and
+    /// component references, so missing members are not ordinary static
+    /// member errors.
+    expandable_connector_defs: HashSet<DefId>,
     /// Type aliases whose targets could not be resolved during type-table
     /// construction (e.g. an MSL alias into a library that is not loaded).
     ///
@@ -316,6 +322,7 @@ impl TypeChecker {
             current_component_shapes: HashMap::new(),
             component_modifier_targets: HashMap::new(),
             component_modifier_member_types: HashMap::new(),
+            expandable_connector_defs: HashSet::new(),
             deferred_alias_errors: HashMap::new(),
         }
     }
@@ -353,6 +360,7 @@ impl TypeChecker {
             .iter()
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
+        self.expandable_connector_defs = Self::collect_expandable_connector_defs(tree);
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
             Ok(context) => context,
             Err(error) => {
@@ -431,6 +439,17 @@ impl TypeChecker {
         for diagnostic in self.eval_ctx.take_warnings() {
             self.diagnostics.emit(diagnostic);
         }
+    }
+
+    fn collect_expandable_connector_defs(tree: &ClassTree) -> HashSet<DefId> {
+        tree.name_map
+            .values()
+            .filter_map(|def_id| tree.get_class_by_def_id(*def_id))
+            .filter(|class| {
+                class.expandable && matches!(class.class_type, rumoca_core::ClassType::Connector)
+            })
+            .filter_map(|class| class.def_id)
+            .collect()
     }
 
     fn apply_instance_class_overrides(
@@ -1096,6 +1115,7 @@ impl TypeChecker {
 
     fn is_connector_alias_wrapper(class: &ClassDef) -> bool {
         matches!(class.class_type, rumoca_core::ClassType::Connector)
+            && !class.expandable
             && class.extends.len() == 1
             && class.classes.is_empty()
             && class.components.is_empty()

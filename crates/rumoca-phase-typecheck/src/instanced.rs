@@ -43,6 +43,7 @@ impl TypeChecker {
             .iter()
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
+        self.expandable_connector_defs = Self::collect_expandable_connector_defs(tree);
         self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
             Ok(context) => context,

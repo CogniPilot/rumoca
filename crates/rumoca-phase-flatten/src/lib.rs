@@ -333,9 +333,7 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
-    if !model_name.is_empty() {
-        ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
-    }
+    ctx.simulated_root_name = simulated_root_name(tree, overlay, model_name);
     let class_index = ast::ClassDefIndex::from_tree(tree);
     ctx.class_def_ids = std::sync::Arc::new(class_index.def_ids().collect());
     ctx.target_def_names = tree
@@ -357,6 +355,7 @@ pub fn flatten_ref_with_options(
         tree,
         &class_index,
         &ctx.component_members,
+        ctx.simulated_root_name.as_deref(),
     )?;
     let flatten_graph = prepare_context_for_equation_flattening(
         &mut ctx,
@@ -388,6 +387,23 @@ pub fn flatten_ref_with_options(
     })?;
 
     Ok(flat)
+}
+
+fn simulated_root_name(
+    tree: &ast::ClassTree,
+    overlay: &ast::InstanceOverlay,
+    model_name: &str,
+) -> Option<String> {
+    if !model_name.is_empty() {
+        return Some(crate::path_utils::leaf_segment(model_name).to_string());
+    }
+    overlay
+        .classes
+        .values()
+        .find(|class_data| class_data.qualified_name.parts.is_empty())
+        .and_then(|class_data| class_data.class_def_id)
+        .and_then(|def_id| tree.def_map.get(&def_id))
+        .map(|qualified| crate::path_utils::leaf_segment(qualified).to_string())
 }
 
 fn populate_flat_symbol_ancestry(flat: &mut flat::Model, class_index: &ast::ClassDefIndex<'_>) {
@@ -814,6 +830,28 @@ mod nested_class_constant_scope_tests {
             .expect("dimension references should lower for class-scope collection");
 
         assert!(scopes.contains("Modelica.Math.Random.Generators.Xorshift128plus"));
+    }
+
+    #[test]
+    fn simulated_root_name_falls_back_to_overlay_root_class() {
+        let root_def = rumoca_core::DefId::new(7);
+        let mut tree = ast::ClassTree::new();
+        tree.def_map.insert(root_def, "Pkg.Vehicle".to_string());
+        let mut overlay = ast::InstanceOverlay::default();
+        overlay.classes.insert(
+            ast::InstanceId::new(1),
+            ast::ClassInstanceData {
+                instance_id: ast::InstanceId::new(1),
+                class_def_id: Some(root_def),
+                qualified_name: ast::QualifiedName::new(),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            simulated_root_name(&tree, &overlay, ""),
+            Some("Vehicle".to_string())
+        );
     }
 
     #[test]

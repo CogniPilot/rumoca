@@ -762,6 +762,7 @@ pub(crate) fn process_component_instances_for_flatten(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     component_members: &component_member_scope::ComponentMemberScopes,
+    simulated_root_name: Option<&str>,
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
@@ -772,6 +773,7 @@ pub(crate) fn process_component_instances_for_flatten(
         process_component_instance(ComponentInstanceProcess {
             flat,
             instance_data,
+            simulated_root_name,
             component_override_map,
             tree,
             class_index,
