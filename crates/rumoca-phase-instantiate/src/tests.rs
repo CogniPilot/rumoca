@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_eval_ast::eval_instantiate::extract_int_params_with_mods;
 use rumoca_ir_ast as ast;
 
 /// Helper to create a token with text for testing.

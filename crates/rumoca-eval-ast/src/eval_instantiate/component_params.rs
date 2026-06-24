@@ -1,7 +1,7 @@
 use super::{
     ConditionEvalEnv, InstantiateEvalCtx, ast, eval_scoped_string_condition_with_depth,
     get_enum_value_with_depth, resolve_component_ref_expr, try_eval_bool_literal,
-    try_eval_integer_expr_with_depth,
+    try_eval_integer_expr_with_depth_and_locals,
 };
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
@@ -246,28 +246,62 @@ pub fn extract_bool_params_with_mods(
 /// Returns a map of component names to their integer values.
 /// Takes the modification environment to check for parameter overrides.
 pub fn extract_int_params_with_mods(ctx: &InstantiateEvalCtx) -> FxHashMap<String, i64> {
+    extract_int_params_with_mods_and_known(ctx, &FxHashMap::default())
+}
+
+pub fn extract_int_params_with_mods_and_known(
+    ctx: &InstantiateEvalCtx,
+    known_int_params: &FxHashMap<String, i64>,
+) -> FxHashMap<String, i64> {
     let InstantiateEvalCtx {
         tree,
         mod_env,
         effective_components,
         resolve_class_components,
     } = ctx;
-    let mut int_params = extract_params_with_mods(effective_components, mod_env, |comp, expr| {
+    let mut int_params = FxHashMap::default();
+    let mut eval_locals = known_dotted_integer_params(known_int_params);
+
+    for (name, comp) in *effective_components {
         if !matches!(
             comp.variability,
             rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
         ) {
-            return None;
+            continue;
         }
-        try_eval_integer_expr_with_depth(
-            expr,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            0,
-        )
-    });
+
+        let mod_path = ast::QualifiedName::from_ident(name);
+        if let Some(mod_value) = mod_env.get(&mod_path)
+            && let Some(value) = try_eval_integer_expr_with_depth_and_locals(
+                &mod_value.value,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                0,
+                Some(&eval_locals),
+            )
+        {
+            int_params.insert(name.clone(), value);
+            eval_locals.insert(name.clone(), value);
+            continue;
+        }
+
+        if let Some(value_expr) = component_expr_for_structural_eval(comp)
+            && let Some(value) = try_eval_integer_expr_with_depth_and_locals(
+                value_expr,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                0,
+                Some(&eval_locals),
+            )
+        {
+            int_params.insert(name.clone(), value);
+            eval_locals.insert(name.clone(), value);
+        }
+    }
 
     // Also add dotted keys from multi-part modifications in mod_env.
     // This handles record field references like cellData.nRC used in for-loop ranges.
@@ -282,15 +316,24 @@ pub fn extract_int_params_with_mods(ctx: &InstantiateEvalCtx) -> FxHashMap<Strin
             if int_params.contains_key(&dotted_key) {
                 continue;
             }
-            if let Some(value) = try_eval_integer_expr_with_depth(
+            if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
                 &mod_value.value,
                 mod_env,
                 effective_components,
                 tree,
                 resolve_class_components,
                 0,
+                Some(&eval_locals),
             ) {
                 int_params.insert(dotted_key, value);
+                eval_locals.insert(
+                    qn.parts
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    value,
+                );
             }
         }
     }
@@ -301,6 +344,16 @@ pub fn extract_int_params_with_mods(ctx: &InstantiateEvalCtx) -> FxHashMap<Strin
     propagate_record_alias_integer_params(&mut int_params, mod_env);
 
     int_params
+}
+
+fn known_dotted_integer_params(
+    known_int_params: &FxHashMap<String, i64>,
+) -> FxHashMap<String, i64> {
+    known_int_params
+        .iter()
+        .filter(|(key, _)| key.contains('.'))
+        .map(|(key, value)| (key.clone(), *value))
+        .collect()
 }
 
 fn extract_params_with_mods<T, F>(

@@ -57,7 +57,7 @@ mod type_overrides;
 
 use rumoca_eval_ast::eval_instantiate::{
     InstantiateEvalCtx, evaluate_array_dimensions, evaluate_component_condition, extract_binding,
-    extract_bool_params_with_mods, extract_int_params_with_mods, generate_array_indices,
+    extract_bool_params_with_mods, extract_int_params_with_mods_and_known, generate_array_indices,
     propagate_record_alias_integer_params,
 };
 
@@ -1007,7 +1007,7 @@ fn instantiate_class(
             effective_components,
             resolve_class_components: &resolve_effective_components_for_eval,
         };
-        let int_params = extract_int_params_with_mods(&eval_ctx);
+        let int_params = extract_int_params_with_mods_and_known(&eval_ctx, &ctx.known_int_params);
         ctx.register_known_int_params(&qualified_name, &int_params);
 
         // Instantiate each effective component (MLS §4.8 conditional components)

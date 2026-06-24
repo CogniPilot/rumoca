@@ -1950,7 +1950,8 @@ pub(super) use component_params::{
 };
 pub use component_params::{
     eval_state_select_expr, eval_state_select_expr_with_scope, expr_to_string, extract_binding,
-    extract_bool_params_with_mods, extract_int_params_with_mods, parse_state_select,
+    extract_bool_params_with_mods, extract_int_params_with_mods,
+    extract_int_params_with_mods_and_known, parse_state_select,
     propagate_record_alias_integer_params, try_eval_string_expr,
 };
 pub use function_eval::{

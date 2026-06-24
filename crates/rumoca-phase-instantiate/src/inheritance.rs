@@ -1882,7 +1882,7 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         //   3. Binary { Assign, lhs: ClassModification { target: comp_name, ... }, rhs }
         //      For: extends Foo(comp(each final unit="1")=expr)
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
-        let Some((target_name, modifications, each_flags, final_flags)) =
+        let Some((target_name, (modifications, each_flags, final_flags))) =
             extend_nested_target_modifications(extend, modification)
         else {
             return;
@@ -1901,10 +1901,13 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
     });
 }
 
+type NestedModificationSlices<'a> = (&'a [ast::Expression], &'a [bool], &'a [bool]);
+type ExtendNestedTargetModifications<'a> = (String, NestedModificationSlices<'a>);
+
 fn extend_nested_target_modifications<'a>(
     extend: &ast::Extend,
     modification: &'a ast::ExtendModification,
-) -> Option<(String, &'a [ast::Expression], &'a [bool], &'a [bool])> {
+) -> Option<ExtendNestedTargetModifications<'a>> {
     match &modification.expr {
         ast::Expression::ClassModification {
             target,
@@ -1914,9 +1917,11 @@ fn extend_nested_target_modifications<'a>(
             ..
         } => Some((
             extend_relative_component_target(extend, target)?,
-            modifications.as_slice(),
-            each_flags.as_slice(),
-            final_flags.as_slice(),
+            (
+                modifications.as_slice(),
+                each_flags.as_slice(),
+                final_flags.as_slice(),
+            ),
         )),
         ast::Expression::Modification { target, value, .. } => {
             let ast::Expression::ClassModification {
@@ -1930,9 +1935,11 @@ fn extend_nested_target_modifications<'a>(
             };
             Some((
                 extend_relative_component_target(extend, target)?,
-                modifications.as_slice(),
-                each_flags.as_slice(),
-                final_flags.as_slice(),
+                (
+                    modifications.as_slice(),
+                    each_flags.as_slice(),
+                    final_flags.as_slice(),
+                ),
             ))
         }
         ast::Expression::Binary {
@@ -1952,9 +1959,11 @@ fn extend_nested_target_modifications<'a>(
             };
             Some((
                 extend_relative_component_target(extend, target)?,
-                modifications.as_slice(),
-                each_flags.as_slice(),
-                final_flags.as_slice(),
+                (
+                    modifications.as_slice(),
+                    each_flags.as_slice(),
+                    final_flags.as_slice(),
+                ),
             ))
         }
         _ => None,

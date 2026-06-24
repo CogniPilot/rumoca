@@ -205,17 +205,7 @@ impl TypeChecker {
             else {
                 continue;
             };
-            for (alias_source, target_prefix) in alias_prefixes {
-                if field_name.starts_with(target_prefix) {
-                    Self::queue_alias_field_update(
-                        alias_source,
-                        target_prefix,
-                        &field_name,
-                        values,
-                        &mut updates,
-                    );
-                }
-            }
+            Self::queue_alias_field_updates(alias_prefixes, &field_name, values, &mut updates);
         }
 
         let mut progress = false;
@@ -226,6 +216,26 @@ impl TypeChecker {
             }
         }
         progress
+    }
+
+    fn queue_alias_field_updates<T: Clone + PartialEq>(
+        alias_prefixes: &[(&str, String)],
+        field_name: &str,
+        values: &rustc_hash::FxHashMap<String, T>,
+        updates: &mut rustc_hash::FxHashMap<String, T>,
+    ) {
+        for (alias_source, target_prefix) in alias_prefixes {
+            if !field_name.starts_with(target_prefix) {
+                continue;
+            }
+            Self::queue_alias_field_update(
+                alias_source,
+                target_prefix,
+                field_name,
+                values,
+                updates,
+            );
+        }
     }
 
     #[allow(dead_code)]

@@ -137,6 +137,9 @@ fn collect_component_shadowed_import_alias(
     let Some(resolved_path) = cr.def_id.and_then(|def_id| def_map.get(&def_id)) else {
         return;
     };
+    if crate::path_utils::leaf_segment(resolved_path) != alias {
+        return;
+    }
     if resolved_path != imported_path {
         shadowed.insert(alias.to_string());
     }

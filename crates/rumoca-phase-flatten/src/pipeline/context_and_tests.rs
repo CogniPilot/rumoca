@@ -908,14 +908,8 @@ impl Context {
 
         let mut progress = false;
         loop {
-            let mut reference_cache = rustc_hash::FxHashMap::default();
             let canonicalizer = EnumCanonicalizer::new(&self.enum_parameter_values);
-            let new_vals = self.collect_enum_values(
-                params,
-                &param_names,
-                &mut reference_cache,
-                &canonicalizer,
-            );
+            let new_vals = self.collect_enum_values(params, &param_names, &canonicalizer);
             if new_vals.is_empty() {
                 break;
             }
@@ -936,22 +930,13 @@ impl Context {
         &self,
         params: &[ParamBinding<'_>],
         param_names: &rustc_hash::FxHashSet<&str>,
-        reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
         canonicalizer: &EnumCanonicalizer,
     ) -> Vec<(String, String)> {
         params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
-                if self.enum_parameter_values.contains_key(*name) {
-                    return None;
-                }
-                self.resolve_enum_binding_value(
-                    binding,
-                    param_names,
-                    reference_cache,
-                    canonicalizer,
-                )
-                .map(|enum_val| ((*name).to_string(), enum_val))
+                self.resolve_enum_binding_value(binding, param_names, canonicalizer)
+                    .map(|enum_val| ((*name).to_string(), enum_val))
             })
             .collect()
     }
@@ -975,20 +960,18 @@ impl Context {
         &self,
         binding: &Expression,
         param_names: &rustc_hash::FxHashSet<&str>,
-        reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
         canonicalizer: &EnumCanonicalizer,
     ) -> Option<String> {
-        let enum_val = self.try_eval_enum_binding(binding, reference_cache, canonicalizer)?;
+        let enum_val = self.try_eval_enum_binding(binding, canonicalizer)?;
         if !self.enum_reference_matches_parameter(&enum_val, param_names) {
             return Some(enum_val);
         }
-        self.resolve_non_parameter_enum_varref(binding, param_names, reference_cache)
+        self.resolve_non_parameter_enum_varref(binding, param_names)
     }
 
     fn try_eval_enum_binding(
         &self,
         binding: &Expression,
-        reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
         canonicalizer: &EnumCanonicalizer,
     ) -> Option<String> {
         try_eval_flat_expr_enum_with_canonicalizer(
@@ -998,27 +981,22 @@ impl Context {
             &self.enum_parameter_values,
             canonicalizer,
         )
-        .or_else(|| self.resolve_varref_enum_reference(binding, reference_cache))
+        .or_else(|| self.resolve_varref_enum_reference(binding))
     }
 
     fn resolve_non_parameter_enum_varref(
         &self,
         binding: &Expression,
         param_names: &rustc_hash::FxHashSet<&str>,
-        reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
     ) -> Option<String> {
-        let resolved = self.resolve_varref_enum_reference(binding, reference_cache)?;
+        let resolved = self.resolve_varref_enum_reference(binding)?;
         if self.enum_reference_matches_parameter(&resolved, param_names) {
             return None;
         }
         Some(resolved)
     }
 
-    fn resolve_varref_enum_reference(
-        &self,
-        binding: &Expression,
-        reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
-    ) -> Option<String> {
+    fn resolve_varref_enum_reference(&self, binding: &Expression) -> Option<String> {
         let Expression::VarRef {
             name, subscripts, ..
         } = binding
@@ -1028,7 +1006,7 @@ impl Context {
         if !subscripts.is_empty() {
             return None;
         }
-        self.resolve_enum_reference_value(name.as_str(), reference_cache)
+        self.resolve_enum_reference_value(name.as_str())
     }
 
     /// Returns true when `reference` points to another enum parameter name.
@@ -1068,39 +1046,27 @@ impl Context {
         None
     }
 
-    fn resolve_enum_reference_value(
+    fn resolve_enum_reference_value(&self, reference: &str) -> Option<String> {
+        self.resolve_enum_reference_value_at_depth(reference, 0)
+    }
+
+    fn resolve_enum_reference_value_at_depth(
         &self,
         reference: &str,
-        reference_cache: &mut rustc_hash::FxHashMap<String, Option<String>>,
+        depth: usize,
     ) -> Option<String> {
         const MAX_ENUM_REF_DEPTH: usize = 16;
-        if let Some(cached) = reference_cache.get(reference) {
-            return cached.clone();
+        if depth >= MAX_ENUM_REF_DEPTH {
+            return None;
         }
 
-        let mut current = reference.to_string();
-        let mut visited = Vec::new();
-        let mut result = None;
-        for _ in 0..MAX_ENUM_REF_DEPTH {
-            if let Some(cached) = reference_cache.get(&current).cloned() {
-                result = cached;
-                break;
-            }
-            visited.push(current.clone());
-            let Some(candidate) = self.lookup_enum_reference_candidate(&current) else {
-                break;
-            };
-            if candidate == current || self.lookup_enum_reference_candidate(&candidate).is_none() {
-                result = Some(candidate);
-                break;
-            }
-            current = candidate;
+        let candidate = self.lookup_enum_reference_candidate(reference)?;
+        if candidate == reference {
+            return Some(candidate);
         }
 
-        for visited_reference in visited {
-            reference_cache.insert(visited_reference, result.clone());
-        }
-        result
+        self.resolve_enum_reference_value_at_depth(&candidate, depth + 1)
+            .or(Some(candidate))
     }
 
     /// Collapse enum parameter values to their final literal values.
@@ -1110,13 +1076,11 @@ impl Context {
     /// compile-time condition evaluation in initial equations.
     fn normalize_enum_parameter_values(&mut self) {
         let names: Vec<String> = self.enum_parameter_values.keys().cloned().collect();
-        let mut reference_cache = rustc_hash::FxHashMap::default();
         for name in names {
             let Some(current) = self.enum_parameter_values.get(&name).cloned() else {
                 continue;
             };
-            if let Some(resolved) =
-                self.resolve_enum_reference_value(&current, &mut reference_cache)
+            if let Some(resolved) = self.resolve_enum_reference_value(&current)
                 && resolved != current
             {
                 self.enum_parameter_values.insert(name, resolved);
