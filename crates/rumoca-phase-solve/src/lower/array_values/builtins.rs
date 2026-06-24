@@ -226,7 +226,22 @@ impl<'a> LowerBuilder<'a> {
                 let arg = required_array_builtin_arg(args, function, 1, call_span)?;
                 self.lower_array_like_values(arg, scope, call_depth)
             }
-            function if let Some(op) = unary_array_builtin_op(&function) => {
+            rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => {
+                let arg = required_array_builtin_arg(args, function, 0, call_span)?;
+                self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
+            }
+            _ => {
+                let Some(op) = unary_array_builtin_op(&function) else {
+                    return Err(array_builtin_contract_error(
+                        format!(
+                            "{} does not have array-like builtin lowering",
+                            function.name()
+                        ),
+                        args.first()
+                            .and_then(rumoca_core::Expression::span)
+                            .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
+                    ));
+                };
                 let arg = required_array_builtin_arg(args, function, 0, call_span)?;
                 let span = expression_or_call_span(arg, call_span);
                 let values = self.lower_array_like_values(arg, scope, call_depth)?;
@@ -238,19 +253,6 @@ impl<'a> LowerBuilder<'a> {
                 }
                 Ok(lowered)
             }
-            rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => {
-                let arg = required_array_builtin_arg(args, function, 0, call_span)?;
-                self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
-            }
-            _ => Err(array_builtin_contract_error(
-                format!(
-                    "{} does not have array-like builtin lowering",
-                    function.name()
-                ),
-                args.first()
-                    .and_then(rumoca_core::Expression::span)
-                    .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
-            )),
         }
     }
 

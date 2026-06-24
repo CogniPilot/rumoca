@@ -804,11 +804,8 @@ fn alias_component_roots(
     // Inputs are read-only sources: force them to be roots so alias edges always
     // orient *away* from them (`state := input`), never toward them. Protected
     // names (non-alias update targets) are likewise forced roots.
-    let mut forced = discrete_vec_with_capacity(
-        component.len(),
-        "alias component forced root count",
-        span,
-    )?;
+    let mut forced =
+        discrete_vec_with_capacity(component.len(), "alias component forced root count", span)?;
     for name in component {
         if protected_lhs_names.contains(name) || is_discrete_input_name(dae_model, name) {
             forced.push(name.clone());
@@ -1008,7 +1005,9 @@ fn should_reorient_discrete_alias(
 
     // Inputs are read-only: never reorient an alias so an input becomes the write
     // target, and always reorient away from one if the current target is an input.
-    let lhs_is_input = lhs_names.iter().any(|n| is_discrete_input_name(dae_model, n));
+    let lhs_is_input = lhs_names
+        .iter()
+        .any(|n| is_discrete_input_name(dae_model, n));
     let target_is_input = target_names
         .iter()
         .any(|n| is_discrete_input_name(dae_model, n));

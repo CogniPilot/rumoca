@@ -1,6 +1,4 @@
 use super::*;
-use std::collections::BTreeSet;
-
 // =============================================================================
 // Focused simulation target selection and subset controls
 // =============================================================================

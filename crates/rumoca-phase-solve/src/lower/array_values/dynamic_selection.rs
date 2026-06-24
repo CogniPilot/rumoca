@@ -1,3 +1,4 @@
+use super::inference::concrete_i64_dims;
 use super::*;
 
 impl<'a> LowerBuilder<'a> {
@@ -329,14 +330,30 @@ impl<'a> LowerBuilder<'a> {
         span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Option<Vec<String>>, LowerError> {
-        let Some(shape) = self.layout.shape(base_name) else {
+        let shape: Option<Vec<usize>> = if let Some(shape) = self.layout.shape(base_name) {
+            Some(shape.to_vec())
+        } else if let Some(variable) = self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, &rumoca_core::VarName::new(base_name)))
+            .filter(|variable| !variable.dims.is_empty())
+        {
+            Some(concrete_i64_dims(
+                &variable.dims,
+                base_name,
+                "DAE variable dimensions",
+                span,
+            )?)
+        } else {
+            None
+        };
+        let Some(shape) = shape else {
             return Ok(None);
         };
         if subscripts.is_empty() {
             return Ok(None);
         }
 
-        let selections = self.slice_selections(subscripts, shape, span, scope)?;
+        let selections = self.slice_selections(subscripts, &shape, span, scope)?;
         let mut keys = Vec::new();
         collect_slice_binding_keys(base_name, &selections, 0, &mut Vec::new(), &mut keys);
         Ok(Some(keys))

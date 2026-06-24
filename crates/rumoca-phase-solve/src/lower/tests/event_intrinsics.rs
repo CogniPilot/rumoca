@@ -22,7 +22,7 @@ fn discrete_history_update_from_input_keeps_state_as_target() {
         rhs: rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("x").into(),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: lower_test_span(),
         },
         span: lower_test_span(),
         origin: "prev_x := x history update".to_string(),
@@ -40,7 +40,10 @@ fn discrete_history_update_from_input_keeps_state_as_target() {
         "discrete state (not the input) must be the update target"
     );
     let rumoca_core::Expression::VarRef { name, .. } = &eq.rhs else {
-        panic!("history update RHS should read the input directly: {:?}", eq.rhs);
+        panic!(
+            "history update RHS should read the input directly: {:?}",
+            eq.rhs
+        );
     };
     assert_eq!(
         name.var_name().as_str(),
