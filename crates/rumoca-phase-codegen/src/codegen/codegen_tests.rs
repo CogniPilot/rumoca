@@ -1374,14 +1374,15 @@ fn test_fmi_templates_emit_source_reference_alias_macros() {
     }
 }
 
-fn template_section<'a>(template: &'a str, marker: &str) -> &'a str {
-    template
+fn template_section(template: &str, marker: &str) -> String {
+    let section = template
         .split(marker)
         .nth(1)
         .unwrap_or_else(|| panic!("template should define {marker}"))
         .split("\nFMI")
         .next()
-        .expect("template section should be present")
+        .expect("template section should be present");
+    normalize_newlines(section)
 }
 
 #[test]

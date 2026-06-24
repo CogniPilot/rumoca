@@ -1580,13 +1580,19 @@ where
     let Some((package, relative)) = rest.split_once('/') else {
         return uri.to_string();
     };
+    let relative_path = relative
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .fold(std::path::PathBuf::new(), |path, segment| {
+            path.join(segment)
+        });
     for root in source_roots {
         let root = root.as_ref();
-        let direct = root.join(relative);
+        let direct = root.join(&relative_path);
         if direct.exists() {
             return direct.to_string_lossy().into_owned();
         }
-        let nested = root.join(package).join(relative);
+        let nested = root.join(package).join(&relative_path);
         if nested.exists() {
             return nested.to_string_lossy().into_owned();
         }

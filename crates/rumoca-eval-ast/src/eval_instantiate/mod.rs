@@ -327,16 +327,6 @@ fn eval_binary_condition(
     env: ConditionEvalEnv<'_>,
     depth: usize,
 ) -> Option<bool> {
-    let eval = |e| {
-        evaluate_component_condition_with_depth(
-            e,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        )
-    };
     let enum_eq = || {
         evaluate_enum_equality_with_depth(
             lhs,
@@ -348,8 +338,44 @@ fn eval_binary_condition(
             depth + 1,
         )
     };
-    let int_eval = |e| {
-        try_eval_integer_expr_with_depth(
+
+    match op {
+        rumoca_core::OpBinary::Or | rumoca_core::OpBinary::And => {
+            return eval_boolean_binary_condition(op, lhs, rhs, env, depth);
+        }
+        rumoca_core::OpBinary::Eq => {
+            // Enum equality is more specific than integer equality.
+            if let Some(val) = enum_eq() {
+                return Some(val);
+            }
+            return eval_numeric_binary_condition(op, lhs, rhs, env, depth);
+        }
+        rumoca_core::OpBinary::Neq => {
+            if let Some(val) = enum_eq() {
+                return Some(!val);
+            }
+            return eval_numeric_binary_condition(op, lhs, rhs, env, depth);
+        }
+        rumoca_core::OpBinary::Lt
+        | rumoca_core::OpBinary::Le
+        | rumoca_core::OpBinary::Gt
+        | rumoca_core::OpBinary::Ge => {
+            return eval_numeric_binary_condition(op, lhs, rhs, env, depth);
+        }
+        _ => {}
+    }
+    None
+}
+
+fn eval_boolean_binary_condition(
+    op: &rumoca_core::OpBinary,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    depth: usize,
+) -> Option<bool> {
+    let eval = |e| {
+        evaluate_component_condition_with_depth(
             e,
             env.mod_env,
             env.effective_components,
@@ -358,9 +384,57 @@ fn eval_binary_condition(
             depth + 1,
         )
     };
-    let real_eval = |e| {
+    let (lhs, rhs) = (eval(lhs), eval(rhs));
+    match op {
+        rumoca_core::OpBinary::Or if lhs == Some(true) || rhs == Some(true) => Some(true),
+        rumoca_core::OpBinary::Or if lhs == Some(false) && rhs == Some(false) => Some(false),
+        rumoca_core::OpBinary::And if lhs == Some(false) || rhs == Some(false) => Some(false),
+        rumoca_core::OpBinary::And if lhs == Some(true) && rhs == Some(true) => Some(true),
+        _ => None,
+    }
+}
+
+fn eval_numeric_binary_condition(
+    op: &rumoca_core::OpBinary,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    depth: usize,
+) -> Option<bool> {
+    eval_integer_binary_condition(op, lhs, rhs, env, depth)
+        .or_else(|| eval_real_binary_condition(op, lhs, rhs, env, depth))
+}
+
+fn eval_integer_binary_condition(
+    op: &rumoca_core::OpBinary,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    depth: usize,
+) -> Option<bool> {
+    let eval = |expr| {
+        try_eval_integer_expr_with_depth(
+            expr,
+            env.mod_env,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+            depth + 1,
+        )
+    };
+    compare_ordered_values(op, eval(lhs)?, eval(rhs)?)
+}
+
+fn eval_real_binary_condition(
+    op: &rumoca_core::OpBinary,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    depth: usize,
+) -> Option<bool> {
+    let eval = |expr| {
         try_eval_real_expr_with_depth(
-            e,
+            expr,
             env.mod_env,
             env.effective_components,
             env.tree,
@@ -369,84 +443,22 @@ fn eval_binary_condition(
             depth + 1,
         )
     };
+    compare_ordered_values(op, eval(lhs)?, eval(rhs)?)
+}
 
+fn compare_ordered_values<T>(op: &rumoca_core::OpBinary, lhs: T, rhs: T) -> Option<bool>
+where
+    T: PartialOrd,
+{
     match op {
-        rumoca_core::OpBinary::Or => {
-            let (l, r) = (eval(lhs), eval(rhs));
-            if l == Some(true) || r == Some(true) {
-                return Some(true);
-            }
-            if l == Some(false) && r == Some(false) {
-                return Some(false);
-            }
-        }
-        rumoca_core::OpBinary::And => {
-            let (l, r) = (eval(lhs), eval(rhs));
-            if l == Some(false) || r == Some(false) {
-                return Some(false);
-            }
-            if l == Some(true) && r == Some(true) {
-                return Some(true);
-            }
-        }
-        rumoca_core::OpBinary::Eq => {
-            // Enum equality is more specific than integer equality.
-            if let Some(val) = enum_eq() {
-                return Some(val);
-            }
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l == r);
-            }
-            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
-                return Some(l == r);
-            }
-        }
-        rumoca_core::OpBinary::Neq => {
-            if let Some(val) = enum_eq() {
-                return Some(!val);
-            }
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l != r);
-            }
-            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
-                return Some(l != r);
-            }
-        }
-        rumoca_core::OpBinary::Lt => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l < r);
-            }
-            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
-                return Some(l < r);
-            }
-        }
-        rumoca_core::OpBinary::Le => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l <= r);
-            }
-            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
-                return Some(l <= r);
-            }
-        }
-        rumoca_core::OpBinary::Gt => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l > r);
-            }
-            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
-                return Some(l > r);
-            }
-        }
-        rumoca_core::OpBinary::Ge => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l >= r);
-            }
-            if let (Some(l), Some(r)) = (real_eval(lhs), real_eval(rhs)) {
-                return Some(l >= r);
-            }
-        }
-        _ => {}
+        rumoca_core::OpBinary::Eq => Some(lhs == rhs),
+        rumoca_core::OpBinary::Neq => Some(lhs != rhs),
+        rumoca_core::OpBinary::Lt => Some(lhs < rhs),
+        rumoca_core::OpBinary::Le => Some(lhs <= rhs),
+        rumoca_core::OpBinary::Gt => Some(lhs > rhs),
+        rumoca_core::OpBinary::Ge => Some(lhs >= rhs),
+        _ => None,
     }
-    None
 }
 
 /// Evaluate an enum equality comparison like `controllerType == SimpleController.PI`.
