@@ -15,3 +15,25 @@ pub(crate) fn class_scope_split(name: &str) -> Option<(&str, &str)> {
 pub(crate) fn class_name_leaf(name: &str) -> &str {
     rumoca_core::top_level_last_segment(name)
 }
+
+/// Build a component reference expression from a dotted path.
+pub(crate) fn component_ref_expr_from_dotted(
+    value: &str,
+    span: rumoca_core::Span,
+) -> rumoca_ir_ast::Expression {
+    rumoca_ir_ast::Expression::ComponentReference(rumoca_ir_ast::ComponentReference {
+        local: false,
+        parts: rumoca_core::split_path_with_indices(value)
+            .into_iter()
+            .map(|part| rumoca_ir_ast::ComponentRefPart {
+                ident: rumoca_core::Token {
+                    text: part.to_string().into(),
+                    ..Default::default()
+                },
+                subs: None,
+            })
+            .collect(),
+        def_id: None,
+        span,
+    })
+}

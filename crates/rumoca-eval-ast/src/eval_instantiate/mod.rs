@@ -6,10 +6,6 @@
 //! - Enum comparisons for parameter-based conditions
 //! - StateSelect parsing from annotations
 
-use rumoca_core::{
-    IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
-    eval_integer_div_builtin,
-};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
@@ -1340,7 +1336,7 @@ fn try_eval_integer_expr_with_depth_and_locals(
         ast::Expression::Binary { op, lhs, rhs, .. } => {
             let l = recurse(lhs)?;
             let r = recurse(rhs)?;
-            eval_integer_binary(op, l, r)
+            function_eval::eval_integer_binary(op, l, r)
         }
         ast::Expression::Unary { op, rhs, .. } => {
             let r = recurse(rhs)?;
@@ -1365,7 +1361,7 @@ fn try_eval_integer_expr_with_depth_and_locals(
             recurse(else_branch)
         }
         ast::Expression::FunctionCall { comp, args, .. } => {
-            eval_integer_function_call(comp, args, env, depth, local_ints)
+            function_eval::eval_integer_function_call(comp, args, env, depth, local_ints)
         }
         _ => None,
     }
@@ -1422,7 +1418,7 @@ pub(super) fn try_eval_bool_expr_with_local_values(
         } => Some(!recurse(rhs)?),
         ast::Expression::Parenthesized { inner, .. } => recurse(inner),
         ast::Expression::ComponentReference(comp_ref) => {
-            local_bools.and_then(|values| lookup_local_bool(comp_ref, values))
+            local_bools.and_then(|values| function_eval::lookup_local_bool(comp_ref, values))
         }
         ast::Expression::FunctionCall { comp, args, .. } => {
             eval_bool_function_call(comp, args, env, depth, local_ints, local_bools)
@@ -1473,7 +1469,8 @@ fn eval_bool_function_call(
         .and_then(|did| env.tree.def_map.get(&did))
         .map(String::as_str);
 
-    let function_def = lookup_function_definition(&func_name, qualified_name, env.tree)?;
+    let function_def =
+        function_eval::lookup_function_definition(&func_name, qualified_name, env.tree)?;
     function_eval::eval_user_defined_bool_function(
         function_def,
         args,
@@ -1503,7 +1500,7 @@ fn eval_integer_component_ref(
     };
 
     if let Some(local_values) = local_ints
-        && let Some(value) = lookup_local_integer(comp_ref, local_values)
+        && let Some(value) = function_eval::lookup_local_integer(comp_ref, local_values)
     {
         return Some(value);
     }
@@ -1943,228 +1940,6 @@ fn extract_field_override_from_class_modification<'a>(
     }
 
     resolved
-}
-
-fn eval_integer_binary(op: &rumoca_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
-    let operator = match op {
-        rumoca_core::OpBinary::Add => IntegerBinaryOperator::Add,
-        rumoca_core::OpBinary::Sub => IntegerBinaryOperator::Sub,
-        rumoca_core::OpBinary::Mul => IntegerBinaryOperator::Mul,
-        rumoca_core::OpBinary::Div => IntegerBinaryOperator::Div,
-        _ => return None,
-    };
-    eval_common_integer_binary(operator, lhs, rhs)
-}
-
-fn lookup_local_integer(
-    comp_ref: &ast::ComponentReference,
-    local_values: &FxHashMap<String, i64>,
-) -> Option<i64> {
-    if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
-        return None;
-    }
-    let dotted = comp_ref
-        .parts
-        .iter()
-        .map(|p| p.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".");
-    if let Some(value) = local_values.get(&dotted) {
-        return Some(*value);
-    }
-    if comp_ref.parts.len() == 1 {
-        let name = comp_ref.parts[0].ident.text.as_ref();
-        return local_values.get(name).copied();
-    }
-    None
-}
-
-fn lookup_local_bool(
-    comp_ref: &ast::ComponentReference,
-    local_values: &FxHashMap<String, bool>,
-) -> Option<bool> {
-    if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
-        return None;
-    }
-    let dotted = comp_ref
-        .parts
-        .iter()
-        .map(|p| p.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".");
-    if let Some(value) = local_values.get(&dotted) {
-        return Some(*value);
-    }
-    if comp_ref.parts.len() == 1 {
-        let name = comp_ref.parts[0].ident.text.as_ref();
-        return local_values.get(name).copied();
-    }
-    None
-}
-
-/// Evaluate a function call to an integer value during instantiation.
-///
-/// Handles Modelica builtins (integer, mod, div, abs) and user-defined pure
-/// functions by looking them up in the ast::ClassTree and evaluating with rumoca_eval_const.
-fn eval_integer_function_call(
-    comp: &ast::ComponentReference,
-    args: &[ast::Expression],
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    local_ints: Option<&FxHashMap<String, i64>>,
-) -> Option<i64> {
-    // Build function name from parts
-    let func_name = comp
-        .parts
-        .iter()
-        .map(|p| p.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".");
-
-    // Also try the qualified name via def_id (resolve phase may have set this)
-    let qualified_name = comp
-        .def_id
-        .and_then(|did| env.tree.def_map.get(&did))
-        .cloned();
-
-    let recurse = |e| {
-        try_eval_integer_expr_with_depth_and_locals(
-            e,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-            local_ints,
-        )
-    };
-
-    // Handle Modelica builtins that return integers
-    match func_name.as_str() {
-        "integer" => {
-            // MLS §3.7.2: integer(x) truncates Real to Integer
-            let val = recurse(args.first()?)?;
-            return Some(val);
-        }
-        "mod" => {
-            // MLS §3.7.2: mod(x, y) = x - floor(x/y)*y
-            let x = recurse(args.first()?)?;
-            let y = recurse(args.get(1)?)?;
-            return if y != 0 {
-                Some(((x % y) + y) % y)
-            } else {
-                None
-            };
-        }
-        "div" => {
-            // MLS §3.7.2: div(x, y) = truncate(x/y)
-            let x = recurse(args.first()?)?;
-            let y = recurse(args.get(1)?)?;
-            return eval_integer_div_builtin(x, y);
-        }
-        "abs" => {
-            let x = recurse(args.first()?)?;
-            return Some(x.abs());
-        }
-        "min" => {
-            let x = recurse(args.first()?)?;
-            let y = recurse(args.get(1)?)?;
-            return Some(x.min(y));
-        }
-        "max" => {
-            let x = recurse(args.first()?)?;
-            let y = recurse(args.get(1)?)?;
-            return Some(x.max(y));
-        }
-        _ => {}
-    }
-
-    let function_def = lookup_function_definition(&func_name, qualified_name.as_deref(), env.tree)?;
-    eval_user_defined_integer_function(function_def, args, env, depth, local_ints)
-}
-
-fn lookup_function_definition<'a>(
-    func_name: &str,
-    qualified_name: Option<&str>,
-    tree: &'a ast::ClassTree,
-) -> Option<&'a ast::ClassDef> {
-    if let Some(name) = qualified_name
-        && let Some(class) = tree.get_class_by_qualified_name(name)
-        && class.class_type == rumoca_core::ClassType::Function
-    {
-        return Some(class);
-    }
-
-    if let Some(class) = tree.get_class_by_qualified_name(func_name)
-        && class.class_type == rumoca_core::ClassType::Function
-    {
-        return Some(class);
-    }
-
-    lookup_unique_short_function_name(func_name, tree)
-}
-
-fn lookup_unique_short_function_name<'a>(
-    func_name: &str,
-    tree: &'a ast::ClassTree,
-) -> Option<&'a ast::ClassDef> {
-    if func_name.contains('.') {
-        return None;
-    }
-
-    let mut matches = tree
-        .def_map
-        .values()
-        .filter(|qualified| {
-            qualified
-                .rsplit('.')
-                .next()
-                .is_some_and(|leaf| leaf == func_name)
-        })
-        .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))
-        .filter(|class| class.class_type == rumoca_core::ClassType::Function);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
-}
-
-fn eval_user_defined_integer_function(
-    function_def: &ast::ClassDef,
-    args: &[ast::Expression],
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    caller_locals: Option<&FxHashMap<String, i64>>,
-) -> Option<i64> {
-    if !function_def.pure || function_def.external.is_some() {
-        return None;
-    }
-    if depth >= MAX_EXPR_EVAL_DEPTH {
-        return None;
-    }
-
-    let mut local_values = FxHashMap::default();
-    function_eval::bind_function_inputs(
-        function_def,
-        args,
-        env,
-        depth + 1,
-        caller_locals,
-        &mut local_values,
-    )?;
-    function_eval::initialize_function_locals(function_def, env, depth + 1, &mut local_values);
-    let output_name = function_eval::find_scalar_function_output_name(function_def)?;
-
-    for algorithm in &function_def.algorithms {
-        if function_eval::interpret_function_statements(
-            algorithm,
-            env,
-            depth + 1,
-            &mut local_values,
-        )? {
-            break;
-        }
-    }
-
-    local_values.get(&output_name).copied()
 }
 
 mod component_params;

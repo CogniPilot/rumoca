@@ -12,6 +12,7 @@ pub(super) struct ComponentAttrsAndBinding {
     pub(super) binding_from_modification: bool,
 }
 
+#[cfg(test)]
 pub(super) fn extract_component_attrs_and_binding(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
@@ -19,9 +20,34 @@ pub(super) fn extract_component_attrs_and_binding(
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
 ) -> InstantiateResult<ComponentAttrsAndBinding> {
+    extract_component_attrs_and_binding_in_scope(
+        comp,
+        mod_env,
+        instance_name,
+        eval_ctx,
+        imports,
+        None,
+    )
+}
+
+pub(super) fn extract_component_attrs_and_binding_in_scope(
+    comp: &ast::Component,
+    mod_env: &ast::ModificationEnvironment,
+    instance_name: &str,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+    imports: &[(String, String)],
+    declaration_scope: Option<&ast::QualifiedName>,
+) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
-    let mut attrs =
-        extract_attributes(comp, mod_env, &comp.name, instance_name, eval_ctx, imports)?;
+    let mut attrs = extract_attributes_in_scope(
+        comp,
+        mod_env,
+        &comp.name,
+        instance_name,
+        eval_ctx,
+        imports,
+        declaration_scope,
+    )?;
     let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
     let binding_source = if binding_from_modification {
         let binding_path = ast::QualifiedName::from_ident(&comp.name);
@@ -323,6 +349,7 @@ fn should_promote_binding_to_start(
 /// MLS §7.2: The modification environment is checked for overriding
 /// modifications from outer scopes. Outer modifications override inner ones per
 /// MLS §7.2.4.
+#[cfg(test)]
 pub(super) fn extract_attributes(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
@@ -330,6 +357,26 @@ pub(super) fn extract_attributes(
     instance_name: &str,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
+) -> InstantiateResult<ExtractedAttributes> {
+    extract_attributes_in_scope(
+        comp,
+        mod_env,
+        comp_name,
+        instance_name,
+        eval_ctx,
+        imports,
+        None,
+    )
+}
+
+pub(super) fn extract_attributes_in_scope(
+    comp: &ast::Component,
+    mod_env: &ast::ModificationEnvironment,
+    comp_name: &str,
+    _instance_name: &str,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+    imports: &[(String, String)],
+    declaration_scope: Option<&ast::QualifiedName>,
 ) -> InstantiateResult<ExtractedAttributes> {
     let mut source_scopes = IndexMap::default();
     let start_path = ast::QualifiedName::from_ident(comp_name).child("start");
@@ -354,7 +401,7 @@ pub(super) fn extract_attributes(
             value,
             eval_ctx,
             imports,
-            instance_name,
+            declaration_scope,
         )?),
         None => None,
     };
@@ -394,7 +441,7 @@ pub(super) fn extract_attributes(
             }
             "stateSelect" if !has_outer_state_select => {
                 attrs.state_select =
-                    parse_required_state_select(value, eval_ctx, imports, instance_name)?
+                    parse_required_state_select(value, eval_ctx, imports, declaration_scope)?
             }
             _ => {}
         }
@@ -412,9 +459,9 @@ fn parse_required_state_select(
     value: &ast::Expression,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
-    comp_name: &str,
+    declaration_scope: Option<&ast::QualifiedName>,
 ) -> InstantiateResult<rumoca_core::StateSelect> {
-    let scope_prefix = parent_scope(comp_name);
+    let scope_prefix = declaration_scope.map(ast::QualifiedName::to_flat_string);
     parse_state_select(value)
         .or_else(|| eval_state_select_expr_with_scope(eval_ctx, value, scope_prefix.as_deref()))
         .or_else(|| {
@@ -431,10 +478,4 @@ fn parse_required_state_select(
                 span: rumoca_core::span_to_source_span(value.span()),
             })
         })
-}
-
-fn parent_scope(comp_name: &str) -> Option<String> {
-    comp_name
-        .rsplit_once('.')
-        .map(|(parent, _)| parent.to_string())
 }

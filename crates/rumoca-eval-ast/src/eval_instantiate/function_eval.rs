@@ -1,10 +1,17 @@
 use super::{
-    IntegerEvalEnv, MAX_EXPR_EVAL_DEPTH, ResolveClassComponents, ast, eval_integer_binary,
-    eval_integer_function_call, evaluate_component_condition_with_depth,
-    try_eval_bool_expr_with_depth_and_locals, try_eval_bool_expr_with_local_values,
-    try_eval_integer_expr_with_depth_and_locals,
+    IntegerEvalEnv, MAX_EXPR_EVAL_DEPTH, ResolveClassComponents, ast,
+    evaluate_component_condition_with_depth, try_eval_bool_expr_with_depth_and_locals,
+    try_eval_bool_expr_with_local_values, try_eval_integer_expr_with_depth_and_locals,
+};
+use rumoca_core::{
+    IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
+    eval_integer_div_builtin,
 };
 use rustc_hash::FxHashMap;
+
+mod local_lookup;
+
+pub(super) use local_lookup::{lookup_local_bool, lookup_local_integer};
 
 const MAX_FUNCTION_LOOP_ITERATIONS: usize = 4096;
 
@@ -267,6 +274,154 @@ pub(super) fn eval_user_defined_bool_function(
     }
 
     locals.bools.get(&output_name).copied()
+}
+
+pub(super) fn lookup_function_definition<'a>(
+    func_name: &str,
+    qualified_name: Option<&str>,
+    tree: &'a ast::ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if let Some(name) = qualified_name
+        && let Some(class) = tree.get_class_by_qualified_name(name)
+        && class.class_type == rumoca_core::ClassType::Function
+    {
+        return Some(class);
+    }
+
+    if let Some(class) = tree.get_class_by_qualified_name(func_name)
+        && class.class_type == rumoca_core::ClassType::Function
+    {
+        return Some(class);
+    }
+
+    lookup_unique_short_function_name(func_name, tree)
+}
+
+fn lookup_unique_short_function_name<'a>(
+    func_name: &str,
+    tree: &'a ast::ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if func_name.contains('.') {
+        return None;
+    }
+
+    let mut matches = tree
+        .def_map
+        .values()
+        .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))
+        .filter(|class| {
+            class.class_type == rumoca_core::ClassType::Function
+                && class.name.text.as_ref() == func_name
+        });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+pub(super) fn eval_integer_binary(op: &rumoca_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+    let operator = match op {
+        rumoca_core::OpBinary::Add => IntegerBinaryOperator::Add,
+        rumoca_core::OpBinary::Sub => IntegerBinaryOperator::Sub,
+        rumoca_core::OpBinary::Mul => IntegerBinaryOperator::Mul,
+        rumoca_core::OpBinary::Div => IntegerBinaryOperator::Div,
+        _ => return None,
+    };
+    eval_common_integer_binary(operator, lhs, rhs)
+}
+
+pub(super) fn eval_integer_function_call(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    local_ints: Option<&FxHashMap<String, i64>>,
+) -> Option<i64> {
+    let func_name = comp
+        .parts
+        .iter()
+        .map(|p| p.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+
+    let qualified_name = comp
+        .def_id
+        .and_then(|did| env.tree.def_map.get(&did))
+        .cloned();
+
+    if let Some(value) = eval_integer_builtin(func_name.as_str(), args, env, depth, local_ints) {
+        return Some(value);
+    }
+
+    let function_def = lookup_function_definition(&func_name, qualified_name.as_deref(), env.tree)?;
+    eval_user_defined_integer_function(function_def, args, env, depth, local_ints)
+}
+
+fn eval_integer_builtin(
+    func_name: &str,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    local_ints: Option<&FxHashMap<String, i64>>,
+) -> Option<i64> {
+    let recurse = |e| {
+        try_eval_integer_expr_with_depth_and_locals(
+            e,
+            env.mod_env,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+            depth + 1,
+            local_ints,
+        )
+    };
+
+    match func_name {
+        "integer" => recurse(args.first()?),
+        "mod" => {
+            let x = recurse(args.first()?)?;
+            let y = recurse(args.get(1)?)?;
+            (y != 0).then_some(((x % y) + y) % y)
+        }
+        "div" => eval_integer_div_builtin(recurse(args.first()?)?, recurse(args.get(1)?)?),
+        "abs" => Some(recurse(args.first()?)?.abs()),
+        "min" => Some(recurse(args.first()?)?.min(recurse(args.get(1)?)?)),
+        "max" => Some(recurse(args.first()?)?.max(recurse(args.get(1)?)?)),
+        _ => None,
+    }
+}
+
+pub(super) fn eval_user_defined_integer_function(
+    function_def: &ast::ClassDef,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    caller_locals: Option<&FxHashMap<String, i64>>,
+) -> Option<i64> {
+    if !function_def.pure || function_def.external.is_some() {
+        return None;
+    }
+    if depth >= MAX_EXPR_EVAL_DEPTH {
+        return None;
+    }
+
+    let mut local_values = FxHashMap::default();
+    bind_function_inputs(
+        function_def,
+        args,
+        env,
+        depth + 1,
+        caller_locals,
+        &mut local_values,
+    )?;
+    initialize_function_locals(function_def, env, depth + 1, &mut local_values);
+    let output_name = find_scalar_function_output_name(function_def)?;
+
+    for algorithm in &function_def.algorithms {
+        if interpret_function_statements(algorithm, env, depth + 1, &mut local_values)? {
+            break;
+        }
+    }
+
+    local_values.get(&output_name).copied()
 }
 
 fn bind_mixed_function_inputs(
@@ -1015,10 +1170,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::super::{
-        InstantiateEvalCtx, enum_values_equal, eval_integer_binary, evaluate_component_condition,
-        try_eval_integer_expr,
+        InstantiateEvalCtx, enum_values_equal, evaluate_component_condition, try_eval_integer_expr,
     };
-    use super::evaluate_array_dimensions;
+    use super::{eval_integer_binary, evaluate_array_dimensions};
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
 

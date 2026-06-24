@@ -1683,18 +1683,20 @@ fn prepare_component_binding_info(
         effective_components,
         resolve_class_components: &resolve_effective_components_for_eval,
     };
+    let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let ComponentAttrsAndBinding {
         mut attrs,
         mut binding,
         binding_source,
         binding_source_scope,
         binding_from_modification,
-    } = extract_component_attrs_and_binding(
+    } = extract_component_attrs_and_binding_in_scope(
         comp,
         ctx.mod_env(),
         &ctx.current_path().to_flat_string(),
         &eval_ctx,
         imports,
+        declaration_source_scope.as_ref(),
     )?;
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =

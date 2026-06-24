@@ -523,8 +523,17 @@ fn test_extract_attributes_evaluates_state_select_in_component_parent_scope() {
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "m", "dynBal.m", &eval_ctx, &[])
-        .expect("stateSelect should resolve sibling parameters in the component parent scope");
+    let dyn_bal_scope = ast::QualifiedName::from_ident("dynBal");
+    let attrs = extract_attributes_in_scope(
+        &comp,
+        &mod_env,
+        "m",
+        "dynBal.m",
+        &eval_ctx,
+        &[],
+        Some(&dyn_bal_scope),
+    )
+    .expect("stateSelect should resolve sibling parameters in the component parent scope");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
@@ -589,7 +598,17 @@ fn test_extract_attributes_preserves_parent_scope_through_local_sibling_binding(
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "m", "dynBal.m", &eval_ctx, &[]).expect(
+    let dyn_bal_scope = ast::QualifiedName::from_ident("dynBal");
+    let attrs = extract_attributes_in_scope(
+        &comp,
+        &mod_env,
+        "m",
+        "dynBal.m",
+        &eval_ctx,
+        &[],
+        Some(&dyn_bal_scope),
+    )
+    .expect(
         "stateSelect should keep parent scope while evaluating local sibling parameter bindings",
     );
 
@@ -668,7 +687,19 @@ fn test_extract_attributes_resolves_structured_array_scope_modifiers() {
 
     let tree = ast::ClassTree::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "m", "dyn.ch[1].m", &eval_ctx, &[]).expect(
+    let array_scope = ast::QualifiedName {
+        parts: vec![("dyn".to_string(), Vec::new()), ("ch".to_string(), vec![1])],
+    };
+    let attrs = extract_attributes_in_scope(
+        &comp,
+        &mod_env,
+        "m",
+        "dyn.ch[1].m",
+        &eval_ctx,
+        &[],
+        Some(&array_scope),
+    )
+    .expect(
         "stateSelect should resolve structured array-scope modifiers through flat scoped lookup",
     );
 
