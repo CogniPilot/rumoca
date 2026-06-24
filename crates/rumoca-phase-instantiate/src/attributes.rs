@@ -15,11 +15,13 @@ pub(super) struct ComponentAttrsAndBinding {
 pub(super) fn extract_component_attrs_and_binding(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
+    instance_name: &str,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
 ) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
-    let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx, imports)?;
+    let mut attrs =
+        extract_attributes(comp, mod_env, &comp.name, instance_name, eval_ctx, imports)?;
     let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
     let binding_source = if binding_from_modification {
         let binding_path = ast::QualifiedName::from_ident(&comp.name);
@@ -325,6 +327,7 @@ pub(super) fn extract_attributes(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
     comp_name: &str,
+    instance_name: &str,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
 ) -> InstantiateResult<ExtractedAttributes> {
@@ -348,7 +351,10 @@ pub(super) fn extract_attributes(
     let outer_state_select = mod_env.get_attr(comp_name, "stateSelect");
     let outer_state_select = match outer_state_select {
         Some(value) => Some(parse_required_state_select(
-            value, eval_ctx, imports, comp_name,
+            value,
+            eval_ctx,
+            imports,
+            instance_name,
         )?),
         None => None,
     };
@@ -388,7 +394,7 @@ pub(super) fn extract_attributes(
             }
             "stateSelect" if !has_outer_state_select => {
                 attrs.state_select =
-                    parse_required_state_select(value, eval_ctx, imports, comp_name)?
+                    parse_required_state_select(value, eval_ctx, imports, instance_name)?
             }
             _ => {}
         }

@@ -6,7 +6,8 @@ use super::nested_scope::remap_redeclare_class_modifier;
 use super::type_overrides::{TypeOverrideMap, find_nested_class_in_hierarchy};
 use super::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, evaluate_component_condition, try_eval_integer_expr, try_eval_string_expr,
+    InstantiateEvalCtx, evaluate_component_condition, try_eval_enum_expr, try_eval_integer_expr,
+    try_eval_string_expr,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -659,6 +660,10 @@ fn resolve_modification_expr_with_depth(
         });
     }
 
+    if let Some(value) = try_eval_enum_expr(&eval_ctx, expr) {
+        return Ok(component_ref_expr_from_dotted(&value, expr.span()));
+    }
+
     // Try to evaluate as an integer (common for array dimension parameters).
     if let Some(value) = try_eval_integer_expr(&eval_ctx, expr) {
         return Ok(ast::Expression::Terminal {
@@ -723,6 +728,24 @@ fn resolve_single_part_ref_expr(
     }
 
     None
+}
+
+fn component_ref_expr_from_dotted(value: &str, span: rumoca_core::Span) -> ast::Expression {
+    ast::Expression::ComponentReference(ast::ComponentReference {
+        local: false,
+        parts: value
+            .split('.')
+            .map(|part| ast::ComponentRefPart {
+                ident: rumoca_core::Token {
+                    text: part.to_string().into(),
+                    ..Default::default()
+                },
+                subs: None,
+            })
+            .collect(),
+        def_id: None,
+        span,
+    })
 }
 
 /// Resolve a multi-part component reference by following sibling modifications.
@@ -1542,6 +1565,80 @@ mod tests {
             Some(&make_comp_ref_expr(&["pathLengths"]))
         );
         assert_eq!(stored.source_scope, local_scope);
+    }
+
+    #[test]
+    fn test_enum_if_modifier_resolves_in_written_scope() {
+        let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
+        let mut tau2 = ast::Component {
+            name: "tau2".to_string(),
+            type_name: make_name("Real"),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        tau2.binding = Some(make_int_expr(30));
+        effective_components.insert("tau2".to_string(), tau2);
+
+        let mut eps = ast::Component {
+            name: "eps".to_string(),
+            type_name: make_name("Real"),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        eps.binding = Some(make_int_expr(0));
+        effective_components.insert("eps".to_string(), eps);
+
+        let mut energy_dynamics = ast::Component {
+            name: "energyDynamics".to_string(),
+            type_name: make_name("Dynamics"),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        energy_dynamics.binding = Some(make_comp_ref_expr(&[
+            "Modelica",
+            "Fluid",
+            "Types",
+            "Dynamics",
+            "DynamicFreeInitial",
+        ]));
+        effective_components.insert("energyDynamics".to_string(), energy_dynamics);
+
+        let expr = ast::Expression::If {
+            branches: vec![(
+                ast::Expression::Binary {
+                    op: rumoca_core::OpBinary::Gt,
+                    lhs: Arc::new(make_comp_ref_expr(&["tau2"])),
+                    rhs: Arc::new(make_comp_ref_expr(&["eps"])),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                make_comp_ref_expr(&["energyDynamics"]),
+            )],
+            else_branch: Arc::new(make_comp_ref_expr(&[
+                "Modelica",
+                "Fluid",
+                "Types",
+                "Dynamics",
+                "SteadyState",
+            ])),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let resolved = resolve_modification_expr(
+            &expr,
+            &ast::ModificationEnvironment::default(),
+            &effective_components,
+            &ast::ClassTree::default(),
+            false,
+        )
+        .expect("enum modifier should resolve in the written scope");
+
+        assert_eq!(
+            resolved,
+            make_comp_ref_expr(&[
+                "Modelica",
+                "Fluid",
+                "Types",
+                "Dynamics",
+                "DynamicFreeInitial",
+            ])
+        );
     }
 
     #[test]

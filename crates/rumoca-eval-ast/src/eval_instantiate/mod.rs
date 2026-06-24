@@ -191,6 +191,7 @@ fn evaluate_component_condition_with_depth(
                 tree,
                 resolve_class_components,
             },
+            None,
             depth,
         )
     {
@@ -325,6 +326,7 @@ fn eval_binary_condition(
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     env: ConditionEvalEnv<'_>,
+    scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<bool> {
     let enum_eq = || {
@@ -348,19 +350,19 @@ fn eval_binary_condition(
             if let Some(val) = enum_eq() {
                 return Some(val);
             }
-            return eval_numeric_binary_condition(op, lhs, rhs, env, depth);
+            return eval_numeric_binary_condition(op, lhs, rhs, env, scope_prefix, depth);
         }
         rumoca_core::OpBinary::Neq => {
             if let Some(val) = enum_eq() {
                 return Some(!val);
             }
-            return eval_numeric_binary_condition(op, lhs, rhs, env, depth);
+            return eval_numeric_binary_condition(op, lhs, rhs, env, scope_prefix, depth);
         }
         rumoca_core::OpBinary::Lt
         | rumoca_core::OpBinary::Le
         | rumoca_core::OpBinary::Gt
         | rumoca_core::OpBinary::Ge => {
-            return eval_numeric_binary_condition(op, lhs, rhs, env, depth);
+            return eval_numeric_binary_condition(op, lhs, rhs, env, scope_prefix, depth);
         }
         _ => {}
     }
@@ -399,10 +401,11 @@ fn eval_numeric_binary_condition(
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     env: ConditionEvalEnv<'_>,
+    scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<bool> {
     eval_integer_binary_condition(op, lhs, rhs, env, depth)
-        .or_else(|| eval_real_binary_condition(op, lhs, rhs, env, depth))
+        .or_else(|| eval_real_binary_condition(op, lhs, rhs, env, scope_prefix, depth))
 }
 
 fn eval_integer_binary_condition(
@@ -430,6 +433,7 @@ fn eval_real_binary_condition(
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     env: ConditionEvalEnv<'_>,
+    scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<bool> {
     let eval = |expr| {
@@ -439,7 +443,7 @@ fn eval_real_binary_condition(
             env.effective_components,
             env.tree,
             env.resolve_class_components,
-            None,
+            scope_prefix,
             depth + 1,
         )
     };
@@ -765,6 +769,19 @@ fn get_enum_value_with_depth(
     }
 }
 
+pub fn try_eval_enum_expr(ctx: &InstantiateEvalCtx<'_>, expr: &ast::Expression) -> Option<String> {
+    get_enum_value_with_depth(
+        expr,
+        ctx.mod_env,
+        ctx.effective_components,
+        ctx.tree,
+        ctx.resolve_class_components,
+        None,
+        0,
+    )
+    .filter(|value| value.contains('.'))
+}
+
 fn parent_dotted_scope(path: &str) -> Option<String> {
     let enclosing = rumoca_core::ComponentPath::from_flat_path(path).parent()?;
     (!enclosing.is_root()).then(|| enclosing.to_flat_string())
@@ -819,32 +836,33 @@ fn resolve_component_ref_expr(
     let dotted = component_ref_to_dotted_no_subscripts(comp_ref)?;
     let candidate_paths = candidate_paths_for_ref(comp_ref, dotted.as_str(), scope_prefix);
 
-    lookup_exact_component_ref(candidate_paths.as_slice(), mod_env, effective_components)
-        .or_else(|| {
-            resolve_component_ref_from_record_defaults(comp_ref, effective_components, tree)
-                .map(|expr| (expr, parent_dotted_scope(&dotted)))
-        })
-        .or_else(|| {
-            if comp_ref.parts.len() != 1 {
-                return None;
-            }
-            let prefix = scope_prefix?;
-            let scoped_expr = resolve_scoped_record_field_expr(
-                prefix,
-                dotted.as_str(),
-                effective_components,
-                tree,
-            )?;
-            Some((scoped_expr, Some(prefix.to_string())))
-        })
-        .or_else(|| {
-            resolve_class_redeclare_field_expr(comp_ref, mod_env, tree, resolve_class_components)
-                .map(|expr| (expr, None))
-        })
-        .or_else(|| {
-            resolve_class_constant_binding(comp_ref, tree, resolve_class_components)
-                .map(|expr| (expr, None))
-        })
+    lookup_exact_component_ref(
+        candidate_paths.as_slice(),
+        mod_env,
+        effective_components,
+        scope_prefix,
+    )
+    .or_else(|| {
+        resolve_component_ref_from_record_defaults(comp_ref, effective_components, tree)
+            .map(|expr| (expr, parent_dotted_scope(&dotted)))
+    })
+    .or_else(|| {
+        if comp_ref.parts.len() != 1 {
+            return None;
+        }
+        let prefix = scope_prefix?;
+        let scoped_expr =
+            resolve_scoped_record_field_expr(prefix, dotted.as_str(), effective_components, tree)?;
+        Some((scoped_expr, Some(prefix.to_string())))
+    })
+    .or_else(|| {
+        resolve_class_redeclare_field_expr(comp_ref, mod_env, tree, resolve_class_components)
+            .map(|expr| (expr, None))
+    })
+    .or_else(|| {
+        resolve_class_constant_binding(comp_ref, tree, resolve_class_components)
+            .map(|expr| (expr, None))
+    })
 }
 
 /// Resolve a qualified reference like `P.pT_explicit` to the binding of a
@@ -941,9 +959,10 @@ fn lookup_exact_component_ref(
     candidate_paths: &[String],
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
+    scope_prefix: Option<&str>,
 ) -> Option<(ast::Expression, Option<String>)> {
     for candidate in candidate_paths {
-        if let Some(mod_value) = mod_env.get(&ast::QualifiedName::from_dotted(candidate))
+        if let Some(mod_value) = get_modification_by_flat_candidate(mod_env, candidate)
             && !transparent_self_modifier(candidate, &mod_value.value)
         {
             return Some((
@@ -952,15 +971,36 @@ fn lookup_exact_component_ref(
                     .source_scope
                     .as_ref()
                     .map(ast::QualifiedName::to_flat_string)
-                    .or_else(|| parent_dotted_scope(candidate)),
+                    .or_else(|| parent_dotted_scope(candidate))
+                    .or_else(|| scope_prefix.map(str::to_string)),
             ));
         }
         if let Some(comp) = effective_components.get(candidate.as_str()) {
             let expr = component_expr_for_structural_eval(comp)?;
-            return Some((expr.clone(), parent_dotted_scope(candidate)));
+            return Some((
+                expr.clone(),
+                parent_dotted_scope(candidate).or_else(|| scope_prefix.map(str::to_string)),
+            ));
         }
     }
     None
+}
+
+fn get_modification_by_flat_candidate<'a>(
+    mod_env: &'a ast::ModificationEnvironment,
+    candidate: &str,
+) -> Option<&'a ast::ModificationValue> {
+    mod_env
+        .get(&ast::QualifiedName::from_dotted(candidate))
+        .or_else(|| {
+            candidate.contains('[').then(|| {
+                mod_env
+                    .active
+                    .iter()
+                    .find(|(key, _)| key.to_flat_string() == candidate)
+                    .map(|(_, value)| value)
+            })?
+        })
 }
 
 fn transparent_self_modifier(candidate: &str, value: &ast::Expression) -> bool {
@@ -1055,10 +1095,48 @@ fn eval_scoped_string_binary_condition(
         }
         rumoca_core::OpBinary::Eq => {
             eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth)
+                .or_else(|| eval_scoped_numeric_relation(op, lhs, rhs, env, state))
         }
         rumoca_core::OpBinary::Neq => {
-            eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth).map(|v| !v)
+            eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth)
+                .map(|v| !v)
+                .or_else(|| eval_scoped_numeric_relation(op, lhs, rhs, env, state))
         }
+        rumoca_core::OpBinary::Lt
+        | rumoca_core::OpBinary::Le
+        | rumoca_core::OpBinary::Gt
+        | rumoca_core::OpBinary::Ge => eval_scoped_numeric_relation(op, lhs, rhs, env, state),
+        _ => None,
+    }
+}
+
+fn eval_scoped_numeric_relation(
+    op: &rumoca_core::OpBinary,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    env: ConditionEvalEnv<'_>,
+    state: ScopedEvalState<'_>,
+) -> Option<bool> {
+    let eval = |expr| {
+        try_eval_real_expr_with_depth(
+            expr,
+            env.mod_env,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+            state.scope_prefix,
+            state.depth + 1,
+        )
+    };
+    let lhs = eval(lhs)?;
+    let rhs = eval(rhs)?;
+    match op {
+        rumoca_core::OpBinary::Eq => Some(lhs == rhs),
+        rumoca_core::OpBinary::Neq => Some(lhs != rhs),
+        rumoca_core::OpBinary::Lt => Some(lhs < rhs),
+        rumoca_core::OpBinary::Le => Some(lhs <= rhs),
+        rumoca_core::OpBinary::Gt => Some(lhs > rhs),
+        rumoca_core::OpBinary::Ge => Some(lhs >= rhs),
         _ => None,
     }
 }
@@ -2038,9 +2116,9 @@ fn lookup_unique_short_function_name<'a>(
         .def_map
         .values()
         .filter(|qualified| {
-            rumoca_core::ComponentPath::from_flat_path(qualified)
-                .parts()
-                .last()
+            qualified
+                .rsplit('.')
+                .next()
                 .is_some_and(|leaf| leaf == func_name)
         })
         .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))

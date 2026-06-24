@@ -213,7 +213,7 @@ fn test_extract_attributes_preserves_local_fixed_with_local_start() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
@@ -235,7 +235,7 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
@@ -259,7 +259,7 @@ fn test_extract_attributes_outer_state_select_overrides_local() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
@@ -281,7 +281,7 @@ fn test_extract_attributes_evaluates_state_select_parameter() {
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
@@ -310,7 +310,7 @@ fn test_extract_attributes_evaluates_scoped_state_select_condition_parameter() {
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("stateSelect if-expression should evaluate from scoped parameter context");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
@@ -349,7 +349,7 @@ fn test_extract_attributes_evaluates_state_select_enum_equality_condition() {
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("stateSelect if-expression should evaluate enum equality condition");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Default);
@@ -391,7 +391,7 @@ fn test_extract_attributes_evaluates_state_select_chained_enum_parameter_conditi
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("stateSelect if-expression should follow chained enum parameters");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Default);
@@ -457,7 +457,7 @@ fn test_extract_attributes_evaluates_state_select_enum_if_with_real_condition() 
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("stateSelect should evaluate enum if-expression with Real condition");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
@@ -523,8 +523,154 @@ fn test_extract_attributes_evaluates_state_select_in_component_parent_scope() {
     let tree = ast::ClassTree::default();
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "dynBal.m", &eval_ctx, &[])
+    let attrs = extract_attributes(&comp, &mod_env, "m", "dynBal.m", &eval_ctx, &[])
         .expect("stateSelect should resolve sibling parameters in the component parent scope");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
+fn test_extract_attributes_preserves_parent_scope_through_local_sibling_binding() {
+    let mut comp = make_component("m", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Eq,
+                    make_comp_ref_expr(&["massDynamics"]),
+                    make_comp_ref_expr(&["Modelica", "Fluid", "Types", "Dynamics", "SteadyState"]),
+                ),
+                make_comp_ref_expr(&["StateSelect", "default"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "prefer"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut mass_dynamics = make_component("massDynamics", "Dynamics", None);
+    mass_dynamics.binding = Some(ast::Expression::If {
+        branches: vec![(
+            make_binary_expr(
+                rumoca_core::OpBinary::Gt,
+                make_comp_ref_expr(&["tau"]),
+                make_comp_ref_expr(&["Modelica", "Constants", "eps"]),
+            ),
+            make_comp_ref_expr(&["energyDynamics"]),
+        )],
+        else_branch: std::sync::Arc::new(make_comp_ref_expr(&[
+            "Modelica",
+            "Fluid",
+            "Types",
+            "Dynamics",
+            "SteadyState",
+        ])),
+        span: rumoca_core::Span::DUMMY,
+    });
+    let mut energy_dynamics = make_component("energyDynamics", "Dynamics", None);
+    energy_dynamics.binding = Some(make_comp_ref_expr(&[
+        "Modelica",
+        "Fluid",
+        "Types",
+        "Dynamics",
+        "DynamicFreeInitial",
+    ]));
+    let mut tau = make_component("dynBal.tau", "Real", None);
+    tau.binding = Some(make_real_expr("30.0"));
+    let mut eps = make_component("Modelica.Constants.eps", "Real", None);
+    eps.binding = Some(make_real_expr("1e-15"));
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("massDynamics".to_string(), mass_dynamics);
+    effective_components.insert("energyDynamics".to_string(), energy_dynamics);
+    effective_components.insert("dynBal.tau".to_string(), tau);
+    effective_components.insert("Modelica.Constants.eps".to_string(), eps);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "m", "dynBal.m", &eval_ctx, &[]).expect(
+        "stateSelect should keep parent scope while evaluating local sibling parameter bindings",
+    );
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
+fn test_extract_attributes_resolves_structured_array_scope_modifiers() {
+    let mut comp = make_component("m", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Eq,
+                    make_comp_ref_expr(&["massDynamics"]),
+                    make_comp_ref_expr(&["Modelica", "Fluid", "Types", "Dynamics", "SteadyState"]),
+                ),
+                make_comp_ref_expr(&["StateSelect", "default"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "prefer"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName {
+            parts: vec![
+                ("dyn".to_string(), Vec::new()),
+                ("ch".to_string(), vec![1]),
+                ("massDynamics".to_string(), Vec::new()),
+            ],
+        },
+        ast::ModificationValue::simple(ast::Expression::If {
+            branches: vec![(
+                make_binary_expr(
+                    rumoca_core::OpBinary::Gt,
+                    make_comp_ref_expr(&["tau"]),
+                    make_comp_ref_expr(&["Modelica", "Constants", "eps"]),
+                ),
+                make_comp_ref_expr(&[
+                    "Modelica",
+                    "Fluid",
+                    "Types",
+                    "Dynamics",
+                    "DynamicFreeInitial",
+                ]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&[
+                "Modelica",
+                "Fluid",
+                "Types",
+                "Dynamics",
+                "SteadyState",
+            ])),
+            span: rumoca_core::Span::DUMMY,
+        }),
+    );
+    mod_env.add(
+        ast::QualifiedName {
+            parts: vec![
+                ("dyn".to_string(), Vec::new()),
+                ("ch".to_string(), vec![1]),
+                ("tau".to_string(), Vec::new()),
+            ],
+        },
+        ast::ModificationValue::simple(make_real_expr("30.0")),
+    );
+
+    let mut eps = make_component("Modelica.Constants.eps", "Real", None);
+    eps.binding = Some(make_real_expr("1e-15"));
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("Modelica.Constants.eps".to_string(), eps);
+
+    let tree = ast::ClassTree::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "m", "dyn.ch[1].m", &eval_ctx, &[]).expect(
+        "stateSelect should resolve structured array-scope modifiers through flat scoped lookup",
+    );
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
@@ -554,7 +700,7 @@ fn test_extract_attributes_rejects_invalid_state_select() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let err = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let err = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect_err("invalid stateSelect literal should fail");
 
     assert!(err.to_string().contains("stateSelect"));
@@ -678,7 +824,7 @@ fn test_parameter_declaration_binding_promotes_builtin_default_start() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx, &[])
+    let result = extract_component_attrs_and_binding(&comp, &mod_env, &comp.name, &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(
@@ -701,7 +847,7 @@ fn test_parameter_declaration_binding_does_not_override_explicit_start() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx, &[])
+    let result = extract_component_attrs_and_binding(&comp, &mod_env, &comp.name, &eval_ctx, &[])
         .expect("valid attributes should extract");
 
     assert_eq!(
@@ -1312,7 +1458,7 @@ fn inherited_attribute_modification_keeps_written_source_scope() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+    let mut attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
         .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
@@ -1342,7 +1488,7 @@ fn local_attribute_modification_keeps_instance_qualification() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx, &[])
+    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", "nextstate", &eval_ctx, &[])
         .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 

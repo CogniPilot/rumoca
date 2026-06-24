@@ -13,6 +13,7 @@ use crate::source_root_cache::resolve_cache_root_dir;
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const CACHE_ACCESS_METADATA_SUFFIX: &str = ".rumoca-access";
 const CACHE_PRUNE_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+const CACHE_AUTO_PRUNE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct CacheStatus {
@@ -138,6 +139,23 @@ pub(crate) fn maybe_prune_cache_after_write(root: Option<&Path>) {
             return;
         }
     };
+    let should_prune = match mark_auto_prune_check_if_due(
+        &prune_root,
+        SystemTime::now(),
+        CACHE_AUTO_PRUNE_CHECK_INTERVAL,
+    ) {
+        Ok(should_prune) => should_prune,
+        Err(err) => {
+            eprintln!(
+                "failed to update cache auto-prune marker under {}: {err}",
+                prune_root.display()
+            );
+            return;
+        }
+    };
+    if !should_prune {
+        return;
+    }
     let report = match prune_cache_after_write_with_options(Some(&prune_root), &options) {
         Ok(Some(report)) => report,
         Ok(None) => return,
@@ -493,6 +511,45 @@ fn cache_prune_lock_path(root: &Path) -> PathBuf {
     root.parent()
         .map(|parent| parent.join(&lock_name))
         .unwrap_or_else(|| PathBuf::from(lock_name))
+}
+
+fn mark_auto_prune_check_if_due(
+    root: &Path,
+    now: SystemTime,
+    interval: Duration,
+) -> std::io::Result<bool> {
+    let path = cache_auto_prune_marker_path(root);
+    let due = match fs::read_to_string(&path) {
+        Ok(content) => content
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .and_then(|seconds| {
+                now.duration_since(UNIX_EPOCH + Duration::from_secs(seconds))
+                    .ok()
+            })
+            .map(|age| age > interval)
+            .unwrap_or(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(_) => false,
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, system_time_secs_since_unix_epoch(now)?.to_string())?;
+    Ok(due)
+}
+
+fn cache_auto_prune_marker_path(root: &Path) -> PathBuf {
+    let marker_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(|name| format!(".{name}.rumoca-auto-prune-checked"))
+        .unwrap_or_else(|| ".rumoca-cache.rumoca-auto-prune-checked".to_string());
+    root.parent()
+        .map(|parent| parent.join(&marker_name))
+        .unwrap_or_else(|| PathBuf::from(marker_name))
 }
 
 #[cfg(test)]
@@ -865,6 +922,54 @@ mod tests {
         assert_eq!(status.subcaches[0].total_bytes, 7);
         assert_eq!(status.subcaches[1].name, "source-roots");
         assert_eq!(status.subcaches[1].total_bytes, 5);
+    }
+
+    #[test]
+    fn auto_prune_marker_skips_first_foreground_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+
+        assert!(
+            !mark_auto_prune_check_if_due(&root, now, Duration::from_secs(10))
+                .expect("mark first check"),
+            "first foreground write should only create the marker"
+        );
+        assert!(cache_auto_prune_marker_path(&root).exists());
+    }
+
+    #[test]
+    fn auto_prune_marker_rate_limits_foreground_checks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+        let first = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let recent = first + Duration::from_secs(5);
+
+        assert!(
+            !mark_auto_prune_check_if_due(&root, first, Duration::from_secs(10))
+                .expect("mark first check")
+        );
+        assert!(
+            !mark_auto_prune_check_if_due(&root, recent, Duration::from_secs(10))
+                .expect("mark recent check")
+        );
+    }
+
+    #[test]
+    fn auto_prune_marker_allows_due_foreground_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+        let first = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let due = first + Duration::from_secs(11);
+
+        assert!(
+            !mark_auto_prune_check_if_due(&root, first, Duration::from_secs(10))
+                .expect("mark first check")
+        );
+        assert!(
+            mark_auto_prune_check_if_due(&root, due, Duration::from_secs(10))
+                .expect("mark due check")
+        );
     }
 
     #[test]
