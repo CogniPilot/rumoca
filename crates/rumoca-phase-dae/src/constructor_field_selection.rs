@@ -25,8 +25,7 @@ fn expression_leaf_name(expr: &rumoca_core::Expression) -> Option<&str> {
         rumoca_core::Expression::VarRef { name, .. } => name
             .component_ref()
             .and_then(|component_ref| component_ref.parts.last())
-            .map(|part| part.ident.as_str())
-            .or_else(|| name.as_str().rsplit('.').next()),
+            .map(|part| part.ident.as_str()),
         rumoca_core::Expression::Index { base, .. } => expression_leaf_name(base),
         rumoca_core::Expression::FieldAccess { field, .. } => Some(field.as_str()),
         _ => None,
