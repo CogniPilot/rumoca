@@ -23,6 +23,15 @@ pub(crate) trait TypeCheckTraversalCallbacks {
     /// Called after both sides of a simple equation are traversed.
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable);
 
+    /// Called for a connect equation after both references are traversed.
+    fn on_connect_equation(
+        &mut self,
+        _lhs: &ComponentReference,
+        _rhs: &ComponentReference,
+        _type_table: &TypeTable,
+    ) {
+    }
+
     /// Called after an expression-form function call and all arguments are traversed.
     fn on_expression_function_call(
         &mut self,
@@ -68,6 +77,24 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
             }
         }
         ast::visitor::walk_equation_default(self, equation)
+    }
+
+    fn visit_connect(
+        &mut self,
+        lhs: &ComponentReference,
+        rhs: &ComponentReference,
+    ) -> ControlFlow<()> {
+        self.visit_component_reference_ctx(
+            lhs,
+            ast::ComponentReferenceContext::EquationConnectLhs,
+        )?;
+        self.visit_component_reference_ctx(
+            rhs,
+            ast::ComponentReferenceContext::EquationConnectRhs,
+        )?;
+        self.callbacks
+            .on_connect_equation(lhs, rhs, self.type_table);
+        ControlFlow::Continue(())
     }
 
     fn visit_simple_equation(&mut self, lhs: &Expression, rhs: &Expression) -> ControlFlow<()> {

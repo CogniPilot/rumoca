@@ -52,6 +52,16 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
         self.check_power_operators(rhs, type_table);
     }
 
+    fn on_connect_equation(
+        &mut self,
+        lhs: &rumoca_ir_ast::ComponentReference,
+        rhs: &rumoca_ir_ast::ComponentReference,
+        type_table: &TypeTable,
+    ) {
+        self.validate_expandable_connect_reference(lhs, type_table);
+        self.validate_expandable_connect_reference(rhs, type_table);
+    }
+
     fn on_expression_function_call(
         &mut self,
         comp: &rumoca_ir_ast::ComponentReference,
@@ -1660,6 +1670,48 @@ impl TypeChecker {
         Ok(current_type)
     }
 
+    fn validate_expandable_connect_reference(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        type_table: &TypeTable,
+    ) {
+        let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp) else {
+            return;
+        };
+        if prefix_len == comp.parts.len() {
+            return;
+        }
+
+        for part in comp.parts.iter().skip(prefix_len) {
+            let member_name = part.ident.text.to_string();
+            if let Some(next_type) =
+                self.lookup_component_member_type(current_type, &member_name, type_table)
+            {
+                current_type = next_type;
+                continue;
+            }
+            if !self.is_expandable_connector_type(type_table, current_type) {
+                return;
+            }
+            match self.component_reference_member_span(&part.ident.location) {
+                Ok(span) => self.emit_unknown_component_member(
+                    MissingComponentMember {
+                        owner_type: current_type,
+                        member_name,
+                        reference: comp.to_string(),
+                        span,
+                    },
+                    type_table,
+                ),
+                Err(ComponentReferenceTypeError::MissingSourceContext(error)) => {
+                    self.emit_typecheck_error(error);
+                }
+                Err(ComponentReferenceTypeError::MissingMember(_)) => {}
+            }
+            return;
+        }
+    }
+
     fn component_reference_member_span(
         &self,
         location: &rumoca_core::Location,
@@ -1767,6 +1819,15 @@ impl TypeChecker {
                 | ClassKind::Type
                 | ClassKind::Operator
         )
+    }
+
+    fn is_expandable_connector_type(&self, type_table: &TypeTable, owner_type: TypeId) -> bool {
+        let owner_root = self.resolve_type_root(type_table, owner_type);
+        let Some(Type::Class(class_type)) = type_table.get(owner_root) else {
+            return false;
+        };
+        class_type.kind == ClassKind::Connector
+            && self.expandable_connector_defs.contains(&class_type.def_id)
     }
 
     pub(in crate::typechecker) fn emit_unknown_component_member(
