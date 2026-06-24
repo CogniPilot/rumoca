@@ -1699,6 +1699,60 @@ fn test_render_component_ref_uses_symbol_map_before_c_bracket_fallback() {
 }
 
 #[test]
+fn test_render_expression_handles_component_reference_wrapper() {
+    let expr = serde_json::json!({
+        "ComponentReference": {
+            "local": false,
+            "parts": [
+                {"ident": "plant", "subs": []},
+                {"ident": "arr", "subs": [{"Index": {"value": 0}}]},
+                {"ident": "field", "subs": []}
+            ],
+            "def_id": 7
+        }
+    });
+    let symbols = serde_json::json!({
+        "plant.arr[1].field": "plant_arr_1_field"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "plant_arr_1_field");
+}
+
+#[test]
+fn test_render_expression_handles_var_name_component_reference() {
+    let expr = serde_json::json!({
+        "name": "plant.arr[1].field",
+        "component_ref": {
+            "local": false,
+            "parts": [
+                {"ident": "plant", "subs": []},
+                {"ident": "arr", "subs": [{"Index": {"value": 0}}]},
+                {"ident": "field", "subs": []}
+            ],
+            "def_id": 7
+        },
+        "def_id": 7
+    });
+    let symbols = serde_json::json!({
+        "plant.arr[1].field": "plant_arr_1_field"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "plant_arr_1_field");
+}
+
+#[test]
 fn test_render_component_ref_canonicalizes_zero_based_source_without_symbol_map() {
     let component_ref = serde_json::json!({
         "parts": [

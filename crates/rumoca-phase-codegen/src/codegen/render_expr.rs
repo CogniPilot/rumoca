@@ -87,6 +87,12 @@ pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult 
     if let Ok(named) = get_field(expr, "NamedArgument") {
         return render_named_argument(&named, cfg);
     }
+    if let Ok(component_ref) = get_field(expr, "ComponentReference") {
+        return super::render_stmt::render_component_ref(&component_ref, cfg);
+    }
+    if let Ok(component_ref) = get_field(expr, "component_ref") {
+        return super::render_stmt::render_component_ref(&component_ref, cfg);
+    }
     if get_field(expr, "parts").is_ok() {
         return super::render_stmt::render_component_ref(expr, cfg);
     }

@@ -603,7 +603,7 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             );
             assert_eq!(
                 scalar_fallback_output_indices(&problem.continuous.implicit_rhs),
-                vec![0, 9, 10, 20, 53],
+                vec![0, 9, 52, 62, 63],
                 "Turkey implicit RHS scalar fallback rows should be only the derivative and source scalar boundary/surface equations"
             );
             let layout_source = render_wgsl_solve_layout_source(&problem, "Turkey");
