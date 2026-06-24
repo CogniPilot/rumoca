@@ -1653,6 +1653,18 @@ impl<'a> LowerBuilder<'a> {
         subscripts: &[rumoca_core::Subscript],
     ) -> bool {
         let key = name.as_str();
+        // `__pre__.X` is the previous-step memory of a discrete state, not a
+        // constant. The DAE registers it as a non-tunable parameter (and seeds
+        // its `start` value into `structural_bindings`) purely as a
+        // representational artifact, but `snapshot_pre` rewrites the slot every
+        // step. Folding an if-branch on it would bake in the state's start value
+        // (e.g. `if pre(current_wp) == 1` collapsing to the wp==1 branch),
+        // silently producing the wrong dynamics — exactly what scalar `lower_if`
+        // already refuses to do. Treat it as run-time state so lowering keeps a
+        // `Select`.
+        if key.starts_with("__pre__.") {
+            return false;
+        }
         // Loop indices and projected function parameters bound to constants.
         if subscripts.is_empty() && self.local_const_bindings.contains_key(key) {
             return true;
