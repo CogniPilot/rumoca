@@ -117,6 +117,17 @@ fn test_propagate_alias_map_copies_root_and_prefixed_fields() {
 }
 
 #[test]
+fn test_alias_head_ignores_dots_inside_subscripts() {
+    assert_eq!(TypeChecker::alias_head("src.stackData.cellData"), "src");
+    assert_eq!(
+        TypeChecker::alias_head("plug[data.medium].port"),
+        "plug[data.medium]"
+    );
+    assert_eq!(TypeChecker::alias_head("ch[1].chi.vol2"), "ch[1]");
+    assert_eq!(TypeChecker::alias_head("standalone"), "standalone");
+}
+
+#[test]
 fn test_extract_simple_path_preserves_subscripted_component_refs() {
     let expr = Expression::ComponentReference(ComponentReference {
         local: false,

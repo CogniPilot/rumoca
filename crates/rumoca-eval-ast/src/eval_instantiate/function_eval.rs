@@ -4,16 +4,30 @@ use super::{
     try_eval_bool_expr_with_local_values, try_eval_integer_expr_with_depth_and_locals,
 };
 use rumoca_core::{
-    IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
+    DefId, IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
     eval_integer_div_builtin,
 };
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 
 mod local_lookup;
 
 pub(super) use local_lookup::{lookup_local_bool, lookup_local_integer};
 
 const MAX_FUNCTION_LOOP_ITERATIONS: usize = 4096;
+const MAX_FUNCTION_LEAF_INDEXES: usize = 16;
+
+thread_local! {
+    static FUNCTION_LEAF_INDEX_CACHE: RefCell<FxHashMap<FunctionLeafIndexKey, FxHashMap<String, Option<DefId>>>> =
+        RefCell::new(FxHashMap::default());
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct FunctionLeafIndexKey {
+    tree_addr: usize,
+    def_count: usize,
+    name_count: usize,
+}
 
 enum LocalValue {
     Integer(i64),
@@ -305,16 +319,47 @@ fn lookup_unique_short_function_name<'a>(
         return None;
     }
 
-    let mut matches = tree
-        .def_map
-        .values()
-        .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))
-        .filter(|class| {
-            class.class_type == rumoca_core::ClassType::Function
-                && class.name.text.as_ref() == func_name
-        });
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
+    let def_id = cached_function_leaf_def_id(tree, func_name)??;
+    tree.get_class_by_def_id(def_id)
+        .filter(|class| class.class_type == rumoca_core::ClassType::Function)
+}
+
+fn cached_function_leaf_def_id(tree: &ast::ClassTree, func_name: &str) -> Option<Option<DefId>> {
+    let key = FunctionLeafIndexKey {
+        tree_addr: std::ptr::from_ref(tree) as usize,
+        def_count: tree.def_map.len(),
+        name_count: tree.name_map.len(),
+    };
+    FUNCTION_LEAF_INDEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !cache.contains_key(&key) {
+            if cache.len() >= MAX_FUNCTION_LEAF_INDEXES {
+                cache.clear();
+            }
+            cache.insert(key, build_function_leaf_index(tree));
+        }
+        cache
+            .get(&key)
+            .and_then(|index| index.get(func_name).copied())
+    })
+}
+
+fn build_function_leaf_index(tree: &ast::ClassTree) -> FxHashMap<String, Option<DefId>> {
+    let mut index = FxHashMap::default();
+    for (def_id, qualified) in &tree.def_map {
+        let Some(class) = tree.get_class_by_qualified_name(qualified) else {
+            continue;
+        };
+        if class.class_type != rumoca_core::ClassType::Function {
+            continue;
+        }
+        let leaf = qualified.rsplit('.').next().unwrap_or(qualified);
+        index
+            .entry(leaf.to_string())
+            .and_modify(|existing| *existing = None)
+            .or_insert(Some(*def_id));
+    }
+    index
 }
 
 pub(super) fn eval_integer_binary(op: &rumoca_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
@@ -1172,7 +1217,10 @@ mod tests {
     use super::super::{
         InstantiateEvalCtx, enum_values_equal, evaluate_component_condition, try_eval_integer_expr,
     };
-    use super::{eval_integer_binary, evaluate_array_dimensions};
+    use super::{
+        eval_integer_binary, evaluate_array_dimensions, lookup_unique_short_function_name,
+    };
+    use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
 
@@ -1963,5 +2011,78 @@ mod tests {
         };
 
         assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(2));
+    }
+
+    fn function_class(name: &str, def_id: DefId) -> ast::ClassDef {
+        ast::ClassDef {
+            def_id: Some(def_id),
+            name: token(name),
+            class_type: rumoca_core::ClassType::Function,
+            pure: true,
+            ..Default::default()
+        }
+    }
+
+    fn package_with_function(
+        package_name: &str,
+        package_id: DefId,
+        function_id: DefId,
+    ) -> ast::ClassDef {
+        let mut package = ast::ClassDef {
+            def_id: Some(package_id),
+            name: token(package_name),
+            class_type: rumoca_core::ClassType::Package,
+            ..Default::default()
+        };
+        package
+            .classes
+            .insert("leaf".to_string(), function_class("leaf", function_id));
+        package
+    }
+
+    #[test]
+    fn short_function_lookup_uses_unique_leaf_index() {
+        let package_id = DefId::new(1);
+        let function_id = DefId::new(2);
+        let mut tree = ast::ClassTree::new();
+        tree.definitions.classes.insert(
+            "Pkg".to_string(),
+            package_with_function("Pkg", package_id, function_id),
+        );
+        tree.def_map.insert(package_id, "Pkg".to_string());
+        tree.def_map.insert(function_id, "Pkg.leaf".to_string());
+        tree.name_map.insert("Pkg".to_string(), package_id);
+        tree.name_map.insert("Pkg.leaf".to_string(), function_id);
+
+        let found = lookup_unique_short_function_name("leaf", &tree);
+
+        assert_eq!(found.and_then(|class| class.def_id), Some(function_id));
+    }
+
+    #[test]
+    fn short_function_lookup_rejects_ambiguous_leaf() {
+        let package_a_id = DefId::new(10);
+        let function_a_id = DefId::new(11);
+        let package_b_id = DefId::new(20);
+        let function_b_id = DefId::new(21);
+        let mut tree = ast::ClassTree::new();
+        tree.definitions.classes.insert(
+            "PkgA".to_string(),
+            package_with_function("PkgA", package_a_id, function_a_id),
+        );
+        tree.definitions.classes.insert(
+            "PkgB".to_string(),
+            package_with_function("PkgB", package_b_id, function_b_id),
+        );
+        tree.def_map.insert(package_a_id, "PkgA".to_string());
+        tree.def_map.insert(function_a_id, "PkgA.leaf".to_string());
+        tree.def_map.insert(package_b_id, "PkgB".to_string());
+        tree.def_map.insert(function_b_id, "PkgB.leaf".to_string());
+        tree.name_map.insert("PkgA".to_string(), package_a_id);
+        tree.name_map.insert("PkgA.leaf".to_string(), function_a_id);
+        tree.name_map.insert("PkgB".to_string(), package_b_id);
+        tree.name_map.insert("PkgB.leaf".to_string(), function_b_id);
+
+        assert!(lookup_unique_short_function_name("leaf", &tree).is_none());
     }
 }

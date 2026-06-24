@@ -193,7 +193,7 @@ impl TypeChecker {
             .enumerate()
             .map(|(index, (_, alias_target))| {
                 aliases_by_target_head
-                    .entry(Self::alias_head(alias_target))
+                    .entry(Self::alias_head(alias_target).to_string())
                     .or_default()
                     .push(index);
                 format!("{alias_target}.")
@@ -201,8 +201,8 @@ impl TypeChecker {
             .collect();
         let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
         for field_name in values.keys() {
-            let field_head = Self::alias_head(field_name);
-            let Some(alias_indices) = aliases_by_target_head.get(&field_head) else {
+            let Some(alias_indices) = aliases_by_target_head.get(Self::alias_head(field_name))
+            else {
                 continue;
             };
             for index in alias_indices {
@@ -235,11 +235,16 @@ impl TypeChecker {
         progress
     }
 
-    fn alias_head(path: &str) -> String {
-        ComponentPath::from_flat_path(path)
-            .parts()
-            .first()
-            .cloned()
-            .unwrap_or_else(|| path.to_string())
+    pub(crate) fn alias_head(path: &str) -> &str {
+        let mut bracket_depth = 0usize;
+        for (index, byte) in path.bytes().enumerate() {
+            match byte {
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                b'.' if bracket_depth == 0 => return &path[..index],
+                _ => {}
+            }
+        }
+        path
     }
 }

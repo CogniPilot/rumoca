@@ -395,12 +395,19 @@ impl TypeChecker {
             .collect();
 
         const MAX_PASSES: usize = 5;
+        let mut cleared_alias_scopes = HashSet::<String>::new();
         for _ in 0..MAX_PASSES {
             let prev =
                 ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
 
             for data in overlay.components.values() {
-                Self::apply_instance_class_overrides(tree, &component_index, data, ctx);
+                Self::apply_instance_class_overrides(
+                    tree,
+                    &component_index,
+                    data,
+                    ctx,
+                    &mut cleared_alias_scopes,
+                );
             }
 
             let new =
@@ -422,6 +429,7 @@ impl TypeChecker {
         component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
         data: &rumoca_ir_ast::InstanceData,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        cleared_alias_scopes: &mut HashSet<String>,
     ) {
         if data.class_overrides.is_empty() {
             return;
@@ -441,6 +449,7 @@ impl TypeChecker {
                 &class_override.alias,
                 class_override.target_def_id,
                 ctx,
+                cleared_alias_scopes,
             );
         }
     }
@@ -453,6 +462,7 @@ impl TypeChecker {
         alias: &str,
         def_id: DefId,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        cleared_alias_scopes: &mut HashSet<String>,
     ) {
         if Self::try_apply_forwarded_parent_alias_constants(
             tree,
@@ -471,7 +481,9 @@ impl TypeChecker {
         let alias_scope = format!("{comp_scope}.{alias}");
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
         // package constants in the local alias scope.
-        Self::clear_alias_scope_values(ctx, &alias_scope);
+        if cleared_alias_scopes.insert(alias_scope.clone()) {
+            Self::clear_alias_scope_values(ctx, &alias_scope);
+        }
         Self::extract_override_class_constants(tree, &alias_scope, def_id, ctx);
 
         // For declarations like `Medium.BaseProperties medium`, expose
