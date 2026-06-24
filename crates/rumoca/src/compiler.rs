@@ -473,6 +473,8 @@ pub struct Compiler {
     source_root_paths: Vec<String>,
     /// Enable verbose output.
     verbose: bool,
+    /// Explicit compatibility mode for non-standard library annotations.
+    allow_non_param_evaluate_annotation: bool,
 }
 
 impl Compiler {
@@ -513,6 +515,23 @@ impl Compiler {
     pub fn source_roots(mut self, paths: &[String]) -> Self {
         self.source_root_paths.extend(paths.iter().cloned());
         self
+    }
+
+    /// Allow `annotation(Evaluate=true)` on non-parameter/non-constant components.
+    ///
+    /// Strict MLS behavior remains the default. This opt-in exists for external
+    /// libraries that carry this non-standard annotation on otherwise ordinary
+    /// connector/helper components.
+    pub fn allow_non_param_evaluate_annotation(mut self, allow: bool) -> Self {
+        self.allow_non_param_evaluate_annotation = allow;
+        self
+    }
+
+    fn session_config(&self) -> SessionConfig {
+        SessionConfig {
+            evaluate_scope_is_error: !self.allow_non_param_evaluate_annotation,
+            ..SessionConfig::default()
+        }
     }
 
     /// Load a source-root path into the session.
@@ -725,7 +744,7 @@ impl Compiler {
         }
 
         // Create a session and add the document
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
@@ -808,7 +827,7 @@ impl Compiler {
             eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
         session
@@ -833,7 +852,7 @@ impl Compiler {
             eprintln!("[rumoca] Phase 1-5: Parsing, resolving, and flattening...");
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
         session
@@ -857,7 +876,7 @@ impl Compiler {
             eprintln!("[rumoca] Source file: {}", file_name);
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
@@ -926,7 +945,7 @@ impl Compiler {
             eprintln!("[rumoca] Source file: {file_name}");
         }
 
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(self.session_config());
         self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
@@ -1625,6 +1644,35 @@ mod tests {
             "Compilation failed unexpectedly: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn test_non_param_evaluate_annotation_requires_explicit_compatibility_opt_in() {
+        let source = r#"
+            model NonParamEvaluate
+              Real x(start = 1) annotation(Evaluate = true);
+            equation
+              der(x) = 0;
+            end NonParamEvaluate;
+        "#;
+
+        let strict_err = Compiler::new()
+            .model("NonParamEvaluate")
+            .compile_str(source, "NonParamEvaluate.mo")
+            .expect_err("strict MLS mode must reject Evaluate=true on a non-parameter");
+        let strict_message = strict_err.to_string();
+        assert!(
+            strict_message.contains(
+                "annotation Evaluate is only allowed on parameter or constant components"
+            ),
+            "strict failure should preserve the Evaluate-scope diagnostic: {strict_message}"
+        );
+
+        Compiler::new()
+            .model("NonParamEvaluate")
+            .allow_non_param_evaluate_annotation(true)
+            .compile_str(source, "NonParamEvaluate.mo")
+            .expect("explicit compatibility opt-in should downgrade ER070 to a warning");
     }
 
     #[test]

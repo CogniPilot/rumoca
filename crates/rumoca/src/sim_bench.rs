@@ -259,6 +259,7 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
             options: ModelOptions {
                 model: Some(model_name),
                 source_roots,
+                allow_non_param_evaluate_annotation: false,
             },
         },
         t_end: args.t_end.unwrap_or(config.sim.t_end),

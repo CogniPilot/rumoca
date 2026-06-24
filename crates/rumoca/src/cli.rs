@@ -254,6 +254,14 @@ pub struct ModelOptions {
     /// explicit flag.
     #[arg(long = "source-root", value_name = "PATH", action = ArgAction::Append)]
     pub source_roots: Vec<String>,
+
+    /// Compatibility opt-in for external libraries that annotate ordinary
+    /// non-parameter/non-constant components with `Evaluate=true`.
+    ///
+    /// Strict MLS behavior remains the default. Use only for known library
+    /// compatibility surfaces, not for validating new source as standard.
+    #[arg(long)]
+    pub allow_non_param_evaluate_annotation: bool,
 }
 
 /// `compile`/`check` model input: the required model-file positional plus the
@@ -826,6 +834,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
                     .iter()
                     .map(|path| path.to_string_lossy().to_string())
                     .collect(),
+                allow_non_param_evaluate_annotation: false,
             },
         };
         init_debug_tracing(&args.diagnostics)?;
@@ -1418,6 +1427,7 @@ fn compile_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(args.options.allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     let result = compiler.compile_file(&args.model_file)?;
     Ok((result, model))
@@ -1439,6 +1449,7 @@ fn compile_early_ir_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(args.options.allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     let artifact = match phase {
         CompilePhase::Ast => {
@@ -1469,6 +1480,7 @@ pub(crate) fn compile_dae_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(args.options.allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     let result = compiler.compile_file_dae(&args.model_file)?;
     Ok((result, model))
@@ -1540,6 +1552,7 @@ fn compiler_for_source(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .allow_non_param_evaluate_annotation(options.allow_non_param_evaluate_annotation)
         .source_roots(&source_roots);
     Ok((compiler, model))
 }

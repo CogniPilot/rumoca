@@ -280,6 +280,35 @@ fn test_extract_attributes_evaluates_state_select_parameter() {
 }
 
 #[test]
+fn test_extract_attributes_evaluates_scoped_state_select_condition_parameter() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        ast::Expression::If {
+            branches: vec![(
+                make_comp_ref_expr(&["medium", "preferredMediumStates"]),
+                make_comp_ref_expr(&["StateSelect", "prefer"]),
+            )],
+            else_branch: std::sync::Arc::new(make_comp_ref_expr(&["StateSelect", "default"])),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    let mut preferred = make_component("preferredMediumStates", "Boolean", None);
+    preferred.binding = Some(make_bool_expr(true));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("preferredMediumStates".to_string(), preferred);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect("stateSelect if-expression should evaluate from scoped parameter context");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
 fn test_lookup_type_info_accepts_predefined_state_select() {
     let tree = ast::ClassTree::new();
     let comp = make_component("stateSelect", "StateSelect", None);

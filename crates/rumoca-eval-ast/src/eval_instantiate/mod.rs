@@ -233,6 +233,32 @@ fn eval_param_ref(
         }
     }
 
+    // Type attributes may be evaluated while extracting fields of a structured
+    // component. In MSL media records, expressions such as
+    // `medium.preferredMediumStates` refer to the current structured component's
+    // `preferredMediumStates` parameter even after the field is being processed.
+    if comp_ref.parts.len() > 1
+        && let Some(last) = comp_ref.parts.last()
+    {
+        let field_name = last.ident.text.as_ref();
+        if let Some(sibling) = effective_components.get(field_name) {
+            let value_expr = component_params::component_condition_value_expr(sibling);
+            if let Some(val) = expr_to_bool(value_expr) {
+                return Some(val);
+            }
+            if let Some(val) = evaluate_component_condition_with_depth(
+                value_expr,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                depth + 1,
+            ) {
+                return Some(val);
+            }
+        }
+    }
+
     // Look up the parameter's default value from effective components (single-part only)
     if comp_ref.parts.len() == 1 {
         let param_name = comp_ref.parts[0].ident.text.as_ref();
