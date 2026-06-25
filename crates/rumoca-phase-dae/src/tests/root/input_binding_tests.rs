@@ -768,6 +768,57 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
 }
 
 #[test]
+fn test_connected_input_alias_keeps_single_binding_anchor() {
+    let mut flat = Model::new();
+    for (name, value) in [("inner.p", 1.0), ("inner.q", 2.0)] {
+        flat.add_variable(
+            VarName::new(name),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: VarName::new(name),
+                causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
+                variability: rumoca_core::Variability::Empty,
+                is_primitive: true,
+                binding: Some(rumoca_core::Expression::Literal {
+                    value: Literal::Real(value),
+                    span: crate::test_support::test_span(),
+                }),
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            }),
+        );
+    }
+
+    add_connection_equation(&mut flat, "inner.q", "inner.p");
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("to_dae should succeed for connected internal input aliases");
+
+    let binding_equations = dae
+        .continuous
+        .equations
+        .iter()
+        .filter(|eq| eq.origin.starts_with("binding equation for inner."))
+        .count();
+    assert_eq!(
+        binding_equations, 1,
+        "one input-only alias component should keep exactly one binding anchor"
+    );
+    assert_eq!(
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
+        0,
+        "multiple default bindings in one input-only alias set must not over-constrain balance"
+    );
+}
+
+#[test]
 fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_inputs() {
     let mut flat = Model::new();
     flat.add_variable(

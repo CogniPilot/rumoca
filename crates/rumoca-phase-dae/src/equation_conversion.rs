@@ -45,6 +45,57 @@ pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> 
     }
 }
 
+fn is_flat_stream_name(flat: &flat::Model, name: &rumoca_core::VarName) -> bool {
+    name_resolution::resolve_var_name_with_subscript_fallback(name, |candidate| {
+        flat.variables
+            .get(candidate)
+            .is_some_and(|variable| variable.stream)
+    })
+    .is_some()
+}
+
+fn connection_sides(eq: &flat::Equation) -> Option<(rumoca_core::VarName, rumoca_core::VarName)> {
+    if !eq.origin.is_connection() {
+        return None;
+    }
+
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
+        return None;
+    };
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
+        return None;
+    }
+
+    Some((
+        name_resolution::extract_varref_name(lhs)?,
+        name_resolution::extract_varref_name(rhs)?,
+    ))
+}
+
+pub(super) fn is_stream_stream_connection(eq: &flat::Equation, flat: &flat::Model) -> bool {
+    let Some((lhs_name, rhs_name)) = connection_sides(eq) else {
+        return false;
+    };
+    is_flat_stream_name(flat, &lhs_name) && is_flat_stream_name(flat, &rhs_name)
+}
+
+fn should_skip_stream_stream_connection(eq: &flat::Equation, ctx: &EqFilterContext<'_>) -> bool {
+    let Some((lhs_name, rhs_name)) = connection_sides(eq) else {
+        return false;
+    };
+    if !is_stream_stream_connection(eq, ctx.flat) {
+        return false;
+    }
+
+    let lhs_consumed =
+        name_resolution::resolve_name_against_set(&lhs_name, ctx.non_connection_rhs_var_refs)
+            .is_some();
+    let rhs_consumed =
+        name_resolution::resolve_name_against_set(&rhs_name, ctx.non_connection_rhs_var_refs)
+            .is_some();
+    !(lhs_consumed && rhs_consumed)
+}
+
 /// Check if an equation defines an input variable with a constant/parameter value.
 ///
 /// Equations of the form `input_var = literal` where `input_var` is an input
@@ -315,6 +366,7 @@ struct EqFilterStats {
     kept_other: usize,
     skipped_top_level_oc: usize,
     skipped_input_input: usize,
+    skipped_stream_stream: usize,
     skipped_output_alias: usize,
     skipped_input_default: usize,
     skipped_explicit_zero: usize,
@@ -333,13 +385,14 @@ impl EqFilterStats {
 
     fn log(&self) {
         crate::log_equation_filter_debug(format!(
-            "eq-filter: kept(connection={}, flow_sum={}, unconnected_flow={}, other={}) skipped(top_level_oc={}, input_input={}, output_alias={}, input_default={}, explicit_zero={}, inferred_zero={})",
+            "eq-filter: kept(connection={}, flow_sum={}, unconnected_flow={}, other={}) skipped(top_level_oc={}, input_input={}, stream_stream={}, output_alias={}, input_default={}, explicit_zero={}, inferred_zero={})",
             self.kept_connection,
             self.kept_flow_sum,
             self.kept_unconnected_flow,
             self.kept_other,
             self.skipped_top_level_oc,
             self.skipped_input_input,
+            self.skipped_stream_stream,
             self.skipped_output_alias,
             self.skipped_input_default,
             self.skipped_explicit_zero,
@@ -420,6 +473,12 @@ fn skip_equation_pre_classification(
     if is_input_input_connection(eq, dae) {
         stats.skipped_input_input += 1;
         log_skip(ctx.debug_eq_filter, "input_input", eq);
+        return true;
+    }
+
+    if should_skip_stream_stream_connection(eq, ctx) {
+        stats.skipped_stream_stream += 1;
+        log_skip(ctx.debug_eq_filter, "stream_stream", eq);
         return true;
     }
 
@@ -513,6 +572,7 @@ fn record_field_specs_for_call(
 #[derive(Debug, Clone)]
 struct RecordFieldSpec {
     param: rumoca_core::FunctionParam,
+    match_by_name: bool,
 }
 
 impl RecordFieldSpec {
@@ -527,7 +587,10 @@ impl RecordFieldSpec {
         (!params.is_empty()).then(|| {
             params
                 .into_iter()
-                .map(|param| Self { param })
+                .map(|param| Self {
+                    param,
+                    match_by_name: false,
+                })
                 .collect::<Vec<_>>()
         })
     }
@@ -552,13 +615,23 @@ impl RecordFieldSpec {
         }
     }
 
+    fn is_lhs_derived(&self) -> bool {
+        self.match_by_name
+    }
+
     fn matches_component_ref(
         &self,
         field_ref: &rumoca_core::ComponentReference,
         symbol_ancestry: &IndexMap<rumoca_core::DefId, Vec<rumoca_core::DefId>>,
     ) -> bool {
         self.param.def_id.is_some_and(|expected| {
-            field_ref.def_id == Some(expected)
+            let name_matches = self.match_by_name
+                && field_ref
+                    .parts
+                    .last()
+                    .is_some_and(|part| part.ident == self.param.name);
+            name_matches
+                || field_ref.def_id == Some(expected)
                 || field_ref.def_id.is_some_and(|actual| {
                     symbol_ancestry
                         .get(&actual)
@@ -710,6 +783,7 @@ fn component_ref_matches_record_field(
     field_ref: &rumoca_core::ComponentReference,
     field: &RecordFieldSpec,
     symbol_ancestry: &IndexMap<rumoca_core::DefId, Vec<rumoca_core::DefId>>,
+    flat: &flat::Model,
 ) -> bool {
     let lhs_parts = lhs_ref.parts.as_slice();
     let field_parts = field_ref.parts.as_slice();
@@ -734,7 +808,41 @@ fn component_ref_matches_record_field(
             }
             continue;
         }
-        if record_owner_subscripts_match(lhs_part, field_part, field_leaf) {
+        if record_owner_subscripts_match(lhs_part, field_part, field_leaf, flat) {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn component_ref_is_record_field_child(
+    lhs_ref: &rumoca_core::ComponentReference,
+    field_ref: &rumoca_core::ComponentReference,
+    flat: &flat::Model,
+) -> bool {
+    let lhs_parts = lhs_ref.parts.as_slice();
+    let field_parts = field_ref.parts.as_slice();
+    if field_parts.len() != lhs_parts.len() + 1 {
+        return false;
+    }
+
+    let Some(lhs_leaf_index) = lhs_parts.len().checked_sub(1) else {
+        return false;
+    };
+    let field_leaf = &field_parts[field_parts.len() - 1];
+    for (lhs_index, lhs_part) in lhs_parts.iter().enumerate() {
+        let field_part = &field_parts[lhs_index];
+        if lhs_part.ident != field_part.ident {
+            return false;
+        }
+        if lhs_index != lhs_leaf_index {
+            if !subscripts_match_semantically(&lhs_part.subs, &field_part.subs) {
+                return false;
+            }
+            continue;
+        }
+        if record_owner_subscripts_match(lhs_part, field_part, field_leaf, flat) {
             continue;
         }
         return false;
@@ -746,6 +854,7 @@ fn record_owner_subscripts_match(
     lhs_part: &rumoca_core::ComponentRefPart,
     field_owner_part: &rumoca_core::ComponentRefPart,
     field_leaf: &rumoca_core::ComponentRefPart,
+    flat: &flat::Model,
 ) -> bool {
     if lhs_part.subs.is_empty() {
         return true;
@@ -753,7 +862,98 @@ fn record_owner_subscripts_match(
     if subscripts_match_semantically(&lhs_part.subs, &field_owner_part.subs) {
         return true;
     }
+    if subscripts_select_field_owner(&lhs_part.subs, &field_owner_part.subs, flat) {
+        return true;
+    }
     field_owner_part.subs.is_empty() && subscript_prefix_matches(&field_leaf.subs, &lhs_part.subs)
+}
+
+fn subscripts_select_field_owner(
+    lhs: &[rumoca_core::Subscript],
+    field_owner: &[rumoca_core::Subscript],
+    flat: &flat::Model,
+) -> bool {
+    lhs.len() == field_owner.len()
+        && lhs
+            .iter()
+            .zip(field_owner.iter())
+            .all(|(selection, concrete)| subscript_selects_index(selection, concrete, flat))
+}
+
+fn subscript_selects_index(
+    selection: &rumoca_core::Subscript,
+    concrete: &rumoca_core::Subscript,
+    flat: &flat::Model,
+) -> bool {
+    let rumoca_core::Subscript::Index { value, .. } = concrete else {
+        return subscript_matches_semantically(selection, concrete);
+    };
+    match selection {
+        rumoca_core::Subscript::Index {
+            value: selected, ..
+        } => selected == value,
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            expression_selects_index(expr, *value, flat).unwrap_or(false)
+        }
+        rumoca_core::Subscript::Colon { .. } => true,
+    }
+}
+
+fn expression_selects_index(
+    expr: &rumoca_core::Expression,
+    index: i64,
+    flat: &flat::Model,
+) -> Option<bool> {
+    match expr {
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            let start = eval_integer_expression(start, flat)?;
+            let end = eval_integer_expression(end, flat)?;
+            let step = step
+                .as_deref()
+                .map(|step| eval_integer_expression(step, flat))
+                .unwrap_or(Some(1))?;
+            if step == 0 {
+                return Some(false);
+            }
+            Some(if step > 0 {
+                index >= start && index <= end && (index - start) % step == 0
+            } else {
+                index <= start && index >= end && (start - index) % (-step) == 0
+            })
+        }
+        _ => eval_integer_expression(expr, flat).map(|selected| selected == index),
+    }
+}
+
+fn eval_integer_expression(expr: &rumoca_core::Expression, flat: &flat::Model) -> Option<i64> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        rumoca_core::Expression::VarRef { name, .. } => {
+            let binding = &flat.variables.get(name.var_name())?.binding;
+            let Some(binding) = binding else {
+                return None;
+            };
+            eval_integer_expression(binding, flat)
+        }
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } => Some(eval_integer_expression(lhs, flat)? + eval_integer_expression(rhs, flat)?),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } => Some(eval_integer_expression(lhs, flat)? - eval_integer_expression(rhs, flat)?),
+        _ => None,
+    }
 }
 
 fn subscripts_match_semantically(
@@ -849,6 +1049,7 @@ fn record_field_variables<'a>(
                 field_ref,
                 field,
                 &flat.symbol_ancestry,
+                flat,
             )
             .then_some((field_var, field_ref))
         })
@@ -876,6 +1077,93 @@ fn record_field_expansion_error(
     )
 }
 
+fn record_field_specs_for_lhs(
+    lhs_ref: &rumoca_core::Reference,
+    flat: &flat::Model,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
+    let Some(lhs_component_ref) = lhs_ref.component_ref() else {
+        return Ok(None);
+    };
+
+    let mut fields = IndexMap::<String, rumoca_core::DefId>::new();
+    for field_var in flat.variables.values() {
+        if !field_var.is_primitive {
+            continue;
+        }
+        let Some(field_ref) = field_var.component_ref.as_ref() else {
+            continue;
+        };
+        if !component_ref_is_record_field_child(lhs_component_ref, field_ref, flat) {
+            continue;
+        }
+        let Some(field_leaf) = field_ref.parts.last() else {
+            continue;
+        };
+        let Some(def_id) = field_ref.def_id else {
+            return Err(ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "record equation for `{}` has field `{}` without DefId",
+                    lhs_ref.as_str(),
+                    field_leaf.ident
+                ),
+                span,
+            ));
+        };
+        fields.entry(field_leaf.ident.clone()).or_insert(def_id);
+    }
+
+    let specs = fields
+        .into_iter()
+        .map(|(name, def_id)| RecordFieldSpec {
+            param: rumoca_core::FunctionParam::new(name, "Real", span).with_def_id(def_id),
+            match_by_name: true,
+        })
+        .collect::<Vec<_>>();
+    Ok((!specs.is_empty()).then_some(specs))
+}
+
+fn lhs_record_reference(
+    lhs: &rumoca_core::Expression,
+) -> Option<(rumoca_core::Reference, rumoca_core::Span, bool)> {
+    match lhs {
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } if subscripts.is_empty() => Some((name.clone(), *span, false)),
+        rumoca_core::Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if !base_subscripts.is_empty() {
+                return None;
+            }
+            let mut component_ref = name.component_ref()?.clone();
+            component_ref
+                .parts
+                .last_mut()?
+                .subs
+                .extend(subscripts.clone());
+            Some((
+                rumoca_core::Reference::from_component_reference(component_ref),
+                *span,
+                true,
+            ))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn expand_record_field_equation(
     eq: &flat::Equation,
     flat: &flat::Model,
@@ -889,31 +1177,33 @@ pub(crate) fn expand_record_field_equation(
     else {
         return Ok(None);
     };
-    let rumoca_core::Expression::VarRef {
-        name: lhs_name,
-        subscripts,
-        span: lhs_span,
-    } = lhs.as_ref()
+    let Some((lhs_name, lhs_span, lhs_is_indexed_selection)) = lhs_record_reference(lhs.as_ref())
     else {
         return Ok(None);
     };
-    if !subscripts.is_empty()
-        || flat
-            .variables
-            .get(lhs_name.var_name())
-            .is_some_and(|var| var.is_primitive)
+    if flat
+        .variables
+        .get(lhs_name.var_name())
+        .is_some_and(|var| var.is_primitive)
     {
         return Ok(None);
     }
 
-    let Some(field_specs) = record_field_specs_for_rhs(rhs, flat) else {
-        return Ok(None);
+    let field_specs = match record_field_specs_for_rhs(rhs, flat) {
+        Some(field_specs) => field_specs,
+        None => match record_field_specs_for_lhs(&lhs_name, flat, lhs_span)? {
+            Some(field_specs) => field_specs,
+            None => return Ok(None),
+        },
     };
     let mut equations = Vec::new();
     for (index, field) in field_specs.iter().enumerate() {
-        let field_vars = record_field_variables(lhs_name, field, flat, *lhs_span)?;
+        let field_vars = record_field_variables(&lhs_name, field, flat, lhs_span)?;
         if field_vars.is_empty() {
-            return Err(record_field_expansion_error(lhs_name, field, eq.span));
+            if field.is_lhs_derived() || lhs_is_indexed_selection {
+                continue;
+            }
+            return Err(record_field_expansion_error(&lhs_name, field, eq.span));
         }
         let scalar_count = field_scalar_count(&field_vars);
         equations.push(flat::Equation::new_array(

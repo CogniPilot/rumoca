@@ -9,7 +9,8 @@ use super::{
     EqFilterContext, classify_equations, collect_discrete_valued_binding_targets,
     collect_discrete_valued_lhs_target_counts, collect_explicit_discrete_assignments,
     collect_explicit_discrete_assignments_with_binding_targets, expand_record_field_equation,
-    explicit_lhs_reference_from_target, output_alias_skip_reason, output_has_component_equation,
+    explicit_lhs_reference_from_target, is_stream_stream_connection, output_alias_skip_reason,
+    output_has_component_equation, should_skip_stream_stream_connection,
 };
 use crate::ToDaeError;
 
@@ -917,6 +918,153 @@ fn test_output_alias_skip_applies_when_both_sides_are_component_defined() {
         output_alias_skip_reason(&eq, &ctx, &dae_model).as_ref(),
         Some(&rumoca_core::VarName::new("source.y")),
         "alias skip should apply for non-preserved output aliases"
+    );
+}
+
+#[test]
+fn test_stream_stream_connection_is_not_continuous_dae_residual() {
+    let mut flat_model = flat::Model::new();
+    for name in ["pipe.port_b.h_outflow", "sink.port.h_outflow"] {
+        let var_name = rumoca_core::VarName::new(name);
+        flat_model.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name,
+                is_primitive: true,
+                stream: true,
+                ..rumoca_ir_flat::Variable::empty_with_span(fixture_span())
+            },
+        );
+    }
+    flat_model.add_equation(flat::Equation::new(
+        residual(
+            var_ref("pipe.port_b.h_outflow"),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span: fixture_span(),
+            },
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "pipe".to_string(),
+        },
+    ));
+    flat_model.add_equation(flat::Equation::new(
+        residual(
+            var_ref("sink.port.h_outflow"),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: fixture_span(),
+            },
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "sink".to_string(),
+        },
+    ));
+    let connection_eq = flat::Equation::new(
+        residual(
+            var_ref("pipe.port_b.h_outflow"),
+            var_ref("sink.port.h_outflow"),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::Connection {
+            lhs: "pipe.port_b.h_outflow".to_string(),
+            rhs: "sink.port.h_outflow".to_string(),
+        },
+    );
+    assert!(is_stream_stream_connection(&connection_eq, &flat_model));
+    flat_model.add_equation(connection_eq);
+
+    let mut dae_model = dae::Dae::new();
+    for name in ["pipe.port_b.h_outflow", "sink.port.h_outflow"] {
+        let var_name = rumoca_core::VarName::new(name);
+        dae_model.variables.algebraics.insert(
+            var_name.clone(),
+            dae::Variable::new(var_name, fixture_span()),
+        );
+    }
+
+    classify_equations(
+        &mut dae_model,
+        &flat_model,
+        &rustc_hash::FxHashMap::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        dae_model.continuous.equations.len(),
+        2,
+        "stream aliases support stream operators and must not overconstrain f_x"
+    );
+    assert!(dae_model.continuous.equations.iter().all(|equation| {
+        !equation
+            .origin
+            .contains("pipe.port_b.h_outflow = sink.port.h_outflow")
+    }));
+}
+
+#[test]
+fn test_stream_stream_connection_is_kept_when_both_sides_are_consumed() {
+    let mut flat_model = flat::Model::new();
+    for name in [
+        "tank.ports[1].h_outflow",
+        "radiator.port_b.h_outflow",
+        "y1",
+        "y2",
+    ] {
+        let var_name = rumoca_core::VarName::new(name);
+        flat_model.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name,
+                is_primitive: true,
+                stream: name.ends_with("h_outflow"),
+                ..rumoca_ir_flat::Variable::empty_with_span(fixture_span())
+            },
+        );
+    }
+    flat_model.add_equation(flat::Equation::new(
+        residual(var_ref("y1"), var_ref("tank.ports[1].h_outflow")),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "tank".to_string(),
+        },
+    ));
+    flat_model.add_equation(flat::Equation::new(
+        residual(var_ref("y2"), var_ref("radiator.port_b.h_outflow")),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "radiator".to_string(),
+        },
+    ));
+    let connection_eq = flat::Equation::new(
+        residual(
+            var_ref("tank.ports[1].h_outflow"),
+            var_ref("radiator.port_b.h_outflow"),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::Connection {
+            lhs: "tank.ports[1].h_outflow".to_string(),
+            rhs: "radiator.port_b.h_outflow".to_string(),
+        },
+    );
+
+    let outputs_with_component_eqs = HashSet::default();
+    let non_connection_rhs_var_refs = super::collect_non_connection_rhs_var_refs(&flat_model);
+    let top_level_oc_connectors: IndexSet<String> = IndexSet::new();
+    let ctx = EqFilterContext {
+        flat: &flat_model,
+        outputs_with_component_eqs: &outputs_with_component_eqs,
+        non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
+        top_level_oc_connectors: &top_level_oc_connectors,
+        debug_eq_filter: false,
+    };
+
+    assert!(is_stream_stream_connection(&connection_eq, &flat_model));
+    assert!(
+        !should_skip_stream_stream_connection(&connection_eq, &ctx),
+        "stream aliases consumed on both sides carry a structural constraint"
     );
 }
 

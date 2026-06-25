@@ -67,8 +67,8 @@ pub(super) fn convert_bindings_to_equations(
         .collect();
     let unknown_prefix_children = build_unknown_prefix_children(&unknowns)?;
     let internal_inputs = super::InternalInputIndex::new(flat)?;
-    let connected_inputs_only_connected_to_inputs =
-        super::find_connected_inputs_only_connected_to_inputs(flat, &internal_inputs);
+    let connected_input_binding_anchors =
+        super::find_connected_input_binding_anchors(flat, &internal_inputs);
 
     // Build a map from flat equation LHS to the binding expression it exactly
     // shadows. This is an origin-selection rule at the conversion boundary, not
@@ -103,12 +103,8 @@ pub(super) fn convert_bindings_to_equations(
 
         // Connected input-only alias sets (MLS §9.1) must preserve their value anchor
         // from declaration bindings; otherwise the system can become underdetermined.
-        let keep_connected_input_binding = should_keep_connected_input_binding(
-            &kind,
-            name,
-            var,
-            &connected_inputs_only_connected_to_inputs,
-        );
+        let keep_connected_input_binding =
+            should_keep_connected_input_binding(&kind, name, var, &connected_input_binding_anchors);
 
         if should_skip_variable_binding(&kind, name, connected_inputs)
             && !keep_connected_input_binding

@@ -1868,6 +1868,88 @@ fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size()
 }
 
 #[test]
+fn test_infer_equation_scalar_count_qualified_parameter_range_subscript() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("pipe.n"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("pipe.n"),
+            is_primitive: true,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(Expression::Literal {
+                value: Literal::Integer(2),
+                span: crate::test_support::test_span(),
+            }),
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        }),
+    );
+    for name in ["pipe.m_flows", "pipe.flowModel.m_flows"] {
+        flat.add_variable(
+            VarName::new(name),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: VarName::new(name),
+                dims: vec![3],
+                is_primitive: true,
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            }),
+        );
+    }
+
+    let range = || {
+        rumoca_core::Subscript::expr(
+            Box::new(Expression::Range {
+                start: Box::new(Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: crate::test_support::test_span(),
+                }),
+                step: None,
+                end: Box::new(Expression::Binary {
+                    op: rumoca_core::OpBinary::Add,
+                    lhs: Box::new(Expression::VarRef {
+                        name: VarName::new("pipe.n").into(),
+                        subscripts: vec![],
+                        span: crate::test_support::test_span(),
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: crate::test_support::test_span(),
+                    }),
+                    span: crate::test_support::test_span(),
+                }),
+                span: crate::test_support::test_span(),
+            }),
+            crate::test_support::test_span(),
+        )
+    };
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(Expression::VarRef {
+            name: VarName::new("pipe.m_flows").into(),
+            subscripts: vec![range()],
+            span: crate::test_support::test_span(),
+        }),
+        rhs: Box::new(Expression::VarRef {
+            name: VarName::new("pipe.flowModel.m_flows").into(),
+            subscripts: vec![range()],
+            span: crate::test_support::test_span(),
+        }),
+        span: crate::test_support::test_span(),
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(scalar_count, 3);
+}
+
+#[test]
 fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fallback() {
     let mut flat = Model::new();
 

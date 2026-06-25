@@ -51,6 +51,8 @@ pub(crate) fn filter_state_variables(
     flat: &Model,
     internal_inputs: &InternalInputIndex,
 ) -> IndexSet<VarName> {
+    let der_vars = filter_overconstrained_alias_states(der_vars, flat);
+
     der_vars
         .into_iter()
         .filter(|name| {
@@ -60,6 +62,159 @@ pub(crate) fn filter_state_variables(
             })
         })
         .collect()
+}
+
+pub(crate) fn find_overconstrained_derivative_alias_roots(
+    der_vars: &IndexSet<VarName>,
+    flat: &Model,
+) -> FxHashMap<VarName, VarName> {
+    let state_record_paths = overconstrained_state_record_paths(der_vars, flat);
+    if state_record_paths.len() < 2 {
+        return FxHashMap::default();
+    }
+
+    let component_of = overconstrained_record_components(flat);
+    let component_roots = overconstrained_state_roots(flat, &component_of);
+    let mut aliases = FxHashMap::default();
+
+    for (name, record_path) in state_record_paths {
+        if top_level_component_has_outputs(&name, flat) {
+            continue;
+        }
+        let Some(component_id) = component_of.get(record_path.as_str()) else {
+            continue;
+        };
+        let Some(root_path) = component_roots.get(component_id) else {
+            continue;
+        };
+        if oc_paths_match(&record_path, root_path) {
+            continue;
+        }
+        let Some(root_name) = root_variable_for_alias(&name, &record_path, root_path, flat) else {
+            continue;
+        };
+        aliases.insert(name, root_name);
+    }
+
+    aliases
+}
+
+fn top_level_component_has_outputs(name: &VarName, flat: &Model) -> bool {
+    let Some(component) = name.as_str().split('.').next() else {
+        return false;
+    };
+    let prefix = format!("{component}.");
+    flat.variables.iter().any(|(candidate, variable)| {
+        candidate.as_str().starts_with(&prefix)
+            && matches!(variable.causality, rumoca_core::Causality::Output(_))
+    })
+}
+
+fn filter_overconstrained_alias_states(
+    der_vars: IndexSet<VarName>,
+    flat: &Model,
+) -> IndexSet<VarName> {
+    let alias_roots = find_overconstrained_derivative_alias_roots(&der_vars, flat);
+    if alias_roots.is_empty() {
+        return der_vars;
+    }
+
+    der_vars
+        .into_iter()
+        .filter(|name| !alias_roots.contains_key(name))
+        .collect()
+}
+
+fn overconstrained_state_record_paths(
+    der_vars: &IndexSet<VarName>,
+    flat: &Model,
+) -> FxHashMap<VarName, String> {
+    let state_record_paths: FxHashMap<VarName, String> = der_vars
+        .iter()
+        .filter_map(|name| {
+            let var = flat.variables.get(name)?;
+            if !var.is_overconstrained {
+                return None;
+            }
+            Some((name.clone(), var.oc_record_path.clone()?))
+        })
+        .collect();
+
+    state_record_paths
+}
+
+fn overconstrained_record_components(flat: &Model) -> FxHashMap<&str, usize> {
+    let mut record_paths: IndexSet<&str> = IndexSet::new();
+    for var in flat.variables.values() {
+        if !var.is_overconstrained {
+            continue;
+        }
+        if let Some(path) = &var.oc_record_path {
+            record_paths.insert(path.as_str());
+        }
+    }
+    let record_paths: Vec<&str> = record_paths.into_iter().collect();
+    let (component_of, _n_components) = overconstrained_interface::build_record_components(
+        &record_paths,
+        &flat.branches,
+        &flat.optional_edges,
+    );
+    component_of
+}
+
+fn root_variable_for_alias(
+    alias_name: &VarName,
+    alias_record_path: &str,
+    root_record_path: &str,
+    flat: &Model,
+) -> Option<VarName> {
+    let suffix = alias_name.as_str().strip_prefix(alias_record_path)?;
+    if !suffix.starts_with('.') {
+        return None;
+    }
+    let root_name = VarName::new(&format!("{root_record_path}{suffix}"));
+    flat.variables.contains_key(&root_name).then_some(root_name)
+}
+
+fn overconstrained_state_roots(
+    flat: &Model,
+    component_of: &FxHashMap<&str, usize>,
+) -> HashMap<usize, String> {
+    let mut roots = HashMap::default();
+
+    for root in &flat.definite_roots {
+        for (&record_path, &component_id) in component_of {
+            if oc_paths_match(record_path, root) {
+                roots.entry(component_id).or_insert_with(|| root.clone());
+            }
+        }
+    }
+
+    let mut potential_roots = flat.potential_roots.clone();
+    potential_roots.sort_by(|(left_path, left_priority), (right_path, right_priority)| {
+        right_priority
+            .cmp(left_priority)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    for (root, _priority) in potential_roots {
+        for (&record_path, &component_id) in component_of {
+            if !roots.contains_key(&component_id) && oc_paths_match(record_path, &root) {
+                roots.insert(component_id, root.clone());
+            }
+        }
+    }
+
+    roots
+}
+
+fn oc_paths_match(path: &str, root: &str) -> bool {
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+        || root
+            .strip_prefix(path)
+            .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 /// Collect all variables defined by continuous equations (LHS of equations).
@@ -641,6 +796,45 @@ pub(crate) fn find_connected_inputs_only_connected_to_inputs(
     flat: &Model,
     internal_inputs: &InternalInputIndex,
 ) -> HashSet<VarName> {
+    let (input_nodes, adjacency) = input_connection_graph(flat, internal_inputs);
+    collect_input_only_connection_components(flat, &input_nodes, &adjacency)
+        .into_iter()
+        .flat_map(|component| component.inputs)
+        .collect()
+}
+
+/// Pick one declaration-binding anchor per input-only connection component.
+///
+/// For a connected set containing only internal inputs, the connection
+/// equations provide the aliases and one declaration binding provides the
+/// default value. Keeping every bound input in the component would add multiple
+/// value anchors and over-constrain the DAE balance.
+pub(crate) fn find_connected_input_binding_anchors(
+    flat: &Model,
+    internal_inputs: &InternalInputIndex,
+) -> HashSet<VarName> {
+    let (input_nodes, adjacency) = input_connection_graph(flat, internal_inputs);
+    collect_input_only_connection_components(flat, &input_nodes, &adjacency)
+        .into_iter()
+        .filter_map(|component| {
+            flat.variables
+                .keys()
+                .find(|name| {
+                    component.inputs.contains(*name)
+                        && flat
+                            .variables
+                            .get(*name)
+                            .is_some_and(|var| var.binding.is_some())
+                })
+                .cloned()
+        })
+        .collect()
+}
+
+fn input_connection_graph(
+    flat: &Model,
+    internal_inputs: &InternalInputIndex,
+) -> (HashSet<VarName>, HashMap<VarName, HashSet<VarName>>) {
     let mut input_nodes: HashSet<VarName> = HashSet::default();
     let mut adjacency: HashMap<VarName, HashSet<VarName>> = HashMap::default();
 
@@ -678,15 +872,15 @@ pub(crate) fn find_connected_inputs_only_connected_to_inputs(
         adjacency.entry(rhs_node).or_default().insert(lhs_node);
     }
 
-    collect_input_only_connection_components(flat, &input_nodes, &adjacency)
+    (input_nodes, adjacency)
 }
 
 fn collect_input_only_connection_components(
     flat: &Model,
     input_nodes: &HashSet<VarName>,
     adjacency: &HashMap<VarName, HashSet<VarName>>,
-) -> HashSet<VarName> {
-    let mut input_only = HashSet::default();
+) -> Vec<ConnectionComponent> {
+    let mut input_only = Vec::new();
     let mut visited = HashSet::default();
     for start in flat
         .variables
@@ -700,7 +894,7 @@ fn collect_input_only_connection_components(
         if component.has_non_input_peer {
             continue;
         }
-        input_only.extend(component.inputs);
+        input_only.push(component);
     }
     input_only
 }
@@ -1566,4 +1760,138 @@ pub(crate) fn is_when_only_var(name: &VarName, when_only_vars: &IndexSet<VarName
         || subscript_fallback_chain(name.as_str())
             .into_iter()
             .any(|candidate| when_only_vars.contains(&candidate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_span() -> Span {
+        Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+    }
+
+    fn add_oc_gamma(flat: &mut Model, record_path: &str) -> VarName {
+        let name = VarName::new(&format!("{record_path}.gamma"));
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name: name.clone(),
+                variability: rumoca_core::Variability::Empty,
+                is_primitive: true,
+                is_overconstrained: true,
+                oc_record_path: Some(record_path.to_string()),
+                oc_eq_constraint_size: Some(0),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        name
+    }
+
+    fn add_output(flat: &mut Model, name: &str) {
+        let name = VarName::new(name);
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name,
+                variability: rumoca_core::Variability::Empty,
+                causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    #[test]
+    fn overconstrained_alias_states_keep_only_definite_root_record() {
+        let mut flat = Model::new();
+        let root = add_oc_gamma(&mut flat, "constantSource.port_p.reference");
+        add_oc_gamma(&mut flat, "constantSource.port_n.reference");
+        let branch = add_oc_gamma(&mut flat, "constantReluctance.port_p.reference");
+        add_oc_gamma(&mut flat, "constantReluctance.port_n.reference");
+        let other_branch = add_oc_gamma(&mut flat, "leakageWithCoefficient.port_p.reference");
+        add_oc_gamma(&mut flat, "leakageWithCoefficient.port_n.reference");
+        flat.definite_roots
+            .insert("constantSource.port_p.reference".to_string());
+        flat.branches.push((
+            "constantSource.port_p.reference".to_string(),
+            "constantSource.port_n.reference".to_string(),
+        ));
+        flat.branches.push((
+            "constantReluctance.port_p.reference".to_string(),
+            "constantReluctance.port_n.reference".to_string(),
+        ));
+        flat.branches.push((
+            "leakageWithCoefficient.port_p.reference".to_string(),
+            "leakageWithCoefficient.port_n.reference".to_string(),
+        ));
+        flat.optional_edges.push((
+            "constantSource.port_p.reference".to_string(),
+            "constantReluctance.port_p.reference".to_string(),
+        ));
+        flat.optional_edges.push((
+            "constantReluctance.port_n.reference".to_string(),
+            "leakageWithCoefficient.port_p.reference".to_string(),
+        ));
+
+        let mut states = IndexSet::new();
+        states.insert(root.clone());
+        states.insert(branch.clone());
+        states.insert(other_branch.clone());
+
+        let filtered = filter_overconstrained_alias_states(states, &flat);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains(&root));
+        assert!(!filtered.contains(&branch));
+        assert!(!filtered.contains(&other_branch));
+    }
+
+    #[test]
+    fn overconstrained_alias_states_leave_rootless_component_unchanged() {
+        let mut flat = Model::new();
+        let first = add_oc_gamma(&mut flat, "a.reference");
+        let second = add_oc_gamma(&mut flat, "b.reference");
+        flat.optional_edges
+            .push(("a.reference".to_string(), "b.reference".to_string()));
+
+        let mut states = IndexSet::new();
+        states.insert(first.clone());
+        states.insert(second.clone());
+
+        let filtered = filter_overconstrained_alias_states(states, &flat);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&first));
+        assert!(filtered.contains(&second));
+    }
+
+    #[test]
+    fn overconstrained_alias_states_keep_output_sensor_derivative_state() {
+        let mut flat = Model::new();
+        let root = add_oc_gamma(&mut flat, "source.port_p.reference");
+        let physical = add_oc_gamma(&mut flat, "reluctance.port_p.reference");
+        let sensor = add_oc_gamma(&mut flat, "frequencySensor.port.reference");
+        add_output(&mut flat, "frequencySensor.y");
+        flat.definite_roots
+            .insert("source.port_p.reference".to_string());
+        flat.optional_edges.push((
+            "source.port_p.reference".to_string(),
+            "reluctance.port_p.reference".to_string(),
+        ));
+        flat.optional_edges.push((
+            "source.port_p.reference".to_string(),
+            "frequencySensor.port.reference".to_string(),
+        ));
+
+        let states = IndexSet::from_iter([root.clone(), physical.clone(), sensor.clone()]);
+        let alias_roots = find_overconstrained_derivative_alias_roots(&states, &flat);
+        let filtered = filter_overconstrained_alias_states(states, &flat);
+
+        assert_eq!(alias_roots.len(), 1);
+        assert_eq!(alias_roots.get(&physical), Some(&root));
+        assert!(!alias_roots.contains_key(&sensor));
+        assert!(filtered.contains(&root));
+        assert!(!filtered.contains(&physical));
+        assert!(filtered.contains(&sensor));
+    }
 }

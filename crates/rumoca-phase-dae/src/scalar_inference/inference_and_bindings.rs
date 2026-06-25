@@ -205,6 +205,15 @@ fn extract_lhs_var_size_from_var_name(
     flat: &Model,
     prefix_counts: &FxHashMap<String, usize>,
 ) -> Option<usize> {
+    if let Expression::VarRef {
+        name, subscripts, ..
+    } = lhs
+        && !subscripts.is_empty()
+        && let Some(var) = flat.variables.get(name.var_name())
+    {
+        return compute_subscripted_size_with_context(&var.dims, subscripts, flat);
+    }
+
     // Try to extract the variable name from the LHS (no subscripts)
     let var_name = extract_var_from_lhs(lhs)?;
 

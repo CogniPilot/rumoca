@@ -21,7 +21,7 @@ pub(super) fn infer_record_fields_by_function(
     while changed {
         changed = false;
         for (name, function) in functions {
-            let propagated = collect_callee_record_field_uses(function, &fields);
+            let propagated = collect_callee_record_field_uses(function, functions, &fields);
             let entry = fields.entry(name.as_str().to_string()).or_default();
             if merge_field_use_map(entry, propagated) {
                 changed = true;
@@ -157,9 +157,11 @@ fn const_subscript_index(subscript: &rumoca_core::Subscript) -> Option<i64> {
 
 fn collect_callee_record_field_uses(
     function: &rumoca_core::Function,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     fields_by_function: &HashMap<String, FieldUseMap>,
 ) -> FieldUseMap {
     let mut collector = CalleeFieldUseCollector {
+        functions,
         fields_by_function,
         fields: BTreeMap::new(),
     };
@@ -170,6 +172,7 @@ fn collect_callee_record_field_uses(
 }
 
 struct CalleeFieldUseCollector<'a> {
+    functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     fields_by_function: &'a HashMap<String, FieldUseMap>,
     fields: FieldUseMap,
 }
@@ -178,8 +181,9 @@ impl ExpressionVisitor for CalleeFieldUseCollector<'_> {
     fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
         if let rumoca_core::Expression::FunctionCall { name, args, .. } = expr
             && let Some(callee_fields) = self.fields_by_function.get(name.as_str())
+            && let Some(callee) = self.functions.get(name.var_name())
         {
-            merge_callee_field_uses(args, callee_fields, &mut self.fields);
+            merge_callee_field_uses(args, callee, callee_fields, &mut self.fields);
         }
         ExpressionVisitor::walk_expression(self, expr);
     }
@@ -187,10 +191,14 @@ impl ExpressionVisitor for CalleeFieldUseCollector<'_> {
 
 fn merge_callee_field_uses(
     args: &[rumoca_core::Expression],
+    callee: &rumoca_core::Function,
     callee_fields: &FieldUseMap,
     target: &mut FieldUseMap,
 ) {
-    for (idx, fields) in callee_fields.values().enumerate() {
+    for (idx, input) in callee.inputs.iter().enumerate() {
+        let Some(fields) = callee_fields.get(&input.name) else {
+            continue;
+        };
         let Some(rumoca_core::Expression::VarRef { name: arg_name, .. }) = args.get(idx) else {
             continue;
         };
@@ -198,6 +206,85 @@ fn merge_callee_field_uses(
         for (field, dims) in fields {
             merge_field_dims(entry.entry(field.clone()).or_default(), dims.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{ClassType, Expression, Function, FunctionParam, Span, Statement, VarName};
+
+    fn span(start: usize) -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            start,
+            start + 1,
+        )
+    }
+
+    fn var_ref(name: &str) -> Expression {
+        Expression::VarRef {
+            name: VarName::new(name).into(),
+            subscripts: vec![],
+            span: span(1),
+        }
+    }
+
+    fn assignment(value: Expression) -> Statement {
+        Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
+                local: false,
+                span: span(1),
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "y".to_string(),
+                    span: span(1),
+                    subs: vec![],
+                }],
+                def_id: None,
+            },
+            value,
+            span: span(1),
+        }
+    }
+
+    #[test]
+    fn callee_field_uses_follow_signature_order_not_btree_order() {
+        let mut callee = Function::new("Pkg.callee", span(1));
+        callee.add_input(
+            FunctionParam::new("port", "Pkg.Port", span(1)).with_type_class(ClassType::Connector),
+        );
+        callee.add_input(
+            FunctionParam::new("state", "Pkg.State", span(1)).with_type_class(ClassType::Record),
+        );
+        callee.body.push(assignment(var_ref("state_phase")));
+
+        let mut caller = Function::new("Pkg.caller", span(1));
+        caller.body.push(assignment(Expression::FunctionCall {
+            name: VarName::new("Pkg.callee").into(),
+            args: vec![var_ref("port_a"), var_ref("state_a")],
+            is_constructor: false,
+            span: span(1),
+        }));
+
+        let mut functions = IndexMap::new();
+        functions.insert(callee.name.clone(), callee);
+        functions.insert(caller.name.clone(), caller);
+
+        let record_fields_by_type =
+            HashMap::from([("Pkg.State".to_string(), vec!["phase".to_string()])]);
+        let inferred = infer_record_fields_by_function(&functions, &record_fields_by_type);
+        let caller_fields = inferred.get("Pkg.caller").expect("caller fields");
+
+        assert!(
+            !caller_fields.contains_key("port_a"),
+            "connector argument must not inherit the callee record field"
+        );
+        assert_eq!(
+            caller_fields
+                .get("state_a")
+                .and_then(|fields| fields.get("phase")),
+            Some(&Vec::<i64>::new())
+        );
     }
 }
 

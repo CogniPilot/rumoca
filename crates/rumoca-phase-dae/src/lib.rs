@@ -81,8 +81,8 @@ use std::collections::{HashMap, HashSet};
 use variable_analysis::{
     InternalInputIndex, count_interface_flows, count_overconstrained_interface,
     filter_state_variables, find_connected_inputs, find_discrete_connected_internal_inputs,
-    find_equation_defined_inputs, find_when_only_vars, is_when_only_var,
-    validate_flat_function_calls,
+    find_equation_defined_inputs, find_overconstrained_derivative_alias_roots, find_when_only_vars,
+    is_when_only_var, validate_flat_function_calls,
 };
 use when_conversion::convert_when_clause;
 
@@ -94,9 +94,9 @@ pub use dae_lowering::{
 pub use errors::{ToDaeError, ToDaeResult};
 // Re-export moved functions so sibling modules can still use `super::`.
 pub(crate) use variable_analysis::{
-    collect_continuous_equation_lhs, find_connected_inputs_only_connected_to_inputs,
-    infer_record_subscript_size_from_prefix_chain, is_continuous_unknown, is_internal_input,
-    record_subscript_scalar_size, resolve_flat_function,
+    collect_continuous_equation_lhs, find_connected_input_binding_anchors,
+    find_connected_inputs_only_connected_to_inputs, infer_record_subscript_size_from_prefix_chain,
+    is_continuous_unknown, is_internal_input, record_subscript_scalar_size, resolve_flat_function,
 };
 
 #[cfg(test)]
@@ -285,7 +285,12 @@ pub fn to_dae_with_options(
 
     // Fourth pass: classify equations
     run_todae_phase(todae_subphase_timing, "equation_classification", || {
-        classify_equations(&mut dae, flat, &prefix_counts)
+        classify_equations(&mut dae, flat, &prefix_counts)?;
+        add_overconstrained_derivative_alias_equations(
+            &mut dae,
+            flat,
+            &classification_indexes.overconstrained_derivative_alias_roots,
+        )
     })?;
 
     // Process initial equations
@@ -482,6 +487,7 @@ fn has_clocked_binding(var: &flat::Variable) -> bool {
 struct VariableClassificationIndexes {
     prefix_children: FxHashMap<String, Vec<rumoca_core::VarName>>,
     state_vars: IndexSet<rumoca_core::VarName>,
+    overconstrained_derivative_alias_roots: FxHashMap<rumoca_core::VarName, rumoca_core::VarName>,
     connected_inputs: IndexSet<rumoca_core::VarName>,
     discrete_connected_inputs: IndexSet<rumoca_core::VarName>,
     input_only_connected_inputs: IndexSet<rumoca_core::VarName>,
@@ -511,6 +517,8 @@ fn build_variable_classification_indexes(
     let prefix_children = build_prefix_children(flat);
     let internal_inputs = InternalInputIndex::new(flat)?;
     let der_vars = classification::find_state_variables(flat);
+    let overconstrained_derivative_alias_roots =
+        find_overconstrained_derivative_alias_roots(&der_vars, flat);
     let state_vars = filter_state_variables(der_vars, flat, &internal_inputs);
     let mut connected_input_set = find_connected_inputs(flat, &internal_inputs);
     connected_input_set.extend(find_equation_defined_inputs(flat, &internal_inputs));
@@ -532,6 +540,7 @@ fn build_variable_classification_indexes(
     Ok(VariableClassificationIndexes {
         prefix_children,
         state_vars,
+        overconstrained_derivative_alias_roots,
         connected_inputs,
         discrete_connected_inputs,
         input_only_connected_inputs,
@@ -695,6 +704,70 @@ fn classify_variables(
         }
     }
     Ok(())
+}
+
+fn add_overconstrained_derivative_alias_equations(
+    dae: &mut dae::Dae,
+    flat: &flat::Model,
+    alias_roots: &FxHashMap<rumoca_core::VarName, rumoca_core::VarName>,
+) -> Result<(), ToDaeError> {
+    for (alias, root) in alias_roots {
+        let Some(alias_var) = flat.variables.get(alias) else {
+            continue;
+        };
+        if !flat.variables.contains_key(root) {
+            continue;
+        }
+        let residual = derivative_alias_residual(alias, root, alias_var.source_span);
+        let rhs = flat_to_dae_expression_with_refs(&residual, flat)?;
+        dae.continuous.equations.push(dae::Equation::residual_array(
+            rhs,
+            alias_var.source_span,
+            format!(
+                "overconstrained derivative alias: {} = {}",
+                alias.as_str(),
+                root.as_str()
+            ),
+            flat_variable_scalar_count(alias_var),
+        ));
+    }
+    Ok(())
+}
+
+fn derivative_alias_residual(
+    alias: &rumoca_core::VarName,
+    root: &rumoca_core::VarName,
+    span: Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(derivative_var_ref(alias, span)),
+        rhs: Box::new(derivative_var_ref(root, span)),
+        span,
+    }
+}
+
+fn derivative_var_ref(name: &rumoca_core::VarName, span: Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: BuiltinFunction::Der,
+        args: vec![rumoca_core::Expression::VarRef {
+            name: name.clone().into(),
+            subscripts: Vec::new(),
+            span,
+        }],
+        span,
+    }
+}
+
+fn flat_variable_scalar_count(var: &flat::Variable) -> usize {
+    if var.dims.is_empty() {
+        return 1;
+    }
+    var.dims
+        .iter()
+        .map(|dimension| usize::try_from((*dimension).max(1)).unwrap_or(1))
+        .product::<usize>()
+        .max(1)
 }
 
 fn record_variable_start_metadata(
