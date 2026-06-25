@@ -443,7 +443,7 @@ fn eval_static_number(expr: &Expression, bindings: &HashMap<String, f64>) -> Opt
     }
 }
 
-fn expression_exact_name(expr: &Expression) -> Option<String> {
+pub(super) fn expression_exact_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::VarRef {
             name, subscripts, ..

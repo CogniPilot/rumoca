@@ -418,8 +418,9 @@ fn collect_componentwise_direct_demotion_plans(
     counters: &mut DirectDemotionCounters,
 ) -> Result<Vec<DirectStateDemotionPlan>, StructuralError> {
     let mut by_state: IndexMap<String, Vec<Option<Expression>>> = IndexMap::new();
+    let mut alias_safety_cache = AliasSafetyCache::new();
 
-    for eq in &round.dae.continuous.equations {
+    for (eq_index, eq) in round.dae.continuous.equations.iter().enumerate() {
         let Some((state_name, flat_index, defining_expr)) =
             extract_state_component_direct_assignment_equation(
                 round.dae,
@@ -432,6 +433,18 @@ fn collect_componentwise_direct_demotion_plans(
         if round.when_assigned_states.contains(state_name.as_str())
             || expr_contains_der_of_state_or_indexed(&defining_expr, &state_name)
         {
+            continue;
+        }
+        let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
+        if defining_expr_references_unsafe_non_state_alias_closure(
+            &round.non_state_defining_exprs,
+            &alias_scan_expr,
+            &round.state_name_set,
+            &round.non_state_unknown_names,
+            eq_index,
+            &mut alias_safety_cache,
+        ) {
+            counters.n_skip_unsafe_non_state_alias += 1;
             continue;
         }
         if !derivative_states_in_eq(&defining_expr, &round.state_names).is_empty() {

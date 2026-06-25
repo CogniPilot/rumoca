@@ -59,6 +59,7 @@ use direct_demotion::{
     expr_refs_only_parameters_constants_or_time, expression_contains_any_der_call,
     is_connection_equation_origin,
 };
+use state_row_reduction::expression_exact_name;
 pub use state_row_reduction::{
     REGULARIZATION_LEVELS, demote_orphan_states_without_equation_refs,
     demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
@@ -1050,26 +1051,9 @@ pub fn try_extract_state_alias_pair(rhs: &Expression) -> Option<(VarName, VarNam
     if !matches!(op, OpBinary::Sub) {
         return None;
     }
-    let Expression::VarRef {
-        name: lhs_name,
-        subscripts: lhs_subscripts,
-        span: _,
-    } = lhs.as_ref()
-    else {
-        return None;
-    };
-    let Expression::VarRef {
-        name: rhs_name,
-        subscripts: rhs_subscripts,
-        span: _,
-    } = rhs.as_ref()
-    else {
-        return None;
-    };
-    if !lhs_subscripts.is_empty() || !rhs_subscripts.is_empty() {
-        return None;
-    }
-    Some((lhs_name.var_name().clone(), rhs_name.var_name().clone()))
+    let lhs_name = expression_exact_name(lhs)?;
+    let rhs_name = expression_exact_name(rhs)?;
+    Some((VarName::new(lhs_name), VarName::new(rhs_name)))
 }
 
 fn state_select_rank(state_select: rumoca_core::StateSelect) -> u8 {
@@ -1581,6 +1565,9 @@ fn der_call_target_subscripts<'a>(
     };
     if *function != BuiltinFunction::Der || args.len() != 1 {
         return None;
+    }
+    if expression_exact_name(&args[0]).as_deref() == Some(state_name.as_str()) {
+        return Some(None);
     }
     let Expression::VarRef {
         name, subscripts, ..

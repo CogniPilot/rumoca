@@ -34,6 +34,14 @@ fn var_idx2(name: &str, row: i64, col: i64) -> Expression {
     }
 }
 
+fn var_idx1(name: &str, index: i64) -> Expression {
+    Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: vec![Subscript::generated_index(index, Span::DUMMY)],
+        span: Span::DUMMY,
+    }
+}
+
 fn real(v: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(v),
@@ -79,6 +87,10 @@ fn der_idx2(name: &str, row: i64, col: i64) -> Expression {
     der(var_idx2(name, row, col))
 }
 
+fn der_idx1(name: &str, index: i64) -> Expression {
+    der(var_idx1(name, index))
+}
+
 fn eq(rhs: Expression) -> Equation {
     Equation {
         lhs: None,
@@ -110,6 +122,54 @@ fn matrix_derivative_product_dae() -> Dae {
         .equations
         .push(eq(sub(der(var("R")), mul(var("R"), var("skew")))));
     dae
+}
+
+#[test]
+fn test_exact_alias_component_rewrites_indexed_state_derivative_to_canonical_state() {
+    let mut dae = Dae::new();
+    let mut position = test_variable("position[1]");
+    position.state_select = rumoca_core::StateSelect::Always;
+    dae.variables
+        .states
+        .insert(VarName::new("position[1]"), position);
+    dae.variables
+        .states
+        .insert(VarName::new("p[1]"), test_variable("p[1]"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("v[1]"), test_variable("v[1]"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx1("position", 1), var_idx1("p", 1))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx1("p", 1), var_idx1("v", 1))));
+
+    let demoted =
+        demote_exact_alias_component_states(&mut dae).expect("exact alias demotion should run");
+
+    assert_eq!(demoted, 1);
+    assert!(
+        dae.variables
+            .states
+            .contains_key(&VarName::new("position[1]"))
+    );
+    assert!(!dae.variables.states.contains_key(&VarName::new("p[1]")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_der_of(&eq.rhs, &VarName::new("position[1]"))),
+        "indexed derivative alias should be rewritten to the canonical scalarized state"
+    );
+    assert!(
+        !dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_der_of(&eq.rhs, &VarName::new("p[1]"))),
+        "demoted scalarized state derivative should not survive exact alias rewrite"
+    );
 }
 
 #[test]
@@ -157,6 +217,45 @@ fn test_direct_demotion_keeps_matrix_state_component_ode_rows() {
     let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
     assert_eq!(demoted, 0);
     assert!(dae.variables.states.contains_key(&VarName::new("R")));
+}
+
+#[test]
+fn test_direct_demotion_keeps_array_state_components_defined_by_output_aliases() {
+    let mut dae = Dae::new();
+    let mut p = test_variable("p");
+    p.dims = vec![3];
+    dae.variables.states.insert(VarName::new("p"), p);
+    let mut position = test_variable("position");
+    position.dims = vec![3];
+    dae.variables
+        .outputs
+        .insert(VarName::new("position"), position);
+    let mut v = test_variable("v");
+    v.dims = vec![3];
+    dae.variables.algebraics.insert(VarName::new("v"), v);
+
+    for index in 1..=3 {
+        dae.continuous
+            .equations
+            .push(eq(sub(var_idx1("position", index), var_idx1("p", index))));
+        dae.continuous
+            .equations
+            .push(eq(sub(der_idx1("p", index), var_idx1("v", index))));
+    }
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should run");
+
+    assert_eq!(demoted, 0);
+    assert!(dae.variables.states.contains_key(&VarName::new("p")));
+    for index in 1..=3 {
+        assert!(
+            dae.continuous
+                .equations
+                .iter()
+                .any(|eq| expr_contains_der_of(&eq.rhs, &VarName::new(format!("p[{index}]")))),
+            "state component p[{index}] should keep its derivative row"
+        );
+    }
 }
 
 #[test]
