@@ -726,6 +726,12 @@ fn resolve_single_part_ref_expr(
     let name = comp_ref.parts[0].ident.text.as_ref();
     let qn = ast::QualifiedName::from_ident(name);
 
+    if let Some(subscripts) = comp_ref.parts[0].subs.as_ref() {
+        let mod_value = mod_env.get(&qn)?;
+        let indices = literal_integer_subscripts(subscripts)?;
+        return index_array_value(&mod_value.value, &indices);
+    }
+
     if let Some(mod_value) = mod_env.get(&qn)
         && mod_value.value != *expr
     {
@@ -733,6 +739,40 @@ fn resolve_single_part_ref_expr(
     }
 
     None
+}
+
+fn literal_integer_subscripts(subscripts: &[ast::Subscript]) -> Option<Vec<i64>> {
+    subscripts
+        .iter()
+        .map(|subscript| {
+            let ast::Subscript::Expression(ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token,
+                ..
+            }) = subscript
+            else {
+                return None;
+            };
+            token.text.parse::<i64>().ok()
+        })
+        .collect()
+}
+
+fn index_array_value(expr: &ast::Expression, indices: &[i64]) -> Option<ast::Expression> {
+    let (&first, rest) = indices.split_first()?;
+    match expr {
+        ast::Expression::Array { elements, .. } => {
+            let index = first.checked_sub(1)? as usize;
+            let selected = elements.get(index)?;
+            if rest.is_empty() {
+                Some(selected.clone())
+            } else {
+                index_array_value(selected, rest)
+            }
+        }
+        ast::Expression::Parenthesized { inner, .. } => index_array_value(inner, indices),
+        _ => None,
+    }
 }
 
 /// Resolve a multi-part component reference by following sibling modifications.

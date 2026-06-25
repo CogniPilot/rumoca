@@ -86,6 +86,53 @@ fn assert_bool_binding(overlay: &ast::InstanceOverlay, comp_name: &str, expected
     }
 }
 
+fn assert_real_array_binding(data: &ast::InstanceData, expected: &[&str]) {
+    let binding = data.binding.as_ref().unwrap_or_else(|| {
+        panic!(
+            "{} should have binding",
+            data.qualified_name.to_flat_string()
+        )
+    });
+    let ast::Expression::Array { elements, .. } = binding else {
+        panic!(
+            "{} binding should be an array row, got {:?}",
+            data.qualified_name.to_flat_string(),
+            binding
+        );
+    };
+    let actual = elements
+        .iter()
+        .map(|expr| match expr {
+            ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedReal,
+                token,
+                ..
+            } => token.text.as_ref(),
+            other => panic!("expected real literal in row binding, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn assert_indexed_single_ref(expr: &ast::Expression, name: &str, index: &str) {
+    let ast::Expression::ComponentReference(reference) = expr else {
+        panic!("expected indexed component reference source, got {expr:?}");
+    };
+    assert_eq!(reference.parts.len(), 1);
+    assert_eq!(reference.parts[0].ident.text.as_ref(), name);
+    let Some(subscripts) = reference.parts[0].subs.as_ref() else {
+        panic!("expected {name} to carry an element subscript");
+    };
+    assert_eq!(subscripts.len(), 1);
+    let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0] else {
+        panic!(
+            "expected literal integer subscript, got {:?}",
+            subscripts[0]
+        );
+    };
+    assert_eq!(token.text.as_ref(), index);
+}
+
 /// Helper: Assert that a component has the expected dimensions.
 fn assert_dims(overlay: &ast::InstanceOverlay, comp_name: &str, expected_dims: &[i64]) {
     let data =
@@ -353,6 +400,85 @@ fn test_array_modifier_distribution_preserves_binding_source_scope() {
         x2.binding_source_scope.is_some(),
         "s.x[2] modifier binding should keep lexical source scope"
     );
+}
+
+#[test]
+fn test_array_component_modifier_reference_selects_element_row() {
+    let source = r#"
+        model Tower
+            parameter Real v_flow_rate[:];
+        end Tower;
+
+        model TowerGroup
+            parameter Integer n = 2;
+            parameter Real v_flow_rate[n, 3];
+            Tower ct[n](v_flow_rate = v_flow_rate);
+        end TowerGroup;
+
+        model Top
+            TowerGroup group(v_flow_rate = {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}});
+        end Top;
+    "#;
+
+    let (_tree, overlay) = instantiate_test_model(source, "Top");
+    let first = find_component(&overlay, "group.ct[1].v_flow_rate")
+        .expect("first tower v_flow_rate should exist");
+    let second = find_component(&overlay, "group.ct[2].v_flow_rate")
+        .expect("second tower v_flow_rate should exist");
+
+    assert!(
+        first.binding_from_modification,
+        "first tower binding should come from the array component modifier"
+    );
+    assert!(
+        second.binding_from_modification,
+        "second tower binding should come from the array component modifier"
+    );
+    assert_real_array_binding(first, &["1.0", "2.0", "3.0"]);
+    assert_real_array_binding(second, &["4.0", "5.0", "6.0"]);
+
+    let first_source = first
+        .binding_source
+        .as_ref()
+        .expect("first tower should keep symbolic binding source");
+    assert_indexed_single_ref(first_source, "v_flow_rate", "1");
+}
+
+#[test]
+fn test_forwarded_colon_parameter_drives_record_size_dimension() {
+    let source = r#"
+        record Curve
+            parameter Real V_flow[:];
+            parameter Real dp[size(V_flow, 1)];
+        end Curve;
+
+        model Mover
+            parameter Real V_flow[:];
+            parameter Real dp[:];
+            Curve pressure(V_flow = V_flow, dp = dp);
+        end Mover;
+
+        model Top
+            parameter Real flows[2] = {1.0, 2.0};
+            Mover m(V_flow = flows, dp = flows);
+            Real y;
+        equation
+            y = m.pressure.dp[1];
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("forwarded record size dimensions should compile");
+
+    let dims = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new("m.pressure.dp"))
+        .map(|var| var.dims.clone())
+        .expect("m.pressure.dp should be in flat variables");
+    assert_eq!(dims, vec![2]);
 }
 
 /// Test that typecheck_instanced evaluates dimensions correctly.
