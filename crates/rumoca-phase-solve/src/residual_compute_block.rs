@@ -186,15 +186,15 @@ fn target_y_index(target: Option<solve::ScalarSlot>) -> Option<usize> {
 
 fn residual_output_y_range(
     target: Option<solve::ScalarSlot>,
-    y_slot_ranges: &IndexMap<usize, std::ops::Range<usize>>,
+    y_slot_ranges: &crate::stencil::YSlotRanges,
     fallback_index: usize,
     span: rumoca_core::Span,
 ) -> Result<std::ops::Range<usize>, LowerError> {
     let Some(index) = target_y_index(target) else {
         return checked_singleton_range(fallback_index, "residual fallback output", span);
     };
-    if let Some(range) = y_slot_ranges.get(&index) {
-        return Ok(range.clone());
+    if let Some(range) = y_slot_ranges.get(index) {
+        return Ok(range);
     }
     checked_singleton_range(index, "residual target y output", span)
 }
@@ -424,7 +424,8 @@ mod tests {
             1,
             5,
         );
-        let range = residual_output_y_range(None, &IndexMap::new(), 7, span)?;
+        let range =
+            residual_output_y_range(None, &crate::stencil::YSlotRanges::default(), 7, span)?;
 
         assert_eq!(range, 7..8);
         Ok(())
@@ -437,8 +438,13 @@ mod tests {
             4,
             12,
         );
-        let err = residual_output_y_range(None, &IndexMap::new(), usize::MAX, span)
-            .expect_err("overflowing residual output range should fail");
+        let err = residual_output_y_range(
+            None,
+            &crate::stencil::YSlotRanges::default(),
+            usize::MAX,
+            span,
+        )
+        .expect_err("overflowing residual output range should fail");
 
         assert_eq!(err.source_span(), Some(span));
         assert!(
@@ -451,7 +457,7 @@ mod tests {
     fn residual_output_y_range_does_not_fabricate_dummy_span() {
         let err = residual_output_y_range(
             None,
-            &IndexMap::new(),
+            &crate::stencil::YSlotRanges::default(),
             usize::MAX,
             unspanned_residual_test_span(),
         )

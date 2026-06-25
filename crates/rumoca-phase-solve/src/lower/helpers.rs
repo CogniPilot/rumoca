@@ -86,8 +86,25 @@ pub(super) fn indexed_entries_for_key(
 /// model size for large arrays.
 pub(super) struct IndexedMeta {
     pub(super) dims: Vec<usize>,
-    pub(super) by_indices: IndexMap<Vec<usize>, usize>,
+    lookup: IndexLookup,
 }
+
+/// How to map a tuple of 1-based subscripts to a position in the `entries`
+/// slice. Dense arrays (the common case for grid/PDE models) resolve
+/// arithmetically; only genuinely irregular index sets pay for hashing.
+enum IndexLookup {
+    /// Dense, 1-based, row-major box: `position_by_flat[flat(indices)]`. This
+    /// avoids allocating and hashing a `Vec<usize>` key per element, which
+    /// dominated lowering time on large arrays.
+    Dense {
+        strides: Vec<usize>,
+        position_by_flat: Vec<usize>,
+    },
+    /// General fallback for sparse or irregular index sets.
+    Sparse(IndexMap<Vec<usize>, usize>),
+}
+
+const ABSENT_POSITION: usize = usize::MAX;
 
 impl IndexedMeta {
     pub(super) fn build(entries: &[IndexedBinding]) -> Self {
@@ -97,14 +114,94 @@ impl IndexedMeta {
             .map(|entry| entry.indices.len())
             .max()
             .unwrap_or(0);
-        let mut by_indices = IndexMap::with_capacity(entries.len());
-        for (position, entry) in entries.iter().enumerate() {
-            if entry.indices.len() == rank {
-                by_indices.entry(entry.indices.clone()).or_insert(position);
-            }
-        }
-        Self { dims, by_indices }
+        let lookup = build_dense_index_lookup(entries, &dims, rank)
+            .unwrap_or_else(|| build_sparse_index_lookup(entries, rank));
+        Self { dims, lookup }
     }
+
+    /// Position in the original `entries` slice for the given 1-based subscript
+    /// tuple, or `None` when no element matches.
+    pub(super) fn position(&self, indices: &[usize]) -> Option<usize> {
+        match &self.lookup {
+            IndexLookup::Dense {
+                strides,
+                position_by_flat,
+            } => {
+                let flat = dense_flat_index(indices, &self.dims, strides)?;
+                position_by_flat
+                    .get(flat)
+                    .copied()
+                    .filter(|position| *position != ABSENT_POSITION)
+            }
+            IndexLookup::Sparse(by_indices) => by_indices.get(indices).copied(),
+        }
+    }
+}
+
+/// Row-major flat index for a 1-based subscript tuple over a dense box, or
+/// `None` when the rank mismatches or any subscript is out of `[1, dims[dim]]`.
+fn dense_flat_index(indices: &[usize], dims: &[usize], strides: &[usize]) -> Option<usize> {
+    if indices.len() != strides.len() {
+        return None;
+    }
+    let mut flat = 0usize;
+    for (dim, &index) in indices.iter().enumerate() {
+        if index == 0 || index > dims[dim] {
+            return None;
+        }
+        flat += (index - 1) * strides[dim];
+    }
+    Some(flat)
+}
+
+/// Build the arithmetic lookup when `entries` densely cover the inferred
+/// row-major box. Returns `None` (→ sparse fallback) for partial or irregular
+/// coverage, so behaviour is unchanged outside the dense case.
+fn build_dense_index_lookup(
+    entries: &[IndexedBinding],
+    dims: &[usize],
+    rank: usize,
+) -> Option<IndexLookup> {
+    if rank == 0 || dims.len() != rank || dims.contains(&0) {
+        return None;
+    }
+    let total: usize = dims.iter().product();
+    let mut strides = vec![1usize; rank];
+    for dim in (0..rank - 1).rev() {
+        strides[dim] = strides[dim + 1] * dims[dim + 1];
+    }
+    let mut position_by_flat = vec![ABSENT_POSITION; total];
+    let mut filled = 0usize;
+    for (position, entry) in entries.iter().enumerate() {
+        if entry.indices.len() != rank {
+            continue;
+        }
+        let mut flat = 0usize;
+        for (dim, &index) in entry.indices.iter().enumerate() {
+            if index == 0 || index > dims[dim] {
+                return None;
+            }
+            flat += (index - 1) * strides[dim];
+        }
+        if position_by_flat[flat] == ABSENT_POSITION {
+            position_by_flat[flat] = position;
+            filled += 1;
+        }
+    }
+    (filled == total).then_some(IndexLookup::Dense {
+        strides,
+        position_by_flat,
+    })
+}
+
+fn build_sparse_index_lookup(entries: &[IndexedBinding], rank: usize) -> IndexLookup {
+    let mut by_indices = IndexMap::with_capacity(entries.len());
+    for (position, entry) in entries.iter().enumerate() {
+        if entry.indices.len() == rank {
+            by_indices.entry(entry.indices.clone()).or_insert(position);
+        }
+    }
+    IndexLookup::Sparse(by_indices)
 }
 
 pub(super) fn indexed_entries_for_reference(
@@ -258,11 +355,12 @@ pub(super) fn contiguous_param_grid_layout(
     if total != grid.len() {
         return None;
     }
-    // Row-major strides (last dimension contiguous).
-    let mut strides = vec![1usize; ndim];
-    for d in (0..ndim - 1).rev() {
-        strides[d] = strides[d + 1] * extents[d + 1];
-    }
+    // Row-major strides (last dimension contiguous). Element counts are
+    // non-negative and fit `usize`, so the `i64` strides cast back losslessly.
+    let strides: Vec<usize> = rumoca_core::row_major_strides(&extents)
+        .into_iter()
+        .map(|stride| stride as usize)
+        .collect();
     // Slots must be contiguous in row-major order from a common base.
     let base = grid.iter().map(|(_, slot)| *slot).min()?;
     for (indices, slot) in grid {

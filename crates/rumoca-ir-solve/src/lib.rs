@@ -33,7 +33,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 13;
+pub const SOLVE_SCHEMA_VERSION: u16 = 14;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1245,7 +1245,7 @@ impl SolveProblem {
             .validate_shape_contract("initialization.update_rhs")?;
         validate_count(
             "initialization.row_targets",
-            self.initialization.residual.len(),
+            self.initialization.residual.len()?,
             self.initialization.row_targets.len(),
         )?;
         validate_count(
@@ -1261,7 +1261,7 @@ impl SolveProblem {
         validate_projection_plan(
             "initialization.projection_plan",
             &self.initialization.projection_plan,
-            self.initialization.residual.len(),
+            self.initialization.residual.len()?,
             self.solve_layout.solver_scalar_count(),
         )?;
         self.discrete
@@ -1593,7 +1593,7 @@ pub struct ContinuousSolveArtifacts {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct InitializationSolveSystem {
-    pub residual: ScalarProgramBlock,
+    pub residual: ComputeBlock,
     pub row_targets: Vec<Option<ScalarSlot>>,
     pub projection_indices: Vec<usize>,
     #[serde(default)]

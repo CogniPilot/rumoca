@@ -24,28 +24,40 @@ pub fn initial_residual_equations<'a>(
     layout: &VarLayout,
 ) -> Result<Vec<(usize, &'a dae::Equation)>, LowerError> {
     let state_derivative_rows = state_derivative_equation_flags(dae_model)?;
-    Ok(dae_model
-        .continuous
+    // Each continuous-derived equation keeps its ORIGINAL `continuous.equations`
+    // index as the tuple's `usize`. That index is the structured-family
+    // provenance: the array-native residual lowering matches it against the
+    // continuous structured families (`structured_equation_slot`), so a
+    // re-enumerated 0..N index would break stencil/Map detection and force the
+    // whole initialization residual back to per-cell scalar programs. Row lowering
+    // itself only uses the index for per-row temp namespacing (uniqueness) and
+    // `row_idx >= state_scalar_count` comparisons (`state_scalar_count` is 0 in
+    // initial mode, so the value beyond "is it < 0" is irrelevant there).
+    let continuous =
+        dae_model
+            .continuous
+            .equations
+            .iter()
+            .enumerate()
+            .filter(|(row_idx, equation)| {
+                !state_derivative_rows
+                    .get(*row_idx)
+                    .copied()
+                    .unwrap_or(false)
+                    || derivative_row_constrains_initial_unknown(layout, equation)
+            });
+    // Initialization-specific equations are not part of the continuous system, so
+    // they take indices past the continuous range: no structured family matches
+    // (clean scalar fallback) while the index stays unique for temp namespacing.
+    let continuous_len = dae_model.continuous.equations.len();
+    let initial = dae_model
+        .initialization
         .equations
         .iter()
+        .filter(|eq| initial_equation_constrains_solver_unknown(layout, eq))
         .enumerate()
-        .filter(|(row_idx, equation)| {
-            !state_derivative_rows
-                .get(*row_idx)
-                .copied()
-                .unwrap_or(false)
-                || derivative_row_constrains_initial_unknown(layout, equation)
-        })
-        .map(|(_, eq)| eq)
-        .chain(
-            dae_model
-                .initialization
-                .equations
-                .iter()
-                .filter(|eq| initial_equation_constrains_solver_unknown(layout, eq)),
-        )
-        .enumerate()
-        .collect())
+        .map(move |(offset, eq)| (continuous_len + offset, eq));
+    Ok(continuous.chain(initial).collect())
 }
 
 fn derivative_row_constrains_initial_unknown(layout: &VarLayout, equation: &dae::Equation) -> bool {

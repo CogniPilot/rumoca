@@ -83,13 +83,16 @@ fn collect_selected_indexed_entries(
     let mut cursor =
         array_vec_with_capacity(normalized.len(), "indexed selection cursor count", span)?;
     cursor.resize(normalized.len(), 0usize);
+    // Reused across cells: dense arrays resolve `position` arithmetically, so
+    // this buffer is the only per-selection allocation (not one per element).
+    let mut indices =
+        array_vec_with_capacity(normalized.len(), "indexed selection tuple count", span)?;
     loop {
-        let mut indices =
-            array_vec_with_capacity(normalized.len(), "indexed selection tuple count", span)?;
+        indices.clear();
         for (at, selection) in cursor.iter().zip(normalized) {
             indices.push(selection[*at]);
         }
-        if let Some(&position) = meta.by_indices.get(&indices) {
+        if let Some(position) = meta.position(&indices) {
             selected.push(entries[position].clone());
         }
         if !advance_row_major(&mut cursor, normalized) {

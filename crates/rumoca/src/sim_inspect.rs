@@ -134,15 +134,23 @@ pub(crate) fn run_jacobian(
     model: &str,
     spec: &str,
     solver_mode: SimSolverMode,
+    json: bool,
 ) -> Result<()> {
     let (overrides, t) = parse_eval_at_spec(spec)?;
     let opts = SimOptions {
         solver_mode,
         ..SimOptions::default()
     };
-    let probe =
-        rumoca_sim::jacobian_for_dae(dae, &opts, &overrides, t).map_err(anyhow::Error::msg)?;
-    let report = &probe.report;
+    // One lowering for both Jacobians (lowering can dominate on large models).
+    let probe = rumoca_sim::state_and_parameter_jacobian_for_dae(dae, &opts, &overrides, t)
+        .map_err(anyhow::Error::msg)?;
+    let report = &probe.state;
+    let param = &probe.parameter;
+
+    if json {
+        print_jacobian_json(model, t, &probe)?;
+        return Ok(());
+    }
 
     println!(
         "jacobian: model `{model}` at t={t}  ({0}x{0}, d(der(state))/d(state))",
@@ -187,6 +195,134 @@ pub(crate) fn run_jacobian(
 
     if let Some(error) = &report.error {
         println!("\njacobian error: {error}");
+    }
+
+    // Parameter-sensitivity block (roadmap Track 0.3): d(der(state))/d(p), the
+    // forward parameter gradient building block.
+    println!(
+        "\nparameter jacobian: ({}x{}, d(der(state))/d(p))",
+        param.rows(),
+        param.cols()
+    );
+    let param_entries: Vec<_> = param.nonzero_entries().collect();
+    println!("nonzero entries ({}):", param_entries.len());
+    for (row, col, value) in param_entries {
+        println!(
+            "  d(der({}))/d({}) = {value}",
+            param.row_labels[row], param.param_labels[col]
+        );
+    }
+    if let Some(error) = &param.error {
+        println!("parameter jacobian error: {error}");
+    }
+    Ok(())
+}
+
+/// Machine-readable JSON dump of the state Jacobian `∂(der)/∂(state)` and the
+/// parameter Jacobian `∂(der)/∂p`, with named rows/columns and dense matrices.
+fn print_jacobian_json(
+    model: &str,
+    t: f64,
+    probe: &rumoca_sim::StateAndParameterJacobianProbe,
+) -> Result<()> {
+    let report = &probe.state;
+    let param = &probe.parameter;
+    let states: Vec<_> = probe
+        .state_names
+        .iter()
+        .zip(probe.state_used.iter())
+        .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+        .collect();
+    let value = serde_json::json!({
+        "model": model,
+        "t": t,
+        "states": states,
+        "state_jacobian": {
+            "labels": report.state_labels,
+            "matrix": report.matrix,
+            "error": report.error,
+        },
+        "parameter_jacobian": {
+            "row_labels": param.row_labels,
+            "param_labels": param.param_labels,
+            "param_slots": param.param_slots,
+            "matrix": param.matrix,
+            "error": param.error,
+        },
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+/// Steady-state objective gradient `d(objective)/dp` for a chosen model variable
+/// (a state or solver algebraic), at the `--at` point. `adjoint` selects the
+/// reverse-mode adjoint (matrix-free, one solve for all parameters) over the
+/// default forward sensitivity. Both produce the same gradient; `--format json`
+/// emits the parameter-named result. Exits non-zero if the gradient is undefined.
+pub(crate) fn run_objective_gradient(
+    dae: &Dae,
+    model: &str,
+    spec: &str,
+    objective: Option<&str>,
+    adjoint: bool,
+    json: bool,
+) -> Result<()> {
+    let Some(objective) = objective else {
+        bail!("`--inspect objective-gradient` requires `--objective <NAME>`");
+    };
+    let (overrides, t) = parse_eval_at_spec(spec)?;
+    let opts = SimOptions::default();
+    let probe = if adjoint {
+        rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
+            dae, &opts, &overrides, objective, t,
+        )
+    } else {
+        rumoca_sim::steady_state_objective_gradient_for_dae(dae, &opts, &overrides, objective, t)
+    }
+    .map_err(anyhow::Error::msg)?;
+    let report = &probe.report;
+    let mode = if adjoint { "adjoint" } else { "forward" };
+
+    if json {
+        let params: Vec<_> = report
+            .param_labels
+            .iter()
+            .zip(&report.param_slots)
+            .zip(&report.gradient)
+            .map(|((name, slot), value)| {
+                serde_json::json!({ "name": name, "slot": slot, "gradient": value })
+            })
+            .collect();
+        let value = serde_json::json!({
+            "model": model,
+            "objective": objective,
+            "mode": mode,
+            "t": t,
+            "parameters": params,
+            "error": report.error,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return match &report.error {
+            Some(error) => bail!("objective gradient failed: {error}"),
+            None => Ok(()),
+        };
+    }
+
+    println!("objective gradient: model `{model}`  d({objective})/dp  via {mode}  at t={t}");
+    println!("state (used):");
+    for (name, value) in probe.state_names.iter().zip(&probe.state_used) {
+        println!("  {name:<44} = {value}");
+    }
+    if let Some(error) = &report.error {
+        println!("\nerror: {error}");
+        bail!("objective gradient failed: {error}");
+    }
+    println!(
+        "\ngradient d({objective})/dp ({}):",
+        report.param_labels.len()
+    );
+    for (name, value) in report.param_labels.iter().zip(&report.gradient) {
+        println!("  d({objective})/d({name}) = {value}");
     }
     Ok(())
 }

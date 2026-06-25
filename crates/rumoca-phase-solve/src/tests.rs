@@ -2,6 +2,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 mod derivative_row_tests;
+mod gpu_preparation;
 mod projection_plan_more;
 
 fn solve_test_span() -> rumoca_core::Span {
@@ -1806,6 +1807,9 @@ fn solve_problem_lowers_structured_continuous_residual_to_map() {
             equation_counts: vec![1, 1, 1],
             span,
             origin: "structured z=w residual".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
 
     let problem = lower_solve_problem(&dae_model).expect("structured residual should lower");
@@ -1896,6 +1900,9 @@ fn solve_problem_lowers_structured_continuous_residual_with_scalar_math_to_map()
             equation_counts: vec![1, 1, 1],
             span,
             origin: "structured trig residual".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
 
     let problem = lower_solve_problem(&dae_model).expect("structured trig residual should lower");
@@ -1977,6 +1984,9 @@ fn solve_problem_lowers_structured_continuous_residual_with_guard_to_map() {
             equation_counts: vec![1, 1, 1],
             span,
             origin: "structured guarded residual".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
 
     let problem =

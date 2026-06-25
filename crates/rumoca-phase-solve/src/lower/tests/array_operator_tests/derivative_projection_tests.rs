@@ -110,6 +110,9 @@ fn lower_derivative_rhs_keeps_structured_map_through_direct_assignment() {
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 1:3".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("tmp").into()),
@@ -180,6 +183,9 @@ fn lower_derivative_rhs_keeps_structured_map_through_guarded_direct_assignment()
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 1:3".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     for idx in 1..=3 {
         dae_model.continuous.equations.push(dae::Equation {
@@ -265,6 +271,9 @@ fn lower_derivative_rhs_keeps_structured_map_through_direct_coefficient_assignme
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 1:3".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("mass").into()),
@@ -364,6 +373,9 @@ fn lower_derivative_rhs_keeps_structured_stencil_through_chained_flux_assignment
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 2:4".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("mass").into()),
@@ -492,6 +504,9 @@ fn lower_derivative_rhs_keeps_structured_stencil_through_turkey_geometry_chain()
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 2:4".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     for idx in 1..=6 {
         dae_model.continuous.equations.push(dae::Equation {

@@ -1694,4 +1694,99 @@ fn test_eliminate_trivial_keeps_fixed_alias_unknown() {
     assert!(!dae.variables.algebraics.contains_key(&VarName::new("z")));
 }
 
+/// Removing a boundary/trivial equation that sits before a structured family must
+/// shift that family's `first_equation_index` down to match the compacted equation
+/// vector. Regression for a method-of-lines model (e.g. the docs turkey heat eq)
+/// where eliminating a boundary `Q_cond[1] = 0` left the interior `der` family one
+/// slot high, so Solve-IR lowering folded the adjacent surface `der` row into the
+/// interior stencil and computed it with the wrong body.
+#[test]
+fn shift_structured_families_after_equation_removal_remaps_first_eq() {
+    let family = |first_equation_index: usize| dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 3,
+                step: 1,
+            }],
+        },
+        first_equation_index,
+        equation_counts: vec![1, 1, 1],
+        span: test_span(),
+        origin: "test".to_string(),
+        regular: None,
+        template: None,
+        interiors_materialized: true,
+    };
+    let mut dae = Dae::new();
+    // fam0 spans eq 1..4 (e.g. Q_cond[2:4]); fam1 spans eq 6..9 (e.g. der(T[1:3])).
+    dae.continuous.structured_equations = vec![family(1), family(6)];
+
+    // Eliminating eq 0 (a boundary scalar before both families) compacts everything
+    // down by one: fam0 -> rows 0..3, fam1 -> rows 5..8.
+    shift_structured_families_after_equation_removal(&mut dae, &[0]);
+    assert_eq!(
+        dae.continuous.structured_equations[0].first_equation_index,
+        0
+    );
+    assert_eq!(
+        dae.continuous.structured_equations[1].first_equation_index,
+        5
+    );
+
+    // A removal in the gap *between* the families (eq 4, outside both blocks
+    // [0,3) and [5,8)) shifts only the family after it; both blocks stay intact.
+    shift_structured_families_after_equation_removal(&mut dae, &[4]);
+    assert_eq!(dae.continuous.structured_equations.len(), 2);
+    assert_eq!(
+        dae.continuous.structured_equations[0].first_equation_index,
+        0
+    );
+    assert_eq!(
+        dae.continuous.structured_equations[1].first_equation_index,
+        4
+    );
+}
+
+/// A family one of whose own rows is eliminated can no longer describe a
+/// contiguous array block, so it must be dropped (its survivors lower as scalars)
+/// rather than left pointing at a hole. Regression for a constant `for k loop
+/// a[k] = k*c` family folded away by trivial elimination, which otherwise left a
+/// dangling family that failed the corner-incidence invariant downstream.
+#[test]
+fn shift_structured_families_drops_family_with_removed_interior_row() {
+    let family = |first_equation_index: usize| dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "k".to_string(),
+                lower: 1,
+                upper: 3,
+                step: 1,
+            }],
+        },
+        first_equation_index,
+        equation_counts: vec![1, 1, 1],
+        span: test_span(),
+        origin: "test".to_string(),
+        regular: None,
+        template: None,
+        interiors_materialized: true,
+    };
+    let mut dae = Dae::new();
+    // fam0 spans rows 3..6; a later survivor family fam1 spans rows 8..11.
+    dae.continuous.structured_equations = vec![family(3), family(8)];
+
+    // Eliminating fam0's middle row (eq 4) drops fam0 entirely; fam1 still shifts
+    // down by the one removed row before it.
+    shift_structured_families_after_equation_removal(&mut dae, &[4]);
+    assert_eq!(dae.continuous.structured_equations.len(), 1);
+    assert_eq!(
+        dae.continuous.structured_equations[0].first_equation_index,
+        7
+    );
+}
+
 mod boundary_cases;

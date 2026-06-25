@@ -192,8 +192,13 @@ fn dynamic_external_time_table_toggles(n_name: &str) -> rumoca_core::Expression 
 fn default_parameters_build_external_time_table_from_dynamic_matrix_start() {
     let dae_model = dynamic_external_time_table_dae();
     let runtime = Arc::new(EvalRuntimeState::default());
-    let params = default_parameter_values(&dae_model, None, runtime.clone())
-        .expect("parameter starts lower");
+    let params = default_parameter_values(
+        &dae_model,
+        None,
+        runtime.clone(),
+        &std::collections::HashMap::new(),
+    )
+    .expect("parameter starts lower");
     assert_eq!(
         params.len(),
         6,
@@ -216,8 +221,13 @@ fn default_parameters_build_external_time_table_from_dynamic_matrix_start() {
 fn default_parameters_build_boolean_time_table_with_duplicate_first_knot() {
     let dae_model = dynamic_boolean_time_table_dae();
     let runtime = Arc::new(EvalRuntimeState::default());
-    let params = default_parameter_values(&dae_model, None, runtime.clone())
-        .expect("parameter starts lower");
+    let params = default_parameter_values(
+        &dae_model,
+        None,
+        runtime.clone(),
+        &std::collections::HashMap::new(),
+    )
+    .expect("parameter starts lower");
     let table_id = *params.last().expect("table_id parameter");
     let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime)
         .expect("test runtime tail env should build");
@@ -254,8 +264,13 @@ fn default_parameters_build_external_time_table_from_constructor_marked_call_wit
     ));
 
     let runtime = Arc::new(EvalRuntimeState::default());
-    let params = default_parameter_values(&dae_model, None, runtime.clone())
-        .expect("parameter starts lower");
+    let params = default_parameter_values(
+        &dae_model,
+        None,
+        runtime.clone(),
+        &std::collections::HashMap::new(),
+    )
+    .expect("parameter starts lower");
     let table_id = *params.last().expect("table_id parameter");
     let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime)
         .expect("test runtime tail env should build");

@@ -16,8 +16,6 @@ _native.cpython*
 *.so
 .claude/
 .vscode/
-!.vscode/
-!.vscode/settings.json
 dev/
 gh-pages/
 docs/*/book/
@@ -48,6 +46,8 @@ examples/.rumoca/results/
 rumoca_trace*.csv
 
 # Working notes (not for commit)
+.agents/
+skills-lock.json
 crates/rumoca/tests/CASADI_UPSTREAM_*.md
 .vscode-test
 packages/vscode/node_modules

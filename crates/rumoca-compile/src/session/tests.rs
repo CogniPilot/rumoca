@@ -1134,6 +1134,28 @@ fn test_compile_extracts_experiment_tolerance_interval_and_solver() {
 }
 
 #[test]
+fn test_compile_extracts_rumoca_fixed_step_annotation() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                model M
+                  Real x(start=0);
+                equation
+                  der(x) = 1;
+                annotation(__rumoca(Solver(FixedStep=0.0125)), experiment(Interval=0.1));
+                end M;
+                "#,
+        )
+        .unwrap();
+
+    let result = session.compile_model("M").unwrap();
+    assert_eq!(result.experiment_interval, Some(0.1));
+    assert_eq!(result.rumoca_solver_fixed_step, Some(0.0125));
+}
+
+#[test]
 fn test_compile_extracts_solver_from_openmodelica_simulation_flags() {
     let mut session = Session::default();
     session

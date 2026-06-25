@@ -130,6 +130,57 @@ fn cli_parses_sim_inspect_flags() {
 }
 
 #[test]
+fn cli_parses_objective_gradient_inspect() {
+    let cli = Cli::try_parse_from([
+        "rumoca",
+        "sim",
+        "Steady.mo",
+        "--model",
+        "Steady",
+        "--inspect",
+        "objective-gradient",
+        "--objective",
+        "z",
+        "--at",
+        "x=4.5,w=3@0",
+        "--grad-mode",
+        "adjoint",
+        "--format",
+        "json",
+    ])
+    .expect("parse sim --inspect objective-gradient");
+    match cli.command {
+        Commands::Sim(args) => {
+            assert_eq!(args.inspect, Some(InspectKind::ObjectiveGradient));
+            assert_eq!(args.objective.as_deref(), Some("z"));
+            assert_eq!(args.grad_mode, GradMode::Adjoint);
+            assert_eq!(args.format, InspectFormat::Json);
+        }
+        other => panic!("expected sim command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_objective_gradient_defaults_to_forward() {
+    let cli = Cli::try_parse_from([
+        "rumoca",
+        "sim",
+        "Steady.mo",
+        "--model",
+        "Steady",
+        "--inspect",
+        "objective-gradient",
+        "--objective",
+        "x",
+    ])
+    .expect("parse sim --inspect objective-gradient (defaults)");
+    match cli.command {
+        Commands::Sim(args) => assert_eq!(args.grad_mode, GradMode::Forward),
+        other => panic!("expected sim command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_configured_sim_command() {
     let cli = Cli::try_parse_from([
         "rumoca",

@@ -20,6 +20,7 @@ use rumoca_core::{
 };
 use rumoca_ir_dae as dae;
 
+mod aggregate_alias;
 mod connection_policy;
 mod diagnostics;
 mod flow_policy;
@@ -32,6 +33,10 @@ mod substitution_application;
 mod tearing_elimination;
 mod unknown_index;
 
+use aggregate_alias::{
+    aggregate_alias_for_elimination, aggregate_variable_fully_resolved,
+    is_scalarized_element_of_aggregate,
+};
 use connection_policy::should_skip_connection_equation;
 use diagnostics::trace_singular_reduced_rows;
 use flow_policy::{expr_contains_indexed_multiscalar_ref, is_flow_equation_origin};
@@ -384,6 +389,40 @@ fn collect_boundary_unknowns(dae: &Dae) -> Result<Vec<VarName>, StructuralError>
     Ok(unknowns)
 }
 
+/// Keep `continuous.structured_equations` pointing at their (now-compacted) equation
+/// blocks after `removed_sorted` equations were removed from `continuous.equations`.
+///
+/// A family whose block stays intact is shifted down by the number of removed
+/// equations positioned strictly before it. Most trivial/boundary eliminations are
+/// scalar (`x = const`, aliases) sitting outside any family block, so only the start
+/// index moves; without this a method-of-lines interior `der` family would silently
+/// absorb the adjacent boundary `der` row and compute it with the wrong body.
+///
+/// A family one of whose own rows is removed (e.g. a constant `for k loop a[k]=k*c`
+/// family folded away) can no longer describe a contiguous array block, so it is
+/// dropped: the surviving rows lower as plain scalars rather than indexing a hole.
+fn shift_structured_families_after_equation_removal(dae: &mut Dae, removed_sorted: &[usize]) {
+    if removed_sorted.is_empty() {
+        return;
+    }
+    dae.continuous.structured_equations.retain_mut(|family| {
+        let total: usize = family.equation_counts.iter().sum();
+        let block_end = family.first_equation_index + total;
+        let removed_inside_block = removed_sorted
+            .iter()
+            .any(|&idx| idx >= family.first_equation_index && idx < block_end);
+        if removed_inside_block {
+            return false;
+        }
+        let shift = removed_sorted
+            .iter()
+            .filter(|&&idx| idx < family.first_equation_index)
+            .count();
+        family.first_equation_index -= shift;
+        true
+    });
+}
+
 fn finish_boundary_elimination(
     dae: &mut Dae,
     substitutions: Vec<Substitution>,
@@ -397,6 +436,7 @@ fn finish_boundary_elimination(
     for &idx in eliminated_eq_indices.iter().rev() {
         dae.continuous.equations.remove(idx);
     }
+    shift_structured_families_after_equation_removal(dae, &eliminated_eq_indices);
     for name in fully_resolved_continuous_unknowns(dae, resolved)? {
         dae.variables.algebraics.shift_remove(&name);
         dae.variables.outputs.shift_remove(&name);
@@ -424,96 +464,6 @@ fn fully_resolved_continuous_unknowns(
         }
     }
     Ok(removable)
-}
-
-fn aggregate_variable_fully_resolved(
-    name: &VarName,
-    var: &dae::Variable,
-    resolved: &HashSet<VarName>,
-) -> Result<bool, StructuralError> {
-    if var.dims.is_empty() {
-        return Ok(false);
-    }
-    let scalar_count = scalar_count_from_dims(name, &var.dims)?;
-    if scalar_count <= 1 {
-        return Ok(false);
-    }
-    for flat_index in 0..scalar_count {
-        let scalar_name = VarName::new(dae::scalar_name_text_for_flat_index(
-            name.as_str(),
-            &var.dims,
-            flat_index,
-        ));
-        if !resolved.contains(&scalar_name) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn is_scalarized_element_of_aggregate(dae: &Dae, name: &VarName) -> Result<bool, StructuralError> {
-    let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) else {
-        return Ok(false);
-    };
-    if DaeVariableScope::new(dae).exact(name).is_some() {
-        return Ok(false);
-    }
-    let base_name = VarName::new(scalar.base);
-    let Some(base_var) = DaeVariableScope::new(dae).exact(&base_name) else {
-        return Ok(false);
-    };
-    Ok(scalar_count_from_dims(&base_name, &base_var.dims)? > 1)
-}
-
-fn aggregate_alias_for_elimination(
-    dae: &Dae,
-    rhs: &Expression,
-    runtime_protected_unknowns: &IndexSet<String>,
-    runtime_defined_discrete_targets: &HashSet<String>,
-) -> Result<Option<(VarName, Expression)>, StructuralError> {
-    let Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        rhs,
-        ..
-    } = rhs
-    else {
-        return Ok(None);
-    };
-    let Some(lhs_ref) = full_var_ref(lhs) else {
-        return Ok(None);
-    };
-    let Some(rhs_ref) = full_var_ref(rhs) else {
-        return Ok(None);
-    };
-    if lhs_ref.var_name() == rhs_ref.var_name() {
-        return Ok(None);
-    }
-    if !same_aggregate_shape(dae, lhs_ref.var_name(), rhs_ref.var_name())? {
-        return Ok(None);
-    }
-
-    let lhs_candidate = aggregate_alias_candidate(
-        dae,
-        lhs_ref,
-        rhs_ref,
-        rhs.span(),
-        runtime_protected_unknowns,
-        runtime_defined_discrete_targets,
-    )?;
-    let rhs_candidate = aggregate_alias_candidate(
-        dae,
-        rhs_ref,
-        lhs_ref,
-        lhs.span(),
-        runtime_protected_unknowns,
-        runtime_defined_discrete_targets,
-    )?;
-    Ok(match (lhs_candidate, rhs_candidate) {
-        (Some(lhs), Some(rhs)) => Some(preferred_aggregate_alias_candidate(lhs, rhs)),
-        (Some(candidate), None) | (None, Some(candidate)) => Some(candidate),
-        (None, None) => None,
-    })
 }
 
 pub(super) fn full_var_ref(expr: &Expression) -> Option<&Reference> {
@@ -1078,6 +1028,7 @@ fn eliminate_via_blt(
     for &idx in eliminated_eq_indices.iter().rev() {
         dae.continuous.equations.remove(idx);
     }
+    shift_structured_families_after_equation_removal(dae, &eliminated_eq_indices);
 
     // Remove eliminated variables from algebraics and outputs.
     for name in &eliminated_var_names {

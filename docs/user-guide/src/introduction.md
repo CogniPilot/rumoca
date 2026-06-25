@@ -55,11 +55,18 @@ end HotAirBalloon;
 
 ```js,rumoca-viz
 // Render the balloon state as a small Three.js scene.
-api.plotSeries(['h', 'fuelPercent']);
+// Only the integrated states (h, v, T, fuel) are read; the algebraics
+// `burner` and `fuelPercent` are recomputed from the states below so the
+// viz works on every solver path (the GPU integrator returns states only
+// and freezes algebraics).
+api.plotSeries(['h', 'fuel']);
 const { THREE } = await api.loadThree();
 const h = api.series('h');
 const fuel = api.series('fuel');
-const burner = api.series('burner');
+// burner = if fuel > 0 and h < targetHeight then 1 else 0 (model eqn);
+// targetHeight matches the model parameter.
+const targetHeight = 30.0;
+const burner = h.map((hi, k) => (fuel[k] > 0.0 && hi < targetHeight) ? 1.0 : 0.0);
 
 container.classList.add('rumoca-live-surface');
 const host = document.createElement('div');

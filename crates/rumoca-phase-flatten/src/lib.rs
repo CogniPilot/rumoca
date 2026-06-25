@@ -46,6 +46,7 @@ mod function_precollect;
 mod functions;
 mod name_simplify;
 mod outer_refs;
+mod param_variability;
 mod path_utils;
 mod pipeline;
 mod postprocess;
@@ -123,6 +124,18 @@ pub struct FlattenOptions {
     /// The default keeps source-like instance paths for diagnostics, simulation
     /// results, and stable public compiler output.
     pub simplify_variable_names: bool,
+    /// Whether `for`/array equations are fully materialized into per-element scalar
+    /// equations during flattening.
+    ///
+    /// The default (`false`) is family-native lowering: a regular state-derivative
+    /// elementwise family (`der(x[...]) = stencil`) materializes full bodies only
+    /// for its corner cells (base + one neighbor per binder); interior cells get a
+    /// cheap placeholder body, and downstream phases reconstruct their
+    /// incidence/strides/values from the corners. This avoids the O(cells)
+    /// memory/time of building and carrying the unrolled interior bodies. Setting
+    /// `true` forces full materialization -- retained as a debug toggle, which also
+    /// exercises the corner-vs-full equivalence assertions.
+    pub materialize_structured_families: bool,
 }
 
 impl Default for FlattenOptions {
@@ -130,6 +143,7 @@ impl Default for FlattenOptions {
         Self {
             strict_connection_validation: true,
             simplify_variable_names: false,
+            materialize_structured_families: false,
         }
     }
 }
@@ -326,6 +340,7 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
     }

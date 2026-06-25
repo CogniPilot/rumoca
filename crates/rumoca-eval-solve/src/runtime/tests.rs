@@ -625,14 +625,16 @@ fn state_jacobian_includes_projection_forward_sensitivity() {
     let mut out = [0.0_f64];
     runtime
         .eval_state_jacobian_v_ad_into(
-            0.0,
-            &[3.0],
-            &[],
-            &[1.0],
-            AlgebraicSettle {
-                tol: 1.0e-12,
-                max_iters: 32,
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 32,
+                },
             },
+            &[3.0],
+            &[1.0],
             &mut out,
         )
         .expect("projection-coupled state Jacobian should evaluate");
@@ -782,14 +784,16 @@ fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
     let mut out = [0.0_f64];
     runtime
         .eval_state_jacobian_v_ad_into(
-            0.0,
-            &[1.0],
-            &[],
-            &[1.0],
-            AlgebraicSettle {
-                tol: 1.0e-12,
-                max_iters: 64,
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 64,
+                },
             },
+            &[1.0],
+            &[1.0],
             &mut out,
         )
         .expect("looped-projection state Jacobian should evaluate");
@@ -815,4 +819,55 @@ fn sum_row(load_lhs: solve::LinearOp, load_rhs: solve::LinearOp) -> Vec<solve::L
         },
         solve::LinearOp::StoreOutput { src: 2 },
     ]
+}
+
+/// The implicit-residual reverse VJP `(∂g/∂y)ᵀ μ` must be the exact transpose of
+/// the forward implicit JVP `∂g/∂y · v`: the dot-product identity
+/// `μᵀ(J_g v) = (J_gᵀ μ)ᵀ v` (Track B foundation — the constraint-Jacobian
+/// transpose used by the algebraic-projection adjoint). Checked on the 2x2
+/// algebraic-loop model at an arbitrary point (transpose holds anywhere).
+#[test]
+fn reverse_implicit_residual_vjp_transposes_forward_jvp() {
+    let model = linear_algebraic_loop_state_model();
+    let runtime = SolveRuntime::new(&model).expect("runtime builds");
+    let n = runtime.solver_count;
+    let p_scalars = runtime.model.problem.layout.p_scalars();
+    let solver_y = [2.0_f64, 0.5, -0.3]; // arbitrary linearization point
+    let params: [f64; 0] = [];
+
+    // Forward J_g v (seed over solver-y; the implicit JVP is SolverYOnly).
+    let v = [0.7_f64, -0.2, 0.4];
+    let mut jg_v = vec![0.0_f64; runtime.implicit_jacobian_v.len()];
+    runtime
+        .implicit_jacobian_v
+        .eval_with_context(
+            &solver_y,
+            &params,
+            0.0,
+            RowEvalContext {
+                seed: Some(&v),
+                external_tables: None,
+                runtime_state: None,
+            },
+            &mut jg_v,
+        )
+        .expect("forward implicit JVP");
+
+    // Reverse J_gᵀ μ.
+    let mu = [0.5_f64, 1.1, -0.6];
+    let mut jgt_mu = vec![0.0_f64; n + p_scalars];
+    runtime
+        .reverse_implicit_residual_vjp(0.0, &solver_y, &params, &mu, &mut jgt_mu)
+        .expect("reverse implicit residual VJP");
+
+    let lhs: f64 = mu.iter().zip(&jg_v).map(|(m, j)| m * j).sum();
+    let rhs: f64 = jgt_mu[..n].iter().zip(&v).map(|(g, vi)| g * vi).sum();
+    assert!(
+        (lhs - rhs).abs() < 1.0e-9,
+        "implicit VJP transpose identity failed: μᵀ(J_g v)={lhs}, (J_gᵀ μ)ᵀv={rhs}"
+    );
+    assert!(
+        lhs.abs() > 1.0e-6,
+        "test point should produce a nonzero pairing"
+    );
 }

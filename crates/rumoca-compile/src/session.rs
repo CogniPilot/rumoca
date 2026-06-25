@@ -1587,6 +1587,9 @@ pub struct CompilationResult {
     pub experiment_tolerance: Option<f64>,
     /// Optional output interval from `annotation(experiment(Interval=...))`.
     pub experiment_interval: Option<f64>,
+    /// Optional Rumoca fixed-step integration size from
+    /// `annotation(__rumoca(Solver(FixedStep=...)))`.
+    pub rumoca_solver_fixed_step: Option<f64>,
     /// Optional solver/algorithm hint from experiment annotations.
     pub experiment_solver: Option<String>,
 }
@@ -1616,6 +1619,9 @@ pub struct DaeCompilationResult {
     pub experiment_tolerance: Option<f64>,
     /// Optional output interval from `annotation(experiment(Interval=...))`.
     pub experiment_interval: Option<f64>,
+    /// Optional Rumoca fixed-step integration size from
+    /// `annotation(__rumoca(Solver(FixedStep=...)))`.
+    pub rumoca_solver_fixed_step: Option<f64>,
     /// Optional solver/algorithm hint from experiment annotations.
     pub experiment_solver: Option<String>,
 }

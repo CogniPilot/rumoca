@@ -7,7 +7,7 @@ import {
   gpuKernelSchedules as rawGpuKernelSchedules,
   gpuKernelWorkgroupBudget,
   implicitKernelSchedule as rawImplicitKernelSchedule,
-} from "../rumoca_gpu.js";
+} from "../../rumoca-web/runtime/rumoca_gpu.js";
 
 const derivativeEntryPrefixes = {
   native: ["derivative_rhs_map", "derivative_rhs_stencil"],

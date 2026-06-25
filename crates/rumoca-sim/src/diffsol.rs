@@ -80,7 +80,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     let (mut solve_model, solve_timings) =
         lower_dae_for_simulation_with_stage_timing(dae_model, opts, &mut begin_stage)
             .map_err(solve_lowering_sim_error)?;
-    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
+    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts, true)
         .map_err(|err| SimError::SolverError(err.to_string()))?;
     observe_solve_model(&solve_model);
     begin_stage("sim_build");
@@ -114,7 +114,7 @@ pub fn check_initialization(
 ) -> Result<(), SimError> {
     let mut solve_model =
         lower_dae_for_simulation(dae_model, opts).map_err(solve_lowering_sim_error)?;
-    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
+    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts, true)
         .map_err(|err| SimError::SolverError(err.to_string()))?;
     rumoca_solver_diffsol::check_initialization(&solve_model, opts)
 }
@@ -150,7 +150,7 @@ impl SimStepper {
     ) -> Result<Self, SimError> {
         let mut solve_model =
             lower_dae_for_simulation(dae_model, &opts).map_err(solve_lowering_sim_error)?;
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts, true)
             .map_err(|err| SimError::SolverError(err.to_string()))?;
         let inner = rumoca_solver_diffsol::stepper::SimStepper::new(&solve_model, opts)?;
         Ok(Self { inner })
@@ -162,7 +162,12 @@ impl SimStepper {
     ) -> Result<Self, SimulationDiagnosticError> {
         let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
             .map_err(SimulationDiagnosticError::SolveLowering)?;
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)?;
+        crate::solve_lowering::apply_simulation_overrides(
+            &mut solve_model,
+            dae_model,
+            &opts,
+            true,
+        )?;
         let inner = rumoca_solver_diffsol::stepper::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

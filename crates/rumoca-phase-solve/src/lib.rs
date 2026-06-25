@@ -93,8 +93,10 @@ pub use solve_model::{
     ParameterOverrideError, SolveModelLowerError, VisibleExpression, lower_dae_to_solve_model,
     lower_dae_to_solve_model_owned,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata,
+    lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_overrides,
     lower_dae_to_solve_model_owned_with_visible_expressions,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata,
+    lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides,
     propagate_parameter_overrides, visible_expressions_for_dae,
 };
 pub(crate) use subscript_indices::{checked_literal_positive_indices, subscript_source_span};
@@ -206,6 +208,30 @@ pub fn lower_solve_problem(dae_model: &dae::Dae) -> Result<solve::SolveProblem, 
     lower_solve_problem_with_solver_len(dae_model, usize::MAX)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SolveProblemLoweringProfile {
+    Runtime,
+    GpuPreparation,
+}
+
+impl SolveProblemLoweringProfile {
+    fn load_projection_algebraics_in_derivative_rhs(self) -> bool {
+        self == Self::Runtime
+    }
+
+    fn lower_residual_equations(self) -> bool {
+        self == Self::Runtime
+    }
+
+    fn lower_initialization_system(self) -> bool {
+        self == Self::Runtime
+    }
+
+    fn lower_runtime_systems(self) -> bool {
+        self == Self::Runtime
+    }
+}
+
 // SPEC_0021: Exception - top-level Solve-IR lowering entry point assembles the
 // whole SolveProblem so stage contracts are visible at the phase boundary.
 #[allow(clippy::too_many_lines)]
@@ -216,14 +242,31 @@ pub fn lower_solve_problem_with_solver_len(
     lower_solve_problem_with_solver_len_and_model_span(dae_model, solver_len, None)
 }
 
-// SPEC_0021: Exception - implementation for the top-level Solve-IR lowering
-// entry point remains one unit so stage contracts are visible at the phase
-// boundary.
+// SPEC_0021: Exception - top-level Solve-IR lowering entry point assembles the
+// whole SolveProblem so stage contracts are visible at the phase boundary.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn lower_solve_problem_with_solver_len_and_model_span(
     dae_model: &dae::Dae,
     solver_len: usize,
     fallback_model_span: Option<rumoca_core::Span>,
+) -> Result<solve::SolveProblem, LowerError> {
+    lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        dae_model,
+        solver_len,
+        fallback_model_span,
+        SolveProblemLoweringProfile::Runtime,
+    )
+}
+
+// SPEC_0021: Exception - implementation for the top-level Solve-IR lowering
+// entry point remains one unit so stage contracts are visible at the phase
+// boundary.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+    fallback_model_span: Option<rumoca_core::Span>,
+    profile: SolveProblemLoweringProfile,
 ) -> Result<solve::SolveProblem, LowerError> {
     if ir_boundary_validation_enabled() {
         dae_model.validate_shape_contract().map_err(|err| {
@@ -258,15 +301,18 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span(
         runtime_assignment_equations(dae_model, &runtime_tail_updates)?;
     let discrete_update_equations = normalized_discrete_update_equations(dae_model)
         .map_err(|err| lower_problem_context(err, "collect discrete update equations"))?;
-    let derivative_analysis = lower::analyze_derivative_rhs(dae_model)
+    let mut derivative_analysis = lower::analyze_derivative_rhs(dae_model)
         .map_err(|err| lower_problem_context(err, "analyze derivative RHS rows"))?;
     let state_derivative_rows = lower_bool_slice_copy(
         derivative_analysis.equation_flags(),
         "state derivative row flag count",
         model_span,
     )?;
-    let residual_equations =
-        solver_residual_equations(dae_model, &runtime_tail_updates, &state_derivative_rows)?;
+    let residual_equations = if profile.lower_residual_equations() {
+        solver_residual_equations(dae_model, &runtime_tail_updates, &state_derivative_rows)?
+    } else {
+        Vec::new()
+    };
     // `solver_residual_equations` has already removed state-derivative rows.
     // The remaining original DAE indices are not a state-row prefix, so residual
     // lowering must not infer derivative-row behavior from `row_idx < n_x`.
@@ -280,6 +326,28 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span(
         },
     )
     .map_err(|err| lower_problem_context(err, "lower continuous residual rows and targets"))?;
+    // Derivative lowering must LOAD retained algebraic unknowns from their projected
+    // slot rather than inline their definitions (roadmap 4b): inlining a boundary cell
+    // whose flux folds to a constant makes a structured derivative family non-uniform
+    // and blocks stencil preservation. The retained unknowns are exactly the residual
+    // targets that land in the algebraic Y-segment — solved by the algebraic projection
+    // and refreshed before derivative evaluation.
+    let algebraic_y_end = solve_layout.state_scalar_count() + solve_layout.algebraic_scalar_count();
+    let solved_algebraic_y: std::collections::HashSet<usize> = residual_targets
+        .iter()
+        .flatten()
+        .filter_map(|slot| match slot {
+            solve::ScalarSlot::Y { index, .. }
+                if *index >= solve_layout.state_scalar_count() && *index < algebraic_y_end =>
+            {
+                Some(*index)
+            }
+            _ => None,
+        })
+        .collect();
+    if profile.load_projection_algebraics_in_derivative_rhs() {
+        derivative_analysis.load_retained_algebraics(&layout, &solved_algebraic_y);
+    }
     let derivative_rhs =
         lower::lower_derivative_rhs_with_analysis(dae_model, &layout, &derivative_analysis)
             .map_err(|err| lower_problem_context(err, "lower derivative RHS rows"))?;
@@ -314,20 +382,38 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span(
         solver_scalar_count,
         model_span,
     )?;
-    let runtime_assignment_targets =
-        lower_runtime_assignment_targets(dae_model, &runtime_assignment_equations, &layout)?;
-    let discrete_observation_refresh =
-        lower_discrete_observation_refresh(dae_model, &layout, &runtime_assignment_targets)?;
-    let initialization = lower_initialization_system(dae_model, &layout, &solve_layout)?;
-    let dynamic_time_event_exprs = dynamic_events::collect_dynamic_time_event_exprs(dae_model)
-        .map_err(|err| lower_problem_context(err, "collect dynamic time event expressions"))?;
-    let residual_block = residual_compute_block::build_residual_compute_block(
-        dae_model,
-        &layout,
-        &residual,
-        &residual_targets,
-        &residual_equations,
-    )?;
+    let runtime_assignment_targets = if profile.lower_runtime_systems() {
+        lower_runtime_assignment_targets(dae_model, &runtime_assignment_equations, &layout)?
+    } else {
+        Vec::new()
+    };
+    let discrete_observation_refresh = if profile.lower_runtime_systems() {
+        lower_discrete_observation_refresh(dae_model, &layout, &runtime_assignment_targets)?
+    } else {
+        Vec::new()
+    };
+    let initialization = if profile.lower_initialization_system() {
+        lower_initialization_system(dae_model, &layout, &solve_layout)?
+    } else {
+        solve::InitializationSolveSystem::default()
+    };
+    let dynamic_time_event_exprs = if profile.lower_runtime_systems() {
+        dynamic_events::collect_dynamic_time_event_exprs(dae_model)
+            .map_err(|err| lower_problem_context(err, "collect dynamic time event expressions"))?
+    } else {
+        Vec::new()
+    };
+    let residual_block = if profile.lower_residual_equations() {
+        residual_compute_block::build_residual_compute_block(
+            dae_model,
+            &layout,
+            &residual,
+            &residual_targets,
+            &residual_equations,
+        )?
+    } else {
+        solve::ComputeBlock::default()
+    };
     let implicit_rhs = build_implicit_rhs_compute_block(
         &derivative_rhs,
         &residual_block,
@@ -347,60 +433,30 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span(
             derivative_rhs,
         },
         initialization,
-        discrete: solve::DiscreteSolveSystem {
-            runtime_assignment_rhs: solve::ScalarProgramBlock::with_program_spans(
-                lower_runtime_assignment_rhs(dae_model, &layout, &runtime_assignment_equations)
-                    .map_err(|err| lower_problem_context(err, "lower runtime assignment rows"))?,
-                program_spans_for_owned_equations(&runtime_assignment_equations)?,
-            )?,
-            runtime_assignment_targets,
-            rhs: solve::ScalarProgramBlock::with_program_spans(
-                lower_discrete_rhs_from_equations(dae_model, &layout, &discrete_update_equations)
-                    .map_err(|err| lower_problem_context(err, "lower discrete update rows"))?,
-                program_spans_for_owned_equations(&discrete_update_equations)?,
-            )?,
-            update_targets: lower_discrete_update_targets(dae_model, &layout)
-                .map_err(|err| lower_problem_context(err, "lower discrete update targets"))?,
-            pre_modes: lower_discrete_pre_modes(dae_model)
-                .map_err(|err| lower_problem_context(err, "lower discrete pre modes"))?,
-            observation_refresh: discrete_observation_refresh,
-        },
-        events: solve::SolveEventPartition {
-            root_conditions: solve::ScalarProgramBlock::with_program_spans(
-                lower_root_conditions(dae_model, &layout)
-                    .map_err(|err| lower_problem_context(err, "lower root-condition rows"))?,
-                root_condition_program_spans(dae_model)?,
-            )?,
-            root_relation_memory_targets: lower::lower_root_relation_memory_targets(
-                dae_model, &layout,
-            )
-            .map_err(|err| lower_problem_context(err, "lower root relation memory targets"))?,
-            scheduled_time_events: dae_model.events.scheduled_time_events.clone(),
-            dynamic_time_event_names: dynamic_events::collect_dynamic_time_event_names(dae_model),
-            dynamic_time_event_rhs: solve::ScalarProgramBlock::with_program_spans(
-                lower_dynamic_time_event_rhs(dae_model, &layout, &dynamic_time_event_exprs)
-                    .map_err(|err| lower_problem_context(err, "lower dynamic time event rows"))?,
-                program_spans_for_expressions(
-                    &dynamic_time_event_exprs,
-                    "dynamic time event row span count",
-                    model_span,
-                )?,
-            )?,
-            action_conditions: solve::ScalarProgramBlock::with_program_spans(
-                event_actions::lower_event_action_conditions(dae_model, &layout)
-                    .map_err(|err| lower_problem_context(err, "lower event action rows"))?,
-                dae_model
-                    .events
-                    .event_actions
-                    .iter()
-                    .map(|action| action.span)
-                    .collect(),
-            )?,
-            actions: event_actions::lower_event_actions(dae_model, &layout)
-                .map_err(|err| lower_problem_context(err, "lower event actions"))?,
-        },
-        clocks: solve::SolveClockPartition {
-            periodic_event_schedules: lower_periodic_event_schedules(dae_model),
+        discrete: lower_discrete_system_for_profile(
+            DiscreteSystemInputs {
+                dae_model,
+                layout: &layout,
+                runtime_assignment_equations: &runtime_assignment_equations,
+                runtime_assignment_targets,
+                discrete_update_equations: &discrete_update_equations,
+                discrete_observation_refresh,
+            },
+            profile,
+        )?,
+        events: lower_event_partition_for_profile(
+            dae_model,
+            &layout,
+            &dynamic_time_event_exprs,
+            model_span,
+            profile,
+        )?,
+        clocks: if profile.lower_runtime_systems() {
+            solve::SolveClockPartition {
+                periodic_event_schedules: lower_periodic_event_schedules(dae_model),
+            }
+        } else {
+            solve::SolveClockPartition::default()
         },
         solve_layout,
         layout,
@@ -426,23 +482,92 @@ fn ir_boundary_validation_enabled() -> bool {
     ))
 }
 
-fn program_spans_for_equations(
-    equations: &[(usize, &dae::Equation)],
-) -> Result<Vec<rumoca_core::Span>, LowerError> {
-    let mut spans = Vec::new();
-    for (_, eq) in equations {
-        let row_count = eq.scalar_count.max(1);
-        reserve_lower_capacity(
-            &mut spans,
-            row_count,
-            "residual program span row count",
-            eq.span,
-        )?;
-        for _ in 0..row_count {
-            spans.push(eq.span);
-        }
+struct DiscreteSystemInputs<'a> {
+    dae_model: &'a dae::Dae,
+    layout: &'a solve::VarLayout,
+    runtime_assignment_equations: &'a [dae::Equation],
+    runtime_assignment_targets: Vec<solve::ScalarSlot>,
+    discrete_update_equations: &'a [dae::Equation],
+    discrete_observation_refresh: Vec<bool>,
+}
+
+fn lower_discrete_system_for_profile(
+    inputs: DiscreteSystemInputs<'_>,
+    profile: SolveProblemLoweringProfile,
+) -> Result<solve::DiscreteSolveSystem, LowerError> {
+    if !profile.lower_runtime_systems() {
+        return Ok(solve::DiscreteSolveSystem::default());
     }
-    Ok(spans)
+    Ok(solve::DiscreteSolveSystem {
+        runtime_assignment_rhs: solve::ScalarProgramBlock::with_program_spans(
+            lower_runtime_assignment_rhs(
+                inputs.dae_model,
+                inputs.layout,
+                inputs.runtime_assignment_equations,
+            )
+            .map_err(|err| lower_problem_context(err, "lower runtime assignment rows"))?,
+            program_spans_for_owned_equations(inputs.runtime_assignment_equations)?,
+        )?,
+        runtime_assignment_targets: inputs.runtime_assignment_targets,
+        rhs: solve::ScalarProgramBlock::with_program_spans(
+            lower_discrete_rhs_from_equations(
+                inputs.dae_model,
+                inputs.layout,
+                inputs.discrete_update_equations,
+            )
+            .map_err(|err| lower_problem_context(err, "lower discrete update rows"))?,
+            program_spans_for_owned_equations(inputs.discrete_update_equations)?,
+        )?,
+        update_targets: lower_discrete_update_targets(inputs.dae_model, inputs.layout)
+            .map_err(|err| lower_problem_context(err, "lower discrete update targets"))?,
+        pre_modes: lower_discrete_pre_modes(inputs.dae_model)
+            .map_err(|err| lower_problem_context(err, "lower discrete pre modes"))?,
+        observation_refresh: inputs.discrete_observation_refresh,
+    })
+}
+
+fn lower_event_partition_for_profile(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    dynamic_time_event_exprs: &[rumoca_core::Expression],
+    model_span: rumoca_core::Span,
+    profile: SolveProblemLoweringProfile,
+) -> Result<solve::SolveEventPartition, LowerError> {
+    if !profile.lower_runtime_systems() {
+        return Ok(solve::SolveEventPartition::default());
+    }
+    Ok(solve::SolveEventPartition {
+        root_conditions: solve::ScalarProgramBlock::with_program_spans(
+            lower_root_conditions(dae_model, layout)
+                .map_err(|err| lower_problem_context(err, "lower root-condition rows"))?,
+            root_condition_program_spans(dae_model)?,
+        )?,
+        root_relation_memory_targets: lower::lower_root_relation_memory_targets(dae_model, layout)
+            .map_err(|err| lower_problem_context(err, "lower root relation memory targets"))?,
+        scheduled_time_events: dae_model.events.scheduled_time_events.clone(),
+        dynamic_time_event_names: dynamic_events::collect_dynamic_time_event_names(dae_model),
+        dynamic_time_event_rhs: solve::ScalarProgramBlock::with_program_spans(
+            lower_dynamic_time_event_rhs(dae_model, layout, dynamic_time_event_exprs)
+                .map_err(|err| lower_problem_context(err, "lower dynamic time event rows"))?,
+            program_spans_for_expressions(
+                dynamic_time_event_exprs,
+                "dynamic time event row span count",
+                model_span,
+            )?,
+        )?,
+        action_conditions: solve::ScalarProgramBlock::with_program_spans(
+            event_actions::lower_event_action_conditions(dae_model, layout)
+                .map_err(|err| lower_problem_context(err, "lower event action rows"))?,
+            dae_model
+                .events
+                .event_actions
+                .iter()
+                .map(|action| action.span)
+                .collect(),
+        )?,
+        actions: event_actions::lower_event_actions(dae_model, layout)
+            .map_err(|err| lower_problem_context(err, "lower event actions"))?,
+    })
 }
 
 fn program_spans_for_owned_equations(
@@ -557,14 +682,23 @@ fn lower_initialization_system(
         dae_model_span(dae_model)?,
     )?;
 
+    // Array-native residual: route through the same structured lowering the
+    // continuous system uses, so grid `for`-loop equations (e.g. the immersed-mask
+    // `sig[i,j]`) collapse into a few `Map`/`AffineStencil` tensor nodes instead of
+    // one scalar program per cell. This is the dominant initialization cost on PDE
+    // grids (it was ~80% of the whole Solve-IR before this change).
+    let residual = residual_compute_block::build_residual_compute_block(
+        dae_model,
+        layout,
+        &residual_rows,
+        &row_targets,
+        &residual_equations,
+    )?;
     Ok(solve::InitializationSolveSystem {
         row_targets,
         projection_indices,
         projection_plan,
-        residual: solve::ScalarProgramBlock::with_program_spans(
-            residual_rows,
-            program_spans_for_equations(&residual_equations)?,
-        )?,
+        residual,
         update_rhs: solve::ScalarProgramBlock::with_program_spans(
             lower_initial_update_rhs(dae_model, layout)
                 .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,

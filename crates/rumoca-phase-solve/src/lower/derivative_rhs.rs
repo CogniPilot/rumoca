@@ -16,7 +16,8 @@ pub(super) use linear_parts::*;
 pub(super) use projection::*;
 use rumoca_core::{Literal, OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, VarLayout};
+use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, ScalarSlot, VarLayout};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use function_projection::{
@@ -40,7 +41,7 @@ pub(in crate::lower) struct DerivativeEquation {
 }
 
 pub(in crate::lower) struct DerivativeLinearCtx<'a> {
-    state_names: &'a [String],
+    state_names: &'a HashSet<String>,
     dae_model: &'a dae::Dae,
     structural_bindings: &'a IndexMap<String, f64>,
 }
@@ -60,25 +61,39 @@ impl DerivativeRhsAnalysis {
     pub(crate) fn equation_flags(&self) -> &[bool] {
         &self.equation_flags
     }
+
+    /// Drop direct-assignment definitions for algebraics that are retained solver
+    /// unknowns (solved by the algebraic projection and refreshed before derivative
+    /// evaluation). Removing them from the inline map makes *every* lowering path —
+    /// the pre-pass rewriter, the `LowerBuilder`'s own inlining, and the access-proof
+    /// builder — uniformly LOAD the variable from its Y-slot instead of inlining a
+    /// definition that folds to a constant at boundary cells. That uniformity is what
+    /// lets a structured derivative family preserve as an `AffineStencil` (roadmap
+    /// step 4b). `solved_algebraic_y` is the set of retained algebraic Y-indices,
+    /// empty for the isolated `analyze_derivative_rhs` path (no projection runs there,
+    /// so inlining stays the only correct standalone behavior).
+    pub(crate) fn load_retained_algebraics(
+        &mut self,
+        layout: &VarLayout,
+        solved_algebraic_y: &HashSet<usize>,
+    ) {
+        if solved_algebraic_y.is_empty() {
+            return;
+        }
+        let assignments = Arc::make_mut(&mut self.direct_assignments);
+        assignments
+            .retain(|key, _| !is_slot_backed_projection_algebraic(key, layout, solved_algebraic_y));
+    }
 }
 
 pub(crate) fn analyze_derivative_rhs(
     dae_model: &dae::Dae,
 ) -> Result<DerivativeRhsAnalysis, LowerError> {
     let states = collect_state_scalars(dae_model)?;
-    let mut state_names = Vec::new();
-    if !states.is_empty() {
-        let span = first_derivative_state_span(dae_model, &states)?;
-        reserve_derivative_capacity(
-            &mut state_names,
-            states.len(),
-            "derivative state name count",
-            span,
-        )?;
-    }
-    for state in &states {
-        state_names.push(state.name.clone());
-    }
+    // O(1) membership: the per-equation derivative probes test `state_names.contains`
+    // once per candidate key, so a linear `&[String]` scan made the whole pass
+    // O(equations x states) — quadratic in grid size for tensor PDE families.
+    let state_names: HashSet<String> = states.iter().map(|state| state.name.clone()).collect();
     let structural_bindings = compile_time::structural_bindings(dae_model)?;
     let (equations, equation_flags) =
         collect_derivative_equations(dae_model, &state_names, &structural_bindings)?;
@@ -573,6 +588,22 @@ struct DerivativeRhsLoweringContext<'a> {
     layout: &'a VarLayout,
     structural_bindings: &'a Arc<IndexMap<String, f64>>,
     indexed_bindings: &'a IndexedBindingMap,
+}
+
+/// True when `key` names an algebraic that is a retained solver unknown — solved by
+/// the algebraic projection and refreshed into its Y-slot before `derivative_rhs`
+/// evaluation. Such a variable must be LOADED from its slot, never inlined: inlining
+/// a boundary cell whose definition folds to a constant (e.g. `Q_cond[1] = 0`) makes
+/// the derivative family non-uniform and blocks stencil preservation (roadmap 4b).
+fn is_slot_backed_projection_algebraic(
+    key: &str,
+    layout: &VarLayout,
+    solved_algebraic_y: &HashSet<usize>,
+) -> bool {
+    matches!(
+        layout.binding(key),
+        Some(ScalarSlot::Y { index, .. }) if solved_algebraic_y.contains(&index)
+    )
 }
 
 pub(super) fn state_derivative_equation_flags(
@@ -1456,11 +1487,7 @@ fn build_dense_group_solve_setup(
 ) -> Result<DenseGroupSolveSetup, LowerError> {
     let n = states.len();
     let span = first_derivative_state_span(ctx.dae_model, states)?;
-    let mut state_names =
-        derivative_vec_with_capacity(states.len(), "dense derivative state name count", span)?;
-    for state in states {
-        state_names.push(state.name.as_str());
-    }
+    let state_names: HashSet<&str> = states.iter().map(|state| state.name.as_str()).collect();
     let rows = coupled_rows_for_states(ctx.equations, &state_names, span)?;
     let span = derivative_rows_span(&rows, span);
     if rows.len() < n {
@@ -1761,7 +1788,7 @@ fn coupled_rows_for_base<'a>(
 
 fn coupled_rows_for_states<'a>(
     equations: &'a [DerivativeEquation],
-    state_names: &[&str],
+    state_names: &HashSet<&str>,
     span: rumoca_core::Span,
 ) -> Result<Vec<&'a DerivativeEquation>, LowerError> {
     let mut rows =
@@ -1782,7 +1809,7 @@ fn coupled_rows_for_states<'a>(
 fn expanded_direct_derivative_equations(
     target: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     span: rumoca_core::Span,

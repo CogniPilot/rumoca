@@ -1,6 +1,6 @@
 // Rumoca WebGPU RK4 driver.
 //
-// Canonical, packaged runtime helper for the GPU simulation path. The
+// Canonical WGSL/WebGPU execution adapter for the GPU simulation path. The
 // compiler emits per-state derivative kernels via the `wgsl-solve` target
 // (WASM `prepare_gpu_simulation`); the target also exposes implicit residual
 // kernels in the layout for future implicit GPU solvers. This module wraps a
@@ -8,12 +8,13 @@
 // stage/combine algebra runs in the two small hand-written kernels below.
 //
 // v1 semantics: only the first `n_states` slots of y integrate; algebraic
-// slots and all parameters (including relation memory) stay frozen at their
-// prepared initial values, so event-driven behavior does not fire on this
-// path.
+// slots stay frozen at their prepared initial values, so event-driven behavior
+// does not fire on this path. Parameters are frozen unless the caller supplies
+// explicit live input values; inputs live in the same P buffer as parameters.
 //
-// Consumed from npm as `@cognipilot/rumoca/gpu` and by the mdBook live
-// examples (imported from the same pkg base as the WASM glue).
+// Owned by `packages/rumoca-web`, staged into npm as `@cognipilot/rumoca/gpu`,
+// and consumed by the mdBook live examples from the same package base as the
+// WASM glue.
 
 const GPU_STAGE_WGSL = `
 struct StageUniforms { scale: f32, n: u32, _pad0: u32, _pad1: u32 }
@@ -101,6 +102,68 @@ function hasOwn(value, field) {
         && Object.prototype.hasOwnProperty.call(value, field);
 }
 
+function pSlotIndex(slot) {
+    if (!slot || typeof slot !== 'object') {
+        return null;
+    }
+    if (slot.P && Number.isSafeInteger(slot.P.index)) {
+        return slot.P.index;
+    }
+    if (slot.kind === 'P' && Number.isSafeInteger(slot.index)) {
+        return slot.index;
+    }
+    return null;
+}
+
+export function gpuPIndexForName(prep, name) {
+    const bindings = prep?.var_layout?.bindings || prep?.layout?.bindings || {};
+    return pSlotIndex(bindings[name]);
+}
+
+function gpuLiveInputBindings(prep, names) {
+    const inputNames = Array.isArray(names) && names.length > 0
+        ? names
+        : (Array.isArray(prep?.input_names) ? prep.input_names : []);
+    const bindings = [];
+    for (const name of inputNames) {
+        const index = gpuPIndexForName(prep, name);
+        if (Number.isSafeInteger(index)) {
+            bindings.push({ name, index });
+        }
+    }
+    return bindings;
+}
+
+function liveInputValue(source, name) {
+    if (typeof source === 'function') {
+        return source(name);
+    }
+    if (source && typeof source === 'object') {
+        return source[name];
+    }
+    return undefined;
+}
+
+function abortError(message = 'Stopped') {
+    if (typeof DOMException === 'function') {
+        return new DOMException(message, 'AbortError');
+    }
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+}
+
+function throwIfAborted(signal) {
+    if (signal?.aborted) {
+        throw abortError();
+    }
+}
+
+function wgslUsesRuntimeTime(wgsl) {
+    const withoutDummyReads = String(wgsl || '').replace(/_\s*=\s*u\.time\s*;/g, '');
+    return /\bu\.time\b/.test(withoutDummyReads);
+}
+
 function signedIntegerField(value, field, label) {
     const parsed = value?.[field];
     if (!Number.isSafeInteger(parsed)) {
@@ -160,22 +223,50 @@ function deviceWorkgroupLimit(device) {
     );
 }
 
-function simulationStepCount(tStart, tEnd, dt) {
+function positiveFiniteStep(value, label) {
+    if (value <= 0) {
+        throw new Error(`GPU simulation ${label}=${value} must be greater than zero.`);
+    }
+    if (!Number.isFinite(value)) {
+        throw new Error(`GPU simulation ${label} is not finite.`);
+    }
+    return value;
+}
+
+export function gpuRk4StepPlan(tStart, tEnd, outputDt, internalDt) {
     if (tEnd < tStart) {
         throw new Error(`GPU simulation t_end=${tEnd} is before t_start=${tStart}.`);
     }
-    if (dt <= 0) {
-        throw new Error(`GPU simulation dt=${dt} must be greater than zero.`);
+    positiveFiniteStep(outputDt, 'output dt');
+    positiveFiniteStep(internalDt, 'internal_dt');
+    const duration = tEnd - tStart;
+    if (duration === 0) {
+        return { outputCount: 0, internalSteps: 0, outputDt, internalDt };
     }
-    const rawSteps = (tEnd - tStart) / dt;
-    if (!Number.isFinite(rawSteps)) {
-        throw new Error('GPU simulation step count is not finite.');
+    const rawOutputs = duration / outputDt;
+    if (!Number.isFinite(rawOutputs)) {
+        throw new Error('GPU simulation output count is not finite.');
     }
-    const steps = Math.max(1, Math.round(rawSteps));
-    if (!Number.isSafeInteger(steps)) {
-        throw new Error('GPU simulation step count exceeds JavaScript safe integer range.');
+    const outputCount = Math.max(1, Math.ceil(rawOutputs - 1e-9));
+    if (!Number.isSafeInteger(outputCount)) {
+        throw new Error('GPU simulation output count exceeds JavaScript safe integer range.');
     }
-    return steps;
+
+    let internalSteps = 0;
+    let from = tStart;
+    for (let output = 1; output <= outputCount; output++) {
+        const target = Math.min(tEnd, tStart + output * outputDt);
+        const interval = Math.max(0, target - from);
+        const intervalSteps = interval > 0
+            ? Math.max(1, Math.ceil(interval / internalDt - 1e-9))
+            : 0;
+        internalSteps += intervalSteps;
+        if (!Number.isSafeInteger(internalSteps)) {
+            throw new Error('GPU simulation internal step count exceeds JavaScript safe integer range.');
+        }
+        from = target;
+    }
+    return { outputCount, internalSteps, outputDt, internalDt };
 }
 
 function workgroupTotal(kernels, label) {
@@ -669,7 +760,7 @@ export async function probeGpu() {
 //
 //   adapter : GPUAdapter (from `probeGpu`)
 //   prep    : the parsed JSON from WASM `prepare_gpu_simulation`
-//             ({ wgsl, layout, n_states, y0, p0, t_start, t_end, dt })
+//             ({ wgsl, layout, n_states, y0, p0, t_start, t_end, dt, internal_dt })
 //   onPhase : optional (message, fraction|null) progress callback
 //
 // Returns { device, simulate } where `simulate(prepNow, onPhaseNow)` runs the
@@ -691,10 +782,6 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             + `states=${nStates}); this model is not supported yet.`
         );
     }
-    const tStart = finiteNumberField(prep, 't_start', 'GPU preparation');
-    const tEnd = finiteNumberField(prep, 't_end', 'GPU preparation');
-    const dt = finiteNumberField(prep, 'dt', 'GPU preparation');
-    const steps = simulationStepCount(tStart, tEnd, dt);
     const schedules = gpuKernelSchedules(layout);
 
     const device = await adapter.requestDevice();
@@ -709,26 +796,28 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
     let pipelinesBuilt = 0;
-    onPhase(`Building GPU pipelines (0/${kernelList.length})`, 0);
+    const totalPipelines = kernelList.length + 2;
+    onPhase(`Building GPU pipelines (0/${totalPipelines})`, 0);
+    const recordPipelineBuilt = (pipeline) => {
+        pipelinesBuilt += 1;
+        onPhase(
+            `Building GPU pipelines (${pipelinesBuilt}/${totalPipelines})`,
+            pipelinesBuilt / totalPipelines
+        );
+        return pipeline;
+    };
     const derPipelines = await Promise.all(
         kernelList.map((kernel) => device.createComputePipelineAsync({
             layout: 'auto',
             compute: { module: derModule, entryPoint: kernel.entry },
-        }).then((pipeline) => {
-            pipelinesBuilt += 1;
-            onPhase(
-                `Building GPU pipelines (${pipelinesBuilt}/${kernelList.length})`,
-                pipelinesBuilt / kernelList.length
-            );
-            return pipeline;
-        }))
+        }).then(recordPipelineBuilt))
     );
     const axpyPipeline = await device.createComputePipelineAsync({
         layout: 'auto', compute: { module: stageModule, entryPoint: 'axpy' },
-    });
+    }).then(recordPipelineBuilt);
     const combinePipeline = await device.createComputePipelineAsync({
         layout: 'auto', compute: { module: combineModule, entryPoint: 'combine' },
-    });
+    }).then(recordPipelineBuilt);
 
     const storage = (len, label) => device.createBuffer({
         label,
@@ -740,30 +829,20 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const pBuf = storage(Math.max(pLen, 1), 'p');
     const kBufs = [0, 1, 2, 3].map((i) => storage(rows, `k${i + 1}`));
 
-    const timeUniform = device.createBuffer({
+    const timeUniforms = [0, 1, 2, 3].map(() => device.createBuffer({
         size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    }));
     const axpyUniforms = [0.5, 0.5, 1.0].map((scale) => {
         const buffer = device.createBuffer({
             size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
-        const data = new ArrayBuffer(16);
-        new Float32Array(data, 0, 1)[0] = scale * dt;
-        new Uint32Array(data, 4, 1)[0] = nStates;
-        device.queue.writeBuffer(buffer, 0, data);
         return buffer;
     });
     const combineUniform = device.createBuffer({
         size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    {
-        const data = new ArrayBuffer(16);
-        new Float32Array(data, 0, 1)[0] = dt / 6.0;
-        new Uint32Array(data, 4, 1)[0] = nStates;
-        device.queue.writeBuffer(combineUniform, 0, data);
-    }
 
-    const derBind = (yIn, kOut) => derPipelines.map((pipe) => device.createBindGroup({
+    const derBind = (yIn, kOut, timeUniform) => derPipelines.map((pipe) => device.createBindGroup({
         layout: pipe.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: yIn } },
@@ -773,10 +852,10 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         ],
     }));
     const derBinds = [
-        derBind(yBuf, kBufs[0]),   // k1 = f(t, y)
-        derBind(yStage, kBufs[1]), // k2 = f(t + h/2, y + h/2 k1)
-        derBind(yStage, kBufs[2]), // k3 = f(t + h/2, y + h/2 k2)
-        derBind(yStage, kBufs[3]), // k4 = f(t + h, y + h k3)
+        derBind(yBuf, kBufs[0], timeUniforms[0]),   // k1 = f(t, y)
+        derBind(yStage, kBufs[1], timeUniforms[1]), // k2 = f(t + h/2, y + h/2 k1)
+        derBind(yStage, kBufs[2], timeUniforms[2]), // k3 = f(t + h/2, y + h/2 k2)
+        derBind(yStage, kBufs[3], timeUniforms[3]), // k4 = f(t + h, y + h k3)
     ];
     const axpyBind = (kBuf, uniform) => device.createBindGroup({
         layout: axpyPipeline.getBindGroupLayout(0),
@@ -832,60 +911,197 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         size: Math.max(16, yReadBytes),
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
-    const writeTime = (t) => device.queue.writeBuffer(
-        timeUniform, 0, new Float32Array([t, 0, 0, 0]));
+    const writeTime = (buffer, t) => device.queue.writeBuffer(
+        buffer, 0, new Float32Array([t, 0, 0, 0]));
+    const writeStepUniforms = (h) => {
+        for (let i = 0; i < axpyUniforms.length; i++) {
+            const data = new ArrayBuffer(16);
+            new Float32Array(data, 0, 1)[0] = [0.5, 0.5, 1.0][i] * h;
+            new Uint32Array(data, 4, 1)[0] = nStates;
+            device.queue.writeBuffer(axpyUniforms[i], 0, data);
+        }
+        const data = new ArrayBuffer(16);
+        new Float32Array(data, 0, 1)[0] = h / 6.0;
+        new Uint32Array(data, 4, 1)[0] = nStates;
+        device.queue.writeBuffer(combineUniform, 0, data);
+    };
+    const writeStageTimes = (t, h) => {
+        writeTime(timeUniforms[0], t);
+        writeTime(timeUniforms[1], t + h / 2);
+        writeTime(timeUniforms[2], t + h / 2);
+        writeTime(timeUniforms[3], t + h);
+    };
+    const encodeRk4Step = (enc, copyOutput) => {
+        dispatchDer(enc, 0);
+        dispatchStage(enc, axpyPipeline, axpyBinds[0]);
+        dispatchDer(enc, 1);
+        dispatchStage(enc, axpyPipeline, axpyBinds[1]);
+        dispatchDer(enc, 2);
+        dispatchStage(enc, axpyPipeline, axpyBinds[2]);
+        dispatchDer(enc, 3);
+        dispatchStage(enc, combinePipeline, combineBind);
+        if (copyOutput) {
+            enc.copyBufferToBuffer(yBuf, 0, readback, 0, yReadBytes);
+        }
+    };
+    let lastStepDt = NaN;
+    const submitRk4Step = (t, h, copyOutput) => {
+        if (h !== lastStepDt) {
+            writeStepUniforms(h);
+            lastStepDt = h;
+        }
+        writeStageTimes(t, h);
+        const enc = device.createCommandEncoder();
+        encodeRk4Step(enc, copyOutput);
+        device.queue.submit([enc.finish()]);
+    };
 
     // Per-run execution. Only y0/p0 change when a parameter slider moves, so
     // this re-uploads them and steps the RK4 loop; the device, modules,
     // pipelines, buffers, and bind groups above are reused untouched.
-    async function simulate(prepNow, onPhaseNow = () => {}) {
+    async function simulate(prepNow, onPhaseNow = () => {}, options = {}) {
+        const now = () => performance.now();
+        const profile = {
+            uploadMs: 0,
+            liveInputMs: 0,
+            uniformWriteMs: 0,
+            encodeSubmitMs: 0,
+            readbackMs: 0,
+            sampleCopyMs: 0,
+            shapeMs: 0,
+            submits: 0,
+            readbacks: 0,
+            batchedIntervals: 0,
+            unbatchedSteps: 0,
+            derivativeDispatches: 0,
+            stageDispatches: 0,
+        };
+        const signal = options?.signal;
+        throwIfAborted(signal);
+        const tStart = finiteNumberField(prepNow, 't_start', 'GPU preparation');
+        const tEnd = finiteNumberField(prepNow, 't_end', 'GPU preparation');
+        const outputDt = finiteNumberField(prepNow, 'dt', 'GPU preparation');
+        const internalDt = hasOwn(prepNow, 'internal_dt')
+            ? finiteNumberField(prepNow, 'internal_dt', 'GPU preparation')
+            : outputDt;
+        const stepPlan = gpuRk4StepPlan(tStart, tEnd, outputDt, internalDt);
         const y0 = new Float32Array(prepNow.y0 || []);
+        const pValues = new Float32Array(prepNow.p0 || []);
+        let tMeasure = now();
         device.queue.writeBuffer(yBuf, 0, y0);
         device.queue.writeBuffer(yStage, 0, y0);
-        device.queue.writeBuffer(pBuf, 0, new Float32Array(prepNow.p0 || []));
+        device.queue.writeBuffer(pBuf, 0, pValues);
+        profile.uploadMs += now() - tMeasure;
+
+        const liveInputSource = options?.liveInputs;
+        const liveInputBindings = liveInputSource
+            ? gpuLiveInputBindings(prepNow, options.liveInputNames)
+            : [];
+        const writeLiveInputs = () => {
+            if (liveInputBindings.length === 0) {
+                return;
+            }
+            const liveStart = now();
+            let dirty = false;
+            for (const binding of liveInputBindings) {
+                const value = Number(liveInputValue(liveInputSource, binding.name));
+                if (!Number.isFinite(value)) {
+                    continue;
+                }
+                if (pValues[binding.index] !== value) {
+                    pValues[binding.index] = value;
+                    dirty = true;
+                }
+            }
+            if (dirty) {
+                device.queue.writeBuffer(pBuf, 0, pValues);
+            }
+            profile.liveInputMs += now() - liveStart;
+        };
+        writeLiveInputs();
 
         const times = [tStart];
         const samples = [Array.from(y0)];
-        onPhaseNow(`Simulating on WebGPU (0/${steps} steps)`, 0);
+        let completedSteps = 0;
+        onPhaseNow(`Simulating on WebGPU (0/${stepPlan.internalSteps} RK4 steps)`, 0);
         const wallStart = performance.now();
-        // One readback per step keeps the driver simple; the GPU work per
-        // step is small enough that this is not the bottleneck yet.
-        for (let step = 0; step < steps; step++) {
-            const t = tStart + step * dt;
-            const enc = device.createCommandEncoder();
-            writeTime(t);
-            dispatchDer(enc, 0);
-            dispatchStage(enc, axpyPipeline, axpyBinds[0]);
-            device.queue.submit([enc.finish()]);
-            const enc2 = device.createCommandEncoder();
-            writeTime(t + dt / 2);
-            dispatchDer(enc2, 1);
-            dispatchStage(enc2, axpyPipeline, axpyBinds[1]);
-            device.queue.submit([enc2.finish()]);
-            const enc3 = device.createCommandEncoder();
-            dispatchDer(enc3, 2);
-            dispatchStage(enc3, axpyPipeline, axpyBinds[2]);
-            device.queue.submit([enc3.finish()]);
-            const enc4 = device.createCommandEncoder();
-            writeTime(t + dt);
-            dispatchDer(enc4, 3);
-            dispatchStage(enc4, combinePipeline, combineBind);
-            enc4.copyBufferToBuffer(yBuf, 0, readback, 0, yReadBytes);
-            device.queue.submit([enc4.finish()]);
+        const canBatchInterval =
+            !wgslUsesRuntimeTime(prepNow.wgsl || prep.wgsl)
+            && !options?.liveInputs;
+
+        let t = tStart;
+        const timeTol = Math.max(1e-9, Math.abs(tEnd - tStart) * 1e-12);
+        for (let output = 1; output <= stepPlan.outputCount; output++) {
+            throwIfAborted(signal);
+            const target = Math.min(tEnd, tStart + output * outputDt);
+            const interval = target - t;
+            const batchSteps = Math.round(interval / internalDt);
+            const batchable = canBatchInterval
+                && batchSteps > 0
+                && Math.abs(batchSteps * internalDt - interval) <= Math.max(timeTol, 1e-9);
+            if (batchable) {
+                writeLiveInputs();
+                if (internalDt !== lastStepDt) {
+                    const uniformStart = now();
+                    writeStepUniforms(internalDt);
+                    profile.uniformWriteMs += now() - uniformStart;
+                    lastStepDt = internalDt;
+                }
+                const encodeStart = now();
+                const enc = device.createCommandEncoder();
+                for (let step = 0; step < batchSteps; step++) {
+                    throwIfAborted(signal);
+                    encodeRk4Step(enc, step === batchSteps - 1);
+                    completedSteps += 1;
+                }
+                device.queue.submit([enc.finish()]);
+                profile.encodeSubmitMs += now() - encodeStart;
+                profile.submits += 1;
+                profile.batchedIntervals += 1;
+                profile.derivativeDispatches += batchSteps * 4 * kernelList.length;
+                profile.stageDispatches += batchSteps * 4;
+                t = target;
+            } else {
+                while (t < target - timeTol) {
+                    throwIfAborted(signal);
+                    const h = Math.min(internalDt, target - t);
+                    const copyOutput = t + h >= target - timeTol;
+                    writeLiveInputs();
+                    const submitStart = now();
+                    submitRk4Step(t, h, copyOutput);
+                    profile.encodeSubmitMs += now() - submitStart;
+                    profile.submits += 1;
+                    profile.unbatchedSteps += 1;
+                    profile.derivativeDispatches += 4 * kernelList.length;
+                    profile.stageDispatches += 4;
+                    t += h;
+                    completedSteps += 1;
+                }
+            }
+            const readStart = now();
             await readback.mapAsync(GPUMapMode.READ);
-            samples.push(Array.from(new Float32Array(readback.getMappedRange())));
-            readback.unmap();
-            times.push(t + dt);
-            if (step % 5 === 4 || step === steps - 1) {
+            profile.readbackMs += now() - readStart;
+            profile.readbacks += 1;
+            try {
+                throwIfAborted(signal);
+                const copyStart = now();
+                samples.push(Array.from(new Float32Array(readback.getMappedRange())));
+                profile.sampleCopyMs += now() - copyStart;
+            } finally {
+                readback.unmap();
+            }
+            times.push(target);
+            if (output % 5 === 0 || output === stepPlan.outputCount) {
                 onPhaseNow(
-                    `Simulating on WebGPU (${step + 1}/${steps} steps)`,
-                    (step + 1) / steps
+                    `Simulating on WebGPU (${completedSteps}/${stepPlan.internalSteps} RK4 steps)`,
+                    stepPlan.internalSteps > 0 ? completedSteps / stepPlan.internalSteps : 1
                 );
             }
         }
         const gpuSeconds = (performance.now() - wallStart) / 1000;
 
         // Shape the result like simulate_model so plots and viz scripts work unchanged.
+        const shapeStart = now();
         const names = Array.isArray(prepNow.state_names)
             ? prepNow.state_names.slice(0, yLen)
             : [];
@@ -896,6 +1112,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         for (let i = 0; i < yLen; i++) {
             allData.push(samples.map((row) => row[i]));
         }
+        profile.shapeMs += now() - shapeStart;
         const eventNote = runtimeEventRoots > 0
             ? ' · events frozen (GPU v1)' : '';
         return {
@@ -905,7 +1122,13 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 nStates,
                 simDetails: {
                     actual: { t_start: tStart, t_end: times[times.length - 1], points: times.length, variables: names.length },
-                    requested: { solver: `wgsl-solve RK4 (f32)${eventNote}`, t_start: tStart, t_end: tEnd, dt },
+                    requested: {
+                        solver: `wgsl-solve RK4 (f32)${eventNote}`,
+                        t_start: tStart,
+                        t_end: tEnd,
+                        dt: outputDt,
+                        internal_dt: internalDt,
+                    },
                 },
             },
             metrics: {
@@ -915,6 +1138,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                     kernelList, 'GPU derivative kernel schedule'),
                 implicitKernels: schedules.implicit.length,
                 implicitWorkgroups,
+                profile,
             },
         };
     }
@@ -946,7 +1170,13 @@ const sharedGpuCache = {};
 //
 // Returns { payload: { names, allData, nStates, simDetails }, metrics } shaped
 // like `simulate_model` so plots/viz scripts work unchanged.
-export async function runGpuSimulation(adapter, prep, onPhase = () => {}, cache = sharedGpuCache) {
+export async function runGpuSimulation(
+    adapter,
+    prep,
+    onPhase = () => {},
+    cache = sharedGpuCache,
+    options = {},
+) {
     if (!cache.program || cache.wgsl !== prep.wgsl) {
         if (cache.program) {
             try { cache.program.device.destroy(); } catch (err) { /* device already lost */ }
@@ -956,7 +1186,7 @@ export async function runGpuSimulation(adapter, prep, onPhase = () => {}, cache 
         cache.wgsl = prep.wgsl;
     }
     try {
-        return await cache.program.simulate(prep, onPhase);
+        return await cache.program.simulate(prep, onPhase, options);
     } catch (err) {
         // A reused device can be lost (context loss, tab backgrounding).
         // Drop the cache so the next run rebuilds from a fresh device,

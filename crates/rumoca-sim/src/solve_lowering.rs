@@ -30,7 +30,13 @@ pub use entry::{
     lower_dae_for_gpu_preparation, lower_dae_for_simulation,
     structurally_lowered_dae_for_simulation_artifact,
 };
-pub use probe::{EvalAtProbe, JacobianProbe, eval_dae_at, jacobian_for_dae};
+pub use probe::{
+    EvalAtProbe, JacobianProbe, ObjectiveGradientProbe, ParameterJacobianProbe,
+    StateAndParameterJacobianProbe, SteadyStateSensitivityProbe, eval_dae_at, jacobian_for_dae,
+    parameter_jacobian_for_dae, state_and_parameter_jacobian_for_dae,
+    steady_state_adjoint_objective_gradient_for_dae, steady_state_objective_gradient_for_dae,
+    steady_state_parameter_sensitivity_for_dae,
+};
 pub use structure_report::{
     SingularityDiagnosis, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
     diagnose_structural_singularity, structural_report_for_dae,
@@ -39,7 +45,8 @@ pub use structure_report::{
 // Only the diffsol build pipeline consumes the staged-timing entry point.
 #[cfg(feature = "solver-diffsol")]
 pub(crate) use entry::lower_dae_for_simulation_with_stage_timing;
-pub(crate) use overrides::{apply_simulation_overrides, lower_for_simulation_with_overrides};
+pub(crate) use overrides::apply_simulation_overrides;
+pub use overrides::lower_for_simulation_with_overrides;
 
 #[cfg(test)]
 mod tests;

@@ -52,7 +52,8 @@ pub use ir_primitives::*;
 pub use modelica_builtins::*;
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
-    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError,
+    AffineForm, ArrayAccess, ComprehensionTemplate, RegularForFamily, StructuredIndexBinder,
+    StructuredIndexDomain, StructuredIndexDomainError, row_major_strides,
 };
 pub use subscript::Subscript;
 

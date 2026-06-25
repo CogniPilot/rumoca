@@ -41,7 +41,8 @@ pub use expr_query::{
     subscripts_match_indices, var_ref_matches_unknown,
 };
 pub use types::{
-    StructuredEquationFamily, StructuredEquationSlot, component_base_name, structured_equation_slot,
+    StructuredEquationFamily, StructuredEquationSlot, component_base_name,
+    remap_structured_families_after_expansion, structured_equation_slot,
 };
 pub use visitor::{
     AlgorithmOutputCollector, ContainsDerChecker, ContainsDerOfStateChecker, DaeExpressionRewriter,

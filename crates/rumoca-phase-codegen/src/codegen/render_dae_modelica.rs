@@ -70,6 +70,12 @@ struct StructuredFamily {
     equation_count: usize,
     iteration_count: usize,
     domain: Domain,
+    /// The family's canonical comprehension body (one residual expression per
+    /// template equation, with symbolic binder indices). A regular elementwise
+    /// family always carries this, so the RHS renders directly from the template —
+    /// exact, not reconstructed from a corner cell. One entry per `equation_count`;
+    /// indexed by equation position.
+    template: Option<Vec<Value>>,
 }
 
 impl StructuredFamily {
@@ -134,6 +140,9 @@ impl Domain {
 
 #[derive(Clone, Debug)]
 struct DomainBinder {
+    /// Source binder name (`i`, `j`), used for the `for`-comprehension clauses and
+    /// to match the symbolic binder references in a family's comprehension template.
+    display_name: String,
     lower: i64,
     upper: i64,
     step: i64,
@@ -173,7 +182,41 @@ fn parse_structured_family(family: &Value) -> Result<Option<StructuredFamily>, m
         equation_count: first_count,
         iteration_count: counts.len(),
         domain,
+        template: parse_family_template(family, first_count)?,
     }))
+}
+
+/// Parse a family's comprehension template body (the per-equation residual
+/// expressions) from the serialized DAE. `None` when the family carries no
+/// template (non-elementwise families). Errors — never silently drops —
+/// when a template is present but its `body` length does not match the family's
+/// `equation_count`, since that would render the wrong kernel for a position.
+fn parse_family_template(
+    family: &Value,
+    equation_count: usize,
+) -> Result<Option<Vec<Value>>, minijinja::Error> {
+    let Ok(template) = get_field(family, "template") else {
+        return optional_render_miss();
+    };
+    if template.is_none() || template.is_undefined() {
+        return optional_render_miss();
+    }
+    let body = required_field(&template, "body", "comprehension template")?;
+    let len = sequence_len(&body, "comprehension template body")?;
+    if len != equation_count {
+        return Err(render_err(
+            "comprehension template body length does not match family equation count",
+        ));
+    }
+    let mut residuals = render_vec_with_capacity(len, "comprehension template body count")?;
+    for index in 0..len {
+        residuals.push(sequence_item(
+            &body,
+            index,
+            "comprehension template residual",
+        )?);
+    }
+    Ok(Some(residuals))
 }
 
 fn parse_domain(domain: &Value) -> Result<Domain, minijinja::Error> {
@@ -182,6 +225,11 @@ fn parse_domain(domain: &Value) -> Result<Domain, minijinja::Error> {
     let mut parsed = render_vec_with_capacity(binder_count, "structured domain binder count")?;
     for index in 0..binder_count {
         let binder = sequence_item(&binders, index, "structured domain binder")?;
+        let display_name = super::value_to_string(&required_field(
+            &binder,
+            "display_name",
+            "structured domain binder",
+        )?);
         let lower = i64_field(&binder, "lower", "structured domain binder")?;
         let upper = i64_field(&binder, "upper", "structured domain binder")?;
         let step = i64_field(&binder, "step", "structured domain binder")?;
@@ -189,6 +237,7 @@ fn parse_domain(domain: &Value) -> Result<Domain, minijinja::Error> {
             return Err(render_err("structured domain binder has invalid zero step"));
         };
         parsed.push(DomainBinder {
+            display_name,
             lower,
             upper,
             step,
@@ -248,8 +297,17 @@ fn render_structured_family(
     for equation_position in 0..family.equation_count {
         let equation_refs =
             family_equation_refs(equations, family, equation_position, tuples.len())?;
-        let Some(line) =
-            render_structured_equation_position(&equation_refs, &family.domain, &tuples, cfg)?
+        let template_residual = family
+            .template
+            .as_ref()
+            .map(|body| &body[equation_position]);
+        let Some(line) = render_structured_equation_position(
+            &equation_refs,
+            &family.domain,
+            &tuples,
+            template_residual,
+            cfg,
+        )?
         else {
             return optional_render_miss();
         };
@@ -278,6 +336,7 @@ fn render_structured_equation_position(
     equations: &[Value],
     domain: &Domain,
     tuples: &[Vec<i64>],
+    template_residual: Option<&Value>,
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
     let mut lhs_exprs =
@@ -294,12 +353,50 @@ fn render_structured_equation_position(
     let Some(lhs) = render_access_slice(&lhs_exprs, domain, tuples, cfg)? else {
         return optional_render_miss();
     };
+    // A regular elementwise family carries its comprehension template, so the RHS is
+    // rendered as a `for`-comprehension directly from the captured body (exact). A
+    // pure array slice on the RHS is handled first; anything else falls back to the
+    // spelled-out literal.
+    let template_comprehension = match template_residual {
+        Some(residual) => render_template_comprehension_rhs(residual, domain, cfg)?,
+        None => None,
+    };
     let rhs = if let Some(slice) = render_access_slice(&rhs_exprs, domain, tuples, cfg)? {
         slice
+    } else if let Some(comprehension) = template_comprehension {
+        comprehension
     } else {
         render_array_literal(&rhs_exprs, &domain.shape()?, cfg)?
     };
     Ok(Some(format!("{lhs} = {rhs}")))
+}
+
+/// Render a family's RHS as a `for`-comprehension directly from its captured
+/// comprehension template -- exact, not reconstructed from a materialized corner.
+/// The template residual is `lhs - rhs` with symbolic binder indices; its `rhs`
+/// is the per-cell kernel and the domain binders supply the `for` clauses, e.g.
+/// `{(...stencil(i, j)...) for i in 2:29, j in 2:17}`. Yields `optional_render_miss`
+/// only when the residual is not a `lhs - rhs` shape (the caller then falls through);
+/// it never silently hides a malformed template.
+fn render_template_comprehension_rhs(
+    template_residual: &Value,
+    domain: &Domain,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    // A template body is always a `lhs - rhs` residual (built by flatten's
+    // `make_residual`), so a non-residual here is corruption, not a fallback case.
+    let Some((_lhs, rhs)) = residual_sides(template_residual)? else {
+        return Err(render_err(
+            "comprehension template body is not a `lhs - rhs` residual",
+        ));
+    };
+    let kernel = render_expression(&rhs, cfg)?;
+    let clauses = domain
+        .binders
+        .iter()
+        .map(|binder| format!("{} in {}", binder.display_name, render_domain_slice(binder)))
+        .collect::<Vec<_>>();
+    Ok(Some(format!("{{{kernel} for {}}}", clauses.join(", "))))
 }
 
 fn equation_sides(equation: &Value) -> Result<Option<(Value, Value)>, minijinja::Error> {
@@ -311,7 +408,15 @@ fn equation_sides(equation: &Value) -> Result<Option<(Value, Value)>, minijinja:
         return Ok(Some((lhs, rhs)));
     }
     let rhs = required_field(equation, "rhs", "DAE equation")?;
-    let Ok(binary) = get_field(&rhs, "Binary") else {
+    residual_sides(&rhs)
+}
+
+/// Split a residual expression `lhs - rhs` (a `Binary { Sub, .. }`) back into its
+/// `(lhs, rhs)` sides. Yields `optional_render_miss` for any other expression shape,
+/// so callers fall back to rendering the residual as-is. Shared by `equation_sides`
+/// and the comprehension-template renderer.
+fn residual_sides(residual: &Value) -> Result<Option<(Value, Value)>, minijinja::Error> {
+    let Ok(binary) = get_field(residual, "Binary") else {
         return optional_render_miss();
     };
     if !binary_is_sub(&binary) {

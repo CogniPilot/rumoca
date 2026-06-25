@@ -24,12 +24,14 @@ use rumoca_ir_solve::{
 mod compute_block_scalarize;
 pub mod eval_at;
 mod inspect_alloc;
+mod iterative_solve;
 pub mod jacobian;
 mod linear_solve;
 pub mod nan_trace;
 mod prepared;
 mod random_runtime;
 mod refresh_plan;
+mod reverse;
 mod runtime;
 mod runtime_events;
 pub mod sim_driver;
@@ -42,7 +44,9 @@ pub use compute_block_scalarize::{
     to_scalar_program_block,
 };
 pub use eval_at::{EvalAtReport, EvalAtSlot};
-pub use jacobian::JacobianReport;
+pub use jacobian::{
+    JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
+};
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{PreparedComputeBlock, PreparedScalarProgramBlock};
 use random_runtime::{
@@ -50,8 +54,8 @@ use random_runtime::{
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
 pub use runtime::{
-    AlgebraicSettle, EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime,
-    apply_discrete_slot_value,
+    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, ProjectedEventUpdateInput,
+    SolveRuntime, apply_discrete_slot_value,
 };
 pub use runtime_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
@@ -1858,7 +1862,7 @@ fn get(
     Ok(value)
 }
 
-fn eval_unary(op: UnaryOp, value: f64) -> f64 {
+pub(crate) fn eval_unary(op: UnaryOp, value: f64) -> f64 {
     match op {
         UnaryOp::Neg => -value,
         UnaryOp::Not => (value == 0.0) as u8 as f64,
@@ -1883,7 +1887,7 @@ fn eval_unary(op: UnaryOp, value: f64) -> f64 {
     }
 }
 
-fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
+pub(crate) fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
     match op {
         BinaryOp::Add => lhs + rhs,
         BinaryOp::Sub => lhs - rhs,
@@ -1906,7 +1910,7 @@ fn guarded_division(lhs: f64, rhs: f64) -> f64 {
     }
 }
 
-fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
+pub(crate) fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
     op.compare_as_f64(lhs, rhs)
 }
 

@@ -155,10 +155,16 @@ fn prune_unreferenced_condition_memory(
     let mut kept_conditions = Vec::with_capacity(old_conditions.len());
     let mut replacements = Vec::with_capacity(old_relations.len());
 
+    // Collect every referenced condition-memory index in a SINGLE walk of the
+    // model. The previous code re-walked the whole model once per relation,
+    // which is O(relations * equations) = O(n^2) on large array models (one
+    // relation per unrolled cell, every cell equation walked for each).
+    let referenced = collect_referenced_condition_indices(dae_model, &condition_name);
+
     for (old_index, (relation, equation)) in
         old_relations.into_iter().zip(old_conditions).enumerate()
     {
-        if !condition_memory_is_referenced(dae_model, &condition_name, old_index + 1)
+        if !referenced.contains(&(old_index + 1))
             && condition_memory_can_be_direct(&relation, constants)
         {
             replacements.push(ConditionMemoryReplacement::Direct(relation));
@@ -258,15 +264,17 @@ fn runtime_contract(detail: impl Into<String>, span: Option<rumoca_core::Span>) 
     }
 }
 
-fn condition_memory_is_referenced(
+/// Walk the model once and collect every condition-memory index referenced by
+/// any equation, update, initialization, or event condition. Replaces the prior
+/// per-index re-walk so pruning is O(n) in the model size instead of O(n^2).
+fn collect_referenced_condition_indices(
     dae_model: &dae::Dae,
     condition_name: &str,
-    condition_index: usize,
-) -> bool {
-    let mut checker = ConditionMemoryUseChecker {
+) -> std::collections::HashSet<usize> {
+    let mut collector = ConditionMemoryUseCollector {
         condition_name,
-        condition_index,
-        found: false,
+        pre_condition_name: format!("__pre__.{condition_name}"),
+        referenced: std::collections::HashSet::new(),
     };
     for expr in dae_model
         .continuous
@@ -284,30 +292,30 @@ fn condition_memory_is_referenced(
                 .map(|action| &action.condition),
         )
     {
-        checker.visit_expression(expr);
-        if checker.found {
-            return true;
-        }
+        collector.visit_expression(expr);
     }
-    false
+    collector.referenced
 }
 
-struct ConditionMemoryUseChecker<'a> {
+struct ConditionMemoryUseCollector<'a> {
     condition_name: &'a str,
-    condition_index: usize,
-    found: bool,
+    pre_condition_name: String,
+    referenced: std::collections::HashSet<usize>,
 }
 
-impl ExpressionVisitor for ConditionMemoryUseChecker<'_> {
+impl ExpressionVisitor for ConditionMemoryUseCollector<'_> {
     fn visit_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) {
-        if condition_memory_index(name.as_str(), subscripts, self.condition_name)
-            .is_some_and(|(_, index)| index == self.condition_index)
-        {
-            self.found = true;
+        if let Some((_, index)) = condition_memory_index(
+            name.as_str(),
+            subscripts,
+            self.condition_name,
+            &self.pre_condition_name,
+        ) {
+            self.referenced.insert(index);
             return;
         }
         for subscript in subscripts {
@@ -333,6 +341,7 @@ fn rewrite_condition_memory_references(
 
     let mut rewriter = ConditionMemoryReindexer {
         condition_name,
+        pre_condition_name: format!("__pre__.{condition_name}"),
         replacements,
         error: None,
     };
@@ -364,6 +373,7 @@ fn rewrite_equation_rhs(
 
 struct ConditionMemoryReindexer<'a> {
     condition_name: &'a str,
+    pre_condition_name: String,
     replacements: &'a [ConditionMemoryReplacement],
     error: Option<ToDaeError>,
 }
@@ -378,8 +388,12 @@ impl ExpressionRewriter for ConditionMemoryReindexer<'_> {
             subscripts,
             span,
         } = expr
-            && let Some((is_pre, old_index)) =
-                condition_memory_index(name.as_str(), subscripts, self.condition_name)
+            && let Some((is_pre, old_index)) = condition_memory_index(
+                name.as_str(),
+                subscripts,
+                self.condition_name,
+                &self.pre_condition_name,
+            )
             && let Some(replacement) = old_index
                 .checked_sub(1)
                 .and_then(|index| self.replacements.get(index))
@@ -459,12 +473,16 @@ fn generated_index_subscript(
     })
 }
 
+// `pre_condition_name` is `format!("__pre__.{condition_name}")`, precomputed by
+// the caller. It is hoisted out because this is called once per visited
+// var-ref; allocating it here turned a model walk into per-var-ref string
+// formatting (a measurable hot spot on large array models).
 fn condition_memory_index(
     name: &str,
     subscripts: &[rumoca_core::Subscript],
     condition_name: &str,
+    pre_condition_name: &str,
 ) -> Option<(bool, usize)> {
-    let pre_condition_name = format!("__pre__.{condition_name}");
     if name == condition_name {
         return one_based_static_index(subscripts).map(|index| (false, index));
     }

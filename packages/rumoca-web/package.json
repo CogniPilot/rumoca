@@ -1,7 +1,7 @@
 {
   "name": "@cognipilot/rumoca-web",
   "version": "0.9.4",
-  "description": "Hand-written browser assets for Rumoca: wasm runtime glue (workers, WebGPU/diffsol drivers) and the visualization front-end (uPlot plots, three.js 3D viewer, results app). Single source consumed by the npm package build, the rustbook live examples, the tutorial website, the VS Code webview, and the native CLI report.",
+  "description": "Hand-written browser assets for Rumoca: wasm runtime glue, workers, diffsol driver, WebGPU/WGSL execution, and visualization front-end.",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {

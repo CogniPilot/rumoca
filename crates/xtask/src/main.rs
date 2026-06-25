@@ -1824,9 +1824,11 @@ pub(crate) fn ensure_docs_wasm_package(root: &Path) -> Result<()> {
         WasmVariant::FullWeb,
         false,
     ));
-    if docs_wasm_package_supports_live_examples(&package_dir)? {
+    if docs_wasm_package_supports_live_examples(&package_dir)?
+        && docs_wasm_package_is_up_to_date(root, &package_dir)?
+    {
         println!(
-            "WASM package ready for docs live examples: {}",
+            "WASM package up to date for docs live examples: {}",
             package_dir.display()
         );
         return Ok(());
@@ -1856,6 +1858,85 @@ fn docs_wasm_package_supports_live_examples(package_dir: &Path) -> Result<bool> 
         }
     };
     Ok(types.contains("export class WasmStepper"))
+}
+
+/// Freshness gate for the docs WASM package. The capability check alone (does the
+/// package exist and expose `WasmStepper`) silently serves a bundle built before
+/// the latest source edit -- so `docs serve` would keep shipping stale wasm until
+/// the dist is hand-cleaned. The package is up to date only when every compiled
+/// `.wasm` output postdates every input that feeds the Rust->WASM build (crate
+/// sources, embedded templates, manifests, the lockfile, and the build recipe).
+/// Returns `false` (rebuild) when the artifact mtime can't be read; a missing or
+/// unreadable *input* is skipped rather than forcing a rebuild, so a transient
+/// stat failure can't wedge the gate into rebuilding on every invocation.
+fn docs_wasm_package_is_up_to_date(root: &Path, package_dir: &Path) -> Result<bool> {
+    let Some(artifact_mtime) = oldest_wasm_artifact_mtime(package_dir)? else {
+        return Ok(false);
+    };
+    Ok(newest_wasm_input_mtime(root) <= artifact_mtime)
+}
+
+/// Oldest modification time among the package's compiled `.wasm` outputs, or
+/// `None` when it has none. The oldest output is the conservative reference: the
+/// package is current only if *every* output postdates the newest input, so a
+/// single lagging output (e.g. a partially-rebuilt variant) forces a rebuild.
+fn oldest_wasm_artifact_mtime(package_dir: &Path) -> Result<Option<std::time::SystemTime>> {
+    let mut oldest: Option<std::time::SystemTime> = None;
+    for entry in fs::read_dir(package_dir)
+        .with_context(|| format!("failed to read {}", package_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(OsStr::to_str) != Some("wasm") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .with_context(|| format!("failed to read mtime of {}", path.display()))?;
+        oldest = Some(match oldest {
+            Some(current) if current < modified => current,
+            _ => modified,
+        });
+    }
+    Ok(oldest)
+}
+
+/// Newest modification time among inputs that feed the Rust->WASM build: every
+/// file under `crates/` (sources, embedded `.jinja` templates, per-crate
+/// manifests), the workspace manifest and lockfile, and the WASM build recipe.
+/// Every regular file under `crates/` is considered so an embedded-asset edit
+/// (e.g. the `dae-modelica` template) is not missed by an extension filter; the
+/// cost is only the occasional rebuild after touching a non-compiled file there.
+fn newest_wasm_input_mtime(root: &Path) -> std::time::SystemTime {
+    let mut newest = std::time::SystemTime::UNIX_EPOCH;
+    for entry in walkdir::WalkDir::new(root.join("crates"))
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if entry.file_type().is_file() {
+            consider_newer_mtime(entry.path(), &mut newest);
+        }
+    }
+    for extra in [
+        root.join("Cargo.toml"),
+        root.join("Cargo.lock"),
+        root.join("packages/rumoca/build.mjs"),
+        root.join("packages/rumoca/Cargo.toml"),
+    ] {
+        consider_newer_mtime(&extra, &mut newest);
+    }
+    newest
+}
+
+/// Advance `newest` to `path`'s mtime when it is later. Unreadable paths are
+/// skipped so a vanished or permission-denied input never forces a rebuild.
+fn consider_newer_mtime(path: &Path, newest: &mut std::time::SystemTime) {
+    if let Ok(modified) = fs::metadata(path).and_then(|metadata| metadata.modified())
+        && modified > *newest
+    {
+        *newest = modified;
+    }
 }
 
 fn clean_wasm(root: &Path) -> Result<()> {
