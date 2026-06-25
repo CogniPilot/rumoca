@@ -434,7 +434,7 @@ fn collect_seeded_relaxation_candidates(
             continue;
         }
         for defining_expr in defining_expr_candidates(defining_expr_index, &name) {
-            stack.extend(collect_rhs_var_refs(defining_expr).into_iter());
+            stack.extend(collect_rhs_var_refs(defining_expr));
         }
     }
 
@@ -1528,7 +1528,7 @@ fn extract_state_direct_assignment_equation(
     // reject the unsafe cases (self-derivatives, derivative definitions that
     // feed back through the candidate).
     if let Some(pair) = extract_state_direct_assignment(&eq.rhs, state_name_set)
-        && !expr_contains_der_of(&pair.1, &pair.0)
+        && !expr_contains_der_of_state_or_component(&pair.1, &pair.0)
     {
         return Some(pair);
     }
@@ -1540,7 +1540,7 @@ fn extract_state_direct_assignment_equation(
         if !expr_contains_var(&eq.rhs, state_name) {
             continue;
         }
-        if expr_contains_der_of(&eq.rhs, state_name) {
+        if expr_contains_der_of_state_or_component(&eq.rhs, state_name) {
             continue;
         }
         let Some((coef, remainder)) = split_linear_target(&eq.rhs, state_name, eq.span) else {
@@ -1557,6 +1557,11 @@ fn extract_state_direct_assignment_equation(
         solved = Some((state_name.clone(), defining_expr));
     }
     solved
+}
+
+fn expr_contains_der_of_state_or_component(expr: &Expression, state_name: &VarName) -> bool {
+    let matcher = DerivativeNameMatcher::from_var_names(std::slice::from_ref(state_name));
+    expr_contains_der_of_any(expr, &matcher)
 }
 
 fn variable_dims_for_direct_demotion(dae: &Dae, state_name: &VarName) -> Option<Vec<i64>> {

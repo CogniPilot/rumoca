@@ -219,25 +219,9 @@ fn direct_demotion_plan_for_equation(
     counters: &mut DirectDemotionCounters,
     alias_safety_cache: &mut AliasSafetyCache,
 ) -> Result<Option<DirectStateDemotionPlan>, StructuralError> {
-    let (state_name, defining_expr) = match extract_state_direct_assignment_equation(
-        eq,
-        &round.state_names,
-        &round.state_name_set,
-    ) {
+    let (state_name, defining_expr) = match direct_assignment_candidate(round, eq) {
         Some(candidate) => candidate,
         None => return Ok(None),
-    };
-    let defining_expr = if is_connection_equation_origin(&eq.origin) {
-        match connection_component_fixed_defining_expr(
-            round.dae,
-            &state_name,
-            &round.state_name_set,
-        ) {
-            Some(expr) => expr,
-            None => defining_expr,
-        }
-    } else {
-        defining_expr
     };
     counters.n_candidates += 1;
     if eq.origin.starts_with("flow sum equation:") {
@@ -253,15 +237,9 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_self_der += 1;
         return Ok(None);
     }
-    if !derivative_states_in_eq(&defining_expr, &round.state_names).is_empty() {
-        let der_map = build_relaxed_derivative_map_for_exprs(
-            round.dae,
-            std::slice::from_ref(&defining_expr),
-        )?;
-        if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round, &der_map) {
-            counters.n_skip_der_in_defining_expr += 1;
-            return Ok(None);
-        }
+    if !defining_expr_state_derivatives_are_demotable(round, &state_name, &defining_expr)? {
+        counters.n_skip_der_in_defining_expr += 1;
+        return Ok(None);
     }
     // `der(state)` links are substituted symbolically on demotion (gated by
     // `state_ders_in_expr_independently_defined` above and validated again in
@@ -286,16 +264,7 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_unsliced_vector_ref += 1;
         return Ok(None);
     }
-    let state_non_der_ref_rows = round
-        .dae
-        .continuous
-        .equations
-        .iter()
-        .filter(|row| {
-            expr_contains_var(&row.rhs, &state_name) && !expr_contains_der_of(&row.rhs, &state_name)
-        })
-        .count();
-    if state_non_der_ref_rows > 1
+    if state_non_derivative_reference_row_count(round.dae, &state_name) > 1
         && !expr_refs_only_parameters_constants_or_time(round.dae, &defining_expr)
     {
         counters.n_skip_extra_state_refs += 1;
@@ -333,6 +302,49 @@ fn direct_demotion_plan_for_equation(
         state_name,
         der_expr,
     }))
+}
+
+fn direct_assignment_candidate(
+    round: &DirectDemotionRound<'_>,
+    eq: &Equation,
+) -> Option<(VarName, Expression)> {
+    let (state_name, defining_expr) =
+        extract_state_direct_assignment_equation(eq, &round.state_names, &round.state_name_set)?;
+    if !is_connection_equation_origin(&eq.origin) {
+        return Some((state_name, defining_expr));
+    }
+    let defining_expr =
+        connection_component_fixed_defining_expr(round.dae, &state_name, &round.state_name_set)
+            .unwrap_or(defining_expr);
+    Some((state_name, defining_expr))
+}
+
+fn defining_expr_state_derivatives_are_demotable(
+    round: &DirectDemotionRound<'_>,
+    state_name: &VarName,
+    defining_expr: &Expression,
+) -> Result<bool, StructuralError> {
+    if derivative_states_in_eq(defining_expr, &round.state_names).is_empty() {
+        return Ok(true);
+    }
+    let der_map =
+        build_relaxed_derivative_map_for_exprs(round.dae, std::slice::from_ref(defining_expr))?;
+    Ok(state_ders_in_expr_independently_defined(
+        defining_expr,
+        state_name,
+        round,
+        &der_map,
+    ))
+}
+
+fn state_non_derivative_reference_row_count(dae: &Dae, state_name: &VarName) -> usize {
+    dae.continuous
+        .equations
+        .iter()
+        .filter(|row| {
+            expr_contains_var(&row.rhs, state_name) && !expr_contains_der_of(&row.rhs, state_name)
+        })
+        .count()
 }
 
 /// `der(z)` links inside a defining expression are demotable only when `z`'s
