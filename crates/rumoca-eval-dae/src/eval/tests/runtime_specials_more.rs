@@ -76,6 +76,77 @@ fn test_string_is_empty_runtime_special() {
     assert_eq!(non_empty, 0.0);
 }
 
+fn string_lit(value: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(value.to_string()),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+#[test]
+fn test_string_findlast_evaluates_string_parameter_start_expr_with_named_case_flag() {
+    let mut env = VarEnv::<f64>::new();
+    env.start_exprs = std::sync::Arc::new(indexmap::indexmap! {
+        "fileName".to_string() => string_lit("weather/USA_IL_Chicago.csv"),
+    });
+
+    let is_csv_ext = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Eq,
+        lhs: Box::new(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(fn_call(
+                "Modelica.Utilities.Strings.findLast",
+                vec![
+                    var("fileName"),
+                    string_lit(".csv"),
+                    named_ctor_arg("caseSensitive", bool_lit(false)),
+                ],
+            )),
+            rhs: Box::new(int_lit(3)),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(fn_call(
+            "Modelica.Utilities.Strings.length",
+            vec![var("fileName")],
+        )),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&is_csv_ext, &env), Ok(1.0));
+}
+
+#[test]
+fn test_string_find_supports_start_index_and_case_insensitive_search() {
+    let env = VarEnv::<f64>::new();
+
+    let find = eval_expr::<f64>(
+        &fn_call(
+            "Modelica.Utilities.Strings.find",
+            vec![
+                string_lit("Alpha/BETA/beta"),
+                string_lit("beta"),
+                named_ctor_arg("startIndex", int_lit(8)),
+                named_ctor_arg("caseSensitive", bool_lit(false)),
+            ],
+        ),
+        &env,
+    );
+    assert_eq!(find, Ok(12.0));
+
+    let find_last = eval_expr::<f64>(
+        &fn_call(
+            "Modelica.Utilities.Strings.findLast",
+            vec![
+                named_ctor_arg("string", string_lit("a/b/c")),
+                named_ctor_arg("searchString", string_lit("/")),
+                named_ctor_arg("startIndex", int_lit(4)),
+            ],
+        ),
+        &env,
+    );
+    assert_eq!(find_last, Ok(4.0));
+}
+
 #[test]
 fn test_random_runtime_special_seed_and_stream() {
     let env = VarEnv::<f64>::new();

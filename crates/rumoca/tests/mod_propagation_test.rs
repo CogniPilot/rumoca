@@ -1034,6 +1034,79 @@ fn test_forwarded_parent_parameter_remains_visible_to_child_modifier_rhs() {
     }
 }
 
+#[test]
+fn test_array_element_local_vector_modifier_rhs_is_not_indexed_again() {
+    let source = r#"
+        record PressureCurve
+            parameter Real V_flow[:];
+        end PressureCurve;
+
+        record Performance
+            parameter PressureCurve pressure;
+        end Performance;
+
+        model FlowMover
+            parameter Performance per;
+            Real y;
+        equation
+            y = per.pressure.V_flow[1];
+        end FlowMover;
+
+        model Pump
+            parameter Real VolFloCur[:];
+            FlowMover varSpeFloMov(per(pressure(V_flow=VolFloCur)));
+            Real y;
+        equation
+            y = varSpeFloMov.y;
+        end Pump;
+
+        model PumpSystem
+            parameter Integer n = 2;
+            parameter Real VolFloCur[n, 3] = {
+                {0.1, 0.2, 0.3},
+                {1.1, 1.2, 1.3}};
+            Pump pum[n](VolFloCur=VolFloCur);
+        end PumpSystem;
+
+        model Top
+            PumpSystem system;
+            Real y;
+        equation
+            y = system.pum[1].y;
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("array element local vector modifier RHS should keep vector shape");
+
+    let v_flow = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new(
+            "system.pum[1].varSpeFloMov.per.pressure.V_flow",
+        ))
+        .expect("pressure V_flow should be in flat variables");
+    assert_eq!(v_flow.dims, vec![3]);
+    match v_flow
+        .binding
+        .as_ref()
+        .expect("pressure V_flow should keep a binding")
+    {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert_eq!(name.as_str(), "system.pum[1].VolFloCur");
+            assert!(
+                subscripts.is_empty(),
+                "local vector parameter must not receive outer array element subscript, got {subscripts:?}"
+            );
+        }
+        other => panic!("expected pressure V_flow to reference local VolFloCur, got {other:?}"),
+    }
+}
+
 /// Test that typecheck_instanced evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {

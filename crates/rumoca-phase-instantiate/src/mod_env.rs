@@ -734,10 +734,7 @@ fn resolve_single_part_ref_expr(
         return index_array_value(&mod_value.value, &indices);
     }
 
-    if effective_components
-        .get(name)
-        .is_some_and(component_is_scalar)
-    {
+    if effective_components.contains_key(name) {
         return None;
     }
 
@@ -748,10 +745,6 @@ fn resolve_single_part_ref_expr(
     }
 
     None
-}
-
-fn component_is_scalar(comp: &ast::Component) -> bool {
-    comp.shape.is_empty() && comp.shape_expr.is_empty()
 }
 
 fn literal_integer_subscripts(subscripts: &[ast::Subscript]) -> Option<Vec<i64>> {

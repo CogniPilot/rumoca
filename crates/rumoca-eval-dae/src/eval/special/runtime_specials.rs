@@ -1,3 +1,4 @@
+use super::super::table_eval::resolve_modelica_resource_path;
 use super::*;
 use std::sync::Mutex;
 
@@ -69,6 +70,31 @@ fn eval_string_expr<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Result<S
             value: Literal::String(value),
             ..
         } => Ok(value.clone()),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            let Some(start) = env.start_exprs.get(name.as_str()) else {
+                return Err(with_expression_span_if_available(
+                    EvalError::MissingBinding {
+                        name: name.as_str().to_string(),
+                    },
+                    expr,
+                ));
+            };
+            eval_string_expr(start, env)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                if eval_expr::<T>(condition, env)?.to_bool() {
+                    return eval_string_expr(value, env);
+                }
+            }
+            eval_string_expr(else_branch, env)
+        }
         Expression::FunctionCall {
             name, args, span, ..
         } => eval_string_function_call(name.as_str(), args, env)
@@ -85,12 +111,23 @@ fn eval_string_expr<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Result<S
 fn eval_string_function_call<T: SimFloat>(
     name: &str,
     args: &[Expression],
-    _env: &VarEnv<T>,
+    env: &VarEnv<T>,
 ) -> Result<String, EvalError> {
     match name {
         "getInstanceName" => Err(EvalError::UnsupportedExpression {
             kind: "getInstanceName must be lowered to a string literal before DAE evaluation",
         }),
+        "loadResource" | "Modelica.Utilities.Files.loadResource" => {
+            let raw = args
+                .first()
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "loadResource path",
+                })
+                .and_then(|arg| eval_string_expr(arg, env))?;
+            Ok(resolve_modelica_resource_path(&raw)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or(raw))
+        }
         _ => {
             if args.iter().any(|arg| {
                 matches!(
@@ -226,21 +263,25 @@ fn eval_string_misc_intrinsic_function<T: SimFloat>(
             });
         }
         Some(rumoca_core::ModelicaStringIntrinsic::IsEmpty) => {
-            return eval_literal_string_arg(args, |s| T::from_bool(s.trim().is_empty()));
+            let value = eval_required_string_arg(args, env, 0, "string argument")?;
+            return Ok(Some(T::from_bool(value.trim().is_empty())));
         }
         Some(rumoca_core::ModelicaStringIntrinsic::HashString) => {
-            return eval_literal_string_arg(args, |s| {
-                T::from_f64(modelica_strings_hash_string(s) as f64)
-            });
+            let value = eval_required_string_arg(args, env, 0, "string argument")?;
+            return Ok(Some(T::from_f64(
+                modelica_strings_hash_string(&value) as f64
+            )));
         }
         Some(rumoca_core::ModelicaStringIntrinsic::Length) => {
-            return eval_literal_string_arg(args, |s| T::from_f64(s.chars().count() as f64));
+            let value = eval_required_string_arg(args, env, 0, "string argument")?;
+            return Ok(Some(T::from_f64(value.chars().count() as f64)));
         }
         Some(intrinsic @ rumoca_core::ModelicaStringIntrinsic::Find)
         | Some(intrinsic @ rumoca_core::ModelicaStringIntrinsic::FindLast) => {
             return eval_string_find_intrinsic(
                 intrinsic == rumoca_core::ModelicaStringIntrinsic::FindLast,
                 args,
+                env,
             );
         }
         None => {}
@@ -258,50 +299,159 @@ fn eval_string_misc_intrinsic_function<T: SimFloat>(
     }
 }
 
-fn eval_literal_string_arg<T: SimFloat>(
+fn eval_required_string_arg<T: SimFloat>(
     args: &[Expression],
-    eval: impl FnOnce(&str) -> T,
-) -> Result<Option<T>, EvalError> {
-    if let Some(Expression::Literal {
-        value: Literal::String(s),
-        ..
-    }) = args.first()
-    {
-        Ok(Some(eval(s)))
-    } else {
-        Err(EvalError::UnsupportedExpression {
-            kind: "literal string argument",
-        })
-    }
+    env: &VarEnv<T>,
+    idx: usize,
+    kind: &'static str,
+) -> Result<String, EvalError> {
+    let expr = args
+        .get(idx)
+        .ok_or(EvalError::UnsupportedExpression { kind })?;
+    eval_string_expr(expr, env)
 }
 
 fn eval_string_find_intrinsic<T: SimFloat>(
     find_last: bool,
     args: &[Expression],
+    env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
-    let (
-        Some(Expression::Literal {
-            value: Literal::String(haystack),
-            ..
-        }),
-        Some(Expression::Literal {
-            value: Literal::String(needle),
-            ..
-        }),
-    ) = (args.first(), args.get(1))
-    else {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "literal string search arguments",
-        });
-    };
-    let idx = if find_last {
-        haystack.rfind(needle)
+    let (named_args, positional_args) = split_named_and_positional_call_args(args);
+    let haystack = eval_string_find_string_arg(
+        &named_args,
+        &positional_args,
+        "string",
+        0,
+        env,
+        "string search arguments",
+    )?;
+    let needle = eval_string_find_string_arg(
+        &named_args,
+        &positional_args,
+        "searchString",
+        1,
+        env,
+        "string search arguments",
+    )?;
+    let case_sensitive =
+        eval_string_find_bool_arg(&named_args, &positional_args, "caseSensitive", 3, env)?
+            .unwrap_or(true);
+    let default_start = if find_last {
+        haystack.chars().count().max(1) as i64
     } else {
-        haystack.find(needle)
+        1
     };
-    Ok(Some(T::from_f64(
-        idx.map_or(0.0, |index| index.saturating_add(1) as f64),
-    )))
+    let start_index =
+        eval_string_find_integer_arg(&named_args, &positional_args, "startIndex", 2, env)?
+            .unwrap_or(default_start);
+    let idx = modelica_string_find(&haystack, &needle, start_index, find_last, case_sensitive);
+    Ok(Some(T::from_f64(idx as f64)))
+}
+
+fn eval_string_find_string_arg<T: SimFloat>(
+    named_args: &std::collections::HashMap<&str, &Expression>,
+    positional_args: &[&Expression],
+    name: &str,
+    positional_idx: usize,
+    env: &VarEnv<T>,
+    kind: &'static str,
+) -> Result<String, EvalError> {
+    let expr = named_args
+        .get(name)
+        .copied()
+        .or_else(|| positional_args.get(positional_idx).copied())
+        .ok_or(EvalError::UnsupportedExpression { kind })?;
+    eval_string_expr(expr, env)
+}
+
+fn eval_string_find_integer_arg<T: SimFloat>(
+    named_args: &std::collections::HashMap<&str, &Expression>,
+    positional_args: &[&Expression],
+    name: &str,
+    positional_idx: usize,
+    env: &VarEnv<T>,
+) -> Result<Option<i64>, EvalError> {
+    let Some(expr) = named_args
+        .get(name)
+        .copied()
+        .or_else(|| positional_args.get(positional_idx).copied())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(eval_expr::<T>(expr, env)?.real().round() as i64))
+}
+
+fn eval_string_find_bool_arg<T: SimFloat>(
+    named_args: &std::collections::HashMap<&str, &Expression>,
+    positional_args: &[&Expression],
+    name: &str,
+    positional_idx: usize,
+    env: &VarEnv<T>,
+) -> Result<Option<bool>, EvalError> {
+    let Some(expr) = named_args
+        .get(name)
+        .copied()
+        .or_else(|| positional_args.get(positional_idx).copied())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(eval_expr::<T>(expr, env)?.to_bool()))
+}
+
+fn modelica_string_find(
+    haystack: &str,
+    needle: &str,
+    start_index: i64,
+    find_last: bool,
+    case_sensitive: bool,
+) -> usize {
+    if needle.is_empty() || start_index < 1 {
+        return 0;
+    }
+    let source = if case_sensitive {
+        haystack.to_string()
+    } else {
+        haystack.to_lowercase()
+    };
+    let target = if case_sensitive {
+        needle.to_string()
+    } else {
+        needle.to_lowercase()
+    };
+    if find_last {
+        find_last_modelica_index(&source, &target, start_index)
+    } else {
+        find_first_modelica_index(&source, &target, start_index)
+    }
+}
+
+fn find_first_modelica_index(source: &str, target: &str, start_index: i64) -> usize {
+    let start = (start_index - 1) as usize;
+    source
+        .char_indices()
+        .nth(start)
+        .and_then(|(byte_start, _)| {
+            source[byte_start..]
+                .find(target)
+                .map(|offset| source[..byte_start + offset].chars().count() + 1)
+        })
+        .unwrap_or(0)
+}
+
+fn find_last_modelica_index(source: &str, target: &str, start_index: i64) -> usize {
+    let char_count = source.chars().count();
+    if char_count == 0 {
+        return 0;
+    }
+    let end_char = start_index.min(char_count as i64).max(1) as usize;
+    source
+        .char_indices()
+        .nth(end_char)
+        .map(|(byte_end, _)| &source[..byte_end])
+        .unwrap_or(source)
+        .rfind(target)
+        .map(|byte_index| source[..byte_index].chars().count() + 1)
+        .unwrap_or(0)
 }
 
 fn eval_qualified_special_function<T: SimFloat>(
