@@ -185,7 +185,7 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
     Ok(result)
 }
 
-fn resolve_boundary_equations_to_fixpoint(
+pub fn resolve_boundary_equations_to_fixpoint(
     dae: &mut Dae,
 ) -> Result<EliminationResult, StructuralError> {
     let mut result = EliminationResult::default();

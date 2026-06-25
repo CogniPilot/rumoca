@@ -198,10 +198,12 @@ fn apply_direct_demotion_plans(
 }
 
 pub(super) fn apply_direct_demotion_plan(dae: &mut Dae, plan: &DirectStateDemotionPlan) -> usize {
+    let state_dims = variable_dims_for_direct_demotion(dae, &plan.state_name);
     for eq in &mut dae.continuous.equations {
-        eq.rhs = substitute_der_of_state(&eq.rhs, &plan.state_name, &plan.der_expr);
+        eq.rhs = substitute_der_of_state(&eq.rhs, &plan.state_name, &plan.der_expr, &state_dims);
     }
-    if let Some(var) = dae.variables.states.shift_remove(&plan.state_name) {
+    if let Some(mut var) = dae.variables.states.shift_remove(&plan.state_name) {
+        var.fixed = Some(false);
         dae.variables
             .algebraics
             .insert(plan.state_name.clone(), var);
@@ -216,9 +218,15 @@ fn direct_demotion_plan_for_equation(
     eq: &Equation,
     counters: &mut DirectDemotionCounters,
     alias_safety_cache: &mut AliasSafetyCache,
-) -> Option<DirectStateDemotionPlan> {
-    let (state_name, defining_expr) =
-        extract_state_direct_assignment_equation(eq, &round.state_names, &round.state_name_set)?;
+) -> Result<Option<DirectStateDemotionPlan>, StructuralError> {
+    let (state_name, defining_expr) = match extract_state_direct_assignment_equation(
+        eq,
+        &round.state_names,
+        &round.state_name_set,
+    ) {
+        Some(candidate) => candidate,
+        None => return Ok(None),
+    };
     let defining_expr = if is_connection_equation_origin(&eq.origin) {
         match connection_component_fixed_defining_expr(
             round.dae,
@@ -234,20 +242,26 @@ fn direct_demotion_plan_for_equation(
     counters.n_candidates += 1;
     if eq.origin.starts_with("flow sum equation:") {
         counters.n_skip_flow_sum_origin += 1;
-        return None;
+        return Ok(None);
     }
     log_direct_assignment_candidate(round.trace, counters, round.dae, eq, &state_name);
     if round.when_assigned_states.contains(state_name.as_str()) {
         counters.n_skip_when_assigned += 1;
-        return None;
+        return Ok(None);
     }
-    if expr_contains_der_of(&defining_expr, &state_name) {
+    if expr_contains_der_of_state_or_indexed(&defining_expr, &state_name) {
         counters.n_skip_self_der += 1;
-        return None;
+        return Ok(None);
     }
-    if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round) {
-        counters.n_skip_der_in_defining_expr += 1;
-        return None;
+    if !derivative_states_in_eq(&defining_expr, &round.state_names).is_empty() {
+        let der_map = build_relaxed_derivative_map_for_exprs(
+            round.dae,
+            std::slice::from_ref(&defining_expr),
+        )?;
+        if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round, &der_map) {
+            counters.n_skip_der_in_defining_expr += 1;
+            return Ok(None);
+        }
     }
     // `der(state)` links are substituted symbolically on demotion (gated by
     // `state_ders_in_expr_independently_defined` above and validated again in
@@ -263,20 +277,14 @@ fn direct_demotion_plan_for_equation(
         alias_safety_cache,
     ) {
         counters.n_skip_unsafe_non_state_alias += 1;
-        return None;
+        return Ok(None);
     }
-    if round
-        .dae
-        .variables
-        .states
-        .get(&state_name)
-        .is_some_and(|state| state.size() > 1)
-        || expr_contains_unsliced_vector_ref(&defining_expr, round.dae)
-    {
+    if !direct_assignment_shape_is_demotable(round.dae, &state_name, &defining_expr) {
         // MLS §10.1: array state shape is semantic IR. This path substitutes
-        // whole `der(state)` calls, so unsliced compound states stay intact.
+        // whole `der(state)` calls only when the defining expression has the
+        // same aggregate shape. Scalar states still reject unsliced vector refs.
         counters.n_skip_unsliced_vector_ref += 1;
-        return None;
+        return Ok(None);
     }
     let state_non_der_ref_rows = round
         .dae
@@ -291,22 +299,27 @@ fn direct_demotion_plan_for_equation(
         && !expr_refs_only_parameters_constants_or_time(round.dae, &defining_expr)
     {
         counters.n_skip_extra_state_refs += 1;
-        return None;
+        return Ok(None);
     }
+    let der_map =
+        build_relaxed_derivative_map_for_exprs(round.dae, std::slice::from_ref(&defining_expr))?;
     let der_expr = choose_derivative_replacement(
         &defining_expr,
         &round.state_name_set,
         round.dae,
-        &round.der_map,
+        &der_map,
         counters,
-    )?;
-    if expr_contains_der_of(&der_expr, &state_name) {
+    );
+    let Some(der_expr) = der_expr else {
+        return Ok(None);
+    };
+    if expr_contains_der_of_state_or_indexed(&der_expr, &state_name) {
         counters.n_skip_self_der += 1;
-        return None;
+        return Ok(None);
     }
     if expr_contains_der_of_non_state(&der_expr, &round.state_name_set) {
         counters.n_skip_non_state_der += 1;
-        return None;
+        return Ok(None);
     }
     if round.trace && counters.n_trace_logged_candidates < 16 {
         crate::structural_trace!(
@@ -316,10 +329,10 @@ fn direct_demotion_plan_for_equation(
         );
         counters.n_trace_logged_candidates += 1;
     }
-    Some(DirectStateDemotionPlan {
+    Ok(Some(DirectStateDemotionPlan {
         state_name,
         der_expr,
-    })
+    }))
 }
 
 /// `der(z)` links inside a defining expression are demotable only when `z`'s
@@ -332,18 +345,19 @@ fn state_ders_in_expr_independently_defined(
     defining_expr: &Expression,
     candidate: &VarName,
     round: &DirectDemotionRound<'_>,
+    der_map: &HashMap<String, Expression>,
 ) -> bool {
     derivative_states_in_eq(defining_expr, &round.state_names)
         .iter()
         .all(|inner_state| {
-            round
-                .der_map
-                .get(inner_state.as_str())
-                .is_some_and(|value| {
-                    !expr_contains_der_of(value, inner_state)
-                        && !expr_contains_var(value, candidate)
-                })
+            der_map.get(inner_state.as_str()).is_some_and(|value| {
+                !expr_contains_der_of(value, inner_state) && !expr_contains_var(value, candidate)
+            })
         })
+}
+
+fn expr_contains_der_of_state_or_indexed(expr: &Expression, state_name: &VarName) -> bool {
+    expr_contains_der_of(expr, state_name)
 }
 
 fn collect_direct_demotion_plans(
@@ -359,6 +373,12 @@ fn collect_direct_demotion_plans(
     let mut substitutions = HashMap::new();
     let mut counters = DirectDemotionCounters::default();
 
+    for plan in collect_componentwise_direct_demotion_plans(&round, &mut counters)? {
+        substitutions
+            .entry(plan.state_name.as_str().to_string())
+            .or_insert(plan);
+    }
+
     let timer = structural_timing_start("direct_demotion.scan_equations");
     for (eq_index, eq) in round.dae.continuous.equations.iter().enumerate() {
         let Some(plan) = direct_demotion_plan_for_equation(
@@ -367,7 +387,8 @@ fn collect_direct_demotion_plans(
             eq,
             &mut counters,
             &mut alias_safety_cache,
-        ) else {
+        )?
+        else {
             continue;
         };
         substitutions
@@ -378,6 +399,147 @@ fn collect_direct_demotion_plans(
 
     log_direct_demotion_scan_summary(trace, round.state_count(), &substitutions, &counters);
     Ok(substitutions)
+}
+
+fn collect_componentwise_direct_demotion_plans(
+    round: &DirectDemotionRound<'_>,
+    counters: &mut DirectDemotionCounters,
+) -> Result<Vec<DirectStateDemotionPlan>, StructuralError> {
+    let mut by_state: IndexMap<String, Vec<Option<Expression>>> = IndexMap::new();
+
+    for eq in &round.dae.continuous.equations {
+        let Some((state_name, flat_index, defining_expr)) =
+            extract_state_component_direct_assignment_equation(
+                round.dae,
+                eq,
+                &round.state_name_set,
+            )
+        else {
+            continue;
+        };
+        if round.when_assigned_states.contains(state_name.as_str())
+            || expr_contains_der_of_state_or_indexed(&defining_expr, &state_name)
+        {
+            continue;
+        }
+        if !derivative_states_in_eq(&defining_expr, &round.state_names).is_empty() {
+            let der_map = build_relaxed_derivative_map_for_exprs(
+                round.dae,
+                std::slice::from_ref(&defining_expr),
+            )?;
+            if !state_ders_in_expr_independently_defined(
+                &defining_expr,
+                &state_name,
+                round,
+                &der_map,
+            ) {
+                continue;
+            }
+        }
+        let Some(size) = round
+            .dae
+            .variables
+            .states
+            .get(&state_name)
+            .map(Variable::size)
+            .filter(|size| *size > 1)
+        else {
+            continue;
+        };
+        let slots = by_state
+            .entry(state_name.as_str().to_string())
+            .or_insert_with(|| vec![None; size]);
+        if flat_index >= slots.len() || slots[flat_index].is_some() {
+            continue;
+        }
+        slots[flat_index] = Some(defining_expr);
+    }
+
+    let mut plans = Vec::new();
+    for (state_name_string, slots) in by_state {
+        let state_name = VarName::new(state_name_string.as_str());
+        let Some(dims) = variable_dims_for_direct_demotion(round.dae, &state_name) else {
+            continue;
+        };
+        let Some(component_exprs) = slots.into_iter().collect::<Option<Vec<_>>>() else {
+            continue;
+        };
+        let Some(defining_expr) = array_expr_from_flat_values(component_exprs, &dims) else {
+            continue;
+        };
+        let der_map = build_relaxed_derivative_map_for_exprs(
+            round.dae,
+            std::slice::from_ref(&defining_expr),
+        )?;
+        let Some(der_expr) = choose_derivative_replacement(
+            &defining_expr,
+            &round.state_name_set,
+            round.dae,
+            &der_map,
+            counters,
+        ) else {
+            continue;
+        };
+        if expr_contains_der_of_state_or_indexed(&der_expr, &state_name)
+            || expr_contains_der_of_non_state(&der_expr, &round.state_name_set)
+        {
+            continue;
+        }
+        plans.push(DirectStateDemotionPlan {
+            state_name,
+            der_expr,
+        });
+    }
+
+    Ok(plans)
+}
+
+fn extract_state_component_direct_assignment_equation(
+    dae: &Dae,
+    eq: &Equation,
+    state_name_set: &HashSet<String>,
+) -> Option<(VarName, usize, Expression)> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.rhs
+    else {
+        return None;
+    };
+    if let Some((state_name, flat_index)) = state_component_ref_flat_index(dae, lhs, state_name_set)
+        && !expr_contains_var(rhs, &state_name)
+    {
+        return Some((state_name, flat_index, *rhs.clone()));
+    }
+    if let Some((state_name, flat_index)) = state_component_ref_flat_index(dae, rhs, state_name_set)
+        && !expr_contains_var(lhs, &state_name)
+    {
+        return Some((state_name, flat_index, *lhs.clone()));
+    }
+    None
+}
+
+fn state_component_ref_flat_index(
+    dae: &Dae,
+    expr: &Expression,
+    state_name_set: &HashSet<String>,
+) -> Option<(VarName, usize)> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if subscripts.is_empty() || !state_name_set.contains(name.as_str()) {
+        return None;
+    }
+    let state_name = name.var_name().clone();
+    let dims = variable_dims_for_direct_demotion(dae, &state_name)?;
+    let indices = static_subscript_indices(subscripts)?;
+    let flat_index = flat_index_from_indices(&dims, &indices)?;
+    Some((state_name, flat_index))
 }
 
 /// Demote states that are explicitly defined by direct assignment equations
@@ -417,4 +579,21 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> Result<usize, StructuralE
     }
 
     Ok(total_demoted)
+}
+
+fn direct_assignment_shape_is_demotable(
+    dae: &Dae,
+    state_name: &VarName,
+    defining_expr: &Expression,
+) -> bool {
+    let Some(state) = dae.variables.states.get(state_name) else {
+        return false;
+    };
+    if state.size() <= 1 {
+        return !expr_contains_unsliced_vector_ref(defining_expr, dae);
+    }
+    let Some(state_dims) = variable_dims_for_direct_demotion(dae, state_name) else {
+        return false;
+    };
+    expression_dims(defining_expr, dae).is_some_and(|expr_dims| expr_dims == state_dims)
 }

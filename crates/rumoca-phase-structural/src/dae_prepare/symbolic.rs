@@ -169,7 +169,10 @@ fn build_array_der_value(dae: &Dae, state_name: &VarName, dims: &[i64]) -> Optio
     array_expr_from_flat_values(values, dims)
 }
 
-fn array_expr_from_flat_values(values: Vec<Expression>, dims: &[i64]) -> Option<Expression> {
+pub(super) fn array_expr_from_flat_values(
+    values: Vec<Expression>,
+    dims: &[i64],
+) -> Option<Expression> {
     match dims {
         [n] if *n >= 0 && *n as usize == values.len() => Some(Expression::Array {
             span: expression_sequence_span(&values)?,
@@ -235,6 +238,52 @@ struct SymbolicDerivativeContext<'a> {
 }
 
 impl<'a> SymbolicDerivativeContext<'a> {
+    fn differentiate_builtin_call(
+        &self,
+        function: &BuiltinFunction,
+        args: &[Expression],
+        span: Span,
+        active_functions: &mut Vec<VarName>,
+    ) -> Option<Expression> {
+        if args.len() != 1 {
+            return None;
+        }
+        let arg = args.first()?;
+        let d_arg = self.differentiate(arg, active_functions)?;
+        match function {
+            BuiltinFunction::Transpose => Some(Expression::BuiltinCall {
+                function: BuiltinFunction::Transpose,
+                args: vec![d_arg],
+                span,
+            }),
+            BuiltinFunction::Sin => Some(make_binary(
+                OpBinary::Mul,
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Cos,
+                    args: vec![arg.clone()],
+                    span,
+                },
+                d_arg,
+                span,
+            )),
+            BuiltinFunction::Cos => Some(make_unary(
+                OpUnary::Minus,
+                make_binary(
+                    OpBinary::Mul,
+                    Expression::BuiltinCall {
+                        function: BuiltinFunction::Sin,
+                        args: vec![arg.clone()],
+                        span,
+                    },
+                    d_arg,
+                    span,
+                ),
+                span,
+            )),
+            _ => None,
+        }
+    }
+
     fn differentiate_variable(
         &self,
         name: &VarName,
@@ -250,7 +299,6 @@ impl<'a> SymbolicDerivativeContext<'a> {
             return Some(real_literal(0.0, span));
         }
         if !subscripts.is_empty()
-            && !self.dae.variables.states.contains_key(name)
             && let Some(derivative) = self.der_map.get(name.as_str())
             && let Some(dims) = variable_dims_for_name(self.dae, name)
             && let Some(indices) = static_subscript_indices(subscripts)
@@ -489,6 +537,13 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 *is_constructor,
                 active_functions,
             ),
+            Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } if *function != BuiltinFunction::Der => {
+                self.differentiate_builtin_call(function, args, *span, active_functions)
+            }
             // d/dt(der(X)) — a higher-order derivative (successive `Der` blocks,
             // or a relative acceleration `a = der(der(phi))`). `der(X)` is X's
             // first time-derivative; differentiate that expression to climb one
@@ -665,23 +720,54 @@ fn scalar_array_element(expr: &Expression) -> Option<Expression> {
     }
 }
 
-fn expression_dims(expr: &Expression, dae: &Dae) -> Option<Vec<i64>> {
+pub(super) fn expression_dims(expr: &Expression, dae: &Dae) -> Option<Vec<i64>> {
     match expr {
         Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => variable_dims_for_name(dae, name.var_name()),
+        } if subscripts.is_empty() => variable_dims_for_name_including_scalar(dae, name.var_name()),
+        Expression::Literal { .. } => Some(Vec::new()),
         Expression::Array {
             elements,
             is_matrix,
             ..
         } => array_expression_dims(elements, *is_matrix),
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs_dims = expression_dims(lhs, dae)?;
+            let rhs_dims = expression_dims(rhs, dae)?;
+            combine_binary_expression_dims(op, &lhs_dims, &rhs_dims)
+        }
         Expression::BuiltinCall {
             function: BuiltinFunction::Der,
             args,
             ..
         } => args.first().and_then(|arg| expression_dims(arg, dae)),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Transpose,
+            args,
+            ..
+        } if args.len() == 1 => {
+            let dims = expression_dims(&args[0], dae)?;
+            match dims.as_slice() {
+                [rows, cols] => Some(vec![*cols, *rows]),
+                [n] => Some(vec![*n]),
+                [] => Some(Vec::new()),
+                _ => None,
+            }
+        }
         _ => None,
     }
+}
+
+fn variable_dims_for_name_including_scalar(dae: &Dae, name: &VarName) -> Option<Vec<i64>> {
+    dae.variables
+        .states
+        .get(name)
+        .or_else(|| dae.variables.algebraics.get(name))
+        .or_else(|| dae.variables.outputs.get(name))
+        .or_else(|| dae.variables.inputs.get(name))
+        .or_else(|| dae.variables.parameters.get(name))
+        .or_else(|| dae.variables.constants.get(name))
+        .map(|var| var.dims.clone())
 }
 
 fn variable_dims_for_name(dae: &Dae, name: &VarName) -> Option<Vec<i64>> {
@@ -695,6 +781,42 @@ fn variable_dims_for_name(dae: &Dae, name: &VarName) -> Option<Vec<i64>> {
         .or_else(|| dae.variables.constants.get(name))
         .map(|var| var.dims.clone())
         .filter(|dims| !dims.is_empty())
+}
+
+fn combine_binary_expression_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64]) -> Option<Vec<i64>> {
+    match op {
+        OpBinary::Add | OpBinary::AddElem | OpBinary::Sub | OpBinary::SubElem => {
+            combine_additive_expression_dims(lhs, rhs)
+        }
+        OpBinary::Mul | OpBinary::MulElem => combine_multiplicative_expression_dims(lhs, rhs),
+        OpBinary::Div | OpBinary::DivElem if rhs.is_empty() => Some(lhs.to_vec()),
+        _ => None,
+    }
+}
+
+fn combine_additive_expression_dims(lhs: &[i64], rhs: &[i64]) -> Option<Vec<i64>> {
+    if lhs == rhs {
+        return Some(lhs.to_vec());
+    }
+    if lhs.is_empty() {
+        return Some(rhs.to_vec());
+    }
+    if rhs.is_empty() {
+        return Some(lhs.to_vec());
+    }
+    None
+}
+
+fn combine_multiplicative_expression_dims(lhs: &[i64], rhs: &[i64]) -> Option<Vec<i64>> {
+    match (lhs, rhs) {
+        ([], []) => Some(Vec::new()),
+        ([], dims) | (dims, []) => Some(dims.to_vec()),
+        ([a], [b]) if a == b => Some(Vec::new()),
+        ([rows, cols], [n]) if cols == n => Some(vec![*rows]),
+        ([n], [rows, cols]) if n == rows => Some(vec![*cols]),
+        ([a_rows, a_cols], [b_rows, b_cols]) if a_cols == b_rows => Some(vec![*a_rows, *b_cols]),
+        _ => None,
+    }
 }
 
 fn array_expression_dims(elements: &[Expression], is_matrix: bool) -> Option<Vec<i64>> {
@@ -717,7 +839,7 @@ fn projection_span(expr: &Expression, fallback_span: Option<Span>) -> Option<Spa
         .or_else(|| fallback_span.filter(|span| !span.is_dummy()))
 }
 
-fn project_flat_index_with_span(
+pub(super) fn project_flat_index_with_span(
     expr: &Expression,
     dims: &[i64],
     flat_index: usize,
@@ -830,7 +952,7 @@ fn generated_index_subscripts(
         .collect()
 }
 
-fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
+pub(super) fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
     subscripts
         .iter()
         .map(|subscript| match subscript {
@@ -851,7 +973,7 @@ fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
         .collect()
 }
 
-fn flat_index_from_indices(dims: &[i64], indices: &[i64]) -> Option<usize> {
+pub(super) fn flat_index_from_indices(dims: &[i64], indices: &[i64]) -> Option<usize> {
     if dims.len() != indices.len() || dims.is_empty() {
         return None;
     }

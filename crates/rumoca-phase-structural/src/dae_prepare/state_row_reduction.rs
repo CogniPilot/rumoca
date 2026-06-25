@@ -533,6 +533,10 @@ pub fn index_reduce_missing_state_derivatives_once(
                 if used_eq.contains(&idx) {
                     return None;
                 }
+                if !expr_dependency_closure_reaches_state(&eq.rhs, &defining_expr_index, state_name)
+                {
+                    return None;
+                }
                 if eq_contains_any_state_der_with_matcher(&eq.rhs, &state_derivative_matcher) {
                     return None;
                 }
@@ -589,6 +593,34 @@ pub fn index_reduce_missing_state_derivatives_once(
     }
 
     Ok(changed)
+}
+
+fn expr_dependency_closure_reaches_state(
+    expr: &Expression,
+    defining_expr_index: &DefiningExprIndex,
+    state_name: &VarName,
+) -> bool {
+    if expr_contains_var(expr, state_name) {
+        return true;
+    }
+
+    let mut seen = HashSet::new();
+    let mut stack: Vec<VarName> = collect_rhs_var_refs(expr).into_iter().collect();
+    while let Some(name) = stack.pop() {
+        if name == *state_name {
+            return true;
+        }
+        if !seen.insert(name.as_str().to_string()) {
+            continue;
+        }
+        for defining_expr in defining_expr_candidates(defining_expr_index, &name) {
+            if expr_contains_var(defining_expr, state_name) {
+                return true;
+            }
+            stack.extend(collect_rhs_var_refs(defining_expr).into_iter());
+        }
+    }
+    false
 }
 
 fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
@@ -804,7 +836,7 @@ pub fn substitute_standalone_state_derivatives_in_non_ode_rows(dae: &mut Dae) ->
             if !expr_contains_der_of(&eq.rhs, state_name) {
                 continue;
             }
-            eq.rhs = substitute_der_of_state(&eq.rhs, state_name, replacement);
+            eq.rhs = substitute_der_of_state(&eq.rhs, state_name, replacement, &None);
             rewritten = true;
         }
         rewritten_rows += usize::from(rewritten);

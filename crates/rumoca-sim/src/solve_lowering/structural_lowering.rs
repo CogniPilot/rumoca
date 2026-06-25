@@ -91,6 +91,14 @@ pub(super) fn prepare_dae_for_structural_analysis(
         "prepare.substitute_standalone_state_derivatives_in_non_ode_rows",
         timer,
     );
+    log_solve_lowering_start("prepare.demote_states_after_standalone_derivative_substitution");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(
+        "prepare.demote_states_after_standalone_derivative_substitution",
+        timer,
+    );
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
         for (index, eq) in lowered.continuous.equations.iter().enumerate() {
             let summary = format!("{}{}", equation_lhs_prefix(eq), debug_render_expr(&eq.rhs));

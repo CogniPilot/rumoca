@@ -60,6 +60,7 @@ fn connection_alias_refs_are_continuous_scalar_algebraics(
     };
     [lhs_ref.var_name(), rhs_ref.var_name()].iter().all(|name| {
         can_eliminate_scalar_connection_alias_var(dae, name, runtime_defined_discrete_targets)
+            || connection_alias_ref_is_structurally_known(dae, name)
     })
 }
 
@@ -84,14 +85,20 @@ fn can_eliminate_continuous_connection_alias(
     let Some(rhs_ref) = full_var_ref(rhs) else {
         return false;
     };
-    [lhs_ref.var_name(), rhs_ref.var_name()].iter().all(|name| {
+    let refs = [lhs_ref.var_name(), rhs_ref.var_name()];
+    let has_eliminable_live = refs.iter().any(|name| {
         live.iter().any(|live_name| live_name == *name)
             && can_eliminate_scalar_connection_alias_var(
                 dae,
                 name,
                 runtime_defined_discrete_targets,
             )
-    })
+    });
+    has_eliminable_live
+        && refs.iter().all(|name| {
+            live.iter().any(|live_name| live_name == *name)
+                || connection_alias_ref_is_structurally_known(dae, name)
+        })
 }
 
 fn can_eliminate_scalar_connection_alias_var(
@@ -104,4 +111,68 @@ fn can_eliminate_scalar_connection_alias_var(
         && dae.variables.algebraics.contains_key(var_name)
         && !runtime_defined_discrete_targets.contains(var_name.as_str())
         && !runtime_partition_or_event_refs_var(dae, var_name)
+}
+
+fn connection_alias_ref_is_structurally_known(dae: &Dae, var_name: &VarName) -> bool {
+    let mut visiting = HashSet::new();
+    connection_alias_ref_is_structurally_known_inner(dae, var_name, &mut visiting)
+}
+
+fn connection_alias_ref_is_structurally_known_inner(
+    dae: &Dae,
+    var_name: &VarName,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    if dae.variables.parameters.contains_key(var_name)
+        || dae.variables.constants.contains_key(var_name)
+        || var_name.as_str() == "time"
+    {
+        return true;
+    }
+    if !dae.variables.algebraics.contains_key(var_name) {
+        return false;
+    }
+    if !visiting.insert(var_name.as_str().to_string()) {
+        return false;
+    }
+    dae.continuous
+        .equations
+        .iter()
+        .filter_map(|eq| direct_definition_expr_for_var(&eq.rhs, var_name))
+        .any(|expr| connection_alias_expr_is_structurally_known(dae, expr, visiting))
+}
+
+fn direct_definition_expr_for_var<'a>(
+    expr: &'a Expression,
+    var_name: &VarName,
+) -> Option<&'a Expression> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let lhs_name = full_var_ref(lhs).map(|reference| reference.var_name());
+    let rhs_name = full_var_ref(rhs).map(|reference| reference.var_name());
+    if lhs_name.as_ref() == Some(&var_name) {
+        Some(rhs)
+    } else if rhs_name.as_ref() == Some(&var_name) {
+        Some(lhs)
+    } else {
+        None
+    }
+}
+
+fn connection_alias_expr_is_structurally_known(
+    dae: &Dae,
+    expr: &Expression,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    let mut refs = indexmap::IndexSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.iter()
+        .all(|name| connection_alias_ref_is_structurally_known_inner(dae, name, visiting))
 }

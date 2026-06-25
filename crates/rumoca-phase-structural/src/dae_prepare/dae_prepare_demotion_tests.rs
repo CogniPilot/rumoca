@@ -138,6 +138,14 @@ fn no_event(expr: Expression) -> Expression {
     }
 }
 
+fn builtin(function: BuiltinFunction, arg: Expression) -> Expression {
+    Expression::BuiltinCall {
+        function,
+        args: vec![arg],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn array(elements: Vec<Expression>) -> Expression {
     Expression::Array {
         elements,
@@ -1172,6 +1180,69 @@ fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
 }
 
 #[test]
+fn test_demote_direct_assigned_array_state_projects_indexed_derivative_reads() {
+    let mut dae = Dae::new();
+    let mut psi = test_variable("psi");
+    psi.dims = vec![2];
+    dae.variables.states.insert(VarName::new("psi"), psi);
+    let mut v = test_variable("v");
+    v.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("v"), v);
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var("psi"), array(vec![var("time"), var("time")]))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx("v", 1), der_idx("psi", 1))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx("v", 2), der_idx("psi", 2))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("psi")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("psi")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| eq.rhs == sub(var_idx("v", 1), real(1.0))),
+        "indexed der(psi[1]) should be projected to the first derivative component"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| eq.rhs == sub(var_idx("v", 2), real(1.0))),
+        "indexed der(psi[2]) should be projected to the second derivative component"
+    );
+}
+
+#[test]
+fn test_seeded_relaxed_derivative_map_resolves_algebraic_alias_derivative() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("q"), test_variable("q"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("i"), test_variable("i"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("u"), test_variable("u"));
+
+    dae.continuous.equations.push(eq(sub(der("q"), var("u"))));
+    dae.continuous.equations.push(eq(sub(var("i"), var("q"))));
+
+    let der_map = build_relaxed_derivative_map_for_exprs(&dae, &[var("i")])
+        .expect("seeded relaxed derivative map should build");
+
+    assert_eq!(der_map.get("i"), Some(&var("u")));
+}
+
+#[test]
 fn test_index_reduction_differentiates_vector_function_constraint_with_structured_subscripts() {
     let constraint_span = Span::from_offsets(
         rumoca_core::SourceId::from_source_name("orientation_constraint.mo"),
@@ -1399,6 +1470,57 @@ fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
     assert!(
         !expr_contains_der_of(differentiated, &VarName::new("distance")),
         "indexed algebraic derivative should be projected from the defining array equation: {differentiated:?}"
+    );
+}
+
+#[test]
+fn test_symbolic_time_derivative_handles_rotation_matrix_transpose() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("theta"), test_variable("theta"));
+    dae.variables.states.insert(VarName::new("psi"), {
+        let mut psi = test_variable("psi");
+        psi.dims = vec![2];
+        psi
+    });
+    dae.variables
+        .algebraics
+        .insert(VarName::new("omega"), test_variable("omega"));
+
+    let rotation = array(vec![
+        array(vec![
+            builtin(BuiltinFunction::Cos, var("theta")),
+            neg(builtin(BuiltinFunction::Sin, var("theta"))),
+        ]),
+        array(vec![
+            builtin(BuiltinFunction::Sin, var("theta")),
+            builtin(BuiltinFunction::Cos, var("theta")),
+        ]),
+    ]);
+    let expr = mul(builtin(BuiltinFunction::Transpose, rotation), var("psi"));
+    let der_map = HashMap::from([
+        ("theta".to_string(), var("omega")),
+        ("psi".to_string(), array(vec![var("v1"), var("v2")])),
+    ]);
+
+    let derivative = symbolic_time_derivative(&expr, &dae, &der_map)
+        .expect("rotation-frame vector derivative should be symbolic");
+
+    assert!(
+        !expr_contains_der_of_non_state(
+            &derivative,
+            &HashSet::from(["theta".to_string(), "psi".to_string()])
+        ),
+        "derivative should not leave der(non-state) calls: {derivative:?}"
+    );
+    assert!(
+        !expr_contains_der_of(&derivative, &VarName::new("psi")),
+        "indexed state derivatives should project through the derivative map: {derivative:?}"
+    );
+    assert!(
+        format!("{derivative:?}").contains("Transpose"),
+        "transpose derivative should stay structured: {derivative:?}"
     );
 }
 
