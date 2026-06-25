@@ -425,7 +425,9 @@
     // runGpuSimulation. Returns null if unavailable (older package without it).
     function loadGpuDriver() {
         if (!gpuDriverPromise && resolvedPkgBase) {
-            gpuDriverPromise = import(resolvedPkgBase + 'rumoca_gpu.js')
+            const url = new URL(resolvedPkgBase + 'rumoca_gpu.js', window.location.href);
+            url.searchParams.set('rumoca_live_gpu', String(Date.now()));
+            gpuDriverPromise = import(url.href)
                 .catch(() => {
                     gpuDriverPromise = null;
                     return null;
@@ -535,6 +537,25 @@ self.onmessage = async (event) => {
 `;
     }
 
+    function makeAbortError(message = 'Stopped') {
+        if (typeof DOMException === 'function') {
+            return new DOMException(message, 'AbortError');
+        }
+        const error = new Error(message);
+        error.name = 'AbortError';
+        return error;
+    }
+
+    function isAbortError(error) {
+        return error && (error.name === 'AbortError' || error.message === 'Stopped');
+    }
+
+    function throwIfAborted(signal) {
+        if (signal?.aborted) {
+            throw makeAbortError();
+        }
+    }
+
     function loadSimWorker() {
         if (!simWorkerPromise) {
             simWorkerPromise = (async () => {
@@ -543,6 +564,15 @@ self.onmessage = async (event) => {
                 const worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
                 const pending = new Map();
                 let nextId = 1;
+                const failAll = (failure) => {
+                    for (const entry of pending.values()) {
+                        if (entry.onAbort && entry.signal) {
+                            entry.signal.removeEventListener('abort', entry.onAbort);
+                        }
+                        entry.reject(failure);
+                    }
+                    pending.clear();
+                };
                 worker.onmessage = (event) => {
                     const { id, ok, result, error } = event.data;
                     const entry = pending.get(id);
@@ -550,6 +580,9 @@ self.onmessage = async (event) => {
                         return;
                     }
                     pending.delete(id);
+                    if (entry.onAbort && entry.signal) {
+                        entry.signal.removeEventListener('abort', entry.onAbort);
+                    }
                     if (ok) {
                         entry.resolve(result);
                     } else {
@@ -558,18 +591,31 @@ self.onmessage = async (event) => {
                 };
                 worker.onerror = (event) => {
                     const failure = new Error(event.message || 'simulation worker failed');
-                    for (const entry of pending.values()) {
-                        entry.reject(failure);
-                    }
-                    pending.clear();
+                    failAll(failure);
                 };
                 return {
-                    request(action, args) {
+                    request(action, args, signal) {
+                        throwIfAborted(signal);
                         return new Promise((resolve, reject) => {
                             const id = nextId++;
-                            pending.set(id, { resolve, reject });
+                            const onAbort = () => {
+                                pending.delete(id);
+                                worker.terminate();
+                                simWorkerPromise = null;
+                                reject(makeAbortError());
+                                failAll(makeAbortError());
+                            };
+                            if (signal) {
+                                signal.addEventListener('abort', onAbort, { once: true });
+                            }
+                            pending.set(id, { resolve, reject, signal, onAbort });
                             worker.postMessage({ id, action, args });
                         });
+                    },
+                    terminate() {
+                        worker.terminate();
+                        simWorkerPromise = null;
+                        failAll(makeAbortError());
                     },
                 };
             })();
@@ -581,13 +627,22 @@ self.onmessage = async (event) => {
     }
 
     // Run a heavy action in the worker, falling back to the main thread.
-    async function runHeavy(action, args, mainThreadFallback) {
+    async function runHeavy(action, args, mainThreadFallback, signal) {
+        throwIfAborted(signal);
         try {
             const worker = await loadSimWorker();
-            return await worker.request(action, args);
+            const result = await worker.request(action, args, signal);
+            throwIfAborted(signal);
+            return result;
         } catch (error) {
+            if (isAbortError(error)) {
+                throw error;
+            }
+            throwIfAborted(signal);
             console.warn(`rumoca-live: worker path failed for ${action}, using main thread:`, error);
-            return mainThreadFallback();
+            const result = await mainThreadFallback();
+            throwIfAborted(signal);
+            return result;
         }
     }
 
@@ -1161,7 +1216,23 @@ self.onmessage = async (event) => {
 
     // Play button + scrubber + time label driving `drawFrame(frameIndex)`.
     // The string returned by drawFrame becomes the label text.
-    function addAnimation(container, times, drawFrame, playDurationMs = 10000) {
+    function addAnimation(container, times, drawFrame, playDurationMs = 10000, options = {}) {
+        if (options.live) {
+            const clock = document.createElement('div');
+            clock.className = 'rumoca-live-status';
+            container.appendChild(clock);
+            const draw = (frame) => {
+                const clamped = Math.max(0, Math.min(times.length - 1, Math.round(frame)));
+                clock.textContent = drawFrame(clamped) || '';
+            };
+            draw(times.length - 1);
+            const anim = { redraw: draw };
+            if (Array.isArray(options.liveAnimations)) {
+                options.liveAnimations.push(anim);
+            }
+            return anim;
+        }
+
         const controls = document.createElement('div');
         controls.className = 'rumoca-live-radial-controls';
         const playBtn = document.createElement('button');
@@ -1285,20 +1356,80 @@ self.onmessage = async (event) => {
         return { vMin, vMax };
     }
 
+    function enableLiveInputModelSource(source) {
+        let next = source.replace(
+            /(\bparameter\s+Boolean\s+interactive\s*=\s*)false\b/,
+            '$1true',
+        );
+        next = next.replace(
+            /\n  parameter Real sc\[NX, NY\] = \{[\s\S]*?\n  \} "Chordwise coordinate in the pitched airfoil frame";/,
+            '\n  Real sc[NX, NY] "Chordwise coordinate in the pitched airfoil frame";',
+        );
+        next = next.replace(
+            /\n  parameter Real nc\[NX, NY\] = \{[\s\S]*?\n  \} "Chord-normal coordinate in the pitched airfoil frame";/,
+            '\n  Real nc[NX, NY] "Chord-normal coordinate in the pitched airfoil frame";',
+        );
+        next = next.replace(
+            /\n  parameter Real sig\[NX, NY\] = \{[\s\S]*?\n  \} "Solid mask \(1 inside the airfoil\)";/,
+            '\n  Real sig[NX, NY] "Solid mask (1 inside the airfoil)";',
+        );
+        return next;
+    }
+
     // The API handed to editable `js,rumoca-viz` blocks (and used by the
     // built-in `viz-radial` mode). Documented in the user guide.
-    function makeVizApi(payload, container, widget) {
+    function makeVizApi(payload, container, widget, options = {}) {
         const names = payload.names || [];
         const data = (payload.allData || []).slice(1);
+        const initialOverrides = widget
+            ? { ...widget.structuralParams, ...widget.paramOverrides }
+            : {};
+        const sourceText = widget?.getSource?.() || '';
+        const sourceNumericParameter = (name, fallback) => {
+            const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(
+                '\\bparameter\\s+(?:Real|Integer)\\s+' + escaped
+                + '\\s*=\\s*(-?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)\\b',
+            );
+            const match = re.exec(sourceText);
+            const value = match ? Number(match[1]) : NaN;
+            return Number.isFinite(value) ? value : fallback;
+        };
         return {
-            overrides: widget ? { ...widget.paramOverrides } : {},
-            // Slider bound to a scalar parameter: changing it re-settles the
-            // prepared vectors and re-runs (GPU path) without recompiling.
+            overrides: initialOverrides,
+            parameter(name, fallback = NaN) {
+                const liveOverrides = widget
+                    ? { ...widget.structuralParams, ...widget.paramOverrides }
+                    : initialOverrides;
+                const override = Number(liveOverrides[name]);
+                if (Number.isFinite(override)) {
+                    return override;
+                }
+                return sourceNumericParameter(name, fallback);
+            },
+            // Slider bound to a scalar parameter. Two modes:
+            //  - default: a tunable parameter; changing it re-settles the
+            //    prepared vectors and re-runs (fast GPU path) without recompiling.
+            //  - { recompile: true }: a STRUCTURAL parameter (e.g. one marked
+            //    annotation(Evaluate=true)). A runtime override of such a
+            //    parameter is rejected by the compiler, so the slider rewrites
+            //    the source literal `<name> = <value>` in the editor and forces a
+            //    full recompile + re-run.
+            //  - { interactiveInput: "u" }: when the widget's Interactive toggle
+            //    is on, slider movement writes the named model input before
+            //    each interactive interval; when it is off, the slider behaves
+            //    like a normal parameter tuner.
             // Locked while a simulation is in flight.
             addTuner(name, opts = {}) {
                 if (!widget) {
                     return;
                 }
+                const structural = !!opts.recompile;
+                const interactiveInput = typeof opts.interactiveInput === 'string'
+                    && opts.interactiveInput
+                    ? opts.interactiveInput
+                    : null;
+                const store = structural ? widget.structuralParams : widget.paramOverrides;
                 const row = document.createElement('div');
                 row.className = 'rumoca-live-tuner';
                 const label = document.createElement('span');
@@ -1308,21 +1439,61 @@ self.onmessage = async (event) => {
                 slider.min = String(opts.min ?? 0);
                 slider.max = String(opts.max ?? 1);
                 slider.step = String(opts.step ?? 0.1);
-                slider.value = String(
-                    widget.paramOverrides[name] ?? opts.value ?? opts.min ?? 0);
+                slider.value = String(store[name] ?? opts.value ?? opts.min ?? 0);
                 const readout = document.createElement('span');
                 readout.className = 'rumoca-live-status';
                 readout.textContent = slider.value;
+                if (interactiveInput) {
+                    slider.dataset.rumocaLiveInput = interactiveInput;
+                    widget.liveInputs[interactiveInput] = Number(slider.value);
+                }
                 slider.addEventListener('input', () => {
                     readout.textContent = slider.value;
+                    const value = Number(slider.value);
+                    if (Number.isFinite(value)) {
+                        if (!structural) {
+                            widget.paramOverrides[name] = value;
+                        }
+                        if (interactiveInput) {
+                            widget.liveInputs[interactiveInput] = value;
+                        }
+                    }
                 });
-                // Apply on release: parameters are frozen during a run, so a
-                // change triggers a fresh (fast) run with the new value.
+                // Input events keep parameter overrides current immediately.
+                // The release event only decides whether to rerun now.
                 slider.addEventListener('change', () => {
-                    if (widget.busy) {
+                    const value = Number(slider.value);
+                    if (Number.isFinite(value)) {
+                        if (!structural) {
+                            widget.paramOverrides[name] = value;
+                        }
+                        if (interactiveInput) {
+                            widget.liveInputs[interactiveInput] = value;
+                        }
+                    }
+                    if (liveCheck.checked && !structural) {
                         return;
                     }
-                    widget.paramOverrides[name] = Number(slider.value);
+                    if (widget.busy) {
+                        widget.restartRun();
+                        return;
+                    }
+                    if (structural) {
+                        // Structural parameter: rewrite the source literal and
+                        // force a full recompile (a runtime override is rejected).
+                        widget.structuralParams[name] = value;
+                        const src = widget.getSource();
+                        const re = new RegExp(
+                            '(parameter\\s+\\w+\\s+' + name + '\\s*=\\s*)'
+                            + '-?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?');
+                        const next = src.replace(re, '$1' + value);
+                        if (next !== src) {
+                            widget.gpuPrep = null;   // invalidate the compiled cache
+                            widget.setSource(next);  // surface the new value in source
+                        }
+                    } else {
+                        widget.paramOverrides[name] = value;
+                    }
                     widget.requestRun();
                 });
                 widget.tunerInputs.push(slider);
@@ -1352,7 +1523,7 @@ self.onmessage = async (event) => {
             },
             makeCanvas: (width, height) => makeCanvas(container, width, height),
             addAnimation: (times, drawFrame, durationMs) =>
-                addAnimation(container, times, drawFrame, durationMs),
+                addAnimation(container, times, drawFrame, durationMs, options),
             addColorbar: (lo, hi, colorFn) =>
                 addColorbar(container, lo, hi, colorFn || heatColor),
         };
@@ -1394,8 +1565,8 @@ self.onmessage = async (event) => {
         return true;
     }
 
-    async function runCustomViz(container, payload, times, code, widget) {
-        const api = makeVizApi(payload, container, widget);
+    async function runCustomViz(container, payload, times, code, widget, options = {}) {
+        const api = makeVizApi(payload, container, widget, options);
         const render = new Function(
             '{ payload, times, names, data, container, api }',
             `return (async () => {\n${code}\n})();`
@@ -1675,6 +1846,11 @@ self.onmessage = async (event) => {
         runBtn.type = 'button';
         runBtn.className = 'rumoca-live-button rumoca-live-run';
         runBtn.textContent = '▶ Simulate';
+        const stopBtn = document.createElement('button');
+        stopBtn.type = 'button';
+        stopBtn.className = 'rumoca-live-button';
+        stopBtn.textContent = 'Stop';
+        stopBtn.disabled = true;
         const daeBtn = document.createElement('button');
         daeBtn.type = 'button';
         daeBtn.className = 'rumoca-live-button';
@@ -1716,9 +1892,16 @@ self.onmessage = async (event) => {
         gpuCheck.checked = gpuDefault;
         gpuLabel.append(gpuCheck, document.createTextNode(' GPU'));
         gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
+        const liveLabel = document.createElement('label');
+        liveLabel.className = 'rumoca-live-gpu';
+        const liveCheck = document.createElement('input');
+        liveCheck.type = 'checkbox';
+        liveCheck.checked = false;
+        liveLabel.append(liveCheck, document.createTextNode(' Interactive'));
+        liveLabel.title = 'Keep registered input sliders live during WasmStepper runs';
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
-        toolbar.append(runBtn, daeBtn, resetBtn, settingsBtn, solverLabel, gpuLabel, status);
+        toolbar.append(runBtn, stopBtn, daeBtn, resetBtn, settingsBtn, solverLabel, gpuLabel, liveLabel, status);
         // Enable the stiff (BDF/diffsol) option only when the browser can load
         // the relaxed-SIMD addon; otherwise leave it greyed out with a reason.
         async function refreshBdfAvailability() {
@@ -1844,7 +2027,11 @@ self.onmessage = async (event) => {
             viewerScriptsByPath: new Map(),
             gpuPrep: null,
             interactiveRunner: null,
+            activeRun: null,
+            rerunAfterStop: false,
             paramOverrides: {},
+            structuralParams: {},
+            liveInputs: {},
             plotSeries: null,
             tunerInputs: [],
             languageServicesActive: false,
@@ -1943,6 +2130,16 @@ self.onmessage = async (event) => {
                     runBtn.click();
                 }
             },
+            restartRun() {
+                if (widget.busy) {
+                    widget.rerunAfterStop = true;
+                    stopCurrentRun();
+                } else {
+                    runBtn.click();
+                }
+            },
+            getSource() { return editor.getValue(); },
+            setSource(text) { editor.setValue(text); },
             setStatus(text) { status.textContent = text; },
             onWasmReady(wasm) {
                 if (widget.languageServicesActive) {
@@ -1988,6 +2185,16 @@ self.onmessage = async (event) => {
             if (widget.interactiveRunner) {
                 widget.interactiveRunner.dispose();
                 widget.interactiveRunner = null;
+            }
+            if (!widget.busy) {
+                stopBtn.disabled = true;
+            }
+        }
+
+        function stopCurrentRun() {
+            stopInteractiveRunner();
+            if (widget.activeRun && !widget.activeRun.signal.aborted) {
+                widget.activeRun.abort();
             }
         }
 
@@ -2324,17 +2531,26 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         };
 
         const withWasm = async (key, busyLabel, action) => {
+            if (widget.busy) {
+                return;
+            }
+            const run = new AbortController();
+            widget.activeRun = run;
             runBtn.disabled = true;
+            stopBtn.disabled = false;
             daeBtn.disabled = true;
             widget.busy = true;
-            // Parameters are frozen during a simulation: lock any tuners.
+            // Parameters are frozen during a simulation: lock ordinary tuners.
+            // Registered input tuners stay enabled in Interactive mode because
+            // the WasmStepper path reads their current values before each step.
             for (const input of widget.tunerInputs) {
-                input.disabled = true;
+                input.disabled = !(liveCheck.checked && input.dataset.rumocaLiveInput);
             }
             let started = null;
             let succeeded = false;
             try {
                 const wasm = await loadWasm();
+                throwIfAborted(run.signal);
                 started = beginProgress(key, busyLabel);
                 const source = editor.getValue();
                 const model = modelOverride || inferModelName(wasm, source);
@@ -2342,24 +2558,37 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     throw new Error('No model/block/class found in this example.');
                 }
                 activateEditorLanguageServices(wasm);
-                await action(wasm, source, model);
+                await action(wasm, source, model, run.signal);
+                throwIfAborted(run.signal);
                 succeeded = true;
             } catch (error) {
-                showError(error);
+                if (isAbortError(error)) {
+                    widget.setStatus('Stopped');
+                } else {
+                    showError(error);
+                }
             } finally {
                 if (started !== null) {
                     endProgress(key, started, succeeded);
                 }
-                widget.busy = false;
-                runBtn.disabled = false;
-                daeBtn.disabled = false;
-                for (const input of widget.tunerInputs) {
-                    input.disabled = false;
+                if (widget.activeRun === run) {
+                    widget.activeRun = null;
+                    widget.busy = false;
+                    runBtn.disabled = false;
+                    stopBtn.disabled = !widget.interactiveRunner;
+                    daeBtn.disabled = false;
+                    for (const input of widget.tunerInputs) {
+                        input.disabled = false;
+                    }
+                    if (widget.rerunAfterStop) {
+                        widget.rerunAfterStop = false;
+                        setTimeout(() => runBtn.click(), 0);
+                    }
                 }
             }
         };
 
-        runBtn.addEventListener('click', () => withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model) => {
+        runBtn.addEventListener('click', () => withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model, signal) => {
             stopInteractiveRunner();
             const sim = scenarioConfig?.sim || {};
             const solver = trimMaybeString(sim.solver).toLowerCase() || solverSelect.value || 'auto';
@@ -2370,13 +2599,14 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 setPhase('Loading source-root cache', null);
             }
             await ensureWasmSourceRootsLoaded(wasm, widget);
+            throwIfAborted(signal);
             if (scenarioWantsInputRuntime(null)) {
                 const interactiveRuntime = await loadInteractiveRuntime();
                 const THREE = await loadThreeModule();
                 const scriptText = await scenarioInteractiveScript();
                 if (scenarioViewerMode() === 'external_web') {
                     setPhase('Opening external interactive viewer', null);
-                    widget.interactiveRunner = await startExternalInteractiveViewer({
+                    const runner = await startExternalInteractiveViewer({
                         wasm,
                         THREE,
                         source,
@@ -2385,6 +2615,11 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                         sourceRootCacheUrl,
                         scriptText,
                     });
+                    if (signal.aborted) {
+                        runner?.dispose?.();
+                        throw makeAbortError();
+                    }
+                    widget.interactiveRunner = runner;
                     output.replaceChildren(Object.assign(document.createElement('div'), {
                         className: 'rumoca-live-note',
                         textContent: 'External interactive viewer opened in a separate browser window. Press Esc there to release input capture; Q stops the simulation.',
@@ -2404,7 +2639,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 output.replaceChildren(shell);
                 output.hidden = false;
                 setPhase('Compiling interactive stepper', null);
-                widget.interactiveRunner = await interactiveRuntime.createInteractiveSimulation({
+                const runner = await interactiveRuntime.createInteractiveSimulation({
                     wasm,
                     THREE,
                     source,
@@ -2416,7 +2651,244 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     assetBaseUrl: scenarioAssetBaseUrl(),
                     onStatus: (text) => widget.setStatus(text),
                 });
+                if (signal.aborted) {
+                    runner?.dispose?.();
+                    throw makeAbortError();
+                }
+                widget.interactiveRunner = runner;
                 widget.interactiveRunner.start();
+                widget.setStatus('Interactive simulation running');
+                return;
+            }
+            if (liveCheck.checked) {
+                const liveSource = enableLiveInputModelSource(source);
+                if (typeof wasm.prepare_gpu_simulation !== 'function') {
+                    throw new Error('Interactive timing metadata needs prepare_gpu_simulation in this WASM build.');
+                }
+                const gpu = await loadGpuDriver();
+                if (!gpu || typeof gpu.probeGpu !== 'function') {
+                    throw new Error(
+                        'Interactive airfoil stepping needs the WebGPU driver; '
+                        + 'rebuild the package or use the non-interactive path.'
+                    );
+                }
+                const adapter = await gpu.probeGpu();
+                setPhase('Preparing interactive GPU stepper', null);
+                const prep = JSON.parse(await runHeavy(
+                    'prepare_gpu',
+                    { source: liveSource, model, sourceRootCacheUrl },
+                    async () => {
+                        const runtime = await loadRuntimeDriver();
+                        return runtime.prepareGpuSimulationWithRuntime({
+                            wasm,
+                            source: liveSource,
+                            modelName: model,
+                            sourceRootCacheUrl,
+                        });
+                    },
+                    signal
+                ));
+                const variableNames = Array.isArray(prep.state_names)
+                    ? prep.state_names.slice()
+                    : [];
+                if (variableNames.length === 0) {
+                    throw new Error('Interactive GPU prep did not expose state names.');
+                }
+                const t0 = Number(prep.t_start) || 0;
+                const outputDt = Number(prep.dt) || 0.05;
+                const stepDt = Number(prep.internal_dt) || outputDt;
+                const times = [];
+                const rows = variableNames.map(() => []);
+
+                let currentY = Array.isArray(prep.y0) ? prep.y0.slice() : [];
+                let currentP = Array.isArray(prep.p0) ? prep.p0.slice() : [];
+                let overrideKey = null;
+                let t = t0;
+                let completedSteps = 0;
+                const bindings = prep.var_layout?.bindings || {};
+                const pIndex = (name) => {
+                    const index = bindings[name]?.P?.index;
+                    return Number.isSafeInteger(index) ? index : null;
+                };
+                const pValue = (name, fallback = 0) => {
+                    const index = pIndex(name);
+                    const value = index === null ? NaN : Number(currentP[index]);
+                    return Number.isFinite(value) ? value : fallback;
+                };
+                const setP = (name, value) => {
+                    const index = pIndex(name);
+                    if (index !== null && Number.isFinite(value)) {
+                        currentP[index] = value;
+                    }
+                };
+                const commandInput = (inputName, overrideName = inputName, fallback = 0) => {
+                    const live = Number(widget.liveInputs[inputName]);
+                    if (Number.isFinite(live)) {
+                        return live;
+                    }
+                    const override = Number(widget.paramOverrides[overrideName]);
+                    if (Number.isFinite(override)) {
+                        return override;
+                    }
+                    return pValue(inputName, fallback);
+                };
+                const syncLiveInputs = () => {
+                    setP('aoa_cmd', commandInput('aoa_cmd', 'aoa', pValue('aoa', 0)));
+                    setP('mc', commandInput('mc', 'mc', pValue('mc', pValue('mc0', 0.02))));
+                    setP('pc', commandInput('pc', 'pc', pValue('pc', pValue('pc0', 0.4))));
+                    setP('tk', commandInput('tk', 'tk', pValue('tk', pValue('tk0', 0.12))));
+                };
+                const refreshStaticParametersIfNeeded = async () => {
+                    const liveInputs = new Set(['aoa', 'aoa_cmd', 'mc', 'pc', 'tk']);
+                    const nextKey = JSON.stringify(
+                        Object.fromEntries(Object.entries(widget.paramOverrides)
+                            .filter(([name]) => !liveInputs.has(name)))
+                    );
+                    if (nextKey === overrideKey) {
+                        return;
+                    }
+                    overrideKey = nextKey;
+                    const updated = JSON.parse(await runHeavy(
+                        'update_gpu',
+                        { source: liveSource, model, overrides: nextKey },
+                        () => wasm.update_gpu_parameters(liveSource, model, nextKey),
+                        signal
+                    ));
+                    currentP = Array.isArray(updated.p0) ? updated.p0.slice() : currentP;
+                    if (completedSteps === 0 && Array.isArray(updated.y0)) {
+                        currentY = updated.y0.slice();
+                    }
+                    syncLiveInputs();
+                };
+                const pushSample = () => {
+                    times.push(t);
+                    for (let i = 0; i < variableNames.length; i++) {
+                        rows[i].push(Number(currentY[i]) || 0);
+                    }
+                };
+                syncLiveInputs();
+                await refreshStaticParametersIfNeeded();
+                pushSample();
+                const liveHost = document.createElement('div');
+                liveHost.className = 'rumoca-live-radial';
+                output.replaceChildren(liveHost);
+                output.hidden = false;
+                const livePayload = {
+                    names: variableNames,
+                    allData: [times, ...rows],
+                    nStates: Number(prep.n_states) || 0,
+                    simDetails: {
+                        actual: {
+                            t_start: t0,
+                            t_end: t0,
+                            points: 1,
+                            variables: variableNames.length,
+                        },
+                        requested: {
+                            solver: 'wgsl-solve interactive',
+                            t_start: t0,
+                            dt: outputDt,
+                            internal_dt: stepDt,
+                        },
+                    },
+                };
+                const liveAnimations = [];
+                if (widget.vizEditor) {
+                    await runCustomViz(
+                        liveHost,
+                        livePayload,
+                        times,
+                        widget.vizEditor.getValue(),
+                        widget,
+                        { live: true, liveAnimations },
+                    );
+                } else if (wantsRadialViz) {
+                    renderRadialViz(liveHost, times, livePayload);
+                }
+                let disposed = false;
+                let timer = null;
+                const runner = {
+                    dispose() {
+                        disposed = true;
+                        if (timer !== null) {
+                            clearTimeout(timer);
+                            timer = null;
+                        }
+                    },
+                };
+                widget.interactiveRunner = runner;
+                let nextTickWall = performance.now();
+                const redrawLive = () => {
+                    const frame = times.length - 1;
+                    for (const anim of liveAnimations) {
+                        anim.redraw(frame);
+                    }
+                    livePayload.simDetails.actual.t_end = times[frame];
+                    livePayload.simDetails.actual.points = times.length;
+                    widget.setStatus(
+                        `Interactive t = ${times[frame].toFixed(2)} s`
+                        + ` · ${completedSteps} steps`
+                    );
+                };
+                const scheduleTick = () => {
+                    const delay = Math.max(0, nextTickWall - performance.now());
+                    timer = setTimeout(tick, delay);
+                };
+                const tick = async () => {
+                    if (disposed) {
+                        return;
+                    }
+                    try {
+                        if (signal.aborted) {
+                            throw makeAbortError();
+                        }
+                        await refreshStaticParametersIfNeeded();
+                        syncLiveInputs();
+                        const intervalPrep = {
+                            ...prep,
+                            y0: currentY,
+                            p0: currentP,
+                            t_start: t,
+                            t_end: t + outputDt,
+                            dt: outputDt,
+                            internal_dt: stepDt,
+                        };
+                        const result = await gpu.runGpuSimulation(
+                            adapter,
+                            intervalPrep,
+                            () => {},
+                            widget.gpu || (widget.gpu = {}),
+                            { signal },
+                        );
+                        const allData = result.payload?.allData || [];
+                        const frameCount = Array.isArray(allData[0]) ? allData[0].length : 0;
+                        if (frameCount < 2) {
+                            throw new Error('Interactive GPU interval produced no output sample.');
+                        }
+                        const last = frameCount - 1;
+                        t = Number(allData[0][last]) || (t + outputDt);
+                        currentY = variableNames.map((_, index) => Number(allData[index + 1]?.[last]) || 0);
+                        completedSteps += Math.max(1, Math.round(outputDt / stepDt));
+                        pushSample();
+                        redrawLive();
+                        if (!disposed) {
+                            nextTickWall = Math.max(
+                                nextTickWall + outputDt * 1000,
+                                performance.now(),
+                            );
+                            scheduleTick();
+                        }
+                    } catch (error) {
+                        runner.dispose();
+                        if (isAbortError(error)) {
+                            widget.setStatus('Stopped');
+                        } else {
+                            showError(error);
+                        }
+                    }
+                };
+                redrawLive();
+                scheduleTick();
                 widget.setStatus('Interactive simulation running');
                 return;
             }
@@ -2453,7 +2925,8 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                                 modelName: model,
                                 sourceRootCacheUrl,
                             });
-                        }
+                        },
+                        signal
                     ));
                     widget.gpuPrep = { source, prep };
                 }
@@ -2466,14 +2939,16 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     const updated = JSON.parse(await runHeavy(
                         'update_gpu',
                         { source, model, overrides },
-                        () => wasm.update_gpu_parameters(source, model, overrides)
+                        () => wasm.update_gpu_parameters(source, model, overrides),
+                        signal
                     ));
                     prep = { ...prep, y0: updated.y0, p0: updated.p0 };
                 }
                 // Per-widget GPU program cache: a parameter-only re-run reuses
                 // the compiled shader + pipelines and just re-uploads y0/p0.
                 widget.gpu = widget.gpu || {};
-                const result = await gpu.runGpuSimulation(adapter, prep, setPhase, widget.gpu);
+                const result = await gpu.runGpuSimulation(adapter, prep, setPhase, widget.gpu, { signal });
+                throwIfAborted(signal);
                 await renderRunResult(result);
                 return;
             }
@@ -2491,6 +2966,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 // defer to the model's experiment annotation.
                 const runtime = await loadRuntimeDriver();
                 setPhase('Compiling & simulating (stiff · diffsol)', null);
+                throwIfAborted(signal);
                 const result = await runtime.simulateModelWithRuntime({
                     wasm,
                     pkgBase: resolvedPkgBase,
@@ -2502,6 +2978,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     sourceRootCacheUrl,
                     parameterOverrides: widget.scenarioParameterOverrides(),
                 });
+                throwIfAborted(signal);
                 await renderRunResult(result);
                 return;
             }
@@ -2523,9 +3000,18 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     sourceRootCacheUrl,
                     parameterOverrides: widget.scenarioParameterOverrides(),
                 }));
-            });
+            }, signal);
+            throwIfAborted(signal);
             await renderRunResult(JSON.parse(raw));
         }));
+
+        stopBtn.addEventListener('click', () => {
+            widget.rerunAfterStop = false;
+            const hadActiveRun = !!widget.activeRun;
+            stopCurrentRun();
+            stopBtn.disabled = true;
+            widget.setStatus(hadActiveRun ? 'Stopping…' : 'Stopped');
+        });
 
         async function renderRunResult(result) {
             const payload = result.payload || {};
@@ -2613,7 +3099,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             return response.text();
         }
 
-        daeBtn.addEventListener('click', () => withWasm('dae', 'Compiling to DAE…', async (wasm, source, model) => {
+        daeBtn.addEventListener('click', () => withWasm('dae', 'Compiling to DAE…', async (wasm, source, model, signal) => {
             const sourceRootCacheUrl = await widget.sourceRootCacheUrl(wasm);
             if (sourceRootCacheUrl) {
                 setPhase('Loading source-root cache', null);
@@ -2627,7 +3113,8 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     modelName: model,
                     sourceRootCacheUrl,
                 });
-            });
+            }, signal);
+            throwIfAborted(signal);
             const daeBox = document.createElement('pre');
             daeBox.className = 'rumoca-live-dae';
             daeBox.textContent = text || '(empty render)';
@@ -2637,12 +3124,13 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }));
 
         resetBtn.addEventListener('click', () => {
+            widget.rerunAfterStop = false;
             if (widget.interactiveRunner && typeof widget.interactiveRunner.reset === 'function') {
                 widget.interactiveRunner.reset();
                 widget.setStatus('Interactive simulation reset');
                 return;
             }
-            stopInteractiveRunner();
+            stopCurrentRun();
             editor.setValue(originalSource);
             if (widget.vizEditor) {
                 widget.vizEditor.reset();

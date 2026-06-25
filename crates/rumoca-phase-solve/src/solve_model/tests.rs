@@ -552,8 +552,13 @@ fn initial_solver_values_preserve_vector_start_reference() {
     q.start = Some(var("body1.Q_start"));
     dae_model.variables.states.insert(q.name.clone(), q);
 
-    let params = default_parameter_values(&dae_model, None, Arc::new(EvalRuntimeState::default()))
-        .expect("parameter vector should lower");
+    let params = default_parameter_values(
+        &dae_model,
+        None,
+        Arc::new(EvalRuntimeState::default()),
+        &std::collections::HashMap::new(),
+    )
+    .expect("parameter vector should lower");
     assert_eq!(params, vec![0.0, 0.0, 0.0, 0.0, 1.0]);
 
     let initial_y = initial_solver_values(

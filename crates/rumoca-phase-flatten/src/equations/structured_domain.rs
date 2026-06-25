@@ -77,6 +77,8 @@ pub(super) fn lift_full_iteration_child_family(
     families: &mut Vec<flat::StructuredEquationFamily>,
     parent_domain: &rumoca_core::StructuredIndexDomain,
     iterations: &[SourceStructuredIteration],
+    regular: Option<rumoca_core::RegularForFamily>,
+    template: Option<rumoca_core::ComprehensionTemplate>,
 ) -> bool {
     let Some(group) = complete_liftable_child_group(families, iterations) else {
         return false;
@@ -98,6 +100,16 @@ pub(super) fn lift_full_iteration_child_family(
         equation_counts,
         span: first_family.span,
         origin: first_family.origin,
+        regular,
+        // The lifted (multi-binder) family's comprehension body is captured in
+        // `expand_for_equation` from the original un-substituted loop, so every binder
+        // stays symbolic; the per-child templates this lift consumes only describe the
+        // inner binder and are discarded in favor of `template`.
+        template,
+        // The lifted 2-D family is cheapened iff the child (inner-binder) families
+        // were: nested cheapening happens in the inner `expand_for_equation`, whose
+        // families this lift consumes.
+        interiors_materialized: first_family.interiors_materialized,
     };
     let insert_at = remove_indices[0];
     for index in remove_indices.iter().rev() {

@@ -807,7 +807,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
             },
             initialization: solve::InitializationSolveSystem {
-                residual: zero.clone(),
+                residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                 row_targets: Vec::new(),
                 projection_indices: Vec::new(),
                 projection_plan: solve::AlgebraicProjectionPlan::default(),

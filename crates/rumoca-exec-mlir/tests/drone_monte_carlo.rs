@@ -161,7 +161,7 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },
             initialization: InitializationSolveSystem {
-                residual: zero_rb.clone(),
+                residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
                 row_targets: Vec::new(),
                 projection_indices: Vec::new(),
                 projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),

@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::lower) fn collect_derivative_equations(
     dae_model: &dae::Dae,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<(Vec<DerivativeEquation>, Vec<bool>), LowerError> {
     let mut equations = Vec::new();
@@ -67,7 +67,7 @@ pub(in crate::lower) struct ResidualDerivativeRowsContext {
 pub(in crate::lower) fn append_derivative_rows_for_residual(
     equations: &mut Vec<DerivativeEquation>,
     residual: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     context: ResidualDerivativeRowsContext,
@@ -128,7 +128,7 @@ pub(in crate::lower) fn collect_direct_assignments(
 
 pub(in crate::lower) fn collect_missing_indexed_record_field_assignments(
     dae_model: &dae::Dae,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<IndexMap<String, DirectAssignmentValue>, LowerError> {
@@ -668,7 +668,7 @@ fn derivative_linear_parts_for_equation_probe(
 
 pub(in crate::lower) fn derivative_equations_from_residual(
     residual: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     scalar_count: Option<usize>,
@@ -784,7 +784,7 @@ pub(in crate::lower) fn projected_vector_derivative_equations_from_residual(
 
 pub(in crate::lower) fn direct_derivative_equations_from_residual(
     residual: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
@@ -834,7 +834,7 @@ pub(in crate::lower) struct AffineVectorDerivativeTerm {
 
 pub(in crate::lower) fn affine_vector_derivative_equations_from_residual(
     residual: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
@@ -985,7 +985,7 @@ pub(in crate::lower) fn combine_optional_remainder(
 pub(in crate::lower) fn build_affine_vector_derivative_equations(
     term: AffineVectorDerivativeTerm,
     base_rhs: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     span: rumoca_core::Span,
@@ -1069,7 +1069,7 @@ pub(in crate::lower) fn build_affine_vector_derivative_equations(
 
 pub(in crate::lower) fn matrix_vector_derivative_equations_from_residual(
     residual: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
@@ -1129,7 +1129,7 @@ fn optional_derivative_probe<T>(
 
 pub(in crate::lower) fn matrix_vector_derivative_term(
     expr: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
@@ -1170,7 +1170,7 @@ pub(in crate::lower) fn matrix_vector_derivative_term(
 pub(in crate::lower) fn matrix_times_derivative_coefficients(
     matrix: &rumoca_core::Expression,
     target: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
@@ -1201,7 +1201,7 @@ pub(in crate::lower) fn matrix_times_derivative_coefficients(
 pub(in crate::lower) fn derivative_times_matrix_coefficients(
     target: &rumoca_core::Expression,
     matrix: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,

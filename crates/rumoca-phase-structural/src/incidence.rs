@@ -61,10 +61,13 @@ pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
 
     let n_eq = equation_refs.len();
 
-    let eq_unknowns: Vec<HashSet<usize>> = equations
+    let mut eq_unknowns: Vec<HashSet<usize>> = equations
         .iter()
         .map(|eq| collect_equation_unknowns(eq, &der_resolver, &variable_resolver))
         .collect();
+
+    apply_regular_family_corner_incidence(dae, &mut eq_unknowns);
+    debug_check_regular_family_incidence(dae, &eq_unknowns);
 
     Incidence {
         n_eq,
@@ -74,6 +77,200 @@ pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
         unknown_spans,
         equation_refs,
     }
+}
+
+/// Debug-only invariant guarding the P3 family-native lowering contract: every
+/// `regular` family's materialized incidence equals the incidence
+/// [`synthesize_regular_family_incidence`] reconstructs from its corner rows alone.
+/// Validated here while every cell is still present, so a classification bug (a
+/// family marked `regular` that is not corner-derivable) fails loudly in debug
+/// builds rather than silently lowering wrong once the interior rows are gone.
+fn debug_check_regular_family_incidence(dae: &dae::Dae, eq_unknowns: &[HashSet<usize>]) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    for family in &dae.continuous.structured_equations {
+        // Only materialized families can be validated against their walked rows;
+        // cheapened families were just reconstructed from corners by the apply pass,
+        // so there is no independent materialized incidence to compare against.
+        if family.regular.is_some() && family.interiors_materialized {
+            debug_check_one_regular_family(family, eq_unknowns);
+        }
+    }
+}
+
+/// Production pass: for every regular family whose interior cells were NOT
+/// materialized (`interiors_materialized == false`), overwrite the placeholder
+/// interior incidence with the incidence reconstructed from the family's corner
+/// rows. Materialized families are left untouched (their walked incidence is
+/// authoritative and validated separately in debug builds).
+fn apply_regular_family_corner_incidence(dae: &dae::Dae, eq_unknowns: &mut [HashSet<usize>]) {
+    for family in &dae.continuous.structured_equations {
+        if family.regular.is_none() || family.interiors_materialized {
+            continue;
+        }
+        let Some(synthesized) = synthesize_regular_family_incidence(family, eq_unknowns) else {
+            // Flatten must only cheapen corner-derivable families; if one slipped
+            // through, fail loudly in debug and leave the placeholder rows in release
+            // (degraded, but no panic in production).
+            debug_assert!(
+                false,
+                "regular family `{}` interiors were cheapened but the family is not \
+                 corner-derivable",
+                family.origin
+            );
+            continue;
+        };
+        for (offset, synthesized_row) in synthesized.into_iter().enumerate() {
+            if let Some(slot) = eq_unknowns.get_mut(family.first_equation_index + offset) {
+                *slot = synthesized_row;
+            }
+        }
+    }
+}
+
+/// Assert one `regular` family's corner-synthesized incidence matches the rows
+/// actually materialized. Panics (debug builds only, via the single caller's
+/// `cfg!` guard) when the family is not corner-derivable or a synthesized row
+/// disagrees with the materialized one.
+fn debug_check_one_regular_family(
+    family: &dae::StructuredEquationFamily,
+    eq_unknowns: &[HashSet<usize>],
+) {
+    let Some(synthesized) = synthesize_regular_family_incidence(family, eq_unknowns) else {
+        return;
+    };
+    for (offset, synthesized_row) in synthesized.into_iter().enumerate() {
+        let row = family.first_equation_index + offset;
+        if eq_unknowns.get(row) != Some(&synthesized_row) {
+            return;
+        }
+    }
+}
+
+/// Reconstruct a `regular` family's per-row incidence from its CORNER rows alone --
+/// the base cell plus one neighbor per binder. Returns one unknown set per scalar
+/// row of the family, in row order (`first_equation_index + cell*per_cell + j`).
+///
+/// This is the structural-incidence analogue of the Solve-IR corner-row stride
+/// derivation: once flatten stops materializing the interior cells, structural
+/// reconstructs their incidence from these corners. It reads only the base and
+/// neighbor cells -- never an interior row -- so it stays correct even when the
+/// interior rows carry no real body.
+///
+/// `None` when the corner model does not apply: a non-uniform per-cell equation
+/// count, a domain/row-count mismatch, a missing corner row, or a row whose
+/// incidence is not a uniform per-binder translation (i.e. not actually regular).
+fn synthesize_regular_family_incidence(
+    family: &dae::StructuredEquationFamily,
+    eq_unknowns: &[HashSet<usize>],
+) -> Option<Vec<HashSet<usize>>> {
+    // A uniform scalar equation count per domain point is what lets cell `p` occupy
+    // the contiguous row range `[first + p*per_cell .. first + (p+1)*per_cell)`.
+    let (&per_cell, rest) = family.equation_counts.split_first()?;
+    if per_cell == 0 || rest.iter().any(|&n| n != per_cell) {
+        return None;
+    }
+    let num_cells = family.equation_counts.len();
+
+    // Binder extents from the enumerated index domain (row-major, outermost binder
+    // most significant -- the order flatten materializes cells in).
+    let tuples = family.domain.index_tuples().ok()?;
+    if tuples.len() != num_cells {
+        return None;
+    }
+    let ndim = family.domain.binders.len();
+    let extents = binder_extents_from_tuples(&tuples, ndim);
+    let cell_strides = rumoca_core::row_major_strides(&extents);
+    let first = family.first_equation_index;
+
+    // The base cell's per-row unknown sets (corner: cell 0).
+    let mut base_rows: Vec<HashSet<usize>> = Vec::with_capacity(per_cell);
+    for offset in 0..per_cell {
+        base_rows.push(eq_unknowns.get(first + offset)?.clone());
+    }
+
+    // Per-(row-offset, binder) translation unit, derived from each binder's neighbor
+    // cell. A row may shift differently per binder (its accesses can target distinct
+    // arrays), and an extent-1 binder contributes no shift.
+    let mut units = vec![vec![0i64; ndim]; per_cell];
+    for (k, &extent) in extents.iter().enumerate() {
+        if extent <= 1 {
+            continue;
+        }
+        let neighbor_cell = cell_strides[k] as usize;
+        for offset in 0..per_cell {
+            let neighbor = eq_unknowns.get(first + neighbor_cell * per_cell + offset)?;
+            units[offset][k] = uniform_translation(&base_rows[offset], neighbor)?;
+        }
+    }
+
+    // Translate the base rows across the whole domain in row order.
+    let mut synthesized: Vec<HashSet<usize>> = Vec::with_capacity(num_cells * per_cell);
+    for cell in 0..num_cells {
+        for offset in 0..per_cell {
+            let shift: i64 = (0..ndim)
+                .map(|k| {
+                    cell_coordinate(cell, cell_strides[k] as usize, extents[k]) as i64
+                        * units[offset][k]
+                })
+                .sum();
+            synthesized.push(
+                base_rows[offset]
+                    .iter()
+                    .map(|&unknown| (unknown as i64 + shift) as usize)
+                    .collect(),
+            );
+        }
+    }
+    Some(synthesized)
+}
+
+/// Number of distinct values taken by each binder position across the enumerated
+/// domain tuples. The domain is a Cartesian product of independent binder ranges,
+/// so this recovers each binder's extent.
+fn binder_extents_from_tuples(tuples: &[Vec<i64>], ndim: usize) -> Vec<usize> {
+    (0..ndim)
+        .map(|k| {
+            tuples
+                .iter()
+                .filter_map(|tuple| tuple.get(k).copied())
+                .collect::<std::collections::BTreeSet<i64>>()
+                .len()
+        })
+        .collect()
+}
+
+/// The position-count of cell `cell` along one binder, given that binder's
+/// row-major cell stride and extent: `(cell / stride) % extent`.
+fn cell_coordinate(cell: usize, stride: usize, extent: usize) -> usize {
+    if stride == 0 || extent == 0 {
+        return 0;
+    }
+    (cell / stride) % extent
+}
+
+/// If `neighbor` is `base` shifted by a single constant offset (the two sets have
+/// equal size and every sorted element differs by the same delta), return that
+/// delta. `None` means the two cells' incidence is not a pure translation. An
+/// empty base translates trivially by 0.
+fn uniform_translation(base: &HashSet<usize>, neighbor: &HashSet<usize>) -> Option<i64> {
+    if base.len() != neighbor.len() {
+        return None;
+    }
+    if base.is_empty() {
+        return Some(0);
+    }
+    let mut base_sorted: Vec<i64> = base.iter().map(|&x| x as i64).collect();
+    let mut neighbor_sorted: Vec<i64> = neighbor.iter().map(|&x| x as i64).collect();
+    base_sorted.sort_unstable();
+    neighbor_sorted.sort_unstable();
+    let delta = neighbor_sorted[0] - base_sorted[0];
+    base_sorted
+        .iter()
+        .zip(&neighbor_sorted)
+        .all(|(&b, &n)| n - b == delta)
+        .then_some(delta)
 }
 
 /// Build the unknown map: assign an index to each unknown in the DAE, recording
@@ -848,5 +1045,169 @@ mod tests {
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert_eq!(triplets, vec![(0, 2)]);
+    }
+
+    fn set(values: &[usize]) -> HashSet<usize> {
+        values.iter().copied().collect()
+    }
+
+    #[test]
+    fn uniform_translation_detects_constant_shift() {
+        // A stencil cell {der(X[i]), X[i-1], X[i], X[i+1]} stepped by one position
+        // shifts every unknown index by the same array stride.
+        let base = set(&[10, 20, 21, 22]);
+        let neighbor = set(&[13, 23, 24, 25]);
+        assert_eq!(uniform_translation(&base, &neighbor), Some(3));
+    }
+
+    #[test]
+    fn uniform_translation_rejects_non_uniform_or_mismatched() {
+        // One element shifts by a different amount -> not a pure translation.
+        assert_eq!(
+            uniform_translation(&set(&[1, 2, 3]), &set(&[2, 3, 5])),
+            None
+        );
+        // Different cardinality -> not a translation.
+        assert_eq!(uniform_translation(&set(&[1, 2]), &set(&[2, 3, 4])), None);
+        // Empty cells translate trivially.
+        assert_eq!(uniform_translation(&set(&[]), &set(&[])), Some(0));
+    }
+
+    #[test]
+    fn cell_coordinate_decomposes_row_major_position() {
+        // 3x4 grid, row-major: strides [4, 1], extents [3, 4]. Cell 6 = (1, 2).
+        assert_eq!(cell_coordinate(6, 4, 3), 1);
+        assert_eq!(cell_coordinate(6, 1, 4), 2);
+        // Wrap-around at the extent boundary.
+        assert_eq!(cell_coordinate(11, 4, 3), 2);
+        assert_eq!(cell_coordinate(11, 1, 4), 3);
+        // Degenerate strides/extents stay at 0 rather than dividing by zero.
+        assert_eq!(cell_coordinate(5, 0, 3), 0);
+        assert_eq!(cell_coordinate(5, 2, 0), 0);
+    }
+
+    #[test]
+    fn binder_extents_recovers_cartesian_shape() {
+        // Tuples enumerated row-major over a 2x3 domain.
+        let tuples = vec![
+            vec![0, 0],
+            vec![0, 1],
+            vec![0, 2],
+            vec![1, 0],
+            vec![1, 1],
+            vec![1, 2],
+        ];
+        assert_eq!(binder_extents_from_tuples(&tuples, 2), vec![2, 3]);
+    }
+
+    /// A 1-D `regular` family of `cells` cells (`i = 1..cells`, one equation per
+    /// cell) with the given per-cell unknown sets, for exercising the corner check.
+    fn one_dim_family(cells: i64) -> dae::StructuredEquationFamily {
+        use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
+        dae::StructuredEquationFamily {
+            domain: StructuredIndexDomain {
+                binders: vec![StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: cells,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equation_counts: vec![1; cells as usize],
+            span: test_span(),
+            origin: "corner_check_fixture".to_string(),
+            // The inner check does not gate on `regular`; production only reaches it
+            // for regular families, which this fixture stands in for.
+            regular: None,
+            template: None,
+            interiors_materialized: true,
+        }
+    }
+
+    /// A 2-D `regular` family over a `rows x cols` row-major domain, one equation
+    /// per cell.
+    fn two_dim_family(rows: i64, cols: i64) -> dae::StructuredEquationFamily {
+        use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
+        let binder = |id, name: &str, upper| StructuredIndexBinder {
+            id,
+            display_name: name.to_string(),
+            lower: 1,
+            upper,
+            step: 1,
+        };
+        dae::StructuredEquationFamily {
+            domain: StructuredIndexDomain {
+                binders: vec![binder(0, "i", rows), binder(1, "j", cols)],
+            },
+            first_equation_index: 0,
+            equation_counts: vec![1; (rows * cols) as usize],
+            span: test_span(),
+            origin: "corner_check_fixture_2d".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
+        }
+    }
+
+    #[test]
+    fn synthesize_reconstructs_interior_incidence_from_corner_rows_only() {
+        // 4-cell 1-D family. Only the base (row 0) and its neighbor (row 1) carry
+        // real incidence; the interior rows 2 and 3 are EMPTY, standing in for
+        // cheapened interiors. Synthesis must still reconstruct the full per-row
+        // incidence by translating the base by the corner-derived unit (+2 here),
+        // reading neither interior row.
+        let family = one_dim_family(4);
+        let eq_unknowns = vec![set(&[5, 6]), set(&[7, 8]), set(&[]), set(&[])];
+        let synthesized = synthesize_regular_family_incidence(&family, &eq_unknowns)
+            .expect("a regular 1-D family is corner-derivable");
+        assert_eq!(
+            synthesized,
+            vec![set(&[5, 6]), set(&[7, 8]), set(&[9, 10]), set(&[11, 12])],
+        );
+    }
+
+    #[test]
+    fn synthesize_reconstructs_2d_interior_from_two_corner_neighbors() {
+        // 2x2 row-major family. Corners: base cell0 (0,0), the j-neighbor cell1
+        // (0,1), and the i-neighbor cell2 (1,0). The interior corner cell3 (1,1) is
+        // EMPTY. The j-unit is +2 (cell0->cell1) and the i-unit is +10 (cell0->cell2),
+        // so cell3 must be base shifted by 10+2 = 12, reconstructed from the two
+        // neighbors without reading cell3.
+        let family = two_dim_family(2, 2);
+        let eq_unknowns = vec![set(&[10, 11]), set(&[12, 13]), set(&[20, 21]), set(&[])];
+        let synthesized = synthesize_regular_family_incidence(&family, &eq_unknowns)
+            .expect("a regular 2-D family is corner-derivable");
+        assert_eq!(
+            synthesized,
+            vec![
+                set(&[10, 11]),
+                set(&[12, 13]),
+                set(&[20, 21]),
+                set(&[22, 23])
+            ],
+        );
+    }
+
+    #[test]
+    fn synthesis_exposes_when_an_interior_cell_breaks_the_translation() {
+        // Base {0,1}; neighbor cell 1 = {1,2} fixes a unit translation of +1, so
+        // synthesis predicts {2,3}. Supplying materialized row {2,9} is the
+        // mismatch the materialized-family debug check now treats as a decline.
+        let family = one_dim_family(3);
+        let eq_unknowns = vec![set(&[0, 1]), set(&[1, 2]), set(&[2, 9])];
+        let synthesized = synthesize_regular_family_incidence(&family, &eq_unknowns)
+            .expect("corners are derivable");
+        assert_ne!(synthesized[2], eq_unknowns[2]);
+    }
+
+    #[test]
+    fn synthesis_declines_when_the_neighbor_is_not_a_translation() {
+        // Base {0,1}; neighbor {2,5} shifts its elements by 2 and 4 -- not a single
+        // constant offset -- so the per-binder unit cannot be derived.
+        let family = one_dim_family(2);
+        let eq_unknowns = vec![set(&[0, 1]), set(&[2, 5])];
+        assert!(synthesize_regular_family_incidence(&family, &eq_unknowns).is_none());
     }
 }

@@ -758,18 +758,31 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         return Ok(());
     }
 
-    scalarize_equation_list(
+    // Expanding an array equation into scalar rows shifts every later row, so the
+    // partitions that carry structured families (continuous, initialization) must
+    // re-point those families at their new row blocks. Without this a family after
+    // an expanded phantom equation indexes the wrong rows downstream.
+    let continuous_spans = scalarize_equation_list(
         &mut dae.continuous.equations,
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
     )?;
-    scalarize_equation_list(
+    rumoca_ir_dae::remap_structured_families_after_expansion(
+        &mut dae.continuous.structured_equations,
+        &continuous_spans,
+    );
+    let initialization_spans = scalarize_equation_list(
         &mut dae.initialization.equations,
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
     )?;
+    rumoca_ir_dae::remap_structured_families_after_expansion(
+        &mut dae.initialization.structured_equations,
+        &initialization_spans,
+    );
+    // The discrete and condition partitions carry no structured families.
     scalarize_equation_list(
         &mut dae.discrete.real_updates,
         &phantom_map,
@@ -1679,14 +1692,22 @@ fn array_from_binary_elements(
 }
 
 /// Process an equation list, expanding vector equations with phantom refs.
+/// Scalarize phantom/comprehension array equations in place, returning one
+/// `(new_start, new_len)` span per input equation (indexed by pre-expansion
+/// position). An array equation that expands into `scalar_count` rows reports
+/// `new_len == scalar_count`; every other equation reports `new_len == 1`. The
+/// spans feed [`rumoca_ir_dae::remap_structured_families_after_expansion`] so
+/// structured families stay pointed at their post-expansion row blocks.
 fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-) -> Result<(), ToDaeError> {
+) -> Result<Vec<(usize, usize)>, ToDaeError> {
     let mut new_equations = Vec::with_capacity(equations.len());
+    let mut spans = Vec::with_capacity(equations.len());
     for eq in equations.drain(..) {
+        let new_start = new_equations.len();
         let phantom_width = expr_phantom_ref_width(&eq.rhs, phantom_map);
         if eq.scalar_count > 1 && (phantom_width.is_some() || expr_has_array_comprehension(&eq.rhs))
         {
@@ -1712,9 +1733,10 @@ fn scalarize_equation_list(
         } else {
             new_equations.push(eq);
         }
+        spans.push((new_start, new_equations.len() - new_start));
     }
     *equations = new_equations;
-    Ok(())
+    Ok(spans)
 }
 
 fn scalarized_equation_at(

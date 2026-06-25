@@ -153,7 +153,7 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
         args.diagnostics.verbose,
     )?;
     let compile_seconds = compile_started.elapsed().as_secs_f64();
-    let solver = simulate_solver_or_auto(args.solver);
+    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
 
     let mut opts = SimOptions {
         t_end: direct_sim_t_end(args.t_end),

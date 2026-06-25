@@ -26,6 +26,7 @@ use crate::{
     RowEvalContext, to_scalar_program_block,
 };
 
+mod sensitivity;
 mod support;
 use support::{
     NewtonProbe, apply_newton_steps, copy_runtime_values, copy_runtime_values_into,
@@ -150,6 +151,10 @@ pub struct SolveRuntime {
     /// seed completed by `seed_refresh_derivative_dependencies` — to form
     /// the exact state Jacobian for the state-only BDF path.
     derivative_jacobian_v: PreparedScalarProgramBlock,
+    /// Primal state-derivative scalar program `der = f(solver_y, p, t)`. Reversed
+    /// by [`Self::reverse_state_derivative_vjp`] to form the reverse-mode VJP
+    /// `(∂der/∂[solver_y|p])ᵀ·λ` (Track A scalar reverse core).
+    derivative_scalar: PreparedScalarProgramBlock,
     /// Per-row forward-mode AD Jacobian-vector product of `implicit_rhs`
     /// (`d(residual_row)/d(y)·v`). Used to propagate the state seed through the
     /// algebraic projection (`d(alg)/d(state)`) row by row.
@@ -162,6 +167,9 @@ pub struct SolveRuntime {
     runtime_state: solve_eval::SimulationRuntimeState,
     derivative_scratch: RefCell<StateDerivativeScratch>,
     root_scratch: RefCell<Vec<f64>>,
+    /// Reusable register tape / adjoint buffers for the reverse-mode VJP sweep,
+    /// kept across calls so a hot reverse loop stays allocation-free.
+    reverse_scratch: RefCell<crate::reverse::ReverseScratch>,
 }
 
 impl SolveRuntime {
@@ -194,6 +202,7 @@ impl SolveRuntime {
             derivative_jacobian_v: PreparedScalarProgramBlock::new(
                 model.artifacts.continuous.full_jacobian_v.clone(),
             )?,
+            derivative_scalar: PreparedScalarProgramBlock::new(derivative_scalar_rhs)?,
             implicit_jacobian_v: PreparedScalarProgramBlock::new(
                 model
                     .artifacts
@@ -214,6 +223,7 @@ impl SolveRuntime {
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             derivative_scratch: RefCell::new(StateDerivativeScratch::default()),
             root_scratch: RefCell::new(Vec::new()),
+            reverse_scratch: RefCell::new(crate::reverse::ReverseScratch::default()),
         })
     }
 
@@ -877,175 +887,6 @@ impl SolveRuntime {
         }
         self.refresh_derivative_dependencies(t, guess, params, tol, max_iters)?;
         self.eval_derivative_rhs_from_solver_y(t, guess, params, out)
-    }
-
-    /// Exact state Jacobian-vector product `d(der)/d(state)·v` for the state-only
-    /// BDF path, accounting for the algebraic projection.
-    ///
-    /// The state-only path integrates the reduced ODE `der = f(state, alg(state))`,
-    /// where `alg(state)` is recovered each step by the algebraic projection. The
-    /// total state Jacobian is therefore
-    /// `∂f/∂state·v + ∂f/∂alg · (d(alg)/d(state)·v)`. We compute it in three steps:
-    ///
-    /// 1. reconstruct the linearization point `solver_y` (states + projected
-    ///    algebraics) via the value refresh;
-    /// 2. propagate the state seed `v` through the same projection
-    ///    (`seed_refresh_derivative_dependencies`) to fill the algebraic
-    ///    seeds `d(alg)/d(state)·v`;
-    /// 3. apply the derivative JVP `derivative_jacobian_v` to the completed seed.
-    ///
-    /// The result is exact (true structural zeros stay exactly zero, so diffsol's
-    /// NaN-sparsity probe recovers the correct pattern) and uses no finite
-    /// differences. For pure ODEs step 2 is a no-op and this reduces to the plain
-    /// derivative JVP.
-    pub fn eval_state_jacobian_v_ad_into(
-        &self,
-        t: f64,
-        state: &[f64],
-        params: &[f64],
-        seed: &[f64],
-        settle: AlgebraicSettle,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        validate_derivative_output_len(out, self.state_count)?;
-        let mut scratch = self.derivative_scratch.borrow_mut();
-        let StateDerivativeScratch {
-            solver_y,
-            seed_buf,
-            unit_seed,
-        } = &mut *scratch;
-        // (1) Linearization point: project the algebraics from the state.
-        self.populate_solver_y_from_state(solver_y, state)?;
-        self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
-        // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),
-        // so the seed vector spans `[solver-y | parameter]` space. We differentiate
-        // with respect to the state only, so all non-state seeds (algebraics and
-        // parameters) start at zero; the algebraic seeds are then filled by the
-        // projection forward-sensitivity below.
-        let seed_len = self
-            .derivative_jacobian_v
-            .requirements()
-            .seed_len
-            .max(self.implicit_jacobian_v.requirements().seed_len)
-            .max(self.solver_count);
-        seed_buf.clear();
-        seed_buf.resize(seed_len, 0.0);
-        let n = self.state_count.min(seed.len());
-        seed_buf[..n].copy_from_slice(&seed[..n]);
-        unit_seed.clear();
-        unit_seed.resize(seed_len, 0.0);
-        // (2) Forward-propagate the seed through the algebraic projection.
-        self.seed_refresh_derivative_dependencies(
-            t, solver_y, params, seed_buf, unit_seed, settle,
-        )?;
-        // (3) Total state Jacobian-vector product via the derivative JVP.
-        let context = RowEvalContext {
-            seed: Some(seed_buf.as_slice()),
-            ..self.row_eval_context()
-        };
-        self.derivative_jacobian_v
-            .eval_with_context(solver_y, params, t, context, out)
-            .map_err(Into::into)
-    }
-
-    /// Forward-sensitivity ("seed") refresh: with `solver_y` at the linearization
-    /// point and the state seed already written into `seed[..state_count]`, fill
-    /// the algebraic slots of `seed` with `d(alg)/d(state)·v` by propagating the
-    /// seed through the same projection rows used for the value refresh. This
-    /// mirrors [`Self::refresh_derivative_dependencies`] but linearized.
-    fn seed_refresh_derivative_dependencies(
-        &self,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        seed: &mut [f64],
-        unit_seed: &mut [f64],
-        settle: AlgebraicSettle,
-    ) -> Result<(), RuntimeSolveError> {
-        let plan = &self.derivative_refresh;
-        if plan.rows.is_empty() {
-            return Ok(());
-        }
-        if !plan.iterative {
-            // Causal single pass: each target is solved after its dependencies.
-            for row in &plan.rows {
-                self.seed_refresh_row(t, solver_y, params, seed, unit_seed, row)?;
-            }
-            return Ok(());
-        }
-        // Algebraic loop: Gauss–Seidel on the (linear) seed system, mirroring the
-        // value iteration. Since the value refresh already converged at this
-        // point, the seed iteration converges at the same rate.
-        for _ in 0..settle.max_iters.max(1) {
-            let mut max_delta = 0.0_f64;
-            for row in &plan.rows {
-                let before = seed[row.target_index];
-                self.seed_refresh_row(t, solver_y, params, seed, unit_seed, row)?;
-                max_delta = max_delta.max((seed[row.target_index] - before).abs());
-            }
-            if max_delta <= settle.tol {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    /// Solve one residual row `g(y)=0` (which defines algebraic slot `target`) for
-    /// its seed via the implicit-function theorem:
-    /// `seed[target] = -(∂g/∂others · seed) / (∂g/∂target)`, both directional
-    /// derivatives read from the per-row implicit JVP.
-    fn seed_refresh_row(
-        &self,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        seed: &mut [f64],
-        unit_seed: &mut [f64],
-        row: &AlgebraicRefreshRow,
-    ) -> Result<(), RuntimeSolveError> {
-        let target = row.target_index;
-        // Off-diagonal term: JVP of the row with the target's own seed held at 0.
-        let saved = seed[target];
-        seed[target] = 0.0;
-        let off_diagonal = self.eval_implicit_jacobian_row(row, solver_y, params, t, seed)?;
-        seed[target] = saved;
-        // Diagonal term ∂g/∂target via a unit seed isolated to the target slot.
-        unit_seed[target] = 1.0;
-        let diagonal = self.eval_implicit_jacobian_row(row, solver_y, params, t, unit_seed)?;
-        unit_seed[target] = 0.0;
-        seed[target] = if diagonal.is_finite() && diagonal.abs() > SEED_DIAGONAL_EPS {
-            -off_diagonal / diagonal
-        } else {
-            // The row does not constrain its target through its own value (a true
-            // structural zero on the diagonal); the seed contribution is zero.
-            0.0
-        };
-        Ok(())
-    }
-
-    /// Directional derivative `∂g_row/∂y · seed` of implicit residual row
-    /// `row_idx`, evaluated at `solver_y` with the given seed.
-    fn eval_implicit_jacobian_row(
-        &self,
-        row: &AlgebraicRefreshRow,
-        solver_y: &[f64],
-        params: &[f64],
-        t: f64,
-        seed: &[f64],
-    ) -> Result<f64, RuntimeSolveError> {
-        self.implicit_jacobian_v
-            .eval_row_output_unchecked_with_context(
-                row.row_idx,
-                row.output_offset,
-                solver_y,
-                params,
-                t,
-                RowEvalContext {
-                    seed: Some(seed),
-                    ..self.row_eval_context()
-                },
-            )
-            .map_err(Into::into)
     }
 
     pub fn eval_root_conditions(
@@ -1908,6 +1749,18 @@ struct StateDerivativeScratch {
 pub struct AlgebraicSettle {
     pub tol: f64,
     pub max_iters: usize,
+}
+
+/// Shared linearization context for the reconstruct-then-JVP entry points: the
+/// evaluation time, the parameter vector, and the algebraic-settle tolerance
+/// used to project algebraics from the state before linearizing. Bundling these
+/// keeps the sensitivity entry points within the argument-count budget and threads
+/// the same context through every layer without repetition.
+#[derive(Debug, Clone, Copy)]
+pub struct AlgebraicLinearization<'a> {
+    pub t: f64,
+    pub params: &'a [f64],
+    pub settle: AlgebraicSettle,
 }
 
 /// Diagonal magnitude below which a residual row is treated as not constraining

@@ -188,7 +188,7 @@ fn zero_sized_reduction_neutral(
     }
 }
 
-fn real_literal_expr(value: f64, span: rumoca_core::Span) -> ast::Expression {
+pub(crate) fn real_literal_expr(value: f64, span: rumoca_core::Span) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedReal,
         token: rumoca_core::Token {

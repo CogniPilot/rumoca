@@ -425,7 +425,7 @@ pub(crate) fn expand_range_indices(
 }
 
 /// Try to evaluate an expression to a constant integer, with parameter lookup.
-fn try_eval_integer_with_ctx(
+pub(crate) fn try_eval_integer_with_ctx(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &QualifiedName,

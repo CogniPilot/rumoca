@@ -38,6 +38,7 @@ mod name_resolution;
 mod overconstrained_interface;
 mod path_utils;
 mod pre_lowering;
+mod promote_parameter_variable;
 mod reference_validation;
 mod runtime_precompute;
 mod scalar_inference;
@@ -324,6 +325,15 @@ pub fn to_dae_with_options(
         "fixed_start_initial_equations",
         || initial::add_fixed_start_initial_equations(&mut dae),
     )?;
+    // Promote parameter-variable algebraics (constant for the whole simulation)
+    // into derived parameters BEFORE condition lowering, so a parameter-variable
+    // `if` condition (e.g. `if sc < pc`) sees its operands as parameters and stays
+    // directly evaluable instead of allocating an Appendix B event/condition
+    // variable. This also moves time-invariant quantities (coordinate transforms,
+    // immersed-boundary masks) out of the per-step / derivative hot path.
+    run_todae_phase(todae_subphase_timing, "promote_parameter_variable", || {
+        promote_parameter_variable::promote_parameter_variable_algebraics(&mut dae)
+    })?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
         populate_canonical_conditions(&mut dae)
     })?;

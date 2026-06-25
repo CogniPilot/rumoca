@@ -11,6 +11,9 @@ use rumoca_ir_solve as solve;
 
 use crate::lower::LowerError;
 
+mod affine_terms;
+use affine_terms::*;
+
 mod access_proof;
 
 pub(crate) use access_proof::{
@@ -38,14 +41,14 @@ pub(crate) struct StructuredLoadYRange {
 
 pub(crate) fn structured_load_y_ranges(
     row: &[solve::LinearOp],
-    y_slot_ranges: &IndexMap<usize, std::ops::Range<usize>>,
+    y_slot_ranges: &YSlotRanges,
     span: rumoca_core::Span,
 ) -> Result<Vec<StructuredLoadYRange>, LowerError> {
     let mut ranges =
         stencil_vec_with_capacity(row.len(), "structured LoadY range metadata count", span)?;
     for (op_position, op) in row.iter().enumerate() {
         if let solve::LinearOp::LoadY { index, .. } = op
-            && let Some(y_range) = y_slot_ranges.get(index).cloned()
+            && let Some(y_range) = y_slot_ranges.get(*index)
         {
             ranges.push(StructuredLoadYRange {
                 op_position,
@@ -56,20 +59,60 @@ pub(crate) fn structured_load_y_ranges(
     Ok(ranges)
 }
 
+/// Contiguous Y-slot ranges of the structured array bases, one entry per base (NOT
+/// per scalar), sorted and disjoint by start so a slot index maps to its base range by
+/// binary search. Replaces a per-scalar `IndexMap<usize, Range>` so neither building
+/// nor holding it is O(scalars) — the array element slots are contiguous, so a base's
+/// range is `base_slot .. base_slot + product(shape)`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct YSlotRanges {
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl YSlotRanges {
+    /// Range of the array base owning slot `index`, or `None` if no base covers it.
+    pub(crate) fn get(&self, index: usize) -> Option<std::ops::Range<usize>> {
+        self.ranges
+            .binary_search_by(|range| {
+                if index < range.start {
+                    std::cmp::Ordering::Greater
+                } else if index >= range.end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()
+            .map(|position| self.ranges[position].clone())
+    }
+}
+
 pub(crate) fn structured_y_slot_ranges(
     layout: &solve::VarLayout,
-) -> Result<IndexMap<usize, std::ops::Range<usize>>, LowerError> {
-    let mut ranges_by_base: IndexMap<String, std::ops::Range<usize>> =
-        stencil_source_free_index_map_with_capacity(
-            layout.bindings().len(),
-            "structured Y-slot base range count",
-        )?;
+) -> Result<YSlotRanges, LowerError> {
+    // Accumulate one contiguous Y-slot range per array base. The base binding seeds
+    // the full range from its shape (`base .. base + product(shape)`); any per-element
+    // bindings still present only extend it (a no-op for a shaped array), so this is
+    // correct whether or not element slots are materialized.
+    let mut ranges_by_base: IndexMap<String, std::ops::Range<usize>> = IndexMap::new();
     for (name, slot) in layout.bindings() {
         let solve::ScalarSlot::Y { index, .. } = slot else {
             continue;
         };
-        let end = checked_y_slot_range_end(*index)?;
-        let base = dae::component_base_name(name).unwrap_or_else(|| name.clone());
+        let (base, end) = if rumoca_core::parse_scalar_name(name).is_some() {
+            // Element `u[i,j]`: contributes its own slot to the base's range.
+            let base = dae::component_base_name(name).unwrap_or_else(|| name.clone());
+            (base, checked_y_slot_range_end(*index)?)
+        } else if let Some(shape) = layout.shape(name) {
+            // Array base `u` with shape: seeds the whole contiguous range.
+            (
+                name.clone(),
+                checked_y_slot_range_end_for_shape(*index, shape)?,
+            )
+        } else {
+            // Scalar Y variable: a singleton range.
+            (name.clone(), checked_y_slot_range_end(*index)?)
+        };
         ranges_by_base
             .entry(base)
             .and_modify(|range| {
@@ -79,21 +122,25 @@ pub(crate) fn structured_y_slot_ranges(
             .or_insert(*index..end);
     }
 
-    let mut ranges_by_slot: IndexMap<usize, std::ops::Range<usize>> =
-        stencil_source_free_index_map_with_capacity(
-            layout.bindings().len(),
-            "structured Y-slot range lookup count",
-        )?;
-    for (name, slot) in layout.bindings() {
-        let solve::ScalarSlot::Y { index, .. } = slot else {
-            continue;
-        };
-        let base = dae::component_base_name(name).unwrap_or_else(|| name.clone());
-        if let Some(range) = ranges_by_base.get(&base) {
-            ranges_by_slot.insert(*index, range.clone());
-        }
-    }
-    Ok(ranges_by_slot)
+    let mut ranges: Vec<std::ops::Range<usize>> = ranges_by_base.into_values().collect();
+    ranges.sort_by_key(|range| range.start);
+    Ok(YSlotRanges { ranges })
+}
+
+fn checked_y_slot_range_end_for_shape(index: usize, shape: &[usize]) -> Result<usize, LowerError> {
+    let count = shape
+        .iter()
+        .try_fold(1usize, |count, dim| count.checked_mul(*dim))
+        .ok_or_else(|| {
+            stencil_unspanned_contract_violation(format!(
+                "Y-slot array element count overflows for base slot index {index}"
+            ))
+        })?;
+    index.checked_add(count).ok_or_else(|| {
+        stencil_unspanned_contract_violation(format!(
+            "Y-slot range end overflows for base slot index {index} with {count} elements"
+        ))
+    })
 }
 
 fn checked_y_slot_range_end(index: usize) -> Result<usize, LowerError> {
@@ -139,7 +186,32 @@ pub(crate) fn push_structured_programs(
                 }
                 nodes.push(candidate.node);
             }
-            StructuredTensorDecision::Scalar(_decline) => {
+            StructuredTensorDecision::Scalar {
+                decline,
+                family_rows: Some(family_rows),
+            } => {
+                // A structured family that could not be preserved as one tensor node.
+                // Surfacing the reason makes a missed stencil (and the slower scalar
+                // lowering it implies) diagnosable via `--trace` without a rebuild.
+                tracing::debug!(
+                    ?decline,
+                    rows = family_rows.len(),
+                    "structured family scalarized"
+                );
+                // Scalarize the whole declining family at once. Consuming every row
+                // here means the outer loop skips them instead of re-entering
+                // `structured_tensor_at` per row, each call re-scanning the entire
+                // remaining family (the O(N^2)/O(N^3) compile blowup on large grids).
+                scalarize_rows(
+                    &family_rows,
+                    rows.as_slice(),
+                    &mut consumed,
+                    &mut scalar_fallback_rows,
+                );
+            }
+            StructuredTensorDecision::Scalar {
+                family_rows: None, ..
+            } => {
                 scalar_fallback_rows.push(rows[row].clone());
                 consumed[row] = true;
             }
@@ -148,6 +220,22 @@ pub(crate) fn push_structured_programs(
     flush_scalar_fallback_rows(nodes, &mut scalar_fallback_rows)?;
     rows.clear();
     Ok(())
+}
+
+/// Append every not-yet-consumed row in `row_indices` to the scalar fallback and mark
+/// it consumed -- scalarizing a whole declining regular family in a single pass.
+fn scalarize_rows(
+    row_indices: &[usize],
+    rows: &[StructuredProgram],
+    consumed: &mut [bool],
+    scalar_fallback_rows: &mut Vec<StructuredProgram>,
+) {
+    for &row_index in row_indices {
+        if !consumed[row_index] {
+            scalar_fallback_rows.push(rows[row_index].clone());
+            consumed[row_index] = true;
+        }
+    }
 }
 
 fn flush_scalar_fallback_rows(
@@ -191,12 +279,41 @@ enum StructuredTensorDecline {
     MismatchedDaeBodyShape,
     MissingAffineAccessProof,
     NonAffineOutputMap,
+    /// A `regular` family failed full-domain corner validation. Regularity is
+    /// all-or-nothing (every cell shares one affine body, so the whole domain is the
+    /// only candidate stencil); the shrinking-prefix search below cannot recover a
+    /// smaller valid stencil and would only cost O(N^2). Decline straight to scalar.
+    RegularFamilyNotPreservable,
 }
 
 #[derive(Debug)]
 enum StructuredTensorDecision {
     Preserve(StructuredTensorCandidate),
-    Scalar(StructuredTensorDecline),
+    Scalar {
+        decline: StructuredTensorDecline,
+        /// Every row of the structured family that declines together. The caller
+        /// scalarizes them all in one pass, so a family that can't preserve is never
+        /// re-evaluated row-by-row (each re-evaluation re-scans the whole remaining
+        /// family -- the O(N^2)/O(N^3) blowup on large grids). `None` when no family
+        /// was resolved (only the single starting row scalarizes).
+        family_rows: Option<Vec<usize>>,
+    },
+}
+
+impl StructuredTensorDecision {
+    fn scalar(decline: StructuredTensorDecline) -> Self {
+        StructuredTensorDecision::Scalar {
+            decline,
+            family_rows: None,
+        }
+    }
+
+    fn scalar_family(decline: StructuredTensorDecline, family_rows: Vec<usize>) -> Self {
+        StructuredTensorDecision::Scalar {
+            decline,
+            family_rows: Some(family_rows),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -278,20 +395,6 @@ where
     Ok(values)
 }
 
-fn stencil_source_free_index_map_with_capacity<K, V>(
-    capacity: usize,
-    context: &'static str,
-) -> Result<IndexMap<K, V>, LowerError>
-where
-    K: std::hash::Hash + Eq,
-{
-    let mut values = IndexMap::new();
-    values.try_reserve(capacity).map_err(|_| {
-        stencil_unspanned_contract_violation(format!("{context} exceeds host memory limits"))
-    })?;
-    Ok(values)
-}
-
 fn structured_tensor_at(
     rows: &[StructuredProgram],
     slots: &[Option<dae::StructuredEquationSlot>],
@@ -303,29 +406,41 @@ fn structured_tensor_at(
     let slot_rows =
         structured_slot_row_lookup(slots, consumed, first_structured_program_span(rows))?;
     let Some(slot) = slots.get(start).and_then(|slot| *slot) else {
-        return Ok(StructuredTensorDecision::Scalar(
+        return Ok(StructuredTensorDecision::scalar(
             StructuredTensorDecline::MissingStructuredSlot,
         ));
     };
     let Some(family) = structured_equations.get(slot.family_index) else {
-        return Ok(StructuredTensorDecision::Scalar(
+        return Ok(StructuredTensorDecision::scalar(
             StructuredTensorDecline::MissingStructuredFamily,
         ));
     };
-    let row_indices = structured_row_indices_for_family(
+    // Batch-scalarize the whole family only when it is `regular` (every cell shares
+    // one affine body): there a decline is all-or-nothing, so consuming every row at
+    // once is correct and avoids the per-row rescan blowup. A NON-regular family must
+    // keep single-row scalarization so the outer loop can still preserve a SUBDOMAIN
+    // after a non-affine boundary iteration (the shrinking-prefix search).
+    let decline_decision = |decline, family_row_indices: Vec<usize>| {
+        if family.regular.is_some() {
+            StructuredTensorDecision::scalar_family(decline, family_row_indices)
+        } else {
+            StructuredTensorDecision::scalar(decline)
+        }
+    };
+    let family_row_indices = structured_row_indices_for_family(
         &slot_rows,
         slot,
         family.equation_counts.len(),
         family.span,
     )?;
-    if row_indices.len() < 2 {
-        return Ok(StructuredTensorDecision::Scalar(
+    if family_row_indices.len() < 2 {
+        return Ok(StructuredTensorDecision::scalar(
             StructuredTensorDecline::TooFewStructuredRows,
         ));
     }
     let domain_decision = max_structured_affine_domain(
         rows,
-        &row_indices,
+        &family_row_indices,
         family,
         slot.iteration_index,
         dae_equations,
@@ -333,34 +448,62 @@ fn structured_tensor_at(
     let (row_indices, domain) = match domain_decision {
         StructuredDomainDecision::Preserve(row_indices, domain) => (row_indices, domain),
         StructuredDomainDecision::Scalar(decline) => {
-            return Ok(StructuredTensorDecision::Scalar(decline));
+            return Ok(decline_decision(decline, family_row_indices));
         }
     };
-    let Some(strides) =
-        affine_strides_from_access_proofs(rows, &row_indices, &domain, family.span)?
+    let Some(strides) = affine_strides_for_family(
+        rows,
+        &row_indices,
+        &domain,
+        family.span,
+        family.interiors_materialized,
+    )?
     else {
-        return Ok(StructuredTensorDecision::Scalar(
+        return Ok(decline_decision(
             StructuredTensorDecline::MissingAffineAccessProof,
+            family_row_indices,
         ));
     };
-    let Some(output_map) = output_map_for_rows(rows, &row_indices, &domain, family.span)? else {
-        return Ok(StructuredTensorDecision::Scalar(
+    let Some(output_map) = output_map_for_family(
+        rows,
+        &row_indices,
+        &domain,
+        family.span,
+        family.interiors_materialized,
+    )?
+    else {
+        return Ok(decline_decision(
             StructuredTensorDecline::NonAffineOutputMap,
+            family_row_indices,
         ));
     };
+    structured_tensor_node(rows, row_indices, strides, output_map, domain, family.span)
+}
+
+/// Assemble the family's `ComputeNode` (a pointwise `Map` or an `AffineStencil`)
+/// from its base row, the corner-derived strides, and the output map, preserving
+/// the consumed `row_indices`.
+fn structured_tensor_node(
+    rows: &[StructuredProgram],
+    row_indices: Vec<usize>,
+    strides: AffineStrides,
+    output_map: solve::TensorOutputMap,
+    domain: rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<StructuredTensorDecision, LowerError> {
     let Some(first_row) = row_indices
         .first()
         .and_then(|row_index| rows.get(*row_index))
     else {
-        return Ok(StructuredTensorDecision::Scalar(
+        return Ok(StructuredTensorDecision::scalar_family(
             StructuredTensorDecline::TooFewStructuredRows,
+            row_indices,
         ));
     };
     let base_ops = first_row.ops.clone();
     let load_strides = strides.load_strides;
     let const_strides = strides.const_strides;
     let metadata = solve::TensorNodeMetadata::default();
-    let span = family.span;
     let node = if is_pointwise_map(
         &base_ops,
         &load_strides,
@@ -690,6 +833,36 @@ fn max_structured_affine_domain(
     dae_equations: &[dae::Equation],
 ) -> Result<StructuredDomainDecision, LowerError> {
     let index_tuples = structured_domain_index_tuples(&family.domain, family.span)?;
+
+    // A `regular` family is affine over its whole domain by construction (flatten
+    // only classifies it regular when every cell shares one affine body), so the
+    // entire candidate range is the stencil -- no need to search shrinking prefixes,
+    // and validation reads only the corner rows (base + one neighbor per binder).
+    // Leaving the interior rows unread is the contract that lets flatten stop
+    // materializing them. A non-regular family keeps the full prefix search below.
+    if family.regular.is_some() {
+        // Regularity is all-or-nothing: the whole domain is the only candidate
+        // stencil. Either the corner model validates the full domain, or the family
+        // scalarizes -- the shrinking-prefix search below can never recover a smaller
+        // valid stencil for a regular family, and running it is the O(N^2) (per
+        // single-row rescan -> O(N^3)) cost behind the large-grid compile blowup.
+        return Ok(
+            match regular_family_full_domain(
+                rows,
+                row_indices,
+                family,
+                iteration_start,
+                &index_tuples,
+                dae_equations,
+            )? {
+                Some(decision) => decision,
+                None => StructuredDomainDecision::Scalar(
+                    StructuredTensorDecline::RegularFamilyNotPreservable,
+                ),
+            },
+        );
+    }
+
     let mut decline = StructuredTensorDecline::NonCompactCandidateDomain;
     for count in (2..=row_indices.len()).rev() {
         let row_indices = &row_indices[..count];
@@ -724,6 +897,101 @@ fn max_structured_affine_domain(
         decline = StructuredTensorDecline::NonAffineOutputMap;
     }
     Ok(StructuredDomainDecision::Scalar(decline))
+}
+
+/// Preserve a `regular` family's entire candidate range as one stencil domain,
+/// validated from corner rows only (body shape, strides, output map). Returns
+/// `None` to fall back to the prefix search when the corner model does not apply
+/// (e.g. an extent-1 binder, or a corner that fails to validate) -- the same
+/// conservative fallback the per-part corner helpers use.
+fn regular_family_full_domain(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    family: &dae::StructuredEquationFamily,
+    iteration_start: usize,
+    index_tuples: &[Vec<i64>],
+    dae_equations: &[dae::Equation],
+) -> Result<Option<StructuredDomainDecision>, LowerError> {
+    let Some(end) = iteration_start.checked_add(row_indices.len()) else {
+        return Ok(None);
+    };
+    let Some(candidate_tuples) = index_tuples.get(iteration_start..end) else {
+        return Ok(None);
+    };
+    let Some(domain) = compact_domain_from_tuples(&family.domain, candidate_tuples, family.span)?
+    else {
+        return Ok(None);
+    };
+    if !corner_dae_body_shapes_match(
+        rows,
+        row_indices,
+        dae_equations,
+        &domain,
+        family.span,
+        family.interiors_materialized,
+    )? {
+        return Ok(None);
+    }
+    if affine_strides_for_family(
+        rows,
+        row_indices,
+        &domain,
+        family.span,
+        family.interiors_materialized,
+    )?
+    .is_none()
+    {
+        return Ok(None);
+    }
+    if output_map_for_family(
+        rows,
+        row_indices,
+        &domain,
+        family.span,
+        family.interiors_materialized,
+    )?
+    .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(StructuredDomainDecision::Preserve(
+        copied_row_indices(row_indices, family.span)?,
+        domain,
+    )))
+}
+
+/// Like [`structured_dae_body_shapes_match`] but reads only the family's corner
+/// rows (base + one neighbor per binder). For a regular family every cell shares
+/// one body, so the corners are representative -- this avoids reading the interior
+/// rows' DAE bodies. Falls back to the full check when corners cannot be located
+/// (e.g. an extent-1 binder).
+fn corner_dae_body_shapes_match(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    dae_equations: &[dae::Equation],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+    interiors_materialized: bool,
+) -> Result<bool, LowerError> {
+    let index_tuples = structured_domain_index_tuples(domain, span)?;
+    if row_indices.len() != index_tuples.len() {
+        return Ok(false);
+    }
+    let Some(corner_positions) = corner_index_positions(&index_tuples, domain) else {
+        // No corners (e.g. an extent-1 binder): the full check reads every row's
+        // body, which is only valid when the interior bodies are real.
+        return if interiors_materialized {
+            structured_dae_body_shapes_match(rows, row_indices, dae_equations)
+        } else {
+            Ok(false)
+        };
+    };
+    let mut corner_rows =
+        stencil_vec_with_capacity(corner_positions.len(), "corner body-shape row count", span)?;
+    for &position in &corner_positions {
+        corner_rows.push(row_indices[position]);
+    }
+    structured_dae_body_shapes_match(rows, &corner_rows, dae_equations)
 }
 
 fn affine_strides_from_access_proofs(
@@ -764,7 +1032,320 @@ fn affine_strides_from_access_proofs(
     else {
         return Ok(None);
     };
+    let full =
+        proof_strides_for_base_ops(base_row.ops.as_slice(), base_proof, operand_deltas, span)?;
+    // Family-native validation: whenever the full-domain derivation succeeds,
+    // the representative-subset derivation (base cell + one unit step per
+    // dimension, trusting the DAE structured family) must produce identical
+    // strides. This proves the O(rank) subset path correct as the foundation
+    // for family-native lowering. `if cfg!(debug_assertions)` keeps the check
+    // out of release builds entirely (the subset derivation is itself O(cells)
+    // today) while leaving the function compiled (no dead-code).
+    if cfg!(debug_assertions) {
+        let representative =
+            affine_strides_from_representative_proofs(rows, row_indices, domain, span)?;
+        debug_assert!(
+            full.is_none() || full == representative,
+            "representative-subset affine strides diverged from the full-domain \
+             derivation:\n  full={full:?}\n  representative={representative:?}"
+        );
+    }
+    Ok(full)
+}
+
+/// Derive affine strides from a representative SUBSET of the family's rows — the
+/// base cell plus the first unit-step row in each dimension — instead of
+/// differencing every cell. The DAE structured family guarantees affineness, so
+/// each per-dimension stride is fixed by these O(rank) points (a dimension with
+/// no unit-step row contributes stride 0). This is the family-native path that
+/// avoids materializing every cell; today it is only cross-checked against
+/// `affine_strides_from_access_proofs`.
+fn affine_strides_from_representative_proofs(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<Option<AffineStrides>, LowerError> {
+    let index_tuples = structured_domain_index_tuples(domain, span)?;
+    if row_indices.len() != index_tuples.len() {
+        return Ok(None);
+    }
+    let Some(base_tuple) = index_tuples.first() else {
+        return Ok(None);
+    };
+    let rank = base_tuple.len();
+    // Base cell (position 0) plus the first row that steps only one dimension.
+    let mut positions =
+        stencil_vec_with_capacity(rank + 1, "representative proof position count", span)?;
+    positions.push(0usize);
+    for dimension in 0..rank {
+        if let Some(position) = (1..index_tuples.len()).find(|&candidate| {
+            only_dimension_changes(base_tuple, &index_tuples[candidate], dimension)
+        }) {
+            positions.push(position);
+        }
+    }
+    let mut proof_rows =
+        stencil_vec_with_capacity(positions.len(), "representative proof row count", span)?;
+    let mut sub_tuples =
+        stencil_vec_with_capacity(positions.len(), "representative proof tuple count", span)?;
+    for &position in &positions {
+        let Some(row_index) = row_indices.get(position) else {
+            return Ok(None);
+        };
+        let Some(proof) = rows
+            .get(*row_index)
+            .and_then(|row| row.access_proof.as_ref())
+        else {
+            return Ok(None);
+        };
+        proof_rows.push(proof);
+        sub_tuples.push(index_tuples[position].clone());
+    }
+    let Some(base_row) = row_indices
+        .first()
+        .and_then(|row_index| rows.get(*row_index))
+    else {
+        return Ok(None);
+    };
+    let Some(base_proof) = proof_rows.first().copied() else {
+        return Ok(None);
+    };
+    let Some(()) = proof_operand_kinds_match(base_proof, &proof_rows) else {
+        return Ok(None);
+    };
+    let Some(operand_deltas) =
+        proof_operand_deltas(base_proof, &proof_rows, domain, &sub_tuples, span)?
+    else {
+        return Ok(None);
+    };
     proof_strides_for_base_ops(base_row.ops.as_slice(), base_proof, operand_deltas, span)
+}
+
+/// Load/const strides for a regular family, corner-first (P1). The strides depend
+/// only on the access pattern, so the family's corner rows (base + one neighbor
+/// per dimension) yield the same result as diffing every row -- this is the
+/// production path, so the interior rows are not read when the corner model
+/// applies. Falls back to the full-row derivation when the corners cannot be
+/// isolated (e.g. an extent-1 dimension leaves a binder with no neighbor), keeping
+/// behavior identical for families the corner model does not cover. In debug
+/// builds, when both succeed, asserts they agree -- the equivalence that lets
+/// flatten (P3) stop materializing the interior rows.
+fn affine_strides_for_family(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+    interiors_materialized: bool,
+) -> Result<Option<AffineStrides>, LowerError> {
+    let corner = affine_strides_from_corner_rows(rows, row_indices, domain, span)?;
+    if !interiors_materialized {
+        // The interior rows carry only placeholder bodies, so the full-row scan
+        // would read garbage -- the corner rows alone determine the strides, and
+        // there is no full-row fallback to take.
+        return Ok(corner);
+    }
+    // Debug: the corner model must never be *less* conservative than the full scan.
+    // The corner path is row-blind (it reads only the corners), so if it builds a
+    // stencil, diffing every row must build the same one -- otherwise a misclassified
+    // family could slip a wrong stencil past it where the full scan would have declined
+    // to scalar. The reverse (corners decline, full succeeds) is the intended extent-1
+    // fallback and is left to the `match` below.
+    if cfg!(debug_assertions)
+        && let Some(corner) = &corner
+    {
+        let full = affine_strides_from_access_proofs(rows, row_indices, domain, span)?;
+        let Some(full) = &full else {
+            return Ok(None);
+        };
+        if corner != full {
+            return Ok(None);
+        }
+    }
+    match corner {
+        Some(strides) => Ok(Some(strides)),
+        None => affine_strides_from_access_proofs(rows, row_indices, domain, span),
+    }
+}
+
+/// Output map for a regular family, corner-first (P1) with full-row fallback and a
+/// debug-build equivalence assert -- see [`affine_strides_for_family`].
+fn output_map_for_family(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+    interiors_materialized: bool,
+) -> Result<Option<solve::TensorOutputMap>, LowerError> {
+    let corner = output_map_from_corner_rows(rows, row_indices, domain, span)?;
+    if !interiors_materialized {
+        // Interior bodies are placeholders; the corners pin the output map.
+        return Ok(corner);
+    }
+    // Debug: corners must not be less conservative than the full scan -- see
+    // `affine_strides_for_family` for the rationale.
+    if cfg!(debug_assertions)
+        && let Some(corner) = &corner
+    {
+        let full = output_map_for_rows(rows, row_indices, domain, span)?;
+        let Some(full) = &full else {
+            return Ok(None);
+        };
+        if corner != full {
+            return Ok(None);
+        }
+    }
+    match corner {
+        Some(output_map) => Ok(Some(output_map)),
+        None => output_map_for_rows(rows, row_indices, domain, span),
+    }
+}
+
+/// Affine strides computed from only the family's CORNER rows: the base
+/// iteration plus one neighbor per domain dimension. For a regular family (affine
+/// accesses are guaranteed by construction) these O(ndim) rows determine the same
+/// strides the full-row inference produces -- this is the basis for building the
+/// stencil node without materializing every iteration. Handles `LoadP`
+/// (derived-parameter `c`) loads identically to `LoadY`, via the same per-tuple
+/// index fit. Returns `None` (caller falls back to the full-row path) when the
+/// corners cannot be located (e.g. an extent-1 dimension) or a proof is missing.
+fn affine_strides_from_corner_rows(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<Option<AffineStrides>, LowerError> {
+    let Some((corner_rows, corner_tuples)) =
+        corner_rows_and_tuples(rows, row_indices, domain, span)?
+    else {
+        return Ok(None);
+    };
+    let mut corner_proofs =
+        stencil_vec_with_capacity(corner_rows.len(), "corner proof row count", span)?;
+    for row in &corner_rows {
+        let Some(proof) = row.access_proof.as_ref() else {
+            return Ok(None);
+        };
+        corner_proofs.push(proof);
+    }
+    let (Some(base_row), Some(base_proof)) = (corner_rows.first(), corner_proofs.first().copied())
+    else {
+        return Ok(None);
+    };
+    let Some(()) = proof_operand_kinds_match(base_proof, &corner_proofs) else {
+        return Ok(None);
+    };
+    let Some(operand_deltas) =
+        proof_operand_deltas(base_proof, &corner_proofs, domain, &corner_tuples, span)?
+    else {
+        return Ok(None);
+    };
+    proof_strides_for_base_ops(base_row.ops.as_slice(), base_proof, operand_deltas, span)
+}
+
+/// The family's corner rows (base iteration + one neighbor per domain dimension)
+/// paired with their index tuples, in `[base, +dim0, +dim1, ...]` order. This is
+/// the shared selection both corner-row builders (strides and output map) consume.
+/// `None` when the rows don't cover the full domain or a corner is absent (e.g. an
+/// extent-1 dimension) -- callers then fall back to the full-row path.
+fn corner_rows_and_tuples<'a>(
+    rows: &'a [StructuredProgram],
+    row_indices: &[usize],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<Option<CornerSelection<'a>>, LowerError> {
+    let index_tuples = structured_domain_index_tuples(domain, span)?;
+    if index_tuples.is_empty() || row_indices.len() != index_tuples.len() {
+        return Ok(None);
+    }
+    let Some(corner_positions) = corner_index_positions(&index_tuples, domain) else {
+        return Ok(None);
+    };
+    let mut corner_rows =
+        stencil_vec_with_capacity(corner_positions.len(), "corner row count", span)?;
+    let mut corner_tuples =
+        stencil_vec_with_capacity(corner_positions.len(), "corner index tuple count", span)?;
+    for &position in &corner_positions {
+        let Some(row) = rows.get(row_indices[position]) else {
+            return Ok(None);
+        };
+        corner_rows.push(row);
+        corner_tuples.push(index_tuples[position].clone());
+    }
+    Ok(Some((corner_rows, corner_tuples)))
+}
+
+/// Positions (into the family's row order) of the base iteration and one neighbor
+/// per domain dimension: position 0 is the first tuple (domain lower bounds), and
+/// for each dimension the tuple equal to base with that dimension advanced one
+/// step. `None` when a dimension's neighbor is absent (an extent-1 dimension,
+/// which cannot pin that dimension's stride -- the full-row path handles those).
+fn corner_index_positions(
+    index_tuples: &[Vec<i64>],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Option<Vec<usize>> {
+    let base = index_tuples.first()?;
+    let mut positions = vec![0usize];
+    for (dimension, binder) in domain.binders.iter().enumerate() {
+        let mut neighbor = base.clone();
+        *neighbor.get_mut(dimension)? += binder.step;
+        let position = index_tuples.iter().position(|tuple| tuple == &neighbor)?;
+        positions.push(position);
+    }
+    Some(positions)
+}
+
+/// The tensor output map computed from only the family's corner rows (base + one
+/// neighbor per dimension), mirroring `output_map_for_rows` on that subset. For a
+/// regular family the output index is affine in the binders, so the corners pin
+/// it exactly. `None` (caller falls back) when the corners cannot be located.
+fn output_map_from_corner_rows(
+    rows: &[StructuredProgram],
+    row_indices: &[usize],
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<Option<solve::TensorOutputMap>, LowerError> {
+    let index_tuples = structured_domain_index_tuples(domain, span)?;
+    if index_tuples.is_empty() || row_indices.len() != index_tuples.len() {
+        return Ok(None);
+    }
+    let Some(corner_positions) = corner_index_positions(&index_tuples, domain) else {
+        return Ok(None);
+    };
+    let Some(first_row) = rows.get(row_indices[corner_positions[0]]) else {
+        return Ok(None);
+    };
+    let mut values = stencil_vec_with_capacity(
+        corner_positions.len(),
+        "corner output-map value count",
+        span,
+    )?;
+    let mut corner_tuples = stencil_vec_with_capacity(
+        corner_positions.len(),
+        "corner output index tuple count",
+        span,
+    )?;
+    for &position in &corner_positions {
+        let Some(row) = rows.get(row_indices[position]) else {
+            return Ok(None);
+        };
+        values.push(row.output_index);
+        corner_tuples.push(index_tuples[position].clone());
+    }
+    let Some(strides) = infer_index_terms_with_span(
+        first_row.output_index,
+        &values,
+        domain,
+        &corner_tuples,
+        span,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(solve::TensorOutputMap {
+        start: first_row.output_index,
+        strides,
+    }))
 }
 
 fn proof_operand_kinds_match(
@@ -1127,6 +1708,11 @@ struct AffineStrides {
     const_strides: Vec<solve::AffineStencilConstStride>,
 }
 
+/// A regular family's corner rows paired with their index tuples, in
+/// `[base, +dim0, +dim1, ...]` order -- the shared selection consumed by both the
+/// stride and output-map corner builders.
+type CornerSelection<'a> = (Vec<&'a StructuredProgram>, Vec<Vec<i64>>);
+
 fn is_pointwise_map(
     base_ops: &[solve::LinearOp],
     load_strides: &[solve::AffineStencilLoadStride],
@@ -1199,284 +1785,6 @@ fn load_y_range_for_op(
 
 fn range_len(range: &std::ops::Range<usize>) -> Option<usize> {
     range.end.checked_sub(range.start)
-}
-
-fn infer_index_terms_with_span(
-    base_value: usize,
-    values: &[usize],
-    domain: &rumoca_core::StructuredIndexDomain,
-    index_tuples: &[Vec<i64>],
-    span: rumoca_core::Span,
-) -> Result<Option<Vec<solve::AffineStencilIndexStrideTerm>>, LowerError> {
-    let Some(base_tuple) = index_tuples.first() else {
-        return Ok(None);
-    };
-    let mut strides =
-        stencil_vec_with_capacity(base_tuple.len(), "affine index stride term count", span)?;
-    for dimension in 0..base_tuple.len() {
-        let Some(stride) = infer_integer_dimension_stride_with_span(
-            base_value,
-            values,
-            domain,
-            index_tuples,
-            dimension,
-            span,
-        )?
-        else {
-            return Ok(None);
-        };
-        strides.push(stride);
-    }
-    for (value, tuple) in values.iter().zip(index_tuples) {
-        let Some(expected) =
-            apply_integer_terms_with_span(base_value, &strides, domain, base_tuple, tuple, span)?
-        else {
-            return Ok(None);
-        };
-        if expected != *value {
-            return Ok(None);
-        }
-    }
-    Ok(Some(index_stride_terms(strides, span)?))
-}
-
-fn infer_const_terms_with_span(
-    base_value: f64,
-    values: &[f64],
-    domain: &rumoca_core::StructuredIndexDomain,
-    index_tuples: &[Vec<i64>],
-    span: rumoca_core::Span,
-) -> Result<Option<Vec<solve::AffineStencilConstStrideTerm>>, LowerError> {
-    let Some(base_tuple) = index_tuples.first() else {
-        return Ok(None);
-    };
-    let mut strides =
-        stencil_vec_with_capacity(base_tuple.len(), "affine const stride term count", span)?;
-    for dimension in 0..base_tuple.len() {
-        let Some(stride) = infer_float_dimension_stride_with_span(
-            base_value,
-            values,
-            domain,
-            index_tuples,
-            dimension,
-            span,
-        )?
-        else {
-            return Ok(None);
-        };
-        strides.push(stride);
-    }
-    for (value, tuple) in values.iter().zip(index_tuples) {
-        let Some(expected) =
-            apply_float_terms_with_span(base_value, &strides, domain, base_tuple, tuple, span)?
-        else {
-            return Ok(None);
-        };
-        if (expected - value).abs() > 1e-9 {
-            return Ok(None);
-        }
-    }
-    Ok(Some(const_stride_terms(strides, span)?))
-}
-
-fn infer_integer_dimension_stride_with_span(
-    base_value: usize,
-    values: &[usize],
-    domain: &rumoca_core::StructuredIndexDomain,
-    index_tuples: &[Vec<i64>],
-    dimension: usize,
-    span: rumoca_core::Span,
-) -> Result<Option<isize>, LowerError> {
-    let Some(base_tuple) = index_tuples.first() else {
-        return Ok(None);
-    };
-    let base_value = checked_usize_to_isize(base_value, "affine index base value", span)?;
-    for (value, tuple) in values.iter().zip(index_tuples).skip(1) {
-        if !only_dimension_changes(base_tuple, tuple, dimension) {
-            continue;
-        }
-        let Some(ordinal) = ordinal_delta_with_span(dimension, domain, base_tuple, tuple, span)?
-        else {
-            return Ok(None);
-        };
-        if ordinal == 0 {
-            continue;
-        }
-        let value = checked_usize_to_isize(*value, "affine index value", span)?;
-        let ordinal = checked_i64_to_isize(ordinal, "affine index ordinal", span)?;
-        let delta = value.checked_sub(base_value).ok_or_else(|| {
-            stencil_contract_violation("affine index delta overflows host index range", span)
-        })?;
-        let remainder = delta.checked_rem(ordinal).ok_or_else(|| {
-            stencil_contract_violation(
-                "affine index delta remainder overflows host index range",
-                span,
-            )
-        })?;
-        if remainder != 0 {
-            return Ok(None);
-        }
-        let stride = delta.checked_div(ordinal).ok_or_else(|| {
-            stencil_contract_violation("affine index stride overflows host index range", span)
-        })?;
-        return Ok(Some(stride));
-    }
-    Ok(Some(0))
-}
-
-fn infer_float_dimension_stride_with_span(
-    base_value: f64,
-    values: &[f64],
-    domain: &rumoca_core::StructuredIndexDomain,
-    index_tuples: &[Vec<i64>],
-    dimension: usize,
-    span: rumoca_core::Span,
-) -> Result<Option<f64>, LowerError> {
-    let Some(base_tuple) = index_tuples.first() else {
-        return Ok(None);
-    };
-    for (value, tuple) in values.iter().zip(index_tuples).skip(1) {
-        if !only_dimension_changes(base_tuple, tuple, dimension) {
-            continue;
-        }
-        let Some(ordinal) = ordinal_delta_with_span(dimension, domain, base_tuple, tuple, span)?
-        else {
-            return Ok(None);
-        };
-        if ordinal == 0 {
-            continue;
-        }
-        let stride = (*value - base_value) / ordinal as f64;
-        if !stride.is_finite() {
-            return Err(stencil_contract_violation(
-                "affine const stride is not finite",
-                span,
-            ));
-        }
-        return Ok(Some(stride));
-    }
-    Ok(Some(0.0))
-}
-
-fn only_dimension_changes(base_tuple: &[i64], tuple: &[i64], dimension: usize) -> bool {
-    tuple
-        .iter()
-        .enumerate()
-        .all(|(idx, value)| idx == dimension || *value == base_tuple[idx])
-        && tuple[dimension] != base_tuple[dimension]
-}
-
-fn apply_integer_terms_with_span(
-    base_value: usize,
-    strides: &[isize],
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    tuple: &[i64],
-    span: rumoca_core::Span,
-) -> Result<Option<usize>, LowerError> {
-    let mut value = checked_usize_to_isize(base_value, "affine index base value", span)?;
-    for (dimension, stride) in strides.iter().enumerate() {
-        let Some(ordinal) = ordinal_delta_with_span(dimension, domain, base_tuple, tuple, span)?
-        else {
-            return Ok(None);
-        };
-        let ordinal = checked_i64_to_isize(ordinal, "affine index ordinal", span)?;
-        let term = ordinal.checked_mul(*stride).ok_or_else(|| {
-            stencil_contract_violation("affine index stride term overflows host index range", span)
-        })?;
-        value = value.checked_add(term).ok_or_else(|| {
-            stencil_contract_violation("affine index term sum overflows host index range", span)
-        })?;
-    }
-    Ok(usize::try_from(value).ok())
-}
-
-fn apply_float_terms_with_span(
-    base_value: f64,
-    strides: &[f64],
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    tuple: &[i64],
-    span: rumoca_core::Span,
-) -> Result<Option<f64>, LowerError> {
-    let mut value = base_value;
-    for (dimension, stride) in strides.iter().enumerate() {
-        if let Some(ordinal) = ordinal_delta_with_span(dimension, domain, base_tuple, tuple, span)?
-        {
-            let term = ordinal as f64 * stride;
-            if !term.is_finite() {
-                return Err(stencil_contract_violation(
-                    "affine const stride term is not finite",
-                    span,
-                ));
-            }
-            value += term;
-            if !value.is_finite() {
-                return Err(stencil_contract_violation(
-                    "affine const term sum is not finite",
-                    span,
-                ));
-            }
-        }
-    }
-    Ok(Some(value))
-}
-
-fn ordinal_delta_with_span(
-    dimension: usize,
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    tuple: &[i64],
-    span: rumoca_core::Span,
-) -> Result<Option<i64>, LowerError> {
-    let Some(binder) = domain.binders.get(dimension) else {
-        return Ok(None);
-    };
-    let step = binder.step;
-    if step == 0 {
-        return Err(stencil_contract_violation(
-            "structured affine domain binder has zero step",
-            span,
-        ));
-    }
-    let delta = tuple[dimension]
-        .checked_sub(base_tuple[dimension])
-        .ok_or_else(|| {
-            stencil_contract_violation("structured affine ordinal delta overflows i64", span)
-        })?;
-    if delta % step != 0 {
-        return Ok(None);
-    }
-    delta
-        .checked_div(step)
-        .map(Some)
-        .ok_or_else(|| stencil_contract_violation("structured affine ordinal overflows i64", span))
-}
-
-fn checked_usize_to_isize(
-    value: usize,
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<isize, LowerError> {
-    isize::try_from(value).map_err(|_| {
-        stencil_contract_violation(
-            format!("{context} does not fit in host signed index range"),
-            span,
-        )
-    })
-}
-
-fn checked_i64_to_isize(
-    value: i64,
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<isize, LowerError> {
-    isize::try_from(value).map_err(|_| {
-        stencil_contract_violation(
-            format!("{context} does not fit in host signed index range"),
-            span,
-        )
-    })
 }
 
 fn stencil_contract_violation(reason: impl Into<String>, span: rumoca_core::Span) -> LowerError {

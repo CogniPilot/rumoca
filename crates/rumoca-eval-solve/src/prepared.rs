@@ -115,6 +115,30 @@ impl PreparedScalarProgramBlock {
         self.requirements
     }
 
+    /// Reverse-mode VJP: accumulate `Jᵀ · output_cotangents` of this block into
+    /// `cot` at the `LoadY` / `LoadP` / `LoadSeed` input sites (Track A scalar
+    /// reverse core). `scratch` is caller-owned so a hot loop stays
+    /// allocation-free. See [`crate::reverse`].
+    pub(crate) fn reverse_vjp(
+        &self,
+        inputs: &crate::reverse::ReverseInputs<'_>,
+        output_cotangents: &[f64],
+        cot: &mut crate::reverse::ReverseCotangents<'_>,
+        scratch: &mut crate::reverse::ReverseScratch,
+    ) -> Result<(), EvalSolveError> {
+        crate::reverse::reverse_scalar_block_vjp(
+            &crate::reverse::ScalarVjpProgram {
+                block: &self.block,
+                row_registers: &self.row_registers,
+                requirements: self.requirements,
+            },
+            inputs,
+            output_cotangents,
+            cot,
+            scratch,
+        )
+    }
+
     pub fn eval_with_context(
         &self,
         y: &[f64],

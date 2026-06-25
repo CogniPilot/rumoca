@@ -108,7 +108,7 @@ pub(crate) struct OdeModel {
     state_count: usize,
     implicit_rhs: PreparedComputeBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
-    initial_residual: PreparedScalarProgramBlock,
+    initial_residual: PreparedComputeBlock,
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
     pub(crate) root_conditions: PreparedScalarProgramBlock,
@@ -130,8 +130,9 @@ impl OdeModel {
             implicit_scalar_rhs: PreparedScalarProgramBlock::new(
                 solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs)?,
             )?,
-            initial_residual: PreparedScalarProgramBlock::new(
-                model.problem.initialization.residual.clone(),
+            initial_residual: PreparedComputeBlock::new_with_label(
+                &model.problem.initialization.residual,
+                "ode_initial_residual",
             )?,
             initial_targets: model.problem.initialization.row_targets.clone(),
             implicit_jacobian_v: PreparedComputeBlock::new_with_label(
@@ -412,14 +413,16 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         with_runtime_params(&jac_params, p.as_slice(), |params| {
             if jac_runtime
                 .eval_state_jacobian_v_ad_into(
-                    t,
-                    y.as_slice(),
-                    params,
-                    v.as_slice(),
-                    solve_eval::AlgebraicSettle {
-                        tol,
-                        max_iters: 256,
+                    solve_eval::AlgebraicLinearization {
+                        t,
+                        params,
+                        settle: solve_eval::AlgebraicSettle {
+                            tol,
+                            max_iters: 256,
+                        },
                     },
+                    y.as_slice(),
+                    v.as_slice(),
                     out.as_mut_slice(),
                 )
                 .is_err()

@@ -55,9 +55,13 @@ pub use sim_stepper::{SimStepper, StepperState};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
-    SimulationDiagnosticError, SingularityDiagnosis, StructuralReport, TearingReport,
-    UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis, diagnose_structural_singularity,
-    eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation, lower_dae_for_simulation,
+    ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
+    SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
+    StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
+    diagnose_structural_singularity, eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation,
+    lower_dae_for_simulation, lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
+    state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
+    steady_state_objective_gradient_for_dae, steady_state_parameter_sensitivity_for_dae,
     structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
 };
 

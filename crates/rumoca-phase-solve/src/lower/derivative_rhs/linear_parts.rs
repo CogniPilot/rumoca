@@ -186,7 +186,7 @@ pub(in crate::lower) fn derivative_linear_parts_any(
 
 fn derivative_terminal_linear_parts(
     expr: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<LinearParts>, LowerError> {
     let Some((name, coeff)) = derivative_term_coefficient(expr, state_names, owner_span)? else {
@@ -552,7 +552,7 @@ pub(in crate::lower) fn rhs_without_remainder(
 
 pub(in crate::lower) fn derivative_term_coefficient(
     term: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<(String, rumoca_core::Expression)>, LowerError> {
     if let Some(name) = der_state_name(term, state_names)? {
@@ -580,7 +580,7 @@ pub(in crate::lower) fn derivative_term_coefficient(
 
 pub(in crate::lower) fn der_state_name(
     expr: &rumoca_core::Expression,
-    state_names: &[String],
+    state_names: &HashSet<String>,
 ) -> Result<Option<String>, LowerError> {
     let rumoca_core::Expression::BuiltinCall {
         function,
@@ -604,7 +604,7 @@ pub(in crate::lower) fn der_state_name(
     let Some(key) = key else {
         return Ok(None);
     };
-    Ok(state_names.iter().any(|name| name == &key).then_some(key))
+    Ok(state_names.contains(&key).then_some(key))
 }
 
 pub(in crate::lower) fn binding_key_for_der_arg(
@@ -943,7 +943,7 @@ mod tests {
     fn der_state_name_declines_non_state_derivative() -> Result<(), LowerError> {
         let expr = der(var_ref("p", Vec::new(), span(1, 2)), span(0, 3));
 
-        assert!(der_state_name(&expr, &["x".to_string()])?.is_none());
+        assert!(der_state_name(&expr, &HashSet::from(["x".to_string()]))?.is_none());
         Ok(())
     }
 
@@ -956,7 +956,7 @@ mod tests {
             span: call_span,
         };
 
-        let err = der_state_name(&expr, &["x".to_string()])
+        let err = der_state_name(&expr, &HashSet::from(["x".to_string()]))
             .expect_err("malformed der() call should fail");
         assert_eq!(err.source_span(), Some(call_span));
         assert!(err.reason().contains("der() call has no argument"));
@@ -970,7 +970,7 @@ mod tests {
             span: unspanned_linear_parts_test_span(),
         };
 
-        let err = der_state_name(&expr, &["x".to_string()])
+        let err = der_state_name(&expr, &HashSet::from(["x".to_string()]))
             .expect_err("malformed synthetic der() call should fail");
         assert!(
             matches!(err, LowerError::UnspannedContractViolation { .. }),
@@ -994,7 +994,7 @@ mod tests {
             span(0, 5),
         );
 
-        let err = der_state_name(&expr, &["x[1]".to_string()])
+        let err = der_state_name(&expr, &HashSet::from(["x[1]".to_string()]))
             .expect_err("invalid der() subscript should fail");
         assert_eq!(err.source_span(), Some(subscript_span));
         assert!(err.reason().contains("non-positive subscript"));
@@ -1015,7 +1015,7 @@ mod tests {
             span(0, 5),
         );
 
-        assert!(der_state_name(&expr, &["x[1]".to_string()])?.is_none());
+        assert!(der_state_name(&expr, &HashSet::from(["x[1]".to_string()]))?.is_none());
         Ok(())
     }
 }

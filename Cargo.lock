@@ -3602,6 +3602,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-solve",
  "rumoca-phase-structural",
+ "tracing",
 ]
 
 [[package]]

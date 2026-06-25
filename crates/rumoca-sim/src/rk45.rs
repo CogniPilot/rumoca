@@ -37,7 +37,7 @@ impl SimStepper {
     pub fn new(dae_model: &dae::Dae, opts: rumoca_solver::SimOptions) -> Result<Self, SimError> {
         let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
             .map_err(|err| SimError::SolveIr(err.to_string()))?;
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts, true)
             .map_err(|err| SimError::SolveIr(err.to_string()))?;
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)?;
         Ok(Self { inner })
@@ -49,7 +49,12 @@ impl SimStepper {
     ) -> Result<Self, SimulationDiagnosticError> {
         let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
             .map_err(SimulationDiagnosticError::SolveLowering)?;
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)?;
+        crate::solve_lowering::apply_simulation_overrides(
+            &mut solve_model,
+            dae_model,
+            &opts,
+            true,
+        )?;
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

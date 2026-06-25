@@ -47,6 +47,7 @@ fn empty_compilation_result() -> CompilationResult {
         experiment_stop_time: None,
         experiment_tolerance: None,
         experiment_interval: None,
+        rumoca_solver_fixed_step: None,
         experiment_solver: None,
     }
 }

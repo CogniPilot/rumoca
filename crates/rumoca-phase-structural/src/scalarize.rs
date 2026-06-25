@@ -1670,7 +1670,11 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     };
     let scalar_names = build_output_names(dae)?;
     let mut expanded = Vec::new();
+    // One `(new_start, new_len)` span per input equation, so structured families
+    // can be re-pointed at their (post-expansion) row blocks below.
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(dae.continuous.equations.len());
     for eq in &dae.continuous.equations {
+        let new_start = expanded.len();
         let eq_projection = projection.with_context_span(eq.span);
         let scalarization_target = eq
             .lhs
@@ -1731,8 +1735,13 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
                 });
             }
         }
+        spans.push((new_start, expanded.len() - new_start));
     }
     dae.continuous.equations = expanded;
+    rumoca_ir_dae::remap_structured_families_after_expansion(
+        &mut dae.continuous.structured_equations,
+        &spans,
+    );
 
     lower_scalar_linear_algebra_exprs(&mut dae.conditions.relations, &projection)?;
     lower_scalar_linear_algebra_exprs(&mut dae.events.synthetic_root_conditions, &projection)?;

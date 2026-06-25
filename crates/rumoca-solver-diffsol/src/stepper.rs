@@ -766,7 +766,7 @@ mod tests {
                     derivative_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
-                    residual: zero.clone(),
+                    residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                     row_targets: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),
@@ -851,7 +851,10 @@ mod tests {
                     derivative_rhs: ComputeBlock::from_scalar_program_block(derivative.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
-                    residual: scalar_block(vec![zero_row(), zero_row()]),
+                    residual: ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                        zero_row(),
+                        zero_row(),
+                    ])),
                     row_targets: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),

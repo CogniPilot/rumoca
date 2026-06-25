@@ -49,6 +49,8 @@ impl Context {
             class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
             current_class_scope_path: None,
             simulated_root_name: None,
+            materialize_structured_families: true,
+            param_variability_family_bases: rustc_hash::FxHashSet::default(),
         }
     }
 
