@@ -1837,6 +1837,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn install_prereqs_flag_only_applies_to_linux_missing_tools() {
+        use super::{VscodeSmokeOptions, should_install_vscode_smoke_prereqs};
+
         assert!(should_install_vscode_smoke_prereqs(
             smoke_environment(true, true, true, false),
             VscodeSmokeOptions {

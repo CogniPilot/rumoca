@@ -1,3 +1,4 @@
+use super::inference::concrete_i64_dims;
 use super::*;
 
 impl<'a> LowerBuilder<'a> {
@@ -329,14 +330,30 @@ impl<'a> LowerBuilder<'a> {
         span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Option<Vec<String>>, LowerError> {
-        let Some(shape) = self.layout.shape(base_name) else {
+        let shape: Option<Vec<usize>> = if let Some(shape) = self.layout.shape(base_name) {
+            Some(shape.to_vec())
+        } else if let Some(variable) = self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, &rumoca_core::VarName::new(base_name)))
+            .filter(|variable| !variable.dims.is_empty())
+        {
+            Some(concrete_i64_dims(
+                &variable.dims,
+                base_name,
+                "DAE variable dimensions",
+                span,
+            )?)
+        } else {
+            None
+        };
+        let Some(shape) = shape else {
             return Ok(None);
         };
         if subscripts.is_empty() {
             return Ok(None);
         }
 
-        let selections = self.slice_selections(subscripts, shape, span, scope)?;
+        let selections = self.slice_selections(subscripts, &shape, span, scope)?;
         let mut keys = Vec::new();
         collect_slice_binding_keys(base_name, &selections, 0, &mut Vec::new(), &mut keys);
         Ok(Some(keys))
@@ -1653,6 +1670,18 @@ impl<'a> LowerBuilder<'a> {
         subscripts: &[rumoca_core::Subscript],
     ) -> bool {
         let key = name.as_str();
+        // `__pre__.X` is the previous-step memory of a discrete state, not a
+        // constant. The DAE registers it as a non-tunable parameter (and seeds
+        // its `start` value into `structural_bindings`) purely as a
+        // representational artifact, but `snapshot_pre` rewrites the slot every
+        // step. Folding an if-branch on it would bake in the state's start value
+        // (e.g. `if pre(current_wp) == 1` collapsing to the wp==1 branch),
+        // silently producing the wrong dynamics — exactly what scalar `lower_if`
+        // already refuses to do. Treat it as run-time state so lowering keeps a
+        // `Select`.
+        if key.starts_with("__pre__.") {
+            return false;
+        }
         // Loop indices and projected function parameters bound to constants.
         if subscripts.is_empty() && self.local_const_bindings.contains_key(key) {
             return true;

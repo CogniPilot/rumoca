@@ -1276,3 +1276,91 @@ fn named_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Express
         span: lower_test_span(),
     }
 }
+
+#[test]
+fn lower_discrete_rhs_keeps_pre_selector_branch_as_runtime_select() {
+    // Regression: an inner `if pre(s) == 1` nested inside an array-valued update
+    // must lower to a run-time `Select` reading `__pre__.s`, never collapse to
+    // the selector's start-value branch. `__pre__.s` is the previous-step memory
+    // of a discrete state (mutable, rewritten every tick) even though the DAE
+    // registers it as a non-tunable parameter with a `start`. The array lowering
+    // path used to treat that parameter as a translation-time constant and fold
+    // the branch, while the scalar path kept the `Select` -- so the same selector
+    // resolved two different ways across an equation (cross-track guidance bug).
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("__pre__.s"),
+        dae::Variable {
+            start: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span: lower_test_span(),
+            }),
+            fixed: Some(true),
+            is_tunable: false,
+            ..dae::Variable::new(rumoca_core::VarName::new("__pre__.s"), lower_test_span())
+        },
+    );
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("y"),
+        dae::Variable {
+            dims: vec![2],
+            ..dae::Variable::new(rumoca_core::VarName::new("y"), lower_test_span())
+        },
+    );
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y").into()),
+        rhs: rumoca_core::Expression::Array {
+            elements: vec![
+                rumoca_core::Expression::If {
+                    branches: vec![(
+                        rumoca_core::Expression::Binary {
+                            op: rumoca_core::OpBinary::Eq,
+                            lhs: Box::new(var("__pre__.s")),
+                            rhs: Box::new(rumoca_core::Expression::Literal {
+                                value: rumoca_core::Literal::Integer(1),
+                                span: lower_test_span(),
+                            }),
+                            span: lower_test_span(),
+                        },
+                        rumoca_core::Expression::Literal {
+                            value: rumoca_core::Literal::Real(100.0),
+                            span: lower_test_span(),
+                        },
+                    )],
+                    else_branch: Box::new(var("u")),
+                    span: lower_test_span(),
+                },
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(7.0),
+                    span: lower_test_span(),
+                },
+            ],
+            is_matrix: false,
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+        origin: "pre-selector array if".to_string(),
+        scalar_count: 2,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_discrete_rhs(&dae_model, &layout).expect("pre-selector branch should lower");
+    assert_eq!(rows.len(), 2);
+
+    // pre(s) == 1 at runtime -> then-branch constant.
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "__pre__.s", 1.0);
+    set_p_value(&layout, &mut p, "u", 42.0);
+    let (_, then_value) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    assert_eq!(then_value, Some(100.0));
+
+    // pre(s) advances to 2 -> else-branch reads `u`. A folded branch would still
+    // return 100.0 here, ignoring the run-time selector.
+    set_p_value(&layout, &mut p, "__pre__.s", 2.0);
+    let (_, else_value) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    assert_eq!(else_value, Some(42.0));
+}

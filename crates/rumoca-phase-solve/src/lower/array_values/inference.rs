@@ -294,6 +294,13 @@ impl<'a> LowerBuilder<'a> {
                 return Ok(meta.dims.clone());
             }
         }
+        if let Some(variable) = self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, name.var_name()))
+            && !variable.dims.is_empty()
+        {
+            return concrete_i64_dims(&variable.dims, name_text, "DAE variable dimensions", span);
+        }
         if let Some(dims) = self.local_binding_dims.get(name_text) {
             return concrete_i64_dims(dims, name_text, "local binding dimensions", span);
         }
@@ -678,10 +685,13 @@ impl<'a> LowerBuilder<'a> {
         let counts = self.slice_selection_counts(subscripts, shape, scope, Some(span))?;
         let mut dims =
             array_vec_with_capacity(counts.len(), "inferred slice dimension count", span)?;
-        for count in counts {
-            if count > 1 {
+        for (subscript, count) in subscripts.iter().zip(counts.iter().copied()) {
+            if subscript_preserves_slice_dimension(subscript) || count > 1 {
                 dims.push(count);
             }
+        }
+        for count in counts.iter().copied().skip(subscripts.len()) {
+            dims.push(count);
         }
         Ok(Some(dims))
     }
@@ -879,6 +889,15 @@ impl<'a> LowerBuilder<'a> {
                 span,
                 ..
             } => {
+                // MLS §3.7.5/§8.6: `pre(x)` lowers to the synthetic `__pre__.x`
+                // parameter that *holds the previous-event value* of a discrete
+                // (or state) variable. Folding it would pin a runtime array
+                // subscript such as `wp[pre(k), 1]` to its start index, so a
+                // `__pre__.` reference must take the runtime dynamic-selection
+                // path instead of compile-time subscript folding.
+                if name.as_str().starts_with("__pre__.") {
+                    return false;
+                }
                 if subscripts.is_empty() && const_scope.contains_key(name.as_str()) {
                     return true;
                 }
@@ -1105,7 +1124,17 @@ fn scalar_singleton_projection(subscripts: &[rumoca_core::Subscript]) -> bool {
         })
 }
 
-fn concrete_i64_dims(
+fn subscript_preserves_slice_dimension(subscript: &rumoca_core::Subscript) -> bool {
+    match subscript {
+        rumoca_core::Subscript::Colon { .. } => true,
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+        }
+        rumoca_core::Subscript::Index { .. } => false,
+    }
+}
+
+pub(super) fn concrete_i64_dims(
     dims: &[i64],
     name: &str,
     context: &str,
@@ -1208,6 +1237,68 @@ mod tests {
 
         assert_eq!(err.source_span(), Some(span));
         assert_eq!(err.reason(), "non-positive subscript is unsupported");
+    }
+
+    #[test]
+    fn range_slice_keeps_singleton_dimension_while_scalar_index_drops_it() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("singleton_slice.mo"),
+            10,
+            13,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let mut variables = dae::DaeVariables::default();
+        variables.parameters.insert(
+            rumoca_core::VarName::new("buf"),
+            dae::Variable {
+                dims: vec![2],
+                ..dae::Variable::new(rumoca_core::VarName::new("buf"), span)
+            },
+        );
+        let builder = LowerBuilder::new_with_metadata(
+            &layout,
+            &functions,
+            LowerBuilderMetadata {
+                dae_variables: Some(&variables),
+                ..LowerBuilderMetadata::default()
+            },
+        );
+        let range_slice = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("buf"),
+            subscripts: vec![
+                rumoca_core::Subscript::try_generated_expr(
+                    Box::new(rumoca_core::Expression::Range {
+                        start: Box::new(literal_i64(1, span)),
+                        step: None,
+                        end: Box::new(literal_i64(1, span)),
+                        span,
+                    }),
+                    span,
+                    "singleton range test subscript",
+                )
+                .expect("range subscript should build"),
+            ],
+            span,
+        };
+        let scalar_index = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("buf"),
+            subscripts: vec![rumoca_core::Subscript::index(1, span)],
+            span,
+        };
+
+        assert_eq!(
+            builder
+                .infer_expr_dims(&range_slice, &Scope::new())
+                .expect("range slice dims should infer"),
+            vec![1]
+        );
+        assert_eq!(
+            builder
+                .infer_expr_dims(&scalar_index, &Scope::new())
+                .expect("scalar index dims should infer"),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
