@@ -703,6 +703,7 @@ pub fn is_runtime_special_function_short_name(short_name: &str) -> bool {
             | "getTable1DValueNoDer2"
             | "getTable1DValue"
             | "anyTrue"
+            | "allTrue"
             | "andTrue"
             | "firstTrueIndex"
             | "distribution"

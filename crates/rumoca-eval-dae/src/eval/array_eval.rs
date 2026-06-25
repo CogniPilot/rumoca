@@ -1601,6 +1601,11 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
             .ok_or(EvalError::UnsupportedExpression { kind: "der arity" })?;
         return try_infer_runtime_expr_dims(arg, env);
     }
+    if let rumoca_core::Expression::BuiltinCall { function, args, .. } = expr
+        && let Some(dims) = try_infer_constructor_dims(*function, args, env)?
+    {
+        return Ok(dims);
+    }
     if let rumoca_core::Expression::Array {
         elements,
         is_matrix,
@@ -1672,6 +1677,46 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         _ => runtime_vector_dims(values.len()),
     };
     Ok(dims)
+}
+
+fn try_infer_constructor_dims<T: SimFloat>(
+    function: rumoca_core::BuiltinFunction,
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<usize>>, EvalError> {
+    match function {
+        rumoca_core::BuiltinFunction::Fill => {
+            if args.len() < 2 {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "fill arguments",
+                });
+            }
+            constructor_dims(&args[1..], env).map(Some)
+        }
+        rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones => {
+            if args.is_empty() {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "array constructor arguments",
+                });
+            }
+            constructor_dims(args, env).map(Some)
+        }
+        rumoca_core::BuiltinFunction::Identity => {
+            let first = args.first().ok_or(EvalError::UnsupportedExpression {
+                kind: "identity arguments",
+            })?;
+            let n = constructor_dim(first, env)?;
+            Ok(Some(vec![n, n]))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn constructor_dims<T: SimFloat>(
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    args.iter().map(|arg| constructor_dim(arg, env)).collect()
 }
 
 fn checked_runtime_dims(dims: &[i64]) -> Result<Option<Vec<usize>>, EvalError> {

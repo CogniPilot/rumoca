@@ -172,6 +172,9 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
         {
             return Ok(Some(values));
         }
+        if scalar_count == 0 {
+            return Ok(Some(Vec::new()));
+        }
     }
 
     if let Some(dims) = env.dims.get(name)

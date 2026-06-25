@@ -1715,6 +1715,42 @@ fn test_build_env_seeds_fill_start_sized_by_string_array_literal() {
 }
 
 #[test]
+fn test_build_env_accepts_zero_length_fill_sized_by_string_fill() {
+    let string_names = builtin(
+        rumoca_core::BuiltinFunction::Fill,
+        vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(String::new()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            int_lit(0),
+        ],
+    );
+    let size = builtin(
+        rumoca_core::BuiltinFunction::Size,
+        vec![string_names, int_lit(1)],
+    );
+    let mut dae = rumoca_ir_dae::Dae::default();
+    let mut x = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("C_start"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    x.dims = vec![0];
+    x.start = Some(builtin(
+        rumoca_core::BuiltinFunction::Fill,
+        vec![lit(0.0), size],
+    ));
+    dae.variables.parameters.insert("C_start".into(), x);
+
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
+
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&var("C_start"), &env, 0),
+        Ok(Vec::new())
+    );
+}
+
+#[test]
 fn test_build_env_seeds_sum_size_start_for_string_array_literal() {
     let substance_names = arr(
         vec![

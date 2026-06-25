@@ -13,7 +13,7 @@ pub(super) fn eval_boolean_vector_function<T: SimFloat>(
     };
     match short_name {
         "anyTrue" => Ok(Some(T::from_bool(values()?.iter().any(|v| *v != 0.0)))),
-        "andTrue" => {
+        "allTrue" | "andTrue" => {
             let vals = values()?;
             Ok(Some(T::from_bool(
                 !vals.is_empty() && vals.iter().all(|v| *v != 0.0),

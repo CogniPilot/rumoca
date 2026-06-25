@@ -885,6 +885,54 @@ fn test_eval_function_call_external_stub_falls_back_to_special_handler() {
 }
 
 #[test]
+fn test_eval_boolean_vectors_all_true_accepts_array_comprehension() {
+    let env = VarEnv::<f64>::new();
+    let comprehension = |rhs: i64| rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Lt,
+            lhs: Box::new(var("i")),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(rhs),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                step: None,
+                end: Box::new(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let all_true = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Math.BooleanVectors.allTrue"),
+        args: vec![comprehension(3)],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    assert_eq!(eval_expr_value::<f64>(&all_true, &env), 1.0);
+
+    let one_false = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Math.BooleanVectors.allTrue"),
+        args: vec![comprehension(2)],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    assert_eq!(eval_expr_value::<f64>(&one_false, &env), 0.0);
+}
+
+#[test]
 fn test_runtime_special_function_precedence_over_user_body() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
