@@ -338,9 +338,10 @@ impl FallibleExpressionVisitor for FunctionCallResolveValidator<'_> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
-        _is_constructor: bool,
+        is_constructor: bool,
     ) -> Result<(), Self::Error> {
-        if !is_named_function_arg_marker(name)
+        if !is_constructor
+            && !is_named_function_arg_marker(name)
             && let Err(err) =
                 validate_sim_function_call_name(self.dae_model, name, self.function_param_aliases)
         {
@@ -357,6 +358,97 @@ impl FallibleExpressionVisitor for FunctionCallResolveValidator<'_> {
             self.visit_expression(arg)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{Expression, Function, FunctionParam, Literal, OpBinary, Span, VarName};
+
+    fn fixture_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("appendix_b_validation_fixture.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn real(value: f64, span: Span) -> Expression {
+        Expression::Literal {
+            value: Literal::Real(value),
+            span,
+        }
+    }
+
+    #[test]
+    fn solve_input_validation_allows_record_constructor_without_body() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut constructor = Function::new("Pkg.Generic", span);
+        constructor.is_constructor = true;
+        constructor.add_input(FunctionParam::new("eta", "Real", span));
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.Generic"), constructor);
+        dae.continuous.equations.push(dae::Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(real(0.0, span)),
+                rhs: Box::new(Expression::FunctionCall {
+                    name: VarName::new("Pkg.Generic").into(),
+                    args: vec![real(0.8, span)],
+                    is_constructor: true,
+                    span,
+                }),
+                span,
+            },
+            span,
+            "record constructor residual",
+        ));
+
+        validate_solve_input_appendix_b_invariants(&dae)
+            .expect("record constructors are data constructors, not executable functions");
+    }
+
+    #[test]
+    fn solve_input_validation_still_checks_constructor_arguments() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut constructor = Function::new("Pkg.Generic", span);
+        constructor.is_constructor = true;
+        constructor.add_input(FunctionParam::new("eta", "Real", span));
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.Generic"), constructor);
+        dae.continuous.equations.push(dae::Equation::residual(
+            Expression::FunctionCall {
+                name: VarName::new("Pkg.Generic").into(),
+                args: vec![Expression::FunctionCall {
+                    name: VarName::new("Pkg.missingBody").into(),
+                    args: vec![],
+                    is_constructor: false,
+                    span,
+                }],
+                is_constructor: true,
+                span,
+            },
+            span,
+            "record constructor residual",
+        ));
+        dae.symbols.functions.insert(
+            VarName::new("Pkg.missingBody"),
+            Function::new("Pkg.missingBody", span),
+        );
+
+        let err = validate_solve_input_appendix_b_invariants(&dae)
+            .expect_err("constructor arguments must still be validated");
+        let reason = err.reason();
+        assert!(
+            reason.contains("Pkg.missingBody")
+                && reason.contains("function has no executable body"),
+            "{reason}"
+        );
     }
 }
 
