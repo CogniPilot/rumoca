@@ -271,6 +271,9 @@ fn constructor_record_projection_base(
     let Some(source_record) = constructor_class_for_call(tree, comp, binding_source_scope) else {
         return Ok(None);
     };
+    if source_record.class_type != rumoca_core::ClassType::Record {
+        return Ok(None);
+    }
     if source_record.def_id == target_record.def_id {
         return Ok(None);
     }
@@ -297,6 +300,9 @@ fn constructor_projected_field_binding(
     let Some(source_record) = constructor_class_for_call(tree, comp, binding_source_scope) else {
         return Ok(None);
     };
+    if source_record.class_type != rumoca_core::ClassType::Record {
+        return Ok(None);
+    }
 
     let effective = get_effective_components(tree, source_record)?;
     let components = if effective.is_empty() {

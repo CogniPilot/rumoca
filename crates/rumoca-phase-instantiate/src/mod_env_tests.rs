@@ -48,6 +48,14 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
     })
 }
 
+fn named_arg(name: &str, value: ast::Expression) -> ast::Expression {
+    ast::Expression::NamedArgument {
+        name: make_token(name),
+        value: std::sync::Arc::new(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn make_component(name: &str, type_name: &str, type_def_id: Option<DefId>) -> ast::Component {
     ast::Component {
         name: name.to_string(),
@@ -1466,6 +1474,108 @@ mod moved_inline_tests {
         };
         assert_eq!(outer_field, "innerParams");
         assert_eq!(constructor.as_ref(), &binding_expr);
+    }
+
+    #[test]
+    fn test_propagate_record_binding_preserves_function_return_record_field_access() {
+        let state_def_id = rumoca_core::DefId::new(1101);
+        let set_state_def_id = rumoca_core::DefId::new(1102);
+        let mut state_record = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(state_def_id),
+            ..Default::default()
+        };
+        state_record.components.insert(
+            "p".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+        state_record.components.insert(
+            "T".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+        state_record.components.insert(
+            "X".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+
+        let mut set_state_function = ast::ClassDef {
+            name: make_token("setState_pTX"),
+            class_type: rumoca_core::ClassType::Function,
+            def_id: Some(set_state_def_id),
+            ..Default::default()
+        };
+        set_state_function.components.insert(
+            "p".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+        set_state_function.components.insert(
+            "T".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+        set_state_function.components.insert(
+            "X".to_string(),
+            ast::Component::empty_with_span(test_span()),
+        );
+
+        let mut tree = ast::ClassTree::default();
+        tree.definitions.classes.insert(
+            "Medium.ThermodynamicState".to_string(),
+            state_record.clone(),
+        );
+        tree.definitions
+            .classes
+            .insert("Medium.setState_pTX".to_string(), set_state_function);
+        tree.def_map
+            .insert(state_def_id, "Medium.ThermodynamicState".to_string());
+        tree.def_map
+            .insert(set_state_def_id, "Medium.setState_pTX".to_string());
+
+        let binding_expr = ast::Expression::FunctionCall {
+            comp: ast::ComponentReference {
+                local: false,
+                parts: vec![
+                    ast::ComponentRefPart {
+                        ident: make_token("Medium"),
+                        subs: None,
+                    },
+                    ast::ComponentRefPart {
+                        ident: make_token("setState_pTX"),
+                        subs: None,
+                    },
+                ],
+                def_id: Some(set_state_def_id),
+                span: rumoca_core::Span::DUMMY,
+            },
+            args: vec![
+                named_arg("p", make_int_expr(101325)),
+                named_arg("T", make_int_expr(293)),
+                named_arg("X", make_comp_ref_expr(&["X_default"])),
+            ],
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let mut ctx = InstantiateContext::new();
+        propagate_record_binding_to_fields(
+            &tree,
+            &mut ctx,
+            &binding_expr,
+            Some(ast::QualifiedName::from_ident("Medium")),
+            &state_record,
+            &IndexMap::default(),
+        )
+        .expect("record field projection should succeed");
+
+        let x_mod = ctx
+            .mod_env()
+            .active
+            .get(&ast::QualifiedName::from_ident("X"))
+            .expect("X field binding should be present");
+        let ast::Expression::FieldAccess { base, field, .. } = &x_mod.value else {
+            panic!("function-return record field must be kept as field access");
+        };
+        assert_eq!(field, "X");
+        assert_eq!(base.as_ref(), &binding_expr);
     }
 
     #[test]
