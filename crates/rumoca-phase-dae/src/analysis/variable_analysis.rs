@@ -172,7 +172,7 @@ fn root_variable_for_alias(
     if !suffix.starts_with('.') {
         return None;
     }
-    let root_name = VarName::new(&format!("{root_record_path}{suffix}"));
+    let root_name = VarName::new(format!("{root_record_path}{suffix}"));
     flat.variables.contains_key(&root_name).then_some(root_name)
 }
 
@@ -1771,7 +1771,7 @@ mod tests {
     }
 
     fn add_oc_gamma(flat: &mut Model, record_path: &str) -> VarName {
-        let name = VarName::new(&format!("{record_path}.gamma"));
+        let name = VarName::new(format!("{record_path}.gamma"));
         flat.add_variable(
             name.clone(),
             flat::Variable {
