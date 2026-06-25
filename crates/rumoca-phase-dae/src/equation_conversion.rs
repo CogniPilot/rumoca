@@ -1,4 +1,9 @@
 //! Continuous equation filtering/conversion for ToDAE.
+//!
+//! SPEC_0021 file-size exception: this module still owns the current Flat
+//! equation-to-DAE conversion path. split plan: move connector/input boundary
+//! filtering, structured-equation expansion, and expression conversion context
+//! into separate sibling modules as each concern receives focused tests.
 
 use std::collections::{HashMap, HashSet};
 

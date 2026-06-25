@@ -100,7 +100,7 @@ pub(crate) fn find_overconstrained_derivative_alias_roots(
 }
 
 fn top_level_component_has_outputs(name: &VarName, flat: &Model) -> bool {
-    let Some(component) = name.as_str().split('.').next() else {
+    let Some(component) = get_top_level_prefix(name.as_str()) else {
         return false;
     };
     let prefix = format!("{component}.");
