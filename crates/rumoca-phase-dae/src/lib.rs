@@ -801,19 +801,10 @@ fn rewrite_overconstrained_derivative_alias_expr(
             args,
             span,
         } if *function == BuiltinFunction::Der => {
-            if let Some(rumoca_core::Expression::VarRef {
-                name, subscripts, ..
-            }) = args.first_mut()
-                && subscripts.is_empty()
-                && let Some(root) = alias_roots.get(name.var_name())
-            {
-                rewritten_aliases.insert(name.var_name().clone());
-                *args = vec![derivative_alias_var_ref(root, *span)];
+            if rewrite_derivative_alias_call(args, *span, alias_roots, rewritten_aliases) {
                 return;
             }
-            for arg in args {
-                rewrite_overconstrained_derivative_alias_expr(arg, alias_roots, rewritten_aliases);
-            }
+            rewrite_overconstrained_derivative_alias_exprs(args, alias_roots, rewritten_aliases);
         }
         rumoca_core::Expression::Binary { lhs, rhs, .. } => {
             rewrite_overconstrained_derivative_alias_expr(lhs, alias_roots, rewritten_aliases);
@@ -826,9 +817,7 @@ fn rewrite_overconstrained_derivative_alias_expr(
         | rumoca_core::Expression::FunctionCall { args, .. }
         | rumoca_core::Expression::Array { elements: args, .. }
         | rumoca_core::Expression::Tuple { elements: args, .. } => {
-            for arg in args {
-                rewrite_overconstrained_derivative_alias_expr(arg, alias_roots, rewritten_aliases);
-            }
+            rewrite_overconstrained_derivative_alias_exprs(args, alias_roots, rewritten_aliases);
         }
         rumoca_core::Expression::If {
             branches,
@@ -888,31 +877,68 @@ fn rewrite_overconstrained_derivative_alias_expr(
             base, subscripts, ..
         } => {
             rewrite_overconstrained_derivative_alias_expr(base, alias_roots, rewritten_aliases);
-            for subscript in subscripts {
-                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                    rewrite_overconstrained_derivative_alias_expr(
-                        expr,
-                        alias_roots,
-                        rewritten_aliases,
-                    );
-                }
-            }
+            rewrite_overconstrained_derivative_alias_subscripts(
+                subscripts,
+                alias_roots,
+                rewritten_aliases,
+            );
         }
         rumoca_core::Expression::FieldAccess { base, .. } => {
             rewrite_overconstrained_derivative_alias_expr(base, alias_roots, rewritten_aliases);
         }
         rumoca_core::Expression::VarRef { subscripts, .. } => {
-            for subscript in subscripts {
-                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                    rewrite_overconstrained_derivative_alias_expr(
-                        expr,
-                        alias_roots,
-                        rewritten_aliases,
-                    );
-                }
-            }
+            rewrite_overconstrained_derivative_alias_subscripts(
+                subscripts,
+                alias_roots,
+                rewritten_aliases,
+            );
         }
         rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn rewrite_derivative_alias_call(
+    args: &mut Vec<rumoca_core::Expression>,
+    span: Span,
+    alias_roots: &FxHashMap<rumoca_core::VarName, rumoca_core::VarName>,
+    rewritten_aliases: &mut FxHashSet<rumoca_core::VarName>,
+) -> bool {
+    let Some(rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    }) = args.first_mut()
+    else {
+        return false;
+    };
+    if !subscripts.is_empty() {
+        return false;
+    }
+    let Some(root) = alias_roots.get(name.var_name()) else {
+        return false;
+    };
+    rewritten_aliases.insert(name.var_name().clone());
+    *args = vec![derivative_alias_var_ref(root, span)];
+    true
+}
+
+fn rewrite_overconstrained_derivative_alias_exprs(
+    exprs: &mut [rumoca_core::Expression],
+    alias_roots: &FxHashMap<rumoca_core::VarName, rumoca_core::VarName>,
+    rewritten_aliases: &mut FxHashSet<rumoca_core::VarName>,
+) {
+    for expr in exprs {
+        rewrite_overconstrained_derivative_alias_expr(expr, alias_roots, rewritten_aliases);
+    }
+}
+
+fn rewrite_overconstrained_derivative_alias_subscripts(
+    subscripts: &mut [rumoca_core::Subscript],
+    alias_roots: &FxHashMap<rumoca_core::VarName, rumoca_core::VarName>,
+    rewritten_aliases: &mut FxHashSet<rumoca_core::VarName>,
+) {
+    for subscript in subscripts {
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            rewrite_overconstrained_derivative_alias_expr(expr, alias_roots, rewritten_aliases);
+        }
     }
 }
 
