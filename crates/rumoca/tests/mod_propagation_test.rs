@@ -872,6 +872,168 @@ fn test_record_field_modifier_drives_sibling_size_dimension_in_nested_array_comp
     }
 }
 
+#[test]
+fn test_nested_attribute_modifier_on_array_component_selects_element_row() {
+    let source = r#"
+        record Curve
+            parameter Real eta[:];
+        end Curve;
+
+        record Performance
+            parameter Curve motorEfficiency(eta={1.0});
+        end Performance;
+
+        model Pump
+            parameter Performance per;
+            Real y;
+        equation
+            y = per.motorEfficiency.eta[1];
+        end Pump;
+
+        model PumpSystem
+            parameter Integer n = 3;
+            parameter Real Motor_eta[n, 2] = {
+                {0.87, 0.88},
+                {0.77, 0.78},
+                {0.67, 0.68}};
+            Pump pumConSpe[n](per(motorEfficiency(eta=Motor_eta)));
+        end PumpSystem;
+
+        model Top
+            PumpSystem system;
+            Real y;
+        equation
+            y = system.pumConSpe[1].y;
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("nested attribute modifier on array component should select one row");
+
+    let eta = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new(
+            "system.pumConSpe[1].per.motorEfficiency.eta",
+        ))
+        .expect("first pump motor efficiency eta should be in flat variables");
+    assert_eq!(
+        eta.dims,
+        vec![2],
+        "first pump motor efficiency eta should keep one selected row"
+    );
+    match eta
+        .binding
+        .as_ref()
+        .expect("first pump motor efficiency eta should keep a flat binding")
+    {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert_eq!(name.as_str(), "system.Motor_eta");
+            assert!(
+                matches!(
+                    subscripts.as_slice(),
+                    [rumoca_core::Subscript::Index { value: 1, .. }]
+                ),
+                "nested attribute modifier should select first source row, got {subscripts:?}"
+            );
+        }
+        other => panic!("expected selected source row binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_forwarded_parent_parameter_remains_visible_to_child_modifier_rhs() {
+    let source = r#"
+        model Damper
+            parameter Real dpValve_nominal;
+            Real y;
+        equation
+            y = dpValve_nominal;
+        end Damper;
+
+        model Terminal
+            parameter Real PreDroAir;
+            Damper dam(dpValve_nominal=PreDroAir);
+            Real y;
+        equation
+            y = dam.y;
+        end Terminal;
+
+        model FiveZone
+            parameter Real PreDroAir1;
+            Terminal vAV1(PreDroAir=PreDroAir1);
+            Real y;
+        equation
+            y = vAV1.y;
+        end FiveZone;
+
+        model Floor
+            parameter Real PreDroAir1;
+            FiveZone fivZonVAV(PreDroAir1=PreDroAir1);
+            Real y;
+        equation
+            y = fivZonVAV.y;
+        end Floor;
+
+        model Wrapper
+            parameter Real PreDroAir[5] = {200, 124, 124, 124, 124};
+            Floor floor(PreDroAir1=PreDroAir[1]);
+            Real y;
+        equation
+            y = floor.y;
+        end Wrapper;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Wrapper")
+        .compile_str(source, "test.mo")
+        .expect("forwarded parent parameter should remain visible to child modifier RHS");
+
+    let pre_dro_air = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new("floor.fivZonVAV.vAV1.PreDroAir"))
+        .expect("terminal PreDroAir should be in flat variables");
+    assert!(
+        pre_dro_air.binding.is_some(),
+        "terminal PreDroAir should keep the forwarded binding"
+    );
+
+    let dp = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new(
+            "floor.fivZonVAV.vAV1.dam.dpValve_nominal",
+        ))
+        .expect("damper dpValve_nominal should be in flat variables");
+    assert!(
+        dp.binding.is_some(),
+        "damper dpValve_nominal should bind through terminal PreDroAir"
+    );
+    match dp
+        .binding
+        .as_ref()
+        .expect("damper dpValve_nominal should keep a flat binding")
+    {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert_eq!(name.as_str(), "floor.fivZonVAV.vAV1.PreDroAir");
+            assert!(
+                subscripts.is_empty(),
+                "scalar forwarded parameter must not receive an array-element subscript, got {subscripts:?}"
+            );
+        }
+        other => {
+            panic!("expected damper dpValve_nominal to reference terminal PreDroAir, got {other:?}")
+        }
+    }
+}
+
 /// Test that typecheck_instanced evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {

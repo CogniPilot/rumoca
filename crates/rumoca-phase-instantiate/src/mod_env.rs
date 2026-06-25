@@ -696,7 +696,8 @@ fn resolve_modification_expr_with_depth(
 
     // Resolve direct references in current scope (e.g. resolveInFrame=resolveInFrame).
     if mode == ModificationResolveMode::Modifier
-        && let Some(resolved_ref) = resolve_single_part_ref_expr(expr, mod_env)
+        && let Some(resolved_ref) =
+            resolve_single_part_ref_expr(expr, mod_env, effective_components)
     {
         return resolve_modification_expr_with_depth(
             &resolved_ref,
@@ -715,6 +716,7 @@ fn resolve_modification_expr_with_depth(
 fn resolve_single_part_ref_expr(
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
+    effective_components: &IndexMap<String, ast::Component>,
 ) -> Option<ast::Expression> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
         return None;
@@ -732,6 +734,13 @@ fn resolve_single_part_ref_expr(
         return index_array_value(&mod_value.value, &indices);
     }
 
+    if effective_components
+        .get(name)
+        .is_some_and(component_is_scalar)
+    {
+        return None;
+    }
+
     if let Some(mod_value) = mod_env.get(&qn)
         && mod_value.value != *expr
     {
@@ -739,6 +748,10 @@ fn resolve_single_part_ref_expr(
     }
 
     None
+}
+
+fn component_is_scalar(comp: &ast::Component) -> bool {
+    comp.shape.is_empty() && comp.shape_expr.is_empty()
 }
 
 fn literal_integer_subscripts(subscripts: &[ast::Subscript]) -> Option<Vec<i64>> {
