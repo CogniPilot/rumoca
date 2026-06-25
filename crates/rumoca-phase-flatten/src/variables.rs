@@ -396,6 +396,7 @@ fn qualify_variable_attribute(
     let Some(expr) = expr else {
         return Ok(None);
     };
+    let expr = flat_value_attribute_expr(ctx.instance, attr_name, expr);
     let attr_prefix = attribute_prefix(ctx.instance, attr_name, ctx.prefix.clone());
     let qualified = qualify_expression_with_imports(
         expr,
@@ -424,21 +425,85 @@ fn qualify_variable_attribute(
     )))
 }
 
+fn flat_value_attribute_expr<'a>(
+    instance: &'a ast::InstanceData,
+    attr_name: &str,
+    expr: &'a ast::Expression,
+) -> &'a ast::Expression {
+    if attr_name == "start"
+        && instance.binding_from_modification
+        && instance
+            .binding_source
+            .as_ref()
+            .is_some_and(|source| source == expr)
+        && let (Some(source), Some(binding)) =
+            (instance.binding_source.as_ref(), instance.binding.as_ref())
+        && modifier_binding_selects_source_array_element(source, binding)
+    {
+        return binding;
+    }
+    expr
+}
+
 fn qualify_variable_binding(
     ctx: VariableQualifyContext<'_, '_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
-    let Some(expr) = ctx
-        .instance
-        .binding_source
-        .as_ref()
-        .or(ctx.instance.binding.as_ref())
-    else {
+    let Some(expr) = flat_value_binding_expr(ctx.instance) else {
         return Ok(None);
     };
     if ctx.instance.binding_from_modification {
         return qualify_modification_binding(ctx, expr).map(Some);
     }
     qualify_declaration_binding(ctx, expr).map(Some)
+}
+
+fn flat_value_binding_expr(instance: &ast::InstanceData) -> Option<&ast::Expression> {
+    if instance.binding_from_modification
+        && let (Some(source), Some(binding)) =
+            (instance.binding_source.as_ref(), instance.binding.as_ref())
+        && modifier_binding_selects_source_array_element(source, binding)
+    {
+        return Some(binding);
+    }
+    instance
+        .binding_source
+        .as_ref()
+        .or(instance.binding.as_ref())
+}
+
+fn modifier_binding_selects_source_array_element(
+    source: &ast::Expression,
+    binding: &ast::Expression,
+) -> bool {
+    let (
+        ast::Expression::ComponentReference(source_ref),
+        ast::Expression::ComponentReference(binding_ref),
+    ) = (source, binding)
+    else {
+        return false;
+    };
+    component_ref_idents_equal(source_ref, binding_ref)
+        && !component_ref_has_subscripts(source_ref)
+        && component_ref_has_subscripts(binding_ref)
+}
+
+fn component_ref_idents_equal(
+    lhs: &ast::ComponentReference,
+    rhs: &ast::ComponentReference,
+) -> bool {
+    lhs.parts.len() == rhs.parts.len()
+        && lhs
+            .parts
+            .iter()
+            .zip(rhs.parts.iter())
+            .all(|(lhs, rhs)| lhs.ident.text == rhs.ident.text)
+}
+
+fn component_ref_has_subscripts(reference: &ast::ComponentReference) -> bool {
+    reference
+        .parts
+        .iter()
+        .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
 }
 
 fn qualify_modification_binding(

@@ -572,7 +572,24 @@ impl TypeChecker {
         let name = name_path.to_flat_string();
         let scope = Self::enclosing_scope_name(&name_path);
 
-        // Try to infer from binding first
+        // MLS §7.2.4: modification expressions are evaluated in the lexical
+        // scope where the modifier was written. For array-component modifiers
+        // the resolved binding may be an element-indexed value (`row[1]`), while
+        // the preserved source expression (`row`) carries the modified field's
+        // array shape.
+        if instance_data.binding_from_modification
+            && let Some(dims) = self.infer_modifier_source_dims(instance_data)
+        {
+            return Self::apply_inferred_instance_dims(
+                instance_data,
+                &mut self.eval_ctx,
+                &name,
+                dims,
+            );
+        }
+
+        // Try to infer from binding first for declaration bindings and
+        // modification bindings without usable source metadata.
         if let Some(ref binding) = instance_data.binding
             && let Some(dims) = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
                 binding,
@@ -580,6 +597,14 @@ impl TypeChecker {
                 &scope,
             )
         {
+            return Self::apply_inferred_instance_dims(
+                instance_data,
+                &mut self.eval_ctx,
+                &name,
+                dims,
+            );
+        }
+        if let Some(dims) = self.infer_modifier_source_dims(instance_data) {
             return Self::apply_inferred_instance_dims(
                 instance_data,
                 &mut self.eval_ctx,
@@ -605,6 +630,22 @@ impl TypeChecker {
         }
 
         false
+    }
+
+    fn infer_modifier_source_dims(
+        &self,
+        instance_data: &rumoca_ir_ast::InstanceData,
+    ) -> Option<Vec<usize>> {
+        let source = instance_data.binding_source.as_ref()?;
+        let source_scope = instance_data
+            .binding_source_scope
+            .as_ref()?
+            .to_flat_string();
+        rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+            source,
+            &self.eval_ctx,
+            &source_scope,
+        )
     }
 
     fn apply_inferred_instance_dims(

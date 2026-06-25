@@ -37,6 +37,7 @@ pub(super) fn expand_array_component(
     overlay.array_parent_dims.insert(parent_path, dims.to_vec());
 
     let indices = super::generate_array_indices(dims);
+    let active_nested_mod_keys = active_nested_modifier_keys(ctx.mod_env(), name);
 
     // Extract the original binding for indexing. Check active component modifier first,
     // then comp.binding, then fall back to comp.start for modification-only declarations.
@@ -66,6 +67,12 @@ pub(super) fn expand_array_component(
         .as_ref()
         .and_then(|mv| mv.source_scope.clone())
         .or_else(|| component_declaration_source_scope(ctx, comp));
+    let modifier_state = ArrayElementModifierState {
+        binding_qn,
+        mod_env_binding,
+        binding_source_scope,
+        active_nested_mod_keys,
+    };
 
     // MLS §7.2.5: Pre-resolve non-`each` modifications that reference array values.
     // Resolve once so each element can be indexed from the resolved array.
@@ -119,51 +126,179 @@ pub(super) fn expand_array_component(
             &idx,
         )?;
 
-        // Ensure scalar element instantiation sees the indexed binding (MLS §10.1).
-        // Without this scoped override, a parent unindexed modifier entry for this
-        // component name would overwrite the per-element indexed binding.
-        let previous_binding = ctx.mod_env().active.get(&binding_qn).cloned();
-        if let Some(binding_expr) = &scalar_comp.binding
-            && mod_env_binding.is_some()
-        {
-            ctx.mod_env_mut().active.insert(
-                binding_qn.clone(),
-                array_element_binding_modification(
-                    scope,
-                    binding_expr,
-                    &idx,
-                    mod_env_binding.as_ref(),
-                    binding_source_scope.clone(),
-                )?,
-            );
-        }
-
-        ctx.push_path_part(name, idx.clone());
-        let inst_result = instantiate_component(
-            scope.tree,
+        instantiate_scalar_array_element(
+            scope,
+            name,
             &scalar_comp,
+            &idx,
             ctx,
             overlay,
-            scope.effective_components,
-            scope.type_overrides,
-            scope.imports,
-        );
-        ctx.pop_path();
-
-        // Restore parent binding scope for subsequent elements/siblings.
-        match previous_binding {
-            Some(prev) => {
-                ctx.mod_env_mut().active.insert(binding_qn.clone(), prev);
-            }
-            None => {
-                ctx.mod_env_mut().active.shift_remove(&binding_qn);
-            }
-        }
-
-        inst_result?;
+            &modifier_state,
+        )?;
     }
 
     Ok(())
+}
+
+struct ArrayElementModifierState {
+    binding_qn: ast::QualifiedName,
+    mod_env_binding: Option<ast::ModificationValue>,
+    binding_source_scope: Option<ast::QualifiedName>,
+    active_nested_mod_keys: Vec<ast::QualifiedName>,
+}
+
+fn instantiate_scalar_array_element(
+    scope: &ArrayExpansionScope<'_>,
+    name: &str,
+    scalar_comp: &ast::Component,
+    idx: &[i64],
+    ctx: &mut InstantiateContext,
+    overlay: &mut rumoca_ir_ast::InstanceOverlay,
+    modifier_state: &ArrayElementModifierState,
+) -> InstantiateResult<()> {
+    let previous_binding =
+        install_array_element_binding_override(scope, scalar_comp, idx, ctx, modifier_state)?;
+    let previous_nested_mods = distribute_active_nested_mods_for_element(
+        scope,
+        ctx,
+        &modifier_state.active_nested_mod_keys,
+        idx,
+    )?;
+
+    ctx.push_path_part(name, idx.to_vec());
+    let inst_result = instantiate_component(
+        scope.tree,
+        scalar_comp,
+        ctx,
+        overlay,
+        scope.effective_components,
+        scope.type_overrides,
+        scope.imports,
+    );
+    ctx.pop_path();
+
+    restore_array_element_binding(ctx, modifier_state, previous_binding);
+    restore_active_nested_mods(ctx, previous_nested_mods);
+    inst_result
+}
+
+fn install_array_element_binding_override(
+    scope: &ArrayExpansionScope<'_>,
+    scalar_comp: &ast::Component,
+    idx: &[i64],
+    ctx: &mut InstantiateContext,
+    modifier_state: &ArrayElementModifierState,
+) -> InstantiateResult<Option<ast::ModificationValue>> {
+    let previous_binding = ctx
+        .mod_env()
+        .active
+        .get(&modifier_state.binding_qn)
+        .cloned();
+    if let Some(binding_expr) = &scalar_comp.binding
+        && modifier_state.mod_env_binding.is_some()
+    {
+        ctx.mod_env_mut().active.insert(
+            modifier_state.binding_qn.clone(),
+            array_element_binding_modification(
+                scope,
+                binding_expr,
+                idx,
+                modifier_state.mod_env_binding.as_ref(),
+                modifier_state.binding_source_scope.clone(),
+            )?,
+        );
+    }
+    Ok(previous_binding)
+}
+
+fn restore_array_element_binding(
+    ctx: &mut InstantiateContext,
+    modifier_state: &ArrayElementModifierState,
+    previous_binding: Option<ast::ModificationValue>,
+) {
+    match previous_binding {
+        Some(prev) => {
+            ctx.mod_env_mut()
+                .active
+                .insert(modifier_state.binding_qn.clone(), prev);
+        }
+        None => {
+            ctx.mod_env_mut()
+                .active
+                .shift_remove(&modifier_state.binding_qn);
+        }
+    }
+}
+
+fn active_nested_modifier_keys(
+    mod_env: &ast::ModificationEnvironment,
+    component_name: &str,
+) -> Vec<ast::QualifiedName> {
+    mod_env
+        .active
+        .keys()
+        .filter(|key| key.strip_prefix(component_name).is_some())
+        .cloned()
+        .collect()
+}
+
+fn distribute_active_nested_mods_for_element(
+    scope: &ArrayExpansionScope<'_>,
+    ctx: &mut InstantiateContext,
+    keys: &[ast::QualifiedName],
+    idx: &[i64],
+) -> InstantiateResult<Vec<(ast::QualifiedName, Option<ast::ModificationValue>)>> {
+    let mut previous = Vec::with_capacity(keys.len());
+    for key in keys {
+        let Some(existing) = ctx.mod_env().active.get(key).cloned() else {
+            previous.push((key.clone(), None));
+            continue;
+        };
+        if existing.each {
+            continue;
+        }
+        previous.push((key.clone(), Some(existing.clone())));
+        let value = index_binding_for_element(
+            scope.tree,
+            scope.effective_components,
+            &existing.value,
+            idx,
+        )?;
+        let source = existing
+            .source
+            .as_ref()
+            .map(|source| {
+                index_binding_for_element(scope.tree, scope.effective_components, source, idx)
+            })
+            .transpose()?;
+        ctx.mod_env_mut().active.insert(
+            key.clone(),
+            ast::ModificationValue {
+                value,
+                source,
+                source_scope: existing.source_scope,
+                each: existing.each,
+                final_: existing.final_,
+            },
+        );
+    }
+    Ok(previous)
+}
+
+fn restore_active_nested_mods(
+    ctx: &mut InstantiateContext,
+    previous: Vec<(ast::QualifiedName, Option<ast::ModificationValue>)>,
+) {
+    for (key, value) in previous {
+        match value {
+            Some(value) => {
+                ctx.mod_env_mut().active.insert(key, value);
+            }
+            None => {
+                ctx.mod_env_mut().active.shift_remove(&key);
+            }
+        }
+    }
 }
 
 fn indexed_array_component_start(
