@@ -41,6 +41,28 @@ fn try_match_state_to_row(
 
 fn states_with_assignable_derivative_rows(dae: &Dae, state_names: &[VarName]) -> HashSet<usize> {
     let bindings = structural_scalar_bindings(dae);
+    let mut matched_aggregate_states = HashSet::new();
+    for (state_idx, state_name) in state_names.iter().enumerate() {
+        let Some(state) = dae.variables.states.get(state_name) else {
+            continue;
+        };
+        if state.size() <= 1 {
+            continue;
+        }
+        let mut components = HashSet::new();
+        for eq in &dae.continuous.equations {
+            if !state_derivative_row_is_assignable(eq, state_name, state_names, &bindings) {
+                continue;
+            }
+            components.extend(active_derivative_components_for_state(
+                &eq.rhs, state_name, &bindings,
+            ));
+        }
+        if components.len() == state.size() {
+            matched_aggregate_states.insert(state_idx);
+        }
+    }
+
     let state_to_rows: Vec<Vec<usize>> = state_names
         .iter()
         .map(|state_name| {
@@ -76,7 +98,9 @@ fn states_with_assignable_derivative_rows(dae: &Dae, state_names: &[VarName]) ->
             try_match_state_to_row(state_idx, &state_to_rows, &mut row_to_state, &mut seen_rows);
     }
 
-    row_to_state.into_iter().flatten().collect()
+    let mut matched_states: HashSet<usize> = row_to_state.into_iter().flatten().collect();
+    matched_states.extend(matched_aggregate_states);
+    matched_states
 }
 
 fn state_derivative_row_is_assignable(
@@ -158,12 +182,91 @@ impl ExpressionVisitor for ExactStateDerivativeChecker<'_> {
 }
 
 fn derivative_arg_matches_state(expr: &Expression, state_name: &VarName) -> bool {
+    if let Some(name) = derivative_arg_component_name(expr) {
+        return name == state_name.as_str()
+            || rumoca_core::parse_scalar_name(&name)
+                .is_some_and(|scalar| scalar.base == state_name.as_str());
+    }
     let Some(exact_name) = expression_exact_name(expr) else {
         return false;
     };
     exact_name == state_name.as_str()
         || rumoca_core::parse_scalar_name(&exact_name)
             .is_some_and(|scalar| scalar.base == state_name.as_str())
+}
+
+fn derivative_arg_component_name(expr: &Expression) -> Option<String> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if subscripts.is_empty() {
+        return Some(name.as_str().to_string());
+    }
+    let indices = static_subscript_indices(subscripts)?;
+    let indices: Vec<usize> = indices
+        .into_iter()
+        .map(usize::try_from)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    Some(dae::format_subscript_key(name.as_str(), &indices))
+}
+
+fn active_derivative_components_for_state(
+    expr: &Expression,
+    state_name: &VarName,
+    bindings: &HashMap<String, f64>,
+) -> HashSet<String> {
+    let mut collector = ActiveDerivativeComponentCollector {
+        state_name,
+        bindings,
+        components: HashSet::new(),
+    };
+    collector.visit_expression(expr);
+    collector.components
+}
+
+struct ActiveDerivativeComponentCollector<'a> {
+    state_name: &'a VarName,
+    bindings: &'a HashMap<String, f64>,
+    components: HashSet<String>,
+}
+
+impl ExpressionVisitor for ActiveDerivativeComponentCollector<'_> {
+    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+        if *function == BuiltinFunction::Der {
+            if let Some(arg) = args.first()
+                && let Some(component_name) = derivative_arg_component_name(arg)
+                && rumoca_core::parse_scalar_name(&component_name)
+                    .is_some_and(|scalar| scalar.base == self.state_name.as_str())
+            {
+                self.components.insert(component_name);
+            }
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
+        for (condition, value) in branches {
+            match eval_static_bool(condition, self.bindings) {
+                Some(true) => {
+                    self.visit_expression(value);
+                    return;
+                }
+                Some(false) => continue,
+                None => {
+                    self.visit_expression(condition);
+                    self.visit_expression(value);
+                }
+            }
+        }
+        self.visit_expression(else_branch);
+    }
 }
 
 fn all_active_derivative_args_are_states(
@@ -617,7 +720,7 @@ fn expr_dependency_closure_reaches_state(
             if expr_contains_var(defining_expr, state_name) {
                 return true;
             }
-            stack.extend(collect_rhs_var_refs(defining_expr).into_iter());
+            stack.extend(collect_rhs_var_refs(defining_expr));
         }
     }
     false

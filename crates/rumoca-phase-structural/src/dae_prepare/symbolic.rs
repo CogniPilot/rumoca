@@ -1026,12 +1026,13 @@ pub(super) fn expand_der_in_expr_full(
         } if args.len() == 1 => {
             let arg = &args[0];
             match arg {
+                Expression::VarRef { .. } if der_arg_refers_to_retained_state(arg, state_names) => {
+                    expr.clone()
+                }
                 Expression::VarRef {
                     name, subscripts, ..
                 } if subscripts.is_empty() => {
-                    if state_names.contains(name.as_str()) {
-                        expr.clone()
-                    } else if let Some(deriv) = der_map.get(name.as_str()) {
+                    if let Some(deriv) = der_map.get(name.as_str()) {
                         deriv.clone()
                     } else {
                         expr.clone()
@@ -1128,6 +1129,15 @@ pub(super) fn expand_der_in_expr_full(
         },
         _ => expr.clone(),
     }
+}
+
+fn der_arg_refers_to_retained_state(expr: &Expression, state_names: &HashSet<String>) -> bool {
+    let Expression::VarRef { name, .. } = expr else {
+        return false;
+    };
+    state_names.contains(name.as_str())
+        || rumoca_core::parse_scalar_name(name.as_str())
+            .is_some_and(|scalar| state_names.contains(scalar.base))
 }
 
 pub(super) fn truncate_debug(s: &str, max_chars: usize) -> String {

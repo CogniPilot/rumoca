@@ -842,6 +842,49 @@ fn jacobian_for_dae_assembles_named_matrix_and_flags_zero_pivots() {
 }
 
 #[test]
+fn lower_dae_for_simulation_preserves_matrix_derivative_state_slots() {
+    let mut dae = dae::Dae::new();
+    let mut r = dae::Variable::new(VarName::new("R"), fixture_span());
+    r.dims = vec![3, 3];
+    dae.variables.states.insert(VarName::new("R"), r);
+    let mut skew = dae::Variable::new(VarName::new("skew"), fixture_span());
+    skew.dims = vec![3, 3];
+    dae.variables.algebraics.insert(VarName::new("skew"), skew);
+
+    dae.continuous.equations.push(eq(sub(
+        var("skew"),
+        array(vec![
+            array(vec![real(0.0), real(-1.0), real(0.0)]),
+            array(vec![real(1.0), real(0.0), real(0.0)]),
+            array(vec![real(0.0), real(0.0), real(0.0)]),
+        ]),
+    )));
+    dae.continuous
+        .equations
+        .push(eq(sub(der(var("R")), mul(var("R"), var("skew")))));
+
+    let structurally_lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("matrix derivative state should structurally lower");
+    assert!(
+        structurally_lowered
+            .dae
+            .variables
+            .states
+            .contains_key(&VarName::new("R")),
+        "structural lowering must retain matrix state R"
+    );
+
+    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("matrix derivative state should lower to solve IR");
+    assert_eq!(model.problem.solve_layout.state_scalar_count, 9);
+    assert!(
+        model.problem.solve_layout.solver_maps.names[..9]
+            .iter()
+            .any(|name| name == "R[1,2]")
+    );
+}
+
+#[test]
 fn eval_dae_at_rejects_unknown_state_name() {
     let err = eval_dae_at(
         &oscillator_dae(),
