@@ -78,9 +78,6 @@ pub(crate) fn find_overconstrained_derivative_alias_roots(
     let mut aliases = FxHashMap::default();
 
     for (name, record_path) in state_record_paths {
-        if top_level_component_has_outputs(&name, flat) {
-            continue;
-        }
         let Some(component_id) = component_of.get(record_path.as_str()) else {
             continue;
         };
@@ -97,17 +94,6 @@ pub(crate) fn find_overconstrained_derivative_alias_roots(
     }
 
     aliases
-}
-
-fn top_level_component_has_outputs(name: &VarName, flat: &Model) -> bool {
-    let Some(component) = get_top_level_prefix(name.as_str()) else {
-        return false;
-    };
-    let prefix = format!("{component}.");
-    flat.variables.iter().any(|(candidate, variable)| {
-        candidate.as_str().starts_with(&prefix)
-            && matches!(variable.causality, rumoca_core::Causality::Output(_))
-    })
 }
 
 fn filter_overconstrained_alias_states(
@@ -192,8 +178,8 @@ fn overconstrained_state_roots(
 
     let mut potential_roots = flat.potential_roots.clone();
     potential_roots.sort_by(|(left_path, left_priority), (right_path, right_priority)| {
-        right_priority
-            .cmp(left_priority)
+        left_priority
+            .cmp(right_priority)
             .then_with(|| left_path.cmp(right_path))
     });
     for (root, _priority) in potential_roots {
@@ -1866,7 +1852,30 @@ mod tests {
     }
 
     #[test]
-    fn overconstrained_alias_states_keep_output_sensor_derivative_state() {
+    fn overconstrained_alias_states_choose_lowest_priority_potential_root() {
+        let mut flat = Model::new();
+        let high_priority = add_oc_gamma(&mut flat, "high.reference");
+        let low_priority = add_oc_gamma(&mut flat, "low.reference");
+        let branch = add_oc_gamma(&mut flat, "branch.reference");
+        flat.potential_roots
+            .push(("high.reference".to_string(), 256));
+        flat.potential_roots.push(("low.reference".to_string(), 10));
+        flat.optional_edges
+            .push(("high.reference".to_string(), "branch.reference".to_string()));
+        flat.optional_edges
+            .push(("branch.reference".to_string(), "low.reference".to_string()));
+
+        let states =
+            IndexSet::from_iter([high_priority.clone(), low_priority.clone(), branch.clone()]);
+        let alias_roots = find_overconstrained_derivative_alias_roots(&states, &flat);
+
+        assert_eq!(alias_roots.get(&high_priority), Some(&low_priority));
+        assert_eq!(alias_roots.get(&branch), Some(&low_priority));
+        assert!(!alias_roots.contains_key(&low_priority));
+    }
+
+    #[test]
+    fn overconstrained_alias_states_alias_output_sensor_derivative_state() {
         let mut flat = Model::new();
         let root = add_oc_gamma(&mut flat, "source.port_p.reference");
         let physical = add_oc_gamma(&mut flat, "reluctance.port_p.reference");
@@ -1887,11 +1896,11 @@ mod tests {
         let alias_roots = find_overconstrained_derivative_alias_roots(&states, &flat);
         let filtered = filter_overconstrained_alias_states(states, &flat);
 
-        assert_eq!(alias_roots.len(), 1);
+        assert_eq!(alias_roots.len(), 2);
         assert_eq!(alias_roots.get(&physical), Some(&root));
-        assert!(!alias_roots.contains_key(&sensor));
+        assert_eq!(alias_roots.get(&sensor), Some(&root));
         assert!(filtered.contains(&root));
         assert!(!filtered.contains(&physical));
-        assert!(filtered.contains(&sensor));
+        assert!(!filtered.contains(&sensor));
     }
 }

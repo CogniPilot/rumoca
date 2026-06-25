@@ -438,11 +438,16 @@ fn indexed_lhs_scalar_size(
     }
 
     let total = *prefix_counts.get(base_name.as_str())?;
-    let full_name = format!(
-        "{}{}",
-        base_name.as_str(),
-        render_subscript_suffix(subscripts)?
-    );
+    let full_name = if let Some(suffix) = render_subscript_suffix(subscripts) {
+        format!("{}{}", base_name.as_str(), suffix)
+    } else if subscripts.is_empty() {
+        return None;
+    } else {
+        // Dynamic indexing into a scalarized record array still selects one
+        // array element. The exact index is runtime-valued, but every element
+        // has the same scalar record width in flat variables.
+        format!("{}[1]", base_name.as_str())
+    };
     Some(record_subscript_scalar_size(
         &full_name,
         base_name.as_str(),
@@ -954,6 +959,66 @@ mod tests {
                 .as_ref()
                 .and_then(|reference| reference.def_id),
             Some(component_def_id)
+        );
+    }
+
+    #[test]
+    fn indexed_lhs_scalar_size_uses_record_element_width_for_dynamic_subscript() {
+        let mut flat = Model::new();
+        for name in ["sym[1].re", "sym[1].im", "sym[2].re", "sym[2].im", "idx[1]"] {
+            flat.add_variable(
+                VarName::new(name),
+                flat::Variable {
+                    name: VarName::new(name),
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        let residual = Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(Expression::Index {
+                base: Box::new(Expression::VarRef {
+                    name: VarName::new("sym").into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }),
+                subscripts: vec![Subscript::Expr {
+                    expr: Box::new(Expression::VarRef {
+                        name: VarName::new("idx").into(),
+                        subscripts: vec![Subscript::Index {
+                            value: 1,
+                            span: test_span(),
+                        }],
+                        span: test_span(),
+                    }),
+                    span: test_span(),
+                }],
+                span: test_span(),
+            }),
+            rhs: Box::new(Expression::FunctionCall {
+                name: VarName::new("Complex").into(),
+                args: vec![
+                    Expression::Literal {
+                        value: Literal::Integer(0),
+                        span: test_span(),
+                    },
+                    Expression::Literal {
+                        value: Literal::Integer(0),
+                        span: test_span(),
+                    },
+                ],
+                is_constructor: true,
+                span: test_span(),
+            }),
+            span: test_span(),
+        };
+
+        let prefix_counts = build_prefix_counts(&flat);
+        assert_eq!(
+            infer_equation_scalar_count(&residual, &flat, &prefix_counts),
+            2
         );
     }
 
