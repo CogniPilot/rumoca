@@ -102,33 +102,41 @@ impl Context {
         tree: &ClassTree,
     ) -> Result<bool, FlattenError> {
         let mut changed = false;
-        for instance_data in overlay.components.values() {
-            if !instance_data.is_primitive || instance_data.dims_expr.is_empty() {
-                continue;
+        let max_passes = overlay.components.len().max(1);
+        for _ in 0..max_passes {
+            let mut pass_changed = false;
+            for instance_data in overlay.components.values() {
+                if !instance_data.is_primitive || instance_data.dims_expr.is_empty() {
+                    continue;
+                }
+                let var_name = qualified_to_var_name(&instance_data.qualified_name);
+                let Some(flat_var) = flat.variables.get(&var_name) else {
+                    continue;
+                };
+                let span = instance_source_span(instance_data, tree)?;
+                let resolved_dims = self.resolve_component_dims_expr(
+                    var_name.as_str(),
+                    &instance_data.dims_expr,
+                    flat_var,
+                    tree,
+                    span,
+                )?;
+                let Some(flat_var) = flat.variables.get_mut(&var_name) else {
+                    continue;
+                };
+                if flat_var.dims != resolved_dims {
+                    flat_var.dims.clone_from(&resolved_dims);
+                    pass_changed = true;
+                }
+                if self.array_dimensions.get(var_name.as_str()) != Some(&resolved_dims) {
+                    self.array_dimensions
+                        .insert(var_name.to_string(), resolved_dims);
+                    pass_changed = true;
+                }
             }
-            let var_name = qualified_to_var_name(&instance_data.qualified_name);
-            let Some(flat_var) = flat.variables.get(&var_name) else {
-                continue;
-            };
-            let span = instance_source_span(instance_data, tree)?;
-            let resolved_dims = self.resolve_component_dims_expr(
-                var_name.as_str(),
-                &instance_data.dims_expr,
-                flat_var,
-                tree,
-                span,
-            )?;
-            let Some(flat_var) = flat.variables.get_mut(&var_name) else {
-                continue;
-            };
-            if flat_var.dims != resolved_dims {
-                flat_var.dims.clone_from(&resolved_dims);
-                changed = true;
-            }
-            if self.array_dimensions.get(var_name.as_str()) != Some(&resolved_dims) {
-                self.array_dimensions
-                    .insert(var_name.to_string(), resolved_dims);
-                changed = true;
+            changed |= pass_changed;
+            if !pass_changed {
+                break;
             }
         }
         Ok(changed)
@@ -169,7 +177,9 @@ impl Context {
             .binding
             .as_ref()
             .and_then(|binding| self.infer_binding_dimensions(var_name, binding, tree));
-        let resolved_dims = best_dims(self.array_dimensions.get(var_name), inferred_dims.as_ref());
+        let resolved_dims = inferred_dims
+            .as_ref()
+            .or_else(|| self.array_dimensions.get(var_name));
 
         if let Some(dim) = resolved_dims
             .as_ref()

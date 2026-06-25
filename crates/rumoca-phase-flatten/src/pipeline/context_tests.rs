@@ -864,6 +864,56 @@ mod tests {
     }
 
     #[test]
+    fn colon_component_dimensions_prefer_binding_shape_over_stale_larger_dims() {
+        let mut ctx = Context::new();
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        let x_name = rumoca_core::VarName::new("a.x");
+        flat.add_variable(
+            x_name.clone(),
+            flat::Variable {
+                name: x_name.clone(),
+                dims: vec![3],
+                binding: Some(Expression::Array {
+                    elements: vec![Expression::Literal {
+                        value: rumoca_core::Literal::Integer(1),
+                        span: rumoca_core::Span::DUMMY,
+                    }],
+                    is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            symbolic_instance(
+                InstanceId::new(1),
+                "a.x",
+                vec![ast::Subscript::Range {
+                    token: rumoca_core::Token::default(),
+                }],
+            ),
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("colon dimension should prefer binding shape");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables.get(&x_name).expect("a.x variable").dims,
+            vec![1]
+        );
+        assert_eq!(ctx.array_dimensions.get("a.x"), Some(&vec![1]));
+    }
+
+    #[test]
     fn colon_component_dimensions_accept_zero_sized_binding_shape() {
         let mut ctx = Context::new();
         let tree = source_backed_tree();

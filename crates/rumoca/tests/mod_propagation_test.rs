@@ -1107,6 +1107,51 @@ fn test_array_element_local_vector_modifier_rhs_is_not_indexed_again() {
     }
 }
 
+#[test]
+fn test_array_element_colon_parameter_uses_local_binding_shape() {
+    let source = r#"
+        model Base
+            parameter Real stageInputs[:];
+        end Base;
+
+        model Flow
+            extends Base(stageInputs=massFlowRates);
+            parameter Real m_flow_nominal;
+            parameter Real per_speeds[1] = {1};
+            parameter Real massFlowRates[:] =
+                m_flow_nominal * {per_speeds[i] / per_speeds[end] for i in 1:size(per_speeds, 1)};
+        end Flow;
+
+        model System
+            parameter Integer n = 3;
+            parameter Real m_flow_nominal[n] = {2, 3, 4};
+            Flow pump[n](m_flow_nominal=m_flow_nominal);
+        end System;
+
+        model Top
+            System system;
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("array element colon parameter should infer shape from local binding");
+
+    for name in ["system.pump[1].stageInputs", "system.pump[1].massFlowRates"] {
+        let var = compiled
+            .flat
+            .variables
+            .get(&rumoca_core::VarName::new(name))
+            .unwrap_or_else(|| panic!("{name} should be in flat variables"));
+        assert_eq!(
+            var.dims,
+            vec![1],
+            "{name} should use the local per_speeds binding shape, not the parent pump array length"
+        );
+    }
+}
+
 /// Test that typecheck_instanced evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {

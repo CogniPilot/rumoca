@@ -133,7 +133,16 @@ pub(crate) fn expression_from_ast_with_context(
             let base_flat = Box::new(expression_from_ast_with_context(base, context)?);
             let flat_subs = subscripts
                 .iter()
-                .map(|sub| subscript_from_ast(sub, expr.span()))
+                .enumerate()
+                .map(|(idx, sub)| {
+                    subscript_from_ast_for_base(
+                        sub,
+                        expr.span(),
+                        base_flat.as_ref(),
+                        idx + 1,
+                        context,
+                    )
+                })
                 .collect::<LowerResult<Vec<_>>>()?;
             Ok(rumoca_core::Expression::Index {
                 base: base_flat,
@@ -488,6 +497,45 @@ fn subscript_from_ast(
     }
 }
 
+fn subscript_from_ast_for_base(
+    sub: &ast::Subscript,
+    owner_span: rumoca_core::Span,
+    base: &rumoca_core::Expression,
+    dim: usize,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Subscript> {
+    match sub {
+        ast::Subscript::Expression(expr) => {
+            subscript_expr_from_ast_for_base(expr, base, dim, context, |expr, span| {
+                rumoca_core::Subscript::expr(Box::new(expr), span)
+            })
+        }
+        ast::Subscript::Range { .. } | ast::Subscript::Empty => Ok(
+            rumoca_core::Subscript::try_generated_colon(owner_span, "flat component subscript")
+                .map_err(|err| FlattenError::missing_source_context(err.to_string()))?,
+        ),
+    }
+}
+
+fn subscript_expr_from_ast_for_base(
+    expr: &ast::Expression,
+    base: &rumoca_core::Expression,
+    dim: usize,
+    context: LoweringContext<'_>,
+    build: impl FnOnce(rumoca_core::Expression, rumoca_core::Span) -> rumoca_core::Subscript,
+) -> LowerResult<rumoca_core::Subscript> {
+    let span = expr.span();
+    if let Some(val) = try_constant_integer(expr) {
+        return Ok(rumoca_core::Subscript::index(val, span));
+    }
+    let lowered = if expression_contains_end(expr) {
+        expression_from_ast_with_end_context(expr, base, dim, context)?
+    } else {
+        expression_from_ast_with_context(expr, context)?
+    };
+    Ok(build(lowered, span))
+}
+
 fn component_part_subscripts_from_ast(
     part: &ast::ComponentRefPart,
     owner_span: rumoca_core::Span,
@@ -596,12 +644,15 @@ fn component_ref_with_structured_subscripts(
             }
         };
 
+        let flat_subscripts = subs
+            .iter()
+            .enumerate()
+            .map(|(idx, sub)| subscript_from_ast_for_base_with_fallback(sub, span, &base, idx + 1))
+            .collect::<LowerResult<Vec<_>>>()?;
+
         current = Some(rumoca_core::Expression::Index {
             base: Box::new(base),
-            subscripts: subs
-                .iter()
-                .map(|sub| subscript_from_ast_with_fallback(sub, span))
-                .collect::<LowerResult<Vec<_>>>()?,
+            subscripts: flat_subscripts,
             span,
         });
     }
@@ -677,6 +728,26 @@ fn subscript_from_ast_with_fallback(
                 span,
             ))
         }
+        ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+            Ok(rumoca_core::Subscript::colon(fallback_span))
+        }
+    }
+}
+
+fn subscript_from_ast_for_base_with_fallback(
+    sub: &ast::Subscript,
+    fallback_span: rumoca_core::Span,
+    base: &rumoca_core::Expression,
+    dim: usize,
+) -> LowerResult<rumoca_core::Subscript> {
+    match sub {
+        ast::Subscript::Expression(expr) => subscript_expr_from_ast_for_base(
+            expr,
+            base,
+            dim,
+            LoweringContext::default(),
+            |expr, span| rumoca_core::Subscript::expr(Box::new(expr), span),
+        ),
         ast::Subscript::Range { .. } | ast::Subscript::Empty => {
             Ok(rumoca_core::Subscript::colon(fallback_span))
         }
@@ -940,6 +1011,293 @@ fn convert_expr_vec_with_context(
         .collect()
 }
 
+fn expression_contains_end(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::Terminal { terminal_type, .. } => {
+            matches!(terminal_type, ast::TerminalType::End)
+        }
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            expression_contains_end(lhs) || expression_contains_end(rhs)
+        }
+        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs, .. } => {
+            expression_contains_end(rhs)
+        }
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                expression_contains_end(condition) || expression_contains_end(value)
+            }) || expression_contains_end(else_branch)
+        }
+        ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
+            elements.iter().any(expression_contains_end)
+        }
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
+            expression_contains_end(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expression_contains_end(step))
+                || expression_contains_end(end)
+        }
+        ast::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            expression_contains_end(expr)
+                || indices
+                    .iter()
+                    .any(|index| expression_contains_end(&index.range))
+                || filter
+                    .as_ref()
+                    .is_some_and(|filter| expression_contains_end(filter))
+        }
+        ast::Expression::FunctionCall { args, .. } => args.iter().any(expression_contains_end),
+        ast::Expression::NamedArgument { value, .. }
+        | ast::Expression::Modification { value, .. } => expression_contains_end(value),
+        ast::Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
+            expression_contains_end(base)
+                || subscripts.iter().any(|sub| match sub {
+                    ast::Subscript::Expression(expr) => expression_contains_end(expr),
+                    ast::Subscript::Range { .. } | ast::Subscript::Empty => false,
+                })
+        }
+        ast::Expression::FieldAccess { base, .. } => expression_contains_end(base),
+        ast::Expression::ClassModification { modifications, .. } => {
+            modifications.iter().any(expression_contains_end)
+        }
+        ast::Expression::ComponentReference(_) | ast::Expression::Empty { .. } => false,
+    }
+}
+
+fn expression_from_ast_with_end_context(
+    expr: &ast::Expression,
+    end_base: &rumoca_core::Expression,
+    dim: usize,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    match expr {
+        ast::Expression::Terminal { terminal_type, .. }
+            if matches!(terminal_type, ast::TerminalType::End) =>
+        {
+            Ok(end_size_expression(end_base, dim, expr.span()))
+        }
+        ast::Expression::Binary { op, lhs, rhs, .. } => Ok(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(expression_from_ast_with_end_context(
+                lhs, end_base, dim, context,
+            )?),
+            rhs: Box::new(expression_from_ast_with_end_context(
+                rhs, end_base, dim, context,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::Unary { op, rhs, .. } => Ok(rumoca_core::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(expression_from_ast_with_end_context(
+                rhs, end_base, dim, context,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::Parenthesized { inner, .. } => {
+            expression_from_ast_with_end_context(inner, end_base, dim, context)
+        }
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => Ok(rumoca_core::Expression::If {
+            branches: branches
+                .iter()
+                .map(|(condition, value)| {
+                    Ok((
+                        expression_from_ast_with_end_context(condition, end_base, dim, context)?,
+                        expression_from_ast_with_end_context(value, end_base, dim, context)?,
+                    ))
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            else_branch: Box::new(expression_from_ast_with_end_context(
+                else_branch,
+                end_base,
+                dim,
+                context,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } => Ok(rumoca_core::Expression::Array {
+            elements: elements
+                .iter()
+                .map(|element| {
+                    expression_from_ast_with_end_context(element, end_base, dim, context)
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            is_matrix: *is_matrix,
+            span: expr.span(),
+        }),
+        ast::Expression::Tuple { elements, .. } => Ok(rumoca_core::Expression::Tuple {
+            elements: elements
+                .iter()
+                .map(|element| {
+                    expression_from_ast_with_end_context(element, end_base, dim, context)
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            span: expr.span(),
+        }),
+        ast::Expression::Range {
+            start, step, end, ..
+        } => Ok(rumoca_core::Expression::Range {
+            start: Box::new(expression_from_ast_with_end_context(
+                start, end_base, dim, context,
+            )?),
+            step: step
+                .as_ref()
+                .map(|step| {
+                    expression_from_ast_with_end_context(step, end_base, dim, context).map(Box::new)
+                })
+                .transpose()?,
+            end: Box::new(expression_from_ast_with_end_context(
+                end, end_base, dim, context,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::ArrayComprehension {
+            expr: value,
+            indices,
+            filter,
+            ..
+        } => Ok(rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(expression_from_ast_with_end_context(
+                value, end_base, dim, context,
+            )?),
+            indices: indices
+                .iter()
+                .map(|index| {
+                    Ok(rumoca_core::ComprehensionIndex {
+                        name: index.ident.text.to_string(),
+                        range: expression_from_ast_with_end_context(
+                            &index.range,
+                            end_base,
+                            dim,
+                            context,
+                        )?,
+                    })
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            filter: filter
+                .as_ref()
+                .map(|filter| {
+                    expression_from_ast_with_end_context(filter, end_base, dim, context)
+                        .map(Box::new)
+                })
+                .transpose()?,
+            span: expr.span(),
+        }),
+        ast::Expression::FunctionCall { comp, args, .. } => {
+            convert_function_call_with_end_context(comp, args, end_base, dim, context)
+        }
+        ast::Expression::NamedArgument { value, .. }
+        | ast::Expression::Modification { value, .. } => {
+            expression_from_ast_with_end_context(value, end_base, dim, context)
+        }
+        ast::Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
+            let base_flat = expression_from_ast_with_end_context(base, end_base, dim, context)?;
+            let flat_subs = subscripts
+                .iter()
+                .enumerate()
+                .map(|(idx, sub)| {
+                    subscript_from_ast_for_base(sub, expr.span(), &base_flat, idx + 1, context)
+                })
+                .collect::<LowerResult<Vec<_>>>()?;
+            Ok(rumoca_core::Expression::Index {
+                base: Box::new(base_flat),
+                subscripts: flat_subs,
+                span: expr.span(),
+            })
+        }
+        ast::Expression::FieldAccess { base, field, .. } => {
+            Ok(rumoca_core::Expression::FieldAccess {
+                base: Box::new(expression_from_ast_with_end_context(
+                    base, end_base, dim, context,
+                )?),
+                field: field.clone(),
+                span: expr.span(),
+            })
+        }
+        _ => expression_from_ast_with_context(expr, context),
+    }
+}
+
+fn convert_function_call_with_end_context(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    end_base: &rumoca_core::Expression,
+    dim: usize,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    let lower_arg =
+        |arg: &ast::Expression| expression_from_ast_with_end_context(arg, end_base, dim, context);
+
+    if comp.parts.len() == 1 {
+        let func_name = &comp.parts[0].ident.text;
+        if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(func_name) {
+            return Ok(rumoca_core::Expression::BuiltinCall {
+                function: builtin,
+                args: args
+                    .iter()
+                    .map(lower_arg)
+                    .collect::<LowerResult<Vec<_>>>()?,
+                span: comp.span,
+            });
+        }
+    }
+
+    let function_ref = match resolved_function_call_reference(comp, context.def_map) {
+        Some(function_ref) => function_ref,
+        None => Reference::from_component_reference(component_reference_from_ast(comp)?),
+    };
+
+    Ok(rumoca_core::Expression::FunctionCall {
+        name: function_ref,
+        args: args
+            .iter()
+            .map(lower_arg)
+            .collect::<LowerResult<Vec<_>>>()?,
+        is_constructor: false,
+        span: comp.span,
+    })
+}
+
+fn end_size_expression(
+    base: &rumoca_core::Expression,
+    dim: usize,
+    span: Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Size,
+        args: vec![
+            base.clone(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(dim as i64),
+                span,
+            },
+        ],
+        span,
+    }
+}
+
 fn convert_if_with_context(
     branches: &[(ast::Expression, ast::Expression)],
     else_branch: &ast::Expression,
@@ -1100,6 +1458,47 @@ mod tests {
             span,
             def_id: None,
         })
+    }
+
+    fn ast_end() -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::End,
+            token: rumoca_core::Token {
+                text: Arc::from("end"),
+                ..rumoca_core::Token::default()
+            },
+            span: test_span(),
+        }
+    }
+
+    fn ast_int(value: i64) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token: rumoca_core::Token {
+                text: Arc::from(value.to_string()),
+                ..rumoca_core::Token::default()
+            },
+            span: test_span(),
+        }
+    }
+
+    fn assert_size_of_var(expr: &rumoca_core::Expression, expected_name: &str, expected_dim: i64) {
+        let rumoca_core::Expression::BuiltinCall { function, args, .. } = expr else {
+            panic!("expected size builtin, got {expr:?}");
+        };
+        assert_eq!(*function, rumoca_core::BuiltinFunction::Size);
+        let [
+            rumoca_core::Expression::VarRef { name, .. },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(dim),
+                ..
+            },
+        ] = args.as_slice()
+        else {
+            panic!("expected size(var, dim) arguments, got {args:?}");
+        };
+        assert_eq!(name.as_str(), expected_name);
+        assert_eq!(*dim, expected_dim);
     }
 
     fn function_ref(name: &str) -> ast::ComponentReference {
@@ -1355,6 +1754,66 @@ mod tests {
 
         assert_eq!(name.as_str(), "leg_v_b");
         assert_eq!(subscripts.len(), 2);
+    }
+
+    #[test]
+    fn end_subscript_lowers_to_size_of_index_base() {
+        let expr = ast::Expression::ArrayIndex {
+            base: Arc::new(ast_var("speeds")),
+            subscripts: vec![ast::Subscript::Expression(ast_end())],
+            span: test_span(),
+        };
+
+        let lowered = expression_from_ast(&expr).unwrap();
+        let rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } = lowered
+        else {
+            panic!("expected indexed expression");
+        };
+        let rumoca_core::Expression::VarRef { name, .. } = base.as_ref() else {
+            panic!("expected speeds base");
+        };
+        assert_eq!(name.as_str(), "speeds");
+        let [rumoca_core::Subscript::Expr { expr, .. }] = subscripts.as_slice() else {
+            panic!("expected expression subscript, got {subscripts:?}");
+        };
+
+        assert_size_of_var(expr, "speeds", 1);
+    }
+
+    #[test]
+    fn end_subscript_arithmetic_lowers_to_size_expression() {
+        let expr = ast::Expression::ArrayIndex {
+            base: Arc::new(ast_var("speeds")),
+            subscripts: vec![ast::Subscript::Expression(ast::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Arc::new(ast_end()),
+                rhs: Arc::new(ast_int(1)),
+                span: test_span(),
+            })],
+            span: test_span(),
+        };
+
+        let lowered = expression_from_ast(&expr).unwrap();
+        let rumoca_core::Expression::Index { subscripts, .. } = lowered else {
+            panic!("expected indexed expression");
+        };
+        let [rumoca_core::Subscript::Expr { expr, .. }] = subscripts.as_slice() else {
+            panic!("expected expression subscript, got {subscripts:?}");
+        };
+        let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = expr.as_ref() else {
+            panic!("expected binary subscript, got {expr:?}");
+        };
+        assert_eq!(*op, rumoca_core::OpBinary::Sub);
+        assert_size_of_var(lhs, "speeds", 1);
+        assert!(matches!(
+            rhs.as_ref(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                ..
+            }
+        ));
     }
 
     #[test]
