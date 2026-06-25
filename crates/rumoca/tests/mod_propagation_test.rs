@@ -481,6 +481,326 @@ fn test_forwarded_colon_parameter_drives_record_size_dimension() {
     assert_eq!(dims, vec![2]);
 }
 
+#[test]
+fn test_nested_record_parameter_size_dimension_resolves_through_alias() {
+    let source = r#"
+        record FlowParameters
+            parameter Real V_flow[:];
+            parameter Real dp[size(V_flow, 1)];
+        end FlowParameters;
+
+        record EfficiencyParameters
+            parameter Real V_flow[:];
+            parameter Real eta[size(V_flow, 1)];
+        end EfficiencyParameters;
+
+        record Generic
+            parameter FlowParameters pressure;
+            parameter EfficiencyParameters motorEfficiency;
+            parameter EfficiencyParameters hydraulicEfficiency;
+        end Generic;
+
+        model Interface
+            parameter Generic per;
+            FlowParameters pressure = per.pressure;
+            EfficiencyParameters motorEfficiency = per.motorEfficiency;
+            final parameter Real motDer[size(per.motorEfficiency.V_flow, 1)];
+            final parameter Real hydDer[size(per.hydraulicEfficiency.V_flow, 1)];
+        end Interface;
+
+        model Top
+            parameter Real flows[3] = {1.0, 2.0, 3.0};
+            parameter Real heads[3] = {10.0, 20.0, 30.0};
+            parameter Real effs[3] = {0.1, 0.2, 0.3};
+            Interface mover(
+                per(
+                    pressure(V_flow = flows, dp = heads),
+                    motorEfficiency(V_flow = flows, eta = effs),
+                    hydraulicEfficiency(V_flow = flows, eta = effs)));
+            Real y;
+        equation
+            y = mover.pressure.dp[1] + mover.motDer[1] + mover.hydDer[1];
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("nested record size dimensions should compile");
+
+    for name in [
+        "mover.per.pressure.dp",
+        "mover.per.motorEfficiency.eta",
+        "mover.pressure.dp",
+        "mover.motorEfficiency.eta",
+        "mover.motDer",
+        "mover.hydDer",
+    ] {
+        let dims = compiled
+            .flat
+            .variables
+            .get(&rumoca_core::VarName::new(name))
+            .map(|var| var.dims.clone())
+            .unwrap_or_else(|| panic!("{name} should be in flat variables"));
+        assert_eq!(dims, vec![3], "{name} should keep the V_flow row count");
+    }
+}
+
+#[test]
+fn test_array_component_nested_record_defaults_drive_inner_size_dimensions() {
+    let source = r#"
+        record FlowParameters
+            parameter Real V_flow[:];
+            parameter Real dp[size(V_flow, 1)];
+        end FlowParameters;
+
+        record EfficiencyParameters
+            parameter Real V_flow[:];
+            parameter Real eta[size(V_flow, 1)];
+        end EfficiencyParameters;
+
+        record PowerParameters
+            parameter Real V_flow[:];
+            parameter Real P[size(V_flow, 1)];
+        end PowerParameters;
+
+        record Generic
+            parameter FlowParameters pressure(V_flow = {0.0, 0.0}, dp = {0.0, 0.0});
+            parameter EfficiencyParameters hydraulicEfficiency(V_flow = {0.0}, eta = {0.7});
+            parameter EfficiencyParameters motorEfficiency(V_flow = {0.0}, eta = {0.7});
+            parameter PowerParameters power(V_flow = {0.0}, P = {0.0});
+            parameter Boolean motorCooledByFluid = true;
+        end Generic;
+
+        model Interface
+            parameter Generic per;
+            parameter Integer nOri;
+            final parameter Real motDer[size(per.motorEfficiency.V_flow, 1)];
+            final parameter Real hydDer[size(per.hydraulicEfficiency.V_flow, 1)];
+        end Interface;
+
+        partial model PartialMover
+            parameter Generic per;
+            final parameter Integer nOri = size(per.pressure.V_flow, 1);
+            Interface eff(
+                per(
+                    final hydraulicEfficiency = per.hydraulicEfficiency,
+                    final motorEfficiency = per.motorEfficiency,
+                    final motorCooledByFluid = per.motorCooledByFluid,
+                    final power = per.power),
+                final nOri = nOri);
+        end PartialMover;
+
+        model SpeedMover
+            extends PartialMover(
+                eff(per(final pressure = per.pressure)));
+        end SpeedMover;
+
+        model WithoutMotor
+            parameter Real HydEff[:];
+            parameter Real MotEff[:];
+            parameter Real VolFloCur[:];
+            parameter Real PreCur[:];
+            SpeedMover varSpeFloMov(
+                per(
+                    pressure(V_flow = VolFloCur, dp = PreCur),
+                    hydraulicEfficiency(eta = HydEff, V_flow = VolFloCur),
+                    motorEfficiency(eta = MotEff, V_flow = VolFloCur)));
+        end WithoutMotor;
+
+        model PumpSystem
+            parameter Integer n = 2;
+            parameter Real HydEff[n, 3];
+            parameter Real MotEff[n, 3];
+            parameter Real VolFloCur[n, 3];
+            parameter Real PreCur[n, 3];
+            WithoutMotor pum[n](
+                HydEff = HydEff,
+                MotEff = MotEff,
+                VolFloCur = VolFloCur,
+                PreCur = PreCur);
+        end PumpSystem;
+
+        model Top
+            PumpSystem sys(
+                HydEff = {{1.0, 1.0, 1.0}, {1.0, 1.0, 1.0}},
+                MotEff = {{0.6, 0.7, 0.8}, {0.6, 0.7, 0.8}},
+                VolFloCur = {{0.0, 1.0, 2.0}, {0.0, 1.0, 2.0}},
+                PreCur = {{20.0, 10.0, 0.0}, {20.0, 10.0, 0.0}});
+            Real y;
+        equation
+            y = sys.pum[1].varSpeFloMov.eff.motDer[1]
+              + sys.pum[1].varSpeFloMov.eff.hydDer[1];
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("array component record defaults should drive inner size dimensions");
+
+    for name in [
+        "sys.pum[1].varSpeFloMov.per.pressure.dp",
+        "sys.pum[1].varSpeFloMov.per.motorEfficiency.eta",
+        "sys.pum[1].varSpeFloMov.eff.per.pressure.dp",
+        "sys.pum[1].varSpeFloMov.eff.per.motorEfficiency.eta",
+        "sys.pum[1].varSpeFloMov.eff.motDer",
+        "sys.pum[1].varSpeFloMov.eff.hydDer",
+    ] {
+        let dims = compiled
+            .flat
+            .variables
+            .get(&rumoca_core::VarName::new(name))
+            .map(|var| var.dims.clone())
+            .unwrap_or_else(|| panic!("{name} should be in flat variables"));
+        assert_eq!(
+            dims,
+            vec![3],
+            "{name} should keep the selected pump curve row count"
+        );
+    }
+}
+
+#[test]
+fn test_array_component_symbolic_row_modifier_keeps_source_shape_for_record_size() {
+    let source = r#"
+        record Curve
+            parameter Real x[:];
+            parameter Real y[size(x, 1)];
+        end Curve;
+
+        model Child
+            parameter Real row[:];
+            Curve curve(x = row, y = row);
+        end Child;
+
+        model Group
+            parameter Integer n = 2;
+            parameter Real rows[n, 3];
+            Child child[n](row = rows);
+        end Group;
+
+        model Top
+            parameter Real upstream[2, 3] = {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
+            Group group(rows = upstream);
+            Real y;
+        equation
+            y = group.child[1].curve.y[1];
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("symbolic row modifiers should preserve source array shape");
+
+    for name in [
+        "group.child[1].row",
+        "group.child[1].curve.x",
+        "group.child[1].curve.y",
+    ] {
+        let dims = compiled
+            .flat
+            .variables
+            .get(&rumoca_core::VarName::new(name))
+            .map(|var| var.dims.clone())
+            .unwrap_or_else(|| panic!("{name} should be in flat variables"));
+        assert_eq!(dims, vec![3], "{name} should keep the selected row width");
+    }
+
+    let row = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new("group.child[1].row"))
+        .expect("group.child[1].row should be in flat variables");
+    let row_binding = row
+        .binding
+        .as_ref()
+        .expect("group.child[1].row should keep a flat binding");
+    match row_binding {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert_eq!(name.as_str(), "group.rows");
+            assert!(
+                matches!(
+                    subscripts.as_slice(),
+                    [rumoca_core::Subscript::Index { value: 1, .. }]
+                ),
+                "group.child[1].row should select the first source row, got {subscripts:?}"
+            );
+        }
+        other => panic!("group.child[1].row should bind to selected source row, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_nested_array_component_modifier_selects_element_row() {
+    let source = r#"
+        model Tower
+            parameter Real v_flow_rate[:];
+        end Tower;
+
+        model TowerGroup
+            parameter Integer n = 3;
+            Tower ct[n];
+        end TowerGroup;
+
+        model Wrapper
+            parameter Real rows[3, 3];
+            TowerGroup group(ct(v_flow_rate = rows));
+        end Wrapper;
+
+        model Top
+            parameter Real upstream[3, 3] = {
+                {0.0, 0.5, 1.0},
+                {0.0, 0.6, 1.0},
+                {0.0, 0.7, 1.0}};
+            Wrapper wrapper(rows = upstream);
+            Real y;
+        equation
+            y = wrapper.group.ct[1].v_flow_rate[1];
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("nested array component modifier should select row per element");
+
+    let first = compiled
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new(
+            "wrapper.group.ct[1].v_flow_rate",
+        ))
+        .expect("first tower v_flow_rate should be in flat variables");
+    assert_eq!(
+        first.dims,
+        vec![3],
+        "nested modifier should distribute the selected row shape"
+    );
+    match first
+        .binding
+        .as_ref()
+        .expect("first tower should keep a flat binding")
+    {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert_eq!(name.as_str(), "wrapper.rows");
+            assert!(
+                matches!(
+                    subscripts.as_slice(),
+                    [rumoca_core::Subscript::Index { value: 1, .. }]
+                ),
+                "nested modifier should select the first source row, got {subscripts:?}"
+            );
+        }
+        other => panic!("expected first tower binding to select source row, got {other:?}"),
+    }
+}
+
 /// Test that typecheck_instanced evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {
