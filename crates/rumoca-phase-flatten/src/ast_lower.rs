@@ -1084,11 +1084,10 @@ fn expression_from_ast_with_end_context(
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     match expr {
-        ast::Expression::Terminal { terminal_type, .. }
-            if matches!(terminal_type, ast::TerminalType::End) =>
-        {
-            Ok(end_size_expression(end_base, dim, expr.span()))
-        }
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::End,
+            ..
+        } => Ok(end_size_expression(end_base, dim, expr.span())),
         ast::Expression::Binary { op, lhs, rhs, .. } => Ok(rumoca_core::Expression::Binary {
             op: op.clone(),
             lhs: Box::new(expression_from_ast_with_end_context(
