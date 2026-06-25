@@ -762,21 +762,23 @@ fn select_scalar_start_record_alias(
     let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
     let leaf_field = lhs_path.parts().last();
     let Some(lhs_base) = flat::component_base_name(lhs_name.as_str()) else {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
-            .unwrap_or_else(|| expr.clone());
+        return select_leaf_or_original(expr, leaf_field, known_var_names, owner_span);
     };
     if lhs_base == lhs_name.as_str() {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
-            .unwrap_or_else(|| expr.clone());
+        return select_leaf_or_original(expr, leaf_field, known_var_names, owner_span);
     }
     let Some(field_suffix) = lhs_name.as_str().strip_prefix(lhs_base.as_str()) else {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
-            .unwrap_or_else(|| expr.clone());
+        return select_leaf_or_original(expr, leaf_field, known_var_names, owner_span);
     };
     if !field_suffix.starts_with('.') {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
-            .unwrap_or_else(|| expr.clone());
+        return select_leaf_or_original(expr, leaf_field, known_var_names, owner_span);
     }
+    let selector = StartRecordAliasSelector {
+        field_suffix,
+        leaf_field,
+        known_var_names,
+        owner_span,
+    };
 
     match expr {
         Expression::VarRef {
@@ -784,36 +786,7 @@ fn select_scalar_start_record_alias(
             subscripts,
             span,
         } if subscripts.is_empty() => {
-            // A binding that already names a known scalar variable is a
-            // complete value; record-field selection would graft the LHS
-            // field onto an unrelated variable (e.g. `resistor.m =
-            // multiStarResistance.mBasic` must not become `m`).
-            if known_var_names.contains(rhs_name.as_str()) {
-                return expr.clone();
-            }
-            let selected = format!("{}{}", rhs_name.as_str(), field_suffix);
-            if let Some(selected) =
-                crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-            {
-                return Expression::VarRef {
-                    name: VarName::new(selected).into(),
-                    subscripts: vec![],
-                    span: real_or_owner_span(*span, owner_span),
-                };
-            }
-            if let Some(field) = leaf_field {
-                let selected = format!("{}.{}", rhs_name.as_str(), field);
-                if let Some(selected) =
-                    crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-                {
-                    return Expression::VarRef {
-                        name: VarName::new(selected).into(),
-                        subscripts: vec![],
-                        span: real_or_owner_span(*span, owner_span),
-                    };
-                }
-            }
-            expr.clone()
+            select_varref_start_record_alias(expr, rhs_name.var_name(), *span, &selector)
         }
         Expression::FieldAccess { base, field, span } => {
             let Expression::VarRef {
@@ -827,32 +800,7 @@ fn select_scalar_start_record_alias(
             if !subscripts.is_empty() {
                 return expr.clone();
             }
-            if known_var_names.contains(&format!("{}.{}", rhs_name.as_str(), field)) {
-                return expr.clone();
-            }
-            let selected = format!("{}.{}{}", rhs_name.as_str(), field, field_suffix);
-            if let Some(selected) =
-                crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-            {
-                return Expression::VarRef {
-                    name: VarName::new(selected).into(),
-                    subscripts: vec![],
-                    span: real_or_owner_span(*span, owner_span),
-                };
-            }
-            if let Some(lhs_leaf) = leaf_field {
-                let selected = format!("{}.{}.{}", rhs_name.as_str(), field, lhs_leaf);
-                if let Some(selected) =
-                    crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-                {
-                    return Expression::VarRef {
-                        name: VarName::new(selected).into(),
-                        subscripts: vec![],
-                        span: real_or_owner_span(*span, owner_span),
-                    };
-                }
-            }
-            expr.clone()
+            select_field_start_record_alias(expr, rhs_name.var_name(), field, *span, &selector)
         }
         Expression::FunctionCall {
             name,
@@ -867,6 +815,102 @@ fn select_scalar_start_record_alias(
         .unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     }
+}
+
+struct StartRecordAliasSelector<'a> {
+    field_suffix: &'a str,
+    leaf_field: Option<&'a String>,
+    known_var_names: &'a HashSet<String>,
+    owner_span: rumoca_core::Span,
+}
+
+fn select_leaf_or_original(
+    expr: &Expression,
+    leaf_field: Option<&String>,
+    known_var_names: &HashSet<String>,
+    owner_span: rumoca_core::Span,
+) -> Expression {
+    select_leaf_start_record_alias(expr, leaf_field, known_var_names, owner_span)
+        .unwrap_or_else(|| expr.clone())
+}
+
+fn select_varref_start_record_alias(
+    expr: &Expression,
+    rhs_name: &VarName,
+    span: rumoca_core::Span,
+    selector: &StartRecordAliasSelector<'_>,
+) -> Expression {
+    // A binding that already names a known scalar variable is a complete value;
+    // record-field selection would graft the LHS field onto an unrelated
+    // variable (e.g. `resistor.m = multiStarResistance.mBasic` must not become
+    // `m`).
+    if selector.known_var_names.contains(rhs_name.as_str()) {
+        return expr.clone();
+    }
+    resolve_selected_start_var(
+        &format!("{}{}", rhs_name.as_str(), selector.field_suffix),
+        selector.known_var_names,
+        span,
+        selector.owner_span,
+    )
+    .or_else(|| {
+        selector.leaf_field.and_then(|field| {
+            resolve_selected_start_var(
+                &format!("{}.{}", rhs_name.as_str(), field),
+                selector.known_var_names,
+                span,
+                selector.owner_span,
+            )
+        })
+    })
+    .unwrap_or_else(|| expr.clone())
+}
+
+fn select_field_start_record_alias(
+    expr: &Expression,
+    rhs_name: &VarName,
+    field: &str,
+    span: rumoca_core::Span,
+    selector: &StartRecordAliasSelector<'_>,
+) -> Expression {
+    if selector
+        .known_var_names
+        .contains(&format!("{}.{}", rhs_name.as_str(), field))
+    {
+        return expr.clone();
+    }
+    resolve_selected_start_var(
+        &format!("{}.{}{}", rhs_name.as_str(), field, selector.field_suffix),
+        selector.known_var_names,
+        span,
+        selector.owner_span,
+    )
+    .or_else(|| {
+        selector.leaf_field.and_then(|lhs_leaf| {
+            resolve_selected_start_var(
+                &format!("{}.{}.{}", rhs_name.as_str(), field, lhs_leaf),
+                selector.known_var_names,
+                span,
+                selector.owner_span,
+            )
+        })
+    })
+    .unwrap_or_else(|| expr.clone())
+}
+
+fn resolve_selected_start_var(
+    candidate: &str,
+    known_var_names: &HashSet<String>,
+    span: rumoca_core::Span,
+    owner_span: rumoca_core::Span,
+) -> Option<Expression> {
+    crate::path_utils::resolve_known_path_suffix(candidate, known_var_names).map(|selected| {
+        Expression::VarRef {
+            name: VarName::new(selected).into(),
+            subscripts: vec![],
+            span: real_or_owner_span(span, owner_span),
+        }
+    })
 }
 
 fn is_state_constructor_function(name: &rumoca_core::Reference) -> bool {
