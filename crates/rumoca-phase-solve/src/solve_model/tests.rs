@@ -135,6 +135,17 @@ fn call_expr(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Exp
     }
 }
 
+fn builtin_call_expr(
+    function: rumoca_core::BuiltinFunction,
+    args: Vec<rumoca_core::Expression>,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function,
+        args,
+        span: solve_model_test_span(),
+    }
+}
+
 fn constructor_call_expr(
     name: &str,
     args: Vec<rumoca_core::Expression>,
@@ -397,6 +408,34 @@ fn default_start_values_for_size_preserves_scalar_default_start() {
         default_start_values_for_size(&var, 4.0, 3).expect("array default should expand"),
         vec![4.0, 4.0, 4.0]
     );
+}
+
+#[test]
+fn start_values_skips_zero_length_array_expression_evaluation() {
+    let mut var = scalar_var("empty_c_start");
+    var.dims = vec![0];
+    var.start = Some(builtin_call_expr(
+        rumoca_core::BuiltinFunction::Fill,
+        vec![
+            int_expr(0),
+            builtin_call_expr(
+                rumoca_core::BuiltinFunction::Size,
+                vec![
+                    builtin_call_expr(
+                        rumoca_core::BuiltinFunction::Fill,
+                        vec![string_expr(""), int_expr(0)],
+                    ),
+                    int_expr(1),
+                ],
+            ),
+        ],
+    ));
+    let env = rumoca_eval_dae::VarEnv::<f64>::new();
+
+    let values = start_values(&dae::Dae::default(), &var, &env)
+        .expect("zero-length array start should not evaluate element expressions");
+
+    assert!(values.is_empty());
 }
 
 #[test]
