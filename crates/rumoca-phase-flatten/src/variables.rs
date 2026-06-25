@@ -203,7 +203,7 @@ pub(crate) fn create_flat_variable(
     // Get def_map for resolving function call def_ids to qualified names
     let def_map = &tree.def_map;
 
-    let attrs = qualify_variable_attributes(VariableQualifyContext {
+    let mut attrs = qualify_variable_attributes(VariableQualifyContext {
         instance,
         tree,
         class_index,
@@ -220,7 +220,7 @@ pub(crate) fn create_flat_variable(
     // - Modification bindings (e.g., `body(useQuaternions=useQuaternions)`) reference
     //   variables in the lexical scope where the modification is written.
     //   This scope is tracked during instantiation (MLS §7.2.4).
-    let binding = qualify_variable_binding(VariableQualifyContext {
+    let mut binding = qualify_variable_binding(VariableQualifyContext {
         instance,
         tree,
         class_index,
@@ -230,6 +230,10 @@ pub(crate) fn create_flat_variable(
         def_map,
         simulated_root_name,
     })?;
+    if instance_is_string_type(instance) {
+        recover_string_literal_expr(&mut binding, &prefix);
+        recover_string_literal_expr(&mut attrs.start, &prefix);
+    }
 
     let component_ref = Some(ast::instance::component_reference_for_instance(
         &instance.qualified_name,
@@ -273,6 +277,66 @@ pub(crate) fn create_flat_variable(
         oc_record_path: instance.oc_record_path.clone(),
         oc_eq_constraint_size: instance.oc_eq_constraint_size,
     })
+}
+
+fn instance_is_string_type(instance: &ast::InstanceData) -> bool {
+    rumoca_core::qualified_type_name_matches(&instance.type_name, "String")
+        || instance.type_id == rumoca_core::TypeId(3)
+}
+
+fn recover_string_literal_expr(
+    expr: &mut Option<rumoca_core::Expression>,
+    prefix: &ast::QualifiedName,
+) {
+    let Some(recovered) = expr.as_ref().and_then(|expr| {
+        recover_string_literal_from_invalid_var_ref(expr, &prefix.to_flat_string())
+    }) else {
+        return;
+    };
+    *expr = Some(recovered);
+}
+
+fn recover_string_literal_from_invalid_var_ref(
+    expr: &rumoca_core::Expression,
+    prefix: &str,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let path = rumoca_core::ComponentPath::from_reference(name);
+    if path
+        .parts()
+        .iter()
+        .all(|part| is_valid_modelica_identifier(part))
+    {
+        return None;
+    }
+    let literal_path = if prefix.is_empty() {
+        path
+    } else {
+        path.strip_prefix(&rumoca_core::ComponentPath::from_flat_path(prefix))?
+    };
+    Some(rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(literal_path.to_flat_string()),
+        span: *span,
+    })
+}
+
+fn is_valid_modelica_identifier(part: &str) -> bool {
+    let mut chars = part.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn canonicalize_function_calls(
@@ -607,5 +671,61 @@ mod tests {
                 span: test_span(),
             })
         );
+    }
+
+    #[test]
+    fn test_create_flat_variable_preserves_string_literal_binding() {
+        let instance = ast::InstanceData {
+            qualified_name: ast::QualifiedName::from_dotted("building.spawnExe"),
+            source_location: test_location(6, 19),
+            binding_source: Some(ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::String,
+                token: rumoca_core::Token {
+                    text: Arc::from("\"spawn-0.4.3-7048a72798\""),
+                    ..rumoca_core::Token::default()
+                },
+                span: test_span(),
+            }),
+            is_primitive: true,
+            ..ast::InstanceData::default()
+        };
+        let tree = test_tree();
+        let imports = VariableImportContext::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)
+            .expect("flat variable");
+
+        assert_eq!(
+            flat.binding,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("spawn-0.4.3-7048a72798".to_string()),
+                span: test_span(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_create_flat_variable_recovers_invalid_string_literal_varref() {
+        let instance = ast::InstanceData {
+            qualified_name: ast::QualifiedName::from_dotted("building.spawnExe"),
+            source_location: test_location(6, 19),
+            type_name: "String".to_string(),
+            binding: Some(comp_ref(&["spawn-0", "4", "3-7048a72798"])),
+            start: Some(comp_ref(&["spawn-0", "4", "3-7048a72798"])),
+            is_primitive: true,
+            ..ast::InstanceData::default()
+        };
+        let tree = test_tree();
+        let imports = VariableImportContext::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)
+            .expect("flat variable");
+
+        let expected = Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("spawn-0.4.3-7048a72798".to_string()),
+            span: test_span(),
+        });
+        assert_eq!(flat.binding, expected);
+        assert_eq!(flat.start, expected);
     }
 }

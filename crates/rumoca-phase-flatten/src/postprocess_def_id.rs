@@ -129,7 +129,12 @@ impl DefIdVarRefIndex {
                 .or_default()
                 .push(indexed.clone());
             if let Some(def_id) = var.component_ref.as_ref().and_then(|comp| comp.def_id) {
-                by_def_id.entry(def_id).or_default().push(indexed);
+                push_indexed_candidate(&mut by_def_id, def_id, indexed.clone());
+                if let Some(ancestry) = flat.symbol_ancestry.get(&def_id) {
+                    for ancestor_def_id in ancestry {
+                        push_indexed_candidate(&mut by_def_id, *ancestor_def_id, indexed.clone());
+                    }
+                }
             }
         }
         Self { by_def_id, by_leaf }
@@ -153,16 +158,41 @@ impl DefIdVarRefIndex {
         if let Some(def_id) = name.target_def_id()
             && let Some(candidates) = self.by_def_id.get(&def_id)
         {
-            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner);
+            let mode = if is_class_qualified_reference(name) {
+                OwnerScopeMode::DescendantOrEnclosing
+            } else {
+                OwnerScopeMode::DescendantOnly
+            };
+            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner, mode);
         }
         if name.target_def_id().is_some() {
             return None;
         }
         if is_class_qualified_reference(name) {
             let candidates = self.by_leaf.get(raw_leaf)?;
-            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner);
+            return resolve_best_owner_scoped_candidate(
+                name,
+                raw_leaf,
+                candidates,
+                owner,
+                OwnerScopeMode::DescendantOrEnclosing,
+            );
         }
         None
+    }
+}
+
+fn push_indexed_candidate(
+    by_def_id: &mut HashMap<rumoca_core::DefId, Vec<IndexedVarRef>>,
+    def_id: rumoca_core::DefId,
+    indexed: IndexedVarRef,
+) {
+    let candidates = by_def_id.entry(def_id).or_default();
+    if !candidates
+        .iter()
+        .any(|candidate| candidate.name == indexed.name)
+    {
+        candidates.push(indexed);
     }
 }
 
@@ -191,6 +221,7 @@ fn resolve_best_owner_scoped_candidate(
     raw_leaf: &str,
     candidates: &[IndexedVarRef],
     owner: Option<&str>,
+    mode: OwnerScopeMode,
 ) -> Option<String> {
     let raw = name.as_str();
     let owner_path = owner.map(rumoca_core::ComponentPath::from_flat_path);
@@ -204,7 +235,7 @@ fn resolve_best_owner_scoped_candidate(
         .filter_map(|candidate| {
             let owner_score = owner_path
                 .as_ref()
-                .map(|owner| owner_scope_score(owner, &candidate.path))
+                .map(|owner| owner_scope_score(owner, &candidate.path, mode))
                 .unwrap_or_else(|| (candidates.len() == 1).then_some(0))?;
             let suffix_score = path_suffix_score(&raw_path, &candidate.path);
             Some(((owner_score, suffix_score), candidate))
@@ -218,6 +249,12 @@ fn resolve_best_owner_scoped_candidate(
         .skip(1)
         .any(|(score, _)| score == best_score);
     (!ambiguous && best.name.as_str() != raw).then(|| best.name.clone())
+}
+
+#[derive(Clone, Copy)]
+enum OwnerScopeMode {
+    DescendantOnly,
+    DescendantOrEnclosing,
 }
 
 fn path_suffix_score(
@@ -236,14 +273,18 @@ fn path_suffix_score(
 fn owner_scope_score(
     owner_path: &rumoca_core::ComponentPath,
     candidate_path: &rumoca_core::ComponentPath,
+    mode: OwnerScopeMode,
 ) -> Option<usize> {
     let candidate_scope = candidate_path.prefix(candidate_path.len().saturating_sub(1))?;
-    if owner_path.starts_with(&candidate_scope) {
-        return Some(candidate_scope.len());
+    if candidate_scope.starts_with(owner_path) {
+        return Some(owner_path.len());
     }
-    candidate_scope
-        .starts_with(owner_path)
-        .then_some(owner_path.len())
+    match mode {
+        OwnerScopeMode::DescendantOnly => None,
+        OwnerScopeMode::DescendantOrEnclosing => owner_path
+            .starts_with(&candidate_scope)
+            .then_some(candidate_scope.len()),
+    }
 }
 
 fn is_class_qualified_reference(name: &rumoca_core::Reference) -> bool {

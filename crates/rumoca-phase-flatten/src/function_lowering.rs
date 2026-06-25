@@ -19,15 +19,72 @@ use std::collections::{HashMap, HashSet};
 fn record_fields_from_constructor_metadata(
     functions: &flat::VarNameIndexMap<rumoca_core::Function>,
     type_name: &str,
+    owner_function_name: Option<&str>,
 ) -> Option<Vec<rumoca_core::FunctionParam>> {
-    functions
+    let candidates = functions
         .iter()
-        .find(|(name, function)| {
+        .filter(|(name, function)| {
             function.is_constructor
                 && rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
         })
+        .filter(|(_, function)| !function.inputs.is_empty())
+        .collect::<Vec<_>>();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    if type_name.contains('.') {
+        return candidates
+            .into_iter()
+            .max_by_key(|(name, function)| {
+                (
+                    name.as_str() == type_name,
+                    function.inputs.len(),
+                    name.as_str().len(),
+                )
+            })
+            .map(|(_, function)| function.inputs.to_vec());
+    }
+
+    if let Some(contextual_type_name) =
+        owner_function_name.and_then(|name| contextual_record_type_name(name, type_name))
+        && let Some((_, function)) = candidates
+            .iter()
+            .copied()
+            .filter(|(name, _)| {
+                rumoca_core::qualified_type_name_matches(name.as_str(), &contextual_type_name)
+            })
+            .max_by_key(|(name, function)| {
+                (
+                    name.as_str() == contextual_type_name,
+                    function.inputs.len(),
+                    name.as_str().len(),
+                )
+            })
+    {
+        return Some(function.inputs.to_vec());
+    }
+
+    candidates
+        .into_iter()
+        .min_by_key(|(name, function)| {
+            (
+                name.as_str() != type_name,
+                function.inputs.len(),
+                name.as_str().len(),
+            )
+        })
         .map(|(_, function)| function.inputs.to_vec())
-        .filter(|fields: &Vec<rumoca_core::FunctionParam>| !fields.is_empty())
+}
+
+fn contextual_record_type_name(function_name: &str, type_name: &str) -> Option<String> {
+    let namespace = rumoca_core::ComponentPath::from_flat_path(function_name).parent()?;
+    Some(
+        namespace
+            .join(&rumoca_core::ComponentPath::from_flat_path(type_name))
+            .to_flat_string(),
+    )
 }
 
 /// Rewrite FieldAccess on decomposed record params to direct VarRef.
@@ -345,13 +402,23 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
             )
         })
         .collect::<HashMap<_, _>>();
-    let record_fields_by_type = flat
+    let record_fields_by_function_input = flat
         .functions
-        .values()
-        .flat_map(|function| function.inputs.iter())
-        .filter_map(|input| {
-            record_fields_from_constructor_metadata(&flat.functions, &input.type_name)
-                .map(|fields| (input.type_name.clone(), fields))
+        .iter()
+        .flat_map(|(function_name, function)| {
+            function
+                .inputs
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, input)| {
+                    record_fields_from_constructor_metadata(
+                        &flat.functions,
+                        &input.type_name,
+                        Some(function_name.as_str()),
+                    )
+                    .map(|fields| ((function_name.as_str().to_string(), idx), fields))
+                })
+                .collect::<Vec<_>>()
         })
         .collect::<HashMap<_, _>>();
     let record_constructor_fields = flat
@@ -367,7 +434,9 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
     for (func_name, func) in flat.functions.iter_mut() {
         let mut decomposed: Vec<DecomposedParam> = Vec::new();
         for (idx, input) in func.inputs.iter().enumerate() {
-            if let Some(fields) = record_fields_by_type.get(&input.type_name) {
+            if let Some(fields) =
+                record_fields_by_function_input.get(&(func_name.as_str().to_string(), idx))
+            {
                 decomposed.push(DecomposedParam {
                     original_index: idx,
                     param_name: input.name.clone(),
@@ -1345,48 +1414,44 @@ fn projected_values_from_matching_ref(
     if prefix_parts.is_empty() {
         return None;
     }
-    if !fields.iter().all(|field| {
-        let mut parts = prefix_parts.clone();
-        parts.push(rumoca_core::ComponentRefPart {
-            ident: field.name.clone(),
-            span: field.span,
-            subs: Vec::new(),
-        });
-        let projected_ref = rumoca_core::ComponentReference {
-            local: component_ref.local,
-            span: component_ref.span,
-            parts,
-            def_id: None,
-        };
-        flat_variable_names.contains(&projected_ref.to_var_name())
-    }) {
+    let projected_names = fields
+        .iter()
+        .map(|field| {
+            let mut parts = prefix_parts.clone();
+            parts.push(rumoca_core::ComponentRefPart {
+                ident: field.name.clone(),
+                span: field.span,
+                subs: Vec::new(),
+            });
+            let projected_ref = rumoca_core::ComponentReference {
+                local: component_ref.local,
+                span: component_ref.span,
+                parts,
+                def_id: None,
+            };
+            projected_ref.to_var_name()
+        })
+        .collect::<Vec<_>>();
+    if !projected_names
+        .iter()
+        .all(|name| flat_variable_names.contains(name))
+    {
         return None;
     }
     Some(
-        fields
+        projected_names
             .iter()
-            .map(|field| {
-                let mut parts = prefix_parts.clone();
-                parts.push(rumoca_core::ComponentRefPart {
-                    ident: field.name.clone(),
-                    span: field.span,
-                    subs: Vec::new(),
-                });
-                let projected_ref = rumoca_core::ComponentReference {
-                    local: component_ref.local,
-                    span: component_ref.span,
-                    parts,
-                    def_id: None,
-                };
-                let projected_name = projected_ref.to_var_name();
-                rumoca_core::Expression::VarRef {
-                    name: rumoca_core::Reference::with_component_reference(
-                        projected_name.as_str().to_string(),
-                        projected_ref,
+            .map(|projected_name| rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    projected_name.as_str().to_string(),
+                    rumoca_core::ComponentReference::from_flat_segments(
+                        projected_name.as_str(),
+                        *span,
+                        None,
                     ),
-                    subscripts: vec![],
-                    span: *span,
-                }
+                ),
+                subscripts: vec![],
+                span: *span,
             })
             .collect(),
     )
@@ -2209,9 +2274,12 @@ mod tests {
         ));
 
         let flat_variable_names = flat.variables.keys().cloned().collect::<HashSet<_>>();
-        let fields =
-            record_fields_from_constructor_metadata(&flat.functions, "Pkg.EfficiencyParameters")
-                .expect("record fields");
+        let fields = record_fields_from_constructor_metadata(
+            &flat.functions,
+            "Pkg.EfficiencyParameters",
+            None,
+        )
+        .expect("record fields");
         let probe_actuals = [
             component_ref_expr(&["per", "hydraulicEfficiency", "V_flow"]),
             component_ref_expr(&["per", "hydraulicEfficiency", "dp"]),
@@ -2243,6 +2311,178 @@ mod tests {
             rumoca_core::Expression::VarRef { name, .. }
                 if name.as_str() == "per.hydraulicEfficiency.eta"
         ));
+    }
+
+    #[test]
+    fn record_param_lowering_does_not_synthesize_missing_fields_from_partial_prefix() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor_named("Medium.State", &["p", "T", "X"]));
+        flat.add_function(record_constructor_named(
+            "Medium.setState_phX",
+            &["p", "h", "X"],
+        ));
+        flat.add_variable(
+            rumoca_core::VarName::new("port_a.p"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+        flat.add_variable(
+            rumoca_core::VarName::new("port_a.h_outflow"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+        flat.add_variable(
+            rumoca_core::VarName::new("port_a.Xi_outflow"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+
+        let mut density = rumoca_core::Function::new("Medium.density", Span::DUMMY);
+        density.add_input(
+            rumoca_core::FunctionParam::new("state", "Medium.State", test_span())
+                .with_type_class(ClassType::Record),
+        );
+        density.add_output(rumoca_core::FunctionParam::new("d", "Real", test_span()));
+        flat.add_function(density);
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Medium.density"),
+                args: vec![rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::Reference::new("Medium.setState_phX"),
+                    args: vec![
+                        component_ref_expr(&["port_a", "p"]),
+                        component_ref_expr(&["port_a", "h_outflow"]),
+                        component_ref_expr(&["port_a", "Xi_outflow"]),
+                    ],
+                    is_constructor: true,
+                    span: test_span(),
+                }],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 3);
+        assert!(args.iter().all(|arg| {
+            !matches!(
+                arg,
+                rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "port_a.T"
+            )
+        }));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::FieldAccess { base, field, .. }
+                if field == "T"
+            && matches!(base.as_ref(), rumoca_core::Expression::FunctionCall { name, .. }
+                if name.as_str() == "Medium.setState_phX")
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_prefers_more_specific_constructor_metadata() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor_named(
+            "Modelica.Media.Interfaces.PartialSimpleMedium.ThermodynamicState",
+            &["p", "T"],
+        ));
+        flat.add_function(record_constructor_named(
+            "Buildings.Media.Air.ThermodynamicState",
+            &["p", "T", "X"],
+        ));
+
+        let mut function = rumoca_core::Function::new("Buildings.Media.Air.h", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("state", "ThermodynamicState", test_span())
+                .with_type_class(ClassType::Record),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("h", "Real", test_span()));
+        function.body.push(assignment_to(
+            "h",
+            rumoca_core::Expression::Index {
+                base: Box::new(rumoca_core::Expression::FieldAccess {
+                    base: Box::new(var_ref("state")),
+                    field: "X".to_string(),
+                    span: test_span(),
+                }),
+                subscripts: vec![rumoca_core::Subscript::Index {
+                    value: 1,
+                    span: test_span(),
+                }],
+                span: test_span(),
+            },
+        ));
+        flat.add_function(function);
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Buildings.Media.Air.h"))
+            .expect("function remains");
+        let input_names = function
+            .inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(input_names, vec!["state_p", "state_T", "state_X"]);
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+            panic!("expected assignment");
+        };
+        assert!(matches!(
+            value,
+            rumoca_core::Expression::Index { base, .. }
+                if matches!(base.as_ref(), rumoca_core::Expression::VarRef { name, .. }
+                    if name.as_str() == "state_X")
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_keeps_unqualified_inherited_record_in_owner_context() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor_named(
+            "Modelica.Media.Interfaces.PartialSimpleMedium.ThermodynamicState",
+            &["p", "T"],
+        ));
+        flat.add_function(record_constructor_named(
+            "Buildings.Media.Air.ThermodynamicState",
+            &["p", "T", "X"],
+        ));
+
+        let mut function =
+            rumoca_core::Function::new("Buildings.Media.Water.temperature", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("state", "ThermodynamicState", test_span())
+                .with_type_class(ClassType::Record),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("T", "Real", test_span()));
+        function.body.push(assignment_to(
+            "T",
+            rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("state")),
+                field: "T".to_string(),
+                span: test_span(),
+            },
+        ));
+        flat.add_function(function);
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Buildings.Media.Water.temperature"))
+            .expect("function remains");
+        let input_names = function
+            .inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(input_names, vec!["state_p", "state_T"]);
     }
 
     #[test]

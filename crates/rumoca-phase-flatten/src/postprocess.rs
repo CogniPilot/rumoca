@@ -12,6 +12,24 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
         return;
     }
     let known_variables: HashSet<String> = flat.variables.keys().map(ToString::to_string).collect();
+    for var in flat.variables.values_mut() {
+        let owner = rumoca_core::ComponentPath::from_flat_path(var.name.as_str());
+        canonicalize_record_alias_opt_expr_in_owner(
+            &mut var.binding,
+            ctx,
+            &known_variables,
+            &owner,
+        );
+        canonicalize_record_alias_opt_expr_in_owner(&mut var.start, ctx, &known_variables, &owner);
+        canonicalize_record_alias_opt_expr_in_owner(&mut var.min, ctx, &known_variables, &owner);
+        canonicalize_record_alias_opt_expr_in_owner(&mut var.max, ctx, &known_variables, &owner);
+        canonicalize_record_alias_opt_expr_in_owner(
+            &mut var.nominal,
+            ctx,
+            &known_variables,
+            &owner,
+        );
+    }
     for equation in &mut flat.equations {
         canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
     }
@@ -43,18 +61,9 @@ fn record_alias_rewrite_name(
     name: &str,
     ctx: &Context,
     known_variables: &HashSet<String>,
+    owner: Option<&rumoca_core::ComponentPath>,
 ) -> Option<String> {
-    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
-    ctx.record_aliases.iter().find_map(|(alias, target)| {
-        if !name_path.starts_with(alias) || name_path.len() == alias.len() {
-            return None;
-        }
-        let suffix = name_path
-            .suffix_from(alias.len())
-            .expect("suffix index is in range");
-        let candidate = target.join(&suffix).to_flat_string();
-        known_variables.contains(&candidate).then_some(candidate)
-    })
+    record_alias::rewrite_name(name, ctx, known_variables, owner)
 }
 
 pub(super) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::ClassTree) {
