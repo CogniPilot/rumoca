@@ -359,7 +359,12 @@ pub fn to_dae_with_options(
 fn nonnumeric_variable_names(flat: &flat::Model) -> Vec<String> {
     flat.variable_type_names
         .iter()
-        .filter(|(_, type_name)| rumoca_core::qualified_type_name_matches(type_name, "String"))
+        .filter(|(name, type_name)| {
+            rumoca_core::qualified_type_name_matches(type_name, "String")
+                || flat.variables.get(*name).is_some_and(|var| {
+                    variable_analysis::is_external_constructor_handle(flat, name, var)
+                })
+        })
         .map(|(name, _)| name.as_str().to_string())
         .collect()
 }
@@ -605,6 +610,10 @@ fn classify_variables(
         .collect();
 
     for (name, var) in &flat.variables {
+        if variable_analysis::is_external_constructor_handle(flat, name, var) {
+            continue;
+        }
+
         // Skip non-primitive aggregate variables whose primitive fields are
         // represented separately (MLS §4.8). Keep non-primitive leaves so
         // connector-typed scalar aliases remain available in the DAE.

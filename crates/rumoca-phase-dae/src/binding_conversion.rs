@@ -8,8 +8,8 @@ use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
 use crate::{
-    ToDaeError, classification, flat_to_dae_expression_with_refs, flat_to_dae_var_name,
-    path_utils::strip_all_subscripts,
+    ToDaeError, analysis::variable_analysis, classification, flat_to_dae_expression_with_refs,
+    flat_to_dae_var_name, path_utils::strip_all_subscripts,
 };
 
 type Dae = dae::Dae;
@@ -83,6 +83,10 @@ pub(super) fn convert_bindings_to_equations(
     let defined_by_unknown_rhs = collect_vars_with_unknown_rhs(flat, &unknowns);
 
     for (name, var) in &flat.variables {
+        if variable_analysis::is_external_constructor_handle(flat, name, var) {
+            continue;
+        }
+
         if !var.is_primitive && prefix_children.contains_key(name.as_str()) {
             continue;
         }
@@ -559,6 +563,9 @@ fn collect_unknowns(flat: &Model, state_vars: &IndexSet<VarName>) -> HashSet<Var
     flat.variables
         .iter()
         .filter(|(_, var)| {
+            if variable_analysis::is_external_constructor_handle(flat, &var.name, var) {
+                return false;
+            }
             let kind = classification::classify_variable(var, state_vars);
             matches!(
                 kind,

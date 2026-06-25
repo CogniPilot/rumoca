@@ -667,6 +667,63 @@ fn test_todae_accepts_record_constructor_calls_for_known_type_names() {
 }
 
 #[test]
+fn test_todae_keeps_external_object_constructor_out_of_fx() {
+    let mut flat = Model::new();
+    let mut constructor =
+        rumoca_core::Function::new("Pkg.SpawnExternalObject", crate::test_support::test_span());
+    constructor.is_constructor = true;
+    constructor.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("allocate_object".to_string()),
+        output_name: Some("adapter".to_string()),
+        ..Default::default()
+    });
+    flat.add_function(constructor);
+    flat.add_variable(
+        VarName::new("obj"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("obj"),
+            is_primitive: true,
+            binding: Some(rumoca_core::Expression::FunctionCall {
+                name: VarName::new("Pkg.SpawnExternalObject").into(),
+                args: vec![],
+                is_constructor: true,
+                span: crate::test_support::test_span(),
+            }),
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        }),
+    );
+    flat.variable_type_names
+        .insert(VarName::new("obj"), "Pkg.SpawnExternalObject".to_string());
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("external object handles are metadata, not continuous residuals");
+
+    assert!(
+        dae.metadata
+            .nonnumeric_variable_names
+            .contains(&"obj".to_string())
+    );
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("obj")));
+    assert!(!dae.variables.outputs.contains_key(&VarName::new("obj")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !eq.origin.contains("binding equation for obj"))
+    );
+}
+
+#[test]
 fn test_todae_rejects_constructor_field_selection_without_signature() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");

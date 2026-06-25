@@ -469,11 +469,37 @@ pub(crate) fn is_continuous_unknown(
 ) -> bool {
     state_vars.contains(name)
         || flat.variables.get(name).is_some_and(|v| {
-            !matches!(
-                v.variability,
-                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-            )
+            !is_external_constructor_handle(flat, name, v)
+                && !matches!(
+                    v.variability,
+                    rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+                )
         })
+}
+
+/// True for Modelica ExternalObject-style resource handles.
+///
+/// Flattening represents an ExternalObject class call as a constructor
+/// function carrying external-function metadata. Such a handle is not a numeric
+/// DAE unknown; emitting its constructor binding into f_x would force the
+/// continuous solver to call native allocation code.
+pub(crate) fn is_external_constructor_handle(
+    flat: &Model,
+    _name: &VarName,
+    var: &flat::Variable,
+) -> bool {
+    let Some(Expression::FunctionCall {
+        name: constructor_name,
+        is_constructor: true,
+        ..
+    }) = &var.binding
+    else {
+        return false;
+    };
+
+    flat.functions
+        .get(&VarName::new(constructor_name.as_str()))
+        .is_some_and(|function| function.is_constructor && function.external.is_some())
 }
 
 /// Check if a variable is an internal (non-interface) input that should be promoted.
