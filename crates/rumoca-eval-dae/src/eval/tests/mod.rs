@@ -130,6 +130,43 @@ fn indexed_var(name: &str, indices: &[i64]) -> rumoca_core::Expression {
     }
 }
 
+#[test]
+fn var_ref_subscripted_matrix_slice_preserves_selected_row_shape() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("v_flow_rate".to_string(), vec![3, 3])]));
+    set_array_entries(
+        &mut env,
+        "v_flow_rate",
+        &[3, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+    );
+    let explicit_row = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("v_flow_rate"),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let prefix_row = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("v_flow_rate"),
+        subscripts: vec![rumoca_core::Subscript::generated_index(
+            2,
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&explicit_row, &env, 3),
+        Ok(vec![1.0, 2.0, 3.0])
+    );
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&prefix_row, &env, 3),
+        Ok(vec![4.0, 5.0, 6.0])
+    );
+}
+
 fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,

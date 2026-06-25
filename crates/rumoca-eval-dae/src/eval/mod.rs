@@ -1174,20 +1174,44 @@ fn start_expr_is_nonnumeric_inner(
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => {
-            let key = name.as_str();
-            if nonnumeric_name_matches(env, key) {
-                return true;
-            }
-            if env.enum_literal_ordinals.contains_key(key) || !visited.insert(key.to_string()) {
-                return false;
-            }
-            env.start_exprs
-                .get(key)
-                .is_some_and(|start| start_expr_is_nonnumeric_inner(start, env, visited))
-        }
-        rumoca_core::Expression::VarRef { .. } | rumoca_core::Expression::Empty { .. } => false,
+        } if subscripts.is_empty() => unsubscripted_start_var_ref_is_nonnumeric(name, env, visited),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => subscripted_start_var_ref_is_nonnumeric(name, subscripts, env, visited),
+        rumoca_core::Expression::Empty { .. } => false,
     }
+}
+
+fn unsubscripted_start_var_ref_is_nonnumeric(
+    name: &rumoca_core::Reference,
+    env: &VarEnv<f64>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    let key = name.as_str();
+    if nonnumeric_name_matches(env, key) {
+        return true;
+    }
+    if env.enum_literal_ordinals.contains_key(key) || !visited.insert(key.to_string()) {
+        return false;
+    }
+    env.start_exprs
+        .get(key)
+        .is_some_and(|start| start_expr_is_nonnumeric_inner(start, env, visited))
+}
+
+fn subscripted_start_var_ref_is_nonnumeric(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    env: &VarEnv<f64>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    nonnumeric_name_matches(env, name.as_str())
+        || subscripts.iter().any(|subscript| match subscript {
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                start_expr_is_nonnumeric_inner(expr, env, visited)
+            }
+            rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
+        })
 }
 
 fn nonnumeric_name_matches(env: &VarEnv<f64>, name: &str) -> bool {
@@ -1199,7 +1223,11 @@ fn nonnumeric_name_matches(env: &VarEnv<f64>, name: &str) -> bool {
 }
 
 fn string_valued_function_call_name(name: &rumoca_core::VarName) -> bool {
-    matches!(name.last_segment(), "String" | "getInstanceName")
+    matches!(name.last_segment(), "String")
+        || matches!(
+            rumoca_core::modelica_string_intrinsic_short_name(name.last_segment()),
+            Some(rumoca_core::ModelicaStringIntrinsic::RequiresLowering)
+        )
 }
 
 pub fn can_broadcast_start_value(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {

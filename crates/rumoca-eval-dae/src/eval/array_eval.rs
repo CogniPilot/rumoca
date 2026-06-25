@@ -96,6 +96,16 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
             } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
                 eval_var_ref_range_slice_values(name.as_str(), &subscripts[0], env)
             }
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if !subscripts.is_empty() => {
+                if let Some(values) =
+                    eval_var_ref_subscripted_slice_values(name.as_str(), subscripts, env)?
+                {
+                    return Ok(values);
+                }
+                Ok(vec![eval_expr(expr, env)?])
+            }
             rumoca_core::Expression::Index {
                 base, subscripts, ..
             } if subscripts.len() == 1 && subscript_is_range_expr(&subscripts[0]) => {
@@ -142,6 +152,106 @@ fn subscript_is_range_expr(subscript: &rumoca_core::Subscript) -> bool {
         rumoca_core::Subscript::Expr { expr, .. }
             if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
     )
+}
+
+fn eval_var_ref_subscripted_slice_values<T: SimFloat>(
+    name: &str,
+    subscripts: &[rumoca_core::Subscript],
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<T>>, EvalError> {
+    let Some(dims) = env.dims.get(name) else {
+        return Ok(None);
+    };
+    if dims.is_empty() || subscripts.len() > dims.len() {
+        return Ok(None);
+    }
+    let Some(base_values) = array_values_from_env_name_generic(name, env)? else {
+        return Ok(None);
+    };
+    let Some(dim_sizes) = dims
+        .iter()
+        .copied()
+        .map(|dim| usize::try_from(dim).ok().filter(|value| *value > 0))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let scalar_count = dim_sizes.iter().product::<usize>();
+    if scalar_count != base_values.len() {
+        return Ok(None);
+    }
+
+    let mut choices = Vec::with_capacity(dim_sizes.len());
+    for (idx, dim) in dim_sizes.iter().copied().enumerate() {
+        match subscripts.get(idx) {
+            Some(rumoca_core::Subscript::Index { value, span }) => {
+                choices.push(vec![positive_slice_index(*value, dim, *span)?]);
+            }
+            Some(rumoca_core::Subscript::Expr { expr, span }) => {
+                let value = eval_expr::<T>(expr, env)?.real();
+                choices.push(vec![finite_slice_index(value, dim, *span)?]);
+            }
+            Some(rumoca_core::Subscript::Colon { .. }) | None => {
+                choices.push((0..dim).collect());
+            }
+        }
+    }
+
+    let mut selected = Vec::new();
+    append_subscripted_slice_values(&base_values, &dim_sizes, &choices, 0, 0, &mut selected);
+    Ok(Some(selected))
+}
+
+fn append_subscripted_slice_values<T: Copy>(
+    base_values: &[T],
+    dims: &[usize],
+    choices: &[Vec<usize>],
+    dim_idx: usize,
+    flat_prefix: usize,
+    out: &mut Vec<T>,
+) {
+    if dim_idx == dims.len() {
+        out.push(base_values[flat_prefix]);
+        return;
+    }
+    let stride = dims[dim_idx + 1..].iter().product::<usize>();
+    for index in &choices[dim_idx] {
+        append_subscripted_slice_values(
+            base_values,
+            dims,
+            choices,
+            dim_idx + 1,
+            flat_prefix + index * stride,
+            out,
+        );
+    }
+}
+
+fn positive_slice_index(
+    index: i64,
+    dim: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, EvalError> {
+    usize::try_from(index)
+        .ok()
+        .filter(|value| *value >= 1 && *value <= dim)
+        .map(|value| value - 1)
+        .ok_or_else(|| {
+            EvalError::UnsupportedExpression {
+                kind: "subscript index",
+            }
+            .with_span_if_missing(span)
+        })
+}
+
+fn finite_slice_index(value: f64, dim: usize, span: rumoca_core::Span) -> Result<usize, EvalError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "subscript expression",
+        }
+        .with_span_if_missing(span));
+    }
+    positive_slice_index(value as i64, dim, span)
 }
 
 fn eval_var_ref_range_slice_values<T: SimFloat>(

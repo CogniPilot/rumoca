@@ -126,8 +126,77 @@ impl ExpressionRewriter for OuterRefRedirectRewriter<'_> {
                 span: *span,
             };
         }
-        self.walk_expression(expr)
+        if let Some(redirected) = redirect_outer_field_access(expr, self.outer_to_inner) {
+            return redirected;
+        }
+        let rewritten = self.walk_expression(expr);
+        redirect_outer_field_access(&rewritten, self.outer_to_inner).unwrap_or(rewritten)
     }
+}
+
+fn redirect_outer_field_access(
+    expr: &rumoca_core::Expression,
+    outer_to_inner: &IndexMap<String, String>,
+) -> Option<rumoca_core::Expression> {
+    if !matches!(expr, rumoca_core::Expression::FieldAccess { .. }) {
+        return None;
+    }
+    let (name, span) = field_access_path(expr)?;
+    let redirected = redirect_name_string(&name, outer_to_inner)?;
+    Some(rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(redirected),
+        subscripts: Vec::new(),
+        span,
+    })
+}
+
+fn field_access_path(expr: &rumoca_core::Expression) -> Option<(String, rumoca_core::Span)> {
+    match expr {
+        rumoca_core::Expression::FieldAccess { base, field, span } => {
+            let (mut name, _) = field_access_path(base)?;
+            name.push('.');
+            name.push_str(field);
+            Some((name, *span))
+        }
+        rumoca_core::Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            let (mut name, _) = field_access_path(base)?;
+            append_literal_subscripts(&mut name, subscripts)?;
+            Some((name, *span))
+        }
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => {
+            let mut rendered = name.as_str().to_string();
+            append_literal_subscripts(&mut rendered, subscripts)?;
+            Some((rendered, *span))
+        }
+        _ => None,
+    }
+}
+
+fn append_literal_subscripts(
+    name: &mut String,
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<()> {
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Index { value, .. } => {
+                name.push('[');
+                name.push_str(&value.to_string());
+                name.push(']');
+            }
+            rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Expr { .. } => {
+                return None;
+            }
+        }
+    }
+    Some(())
 }
 
 /// Redirect outer-prefixed VarRef names in when equations.
@@ -368,6 +437,35 @@ mod tests {
             panic!("expected comprehension filter var ref");
         };
         assert_eq!(name.as_str(), "innerBus.filter");
+    }
+
+    #[test]
+    fn test_redirect_outer_refs_rewrites_outer_field_access_chain() {
+        let mut flat = flat::Model::new();
+        let x_name = rumoca_core::VarName::new("zoneTol");
+        flat.variables.insert(
+            x_name.clone(),
+            flat::Variable {
+                name: x_name.clone(),
+                start: Some(rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::FieldAccess {
+                        base: Box::new(var_ref("floor.zon[1]")),
+                        field: "building".to_string(),
+                        span: test_span(),
+                    }),
+                    field: "relativeSurfaceTolerance".to_string(),
+                    span: test_span(),
+                }),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut outer_to_inner = IndexMap::default();
+        outer_to_inner.insert("floor.zon[1].building".to_string(), "building".to_string());
+        redirect_outer_refs(&mut flat, &outer_to_inner);
+
+        let var = flat.variables.get(&x_name).expect("expected variable");
+        assert_var_ref(var.start.as_ref(), "building.relativeSurfaceTolerance");
     }
 
     fn assert_var_ref(expr: Option<&rumoca_core::Expression>, expected: &str) {

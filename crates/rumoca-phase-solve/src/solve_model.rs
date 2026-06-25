@@ -1171,7 +1171,13 @@ fn start_values(
         return default_start_values_for_size(var, default_start, size);
     }
     if size <= 1 && var.dims.is_empty() {
-        let value = eval_expr::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?;
+        let value = match eval_expr::<f64>(expr, env) {
+            Ok(value) => value,
+            Err(err) if start_eval_error_uses_default(&err) => {
+                return single_start_value(default_start, var);
+            }
+            Err(err) => return Err(eval_start_error(var, err)),
+        };
         return single_start_value(finite_start_value(value, default_start), var);
     }
     let raw = match shaped_start_values(expr, env, size) {
@@ -1185,9 +1191,22 @@ fn start_values(
                 expr.span().unwrap_or(var.source_span),
             )?
         }
+        Err(err) if start_eval_error_uses_default(&err) => {
+            return default_start_values_for_size(var, default_start, size);
+        }
         Err(err) => return Err(eval_start_error(var, err)),
     };
     finite_start_values(raw, default_start, var)
+}
+
+fn start_eval_error_uses_default(err: &EvalError) -> bool {
+    match err {
+        EvalError::UnsupportedExpression {
+            kind: "external table data",
+        } => true,
+        EvalError::Spanned { source, .. } => start_eval_error_uses_default(source),
+        _ => false,
+    }
 }
 
 fn shaped_start_values(

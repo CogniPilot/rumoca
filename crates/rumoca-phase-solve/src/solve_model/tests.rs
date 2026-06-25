@@ -439,6 +439,34 @@ fn start_values_skips_zero_length_array_expression_evaluation() {
 }
 
 #[test]
+fn start_values_use_default_for_external_table_data_start_guess() {
+    let mut var = scalar_var("table_u_min");
+    var.start = Some(call_expr(
+        "getTimeTableTmin",
+        vec![call_expr(
+            "ExternalCombiTimeTable",
+            vec![
+                string_expr("NoName"),
+                string_expr("NoName"),
+                rumoca_core::Expression::Empty {
+                    span: solve_model_test_span(),
+                },
+                real_expr(0.0),
+                array_expr(vec![int_expr(2)], false),
+                int_expr(3),
+                int_expr(1),
+            ],
+        )],
+    ));
+    let env = rumoca_eval_dae::VarEnv::<f64>::new();
+
+    let values = start_values(&dae::Dae::default(), &var, &env)
+        .expect("external table metadata start should fall back to default guess");
+
+    assert_eq!(values, vec![0.0]);
+}
+
+#[test]
 fn identity_mass_matrix_reports_capacity_overflow() -> Result<(), SolveModelLowerError> {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_solve_solve_model_tests_source_76.mo"),
