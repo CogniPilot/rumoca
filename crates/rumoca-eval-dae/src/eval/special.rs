@@ -9,11 +9,15 @@ use super::distribution_clock::{
 use super::*;
 
 mod runtime_specials;
+mod shape_bindings;
 mod state_accessors;
 pub(super) use runtime_specials::*;
 pub use runtime_specials::{
     deterministic_automatic_global_seed, is_runtime_special_function_name,
     is_runtime_special_function_short_name, modelica_strings_hash_string,
+};
+use shape_bindings::{
+    seed_function_input_shape_bindings, seed_function_input_shape_bindings_from_arg,
 };
 pub(super) use state_accessors::*;
 
@@ -261,6 +265,7 @@ fn bind_user_function_inputs<T: SimFloat>(
         });
 
         if let Some(arg_expr) = arg_expr {
+            seed_function_input_shape_bindings_from_arg(local_env, param, arg_expr, caller_env)?;
             if bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env)? {
                 continue;
             }
@@ -289,6 +294,7 @@ fn bind_user_function_inputs<T: SimFloat>(
                 name: param.name.clone(),
             });
         };
+        seed_function_input_shape_bindings_from_arg(local_env, param, default_expr, caller_env)?;
         if bind_function_input_alias(local_env, function_name, param, default_expr, caller_env)? {
             continue;
         }
@@ -494,6 +500,7 @@ fn copy_array_literal_vector_entries<T: SimFloat>(
     if let Some(field) = selection_field {
         dims.insert(format!("{}.{field}", param.name), shape);
     }
+    seed_function_input_shape_bindings(local_env, param, &[elements.len() as i64])?;
     Ok(true)
 }
 
@@ -551,6 +558,7 @@ fn copy_array_literal_matrix_entries<T: SimFloat>(
     if let Some(field) = selection_field {
         dims.insert(format!("{}.{field}", param.name), shape);
     }
+    seed_function_input_shape_bindings(local_env, param, &[rows.len() as i64, max_cols as i64])?;
     Ok(true)
 }
 
@@ -708,6 +716,7 @@ fn copy_array_input_entries<T: SimFloat>(
     validate_array_input_dims(&dims, values.len())?;
     set_array_entries(local_env, param_name, &dims, &values);
     std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims.clone());
+    seed_function_input_shape_bindings(local_env, param, &dims)?;
 
     if trace_array_bind && source_name.contains("timeTable.table") {
         let t11 = env_array_sample(caller_env, &source_name, &[1, 1]);
@@ -758,7 +767,8 @@ fn bind_evaluated_array_input<T: SimFloat>(
         });
     }
     set_array_entries(local_env, &param.name, &dims, &values);
-    std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims);
+    std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims.clone());
+    seed_function_input_shape_bindings(local_env, param, &dims)?;
     Ok(())
 }
 

@@ -98,7 +98,7 @@ mod table_eval;
 mod special;
 use special::{
     copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
-    resolve_user_function_target,
+    resolve_user_function_target, set_state_array_field_arg_index,
 };
 pub use special::{
     deterministic_automatic_global_seed, eval_builtin_pub, eval_condition_as_root,

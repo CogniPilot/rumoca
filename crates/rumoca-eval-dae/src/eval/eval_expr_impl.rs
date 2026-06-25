@@ -551,7 +551,7 @@ fn bind_user_function_input_for_validation<T: SimFloat>(
         } else {
             eval_array_values::<T>(arg, env)?
         };
-        bind_aggregate_input_for_validation(local_env, &input.name, &input.dims, values)?;
+        bind_aggregate_input_for_validation(local_env, input, values)?;
         return Ok(true);
     }
     if copy_record_function_output_fields(local_env, input, arg, env)? {
@@ -623,14 +623,13 @@ fn concrete_function_param_size(dims: &[i64]) -> Option<usize> {
 
 fn bind_aggregate_input_for_validation<T: SimFloat>(
     local_env: &mut VarEnv<T>,
-    input_name: &str,
-    declared_dims: &[i64],
+    input: &rumoca_core::FunctionParam,
     values: Vec<T>,
 ) -> Result<(), EvalError> {
     if values.is_empty() {
         return Ok(());
     }
-    let inferred_dims = infer_dims_from_values(declared_dims, values.len())?;
+    let inferred_dims = infer_dims_from_values(&input.dims, values.len())?;
     let dims = inferred_dims
         .iter()
         .map(|dim| {
@@ -639,8 +638,40 @@ fn bind_aggregate_input_for_validation<T: SimFloat>(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    set_array_entries(local_env, input_name, &dims, &values);
-    std::sync::Arc::make_mut(&mut local_env.dims).insert(input_name.to_string(), dims);
+    set_array_entries(local_env, &input.name, &dims, &values);
+    std::sync::Arc::make_mut(&mut local_env.dims).insert(input.name.clone(), dims.clone());
+    seed_function_input_shape_bindings_for_validation(local_env, input, &dims)?;
+    Ok(())
+}
+
+fn seed_function_input_shape_bindings_for_validation<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    input: &rumoca_core::FunctionParam,
+    dims: &[i64],
+) -> Result<(), EvalError> {
+    if input.shape_expr.len() != dims.len() {
+        return Ok(());
+    }
+    for (subscript, dim) in input.shape_expr.iter().zip(dims.iter().copied()) {
+        if dim < 0 {
+            return Err(EvalError::UnsupportedExpression {
+                kind: "negative function shape dimension",
+            });
+        }
+        let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+            continue;
+        };
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = expr.as_ref()
+        else {
+            continue;
+        };
+        if !subscripts.is_empty() {
+            continue;
+        };
+        local_env.set(name.as_str(), T::from_f64(dim as f64));
+    }
     Ok(())
 }
 
@@ -1375,6 +1406,13 @@ pub(super) fn bind_constructor_inputs<T: SimFloat>(
             input_values.push(None);
             continue;
         }
+        if function_param_is_aggregate(input) {
+            if let Some(arg_expr) = arg {
+                bind_constructor_aggregate_input(&mut local_env, input, arg_expr, env)?;
+            }
+            input_values.push(None);
+            continue;
+        }
         let value = if let Some(arg_expr) = arg {
             eval_expr::<T>(arg_expr, &local_env)?
         } else if let Some(existing) = local_env.vars.get(&input.name).copied() {
@@ -1393,6 +1431,45 @@ pub(super) fn bind_constructor_inputs<T: SimFloat>(
         input_values.push(Some(value));
     }
     Ok((local_env, input_values))
+}
+
+fn bind_constructor_aggregate_input<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    input: &rumoca_core::FunctionParam,
+    arg_expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    let values = eval_array_like_values::<T>(arg_expr, env)?;
+    if values.is_empty() {
+        return Ok(());
+    }
+    let dims = match try_infer_runtime_expr_dims(arg_expr, env) {
+        Ok(dims) if !dims.is_empty() => dims
+            .into_iter()
+            .map(|dim| {
+                i64::try_from(dim).map_err(|_| EvalError::UnsupportedExpression {
+                    kind: "array dimensions",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Ok(_)
+        | Err(EvalError::UnsupportedExpression { .. })
+        | Err(EvalError::MissingBinding { .. }) => {
+            infer_dims_from_values(&input.dims, values.len())?
+                .into_iter()
+                .map(|dim| {
+                    i64::try_from(dim).map_err(|_| EvalError::UnsupportedExpression {
+                        kind: "array dimensions",
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        Err(err) => return Err(err),
+    };
+    set_array_entries(local_env, &input.name, &dims, &values);
+    std::sync::Arc::make_mut(&mut local_env.dims).insert(input.name.clone(), dims.clone());
+    seed_function_input_shape_bindings_for_validation(local_env, input, &dims)?;
+    Ok(())
 }
 
 pub(super) fn eval_field_access_constructor_by_signature<T: SimFloat>(

@@ -287,14 +287,28 @@ pub(super) fn try_eval_field_access_array_values<T: SimFloat>(
     {
         return Ok(values);
     }
-
     match base {
         Expression::FunctionCall {
             name,
             args,
             is_constructor: false,
             ..
-        } => try_eval_function_record_field_array_values(name, args, field, env),
+        } => match try_eval_function_record_field_array_values(name, args, field, env) {
+            Ok(values) => Ok(values),
+            Err(EvalError::MissingFunction { .. } | EvalError::UnsupportedExpression { .. })
+                if set_state_array_field_arg_index(name.var_name(), field).is_some() =>
+            {
+                let arg_index = set_state_array_field_arg_index(name.var_name(), field)
+                    .expect("checked by guard");
+                let arg = args
+                    .get(arg_index)
+                    .ok_or(EvalError::UnsupportedExpression {
+                        kind: "setState array field arity",
+                    })?;
+                eval_array_like_values(arg, env)
+            }
+            Err(err) => Err(err),
+        },
         Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty()

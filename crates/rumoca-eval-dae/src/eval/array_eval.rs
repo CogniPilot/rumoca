@@ -1506,6 +1506,18 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {
         return Ok(runtime_vector_dims(elements.len()));
     }
+    if let rumoca_core::Expression::FieldAccess { base, field, .. } = expr
+        && let rumoca_core::Expression::FunctionCall { name, args, .. } = base.as_ref()
+        && !env.functions.contains_key(name.as_str())
+        && let Some(arg_index) = set_state_array_field_arg_index(name.var_name(), field)
+    {
+        let arg = args
+            .get(arg_index)
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "setState array field arity",
+            })?;
+        return try_infer_runtime_expr_dims(arg, env);
+    }
 
     let values = eval_array_like_values(expr, env)?;
     let dims = match expr {

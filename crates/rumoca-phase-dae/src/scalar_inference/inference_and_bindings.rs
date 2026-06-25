@@ -854,8 +854,57 @@ fn select_scalar_start_record_alias(
             }
             expr.clone()
         }
+        Expression::FunctionCall {
+            name,
+            is_constructor: false,
+            ..
+        } if is_state_constructor_function(name) => select_function_record_field_start(
+            expr,
+            field_suffix,
+            leaf_field.map(String::as_str),
+            owner_span,
+        )
+        .unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     }
+}
+
+fn is_state_constructor_function(name: &rumoca_core::Reference) -> bool {
+    matches!(
+        name.var_name().last_segment(),
+        "setState_pTX"
+            | "setState_pT"
+            | "setState_dTX"
+            | "setState_phX"
+            | "setState_ph"
+            | "setState_psX"
+            | "setState_ps"
+            | "setSmoothState"
+    )
+}
+
+fn select_function_record_field_start(
+    expr: &Expression,
+    field_suffix: &str,
+    leaf_field: Option<&str>,
+    owner_span: rumoca_core::Span,
+) -> Option<Expression> {
+    let suffix = field_suffix.strip_prefix('.')?;
+    let mut segments = rumoca_core::ComponentPath::from_flat_path(suffix).into_parts();
+    if segments.is_empty()
+        && let Some(field) = leaf_field
+    {
+        segments.push(field.to_string());
+    }
+    let mut selected = expr.clone();
+    for field in segments {
+        selected = Expression::FieldAccess {
+            base: Box::new(selected),
+            field,
+            span: owner_span,
+        };
+    }
+    Some(selected)
 }
 
 fn select_leaf_start_record_alias(
@@ -904,6 +953,15 @@ fn select_leaf_start_record_alias(
                 },
             )
         }
+        Expression::FunctionCall {
+            name,
+            is_constructor: false,
+            ..
+        } if is_state_constructor_function(name) => Some(Expression::FieldAccess {
+            base: Box::new(expr.clone()),
+            field: field.clone(),
+            span: owner_span,
+        }),
         _ => None,
     }
 }
@@ -960,6 +1018,83 @@ mod tests {
                 .and_then(|reference| reference.def_id),
             Some(component_def_id)
         );
+    }
+
+    #[test]
+    fn record_field_start_from_function_call_preserves_field_access() {
+        let span = test_span();
+        let expr = Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Buildings.Media.Air.setState_pTX"),
+            args: vec![],
+            is_constructor: false,
+            span,
+        };
+        let selected = select_scalar_start_record_alias(
+            &VarName::new("state_default.X"),
+            &expr,
+            &HashSet::from(["state_default.X".to_string()]),
+            span,
+        );
+
+        let Expression::FieldAccess { base, field, .. } = selected else {
+            panic!("expected function field access start, got {selected:?}");
+        };
+        assert_eq!(field, "X");
+        assert!(matches!(
+            base.as_ref(),
+            Expression::FunctionCall { name, .. }
+                if name.as_str() == "Buildings.Media.Air.setState_pTX"
+        ));
+    }
+
+    #[test]
+    fn record_field_start_from_constructor_call_is_not_rewritten_to_field_access() {
+        let span = test_span();
+        let expr = Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Modelica.Blocks.Types.ExternalCombiTable1D"),
+            args: vec![],
+            is_constructor: true,
+            span,
+        };
+        let selected = select_scalar_start_record_alias(
+            &VarName::new("tableID"),
+            &expr,
+            &HashSet::from(["tableID".to_string()]),
+            span,
+        );
+
+        assert!(matches!(
+            selected,
+            Expression::FunctionCall {
+                is_constructor: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn scalar_start_from_function_call_is_not_rewritten_to_field_access() {
+        let span = test_span();
+        let expr = Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Modelica.Units.Conversions.from_degC"),
+            args: vec![],
+            is_constructor: false,
+            span,
+        };
+        let selected = select_scalar_start_record_alias(
+            &VarName::new("component.T_start"),
+            &expr,
+            &HashSet::from(["component.T_start".to_string()]),
+            span,
+        );
+
+        assert!(matches!(
+            selected,
+            Expression::FunctionCall {
+                is_constructor: false,
+                ..
+            }
+        ));
     }
 
     #[test]

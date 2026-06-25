@@ -306,6 +306,19 @@ pub(in crate::eval) fn eval_state_accessor_from_set_state<T: SimFloat>(
     }
 }
 
+pub(in crate::eval) fn set_state_array_field_arg_index(
+    name: &VarName,
+    field: &str,
+) -> Option<usize> {
+    if field != "X" {
+        return None;
+    }
+    match name.last_segment() {
+        "setState_pTX" | "setState_dTX" | "setState_phX" | "setState_psX" => Some(2),
+        _ => None,
+    }
+}
+
 fn optional_eval_arg<T: SimFloat>(
     expr: Option<&Expression>,
     env: &VarEnv<T>,

@@ -147,6 +147,20 @@ fn materialize_constructor_assignment<T: SimFloat>(
     value: &rumoca_core::Expression,
     env: &mut VarEnv<T>,
 ) -> Result<bool, EvalError> {
+    if let rumoca_core::Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = value
+    {
+        for (cond, then_expr) in branches {
+            if eval::try_eval_condition_truth(cond, env)? {
+                return materialize_constructor_assignment(target, then_expr, env);
+            }
+        }
+        return materialize_constructor_assignment(target, else_branch, env);
+    }
+
     let rumoca_core::Expression::FunctionCall {
         name,
         args,
