@@ -997,6 +997,9 @@ pub(in crate::eval) fn validate_array_argument<T: SimFloat>(
         {
             Ok(())
         }
+        rumoca_core::Expression::VarRef { subscripts, .. } if !subscripts.is_empty() => {
+            eval_array_like_values::<T>(expr, env).map(|_| ())
+        }
         rumoca_core::Expression::FieldAccess { base, field, .. }
             if try_eval_field_access_array_values(base, field, env).is_ok() =>
         {
@@ -1559,6 +1562,19 @@ fn try_eval_field_access<T: SimFloat>(
         ..
     } = base
     {
+        if let Some(arg_index) = set_state_array_field_arg_index(name.var_name(), field) {
+            let arg = named_or_positional_set_state_array_arg(args, field, arg_index).ok_or(
+                EvalError::UnsupportedExpression {
+                    kind: "setState array field arity",
+                },
+            )?;
+            return eval_array_like_values::<T>(arg, env)?
+                .into_iter()
+                .next()
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "setState array field scalar projection",
+                });
+        }
         if *is_constructor
             && let Some(value) =
                 eval_field_access_constructor_by_signature(name.var_name(), args, field, env)?
@@ -1579,6 +1595,19 @@ fn try_eval_field_access<T: SimFloat>(
     Err(EvalError::UnsupportedExpression {
         kind: "field access",
     })
+}
+
+fn named_or_positional_set_state_array_arg<'a>(
+    args: &'a [rumoca_core::Expression],
+    field: &str,
+    positional_idx: usize,
+) -> Option<&'a rumoca_core::Expression> {
+    args.iter()
+        .find_map(|arg| {
+            let (name, value) = decode_named_constructor_arg(arg)?;
+            (name == field).then_some(value)
+        })
+        .or_else(|| args.get(positional_idx))
 }
 
 fn projected_record_field_expr(expr: &rumoca_core::Expression) -> Option<rumoca_core::Expression> {

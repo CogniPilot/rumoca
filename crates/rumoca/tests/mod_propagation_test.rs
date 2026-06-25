@@ -801,6 +801,77 @@ fn test_nested_array_component_modifier_selects_element_row() {
     }
 }
 
+#[test]
+fn test_record_field_modifier_drives_sibling_size_dimension_in_nested_array_component() {
+    let source = r#"
+        record Fan
+            parameter Real r_V[:];
+            parameter Real r_P[size(r_V, 1)];
+        end Fan;
+
+        model YorkCalc
+            parameter Fan fanRelPow(r_V = {0.0, 0.5, 1.0}, r_P = {0.0, 0.2, 1.0});
+            final parameter Real fanRelPowDer[size(fanRelPow.r_V, 1)];
+        end YorkCalc;
+
+        model Tower
+            parameter Real v_flow_rate[:];
+            parameter Real eta[:];
+            YorkCalc yorkCalc(fanRelPow(r_V = v_flow_rate, r_P = eta));
+        end Tower;
+
+        model TowerGroup
+            parameter Integer n = 3;
+            Tower ct[n];
+        end TowerGroup;
+
+        model Wrapper
+            parameter Real rows[3, 3];
+            parameter Real powers[3, 3];
+            TowerGroup group(ct(v_flow_rate = rows, eta = powers));
+        end Wrapper;
+
+        model Top
+            parameter Real upstream[3, 3] = {
+                {0.0, 0.5, 1.0},
+                {0.0, 0.6, 1.0},
+                {0.0, 0.7, 1.0}};
+            parameter Real fanPower[3, 3] = {
+                {0.0, 0.2, 1.0},
+                {0.0, 0.3, 1.0},
+                {0.0, 0.4, 1.0}};
+            Wrapper wrapper(rows = upstream, powers = fanPower);
+            Real y;
+        equation
+            y = wrapper.group.ct[1].yorkCalc.fanRelPow.r_P[1]
+              + wrapper.group.ct[1].yorkCalc.fanRelPowDer[1];
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("record field modifier should size sibling record fields");
+
+    for name in [
+        "wrapper.group.ct[1].yorkCalc.fanRelPow.r_V",
+        "wrapper.group.ct[1].yorkCalc.fanRelPow.r_P",
+        "wrapper.group.ct[1].yorkCalc.fanRelPowDer",
+    ] {
+        let dims = compiled
+            .flat
+            .variables
+            .get(&rumoca_core::VarName::new(name))
+            .map(|var| var.dims.clone())
+            .unwrap_or_else(|| panic!("{name} should be in flat variables"));
+        assert_eq!(
+            dims,
+            vec![3],
+            "{name} should keep the selected tower fan curve row count"
+        );
+    }
+}
+
 /// Test that typecheck_instanced evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {

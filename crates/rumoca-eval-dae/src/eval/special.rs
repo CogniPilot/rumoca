@@ -265,7 +265,6 @@ fn bind_user_function_inputs<T: SimFloat>(
         });
 
         if let Some(arg_expr) = arg_expr {
-            seed_function_input_shape_bindings_from_arg(local_env, param, arg_expr, caller_env)?;
             if bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env)? {
                 continue;
             }
@@ -275,6 +274,14 @@ fn bind_user_function_inputs<T: SimFloat>(
                 )?;
                 continue;
             }
+            if !param.dims.is_empty() || !param.shape_expr.is_empty() {
+                seed_function_input_shape_bindings_from_arg_if_supported(
+                    local_env, param, arg_expr, caller_env,
+                )?;
+                copy_array_input_entries(local_env, param, arg_expr, caller_env)?;
+                continue;
+            }
+            seed_function_input_shape_bindings_from_arg(local_env, param, arg_expr, caller_env)?;
             if copy_record_constructor_input_fields(local_env, param, arg_expr, caller_env)? {
                 continue;
             }
@@ -294,7 +301,6 @@ fn bind_user_function_inputs<T: SimFloat>(
                 name: param.name.clone(),
             });
         };
-        seed_function_input_shape_bindings_from_arg(local_env, param, default_expr, caller_env)?;
         if bind_function_input_alias(local_env, function_name, param, default_expr, caller_env)? {
             continue;
         }
@@ -307,10 +313,36 @@ fn bind_user_function_inputs<T: SimFloat>(
             )?;
             continue;
         }
+        if !param.dims.is_empty() || !param.shape_expr.is_empty() {
+            seed_function_input_shape_bindings_from_arg_if_supported(
+                local_env,
+                param,
+                default_expr,
+                caller_env,
+            )?;
+            copy_array_input_entries(local_env, param, default_expr, caller_env)?;
+            continue;
+        }
+        seed_function_input_shape_bindings_from_arg(local_env, param, default_expr, caller_env)?;
         let val = eval_expr::<T>(default_expr, local_env)?;
         bind_function_scalar_input(local_env, function_name, &param.name, val);
     }
     Ok(())
+}
+
+fn seed_function_input_shape_bindings_from_arg_if_supported<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    param: &FunctionParam,
+    arg_expr: &Expression,
+    caller_env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    match seed_function_input_shape_bindings_from_arg(local_env, param, arg_expr, caller_env) {
+        Ok(()) => Ok(()),
+        Err(EvalError::UnsupportedExpression {
+            kind: "range" | "range slice",
+        }) => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 fn copy_record_constructor_input_fields<T: SimFloat>(
@@ -696,6 +728,7 @@ fn copy_array_input_entries<T: SimFloat>(
             Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => Some(name.as_str().to_string()),
+            Expression::VarRef { subscripts, .. } if !subscripts.is_empty() => None,
             _ => try_eval_field_access_path(arg_expr, caller_env)?,
         },
     };

@@ -65,6 +65,15 @@ pub fn infer_dimensions_from_binding_with_scope(
             ))
         }
 
+        Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
+            let base_dims = infer_dimensions_from_binding_with_scope(base, ctx, scope)?;
+            Some(apply_array_index_subscripts_to_dims(
+                base_dims, subscripts, ctx, scope,
+            ))
+        }
+
         Expression::Parenthesized { inner, .. } => {
             infer_dimensions_from_binding_with_scope(inner, ctx, scope)
         }
@@ -134,6 +143,22 @@ fn apply_component_subscripts_to_dims(
             }
             apply_subscript_to_dims(sub, &mut dims, &mut pos, ctx, scope);
         }
+    }
+    dims
+}
+
+fn apply_array_index_subscripts_to_dims(
+    mut dims: Vec<usize>,
+    subscripts: &[Subscript],
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+) -> Vec<usize> {
+    let mut pos = 0usize;
+    for sub in subscripts {
+        if pos >= dims.len() {
+            return dims;
+        }
+        apply_subscript_to_dims(sub, &mut dims, &mut pos, ctx, scope);
     }
     dims
 }

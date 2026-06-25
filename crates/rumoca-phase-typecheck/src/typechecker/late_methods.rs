@@ -641,11 +641,12 @@ impl TypeChecker {
             .binding_source_scope
             .as_ref()?
             .to_flat_string();
-        rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+        let dims = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
             source,
             &self.eval_ctx,
             &source_scope,
-        )
+        )?;
+        (!dims.is_empty()).then_some(dims)
     }
 
     fn apply_inferred_instance_dims(

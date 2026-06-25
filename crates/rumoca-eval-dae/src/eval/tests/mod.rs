@@ -167,6 +167,141 @@ fn var_ref_subscripted_matrix_slice_preserves_selected_row_shape() {
     );
 }
 
+#[test]
+fn builtin_sum_evaluates_matrix_row_selected_by_runtime_index_and_colon() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("floorIndex", 2.0);
+    env.dims = Arc::new(IndexMap::from([("mAirFloRat".to_string(), vec![3, 4])]));
+    set_array_entries(
+        &mut env,
+        "mAirFloRat",
+        &[3, 4],
+        &[
+            1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 300.0, 400.0,
+        ],
+    );
+    let row = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("mAirFloRat"),
+        subscripts: vec![
+            rumoca_core::Subscript::Expr {
+                expr: Box::new(var("floorIndex")),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Sum,
+        args: vec![row],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(100.0));
+}
+
+#[test]
+fn set_state_array_field_scalar_projection_accepts_range_slice_argument() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("X_start".to_string(), vec![2])]));
+    set_array_entries(&mut env, "X_start", &[2], &[0.25, 0.75]);
+
+    let x_slice = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("X_start"),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Sub,
+                    lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Size,
+                        args: vec![arr(vec![lit(0.0), lit(0.0)], false), int_lit(1)],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    rhs: Box::new(int_lit(1)),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let state_x = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Medium.setState_pTX"),
+            args: vec![
+                named_ctor_arg("T", lit(293.15)),
+                named_ctor_arg("p", lit(101325.0)),
+                named_ctor_arg("X", x_slice),
+            ],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "X".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(eval_expr::<f64>(&state_x, &env), Ok(0.25));
+}
+
+#[test]
+fn user_function_array_input_binds_range_slice_before_scalar_path() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("X_start".to_string(), vec![2])]));
+    set_array_entries(&mut env, "X_start", &[2], &[0.25, 0.75]);
+
+    let mut functions = IndexMap::new();
+    let mut function = Function::new("Pkg.firstMassFraction", rumoca_core::Span::DUMMY);
+    function.add_input(
+        FunctionParam::new("X", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![0])
+            .with_shape_expr(vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)]),
+    );
+    function.add_output(FunctionParam::new(
+        "y",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.body = vec![Statement::Assignment {
+        comp: comp_ref("y"),
+        value: index_expr(var("X"), 1),
+        span: rumoca_core::Span::DUMMY,
+    }];
+    functions.insert("Pkg.firstMassFraction".to_string(), function);
+    env.functions = Arc::new(functions);
+
+    let x_slice = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("X_start"),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Sub,
+                    lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Size,
+                        args: vec![arr(vec![lit(0.0), lit(0.0)], false), int_lit(1)],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    rhs: Box::new(int_lit(1)),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    };
+    assert_eq!(eval_array_values::<f64>(&x_slice, &env), Ok(vec![0.25]));
+
+    assert_eq!(
+        eval_expr::<f64>(&fn_call("Pkg.firstMassFraction", vec![x_slice]), &env),
+        Ok(0.25)
+    );
+}
+
 fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
