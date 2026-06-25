@@ -45,6 +45,7 @@ pub struct BalanceDetail {
     pub algorithm_outputs: usize,
     pub when_eq_scalar: usize,
     pub interface_flow_count: usize,
+    pub stream_interface_equation_count: usize,
     pub overconstrained_interface_count: i64,
     pub oc_break_edge_scalar_count: usize,
 }
@@ -85,7 +86,7 @@ impl std::fmt::Display for BalanceDetail {
         )?;
         write!(
             f,
-            "  Equations (raw): f_x({}) + f_z({}) + f_m({}) + f_c({}) + algo({}) + when({}) + iflow({}) + oc({}) - brk({})",
+            "  Equations (raw): f_x({}) + f_z({}) + f_m({}) + f_c({}) + algo({}) + when({}) + iflow({}) + stream({}) + oc({}) - brk({})",
             self.f_x_scalar,
             self.f_z_scalar,
             self.f_m_scalar,
@@ -93,6 +94,7 @@ impl std::fmt::Display for BalanceDetail {
             self.algorithm_outputs,
             self.when_eq_scalar,
             self.interface_flow_count,
+            self.stream_interface_equation_count,
             self.overconstrained_interface_count,
             self.oc_break_edge_scalar_count,
         )
@@ -145,6 +147,7 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
         algorithm_outputs,
         when_eq_scalar,
         interface_flow_count: dae_model.metadata.interface_flow_count,
+        stream_interface_equation_count: dae_model.metadata.stream_interface_equation_count,
         overconstrained_interface_count: dae_model.metadata.overconstrained_interface_count,
         oc_break_edge_scalar_count: dae_model.metadata.oc_break_edge_scalar_count,
     })
@@ -180,7 +183,10 @@ fn equations_unknowns_from_detail(detail: &BalanceDetail) -> (usize, usize) {
         + detail.when_eq_scalar) as i64;
     let iflow_needed = (unknowns as i64 - base_without_iflow).max(0);
     let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
-    let base_equations = base_without_iflow + effective_iflow;
+    let base_with_iflow = base_without_iflow + effective_iflow;
+    let stream_needed = (unknowns as i64 - base_with_iflow).max(0);
+    let effective_stream = (detail.stream_interface_equation_count as i64).min(stream_needed);
+    let base_equations = base_with_iflow + effective_stream;
     let oc_needed = (unknowns as i64 - base_equations).max(0);
     let effective_oc_interface = available_oc_interface.min(oc_needed);
     let raw_equations = base_equations + effective_oc_interface;
@@ -1363,6 +1369,22 @@ mod tests {
         let mut dae = dae_with_unknown_scalars(5);
         dae.continuous.equations.push(scalar_eq(3));
         dae.metadata.interface_flow_count = 9;
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn test_balance_clamps_stream_interface_equations_to_remaining_deficit() {
+        let mut dae = dae_with_unknown_scalars(4);
+        dae.continuous.equations.push(scalar_eq(4));
+        dae.metadata.stream_interface_equation_count = 3;
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn test_balance_uses_stream_interface_equations_to_close_deficit_only() {
+        let mut dae = dae_with_unknown_scalars(5);
+        dae.continuous.equations.push(scalar_eq(3));
+        dae.metadata.stream_interface_equation_count = 9;
         assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 

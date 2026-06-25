@@ -289,29 +289,18 @@ fn recover_string_literal_expr(
     prefix: &ast::QualifiedName,
 ) {
     let Some(recovered) = expr.as_ref().and_then(|expr| {
-        recover_string_literal_from_invalid_var_ref(expr, &prefix.to_flat_string())
+        recover_string_literal_from_invalid_component_expr(expr, &prefix.to_flat_string())
     }) else {
         return;
     };
     *expr = Some(recovered);
 }
 
-fn recover_string_literal_from_invalid_var_ref(
+pub(crate) fn recover_string_literal_from_invalid_component_expr(
     expr: &rumoca_core::Expression,
     prefix: &str,
 ) -> Option<rumoca_core::Expression> {
-    let rumoca_core::Expression::VarRef {
-        name,
-        subscripts,
-        span,
-    } = expr
-    else {
-        return None;
-    };
-    if !subscripts.is_empty() {
-        return None;
-    }
-    let path = rumoca_core::ComponentPath::from_reference(name);
+    let path = string_literal_candidate_path(expr)?;
     if path
         .parts()
         .iter()
@@ -324,10 +313,25 @@ fn recover_string_literal_from_invalid_var_ref(
     } else {
         path.strip_prefix(&rumoca_core::ComponentPath::from_flat_path(prefix))?
     };
+    let span = expr.span()?;
     Some(rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::String(literal_path.to_flat_string()),
-        span: *span,
+        span,
     })
+}
+
+fn string_literal_candidate_path(
+    expr: &rumoca_core::Expression,
+) -> Option<rumoca_core::ComponentPath> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(rumoca_core::ComponentPath::from_reference(name)),
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            Some(string_literal_candidate_path(base)?.join_part_slice(std::slice::from_ref(field)))
+        }
+        _ => None,
+    }
 }
 
 fn is_valid_modelica_identifier(part: &str) -> bool {
@@ -727,5 +731,35 @@ mod tests {
         });
         assert_eq!(flat.binding, expected);
         assert_eq!(flat.start, expected);
+    }
+
+    #[test]
+    fn test_recover_string_literal_from_invalid_field_access_path() {
+        let invalid_path = rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::FieldAccess {
+                base: Box::new(rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("zone"),
+                        subscripts: vec![],
+                        span: test_span(),
+                    }),
+                    field: "spawn-0".to_string(),
+                    span: test_span(),
+                }),
+                field: "4".to_string(),
+                span: test_span(),
+            }),
+            field: "3-7048a72798".to_string(),
+            span: test_span(),
+        };
+
+        let expected = Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("spawn-0.4.3-7048a72798".to_string()),
+            span: test_span(),
+        });
+        assert_eq!(
+            recover_string_literal_from_invalid_component_expr(&invalid_path, "zone"),
+            expected
+        );
     }
 }

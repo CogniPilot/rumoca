@@ -520,6 +520,7 @@
     "is_partial": false,
     "class_type": "Model",
     "variable_starts": {},
+    "nonnumeric_variable_names": [],
     "interface_flow_count": 0,
     "stream_interface_equation_count": 0,
     "overconstrained_interface_count": 0,

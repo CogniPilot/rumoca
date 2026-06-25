@@ -64,6 +64,13 @@ fn int_literal(value: i64) -> rumoca_core::Expression {
     }
 }
 
+fn string_literal(value: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(value.to_string()),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn reference_x_fill_expr() -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
@@ -141,6 +148,66 @@ fn substitute_known_constants_preserves_named_arg_marker_for_record_constructor_
         [rumoca_core::Expression::FunctionCall { name, is_constructor: true, .. }]
             if name.as_str() == "Buildings.Fluid.Movers.Data.Generic"
     ));
+}
+
+#[test]
+fn substitute_known_constants_preserves_path_like_string_literal() {
+    let mut ctx = Context::new();
+    ctx.string_parameter_values.insert(
+        "zone.spawnExe".to_string(),
+        "spawn-0.4.3-7048a72798".to_string(),
+    );
+
+    let substituted = substitute_known_constants_expr(
+        var_ref("zone.spawnExe"),
+        &ctx,
+        &rustc_hash::FxHashSet::default(),
+        &std::collections::HashSet::new(),
+        "",
+    )
+    .unwrap();
+
+    assert_eq!(substituted, string_literal("spawn-0.4.3-7048a72798"));
+}
+
+#[test]
+fn substitute_known_constants_recovers_path_like_string_variable_start() {
+    let mut model = flat::Model::new();
+    let name = rumoca_core::VarName::new("zone.spawnExe");
+    model.add_variable(
+        name.clone(),
+        flat::Variable {
+            name: name.clone(),
+            type_id: rumoca_core::TypeId(3),
+            start: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::FieldAccess {
+                        base: Box::new(var_ref("zone")),
+                        field: "spawn-0".to_string(),
+                        span: test_span(),
+                    }),
+                    field: "4".to_string(),
+                    span: test_span(),
+                }),
+                field: "3-7048a72798".to_string(),
+                span: test_span(),
+            }),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model
+        .variable_type_names
+        .insert(name.clone(), "String".to_string());
+
+    substitute_known_constants_in_flat(&mut model, &Context::new()).unwrap();
+
+    assert_eq!(
+        model.variables.get(&name).and_then(|var| var.start.clone()),
+        Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("spawn-0.4.3-7048a72798".to_string()),
+            span: test_span(),
+        })
+    );
 }
 
 #[test]

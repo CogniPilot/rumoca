@@ -1469,6 +1469,7 @@ fn substitute_index_in_subscript(
 pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> EvalContext {
     let parameter_capacity = ctx.parameter_values.len()
         + ctx.boolean_parameter_values.len()
+        + ctx.string_parameter_values.len()
         + ctx.enum_parameter_values.len()
         + ctx.array_dimensions.len();
     let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, ctx.functions.len() * 2);
@@ -1481,6 +1482,10 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
     // Add boolean parameters
     for (name, value) in &ctx.boolean_parameter_values {
         eval_ctx.add_parameter(name.clone(), Value::Bool(*value));
+    }
+
+    for (name, value) in &ctx.string_parameter_values {
+        eval_ctx.add_parameter(name.clone(), Value::String(value.clone()));
     }
 
     // Add enum parameters

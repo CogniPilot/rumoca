@@ -336,6 +336,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
         let prev = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
             + ctx.boolean_parameter_values.len()
+            + ctx.string_parameter_values.len()
             + ctx.real_parameter_values.len()
             + ctx.enum_parameter_values.len()
             + ctx.constant_values.len();
@@ -356,6 +357,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
             + ctx.boolean_parameter_values.len()
+            + ctx.string_parameter_values.len()
             + ctx.real_parameter_values.len()
             + ctx.enum_parameter_values.len()
             + ctx.constant_values.len();
@@ -822,6 +824,14 @@ fn try_eval_const_field_access_expr(
             span,
         });
     }
+    if let Some(value) =
+        lookup_with_qualified_scope(&name, &scope_path, &ctx.string_parameter_values)
+    {
+        return Some(rumoca_core::Expression::Literal {
+            value: Literal::String(value),
+            span,
+        });
+    }
     if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
         return Some(rumoca_core::Expression::VarRef {
@@ -1090,6 +1100,12 @@ pub(crate) fn try_eval_const_component_ref_expr(
             span: owner_span,
         });
     }
+    if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.string_parameter_values) {
+        return Some(rumoca_core::Expression::Literal {
+            value: Literal::String(v),
+            span: owner_span,
+        });
+    }
     if let Some(enum_name) =
         lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
@@ -1142,6 +1158,12 @@ fn try_eval_resolved_const_ref(
     if let Some(v) = lookup_with_scope(name, "", &ctx.boolean_parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Boolean(v),
+            span: owner_span,
+        });
+    }
+    if let Some(v) = lookup_with_scope(name, "", &ctx.string_parameter_values) {
+        return Some(rumoca_core::Expression::Literal {
+            value: Literal::String(v),
             span: owner_span,
         });
     }
@@ -1757,7 +1779,8 @@ pub(crate) fn build_structural_eval_context(
 
     let parameter_capacity = ctx.parameter_values.len()
         + ctx.real_parameter_values.len()
-        + ctx.boolean_parameter_values.len();
+        + ctx.boolean_parameter_values.len()
+        + ctx.string_parameter_values.len();
     let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, ctx.functions.len() * 2);
     for (name, value) in &ctx.parameter_values {
         eval_ctx.add_parameter(name.clone(), Value::Integer(*value));
@@ -1767,6 +1790,9 @@ pub(crate) fn build_structural_eval_context(
     }
     for (name, value) in &ctx.boolean_parameter_values {
         eval_ctx.add_parameter(name.clone(), Value::Bool(*value));
+    }
+    for (name, value) in &ctx.string_parameter_values {
+        eval_ctx.add_parameter(name.clone(), Value::String(value.clone()));
     }
     for func in ctx.functions.values() {
         eval_ctx.add_function(func.clone());
@@ -1944,6 +1970,9 @@ pub(crate) struct Context {
     pub real_parameter_values: rustc_hash::FxHashMap<String, f64>,
     /// Boolean parameter values for evaluating if-equation conditions.
     pub boolean_parameter_values: rustc_hash::FxHashMap<String, bool>,
+    /// String parameter/constant values. Kept separate from enum values because
+    /// arbitrary strings may contain dots or hyphens and are not component paths.
+    pub string_parameter_values: rustc_hash::FxHashMap<String, String>,
     /// Enumeration parameter values (name -> qualified enum literal string).
     pub enum_parameter_values: rustc_hash::FxHashMap<String, String>,
     /// General constant expression values (scalars/arrays) extracted from

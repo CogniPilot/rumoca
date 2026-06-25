@@ -244,6 +244,7 @@ pub fn to_dae_with_options(
     dae.metadata.class_type = flat.class_type.clone();
     dae.metadata.model_description = flat.model_description.clone();
     dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
+    dae.metadata.nonnumeric_variable_names = nonnumeric_variable_names(flat);
 
     let classification_indexes = build_variable_classification_indexes(flat)?;
     let prefix_children = &classification_indexes.prefix_children;
@@ -355,6 +356,14 @@ pub fn to_dae_with_options(
     Ok(dae)
 }
 
+fn nonnumeric_variable_names(flat: &flat::Model) -> Vec<String> {
+    flat.variable_type_names
+        .iter()
+        .filter(|(_, type_name)| rumoca_core::qualified_type_name_matches(type_name, "String"))
+        .map(|(name, _)| name.as_str().to_string())
+        .collect()
+}
+
 fn finalize_lowered_dae(
     dae: &mut dae::Dae,
     flat: &flat::Model,
@@ -411,6 +420,7 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "metadata_counts", || {
         // MLS §4.7 / §4.8 / §9.4: propagate interface counts from flatten.
         dae.metadata.interface_flow_count = count_interface_flows(flat);
+        dae.metadata.stream_interface_equation_count = flat.stream_interface_equation_count;
         dae.metadata.oc_break_edge_scalar_count = flat.oc_break_edge_scalar_count;
         overconstrained_interface::validate_connection_graph(flat)?;
         let oc_correction = count_overconstrained_interface(flat, state_vars)?;

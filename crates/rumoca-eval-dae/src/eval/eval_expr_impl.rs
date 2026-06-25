@@ -374,14 +374,20 @@ fn validate_size_call<T: SimFloat>(
 }
 
 fn size_arg_has_known_shape<T: SimFloat>(expr: &rumoca_core::Expression, env: &VarEnv<T>) -> bool {
-    matches!(
-        expr,
+    match expr {
         rumoca_core::Expression::VarRef {
-            name,
-            subscripts,
+            name, subscripts, ..
+        } => subscripts.is_empty() && env.dims.contains_key(name.as_str()),
+        rumoca_core::Expression::Array { .. } | rumoca_core::Expression::Tuple { .. } => true,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
             ..
-        } if subscripts.is_empty() && env.dims.contains_key(name.as_str())
-    )
+        } => args
+            .first()
+            .is_some_and(|arg| size_arg_has_known_shape(arg, env)),
+        _ => false,
+    }
 }
 
 fn validate_external_table_call<T: SimFloat>(
@@ -532,6 +538,10 @@ fn bind_user_function_input_for_validation<T: SimFloat>(
             .insert(format!("{function_name}.{}", input.name), closure);
         return Ok(true);
     }
+    if function_param_is_string(input) {
+        bind_string_function_input_shape_for_validation(local_env, input, arg, env)?;
+        return Ok(true);
+    }
     if function_param_is_aggregate(input) {
         validate_array_argument(arg, env)?;
         let values = if input.shape_expr.is_empty()
@@ -568,8 +578,36 @@ fn function_param_is_function(input: &rumoca_core::FunctionParam) -> bool {
     input.type_name.to_ascii_lowercase().contains("function")
 }
 
+pub(super) fn function_param_is_string(input: &rumoca_core::FunctionParam) -> bool {
+    rumoca_core::qualified_type_name_matches(&input.type_name, "String")
+}
+
 fn function_param_is_aggregate(input: &rumoca_core::FunctionParam) -> bool {
     !input.dims.is_empty() || !input.shape_expr.is_empty()
+}
+
+pub(super) fn bind_string_function_input_shape_for_validation<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    input: &rumoca_core::FunctionParam,
+    arg: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    let dims = if function_param_is_aggregate(input) {
+        try_infer_runtime_expr_dims(arg, env)?
+            .into_iter()
+            .map(|dim| {
+                i64::try_from(dim).map_err(|_| EvalError::UnsupportedExpression {
+                    kind: "array dimensions",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    if !dims.is_empty() {
+        std::sync::Arc::make_mut(&mut local_env.dims).insert(input.name.clone(), dims);
+    }
+    Ok(())
 }
 
 fn concrete_function_param_size(dims: &[i64]) -> Option<usize> {
@@ -1314,19 +1352,31 @@ pub(super) fn bind_constructor_inputs<T: SimFloat>(
     constructor: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> Result<(VarEnv<T>, Vec<T>), EvalError> {
+) -> Result<(VarEnv<T>, Vec<Option<T>>), EvalError> {
     let mut local_env = env.clone();
     let mut input_values = Vec::with_capacity(constructor.inputs.len());
     let (named_args, positional_args) = split_named_and_positional_call_args(args);
     let mut positional_idx = 0usize;
     for input in &constructor.inputs {
-        let value = if let Some(arg_expr) = named_args.get(input.name.as_str()) {
-            eval_expr::<T>(arg_expr, &local_env)?
+        let arg = if let Some(arg_expr) = named_args.get(input.name.as_str()) {
+            Some(*arg_expr)
         } else if let Some(arg_expr) = positional_args.get(positional_idx) {
             positional_idx += 1;
-            eval_expr::<T>(arg_expr, &local_env)?
+            Some(*arg_expr)
         } else if let Some(default_expr) = &input.default {
-            eval_expr::<T>(default_expr, &local_env)?
+            Some(default_expr)
+        } else {
+            None
+        };
+        if function_param_is_string(input) {
+            if let Some(arg) = arg {
+                bind_string_function_input_shape_for_validation(&mut local_env, input, arg, env)?;
+            }
+            input_values.push(None);
+            continue;
+        }
+        let value = if let Some(arg_expr) = arg {
+            eval_expr::<T>(arg_expr, &local_env)?
         } else if let Some(existing) = local_env.vars.get(&input.name).copied() {
             existing
         } else {
@@ -1340,7 +1390,7 @@ pub(super) fn bind_constructor_inputs<T: SimFloat>(
             &input.name,
             value,
         );
-        input_values.push(value);
+        input_values.push(Some(value));
     }
     Ok((local_env, input_values))
 }
@@ -1362,7 +1412,7 @@ pub(super) fn eval_field_access_constructor_by_signature<T: SimFloat>(
         .enumerate()
         .find(|(_, input)| input.name == field)
     {
-        return Ok(input_values.get(idx).copied());
+        return Ok(input_values.get(idx).copied().flatten());
     }
 
     if let Some(output) = constructor

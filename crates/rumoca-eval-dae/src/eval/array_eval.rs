@@ -257,6 +257,13 @@ fn try_eval_builtin_array_like_values<T: SimFloat>(
                 kind: "symmetric shape",
             })
         }
+        rumoca_core::BuiltinFunction::Size if args.len() == 1 => {
+            let dims = try_infer_runtime_expr_dims(&args[0], env)?;
+            Ok(dims
+                .into_iter()
+                .map(|dim| T::from_f64(dim as f64))
+                .collect())
+        }
         rumoca_core::BuiltinFunction::Vector if args.len() == 1 => {
             eval_array_like_values(&args[0], env)
         }
@@ -1493,7 +1500,7 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         return if *is_matrix {
             try_runtime_matrix_literal_dims(elements, env)
         } else {
-            Ok(runtime_vector_dims(elements.len()))
+            Ok(vec![elements.len()])
         };
     }
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {

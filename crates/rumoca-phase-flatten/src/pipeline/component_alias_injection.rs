@@ -29,6 +29,7 @@ struct ScopedKeySnapshot {
     parameter_values: rustc_hash::FxHashSet<String>,
     real_parameter_values: rustc_hash::FxHashSet<String>,
     boolean_parameter_values: rustc_hash::FxHashSet<String>,
+    string_parameter_values: rustc_hash::FxHashSet<String>,
     enum_parameter_values: rustc_hash::FxHashSet<String>,
     constant_values: rustc_hash::FxHashSet<String>,
     array_dimensions: rustc_hash::FxHashSet<String>,
@@ -41,6 +42,7 @@ impl ScopedKeySnapshot {
             parameter_values: scoped_keys(&ctx.parameter_values, scope),
             real_parameter_values: scoped_keys(&ctx.real_parameter_values, scope),
             boolean_parameter_values: scoped_keys(&ctx.boolean_parameter_values, scope),
+            string_parameter_values: scoped_keys(&ctx.string_parameter_values, scope),
             enum_parameter_values: scoped_keys(&ctx.enum_parameter_values, scope),
             constant_values: scoped_keys(&ctx.constant_values, scope),
             array_dimensions: scoped_keys(&ctx.array_dimensions, scope),
@@ -59,6 +61,7 @@ struct ScopedConstantDelta {
     parameter_values: Vec<(String, i64)>,
     real_parameter_values: Vec<(String, f64)>,
     boolean_parameter_values: Vec<(String, bool)>,
+    string_parameter_values: Vec<(String, String)>,
     enum_parameter_values: Vec<(String, String)>,
     constant_values: Vec<(String, rumoca_core::Expression)>,
     array_dimensions: Vec<(String, Vec<i64>)>,
@@ -82,6 +85,11 @@ impl ScopedConstantDelta {
                 &ctx.boolean_parameter_values,
                 scope,
                 &before.boolean_parameter_values,
+            ),
+            string_parameter_values: capture_string_map_delta(
+                &ctx.string_parameter_values,
+                scope,
+                &before.string_parameter_values,
             ),
             enum_parameter_values: capture_string_map_delta(
                 &ctx.enum_parameter_values,
@@ -128,6 +136,12 @@ impl ScopedConstantDelta {
             scope,
             &ctx.flat_parameter_constant_keys,
             &mut ctx.boolean_parameter_values,
+        );
+        replay_map_delta(
+            &self.string_parameter_values,
+            scope,
+            &ctx.flat_parameter_constant_keys,
+            &mut ctx.string_parameter_values,
         );
         replay_map_delta(
             &self.enum_parameter_values,
@@ -549,6 +563,7 @@ fn component_constant_footprint(ctx: &Context) -> usize {
     ctx.parameter_values.len()
         + ctx.array_dimensions.len()
         + ctx.boolean_parameter_values.len()
+        + ctx.string_parameter_values.len()
         + ctx.real_parameter_values.len()
         + ctx.enum_parameter_values.len()
         + ctx.constant_values.len()
@@ -760,6 +775,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
         let prev = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
             + ctx.boolean_parameter_values.len()
+            + ctx.string_parameter_values.len()
             + ctx.real_parameter_values.len()
             + ctx.enum_parameter_values.len()
             + ctx.constant_values.len();
@@ -792,6 +808,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
             + ctx.boolean_parameter_values.len()
+            + ctx.string_parameter_values.len()
             + ctx.real_parameter_values.len()
             + ctx.enum_parameter_values.len()
             + ctx.constant_values.len();

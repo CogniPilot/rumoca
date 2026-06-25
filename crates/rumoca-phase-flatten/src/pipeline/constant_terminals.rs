@@ -52,9 +52,17 @@ pub(crate) fn try_eval_const_terminal_expr(
             token,
             ..
         } => Some(rumoca_core::Expression::Literal {
-            value: Literal::String(token.text.as_ref().to_string()),
+            value: Literal::String(strip_string_terminal_quotes(&token.text)),
             span: expr.span(),
         }),
         _ => None,
+    }
+}
+
+fn strip_string_terminal_quotes(text: &str) -> String {
+    if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
+        text[1..text.len() - 1].to_string()
+    } else {
+        text.to_string()
     }
 }

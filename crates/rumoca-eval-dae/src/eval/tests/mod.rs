@@ -1543,6 +1543,43 @@ fn test_build_env_seeds_fill_start_sized_by_string_array_literal() {
 }
 
 #[test]
+fn test_build_env_seeds_sum_size_start_for_string_array_literal() {
+    let substance_names = arr(
+        vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("N2".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("O2".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("H2O".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("CO2".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+        false,
+    );
+    let size = builtin(rumoca_core::BuiltinFunction::Size, vec![substance_names]);
+    let mut dae = rumoca_ir_dae::Dae::default();
+    let mut n = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("n"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    n.start = Some(builtin(rumoca_core::BuiltinFunction::Sum, vec![size]));
+    dae.variables.constants.insert("n".into(), n);
+
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
+
+    assert_eq!(env_value(&env, "n"), 4.0);
+}
+
+#[test]
 fn test_build_env_discrete_start_forward_ref_re_evaluates_and_preserves_pre_seed() {
     clear_pre_values();
 

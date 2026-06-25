@@ -234,6 +234,91 @@ fn build_runtime_parameter_tail_env_skips_string_parameter_alias_chain() {
 }
 
 #[test]
+fn build_runtime_parameter_tail_env_skips_get_instance_name_string_alias_chain() {
+    let mut dae = dae::Dae::default();
+
+    let mut building_name = dae::Variable::new(
+        VarName::new("building.modelicaNameBuilding"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    building_name.start = Some(rumoca_core::Expression::FunctionCall {
+        name: Reference::new("getInstanceName"),
+        args: vec![],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae.variables
+        .constants
+        .insert(VarName::new("building.modelicaNameBuilding"), building_name);
+
+    let mut local_name = dae::Variable::new(
+        VarName::new("zone.modelicaNameBuilding"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    local_name.start = Some(rumoca_core::Expression::VarRef {
+        name: Reference::new("building.modelicaNameBuilding"),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae.variables
+        .constants
+        .insert(VarName::new("zone.modelicaNameBuilding"), local_name);
+
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0)
+        .expect("getInstanceName string aliases should stay out of numeric env");
+
+    assert!(!env.vars.contains_key("building.modelicaNameBuilding"));
+    assert!(!env.vars.contains_key("zone.modelicaNameBuilding"));
+}
+
+#[test]
+fn build_runtime_parameter_tail_env_skips_string_field_access_alias_chain() {
+    let mut dae = dae::Dae::default();
+    dae.metadata
+        .nonnumeric_variable_names
+        .push("building.modelicaNameBuilding".to_string());
+
+    let mut building_name = dae::Variable::new(
+        VarName::new("building.modelicaNameBuilding"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    building_name.start = Some(rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String("Root.building".to_string()),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae.variables
+        .constants
+        .insert(VarName::new("building.modelicaNameBuilding"), building_name);
+
+    let mut zone_name = dae::Variable::new(
+        VarName::new("zone.modelicaNameBuilding"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    zone_name.start = Some(rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::VarRef {
+                name: Reference::new("zone"),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "building".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "modelicaNameBuilding".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae.variables
+        .constants
+        .insert(VarName::new("zone.modelicaNameBuilding"), zone_name);
+
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0)
+        .expect("string field-access aliases should stay out of numeric env");
+
+    assert!(!env.vars.contains_key("building.modelicaNameBuilding"));
+    assert!(!env.vars.contains_key("zone.modelicaNameBuilding"));
+}
+
+#[test]
 fn declared_slot_runtime_tail_env_advances_over_string_parameter_slots() {
     let mut dae = dae::Dae::default();
 

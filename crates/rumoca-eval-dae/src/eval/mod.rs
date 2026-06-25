@@ -507,6 +507,7 @@ pub struct VarEnv<T: SimFloat = f64> {
     pub functions: Arc<IndexMap<String, rumoca_core::Function>>,
     pub dims: Arc<IndexMap<String, Vec<i64>>>,
     pub start_exprs: Arc<IndexMap<String, rumoca_core::Expression>>,
+    pub nonnumeric_names: Arc<HashSet<String>>,
     pub clock_intervals: Arc<IndexMap<String, f64>>,
     pub enum_literal_ordinals: Arc<IndexMap<String, i64>>,
     pub function_closures: IndexMap<String, FunctionClosure>,
@@ -522,6 +523,7 @@ impl<T: SimFloat> Clone for VarEnv<T> {
             functions: self.functions.clone(),
             dims: self.dims.clone(),
             start_exprs: self.start_exprs.clone(),
+            nonnumeric_names: self.nonnumeric_names.clone(),
             clock_intervals: self.clock_intervals.clone(),
             enum_literal_ordinals: self.enum_literal_ordinals.clone(),
             function_closures: self.function_closures.clone(),
@@ -539,6 +541,7 @@ impl<T: SimFloat> Default for VarEnv<T> {
             functions: Arc::new(IndexMap::new()),
             dims: Arc::new(IndexMap::new()),
             start_exprs: Arc::new(IndexMap::new()),
+            nonnumeric_names: Arc::new(HashSet::new()),
             clock_intervals: Arc::new(IndexMap::new()),
             enum_literal_ordinals: Arc::new(IndexMap::new()),
             function_closures: IndexMap::new(),
@@ -997,6 +1000,13 @@ fn configure_env_metadata(env: &mut VarEnv<f64>, dae: &Dae) {
     }
     env.dims = Arc::new(collect_var_dims(dae));
     env.start_exprs = Arc::new(collect_var_starts(dae));
+    env.nonnumeric_names = Arc::new(
+        dae.metadata
+            .nonnumeric_variable_names
+            .iter()
+            .cloned()
+            .collect(),
+    );
     env.clock_intervals = Arc::new(dae.clocks.intervals.clone());
     env.enum_literal_ordinals = Arc::new(dae.symbols.enum_literal_ordinals.clone());
 }
@@ -1101,10 +1111,11 @@ fn start_expr_is_nonnumeric_inner(
             .iter()
             .any(|arg| start_expr_is_nonnumeric_inner(arg, env, visited)),
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
-            !is_runtime_special_function_name(name.var_name())
-                && args
-                    .iter()
-                    .any(|arg| start_expr_is_nonnumeric_inner(arg, env, visited))
+            string_valued_function_call_name(name.var_name())
+                || (!is_runtime_special_function_name(name.var_name())
+                    && args
+                        .iter()
+                        .any(|arg| start_expr_is_nonnumeric_inner(arg, env, visited)))
         }
         rumoca_core::Expression::If {
             branches,
@@ -1147,8 +1158,10 @@ fn start_expr_is_nonnumeric_inner(
                     }
                 })
         }
-        rumoca_core::Expression::FieldAccess { base, .. } => {
-            start_expr_is_nonnumeric_inner(base, env, visited)
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            flattened_field_access_name(base, field)
+                .is_some_and(|name| nonnumeric_name_matches(env, &name))
+                || start_expr_is_nonnumeric_inner(base, env, visited)
         }
         rumoca_core::Expression::Range {
             start, step, end, ..
@@ -1163,6 +1176,9 @@ fn start_expr_is_nonnumeric_inner(
             name, subscripts, ..
         } if subscripts.is_empty() => {
             let key = name.as_str();
+            if nonnumeric_name_matches(env, key) {
+                return true;
+            }
             if env.enum_literal_ordinals.contains_key(key) || !visited.insert(key.to_string()) {
                 return false;
             }
@@ -1172,6 +1188,18 @@ fn start_expr_is_nonnumeric_inner(
         }
         rumoca_core::Expression::VarRef { .. } | rumoca_core::Expression::Empty { .. } => false,
     }
+}
+
+fn nonnumeric_name_matches(env: &VarEnv<f64>, name: &str) -> bool {
+    env.nonnumeric_names.contains(name)
+        || env
+            .nonnumeric_names
+            .iter()
+            .any(|candidate| name.ends_with(&format!(".{candidate}")))
+}
+
+fn string_valued_function_call_name(name: &rumoca_core::VarName) -> bool {
+    matches!(name.last_segment(), "String" | "getInstanceName")
 }
 
 pub fn can_broadcast_start_value(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {

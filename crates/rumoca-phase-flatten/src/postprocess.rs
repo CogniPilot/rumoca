@@ -867,7 +867,7 @@ pub(super) fn substitute_known_constants_in_flat(
     }
     substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;
     substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals)?;
-    substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals)?;
+    substitute_variable_annotations(flat, ctx, &live_vars, &no_locals)?;
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars)?;
     crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
     Ok(())
@@ -930,20 +930,38 @@ fn substitute_algorithms(
 }
 
 fn substitute_variable_annotations(
-    variables: &mut flat::VarNameIndexMap<flat::Variable>,
+    flat: &mut flat::Model,
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> Result<(), FlattenError> {
-    for var in variables.values_mut() {
+    for (name, var) in &mut flat.variables {
         let scope = parent_component_scope(var.name.as_str());
         substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope)?;
         substitute_opt_expr(&mut var.start, ctx, live_vars, locals, &scope)?;
         substitute_opt_expr(&mut var.min, ctx, live_vars, locals, &scope)?;
         substitute_opt_expr(&mut var.max, ctx, live_vars, locals, &scope)?;
         substitute_opt_expr(&mut var.nominal, ctx, live_vars, locals, &scope)?;
+        if variable_is_string_type(var, flat.variable_type_names.get(name)) {
+            recover_string_literal_opt_expr(&mut var.binding, &scope);
+            recover_string_literal_opt_expr(&mut var.start, &scope);
+        }
     }
     Ok(())
+}
+
+fn variable_is_string_type(var: &flat::Variable, type_name: Option<&String>) -> bool {
+    var.type_id == rumoca_core::TypeId(3)
+        || type_name.is_some_and(|name| rumoca_core::qualified_type_name_matches(name, "String"))
+}
+
+fn recover_string_literal_opt_expr(expr: &mut Option<rumoca_core::Expression>, scope: &str) {
+    let Some(recovered) = expr.as_ref().and_then(|expr| {
+        crate::variables::recover_string_literal_from_invalid_component_expr(expr, scope)
+    }) else {
+        return;
+    };
+    *expr = Some(recovered);
 }
 
 fn substitute_function_bodies(
@@ -1455,6 +1473,12 @@ fn scalar_parameter_literal(
             span,
         });
     }
+    if let Some(v) = ctx.string_parameter_values.get(key) {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(v.clone()),
+            span,
+        });
+    }
     ctx.enum_parameter_values
         .get(key)
         .map(|v| rumoca_core::Expression::VarRef {
@@ -1706,11 +1730,13 @@ fn constant_key_or_prefix_exists(name: &str, ctx: &Context) -> bool {
         || ctx.real_parameter_values.contains_key(name)
         || ctx.parameter_values.contains_key(name)
         || ctx.boolean_parameter_values.contains_key(name)
+        || ctx.string_parameter_values.contains_key(name)
         || ctx.enum_parameter_values.contains_key(name)
         || map_has_key_prefix(&ctx.constant_values, name)
         || map_has_key_prefix(&ctx.real_parameter_values, name)
         || map_has_key_prefix(&ctx.parameter_values, name)
         || map_has_key_prefix(&ctx.boolean_parameter_values, name)
+        || map_has_key_prefix(&ctx.string_parameter_values, name)
         || map_has_key_prefix(&ctx.enum_parameter_values, name)
 }
 
@@ -1810,6 +1836,12 @@ fn resolve_constant_field_access(
         if let Some(value) = ctx.boolean_parameter_values.get(&key) {
             return Some(rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(*value),
+                span,
+            });
+        }
+        if let Some(value) = ctx.string_parameter_values.get(&key) {
+            return Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(value.clone()),
                 span,
             });
         }

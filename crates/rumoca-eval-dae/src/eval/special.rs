@@ -264,6 +264,12 @@ fn bind_user_function_inputs<T: SimFloat>(
             if bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env)? {
                 continue;
             }
+            if super::eval_expr_impl::function_param_is_string(param) {
+                super::eval_expr_impl::bind_string_function_input_shape_for_validation(
+                    local_env, param, arg_expr, caller_env,
+                )?;
+                continue;
+            }
             if copy_record_constructor_input_fields(local_env, param, arg_expr, caller_env)? {
                 continue;
             }
@@ -284,6 +290,15 @@ fn bind_user_function_inputs<T: SimFloat>(
             });
         };
         if bind_function_input_alias(local_env, function_name, param, default_expr, caller_env)? {
+            continue;
+        }
+        if super::eval_expr_impl::function_param_is_string(param) {
+            super::eval_expr_impl::bind_string_function_input_shape_for_validation(
+                local_env,
+                param,
+                default_expr,
+                caller_env,
+            )?;
             continue;
         }
         let val = eval_expr::<T>(default_expr, local_env)?;

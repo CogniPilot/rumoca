@@ -608,6 +608,13 @@ pub struct DaeMetadata {
     /// tick is the source variable's `start` attribute.
     #[serde(default)]
     pub variable_starts: IndexMap<String, Expression>,
+    /// Source variables whose declared type is not numeric (currently String).
+    ///
+    /// Runtime numeric env construction uses this to keep metadata-only
+    /// bindings out of the numeric parameter tail while still preserving their
+    /// shape/start metadata for expressions such as `size(substanceNames, 1)`.
+    #[serde(default)]
+    pub nonnumeric_variable_names: Vec<String>,
     /// Discrete-valued variables whose source causality is input.
     ///
     /// These are carried in `m` when event/discrete lowering needs them in the

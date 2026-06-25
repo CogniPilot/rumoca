@@ -306,4 +306,18 @@ mod tests {
 
         assert_eq!(value, Ok(4.0));
     }
+
+    #[test]
+    fn eval_builtin_size_preserves_singleton_array_constructor_rank() {
+        let env = VarEnv::<f64>::new();
+        let singleton_array = rumoca_core::Expression::Array {
+            elements: vec![int_literal(7)],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let value = eval_builtin_size(&[singleton_array, int_literal(1)], &env);
+
+        assert_eq!(value, Ok(1.0));
+    }
 }

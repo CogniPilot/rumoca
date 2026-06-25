@@ -34,6 +34,7 @@ impl Context {
             parameter_values: rustc_hash::FxHashMap::default(),
             real_parameter_values: rustc_hash::FxHashMap::default(),
             boolean_parameter_values: rustc_hash::FxHashMap::default(),
+            string_parameter_values: rustc_hash::FxHashMap::default(),
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
             target_def_names: rustc_hash::FxHashMap::default(),
@@ -474,6 +475,14 @@ impl Context {
                 && let Some(val) = self.boolean_parameter_values.get(&resolved).copied()
             {
                 self.boolean_parameter_values
+                    .insert((*name).to_string(), val);
+                progress = true;
+            }
+
+            if !self.string_parameter_values.contains_key(*name)
+                && let Some(val) = self.string_parameter_values.get(&resolved).cloned()
+            {
+                self.string_parameter_values
                     .insert((*name).to_string(), val);
                 progress = true;
             }

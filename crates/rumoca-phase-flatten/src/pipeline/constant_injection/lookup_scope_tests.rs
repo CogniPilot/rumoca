@@ -63,6 +63,14 @@ fn real_expr(value: &str) -> ast::Expression {
     }
 }
 
+fn string_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: rumoca_ir_ast::TerminalType::String,
+        token: token(&format!("\"{value}\"")),
+        span: test_span(),
+    }
+}
+
 fn comp_ref(path: &str) -> ComponentReference {
     ComponentReference {
         local: false,
@@ -317,6 +325,39 @@ fn const_flat_expr_preserves_array_parameter_refs() {
     let expr = ast::Expression::ComponentReference(comp_ref("c0"));
 
     assert_eq!(try_eval_const_flat_expr_with_scope(&expr, &ctx, ""), None);
+}
+
+#[test]
+fn const_flat_expr_preserves_path_like_string_parameter_value() {
+    let mut ctx = Context::new();
+    ctx.string_parameter_values.insert(
+        "zone.spawnExe".to_string(),
+        "spawn-0.4.3-7048a72798".to_string(),
+    );
+    let expr = ast::Expression::ComponentReference(comp_ref("spawnExe"));
+
+    assert_eq!(
+        try_eval_const_flat_expr_with_scope(&expr, &ctx, "zone"),
+        Some(rumoca_core::Expression::Literal {
+            value: Literal::String("spawn-0.4.3-7048a72798".to_string()),
+            span: test_span(),
+        })
+    );
+}
+
+#[test]
+fn const_flat_expr_lowers_string_literal_without_enum_path_reinterpretation() {
+    assert_eq!(
+        try_eval_const_flat_expr_with_scope(
+            &string_expr("spawn-0.4.3-7048a72798"),
+            &Context::new(),
+            ""
+        ),
+        Some(rumoca_core::Expression::Literal {
+            value: Literal::String("spawn-0.4.3-7048a72798".to_string()),
+            span: test_span(),
+        })
+    );
 }
 
 #[test]

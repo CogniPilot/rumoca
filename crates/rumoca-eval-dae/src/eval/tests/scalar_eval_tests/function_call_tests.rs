@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn test_eval_user_function_binds_string_array_input_shape_for_size() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+    let mut f = rumoca_core::Function::new("Pkg.nSubstances", rumoca_core::Span::DUMMY);
+    f.add_input(
+        rumoca_core::FunctionParam::new(
+            "substanceNames",
+            "String",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![0]),
+    );
+    f.add_output(
+        rumoca_core::FunctionParam::new(
+            "n",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_default(builtin(
+            rumoca_core::BuiltinFunction::Size,
+            vec![var("substanceNames"), int_lit(1)],
+        )),
+    );
+    f.body = vec![rumoca_core::Statement::Empty {
+        span: rumoca_core::Span::DUMMY,
+    }];
+    funcs.insert("Pkg.nSubstances".to_string(), f);
+    env.functions = Arc::new(funcs);
+
+    let names = arr(
+        vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("N2".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("O2".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("H2O".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("CO2".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+        false,
+    );
+
+    let expr = fn_call("Pkg.nSubstances", vec![names]);
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), Ok(4.0));
+}
+
+#[test]
 fn test_eval_user_function_binds_record_input_fields_from_varref_argument() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();

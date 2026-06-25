@@ -190,6 +190,7 @@ pub(super) fn context_constant_footprint(ctx: &Context) -> usize {
     ctx.parameter_values.len()
         + ctx.real_parameter_values.len()
         + ctx.boolean_parameter_values.len()
+        + ctx.string_parameter_values.len()
         + ctx.enum_parameter_values.len()
         + ctx.constant_values.len()
         + ctx.array_dimensions.len()
@@ -1495,6 +1496,21 @@ pub(super) fn extract_single_constant_with_prefix_and_function_scope(
             val,
         );
     }
+    if type_name == "String"
+        && let Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(val),
+            ..
+        }) = try_eval_const_flat_expr_with_scope(expr, ctx, prefix)
+        && (!preserve_existing || !ctx.string_parameter_values.contains_key(full_name))
+    {
+        insert_with_prefix(
+            &mut ctx.string_parameter_values,
+            prefix,
+            name,
+            full_name,
+            val,
+        );
+    }
     // Real constants (and constants of aliased Real-derived units).
     if let Some(val) = try_eval_const_real_with_scope(expr, ctx, prefix)
         && val.is_finite()
@@ -1587,6 +1603,13 @@ pub(super) fn materialize_record_constant_alias_fields(
     );
     propagate_alias_fields_in_map(
         &mut ctx.boolean_parameter_values,
+        prefix,
+        target_name,
+        full_name,
+        alias_name,
+    );
+    propagate_alias_fields_in_map(
+        &mut ctx.string_parameter_values,
         prefix,
         target_name,
         full_name,
