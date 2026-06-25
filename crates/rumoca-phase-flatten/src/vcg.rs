@@ -582,13 +582,16 @@ pub(crate) fn build_vcg(
     for component in &components {
         let root = select_root(component, definite_roots, potential_roots);
         let has_definite_root = component.iter().any(|n| definite_roots.contains(*n));
+        let has_potential_root = component
+            .iter()
+            .any(|node| potential_roots.iter().any(|(path, _)| path == node));
 
         for &node in component {
             let node_is_root =
                 definite_roots.contains(node) || (!has_definite_root && node == root);
             is_root_map.insert(node.to_string(), node_is_root);
             // rooted(N) = true iff N is NOT the root and the component has a root
-            let node_rooted = !node_is_root && (has_definite_root || !potential_roots.is_empty());
+            let node_rooted = !node_is_root && (has_definite_root || has_potential_root);
             rooted_map.insert(node.to_string(), node_rooted);
         }
     }
@@ -1059,6 +1062,47 @@ mod tests {
         assert_eq!(vcg.is_root.get("a.R"), Some(&true));
         assert_eq!(vcg.is_root.get("c.R"), Some(&true));
         assert_eq!(vcg.rooted.get("b.R"), Some(&true));
+    }
+
+    #[test]
+    fn test_build_vcg_rooted_is_component_local() {
+        let branches = Vec::new();
+        let optional_edges = vec![("a.R".to_string(), "b.R".to_string())];
+        let definite_roots: FxHashSet<String> = FxHashSet::default();
+        let potential_roots = vec![("other.R".to_string(), 1)];
+
+        let vcg = build_vcg(
+            &definite_roots,
+            &potential_roots,
+            &branches,
+            &optional_edges,
+        );
+
+        assert_eq!(vcg.rooted.get("a.R"), Some(&false));
+        assert_eq!(vcg.rooted.get("b.R"), Some(&false));
+        assert_eq!(vcg.is_root.get("other.R"), Some(&true));
+    }
+
+    #[test]
+    fn test_build_vcg_selects_lowest_priority_potential_root() {
+        let branches = Vec::new();
+        let optional_edges = vec![
+            ("high.R".to_string(), "mid.R".to_string()),
+            ("mid.R".to_string(), "low.R".to_string()),
+        ];
+        let definite_roots: FxHashSet<String> = FxHashSet::default();
+        let potential_roots = vec![("high.R".to_string(), 256), ("low.R".to_string(), 10)];
+
+        let vcg = build_vcg(
+            &definite_roots,
+            &potential_roots,
+            &branches,
+            &optional_edges,
+        );
+
+        assert_eq!(vcg.is_root.get("low.R"), Some(&true));
+        assert_eq!(vcg.rooted.get("high.R"), Some(&true));
+        assert_eq!(vcg.rooted.get("mid.R"), Some(&true));
     }
 
     #[test]
