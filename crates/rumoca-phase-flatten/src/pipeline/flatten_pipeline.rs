@@ -1037,13 +1037,40 @@ fn materialize_referenced_expandable_connector_members(
         .classes
         .values()
         .flat_map(|class_data| &class_data.connections)
-        .flat_map(|connection| [connection.a.to_flat_string(), connection.b.to_flat_string()]);
+        .flat_map(|connection| [connection.a.to_flat_string(), connection.b.to_flat_string()])
+        .chain(direct_equation_endpoint_varrefs(flat));
     materialize_referenced_expandable_connector_members_for_prefixes(
         flat,
         &prefixes,
         referenced_names,
     );
     Ok(())
+}
+
+fn direct_equation_endpoint_varrefs(flat: &flat::Model) -> Vec<String> {
+    flat.equations
+        .iter()
+        .flat_map(|equation| match &equation.residual {
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs,
+                rhs,
+                ..
+            } => [direct_varref_name(lhs), direct_varref_name(rhs)],
+            _ => [None, None],
+        })
+        .flatten()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn direct_varref_name(expr: &rumoca_core::Expression) -> Option<&str> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(name.as_str()),
+        _ => None,
+    }
 }
 
 fn materialize_referenced_expandable_connector_members_for_prefixes(
@@ -1158,6 +1185,44 @@ mod expandable_connector_member_tests {
             !flat
                 .variables
                 .contains_key(&rumoca_core::VarName::new("weaBus.TDryBul"))
+        );
+    }
+
+    #[test]
+    fn materializes_direct_equation_expandable_member_refs() {
+        let mut flat = flat::Model::new();
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var_ref("weaBus.TWetBul")),
+                rhs: Box::new(var_ref("building.weaBus.TWetBul")),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        let referenced_names = direct_equation_endpoint_varrefs(&flat);
+        materialize_referenced_expandable_connector_members_for_prefixes(
+            &mut flat,
+            &[
+                ("weaBus".to_string(), rumoca_core::Span::DUMMY),
+                ("building.weaBus".to_string(), rumoca_core::Span::DUMMY),
+            ],
+            referenced_names,
+        );
+
+        assert!(
+            flat.variables
+                .get(&rumoca_core::VarName::new("weaBus.TWetBul"))
+                .is_some_and(|var| var.from_expandable_connector)
+        );
+        assert!(
+            flat.variables
+                .get(&rumoca_core::VarName::new("building.weaBus.TWetBul"))
+                .is_some_and(|var| var.from_expandable_connector)
         );
     }
 }
