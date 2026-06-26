@@ -757,6 +757,46 @@ end ForRangeStep;
     }
 
     #[test]
+    fn t4_05b_for_range_uses_derived_enum_parameter_bound() {
+        let source = r#"
+type AnalogFilter = enumeration(CriticalDamping, Bessel);
+
+block DerivedEnumRangeFilter
+    parameter AnalogFilter analogFilter = AnalogFilter.CriticalDamping;
+    parameter Integer order = 2;
+    parameter Integer na = if analogFilter == AnalogFilter.CriticalDamping then 0 else integer(order / 2);
+    parameter Integer nr = if analogFilter == AnalogFilter.CriticalDamping then order else mod(order, 2);
+    Real x[order];
+    Real uu[na + nr + 1];
+    input Real u;
+    output Real y;
+equation
+    uu[1] = u;
+    for i in 1:nr loop
+        der(x[i]) = x[i] - uu[i];
+    end for;
+    for i in 1:nr loop
+        uu[i + 1] = x[i];
+    end for;
+    y = uu[nr + na + 1];
+end DerivedEnumRangeFilter;
+
+model DerivedEnumRangeBound
+    parameter Integer order = 3;
+    DerivedEnumRangeFilter filter(order = order);
+equation
+    filter.u = 1;
+end DerivedEnumRangeBound;
+"#;
+        let r = assert_compiles(source, "DerivedEnumRangeBound");
+        assert_eq!(
+            r.f_x_count, 9,
+            "outer-parameter-modified derived enum parameter nr=3 should expand both for-equations through i=3"
+        );
+        assert_eq!(r.balance, 0);
+    }
+
+    #[test]
     fn t4_06_nested_for_equation() {
         let source = r#"
 model NestedFor

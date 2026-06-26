@@ -387,6 +387,63 @@ mod tests {
     }
 
     #[test]
+    fn test_modified_integer_binding_updates_dependent_enum_if_parameter() {
+        let mut ctx = Context::new();
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+
+        for (name, binding, binding_from_modification) in [
+            ("order", int_lit(3), false),
+            ("filter.order", var_ref("order"), true),
+            (
+                "filter.analogFilter",
+                var_ref("AnalogFilter.CriticalDamping"),
+                false,
+            ),
+            (
+                "filter.nr",
+                Expression::If {
+                    branches: vec![(
+                        Expression::Binary {
+                            op: rumoca_core::OpBinary::Eq,
+                            lhs: Box::new(var_ref("filter.analogFilter")),
+                            rhs: Box::new(var_ref("AnalogFilter.CriticalDamping")),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        var_ref("filter.order"),
+                    )],
+                    else_branch: Box::new(Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Mod,
+                        args: vec![var_ref("filter.order"), int_lit(2)],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                false,
+            ),
+        ] {
+            let var_name = rumoca_core::VarName::new(name);
+            flat.add_variable(
+                var_name.clone(),
+                flat::Variable {
+                    name: var_name,
+                    variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                    binding: Some(binding),
+                    binding_from_modification,
+                    is_discrete_type: true,
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        assert_eq!(ctx.get_integer_param("filter.order"), Some(3));
+        assert_eq!(ctx.get_integer_param("filter.nr"), Some(3));
+    }
+
+    #[test]
     fn test_eval_integer_params_reconciles_conflicting_integral_real_value() {
         let mut ctx = Context::new();
         ctx.parameter_values

@@ -798,9 +798,41 @@ impl Context {
         if !binding_from_modification {
             return None;
         }
+        if let Some(value) = self.lookup_modifier_binding_target_integer(binding) {
+            return Some(value);
+        }
         let target = unqualified_varref_name(binding)?;
         let source_scope = modifier_source_scope(name)?;
         rumoca_core::EvalLookup::lookup_integer(self, target, source_scope.as_str())
+    }
+
+    fn lookup_modifier_binding_target_integer(&self, binding: &Expression) -> Option<i64> {
+        let Expression::VarRef {
+            name, subscripts, ..
+        } = binding
+        else {
+            return None;
+        };
+        if !subscripts.is_empty() {
+            return None;
+        }
+        let target_def_id = name.target_def_id()?;
+        let target_name = self.target_def_names.get(&target_def_id)?;
+        self.lookup_integer_by_declared_target_name(target_name)
+    }
+
+    fn lookup_integer_by_declared_target_name(&self, target_name: &str) -> Option<i64> {
+        if let Some(value) = self.get_integer_param(target_name) {
+            return Some(value);
+        }
+        if let Some(root) = self.simulated_root_name.as_deref()
+            && let Some(stripped) = target_name.strip_prefix(root)
+            && let Some(local_name) = stripped.strip_prefix('.')
+            && let Some(value) = self.get_integer_param(local_name)
+        {
+            return Some(value);
+        }
+        None
     }
 
     /// Try to evaluate boolean parameters in one pass.
