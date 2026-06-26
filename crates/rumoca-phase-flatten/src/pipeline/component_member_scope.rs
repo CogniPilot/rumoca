@@ -36,6 +36,88 @@ impl ComponentMemberScopes {
             .get(&scope.to_component_path())
             .is_some_and(|members| members.contains(name))
     }
+
+    pub(crate) fn scoped_component_imports(
+        &self,
+        expr: &ast::Expression,
+        scope: &QualifiedName,
+        imports: &qualify::ImportMap,
+    ) -> qualify::ImportMap {
+        let mut scoped_imports = imports.clone();
+        let mut roots = indexmap::IndexSet::new();
+        collect_expression_component_roots(expr, &mut roots);
+        for root in roots {
+            if scoped_imports.contains_key(root.as_str()) || self.has_member(scope, &root) {
+                continue;
+            }
+            if let Some(parent_scope) = self.nearest_parent_scope_with_member(scope, &root) {
+                let target = if parent_scope.parts.is_empty() {
+                    root.clone()
+                } else {
+                    format!("{}.{}", parent_scope.to_flat_string(), root)
+                };
+                scoped_imports.insert(root, target);
+            }
+        }
+        scoped_imports
+    }
+
+    fn nearest_parent_scope_with_member(
+        &self,
+        scope: &QualifiedName,
+        root: &str,
+    ) -> Option<QualifiedName> {
+        let mut candidate = parent_scope(scope);
+        loop {
+            if self.has_member(&candidate, root) {
+                return Some(candidate);
+            }
+            if candidate.parts.is_empty() {
+                return None;
+            }
+            candidate = parent_scope(&candidate);
+        }
+    }
+}
+
+fn parent_scope(scope: &QualifiedName) -> QualifiedName {
+    if scope.parts.len() <= 1 {
+        QualifiedName::new()
+    } else {
+        QualifiedName {
+            parts: scope.parts[..scope.parts.len() - 1].to_vec(),
+        }
+    }
+}
+
+fn collect_expression_component_roots(
+    expr: &ast::Expression,
+    roots: &mut indexmap::IndexSet<String>,
+) {
+    use rumoca_ir_ast::visitor::Visitor;
+    use std::ops::ControlFlow;
+
+    struct RootCollector<'a> {
+        roots: &'a mut indexmap::IndexSet<String>,
+    }
+
+    impl Visitor for RootCollector<'_> {
+        fn visit_component_reference_ctx(
+            &mut self,
+            cr: &ast::ComponentReference,
+            component_ctx: ast::ComponentReferenceContext,
+        ) -> ControlFlow<()> {
+            if matches!(component_ctx, ast::ComponentReferenceContext::Expression)
+                && let Some(first) = cr.parts.first()
+            {
+                self.roots.insert(first.ident.text.to_string());
+            }
+            ast::walk_component_reference_default(self, cr)
+        }
+    }
+
+    let mut collector = RootCollector { roots };
+    let _ = collector.visit_expression(expr);
 }
 
 impl Context {
@@ -64,15 +146,13 @@ pub(super) fn imports_without_instance_member_aliases(
 ) -> qualify::ImportMap {
     let mut shadowed = indexmap::IndexSet::new();
     collect_instance_member_shadowed_import_aliases(expr, prefix, imports, ctx, &mut shadowed);
-    if shadowed.is_empty() {
-        return imports.clone();
-    }
-
-    imports
+    let unshadowed = imports
         .iter()
         .filter(|(alias, _)| !shadowed.contains(alias.as_str()))
         .map(|(alias, target)| (alias.clone(), target.clone()))
-        .collect()
+        .collect();
+    ctx.component_members
+        .scoped_component_imports(expr, prefix, &unshadowed)
 }
 
 fn collect_instance_member_shadowed_import_aliases(

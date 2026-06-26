@@ -1347,6 +1347,38 @@ fn reference_component_ref_is_instance_path(
     canonical_instance_reference_name(reference, ctx).is_some()
 }
 
+fn active_scope_relative_instance_reference_name(
+    reference: &rumoca_core::Reference,
+    ctx: &FunctionOverrideRewriteContext<'_>,
+) -> Option<rumoca_core::Reference> {
+    let component_members = ctx.component_members?;
+    let component_ref = reference.component_ref()?;
+    if component_ref.local || ctx.active_scope.is_root() {
+        return None;
+    }
+    let relative_path = ComponentPath::from_component_reference(component_ref);
+    let relative_name = relative_path.to_flat_string();
+    if relative_name != reference.as_str() {
+        return None;
+    }
+    let scoped_path = ctx.active_scope.join(&relative_path);
+    if !component_members.contains_component_path(&scoped_path) {
+        return None;
+    }
+    let scoped_name = scoped_path.to_flat_string();
+    if ctx
+        .class_index
+        .get_by_qualified_name(&scoped_name)
+        .is_some()
+    {
+        return None;
+    }
+    Some(rumoca_core::Reference::with_component_reference(
+        scoped_name,
+        component_ref.clone(),
+    ))
+}
+
 fn canonical_instance_reference_name(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
@@ -1846,6 +1878,15 @@ impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
             if reference_targets_function_local_def(name, self.ctx) {
                 return Expression::VarRef {
                     name: name.clone(),
+                    subscripts: rewritten_subscripts,
+                    span: *span,
+                };
+            }
+            if let Some(canonical_name) =
+                active_scope_relative_instance_reference_name(name, self.ctx)
+            {
+                return Expression::VarRef {
+                    name: canonical_name,
                     subscripts: rewritten_subscripts,
                     span: *span,
                 };

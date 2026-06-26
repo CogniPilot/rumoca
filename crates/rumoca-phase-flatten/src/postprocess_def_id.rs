@@ -151,6 +151,13 @@ impl DefIdVarRefIndex {
         known_variables: &HashSet<String>,
     ) -> Option<String> {
         let raw = name.as_str();
+        if let Some(component_ref) = name.component_ref() {
+            let structured = rumoca_core::ComponentPath::from_component_reference(component_ref)
+                .to_flat_string();
+            if known_variables.contains(structured.as_str()) {
+                return (structured.as_str() != raw).then_some(structured);
+            }
+        }
         if known_variables.contains(raw) {
             return None;
         }
@@ -163,7 +170,18 @@ impl DefIdVarRefIndex {
             } else {
                 OwnerScopeMode::DescendantOnly
             };
-            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner, mode);
+            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner, mode)
+                .or_else(|| {
+                    (!is_class_qualified_reference(name)).then(|| {
+                        resolve_best_owner_scoped_candidate(
+                            name,
+                            raw_leaf,
+                            candidates,
+                            owner,
+                            OwnerScopeMode::EnclosingOnly,
+                        )
+                    })?
+                });
         }
         if name.target_def_id().is_some() {
             return None;
@@ -254,6 +272,7 @@ fn resolve_best_owner_scoped_candidate(
 #[derive(Clone, Copy)]
 enum OwnerScopeMode {
     DescendantOnly,
+    EnclosingOnly,
     DescendantOrEnclosing,
 }
 
@@ -276,15 +295,22 @@ fn owner_scope_score(
     mode: OwnerScopeMode,
 ) -> Option<usize> {
     let candidate_scope = candidate_path.prefix(candidate_path.len().saturating_sub(1))?;
-    if candidate_scope.starts_with(owner_path) {
+    if matches!(
+        mode,
+        OwnerScopeMode::DescendantOnly | OwnerScopeMode::DescendantOrEnclosing
+    ) && candidate_scope.starts_with(owner_path)
+    {
         return Some(owner_path.len());
     }
-    match mode {
-        OwnerScopeMode::DescendantOnly => None,
-        OwnerScopeMode::DescendantOrEnclosing => owner_path
+    if matches!(
+        mode,
+        OwnerScopeMode::EnclosingOnly | OwnerScopeMode::DescendantOrEnclosing
+    ) {
+        return owner_path
             .starts_with(&candidate_scope)
-            .then_some(candidate_scope.len()),
+            .then_some(candidate_scope.len());
     }
+    None
 }
 
 fn is_class_qualified_reference(name: &rumoca_core::Reference) -> bool {

@@ -1418,6 +1418,117 @@ fn test_discrete_input_alias_chain_to_local_output_counts_as_local_unknown() {
 }
 
 #[test]
+fn test_discrete_input_metadata_records_only_untargeted_dae_inputs() {
+    let mut flat = Model::new();
+    for name in ["untargeted.u", "targeted.u", "untargeted.y", "targeted.y"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                connected: true,
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            },
+        );
+    }
+    flat.add_variable(
+        VarName::new("unconnected.u"),
+        flat::Variable {
+            name: VarName::new("unconnected.u"),
+            connected: false,
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+
+    let mut dae = rumoca_ir_dae::Dae::default();
+    dae.variables.discrete_valued.insert(
+        VarName::new("untargeted.u"),
+        dae_discrete_port_var("untargeted.u", rumoca_ir_dae::VariableCausality::Input),
+    );
+    dae.variables.discrete_valued.insert(
+        VarName::new("targeted.u"),
+        dae_discrete_port_var("targeted.u", rumoca_ir_dae::VariableCausality::Input),
+    );
+    dae.variables.discrete_valued.insert(
+        VarName::new("untargeted.y"),
+        dae_discrete_port_var("untargeted.y", rumoca_ir_dae::VariableCausality::Output),
+    );
+    dae.variables.discrete_valued.insert(
+        VarName::new("targeted.y"),
+        dae_discrete_port_var("targeted.y", rumoca_ir_dae::VariableCausality::Output),
+    );
+    dae.variables.discrete_valued.insert(
+        VarName::new("unconnected.u"),
+        dae_discrete_port_var("unconnected.u", rumoca_ir_dae::VariableCausality::Input),
+    );
+    dae.variables.discrete_reals.insert(
+        VarName::new("real_port.u"),
+        dae_discrete_port_var("real_port.u", rumoca_ir_dae::VariableCausality::Input),
+    );
+    flat.add_variable(
+        VarName::new("real_port.u"),
+        flat::Variable {
+            name: VarName::new("real_port.u"),
+            connected: true,
+            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+    dae.discrete
+        .valued_updates
+        .push(test_discrete_assignment("targeted.u"));
+    dae.discrete
+        .valued_updates
+        .push(test_discrete_assignment("targeted.y"));
+
+    crate::refresh_external_discrete_input_metadata(&mut dae, &flat);
+
+    assert_eq!(
+        dae.metadata.discrete_input_names,
+        vec!["untargeted.u".to_string(), "untargeted.y".to_string()],
+        "only connected discrete-valued input/output variables without a DAE update target are external"
+    );
+}
+
+fn dae_discrete_port_var(
+    name: &str,
+    causality: rumoca_ir_dae::VariableCausality,
+) -> rumoca_ir_dae::Variable {
+    rumoca_ir_dae::Variable {
+        name: VarName::new(name),
+        causality,
+        ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(file!()),
+            1,
+            2,
+        ))
+    }
+}
+
+fn test_discrete_assignment(lhs_name: &str) -> rumoca_ir_dae::Equation {
+    rumoca_ir_dae::Equation {
+        lhs: Some(VarName::new(lhs_name).into()),
+        rhs: Expression::Literal {
+            value: Literal::Boolean(true),
+            span: crate::test_support::test_span(),
+        },
+        span: crate::test_support::test_span(),
+        origin: "test discrete assignment".to_string(),
+        scalar_count: 1,
+    }
+}
+
+#[test]
 fn test_connected_real_input_propagates_discrete_partition_from_peer() {
     let mut flat = Model::new();
     flat.add_variable(

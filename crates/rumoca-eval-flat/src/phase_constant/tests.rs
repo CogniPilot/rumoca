@@ -243,6 +243,96 @@ fn infer_user_function_output_dims_from_shape_expr() {
 }
 
 #[test]
+fn infer_user_function_output_dims_from_indexed_integer_args() {
+    let mut functions = FxHashMap::default();
+    let mut function = rumoca_core::Function::new("Pkg.read_matrix", test_span());
+    function.add_input(rumoca_core::FunctionParam::new(
+        "nrow",
+        "Integer",
+        test_span(),
+    ));
+    function.add_input(rumoca_core::FunctionParam::new(
+        "ncol",
+        "Integer",
+        test_span(),
+    ));
+    function.add_output(
+        rumoca_core::FunctionParam::new("matrix", "Real", test_span())
+            .with_dims(vec![0, 0])
+            .with_shape_expr(vec![
+                rumoca_core::Subscript::expr(Box::new(var("nrow")), rumoca_core::Span::DUMMY),
+                rumoca_core::Subscript::expr(Box::new(var("ncol")), rumoca_core::Span::DUMMY),
+            ]),
+    );
+    functions.insert("Pkg.read_matrix".to_string(), function);
+
+    let mut known_ints = FxHashMap::default();
+    known_ints.insert("model.dim[1]".to_string(), 3);
+    known_ints.insert("model.dim[2]".to_string(), 2);
+    let known_reals = FxHashMap::default();
+    let known_bools = FxHashMap::default();
+    let known_enums = FxHashMap::default();
+    let array_dims = FxHashMap::default();
+    let expr = function_call(
+        "Pkg.read_matrix",
+        vec![indexed_var("dim", 1), indexed_var("dim", 2)],
+    );
+
+    assert_eq!(
+        infer_array_dimensions_full_with_functions(
+            &expr,
+            &ParamEvalContext::new(
+                &known_ints,
+                &known_reals,
+                &known_bools,
+                &known_enums,
+                &array_dims,
+                &functions,
+                Some("model.A"),
+            ),
+        ),
+        Some(vec![3, 2])
+    );
+}
+
+#[test]
+fn infer_read_real_matrix_dims_from_dimension_arguments() {
+    let mut known_ints = FxHashMap::default();
+    known_ints.insert("dim[1]".to_string(), 3);
+    known_ints.insert("dim[2]".to_string(), 2);
+    let known_reals = FxHashMap::default();
+    let known_bools = FxHashMap::default();
+    let known_enums = FxHashMap::default();
+    let array_dims = FxHashMap::default();
+    let functions = FxHashMap::default();
+    let expr = function_call(
+        "Modelica.Utilities.Streams.readRealMatrix",
+        vec![
+            var("file"),
+            var("matrixName"),
+            index_expr(var("dim"), 1),
+            index_expr(var("dim"), 2),
+        ],
+    );
+
+    assert_eq!(
+        infer_array_dimensions_full_with_functions(
+            &expr,
+            &ParamEvalContext::new(
+                &known_ints,
+                &known_reals,
+                &known_bools,
+                &known_enums,
+                &array_dims,
+                &functions,
+                Some("A"),
+            ),
+        ),
+        Some(vec![3, 2])
+    );
+}
+
+#[test]
 fn infer_scalar_user_function_broadcasts_array_argument_dims() {
     let mut functions = FxHashMap::default();
     let mut function = rumoca_core::Function::new("Cv.from_deg", test_span());

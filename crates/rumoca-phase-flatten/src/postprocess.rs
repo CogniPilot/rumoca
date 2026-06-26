@@ -489,10 +489,6 @@ fn should_replace_dims(current: &[i64], recovered: &[i64]) -> bool {
         return false;
     }
     current.len() < recovered.len()
-        || current
-            .iter()
-            .zip(recovered.iter())
-            .any(|(current, recovered)| *recovered > *current)
 }
 
 fn collapse_index_when_equations(
@@ -1525,6 +1521,15 @@ fn substitute_scoped_scalar_var_ref(
     for (candidate, candidate_scope) in scoped_lookup_candidates_with_scope(key, scope) {
         if candidate == key {
             continue;
+        }
+        if live_vars.contains(&candidate)
+            || inline_index_base_is_live_or_local(&candidate, live_vars, locals)
+        {
+            return Ok(Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(candidate),
+                subscripts: vec![],
+                span,
+            }));
         }
         if let Some(v) = resolve_constant_value_expr(&candidate, ctx) {
             if reference_key_has_array_shape(&candidate, ctx, &candidate_scope)

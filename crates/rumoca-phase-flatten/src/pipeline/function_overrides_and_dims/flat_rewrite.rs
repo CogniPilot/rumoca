@@ -56,6 +56,7 @@ pub(crate) fn rewrite_function_overrides_in_statement_with_ctx(
     *stmt = FunctionOverrideExpressionRewriter { ctx }.rewrite_statement(stmt);
 }
 
+#[cfg(test)]
 pub(crate) fn rewrite_function_overrides_in_expression(
     expr: &mut Expression,
     tree: &ClassTree,
@@ -72,19 +73,23 @@ pub(crate) fn rewrite_function_overrides_in_expression(
     rewrite_function_overrides_in_expression_with_ctx(expr, &ctx);
 }
 
-pub(crate) fn rewrite_function_overrides_in_when_clause(
+pub(crate) fn rewrite_function_overrides_in_when_clause_scoped(
     clause: &mut rumoca_ir_flat::WhenClause,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    active_scope: &ComponentPath,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) {
     let ctx = FunctionOverrideRewriteContext::new(
         tree,
         class_index,
         override_packages,
         override_functions,
-    );
+    )
+    .with_active_scope(active_scope.clone())
+    .with_component_member_scope(component_members);
     rewrite_function_overrides_in_when_clause_with_ctx(clause, &ctx);
 }
 
@@ -128,49 +133,29 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    active_scope: &ComponentPath,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) {
+    let ctx = FunctionOverrideRewriteContext::new(
+        tree,
+        class_index,
+        override_packages,
+        override_functions,
+    )
+    .with_active_scope(active_scope.clone())
+    .with_component_member_scope(component_members);
     for equation in &mut flattened.equations {
-        rewrite_function_overrides_in_expression(
-            &mut equation.residual,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-        );
+        rewrite_function_overrides_in_expression_with_ctx(&mut equation.residual, &ctx);
     }
     for assert_eq in &mut flattened.assert_equations {
-        rewrite_function_overrides_in_expression(
-            &mut assert_eq.condition,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-        );
-        rewrite_function_overrides_in_expression(
-            &mut assert_eq.message,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-        );
+        rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.condition, &ctx);
+        rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.message, &ctx);
         if let Some(level_expr) = &mut assert_eq.level {
-            rewrite_function_overrides_in_expression(
-                level_expr,
-                tree,
-                class_index,
-                override_packages,
-                override_functions,
-            );
+            rewrite_function_overrides_in_expression_with_ctx(level_expr, &ctx);
         }
     }
     for clause in &mut flattened.when_clauses {
-        rewrite_function_overrides_in_when_clause(
-            clause,
-            tree,
-            class_index,
-            override_packages,
-            override_functions,
-        );
+        rewrite_function_overrides_in_when_clause_with_ctx(clause, &ctx);
     }
 }
 

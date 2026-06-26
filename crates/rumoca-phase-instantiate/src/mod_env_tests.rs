@@ -516,6 +516,33 @@ mod moved_inline_tests {
     }
 
     #[test]
+    fn test_declaration_binding_preserves_nested_sibling_component_reference_identity() {
+        let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
+        let mut joint_usp = ast::Component {
+            name: "jointUSP".to_string(),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        joint_usp
+            .modifications
+            .insert("e2_ia".to_string(), make_comp_ref_expr(&["rod1", "e2_ia"]));
+        effective_components.insert("jointUSP".to_string(), joint_usp);
+
+        let expr = make_comp_ref_expr(&["jointUSP", "e2_ia"]);
+        let resolved = resolve_declaration_binding_expr(
+            &expr,
+            &ast::ModificationEnvironment::default(),
+            &effective_components,
+            &ast::ClassTree::default(),
+        )
+        .expect("declaration binding resolution should succeed");
+
+        assert_eq!(
+            resolved, expr,
+            "declaration bindings must not inline a sibling field into a receiver-less relative reference"
+        );
+    }
+
+    #[test]
     fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
         let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
         let mut data = ast::Component {

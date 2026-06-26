@@ -149,6 +149,15 @@ pub fn try_eval_integer_with_context(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => resolve_varref_integer(name.as_str(), ctx),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => resolve_indexed_varref_integer(name.as_str(), subscripts, ctx),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base_name = flatten_field_access_path(base)?;
+            resolve_indexed_varref_integer(&base_name, subscripts, ctx)
+        }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
             let base_name = flatten_field_access_path(base)?;
             let field_name = format!("{base_name}.{field}");
@@ -200,6 +209,29 @@ pub fn try_eval_integer_with_context(
     }
 
     result
+}
+
+fn resolve_indexed_varref_integer(
+    name: &str,
+    subscripts: &[rumoca_core::Subscript],
+    ctx: &ParamEvalContext,
+) -> Option<i64> {
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let index = match subscript {
+            rumoca_core::Subscript::Index { value, .. } => *value,
+            rumoca_core::Subscript::Expr { expr, .. } => try_eval_integer_with_context(expr, ctx)?,
+            rumoca_core::Subscript::Colon { .. } => return None,
+        };
+        indices.push(index);
+    }
+
+    let index_text = indices
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    resolve_varref_integer(&format!("{name}[{index_text}]"), ctx)
 }
 
 fn flatten_field_access_path(expr: &rumoca_core::Expression) -> Option<String> {
@@ -1029,7 +1061,8 @@ fn infer_array_dimensions_with_context(
             infer_binary_dimensions_with_context(op, lhs, rhs, ctx)
         }
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
-            infer_user_function_call_dimensions(name, args, ctx)
+            infer_modelica_utility_function_dimensions(name, args, ctx)
+                .or_else(|| infer_user_function_call_dimensions(name, args, ctx))
         }
         rumoca_core::Expression::Index {
             base, subscripts, ..
@@ -1134,6 +1167,36 @@ fn infer_user_function_call_dimensions(
         .enumerate()
         .map(|(index, subscript)| eval_param_shape_subscript(output, index, subscript, &local_ctx))
         .collect()
+}
+
+fn infer_modelica_utility_function_dimensions(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    ctx: &ParamEvalContext<'_>,
+) -> Option<Vec<i64>> {
+    if name.last_segment() != "readRealMatrix" {
+        return None;
+    }
+    let nrow = args
+        .get(2)
+        .map(function_arg_value)
+        .or_else(|| named_integer_arg(args, "nrow"))?;
+    let ncol = args
+        .get(3)
+        .map(function_arg_value)
+        .or_else(|| named_integer_arg(args, "ncol"))?;
+    let nrow = try_eval_integer_with_context(nrow, ctx)?;
+    let ncol = try_eval_integer_with_context(ncol, ctx)?;
+    Some(vec![nrow, ncol])
+}
+
+fn named_integer_arg<'a>(
+    args: &'a [rumoca_core::Expression],
+    name: &str,
+) -> Option<&'a rumoca_core::Expression> {
+    args.iter()
+        .filter_map(named_call_arg)
+        .find_map(|(arg_name, value)| (arg_name == name).then_some(value))
 }
 
 fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {

@@ -648,15 +648,23 @@ fn expand_connection_rank_nodes(
     if scalar_count <= 1 {
         return Some(vec![name.clone()]);
     }
-    let variable = variables.get(name)?;
-    if variable.size() < scalar_count {
-        return None;
+    if let Some(variable) = variables.get(name) {
+        if variable.size() < scalar_count {
+            return None;
+        }
+        return Some(
+            (1..=scalar_count)
+                .map(|idx| rumoca_core::VarName::new(format!("{}[{idx}]", name.as_str())))
+                .collect(),
+        );
     }
-    Some(
-        (1..=scalar_count)
-            .map(|idx| rumoca_core::VarName::new(format!("{}[{idx}]", name.as_str())))
-            .collect(),
-    )
+    let indexed = (1..=scalar_count)
+        .map(|idx| rumoca_core::VarName::new(format!("{}[{idx}]", name.as_str())))
+        .collect::<Vec<_>>();
+    indexed
+        .iter()
+        .all(|candidate| variables.contains_key(candidate))
+        .then_some(indexed)
 }
 
 fn count_condition_memory_equation_scalars(dae_model: &dae::Dae) -> usize {
@@ -1466,6 +1474,24 @@ mod tests {
             .valued_updates
             .push(connection_assignment_with_rhs_ref("a", "b"));
         assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn test_balance_expands_scalarized_discrete_connection_targets() {
+        let mut dae = dae::Dae::default();
+        for name in ["a[1]", "a[2]", "b[1]", "b[2]"] {
+            dae.variables
+                .discrete_valued
+                .insert(rumoca_core::VarName::new(name), discrete_var(name));
+        }
+        dae.discrete
+            .valued_updates
+            .push(connection_assignment_with_count("a", "b", 2));
+
+        assert_eq!(
+            balance(&dae).expect("scalarized vector connection should expand to children"),
+            2
+        );
     }
 
     #[test]

@@ -418,6 +418,9 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "reference_metadata", || {
         attach_dae_reference_metadata(dae)
     })?;
+    run_todae_phase(todae_subphase_timing, "discrete_input_metadata", || {
+        refresh_external_discrete_input_metadata(dae, flat);
+    });
     run_todae_phase(todae_subphase_timing, "appendix_b_validation", || {
         appendix_b_validation::validate_appendix_b_invariants(dae)
     })?;
@@ -474,6 +477,57 @@ fn ir_boundary_validation_enabled() -> bool {
         test,
         feature = "strict-ir-validation"
     ))
+}
+
+fn refresh_external_discrete_input_metadata(dae: &mut dae::Dae, flat: &flat::Model) {
+    let targeted = targeted_discrete_variable_names(dae);
+    dae.metadata.discrete_input_names.clear();
+    let mut names = Vec::new();
+    names.extend(external_discrete_input_names(
+        &dae.variables.discrete_valued,
+        &targeted,
+        flat,
+    ));
+    names.sort();
+    names.dedup();
+    dae.metadata.discrete_input_names = names;
+}
+
+fn targeted_discrete_variable_names(dae: &dae::Dae) -> HashSet<rumoca_core::VarName> {
+    dae.discrete
+        .real_updates
+        .iter()
+        .chain(dae.discrete.valued_updates.iter())
+        .chain(dae.conditions.equations.iter())
+        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| lhs.var_name().clone()))
+        .collect()
+}
+
+fn external_discrete_input_names(
+    variables: &IndexMap<rumoca_core::VarName, dae::Variable>,
+    targeted: &HashSet<rumoca_core::VarName>,
+    flat: &flat::Model,
+) -> Vec<String> {
+    variables
+        .iter()
+        .filter(|(name, variable)| {
+            matches!(
+                variable.causality,
+                dae::VariableCausality::Input | dae::VariableCausality::Output
+            ) && !targeted.contains(*name)
+                && flat_variable_is_connected(flat, name)
+        })
+        .map(|(name, _)| name.as_str().to_string())
+        .collect()
+}
+
+fn flat_variable_is_connected(flat: &flat::Model, name: &rumoca_core::VarName) -> bool {
+    flat.variables
+        .get(name)
+        .is_some_and(|variable| variable.connected)
+        || subscript_fallback_chain(name.as_str())
+            .into_iter()
+            .any(|candidate| flat.variables.get(&candidate).is_some_and(|v| v.connected))
 }
 
 /// Determine if an algebraic variable should be stored as discrete or regular algebraic.

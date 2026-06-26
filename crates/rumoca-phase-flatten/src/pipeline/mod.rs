@@ -15,6 +15,7 @@ mod import_scopes;
 mod instance_identity;
 
 pub(crate) use component_alias_injection::*;
+pub(crate) use component_member_scope::ComponentMemberScopes;
 pub(crate) use constant_injection::*;
 pub(crate) use constant_terminals::*;
 pub(crate) use context_and_tests::*;

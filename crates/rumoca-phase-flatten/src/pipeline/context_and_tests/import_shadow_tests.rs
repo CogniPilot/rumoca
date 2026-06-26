@@ -145,3 +145,34 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
     };
     assert_eq!(name.as_str(), "tank.medium.state");
 }
+
+#[test]
+fn equation_qualification_resolves_member_from_nearest_parent_instance_scope() {
+    let mut overlay = ast::InstanceOverlay::default();
+    overlay.components.insert(
+        ast::InstanceId::new(1),
+        ast::InstanceData {
+            qualified_name: QualifiedName::from_dotted("jointRRP.rod1.e2_ia"),
+            ..ast::InstanceData::default()
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.seed_component_member_scopes(&overlay);
+
+    let expr = ast::Expression::ComponentReference(comp_ref_parts(&["rod1", "e2_ia"]));
+    let prefix = QualifiedName::from_dotted("jointRRP.jointUSP");
+
+    let qualified = qualify_expression_imports_with_def_map_ctx(
+        &expr,
+        &prefix,
+        &qualify::ImportMap::default(),
+        None,
+        &ctx,
+    )
+    .unwrap();
+
+    let rumoca_core::Expression::VarRef { name, .. } = qualified else {
+        panic!("expected VarRef");
+    };
+    assert_eq!(name.as_str(), "jointRRP.rod1.e2_ia");
+}

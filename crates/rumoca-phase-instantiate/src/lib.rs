@@ -1687,8 +1687,8 @@ fn prepare_component_binding_info(
     let ComponentAttrsAndBinding {
         mut attrs,
         mut binding,
-        binding_source,
-        binding_source_scope,
+        mut binding_source,
+        mut binding_source_scope,
         binding_from_modification,
     } = extract_component_attrs_and_binding_in_scope(
         comp,
@@ -1698,6 +1698,12 @@ fn prepare_component_binding_info(
         imports,
         declaration_source_scope.as_ref(),
     )?;
+    if binding_from_modification && binding_source_scope.is_none() {
+        binding_source_scope = binding
+            .as_ref()
+            .and_then(|expr| expression_source_scope(ctx, expr))
+            .or_else(|| declaration_source_scope.clone());
+    }
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
@@ -1711,6 +1717,11 @@ fn prepare_component_binding_info(
             effective_components,
             tree,
         )?;
+        let display_binding_source =
+            declaration_binding_source_for_flattening(declaration_binding, &resolved_binding);
+        if binding_source.is_none() {
+            binding_source = display_binding_source.clone();
+        }
         if start_from_declaration_binding {
             attrs.start = Some(resolved_binding.clone());
         }
@@ -1723,6 +1734,20 @@ fn prepare_component_binding_info(
         binding_source_scope,
         binding_from_modification,
     })
+}
+
+fn declaration_binding_source_for_flattening(
+    original: &ast::Expression,
+    resolved: &ast::Expression,
+) -> Option<ast::Expression> {
+    if original == resolved || !is_multi_part_component_ref(original) {
+        return None;
+    }
+    Some(original.clone())
+}
+
+fn is_multi_part_component_ref(expr: &ast::Expression) -> bool {
+    matches!(expr, ast::Expression::ComponentReference(comp_ref) if comp_ref.parts.len() >= 2)
 }
 
 fn declaration_binding_allows_structural_resolution(

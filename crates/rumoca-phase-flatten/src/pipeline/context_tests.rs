@@ -119,6 +119,14 @@ mod tests {
         }
     }
 
+    fn var_ref(name: &str) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     fn int_array(values: &[i64]) -> Expression {
         Expression::Array {
             elements: values.iter().copied().map(int_lit).collect(),
@@ -613,6 +621,81 @@ mod tests {
             vec![401]
         );
         assert_eq!(ctx.array_dimensions.get("realFFT.abs"), Some(&vec![401]));
+    }
+
+    #[test]
+    fn symbolic_component_dimensions_use_modified_parameter_value() {
+        let mut ctx = Context::new();
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+
+        let root_n = rumoca_core::VarName::new("N");
+        flat.add_variable(
+            root_n.clone(),
+            flat::Variable {
+                name: root_n,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(int_lit(7)),
+                is_discrete_type: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let local_n = rumoca_core::VarName::new("aD_Converter.N");
+        flat.add_variable(
+            local_n.clone(),
+            flat::Variable {
+                name: local_n,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(var_ref("N")),
+                binding_from_modification: true,
+                start: Some(Expression::Literal {
+                    value: rumoca_core::Literal::Real(8.0),
+                    span: test_span(),
+                }),
+                is_discrete_type: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let y_name = rumoca_core::VarName::new("aD_Converter.y");
+        flat.add_variable(
+            y_name.clone(),
+            flat::Variable {
+                name: y_name.clone(),
+                dims: vec![8],
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            symbolic_instance(
+                InstanceId::new(1),
+                "aD_Converter.y",
+                vec![ast::Subscript::Expression(component_ref_expr(
+                    "aD_Converter.N",
+                ))],
+            ),
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+        assert_eq!(ctx.get_integer_param("aD_Converter.N"), Some(7));
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("modified symbolic dimension should resolve");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables.get(&y_name).expect("y variable").dims,
+            vec![7]
+        );
+        assert_eq!(ctx.array_dimensions.get("aD_Converter.y"), Some(&vec![7]));
     }
 
     #[test]

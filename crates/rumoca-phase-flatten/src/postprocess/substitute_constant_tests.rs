@@ -286,6 +286,47 @@ fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
 }
 
 #[test]
+fn recover_indexed_lhs_dimensions_does_not_expand_known_symbolic_dimension() {
+    let mut model = flat::Model::new();
+    let y_name = rumoca_core::VarName::new("aD_Converter.y");
+    model.add_variable(
+        y_name.clone(),
+        flat::Variable {
+            name: y_name.clone(),
+            dims: vec![7],
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("aD_Converter.y"),
+                subscripts: vec![rumoca_core::Subscript::generated_index(
+                    8,
+                    rumoca_core::Span::DUMMY,
+                )],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rhs: Box::new(int_literal(0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "aD_Converter".to_string(),
+        },
+    ));
+
+    recover_indexed_lhs_dimensions(&mut model);
+
+    assert_eq!(
+        model.variables.get(&y_name).expect("y variable").dims,
+        vec![7]
+    );
+}
+
+#[test]
 fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
@@ -838,6 +879,45 @@ fn substitutes_fully_qualified_constant_alias_in_declaration_scope() {
     assert!(!expr_contains_var_ref(start, "Pkg.Medium.X_default"));
     assert!(!expr_contains_var_ref(start, "reference_X"));
     assert!(!expr_contains_var_ref(start, "nS"));
+}
+
+#[test]
+fn scoped_relative_alias_keeps_live_flat_variable_before_constant_expansion() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "jointRRP.e_ia");
+    add_primitive_variable(&mut model, "jointRRP.jointUSP.e2_ia");
+    add_primitive_variable(&mut model, "jointRRP.jointUSP.rod1.e2_ia");
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("jointRRP.e_ia"))
+        .expect("variable should exist")
+        .binding = Some(var_ref("jointUSP.e2_ia"));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("jointRRP.jointUSP.e2_ia".to_string(), var_ref("rod1.e2_ia"));
+    ctx.constant_values.insert(
+        "jointRRP.rod1.e2_ia".to_string(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("jointRRP.e_ia"))
+        .expect("variable should exist")
+        .binding
+        .as_ref()
+        .expect("binding should remain");
+    assert!(matches!(
+        binding,
+        rumoca_core::Expression::VarRef { name, .. }
+            if name.as_str() == "jointRRP.jointUSP.e2_ia"
+    ));
 }
 
 #[test]

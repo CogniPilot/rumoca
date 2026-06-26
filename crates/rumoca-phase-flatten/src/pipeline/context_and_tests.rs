@@ -1,3 +1,8 @@
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
+
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
 
@@ -438,6 +443,8 @@ impl Context {
         const MAX_PASSES: usize = 10;
         for _pass in 0..MAX_PASSES {
             let enum_progress = self.eval_enum_param_bindings(params);
+            let string_progress = self.eval_string_params(params);
+            let matrix_size_progress = self.eval_read_matrix_size_params(params);
             let real_progress = self.eval_real_params(params);
             let int_progress = self.eval_integer_param_bindings(params);
             let bool_progress = self.eval_boolean_params(params);
@@ -445,6 +452,8 @@ impl Context {
             let varref_dim_progress = self.propagate_varref_dimensions(var_bindings);
             let alias_progress = self.propagate_through_aliases(params);
             if !enum_progress
+                && !string_progress
+                && !matrix_size_progress
                 && !real_progress
                 && !int_progress
                 && !bool_progress
@@ -831,6 +840,123 @@ impl Context {
             }
         }
         progress
+    }
+
+    fn eval_string_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let new_vals: Vec<(String, String)> = params
+            .iter()
+            .filter_map(|ParamBinding { name, binding, .. }| {
+                self.eval_string_expression(binding, Some(name))
+                    .map(|value| ((*name).to_string(), value))
+            })
+            .collect();
+
+        let mut progress = false;
+        for (name, value) in new_vals {
+            if self.string_parameter_values.get(&name) != Some(&value) {
+                self.string_parameter_values.insert(name, value);
+                progress = true;
+            }
+        }
+        progress
+    }
+
+    fn eval_read_matrix_size_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let mut progress = false;
+        for ParamBinding { name, binding, .. } in params {
+            let Some((rows, cols)) = self.eval_read_matrix_size_binding(name, binding) else {
+                continue;
+            };
+            progress |= self.insert_indexed_integer_value(name, 1, rows);
+            progress |= self.insert_indexed_integer_value(name, 2, cols);
+            progress |= self
+                .array_dimensions
+                .insert((*name).to_string(), vec![2])
+                .is_none_or(|existing| existing != vec![2]);
+        }
+        progress
+    }
+
+    fn insert_indexed_integer_value(&mut self, base: &str, index: i64, value: i64) -> bool {
+        let key = format!("{base}[{index}]");
+        if self.parameter_values.get(&key).copied() == Some(value) {
+            return false;
+        }
+        self.parameter_values.insert(key, value);
+        true
+    }
+
+    fn eval_read_matrix_size_binding(
+        &self,
+        var_name: &str,
+        binding: &Expression,
+    ) -> Option<(i64, i64)> {
+        let Expression::FunctionCall { name, args, .. } = binding else {
+            return None;
+        };
+        if !matches!(
+            name.as_str(),
+            "readMatrixSize" | "Modelica.Utilities.Streams.readMatrixSize"
+        ) {
+            return None;
+        }
+        let file_name = args
+            .first()
+            .and_then(|arg| self.eval_string_expression(arg, Some(var_name)))?;
+        let matrix_name = args
+            .get(1)
+            .and_then(|arg| self.eval_string_expression(arg, Some(var_name)))?;
+        read_mat_matrix_size(&file_name, &matrix_name)
+    }
+
+    fn eval_string_expression(
+        &self,
+        expr: &Expression,
+        var_context: Option<&str>,
+    ) -> Option<String> {
+        match expr {
+            Expression::Literal {
+                value: rumoca_core::Literal::String(value),
+                ..
+            } => Some(value.clone()),
+            Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => self.resolve_string_varref(name.as_str(), var_context),
+            Expression::FunctionCall { name, args, .. }
+                if matches!(
+                    name.as_str(),
+                    "loadResource" | "Modelica.Utilities.Files.loadResource"
+                ) =>
+            {
+                let raw = args
+                    .first()
+                    .and_then(|arg| self.eval_string_expression(arg, var_context))?;
+                Some(
+                    resolve_modelica_resource_path(&raw)
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or(raw),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_string_varref(&self, name: &str, var_context: Option<&str>) -> Option<String> {
+        if let Some(var_context) = var_context {
+            let scope = rumoca_core::ComponentPath::from_flat_path(var_context)
+                .parent()
+                .map(|path| path.to_flat_string())
+                .unwrap_or_default();
+            for candidate in scoped_lookup_candidates(name, &scope) {
+                if let Some(value) = self.string_parameter_values.get(&candidate) {
+                    return Some(value.clone());
+                }
+            }
+        }
+        self.string_parameter_values
+            .get(name)
+            .cloned()
+            .or_else(|| lookup_unique_suffix_string(name, &self.string_parameter_values))
     }
 
     /// Try to evaluate real parameters in one pass.
@@ -1387,6 +1513,229 @@ fn modifier_source_scope(name: &str) -> Option<String> {
     Some(source_scope.to_flat_string())
 }
 
+fn lookup_unique_suffix_string(
+    name: &str,
+    values: &rustc_hash::FxHashMap<String, String>,
+) -> Option<String> {
+    let mut found = None;
+    for suffix in rumoca_core::ComponentPath::from_flat_path(name).suffixes_excluding_self() {
+        let candidate = suffix.to_flat_string();
+        if let Some(value) = values.get(&candidate) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(value.clone());
+        }
+    }
+    found
+}
+
+fn read_mat_matrix_size(file_name: &str, matrix_name: &str) -> Option<(i64, i64)> {
+    let path = resolve_modelica_resource_path(file_name)?;
+    let bytes = std::fs::read(path).ok()?;
+    read_mat_v4_matrix_size(&bytes, matrix_name)
+        .or_else(|| read_mat_v5_matrix_size(&bytes, matrix_name))
+}
+
+fn resolve_modelica_resource_path(raw: &str) -> Option<PathBuf> {
+    let raw_path = Path::new(raw);
+    if raw_path.is_file() {
+        return Some(raw_path.to_path_buf());
+    }
+    let rest = raw.strip_prefix("modelica://Modelica/")?;
+    modelica_source_roots()
+        .into_iter()
+        .map(|root| root.join(rest))
+        .find(|candidate| candidate.is_file())
+}
+
+fn modelica_source_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for msl_base in modelica_cache_dirs() {
+        let Ok(msl_entries) = std::fs::read_dir(msl_base) else {
+            continue;
+        };
+        for msl_entry in msl_entries.flatten() {
+            let msl_path = msl_entry.path();
+            let Some(msl_name) = msl_path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !msl_name.starts_with("ModelicaStandardLibrary-") {
+                continue;
+            }
+            let Ok(version_entries) = std::fs::read_dir(&msl_path) else {
+                continue;
+            };
+            for version_entry in version_entries.flatten() {
+                let version_path = version_entry.path();
+                let Some(version_name) = version_path.file_name().and_then(|name| name.to_str())
+                else {
+                    continue;
+                };
+                if version_name.starts_with("Modelica ") && version_path.is_dir() {
+                    roots.push(version_path);
+                }
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn modelica_cache_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let Ok(current_dir) = std::env::current_dir() else {
+        return dirs;
+    };
+    for ancestor in current_dir.ancestors() {
+        let candidate = ancestor.join("target").join("msl");
+        if candidate.is_dir() {
+            dirs.push(candidate);
+        }
+    }
+    dirs
+}
+
+fn read_mat_v4_matrix_size(bytes: &[u8], matrix_name: &str) -> Option<(i64, i64)> {
+    let mut offset = 0usize;
+    while offset.checked_add(20)? <= bytes.len() {
+        let mopt = read_i32_le(bytes, offset)?;
+        let rows = read_i32_le(bytes, offset + 4)?;
+        let cols = read_i32_le(bytes, offset + 8)?;
+        let imagf = read_i32_le(bytes, offset + 12)?;
+        let name_len = read_i32_le(bytes, offset + 16)?;
+        if rows <= 0 || cols <= 0 || name_len <= 0 || imagf < 0 {
+            return None;
+        }
+        let name_start = offset + 20;
+        let name_end = name_start.checked_add(name_len as usize)?;
+        if name_end > bytes.len() {
+            return None;
+        }
+        let raw_name = &bytes[name_start..name_end];
+        let name = std::str::from_utf8(raw_name.strip_suffix(&[0]).unwrap_or(raw_name)).ok()?;
+        if name == matrix_name {
+            return Some((i64::from(rows), i64::from(cols)));
+        }
+        let value_size = mat_v4_value_size(mopt)?;
+        let value_count = (rows as usize)
+            .checked_mul(cols as usize)?
+            .checked_mul(if imagf == 0 { 1 } else { 2 })?;
+        offset = name_end.checked_add(value_count.checked_mul(value_size)?)?;
+    }
+    None
+}
+
+fn mat_v4_value_size(mopt: i32) -> Option<usize> {
+    match (mopt / 10) % 10 {
+        0 => Some(8),
+        1 | 2 => Some(4),
+        3 | 4 => Some(2),
+        5 => Some(1),
+        _ => None,
+    }
+}
+
+fn read_mat_v5_matrix_size(bytes: &[u8], matrix_name: &str) -> Option<(i64, i64)> {
+    if bytes.len() < 128 {
+        return None;
+    }
+    read_mat_v5_elements(bytes, 128, matrix_name)
+}
+
+fn read_mat_v5_elements(bytes: &[u8], start: usize, matrix_name: &str) -> Option<(i64, i64)> {
+    let mut offset = start;
+    while offset.checked_add(8)? <= bytes.len() {
+        let tag = read_mat_v5_tag(bytes, offset)?;
+        match tag.data_type {
+            14 => {
+                if let Some(size) = read_mat_v5_matrix_element(bytes, tag.payload, matrix_name) {
+                    return Some(size);
+                }
+            }
+            15 => {
+                let mut decoded = Vec::new();
+                flate2::read::ZlibDecoder::new(&bytes[tag.payload.clone()])
+                    .read_to_end(&mut decoded)
+                    .ok()?;
+                if let Some(size) = read_mat_v5_elements(&decoded, 0, matrix_name) {
+                    return Some(size);
+                }
+            }
+            _ => {}
+        }
+        offset = offset.checked_add(tag.total_size)?;
+    }
+    None
+}
+
+fn read_mat_v5_matrix_element(
+    bytes: &[u8],
+    payload: std::ops::Range<usize>,
+    matrix_name: &str,
+) -> Option<(i64, i64)> {
+    let mut offset = payload.start;
+    let end = payload.end;
+    let flags = read_mat_v5_tag(bytes, offset)?;
+    offset = offset.checked_add(flags.total_size)?;
+    let dims_tag = read_mat_v5_tag(bytes, offset)?;
+    offset = offset.checked_add(dims_tag.total_size)?;
+    let name_tag = read_mat_v5_tag(bytes, offset)?;
+    let dims = read_i32_values_le(&bytes[dims_tag.payload], 2)?;
+    let name = std::str::from_utf8(&bytes[name_tag.payload]).ok()?;
+    (offset <= end && name == matrix_name).then_some((i64::from(dims[0]), i64::from(dims[1])))
+}
+
+struct MatV5Tag {
+    data_type: u32,
+    payload: std::ops::Range<usize>,
+    total_size: usize,
+}
+
+fn read_mat_v5_tag(bytes: &[u8], offset: usize) -> Option<MatV5Tag> {
+    let word = read_u32_le(bytes, offset)?;
+    let small_bytes = word >> 16;
+    if small_bytes != 0 {
+        let data_type = word & 0xffff;
+        let payload_start = offset.checked_add(4)?;
+        let payload_end = payload_start.checked_add(small_bytes as usize)?;
+        return (payload_end <= offset.checked_add(8)? && payload_end <= bytes.len()).then_some(
+            MatV5Tag {
+                data_type,
+                payload: payload_start..payload_end,
+                total_size: 8,
+            },
+        );
+    }
+    let byte_count = read_u32_le(bytes, offset + 4)? as usize;
+    let payload_start = offset.checked_add(8)?;
+    let payload_end = payload_start.checked_add(byte_count)?;
+    let total_size = 8usize.checked_add(pad_to_eight(byte_count)?)?;
+    (payload_end <= bytes.len()).then_some(MatV5Tag {
+        data_type: word,
+        payload: payload_start..payload_end,
+        total_size,
+    })
+}
+
+fn pad_to_eight(value: usize) -> Option<usize> {
+    value.checked_add(7).map(|v| v & !7)
+}
+
+fn read_i32_values_le(bytes: &[u8], count: usize) -> Option<Vec<i32>> {
+    (0..count).map(|i| read_i32_le(bytes, i * 4)).collect()
+}
+
+fn read_i32_le(bytes: &[u8], offset: usize) -> Option<i32> {
+    read_u32_le(bytes, offset).map(|value| value as i32)
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
+    let slice = bytes.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_le_bytes(slice.try_into().ok()?))
+}
+
 impl Default for Context {
     fn default() -> Self {
         Self::new()
@@ -1460,12 +1809,14 @@ fn process_class_instance_body(
         // Handle when-equations separately (pass context for parameter evaluation).
         let mut clauses = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
         for clause in &mut clauses {
-            rewrite_function_overrides_in_when_clause(
+            rewrite_function_overrides_in_when_clause_scoped(
                 clause,
                 tree,
                 class_index,
                 &override_packages,
                 &override_functions,
+                &class_scope,
+                &ctx.component_members,
             );
         }
         flat.when_clauses.extend(clauses);
@@ -1479,6 +1830,8 @@ fn process_class_instance_body(
             class_index,
             &override_packages,
             &override_functions,
+            &class_scope,
+            &ctx.component_members,
         );
         let equation_base = flat.equations.len();
         for eq in flattened.equations {
@@ -1531,6 +1884,8 @@ fn process_class_instance_body(
             class_index,
             &override_packages,
             &override_functions,
+            &class_scope,
+            &ctx.component_members,
         );
         let equation_base = flat.initial_equations.len();
         for eq in flattened.equations {
@@ -1717,6 +2072,7 @@ pub(crate) fn process_component_instance(
         request.tree,
         request.class_index,
         &import_context,
+        request.component_members,
         request.simulated_root_name,
     )?;
     assign_instance_identity_to_flat_variable(

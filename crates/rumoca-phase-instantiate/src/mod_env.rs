@@ -221,6 +221,15 @@ fn inherited_modifier_source_metadata(
     let qn = ast::QualifiedName::from_ident(name);
     let mod_value = mod_env.get(&qn)?;
     if mod_value.value == *expr {
+        if mod_value.source.is_some() || mod_value.source_scope.is_some() {
+            return Some((
+                mod_value
+                    .source
+                    .clone()
+                    .or_else(|| Some(mod_value.value.clone())),
+                mod_value.source_scope.clone(),
+            ));
+        }
         return None;
     }
 
@@ -663,7 +672,10 @@ fn resolve_modification_expr_with_depth(
 
     // MLS §7.2: Resolve multi-part references through sibling modifications
     // before treating unresolved references as enum literals.
-    if let Some(resolved) = resolve_sibling_modification(expr, effective_components) {
+    if let Some(resolved) = resolve_sibling_modification(expr, effective_components, mode) {
+        if resolved == *expr {
+            return Ok(expr.clone());
+        }
         return resolve_modification_expr_with_depth(
             &resolved,
             mod_env,
@@ -785,6 +797,7 @@ fn index_array_value(expr: &ast::Expression, indices: &[i64]) -> Option<ast::Exp
 fn resolve_sibling_modification(
     expr: &ast::Expression,
     effective_components: &IndexMap<String, ast::Component>,
+    mode: ModificationResolveMode,
 ) -> Option<ast::Expression> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
         return None;
@@ -796,6 +809,11 @@ fn resolve_sibling_modification(
     let second = comp_ref.parts[1].ident.text.as_ref();
     let comp = effective_components.get(first)?;
     let mod_expr = comp.modifications.get(second)?;
+    if mode == ModificationResolveMode::DeclarationBinding
+        && matches!(mod_expr, ast::Expression::ComponentReference(_))
+    {
+        return Some(expr.clone());
+    }
     // Keep record/class-modification bindings as references so declaration
     // defaults remain visible during record-field projection.
     if is_non_scalar_sibling_modifier_expr(mod_expr) {

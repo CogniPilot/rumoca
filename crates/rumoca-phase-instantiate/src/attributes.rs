@@ -48,7 +48,11 @@ pub(super) fn extract_component_attrs_and_binding_in_scope(
         imports,
         declaration_scope,
     )?;
-    let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
+    let (binding, binding_from_modification, mut binding_source_scope) =
+        extract_binding(comp, mod_env);
+    if binding_from_modification && binding_source_scope.is_none() {
+        binding_source_scope = declaration_scope.cloned();
+    }
     let binding_source = if binding_from_modification {
         let binding_path = ast::QualifiedName::from_ident(&comp.name);
         mod_env

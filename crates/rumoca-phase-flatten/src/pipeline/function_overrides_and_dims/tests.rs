@@ -249,6 +249,60 @@ fn active_package_member_rewrite_keeps_structured_instance_path() {
 }
 
 #[test]
+fn active_scope_relative_instance_reference_is_canonicalized_before_member_rewrite() {
+    let package_def = DefId::new(1);
+    let member_def = DefId::new(2);
+    let mut member = class("jointUSP", ClassType::Record);
+    member.def_id = Some(member_def);
+    let mut package = class("AliasPackage", ClassType::Package);
+    package.def_id = Some(package_def);
+    package.classes.insert("jointUSP".to_string(), member);
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("AliasPackage".to_string(), package);
+    tree.def_map.insert(package_def, "AliasPackage".to_string());
+    tree.def_map
+        .insert(member_def, "AliasPackage.jointUSP".to_string());
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages = vec![override_target(
+        "AliasPackage",
+        package_def,
+        ClassType::Package,
+    )];
+    let override_functions = OverrideFunctionMap::default();
+    let mut component_members = component_member_scope::ComponentMemberScopes::default();
+    component_members
+        .insert_component_member_path(&ComponentPath::from_flat_path("jointRRP.jointUSP.e2_ia"));
+    component_members
+        .insert_component_member_path(&ComponentPath::from_flat_path("jointRRP.rod1.e2_ia"));
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    )
+    .with_active_scope(ComponentPath::from_flat_path("jointRRP"))
+    .with_component_member_scope(&component_members);
+    let mut expr = Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(core_comp_ref(&[
+            "jointUSP", "e2_ia",
+        ])),
+        subscripts: vec![],
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::VarRef { name, .. } = expr else {
+        panic!("expected var ref");
+    };
+    assert_eq!(name.as_str(), "jointRRP.jointUSP.e2_ia");
+}
+
+#[test]
 fn fully_qualified_sibling_package_call_is_not_aliased_to_self() {
     // Regression: a function `A.Quat.inverse` that calls the fully-qualified
     // sibling `B.Quat.inverse` must NOT have that call rewritten to its own
@@ -754,16 +808,30 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
     gravity.extends.push(Extend {
         base_name: Name::from_string("Standard"),
         base_def_id: Some(standard_def),
-        modifications: vec![rumoca_ir_ast::ExtendModification {
-            expr: rumoca_ir_ast::Expression::Modification {
-                target: comp_ref(&["gravityType"]),
-                value: Arc::new(ast_var("gravityType")),
-                span: test_span(),
+        modifications: vec![
+            rumoca_ir_ast::ExtendModification {
+                expr: rumoca_ir_ast::Expression::Modification {
+                    target: comp_ref(&["gravityType"]),
+                    value: Arc::new(ast_var("gravityType")),
+                    span: test_span(),
+                },
+                each: false,
+                final_: false,
+                redeclare: false,
             },
-            each: false,
-            final_: false,
-            redeclare: false,
-        }],
+            rumoca_ir_ast::ExtendModification {
+                expr: rumoca_ir_ast::Expression::Modification {
+                    target: comp_ref(&["g"]),
+                    value: Arc::new(rumoca_ir_ast::Expression::ComponentReference(comp_ref(&[
+                        "world", "g",
+                    ]))),
+                    span: test_span(),
+                },
+                each: false,
+                final_: false,
+                redeclare: false,
+            },
+        ],
         ..Extend::default()
     });
 
@@ -813,11 +881,71 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
         panic!("expected rewritten function call");
     };
     assert_eq!(name.as_str(), "Standard");
-    assert_eq!(args.len(), 2);
+    assert_eq!(args.len(), 3);
     let Some(("gravityType", Expression::VarRef { name, .. })) = named_arg(&args[1]) else {
         panic!("expected receiver-qualified gravityType named argument");
     };
     assert_eq!(name.as_str(), "world.gravityType");
+    let Some(("g", Expression::VarRef { name, .. })) = named_arg(&args[2]) else {
+        panic!("expected receiver-relative g named argument");
+    };
+    assert_eq!(name.as_str(), "world.g");
+
+    let mut component_members = component_member_scope::ComponentMemberScopes::default();
+    component_members
+        .insert_component_member_path(&ComponentPath::from_flat_path("mechanics.world"));
+    component_members.insert_component_member_path(&ComponentPath::from_flat_path(
+        "mechanics.world.gravityType",
+    ));
+    let scoped_ctx =
+        FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &override_functions)
+            .with_active_scope(ComponentPath::from_flat_path("mechanics"))
+            .with_component_member_scope(&component_members);
+    let mut scoped_expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("World.gravityAcceleration"),
+        args: vec![core_var("r")],
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut scoped_expr, &scoped_ctx);
+
+    let Expression::FunctionCall { args, .. } = scoped_expr else {
+        panic!("expected rewritten function call");
+    };
+    let Some(("gravityType", Expression::VarRef { name, .. })) = named_arg(&args[1]) else {
+        panic!("expected receiver-qualified scoped gravityType named argument");
+    };
+    assert_eq!(name.as_str(), "mechanics.world.gravityType");
+    let Some(("g", Expression::VarRef { name, .. })) = named_arg(&args[2]) else {
+        panic!("expected receiver-qualified scoped g named argument");
+    };
+    assert_eq!(name.as_str(), "mechanics.world.g");
+
+    let nested_ctx =
+        FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &override_functions)
+            .with_active_scope(ComponentPath::from_flat_path("mechanics.b0.body"))
+            .with_component_member_scope(&component_members);
+    let mut nested_expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("World.gravityAcceleration"),
+        args: vec![core_var("r")],
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut nested_expr, &nested_ctx);
+
+    let Expression::FunctionCall { args, .. } = nested_expr else {
+        panic!("expected rewritten function call");
+    };
+    let Some(("gravityType", Expression::VarRef { name, .. })) = named_arg(&args[1]) else {
+        panic!("expected receiver-qualified ancestor gravityType named argument");
+    };
+    assert_eq!(name.as_str(), "mechanics.world.gravityType");
+    let Some(("g", Expression::VarRef { name, .. })) = named_arg(&args[2]) else {
+        panic!("expected receiver-qualified ancestor g named argument");
+    };
+    assert_eq!(name.as_str(), "mechanics.world.g");
 }
 
 #[test]

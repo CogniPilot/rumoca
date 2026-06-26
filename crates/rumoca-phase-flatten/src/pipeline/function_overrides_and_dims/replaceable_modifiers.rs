@@ -8,10 +8,7 @@ pub(super) fn append_replaceable_function_modifier_args(
 ) -> Vec<Expression> {
     let receiver_alias = receiver_alias_for_member_function(current_ref, ctx);
     let existing_names = named_function_arg_names(&args);
-    let declaration_receiver_scope = receiver_alias
-        .as_deref()
-        .map(ComponentPath::from_flat_path)
-        .unwrap_or_else(|| ctx.active_scope.clone());
+    let declaration_receiver_scope = default_arg_receiver_scope(receiver_alias.as_deref(), ctx);
     if let Some(default_args) = replaceable_function_modifier_args(
         current_ref.as_str(),
         resolved_name,
@@ -44,6 +41,27 @@ pub(super) fn append_replaceable_function_modifier_args(
         );
     }
     args
+}
+
+fn default_arg_receiver_scope(
+    receiver_alias: Option<&str>,
+    ctx: &FunctionOverrideRewriteContext<'_>,
+) -> ComponentPath {
+    let Some(receiver_alias) = receiver_alias else {
+        return ctx.active_scope.clone();
+    };
+    let receiver_scope = ComponentPath::from_flat_path(receiver_alias);
+    if let Some(component_members) = ctx.component_members {
+        let mut scope = Some(ctx.active_scope.clone());
+        while let Some(candidate_scope) = scope {
+            let scoped_receiver = candidate_scope.join(&receiver_scope);
+            if component_members.contains_component_path(&scoped_receiver) {
+                return scoped_receiver;
+            }
+            scope = candidate_scope.parent();
+        }
+    }
+    receiver_scope
 }
 
 fn override_function_target_and_receiver_scope<'a>(

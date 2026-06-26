@@ -13,6 +13,7 @@ use rumoca_ir_flat as flat;
 use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::functions;
+use crate::pipeline::ComponentMemberScopes;
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
 use crate::source_spans::required_location_span;
 use rustc_hash::FxHashMap;
@@ -186,6 +187,7 @@ pub(crate) fn create_flat_variable(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     imports: &VariableImportContext,
+    component_members: &ComponentMemberScopes,
     simulated_root_name: Option<&str>,
 ) -> Result<flat::Variable, FlattenError> {
     let name = rumoca_core::VarName::new(instance.qualified_name.to_flat_string());
@@ -209,6 +211,7 @@ pub(crate) fn create_flat_variable(
         class_index,
         imports,
         prefix: &prefix,
+        component_members,
         opts,
         def_map,
         simulated_root_name,
@@ -226,6 +229,7 @@ pub(crate) fn create_flat_variable(
         class_index,
         imports,
         prefix: &prefix,
+        component_members,
         opts,
         def_map,
         simulated_root_name,
@@ -365,6 +369,7 @@ struct VariableQualifyContext<'a, 'tree> {
     class_index: &'a ast::ClassDefIndex<'tree>,
     imports: &'a VariableImportContext,
     prefix: &'a ast::QualifiedName,
+    component_members: &'a ComponentMemberScopes,
     opts: QualifyOptions,
     def_map: &'a crate::ResolveDefMap,
     simulated_root_name: Option<&'a str>,
@@ -511,8 +516,12 @@ fn qualify_modification_binding(
     expr: &ast::Expression,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let mod_prefix = modification_binding_prefix(ctx.instance, ctx.tree)?;
-    let qualified =
-        qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, ctx.imports.binding_imports());
+    let binding_imports = ctx.component_members.scoped_component_imports(
+        expr,
+        &mod_prefix,
+        ctx.imports.binding_imports(),
+    );
+    let qualified = qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, &binding_imports);
     let instance_name = declaration_instance_name(ctx.simulated_root_name, &mod_prefix);
     Ok(canonicalize_function_calls(
         ast_lower::expression_from_ast_with_context(
@@ -532,8 +541,11 @@ fn qualify_declaration_binding(
     ctx: VariableQualifyContext<'_, '_>,
     expr: &ast::Expression,
 ) -> Result<rumoca_core::Expression, FlattenError> {
+    let declaration_imports =
+        ctx.component_members
+            .scoped_component_imports(expr, ctx.prefix, &ctx.imports.declaration);
     let qualified =
-        qualify_expression_with_imports(expr, ctx.prefix, ctx.opts, &ctx.imports.declaration);
+        qualify_expression_with_imports(expr, ctx.prefix, ctx.opts, &declaration_imports);
     let source_scope = ctx
         .imports
         .binding_function_scope
@@ -641,8 +653,16 @@ mod tests {
         };
         let tree = test_tree();
         let imports = VariableImportContext::default();
+        let component_members = ComponentMemberScopes::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)?;
+        let flat = create_flat_variable(
+            &instance,
+            &tree,
+            &class_index,
+            &imports,
+            &component_members,
+            None,
+        )?;
         assert_eq!(
             flat.component_ref
                 .as_ref()
@@ -687,9 +707,17 @@ mod tests {
         };
         let tree = test_tree();
         let imports = VariableImportContext::default();
+        let component_members = ComponentMemberScopes::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)
-            .expect("flat variable");
+        let flat = create_flat_variable(
+            &instance,
+            &tree,
+            &class_index,
+            &imports,
+            &component_members,
+            None,
+        )
+        .expect("flat variable");
         let max = flat.max.expect("max");
         match max {
             rumoca_core::Expression::VarRef {
@@ -699,6 +727,46 @@ mod tests {
                 assert!(subscripts.is_empty());
             }
             _ => panic!("expected max to become a qualified VarRef"),
+        }
+    }
+
+    #[test]
+    fn test_create_flat_variable_resolves_declaration_binding_to_parent_instance_member() {
+        let instance = ast::InstanceData {
+            qualified_name: ast::QualifiedName::from_dotted("battery.r0.T"),
+            source_location: test_location(20, 31),
+            binding: Some(comp_ref(&["cellData", "T_ref"])),
+            is_primitive: true,
+            ..ast::InstanceData::default()
+        };
+        let tree = test_tree();
+        let imports = VariableImportContext::default();
+        let mut component_members = ComponentMemberScopes::default();
+        component_members.insert_component_member_path(
+            &rumoca_core::ComponentPath::from_flat_path("battery.cellData.T_ref"),
+        );
+        component_members.insert_component_member_path(
+            &rumoca_core::ComponentPath::from_flat_path("battery.r0.T"),
+        );
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let flat = create_flat_variable(
+            &instance,
+            &tree,
+            &class_index,
+            &imports,
+            &component_members,
+            None,
+        )
+        .expect("flat variable");
+        let binding = flat.binding.expect("binding");
+        match binding {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => {
+                assert_eq!(name.as_str(), "battery.cellData.T_ref");
+                assert!(subscripts.is_empty());
+            }
+            _ => panic!("expected binding to become a parent-scoped VarRef"),
         }
     }
 
@@ -728,10 +796,17 @@ mod tests {
         };
         let tree = test_tree();
         let imports = VariableImportContext::default();
+        let component_members = ComponentMemberScopes::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat =
-            create_flat_variable(&instance, &tree, &class_index, &imports, Some("RootModel"))
-                .expect("flat variable");
+        let flat = create_flat_variable(
+            &instance,
+            &tree,
+            &class_index,
+            &imports,
+            &component_members,
+            Some("RootModel"),
+        )
+        .expect("flat variable");
 
         assert_eq!(
             flat.binding,
@@ -760,9 +835,17 @@ mod tests {
         };
         let tree = test_tree();
         let imports = VariableImportContext::default();
+        let component_members = ComponentMemberScopes::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)
-            .expect("flat variable");
+        let flat = create_flat_variable(
+            &instance,
+            &tree,
+            &class_index,
+            &imports,
+            &component_members,
+            None,
+        )
+        .expect("flat variable");
 
         assert_eq!(
             flat.binding,
@@ -786,9 +869,17 @@ mod tests {
         };
         let tree = test_tree();
         let imports = VariableImportContext::default();
+        let component_members = ComponentMemberScopes::default();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        let flat = create_flat_variable(&instance, &tree, &class_index, &imports, None)
-            .expect("flat variable");
+        let flat = create_flat_variable(
+            &instance,
+            &tree,
+            &class_index,
+            &imports,
+            &component_members,
+            None,
+        )
+        .expect("flat variable");
 
         let expected = Some(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("spawn-0.4.3-7048a72798".to_string()),

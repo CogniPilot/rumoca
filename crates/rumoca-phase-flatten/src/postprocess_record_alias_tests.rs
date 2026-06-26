@@ -270,6 +270,143 @@ fn def_id_canonicalization_uses_symbol_ancestry_for_inherited_attribute_refs() {
 }
 
 #[test]
+fn def_id_canonicalization_resolves_inherited_bare_binding_to_owner_sibling() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(19372);
+    let sibling_instance_def = rumoca_core::DefId::new(39979);
+    model.add_variable(
+        rumoca_core::VarName::new("material.B_rRef"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("material.B_rRef"),
+            component_ref: Some(component_ref_with_def_id(
+                "material.B_rRef",
+                sibling_instance_def,
+            )),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model
+        .symbol_ancestry
+        .insert(sibling_instance_def, vec![source_def]);
+    model.add_variable(
+        rumoca_core::VarName::new("material.B_r"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("material.B_r"),
+            binding: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "B_rRef",
+                    component_ref_with_def_id("B_rRef", source_def),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("material.B_r"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected varref binding");
+    };
+    assert_eq!(name.as_str(), "material.B_rRef");
+}
+
+#[test]
+fn def_id_canonicalization_prefers_owner_instance_before_enclosing_fallback() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(610);
+    let nested_instance_def = rumoca_core::DefId::new(40065);
+    let owner_instance_def = rumoca_core::DefId::new(40206);
+    for (name, def_id) in [
+        ("cell.cell.limIntegrator.y", nested_instance_def),
+        ("cell.limIntegrator.y", owner_instance_def),
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_with_def_id(name, def_id)),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        model.symbol_ancestry.insert(def_id, vec![source_def]);
+    }
+    model.equations.push(flat::Equation {
+        residual: rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "y",
+                component_ref_with_def_id("y", source_def),
+            ),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: "cell.limIntegrator".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let rumoca_core::Expression::VarRef { name, .. } = &model.equations[0].residual else {
+        panic!("expected varref residual");
+    };
+    assert_eq!(name.as_str(), "cell.limIntegrator.y");
+}
+
+#[test]
+fn def_id_canonicalization_prefers_known_structured_path_over_rendered_name() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(621);
+    let instance_def = rumoca_core::DefId::new(40206);
+    model.add_variable(
+        rumoca_core::VarName::new("cell.limIntegrator.local_reset"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("cell.limIntegrator.local_reset"),
+            component_ref: Some(component_ref_with_def_id(
+                "cell.limIntegrator.local_reset",
+                instance_def,
+            )),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.symbol_ancestry.insert(instance_def, vec![source_def]);
+    model.equations.push(flat::Equation {
+        residual: rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "local_reset",
+                component_ref_with_def_id("cell.limIntegrator.local_reset", source_def),
+            ),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: "cell.limIntegrator".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let rumoca_core::Expression::VarRef { name, .. } = &model.equations[0].residual else {
+        panic!("expected varref residual");
+    };
+    assert_eq!(name.as_str(), "cell.limIntegrator.local_reset");
+}
+
+#[test]
 fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
     let mut model = flat::Model::new();
     model.add_variable(
