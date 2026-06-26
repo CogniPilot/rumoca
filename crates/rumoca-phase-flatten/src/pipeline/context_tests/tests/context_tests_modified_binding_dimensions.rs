@@ -103,7 +103,11 @@ fn modified_binding_dimensions_replace_stale_declared_shape() {
     assert_eq!(ctx.get_integer_param("aimsM.rotor.resistor.m"), Some(5));
     assert_eq!(
         ctx.array_dimensions.get("aimsM.rotor.resistor.R"),
-        Some(&vec![3])
+        Some(&vec![5])
+    );
+    assert_eq!(
+        flat.variables.get(&r_name).expect("R variable").dims,
+        vec![3]
     );
 
     assert!(ctx.reconcile_modified_binding_dimensions(&mut flat));
@@ -126,5 +130,111 @@ fn modified_binding_dimensions_replace_stale_declared_shape() {
     assert_eq!(
         ctx.array_dimensions.get("aimsM.rotor.resistor.R"),
         Some(&vec![5])
+    );
+}
+
+#[test]
+fn modified_binding_dimensions_do_not_follow_unrelated_local_m() {
+    let mut ctx = Context::new();
+    let tree = source_backed_tree();
+    let mut flat = flat::Model::default();
+
+    let local_m = rumoca_core::VarName::new("component.m");
+    flat.add_variable(
+        local_m.clone(),
+        flat::Variable {
+            name: local_m,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(int_lit(5)),
+            binding_from_modification: true,
+            is_discrete_type: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    let x_name = rumoca_core::VarName::new("component.x");
+    flat.add_variable(
+        x_name.clone(),
+        flat::Variable {
+            name: x_name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            dims: vec![3],
+            binding: Some(Expression::Array {
+                elements: vec![int_lit(1), int_lit(2), int_lit(3)],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            binding_from_modification: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    ctx.build_parameter_lookup(&flat, &tree);
+    assert_eq!(ctx.get_integer_param("component.m"), Some(5));
+    assert_eq!(ctx.array_dimensions.get("component.x"), Some(&vec![3]));
+    assert!(!ctx.reconcile_modified_binding_dimensions(&mut flat));
+    assert_eq!(
+        flat.variables.get(&x_name).expect("x variable").dims,
+        vec![3]
+    );
+}
+
+#[test]
+fn modified_integer_alias_sync_is_not_limited_to_phase_count_m() {
+    let mut ctx = Context::new();
+    let tree = source_backed_tree();
+    let mut flat = flat::Model::default();
+
+    for (name, binding, binding_from_modification) in [
+        ("system.n", int_lit(4), true),
+        ("component.nLocal", var_ref("system.n"), true),
+    ] {
+        let var_name = rumoca_core::VarName::new(name);
+        flat.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(binding),
+                binding_from_modification,
+                is_discrete_type: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    let x_name = rumoca_core::VarName::new("component.x");
+    flat.add_variable(
+        x_name.clone(),
+        flat::Variable {
+            name: x_name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            dims: vec![2],
+            binding: Some(Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Fill,
+                args: vec![int_lit(1), var_ref("component.nLocal")],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            binding_from_modification: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    ctx.build_parameter_lookup(&flat, &tree);
+
+    assert_eq!(ctx.get_integer_param("component.nLocal"), Some(4));
+    assert_eq!(ctx.array_dimensions.get("component.x"), Some(&vec![4]));
+    assert_eq!(
+        flat.variables.get(&x_name).expect("x variable").dims,
+        vec![2]
+    );
+    assert!(ctx.reconcile_modified_binding_dimensions(&mut flat));
+    assert_eq!(
+        flat.variables.get(&x_name).expect("x variable").dims,
+        vec![4]
     );
 }

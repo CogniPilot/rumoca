@@ -10,26 +10,6 @@ fn modified_integer_param_bindings(
         .collect()
 }
 
-fn best_effective_dims(
-    inferred: Option<&Vec<i64>>,
-    local_m_dims: Option<&Vec<i64>>,
-) -> Option<Vec<i64>> {
-    match (inferred, local_m_dims) {
-        (Some(inferred), Some(local_m_dims)) => {
-            if dims_are_better(local_m_dims, inferred)
-                || same_rank_concrete_dims(local_m_dims, inferred)
-            {
-                Some(local_m_dims.clone())
-            } else {
-                Some(inferred.clone())
-            }
-        }
-        (Some(inferred), None) => Some(inferred.clone()),
-        (None, Some(local_m_dims)) => Some(local_m_dims.clone()),
-        (None, None) => None,
-    }
-}
-
 fn literal_integer(expr: &Expression) -> Option<i64> {
     match expr {
         Expression::Literal {
@@ -49,13 +29,6 @@ fn has_nested_modified_integer_target(expr: &Expression) -> bool {
             ..
         } if subscripts.is_empty() && name.is_nested()
     )
-}
-
-fn is_local_phase_count_parameter(name: &str) -> bool {
-    rumoca_core::ComponentPath::from_flat_path(name)
-        .parts()
-        .last()
-        .is_some_and(|segment| segment == "m")
 }
 
 impl Context {
@@ -91,9 +64,6 @@ impl Context {
         let new_vals = modified_integer_params
             .iter()
             .filter_map(|(name, binding)| {
-                if !is_local_phase_count_parameter(name) {
-                    return None;
-                }
                 binding
                     .as_ref()
                     .filter(|expr| has_nested_modified_integer_target(expr))
@@ -123,33 +93,10 @@ impl Context {
     fn effective_modified_binding_dims(
         &self,
         name: &str,
-        current_dims: &[i64],
-        modified_integer_params: &rustc_hash::FxHashMap<String, Option<Expression>>,
+        _current_dims: &[i64],
+        _modified_integer_params: &rustc_hash::FxHashMap<String, Option<Expression>>,
     ) -> Option<Vec<i64>> {
-        let inferred = self.array_dimensions.get(name);
-        let local_m_dims = self.modified_local_m_dims(name, current_dims, modified_integer_params);
-        best_effective_dims(inferred, local_m_dims.as_ref())
-    }
-
-    fn modified_local_m_dims(
-        &self,
-        name: &str,
-        current_dims: &[i64],
-        modified_integer_params: &rustc_hash::FxHashMap<String, Option<Expression>>,
-    ) -> Option<Vec<i64>> {
-        if current_dims.len() != 1 {
-            return None;
-        }
-        let parent = rumoca_core::ComponentPath::from_flat_path(name).parent()?;
-        let local_m = parent
-            .join(&rumoca_core::ComponentPath::from_flat_path("m"))
-            .to_flat_string();
-        let binding = modified_integer_params.get(&local_m)?;
-        let dim = binding
-            .as_ref()
-            .and_then(|_| self.modified_integer_binding_value(&local_m, modified_integer_params, 0))
-            .or_else(|| self.get_integer_param(&local_m))?;
-        (dim >= 0).then_some(vec![dim])
+        self.array_dimensions.get(name).cloned()
     }
 
     fn modified_integer_binding_value(

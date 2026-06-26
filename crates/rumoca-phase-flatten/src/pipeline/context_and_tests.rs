@@ -97,7 +97,9 @@ impl Context {
 
         // Multi-pass evaluation until fixpoint
         self.run_multipass_evaluation(&params, &var_bindings);
-        self.reconcile_modified_integer_parameter_values(flat);
+        if self.reconcile_modified_integer_parameter_values(flat) {
+            self.eval_array_dimensions(&var_bindings);
+        }
     }
 
     pub(crate) fn recompute_symbolic_component_dimensions(
@@ -599,10 +601,10 @@ impl Context {
         };
 
         // Check if we should update (MLS §10.1)
-        let should_update = self
-            .array_dimensions
-            .get(name)
-            .is_none_or(|existing| dims_are_better(&inferred_dims, existing));
+        let should_update = self.array_dimensions.get(name).is_none_or(|existing| {
+            dims_are_better(&inferred_dims, existing)
+                || (binding_from_modification && same_rank_concrete_dims(&inferred_dims, existing))
+        });
 
         if should_update {
             #[cfg(feature = "tracing")]
