@@ -844,9 +844,11 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // class/package constant injection so record rebindings override injected
     // declaration defaults (MLS §7.2.3/§7.2.4, §8.3.3 structural ranges).
     ctx.build_parameter_lookup(flat, tree);
+    ctx.reconcile_modified_binding_dimensions(flat);
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
         ctx.build_parameter_lookup(flat, tree);
+        ctx.reconcile_modified_binding_dimensions(flat);
     }
     ctx.refresh_enum_parameter_lookup(flat);
     pre_evaluate_structural_equations(ctx, overlay, tree)?;
@@ -954,8 +956,10 @@ pub(crate) fn finalize_flat_model(
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     substitute_known_constants_in_flat(flat, ctx)?;
     ctx.build_parameter_lookup(flat, tree);
+    ctx.reconcile_modified_binding_dimensions(flat);
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
         ctx.build_parameter_lookup(flat, tree);
+        ctx.reconcile_modified_binding_dimensions(flat);
     }
     recover_indexed_lhs_dimensions(flat);
     mark_record_constructor_calls(flat, tree);

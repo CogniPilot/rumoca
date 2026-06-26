@@ -196,6 +196,7 @@ fn selected_target_failures_report_missing_results_in_target_order() {
 fn selected_target_gate_returns_error_instead_of_asserting() {
     let mut summary = valid_summary_template();
     summary.sim_target_models = vec!["A".to_string()];
+    summary.sim_attempted = 1;
     let mut fail = phase_error_result("A".to_string(), "Success", None, None);
     fail.sim_status = Some("sim_solver_fail".to_string());
     summary.model_results = vec![fail];
@@ -205,6 +206,44 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
     let message = error.to_string();
     assert!(message.contains("1 of 1 selected simulation target(s) did not succeed"));
     assert!(message.contains("A (sim_solver_fail)"));
+}
+
+#[test]
+fn selected_target_gate_checks_compile_only_phase_failures() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
+    summary.sim_attempted = 0;
+    let mut ok = phase_error_result("A".to_string(), "Success", None, None);
+    ok.is_balanced = Some(true);
+    ok.initial_balance_ok = Some(true);
+    let fail = phase_error_result(
+        "B".to_string(),
+        "ToDae",
+        Some("unbalanced".to_string()),
+        None,
+    );
+    summary.model_results = vec![ok, fail];
+
+    assert_eq!(
+        selected_target_failures(&summary),
+        vec!["B (todae-failed)".to_string()]
+    );
+}
+
+#[test]
+fn selected_target_gate_accepts_compile_only_balanced_success() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string()];
+    summary.sim_attempted = 0;
+    let mut ok = phase_error_result("A".to_string(), "Success", None, None);
+    ok.is_balanced = Some(true);
+    ok.initial_balance_ok = Some(true);
+    summary.model_results = vec![ok];
+
+    assert!(
+        selected_target_failures(&summary).is_empty(),
+        "compile-only focused gate should accept selected balanced ToDae success"
+    );
 }
 
 #[test]

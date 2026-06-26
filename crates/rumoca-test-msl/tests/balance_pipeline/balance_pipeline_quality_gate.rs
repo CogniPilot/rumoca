@@ -1681,12 +1681,12 @@ pub(super) fn msl_quality_gate_failure_message(
 }
 
 pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
+    if require_selected_targets_success() {
+        return enforce_all_selected_targets_succeeded(summary);
+    }
     if summary.sim_attempted == 0 {
         println!("MSL quality gate: skipped for compile/balance-only run.");
         return Ok(());
-    }
-    if require_selected_targets_success() {
-        return enforce_all_selected_targets_succeeded(summary);
     }
     if should_skip_msl_quality_gate() {
         println!(
@@ -1750,10 +1750,10 @@ pub(super) fn selected_target_failures(summary: &MslSummary) -> Vec<String> {
         .filter(|result| target_set.contains(result.model_name.as_str()))
         .filter_map(|result| {
             seen_targets.insert(result.model_name.as_str());
-            if result.sim_status.as_deref() == Some("sim_ok") {
+            let status = selected_target_result_status(summary, result);
+            if status == "ok" {
                 return None;
             }
-            let status = result.sim_status.as_deref().unwrap_or("not-simulated");
             Some(format!("{} ({status})", result.model_name))
         })
         .collect();
@@ -1764,6 +1764,37 @@ pub(super) fn selected_target_failures(summary: &MslSummary) -> Vec<String> {
             .map(|model_name| format!("{model_name} (missing-result)")),
     );
     failures
+}
+
+fn selected_target_result_status(summary: &MslSummary, result: &MslModelResult) -> String {
+    if summary.sim_attempted > 0 {
+        return match result.sim_status.as_deref() {
+            Some("sim_ok") => "ok".to_string(),
+            Some(status) => status.to_string(),
+            None => "not-simulated".to_string(),
+        };
+    }
+    if result.phase_reached != "Success" {
+        return match result.phase_reached.as_str() {
+            "" => "missing-phase",
+            "Resolve" => "resolve-failed",
+            "Instantiate" => "instantiate-failed",
+            "Typecheck" => "typecheck-failed",
+            "Flatten" => "flatten-failed",
+            "ToDae" => "todae-failed",
+            "NeedsInner" => "needs-inner",
+            "NonSim" => "non-sim",
+            _ => "phase-failed",
+        }
+        .to_string();
+    }
+    if result.is_balanced == Some(false) {
+        return "unbalanced".to_string();
+    }
+    if result.initial_balance_ok == Some(false) {
+        return "initial-unbalanced".to_string();
+    }
+    "ok".to_string()
 }
 
 pub(super) fn should_skip_msl_quality_gate() -> bool {

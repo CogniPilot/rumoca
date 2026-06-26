@@ -275,6 +275,12 @@ fn dims_are_better(candidate: &[i64], existing: &[i64]) -> bool {
     })
 }
 
+fn same_rank_concrete_dims(candidate: &[i64], existing: &[i64]) -> bool {
+    candidate.len() == existing.len()
+        && candidate.iter().all(|dim| *dim >= 0)
+        && existing.iter().all(|dim| *dim >= 0)
+}
+
 fn dimension_specificity(dims: &[i64]) -> usize {
     dims.iter().filter(|dim| **dim > 0).count()
 }
