@@ -864,12 +864,7 @@ fn discrete_connection_node_is_external(dae_model: &dae::Dae, name: &rumoca_core
                 .map(rumoca_core::VarName::new)
                 .and_then(|base| find_variable(dae_model, &base))
         })
-        .is_some_and(|variable| {
-            matches!(
-                variable.causality,
-                dae::VariableCausality::Input | dae::VariableCausality::Output
-            )
-        })
+        .is_some_and(|variable| matches!(variable.causality, dae::VariableCausality::Input))
 }
 
 fn is_discrete_connection_update_between(
