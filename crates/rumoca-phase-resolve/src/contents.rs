@@ -235,11 +235,10 @@ impl Resolver {
         // Get the first part of the reference
         let first_name = &comp.parts[0].ident.text;
 
-        // Look up the name in the scope tree
-        if let Some(def_id) = self
-            .scope_tree
-            .lookup(scope, &ComponentPath::from_flat_path(first_name))
-        {
+        if let Some(def_id) = self.lookup_component_reference_first_part(
+            scope,
+            &ComponentPath::from_flat_path(first_name),
+        ) {
             comp.def_id = Some(def_id);
             self.stats.comp_refs_resolved += 1;
         } else {
@@ -257,6 +256,71 @@ impl Resolver {
                 self.resolve_subscripts(subs, scope);
             }
         }
+    }
+
+    fn lookup_component_reference_first_part(
+        &self,
+        scope: ScopeId,
+        name: &ComponentPath,
+    ) -> Option<DefId> {
+        let local_class_scope = self.nearest_class_scope(scope);
+        let mut current = Some(scope);
+
+        while let Some(scope_id) = current {
+            let Some(scope_node) = self.scope_tree.get(scope_id) else {
+                break;
+            };
+
+            if let Some(&def_id) = scope_node.members.get(name)
+                && self.component_reference_member_visible_from_scope(
+                    def_id,
+                    scope_id,
+                    local_class_scope,
+                )
+            {
+                return Some(def_id);
+            }
+
+            if let Some(def_id) = scope_node
+                .imports
+                .iter()
+                .find_map(|import| import.resolves(name))
+            {
+                return Some(def_id);
+            }
+
+            current = if scope_node.is_encapsulated() && scope_id != ScopeId::GLOBAL {
+                Some(ScopeId::GLOBAL)
+            } else {
+                scope_node.parent
+            };
+        }
+
+        None
+    }
+
+    fn component_reference_member_visible_from_scope(
+        &self,
+        def_id: DefId,
+        found_scope: ScopeId,
+        local_class_scope: Option<ScopeId>,
+    ) -> bool {
+        if Some(found_scope) == local_class_scope {
+            return true;
+        }
+
+        let Some(variability) = self.component_variabilities.get(&def_id) else {
+            return true;
+        };
+        matches!(
+            variability,
+            rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+        )
+    }
+
+    fn nearest_class_scope(&self, scope: ScopeId) -> Option<ScopeId> {
+        std::iter::successors(Some(scope), |current| self.scope_tree.parent(*current))
+            .find(|scope_id| self.scope_to_class_def.contains_key(scope_id))
     }
 
     /// Resolve a function reference to its callable DefId while preserving the

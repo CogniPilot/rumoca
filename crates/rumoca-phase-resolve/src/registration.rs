@@ -67,6 +67,8 @@ impl Resolver {
         for (name, comp) in class.components.iter_mut() {
             let def_id = self.alloc_def_id(Some(qualified_name), name);
             comp.def_id = Some(def_id);
+            self.component_variabilities
+                .insert(def_id, comp.variability.clone());
             self.scope_tree
                 .add_member(class_scope, ComponentPath::from_flat_path(name), def_id);
             if comp.is_replaceable {

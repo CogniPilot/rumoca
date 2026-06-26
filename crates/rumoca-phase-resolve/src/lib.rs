@@ -220,6 +220,8 @@ pub struct Resolver {
     pub(crate) name_to_def: IndexMap<String, DefId>,
     /// Map from class DefId to declared class type.
     pub(crate) class_types: IndexMap<DefId, rumoca_core::ClassType>,
+    /// Map from component DefId to declared variability.
+    pub(crate) component_variabilities: IndexMap<DefId, rumoca_core::Variability>,
     /// Map from package qualified name to its direct children.
     /// Used for O(1) unqualified import resolution instead of O(n) scan.
     pub(crate) package_children: IndexMap<String, IndexMap<String, DefId>>,
@@ -336,6 +338,7 @@ impl Resolver {
             def_names: IndexMap::default(),
             name_to_def: IndexMap::default(),
             class_types: IndexMap::default(),
+            component_variabilities: IndexMap::default(),
             package_children: IndexMap::default(),
             diagnostics: Diagnostics::new(),
             resolving_extends: std::collections::HashSet::new(),
