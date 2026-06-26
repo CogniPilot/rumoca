@@ -50,11 +50,11 @@ impl ComponentMemberScopes {
             if scoped_imports.contains_key(root.as_str()) || self.has_member(scope, &root) {
                 continue;
             }
-            if let Some(parent_scope) = self.nearest_parent_scope_with_member(scope, &root) {
-                let target = if parent_scope.parts.is_empty() {
+            if let Some(parent_name) = self.nearest_parent_name_with_member(scope, &root) {
+                let target = if parent_name.parts.is_empty() {
                     root.clone()
                 } else {
-                    format!("{}.{}", parent_scope.to_flat_string(), root)
+                    parent_name.child(&root).to_flat_string()
                 };
                 scoped_imports.insert(root, target);
             }
@@ -62,12 +62,12 @@ impl ComponentMemberScopes {
         scoped_imports
     }
 
-    fn nearest_parent_scope_with_member(
+    fn nearest_parent_name_with_member(
         &self,
         scope: &QualifiedName,
         root: &str,
     ) -> Option<QualifiedName> {
-        let mut candidate = parent_scope(scope);
+        let mut candidate = parent_qualified_name(scope);
         loop {
             if self.has_member(&candidate, root) {
                 return Some(candidate);
@@ -75,12 +75,12 @@ impl ComponentMemberScopes {
             if candidate.parts.is_empty() {
                 return None;
             }
-            candidate = parent_scope(&candidate);
+            candidate = parent_qualified_name(&candidate);
         }
     }
 }
 
-fn parent_scope(scope: &QualifiedName) -> QualifiedName {
+fn parent_qualified_name(scope: &QualifiedName) -> QualifiedName {
     if scope.parts.len() <= 1 {
         QualifiedName::new()
     } else {
