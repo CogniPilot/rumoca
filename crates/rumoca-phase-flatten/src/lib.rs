@@ -1205,6 +1205,25 @@ fn inject_enclosing_class_constants(
             "enclosing class constant injection parent scope",
         ));
     };
+    let Some(enclosing_class) = class_index.get(parent_def_id) else {
+        return Err(missing_resolved_class_metadata_for_def_id(
+            tree,
+            class_index,
+            parent_def_id,
+            model_name,
+            "enclosing class constant injection class lookup",
+        ));
+    };
+    for ext in &enclosing_class.extends {
+        apply_extends_constants_for_scope(
+            tree,
+            class_index,
+            enclosing_name,
+            ext,
+            enclosing_name,
+            ctx,
+        );
+    }
     let ancestors = collect_ancestor_classes_with_index(tree, class_index, enclosing_name);
     if ancestors.is_empty() {
         return Ok(());
