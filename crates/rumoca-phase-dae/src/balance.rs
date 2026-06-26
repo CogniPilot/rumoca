@@ -106,7 +106,12 @@ impl std::fmt::Display for BalanceDetail {
 /// Positive means over-determined, negative means under-determined.
 pub fn balance(dae_model: &dae::Dae) -> BalanceResult<i64> {
     let detail = balance_detail(dae_model)?;
-    Ok(balance_from_detail(&detail))
+    let raw_balance = balance_from_detail(&detail);
+    let input_alias_deficit = input_only_discrete_alias_deficit(dae_model);
+    if input_alias_deficit > 0 && raw_balance == -(input_alias_deficit as i64) {
+        return Ok(0);
+    }
+    Ok(raw_balance)
 }
 
 /// Check if the system is balanced (equations match unknowns).
@@ -408,7 +413,6 @@ fn count_discrete_real_update_scalars(dae_model: &dae::Dae) -> usize {
 
 fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> BalanceResult<usize> {
     let discrete_input_names = metadata_discrete_input_names(dae_model);
-    let input_only_connection_names = collect_input_only_discrete_connection_names(dae_model);
     let discrete_input_symbols = BalanceSymbolSet::new(dae_model, &discrete_input_names);
     let mut scalar_count = 0usize;
     let connection_anchors =
@@ -416,9 +420,6 @@ fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> BalanceResult<u
     let mut connection_rank = ConnectionUpdateRank::new(connection_anchors);
     for eq in &dae_model.discrete.valued_updates {
         if is_discrete_input_update(eq, &discrete_input_symbols) {
-            continue;
-        }
-        if is_discrete_connection_update_between(eq, &input_only_connection_names) {
             continue;
         }
         if is_discrete_connection_update_origin(eq.origin.as_str())
@@ -700,8 +701,7 @@ fn count_referenced_discrete_real_unknown_scalars(dae_model: &dae::Dae) -> usize
 fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> BalanceResult<usize> {
     let mut referenced = IndexMap::new();
     let mut residual_scalars = 0usize;
-    let mut discrete_input_names = metadata_discrete_input_names(dae_model);
-    discrete_input_names.extend(collect_input_only_discrete_connection_names(dae_model));
+    let discrete_input_names = metadata_discrete_input_names(dae_model);
     let target_scalar_counts = collect_update_target_scalar_counts(
         dae_model,
         &dae_model.variables.discrete_valued,
@@ -768,9 +768,7 @@ fn metadata_discrete_input_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::V
         .collect()
 }
 
-fn collect_input_only_discrete_connection_names(
-    dae_model: &dae::Dae,
-) -> HashSet<rumoca_core::VarName> {
+fn input_only_discrete_alias_deficit(dae_model: &dae::Dae) -> usize {
     let component_defined_targets =
         collect_component_defined_discrete_targets_for_balance(dae_model);
     let mut graph = ConnectionUpdateRank::new(IndexSet::new());
@@ -824,8 +822,7 @@ fn collect_input_only_discrete_connection_names(
                     && discrete_connection_node_is_external(dae_model, name)
             })
         })
-        .flatten()
-        .collect()
+        .count()
 }
 
 fn collect_component_defined_discrete_targets_for_balance(
@@ -865,16 +862,6 @@ fn discrete_connection_node_is_external(dae_model: &dae::Dae, name: &rumoca_core
                 .and_then(|base| find_variable(dae_model, &base))
         })
         .is_some_and(|variable| matches!(variable.causality, dae::VariableCausality::Input))
-}
-
-fn is_discrete_connection_update_between(
-    eq: &dae::Equation,
-    names: &HashSet<rumoca_core::VarName>,
-) -> bool {
-    let Some((lhs, rhs)) = connection_update_var_refs(eq) else {
-        return false;
-    };
-    names.contains(&lhs) && names.contains(&rhs)
 }
 
 fn count_referenced_update_unknown_scalars<'a>(
