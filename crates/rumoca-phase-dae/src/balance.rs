@@ -408,6 +408,7 @@ fn count_discrete_real_update_scalars(dae_model: &dae::Dae) -> usize {
 
 fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> BalanceResult<usize> {
     let discrete_input_names = metadata_discrete_input_names(dae_model);
+    let input_only_connection_names = collect_input_only_discrete_connection_names(dae_model);
     let discrete_input_symbols = BalanceSymbolSet::new(dae_model, &discrete_input_names);
     let mut scalar_count = 0usize;
     let connection_anchors =
@@ -415,6 +416,9 @@ fn count_discrete_valued_update_scalars(dae_model: &dae::Dae) -> BalanceResult<u
     let mut connection_rank = ConnectionUpdateRank::new(connection_anchors);
     for eq in &dae_model.discrete.valued_updates {
         if is_discrete_input_update(eq, &discrete_input_symbols) {
+            continue;
+        }
+        if is_discrete_connection_update_between(eq, &input_only_connection_names) {
             continue;
         }
         if is_discrete_connection_update_origin(eq.origin.as_str())
@@ -696,7 +700,8 @@ fn count_referenced_discrete_real_unknown_scalars(dae_model: &dae::Dae) -> usize
 fn count_referenced_discrete_valued_unknown_scalars(dae_model: &dae::Dae) -> BalanceResult<usize> {
     let mut referenced = IndexMap::new();
     let mut residual_scalars = 0usize;
-    let discrete_input_names = metadata_discrete_input_names(dae_model);
+    let mut discrete_input_names = metadata_discrete_input_names(dae_model);
+    discrete_input_names.extend(collect_input_only_discrete_connection_names(dae_model));
     let target_scalar_counts = collect_update_target_scalar_counts(
         dae_model,
         &dae_model.variables.discrete_valued,
@@ -761,6 +766,120 @@ fn metadata_discrete_input_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::V
         .iter()
         .map(rumoca_core::VarName::new)
         .collect()
+}
+
+fn collect_input_only_discrete_connection_names(
+    dae_model: &dae::Dae,
+) -> HashSet<rumoca_core::VarName> {
+    let component_defined_targets =
+        collect_component_defined_discrete_targets_for_balance(dae_model);
+    let mut graph = ConnectionUpdateRank::new(IndexSet::new());
+    let mut nodes = IndexSet::new();
+
+    for eq in &dae_model.discrete.valued_updates {
+        if !is_discrete_connection_update_origin(eq.origin.as_str()) {
+            continue;
+        }
+        let Some((lhs, rhs)) = connection_update_var_refs(eq) else {
+            continue;
+        };
+        let Some(lhs_nodes) = expand_connection_rank_nodes(
+            &lhs,
+            eq.scalar_count,
+            &dae_model.variables.discrete_valued,
+        ) else {
+            continue;
+        };
+        let Some(rhs_nodes) = expand_connection_rank_nodes(
+            &rhs,
+            eq.scalar_count,
+            &dae_model.variables.discrete_valued,
+        ) else {
+            continue;
+        };
+        if lhs_nodes.len() != rhs_nodes.len() {
+            continue;
+        }
+        for (lhs_node, rhs_node) in lhs_nodes.into_iter().zip(rhs_nodes) {
+            nodes.insert(lhs_node.clone());
+            nodes.insert(rhs_node.clone());
+            graph.add_edge(lhs_node, rhs_node);
+        }
+    }
+
+    let mut components: IndexMap<usize, Vec<rumoca_core::VarName>> = IndexMap::new();
+    for node in nodes {
+        let Some(idx) = graph.node_to_idx.get(&node).copied() else {
+            continue;
+        };
+        let root = graph.find_idx(idx);
+        components.entry(root).or_default().push(node);
+    }
+
+    components
+        .into_values()
+        .filter(|component| {
+            component.iter().all(|name| {
+                !component_defined_targets.contains(name)
+                    && discrete_connection_node_is_external(dae_model, name)
+            })
+        })
+        .flatten()
+        .collect()
+}
+
+fn collect_component_defined_discrete_targets_for_balance(
+    dae_model: &dae::Dae,
+) -> HashSet<rumoca_core::VarName> {
+    let mut targets = HashSet::new();
+    for eq in dae_model
+        .discrete
+        .valued_updates
+        .iter()
+        .chain(dae_model.conditions.equations.iter())
+    {
+        if is_discrete_connection_update_origin(eq.origin.as_str()) {
+            continue;
+        }
+        let Some(lhs) = &eq.lhs else {
+            continue;
+        };
+        if let Some(nodes) = expand_connection_rank_nodes(
+            lhs.var_name(),
+            eq.scalar_count,
+            &dae_model.variables.discrete_valued,
+        ) {
+            targets.extend(nodes);
+        } else {
+            targets.insert(lhs.var_name().clone());
+        }
+    }
+    targets
+}
+
+fn discrete_connection_node_is_external(dae_model: &dae::Dae, name: &rumoca_core::VarName) -> bool {
+    find_variable(dae_model, name)
+        .or_else(|| {
+            rumoca_core::strip_trailing_subscript_suffix(name.as_str())
+                .map(rumoca_core::VarName::new)
+                .and_then(|base| find_variable(dae_model, &base))
+        })
+        .is_some_and(|variable| {
+            matches!(
+                variable.causality,
+                dae::VariableCausality::Input | dae::VariableCausality::Output
+            )
+        })
+}
+
+fn is_discrete_connection_update_between(
+    eq: &dae::Equation,
+    names: &HashSet<rumoca_core::VarName>,
+) -> bool {
+    let Some((lhs, rhs)) = connection_update_var_refs(eq) else {
+        return false;
+    };
+    names.contains(&lhs) && names.contains(&rhs)
 }
 
 fn count_referenced_update_unknown_scalars<'a>(
