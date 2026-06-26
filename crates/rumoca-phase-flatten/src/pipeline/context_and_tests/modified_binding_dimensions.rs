@@ -51,6 +51,13 @@ fn has_nested_modified_integer_target(expr: &Expression) -> bool {
     )
 }
 
+fn is_local_phase_count_parameter(name: &str) -> bool {
+    rumoca_core::ComponentPath::from_flat_path(name)
+        .parts()
+        .last()
+        .is_some_and(|segment| segment == "m")
+}
+
 impl Context {
     pub(crate) fn reconcile_modified_binding_dimensions(&self, flat: &mut Model) -> bool {
         let mut changed = false;
@@ -84,6 +91,9 @@ impl Context {
         let new_vals = modified_integer_params
             .iter()
             .filter_map(|(name, binding)| {
+                if !is_local_phase_count_parameter(name) {
+                    return None;
+                }
                 binding
                     .as_ref()
                     .filter(|expr| has_nested_modified_integer_target(expr))
