@@ -27,33 +27,35 @@ impl ExpressionTransformer for QualifyReplaceableFunctionModifier<'_> {
                 .collect();
             prefixed_parts.extend(cr.parts);
             cr.parts = prefixed_parts;
-        } else if cr.parts.len() > 1 && !cr.local && !self.receiver_alias.is_root() {
-            if let Some(receiver_leaf) = self.receiver_alias.parts().last() {
-                let already_scoped = cr.parts.len() >= self.receiver_alias.parts().len()
-                    && cr
-                        .parts
-                        .iter()
-                        .zip(self.receiver_alias.parts())
-                        .all(|(part, receiver_part)| part.ident.text.as_ref() == receiver_part);
-                if !already_scoped && cr.parts[0].ident.text.as_ref() == receiver_leaf {
-                    let location = cr.parts[0].ident.location.clone();
-                    let mut scoped_parts: Vec<_> = self
-                        .receiver_alias
-                        .parts()
-                        .iter()
-                        .map(|part| rumoca_ir_ast::ComponentRefPart {
-                            ident: Token {
-                                text: std::sync::Arc::from(part.as_str()),
-                                location: location.clone(),
-                                token_number: 0,
-                                token_type: 0,
-                            },
-                            subs: None,
-                        })
-                        .collect();
-                    scoped_parts.extend(cr.parts.into_iter().skip(1));
-                    cr.parts = scoped_parts;
-                }
+        } else if cr.parts.len() > 1
+            && !cr.local
+            && !self.receiver_alias.is_root()
+            && let Some(receiver_leaf) = self.receiver_alias.parts().last()
+        {
+            let already_scoped = cr.parts.len() >= self.receiver_alias.parts().len()
+                && cr
+                    .parts
+                    .iter()
+                    .zip(self.receiver_alias.parts())
+                    .all(|(part, receiver_part)| part.ident.text.as_ref() == receiver_part);
+            if !already_scoped && cr.parts[0].ident.text.as_ref() == receiver_leaf {
+                let location = cr.parts[0].ident.location.clone();
+                let mut scoped_parts: Vec<_> = self
+                    .receiver_alias
+                    .parts()
+                    .iter()
+                    .map(|part| rumoca_ir_ast::ComponentRefPart {
+                        ident: Token {
+                            text: std::sync::Arc::from(part.as_str()),
+                            location: location.clone(),
+                            token_number: 0,
+                            token_type: 0,
+                        },
+                        subs: None,
+                    })
+                    .collect();
+                scoped_parts.extend(cr.parts.into_iter().skip(1));
+                cr.parts = scoped_parts;
             }
         }
         for part in &mut cr.parts {
