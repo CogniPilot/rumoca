@@ -744,18 +744,21 @@ fn expand_connection_rank_nodes(
     scalar_count: usize,
     variables: &IndexMap<rumoca_core::VarName, dae::Variable>,
 ) -> Option<Vec<rumoca_core::VarName>> {
-    if scalar_count <= 1 {
-        return Some(vec![name.clone()]);
-    }
     if let Some(variable) = variables.get(name) {
         if variable.size() < scalar_count {
             return None;
+        }
+        if variable.is_scalar() {
+            return Some(vec![name.clone()]);
         }
         return Some(
             (1..=scalar_count)
                 .map(|idx| rumoca_core::VarName::new(format!("{}[{idx}]", name.as_str())))
                 .collect(),
         );
+    }
+    if scalar_count <= 1 {
+        return Some(vec![name.clone()]);
     }
     let indexed = (1..=scalar_count)
         .map(|idx| rumoca_core::VarName::new(format!("{}[{idx}]", name.as_str())))
@@ -1757,6 +1760,30 @@ mod tests {
             balance(&dae).expect("scalarized vector connection should expand to children"),
             2
         );
+    }
+
+    #[test]
+    fn test_balance_anchors_size_one_discrete_input_vectors_by_index() {
+        let mut dae = dae::Dae::default();
+        dae.variables.discrete_valued.insert(
+            rumoca_core::VarName::new("source"),
+            discrete_vector_var("source", 1),
+        );
+        for name in ["a", "b"] {
+            dae.variables
+                .discrete_valued
+                .insert(rumoca_core::VarName::new(name), discrete_var(name));
+        }
+        dae.metadata.discrete_input_names.push("source".to_string());
+        dae.discrete.valued_updates.push(scalar_eq_with_lhs("b", 1));
+        dae.discrete
+            .valued_updates
+            .push(connection_assignment_with_rhs_index("a", "source", 1));
+        dae.discrete
+            .valued_updates
+            .push(connection_assignment_with_rhs_ref("a", "b"));
+
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
     }
 
     #[test]
